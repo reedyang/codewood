@@ -1,0 +1,4 @@
+*.pyc
+.smartshell
+.venv*
+.cursor
