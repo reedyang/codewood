@@ -4,7 +4,7 @@ import sys
 import json
 import re
 from pathlib import Path
-from typing import List, Dict, Optional, Any
+from typing import List, Dict, Optional, Any, Tuple
 import shutil
 from datetime import datetime
 
@@ -59,6 +59,10 @@ class SmartShellAgent:
         self.work_directory = Path(work_directory) if work_directory else Path.cwd()
         self.conversation_history = []
         self.operation_results = []
+        # Session-local paths created by action "script"; may be auto-removed after shell runs them
+        self._ephemeral_script_paths = set()
+        # Basename of last ephemeral script auto-removed after shell (avoid redundant delete + freedom prompt)
+        self._last_auto_removed_ephemeral: Optional[str] = None
         
         # 初始化历史记录管理器，使用指定的配置目录或自动查找
         if config_dir:
@@ -82,14 +86,16 @@ class SmartShellAgent:
             self.history_manager = HistoryManager(str(config_dir))
             self.config_dir = Path(config_dir)
 
-        # 加载配置以确定知识库开关（默认开启）
+        # 加载配置以确定知识库开关（默认开启）、自由模式开关（默认关闭）
         self.knowledge_enabled = True
+        self.freedom_enabled = False
         try:
             cfg_path = self.config_dir / "config.json"
             if cfg_path.exists():
                 with open(cfg_path, "r", encoding="utf-8") as f:
                     cfg_data = json.load(f)
                 self.knowledge_enabled = bool(cfg_data.get("knowledge_enabled", True))
+                self.freedom_enabled = bool(cfg_data.get("freedom_enabled", False))
         except Exception as e:
             print(f"⚠️ 读取配置中的知识库开关失败，默认开启: {e}")
         
@@ -214,68 +220,100 @@ class SmartShellAgent:
         # 释放引用（让底层资源由GC清理）
         self.knowledge_manager = None
         return {"success": True, "message": f"知识库已关闭{'（已保存配置）' if saved else ''}"}
-        
-        # 支持新的双模型配置
-        if normal_config and vision_config:
-            self.dual_model_mode = True
-            self.normal_config = normal_config
-            self.vision_config = vision_config
-            
-            # 设置普通任务模型
-            self.normal_provider = normal_config.get("provider", "ollama")
-            self.normal_params = normal_config.get("params", {})
-            self.normal_model_name = self.normal_params.get("model", "gemma3:4b")
-            
-            # 设置视觉模型
-            self.vision_provider = vision_config.get("provider", "ollama")
-            self.vision_params = vision_config.get("params", {})
-            self.vision_model_name = self.vision_params.get("model", "qwen2.5vl:7b")
-            
-            # 兼容旧接口
-            self.model_name = self.normal_model_name
-            self.provider = self.normal_provider
-            self.params = self.normal_params
-            self.openai_conf = self.normal_params if self.normal_provider == "openai" else None
-            self.openwebui_conf = self.normal_params if self.normal_provider == "openwebui" else None
 
+    def _save_freedom_enabled_to_config(self) -> bool:
+        """将自由模式开关状态保存到 config.json"""
+        try:
+            cfg_path = self.config_dir / "config.json"
+            cfg_data = {}
+            if cfg_path.exists():
+                try:
+                    with open(cfg_path, "r", encoding="utf-8") as f:
+                        cfg_data = json.load(f) or {}
+                except Exception:
+                    cfg_data = {}
+            cfg_data["freedom_enabled"] = bool(self.freedom_enabled)
+            with open(cfg_path, "w", encoding="utf-8") as f:
+                json.dump(cfg_data, f, ensure_ascii=False, indent=2)
+            return True
+        except Exception as e:
+            print(f"⚠️ 保存自由模式开关到配置失败: {e}")
+            return False
+
+    def _enable_freedom(self) -> Dict[str, Any]:
+        """开启自由模式：可逆操作在需确认前由 AI 判定，可逆则自动执行"""
+        if self.freedom_enabled:
+            return {"success": True, "message": "自由模式已处于开启状态"}
+        self.freedom_enabled = True
+        saved = self._save_freedom_enabled_to_config()
+        return {
+            "success": True,
+            "message": f"自由模式已开启：可逆操作将自动跳过确认{'（已保存配置）' if saved else ''}",
+        }
+
+    def _disable_freedom(self) -> Dict[str, Any]:
+        if not self.freedom_enabled:
+            return {"success": True, "message": "自由模式已处于关闭状态"}
+        self.freedom_enabled = False
+        saved = self._save_freedom_enabled_to_config()
+        return {"success": True, "message": f"自由模式已关闭{'（已保存配置）' if saved else ''}"}
+
+    def _parse_reversibility_response(self, text: str) -> Tuple[bool, str]:
+        """Parse model JSON; on failure treat as irreversible (still require confirm)."""
+        if not text or not isinstance(text, str):
+            return False, "空响应"
+        s = text.strip()
+        fence = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", s, re.DOTALL)
+        if fence:
+            s = fence.group(1)
+        for i, ch in enumerate(s):
+            if ch != "{":
+                continue
+            depth = 0
+            for j in range(i, len(s)):
+                if s[j] == "{":
+                    depth += 1
+                elif s[j] == "}":
+                    depth -= 1
+                    if depth == 0:
+                        chunk = s[i : j + 1]
+                        try:
+                            obj = json.loads(chunk)
+                            if "reversible" in obj:
+                                r = obj["reversible"]
+                                if isinstance(r, str):
+                                    r = r.strip().lower() in ("true", "1", "yes", "是")
+                                reason = str(obj.get("reason", "")).strip()[:200]
+                                ok = bool(r)
+                                return ok, (reason or ("可逆" if ok else "不可逆"))
+                        except json.JSONDecodeError:
+                            pass
+                        break
+        return False, "无法解析可逆性判定"
+
+    def _ai_assess_reversible(self, command: Dict[str, Any]) -> Tuple[bool, str]:
+        payload = json.dumps(command, ensure_ascii=False)
+        raw = self.call_ai(
+            payload, context="", stream=False, include_knowledge=False, minimal_classifier=True
+        )
+        if not isinstance(raw, str):
+            return False, "模型返回类型异常"
+        if raw.strip().startswith("❌"):
+            return False, raw.strip()[:120]
+        return self._parse_reversibility_response(raw)
+
+    def _freedom_auto_confirm(self, command: Dict[str, Any]) -> bool:
+        """Return True to skip interactive confirmation (move/delete/shell/script/git write)."""
+        if not getattr(self, "freedom_enabled", False):
+            return False
+        print("🦅 自由模式：正在请 AI 判定操作是否可逆…")
+        reversible, reason = self._ai_assess_reversible(command)
+        if reversible:
+            print(f"🦅 判定为可逆，自动跳过确认 — {reason}")
         else:
-            # 兼容旧格式
-            self.dual_model_mode = False
-            self.model_name = model_name
-            self.provider = provider
-            self.openai_conf = openai_conf
-            self.openwebui_conf = openwebui_conf
-            self.params = params
-            # 兼容params统一配置
-            if self.provider == 'openai' and self.openai_conf is None and params is not None:
-                self.openai_conf = params
-            if self.provider == 'openwebui' and self.openwebui_conf is None and params is not None:
-                self.openwebui_conf = params
-        
-        self._validate_model()
-        
-        # 系统提示词
-        prompt_path = os.path.join(os.path.dirname(__file__), 'system_prompt.md')
-        with open(prompt_path, 'r', encoding='utf-8') as f:
-            self.system_prompt = f.read()
-        
-        # 初始化输入处理器
-        self.input_handler = None
-        if TAB_COMPLETION_AVAILABLE:
-            try:
-                if INPUT_HANDLER_TYPE == "windows":
-                    self.input_handler = create_windows_input_handler(self.work_directory)
+            print(f"🦅 判定为不可逆或不确定，仍需手动确认 — {reason}")
+        return reversible
 
-                elif INPUT_HANDLER_TYPE == "readline":
-                    self.input_handler = create_tab_completer(self.work_directory)
-
-                else:
-                    print("⚠️ 未知的输入处理器类型")
-            except Exception as e:
-                print(f"⚠️ 输入处理器初始化失败: {e}")
-        else:
-            print("⚠️ Tab补全功能不可用")
-    
     def _validate_model(self):
         """验证模型是否可用（仅ollama模式）"""
         if self.dual_model_mode:
@@ -313,51 +351,95 @@ class SmartShellAgent:
             print(f"⚠️ 验证{model_type}时出错: {e}")
             print(f"💡 请确保 Ollama 服务正在运行")
 
-    def call_ai(self, user_input: str, context: str = "", stream: bool = False, include_knowledge: bool = True):
+    def call_ai(
+        self,
+        user_input: str,
+        context: str = "",
+        stream: bool = False,
+        include_knowledge: bool = True,
+        minimal_classifier: bool = False,
+    ):
         """调用大模型API获取AI回复，支持流式输出。stream=True时返回生成器"""
         try:
             # 确保os未被局部变量遮蔽
             import os
             os_info = os.uname() if hasattr(os, 'uname') else os.name
             date_time = datetime.now().strftime("%Y-%m-%d %A %H:%M:%S")
-            messages = [{"role": "system", "content": f"{self.system_prompt}\n当前操作系统信息：{os_info}\n当前日期时间：{date_time}"}]
-            for msg in self.conversation_history[-5:]:
-                messages.append(msg)
-            
-            # 从知识库获取相关上下文（可开关）
-            knowledge_context = ""
-            if include_knowledge:
-                # 若允许查询但管理器为空，尝试懒加载初始化一次（需开关开启且依赖可用）
-                if self.knowledge_manager is None and getattr(self, 'knowledge_enabled', True) and KNOWLEDGE_AVAILABLE:
-                    try:
-                        embedding_model = "nomic-embed-text"
-                        self.knowledge_manager = KnowledgeManager(str(self.config_dir), embedding_model)
-                        # 尝试同步（若已同步会做快速检查）
-                        self.knowledge_manager.sync_knowledge_base()
-                    except Exception as e:
-                        # 初始化失败则保持为空，并继续不使用知识库
-                        self.knowledge_manager = None
-                        print(f"⚠️ 知识库懒加载初始化失败: {e}")
-                if self.knowledge_manager:
-                    try:
-                        print("🔎 正在查询知识库...")
-                        knowledge_context = self.knowledge_manager.get_knowledge_context(user_input)
-                        if knowledge_context:
-                            print("📚 从知识库检索到相关信息")
-                        else:
-                            print("ℹ️ 知识库未找到相关信息")
-                    except Exception as e:
-                        print(f"⚠️ 知识库检索失败: {e}")
-            
-            current_input = f"当前工作目录: {self.work_directory}\n"
-            if self.operation_results:
-                current_input += f"最近的操作结果: {self.operation_results[-1]}\n"
-            if context:
-                current_input += f"操作上下文: {context}\n"
-            if knowledge_context and knowledge_context != "":
-                current_input += f"知识库相关信息:\n{knowledge_context}\n"
-            current_input += f"用户输入: {user_input}"
-            messages.append({"role": "user", "content": current_input})
+
+            if minimal_classifier:
+                if stream:
+                    return "❌ 错误：内部可逆性判定不支持流式模式。"
+                classifier_system = (
+                    "You classify smart-shell JSON commands for reversibility. "
+                    "Reply with ONLY one JSON object (no markdown code fence): "
+                    '{"reversible": true or false, "reason": "brief"}. '
+                    "reversible=true only if the user can undo without permanent data loss, or the operation is read-only. "
+                    "Typically reversible: move within workspace; mkdir; git status/log/diff/show; harmless shell (dir/ls/type/cat). "
+                    "Creating directory junctions/symlinks (Windows mklink /J or /D, Unix ln -s) is reversible: "
+                    "undo is removing the link only; the target directory contents are not deleted by removing the link. "
+                    "script action that only writes a new helper file is reversible (delete the file to undo). "
+                    "shell running a local .bat/.cmd/.ps1 that only creates junctions/symlinks or lists files is reversible. "
+                    "Typically NOT reversible: delete/rmtree, batch delete, shell with rm -rf / del critical / format / diskpart, "
+                    "git push/commit/merge/rebase/reset/checkout/cherry-pick that changes repo state, "
+                    "script or shell that overwrites or wipes unique user data, ffmpeg when unique data would be lost. "
+                    "When uncertain, set reversible to false."
+                )
+                messages = [
+                    {"role": "system", "content": classifier_system},
+                    {
+                        "role": "user",
+                        "content": (
+                            f"当前工作目录: {self.work_directory}\n操作系统: {os_info}\n本地时间: {date_time}\n"
+                            f"待判定命令 JSON:\n{user_input}"
+                        ),
+                    },
+                ]
+                record_history = False
+            else:
+                record_history = True
+                messages = [
+                    {
+                        "role": "system",
+                        "content": f"{self.system_prompt}\n当前操作系统信息：{os_info}\n当前日期时间：{date_time}",
+                    }
+                ]
+                for msg in self.conversation_history[-5:]:
+                    messages.append(msg)
+
+                # 从知识库获取相关上下文（可开关）
+                knowledge_context = ""
+                if include_knowledge:
+                    # 若允许查询但管理器为空，尝试懒加载初始化一次（需开关开启且依赖可用）
+                    if self.knowledge_manager is None and getattr(self, 'knowledge_enabled', True) and KNOWLEDGE_AVAILABLE:
+                        try:
+                            embedding_model = "nomic-embed-text"
+                            self.knowledge_manager = KnowledgeManager(str(self.config_dir), embedding_model)
+                            # 尝试同步（若已同步会做快速检查）
+                            self.knowledge_manager.sync_knowledge_base()
+                        except Exception as e:
+                            # 初始化失败则保持为空，并继续不使用知识库
+                            self.knowledge_manager = None
+                            print(f"⚠️ 知识库懒加载初始化失败: {e}")
+                    if self.knowledge_manager:
+                        try:
+                            print("🔎 正在查询知识库...")
+                            knowledge_context = self.knowledge_manager.get_knowledge_context(user_input)
+                            if knowledge_context:
+                                print("📚 从知识库检索到相关信息")
+                            else:
+                                print("ℹ️ 知识库未找到相关信息")
+                        except Exception as e:
+                            print(f"⚠️ 知识库检索失败: {e}")
+
+                current_input = f"当前工作目录: {self.work_directory}\n"
+                if self.operation_results:
+                    current_input += f"最近的操作结果: {self.operation_results[-1]}\n"
+                if context:
+                    current_input += f"操作上下文: {context}\n"
+                if knowledge_context and knowledge_context != "":
+                    current_input += f"知识库相关信息:\n{knowledge_context}\n"
+                current_input += f"用户输入: {user_input}"
+                messages.append({"role": "user", "content": current_input})
 
             # 根据模式选择模型配置
             if self.dual_model_mode:
@@ -429,14 +511,16 @@ class SmartShellAgent:
                                         yield delta
                             except Exception:
                                 continue
-                        self.conversation_history.append({"role": "user", "content": user_input})
-                        self.conversation_history.append({"role": "assistant", "content": buffer})
+                        if record_history:
+                            self.conversation_history.append({"role": "user", "content": user_input})
+                            self.conversation_history.append({"role": "assistant", "content": buffer})
                     return gen()
                 else:
                     data = resp.json()
                     ai_response = data["choices"][0]["message"]["content"]
-                    self.conversation_history.append({"role": "user", "content": user_input})
-                    self.conversation_history.append({"role": "assistant", "content": ai_response})
+                    if record_history:
+                        self.conversation_history.append({"role": "user", "content": user_input})
+                        self.conversation_history.append({"role": "assistant", "content": ai_response})
                     return ai_response
             elif provider == "openwebui" and openwebui_conf:
                 import requests
@@ -484,14 +568,16 @@ class SmartShellAgent:
                                         yield delta
                             except Exception:
                                 continue
-                        self.conversation_history.append({"role": "user", "content": user_input})
-                        self.conversation_history.append({"role": "assistant", "content": buffer})
+                        if record_history:
+                            self.conversation_history.append({"role": "user", "content": user_input})
+                            self.conversation_history.append({"role": "assistant", "content": buffer})
                     return gen()
                 else:
                     data = resp.json()
                     ai_response = data["choices"][0]["message"]["content"]
-                    self.conversation_history.append({"role": "user", "content": user_input})
-                    self.conversation_history.append({"role": "assistant", "content": ai_response})
+                    if record_history:
+                        self.conversation_history.append({"role": "user", "content": user_input})
+                        self.conversation_history.append({"role": "assistant", "content": ai_response})
                     return ai_response
             else:
                 # 检查是否为Ollama提供者
@@ -522,8 +608,9 @@ class SmartShellAgent:
                                 if delta:  # 再次检查是否为空
                                     buffer += delta
                                     yield delta
-                        self.conversation_history.append({"role": "user", "content": user_input})
-                        self.conversation_history.append({"role": "assistant", "content": buffer})
+                        if record_history:
+                            self.conversation_history.append({"role": "user", "content": user_input})
+                            self.conversation_history.append({"role": "assistant", "content": buffer})
                     return gen()
                 else:
                     response = ollama.chat(
@@ -532,8 +619,9 @@ class SmartShellAgent:
                         stream=False
                     )
                     ai_response = response['message']['content']
-                    self.conversation_history.append({"role": "user", "content": user_input})
-                    self.conversation_history.append({"role": "assistant", "content": ai_response})
+                    if record_history:
+                        self.conversation_history.append({"role": "user", "content": user_input})
+                        self.conversation_history.append({"role": "assistant", "content": ai_response})
                     return ai_response
         except Exception as e:
             error_msg = f"调用大模型API时出错: {str(e)} (provider: {provider}, model: {model_name})"
@@ -1107,15 +1195,77 @@ big_image.jpg
             return {"success": True, "summary": summary, "file": str(abs_path)}
         except Exception as e:
             return {"success": False, "error": f"总结文件失败: {str(e)}"}
+
+    def _ephemeral_path_key(self, path: Path) -> str:
+        try:
+            resolved = path.resolve()
+        except OSError:
+            resolved = path
+        s = str(resolved)
+        if os.name == "nt":
+            s = os.path.normcase(s)
+        return s
+
+    def _register_ephemeral_script(self, script_path: Path) -> None:
+        self._ephemeral_script_paths.add(self._ephemeral_path_key(script_path))
+
+    def _parse_shell_invoked_executable(self, command: str) -> Optional[Path]:
+        """Best-effort: path to the primary script/exe the user asked to run (first token)."""
+        import shlex
+        s = command.strip()
+        if not s:
+            return None
+        if s.lower().startswith("call "):
+            s = s[5:].strip()
+        try:
+            parts = shlex.split(s, posix=os.name != "nt")
+        except ValueError:
+            parts = s.split()
+        if not parts:
+            return None
+        base0 = parts[0].replace("\\", "/").split("/")[-1].lower().rstrip(".exe")
+        if len(parts) >= 3 and base0 == "cmd" and parts[1].lower() in ("/c", "/k"):
+            token = parts[2]
+        else:
+            token = parts[0]
+        token = token.strip('"').strip("'")
+        if token.startswith(".\\") or token.startswith("./"):
+            token = token[2:]
+        p = Path(token)
+        if not p.is_absolute():
+            p = self.work_directory / p
+        try:
+            return p.resolve()
+        except OSError:
+            return p
+
+    def _try_remove_ephemeral_script_after_shell(self, command: str) -> Optional[str]:
+        """Returns basename if an ephemeral script was removed, else None."""
+        invoked = self._parse_shell_invoked_executable(command)
+        if invoked is None:
+            return None
+        key = self._ephemeral_path_key(invoked)
+        if key not in self._ephemeral_script_paths:
+            return None
+        try:
+            if invoked.is_file():
+                name = invoked.name
+                invoked.unlink()
+                self._ephemeral_script_paths.discard(key)
+                print(f"🗑️ 已自动删除本会话创建的临时脚本: {name}")
+                return name
+        except OSError as e:
+            print(f"⚠️ 自动删除临时脚本失败 ({invoked}): {e}")
+        return None
     
-    def action_shell_command(self, command: str) -> dict:
+    def action_shell_command(self, command: str, confirmed: bool = False) -> dict:
         """执行任意系统命令，支持实时输出和交互输入"""
-        # 请求用户确实是否执行这条命令
         if not command.strip():
             return {"success": False, "error": "命令不能为空"}
-        confirm = input(f"⚠️ 确认执行系统命令: {command} ? (y/n): ")
-        if confirm.lower() != "y":
-            return {"success": False, "error": "用户取消了操作"}
+        if not confirmed:
+            confirm = input(f"⚠️ 确认执行系统命令: {command} ? (y/n): ")
+            if confirm.lower() != "y":
+                return {"success": False, "error": "用户取消了操作"}
 
         import subprocess
         import sys
@@ -1134,6 +1284,17 @@ big_image.jpg
             return_code = process.wait()
             
             if return_code == 0:
+                removed = self._try_remove_ephemeral_script_after_shell(command)
+                if removed:
+                    self._last_auto_removed_ephemeral = removed
+                    return {
+                        "success": True,
+                        "message": (
+                            f"命令执行成功；已自动删除临时脚本 «{removed}»。"
+                            "请勿再对该文件执行 delete。"
+                        ),
+                        "auto_removed_ephemeral_script": removed,
+                    }
                 return {"success": True, "message": "命令执行成功"}
             else:
                 return {"success": False, "error": f"命令执行失败，退出码: {return_code}"}
@@ -1141,14 +1302,14 @@ big_image.jpg
         except Exception as e:
             return {"success": False, "error": f"系统命令执行异常: {str(e)}"}
         
-    def action_create_script(self, filename: str, content: str) -> dict:
+    def action_create_script(self, filename: str, content: str, confirmed: bool = False) -> dict:
         """创建脚本文件，支持任意内容和扩展名"""
-        # 请求用户确认是否创建脚本文件
-        print("请求创建脚本文件: {filename}")
+        print(f"请求创建脚本文件: {filename}")
         print(f"内容:\n{content}")
-        confirm = input(f"⚠️ 确认创建脚本文件: {filename} ? (y/n): ")
-        if confirm.lower() != "y":
-            return {"success": False, "error": "用户取消了操作"}
+        if not confirmed:
+            confirm = input(f"⚠️ 确认创建脚本文件: {filename} ? (y/n): ")
+            if confirm.lower() != "y":
+                return {"success": False, "error": "用户取消了操作"}
 
         try:
             if not filename or not content:
@@ -1166,7 +1327,9 @@ big_image.jpg
                     os.chmod(script_path, os.stat(script_path).st_mode | stat.S_IXUSR)
                 except Exception:
                     pass
-            return {"success": True, "filename": filename, "full_path": str(script_path), "message": f"成功创建脚本文件 '{filename}'"}
+            resolved = script_path.resolve()
+            self._register_ephemeral_script(resolved)
+            return {"success": True, "filename": filename, "full_path": str(resolved), "message": f"成功创建脚本文件 '{filename}'"}
         except Exception as e:
             return {"success": False, "error": f"创建脚本文件失败: {str(e)}"}
 
@@ -1235,7 +1398,7 @@ big_image.jpg
         except Exception as e:
             return {"success": False, "error": f"图片分析失败: {str(e)}"}
 
-    def action_git(self, command: str, args: Optional[str] = None) -> dict:
+    def action_git(self, command: str, args: Optional[str] = None, confirmed: bool = False) -> dict:
         """执行Git命令，支持所有Git操作，写操作需要用户确认"""
         try:
             import subprocess
@@ -1256,7 +1419,7 @@ big_image.jpg
             
             is_write_operation = command.lower() in write_commands
             
-            if is_write_operation:
+            if is_write_operation and not confirmed:
                 # 显示将要执行的命令并请求用户确认
                 print(f"⚠️ 即将执行Git写操作: {full_command}")
                 confirm = input("确认执行此Git命令吗？(y/n): ")
@@ -1472,9 +1635,10 @@ big_image.jpg
                     if filtered_result["success"]:
                         result = filtered_result
 
-                filter_info = result.get("filter_info", "")
-                smart_info = f" [智能过滤: {smart_filter}]" if smart_filter else ""
-                print(f"\n📁 目录内容 ({result['path']}){filter_info}{smart_info}:")
+                title_extra = result.get("filter_info", "")
+                if smart_filter and "智能过滤" not in title_extra:
+                    title_extra += f" [智能过滤: {smart_filter}]"
+                print(f"\n📁 目录内容 ({result['path']}){title_extra}:")
                 print("-" * 80)
                 for item in result["items"]:
                     icon = "📁" if item["type"] == "directory" else "📄"
@@ -1516,7 +1680,9 @@ big_image.jpg
             source = params.get("source")
             destination = params.get("destination")
             if source and destination:
-                result = self.action_move_file(source, destination)
+                move_cmd = {"action": "move", "params": {"source": source, "destination": destination}}
+                confirmed = self._freedom_auto_confirm(move_cmd)
+                result = self.action_move_file(source, destination, confirmed=confirmed)
 
                 if result["success"]:
                     print(f"✅ {result['message']}")
@@ -1529,7 +1695,25 @@ big_image.jpg
             # 支持多种参数名: file_name, path, name
             file_name = params.get("file_name") or params.get("path") or params.get("name")
             if file_name:
-                result = self.action_delete_file(file_name, False)
+                target_path = self.work_directory / file_name
+                base = Path(file_name).name
+                if (
+                    not target_path.exists()
+                    and self._last_auto_removed_ephemeral
+                    and base.lower() == self._last_auto_removed_ephemeral.lower()
+                ):
+                    print(
+                        f"ℹ️ «{base}» 已由上一步 shell 成功后自动删除，跳过重复的 delete（无需 freedom 确认）。"
+                    )
+                    self._last_auto_removed_ephemeral = None
+                    return {
+                        "success": True,
+                        "message": f"文件 «{base}» 已不存在（已由系统自动清理）",
+                        "skipped_duplicate_delete": True,
+                    }
+                del_cmd = {"action": "delete", "params": {"path": file_name}}
+                confirmed = self._freedom_auto_confirm(del_cmd)
+                result = self.action_delete_file(file_name, confirmed=confirmed)
 
                 if result["success"]:
                     print(f"✅ {result['message']}")
@@ -1609,7 +1793,9 @@ big_image.jpg
         elif action == "shell":
             shell_cmd = params.get("command")
             if shell_cmd:
-                result = self.action_shell_command(shell_cmd)
+                shell_cmd_dict = {"action": "shell", "params": {"command": shell_cmd}}
+                confirmed = self._freedom_auto_confirm(shell_cmd_dict)
+                result = self.action_shell_command(shell_cmd, confirmed=confirmed)
                 if result["success"]:
                     print(f"\n💻 系统命令执行成功: {result['message']}")
                 else:
@@ -1623,7 +1809,10 @@ big_image.jpg
             filename = params.get("filename")
             content = params.get("content")
             if filename and content:
-                result = self.action_create_script(filename, content)
+                assess_content = content if len(content) <= 6000 else content[:6000] + "\n/* ... truncated for reversibility check ... */"
+                script_cmd = {"action": "script", "params": {"filename": filename, "content": assess_content}}
+                confirmed = self._freedom_auto_confirm(script_cmd)
+                result = self.action_create_script(filename, content, confirmed=confirmed)
                 if result["success"]:
                     print(f"✅ {result['message']}")
                 else:
@@ -1668,7 +1857,15 @@ big_image.jpg
             git_command = params.get("command")
             git_args = params.get("args")
             if git_command:
-                result = self.action_git(git_command, git_args)
+                git_write_subcommands = [
+                    "add", "commit", "push", "pull", "merge", "rebase", "reset",
+                    "checkout", "branch", "tag", "remote", "fetch", "clone", "init",
+                    "stash", "cherry-pick", "revert", "clean", "rm", "mv",
+                ]
+                needs_confirm = git_command.lower() in git_write_subcommands
+                git_cmd = {"action": "git", "params": {"command": git_command, "args": git_args}}
+                confirmed = self._freedom_auto_confirm(git_cmd) if needs_confirm else False
+                result = self.action_git(git_command, git_args, confirmed=confirmed)
                 if result["success"]:
                     print(f"\n🔧 Git命令执行成功: {result['command']}")
                     if result.get("output"):
@@ -1797,24 +1994,60 @@ big_image.jpg
                 print(f"❌ {result.get('error', '关闭失败')}")
             return result
 
+        elif action == "freedom_enable" or action == "freedom_on":
+            result = self._enable_freedom()
+            if result.get("success"):
+                print(f"✅ {result.get('message', '自由模式已开启')}")
+            else:
+                print(f"❌ {result.get('error', '开启失败')}")
+            return result
+
+        elif action == "freedom_disable" or action == "freedom_off":
+            result = self._disable_freedom()
+            if result.get("success"):
+                print(f"✅ {result.get('message', '自由模式已关闭')}")
+            else:
+                print(f"❌ {result.get('error', '关闭失败')}")
+            return result
+
         return {"success": False, "error": "未知的操作类型"}
 
     def run(self):
         """运行AI Agent主循环，支持自动多轮命令执行，AI可根据上次执行结果继续生成命令，遇到{"action": "done"}时终止。"""
         import sys
-        
-        # 启动时提示知识库状态
-        if not self.knowledge_enabled:
-            print("知识库当前处于关闭状态。可使用 'knowledge on' 或 '开启知识库' 来开启")
-        elif not self.knowledge_manager:
-            # 已开启但不可用（依赖缺失或初始化失败）
-            print("知识库已开启但当前不可用。请检查依赖或稍后重试。可使用 'knowledge off' 暂时关闭。")
-
-        print("输入 'exit' 或 'quit' 退出程序, 输入 'help' 查看帮助")
-        print("=" * 80)
-
         import os
         os_name = os.name
+
+        # 启动时提示知识库状态
+        _win = os_name == "nt"
+        if not self.knowledge_enabled:
+            print(
+                "知识库当前处于关闭状态。可使用 "
+                + ("`/knowledge on`" if _win else "'knowledge on'")
+                + " 来开启"
+            )
+        elif not self.knowledge_manager:
+            print(
+                "知识库已开启但当前不可用。请检查依赖或稍后重试。可使用 "
+                + ("`/knowledge off`" if _win else "'knowledge off'")
+                + " 暂时关闭。"
+            )
+
+        if self.freedom_enabled:
+            _fh = "`/freedom off`" if _win else "'freedom off'"
+            print(
+                "自由模式已开启：移动/删除/shell/脚本/Git 写操作在执行前会由 AI 判定是否可逆，"
+                f"可逆则自动跳过 y/n 确认。输入 {_fh} 可关闭。"
+            )
+
+        print("输入 'help' 查看帮助（Windows 下内置命令与本地命令多需 / 前缀）")
+        if os_name == "nt":
+            print(
+                "在 Windows 下：退出、帮助、知识库、自由模式、清屏、清空上下文等内置命令，"
+                "以及本机直接执行的系统命令，均须以 / 开头（如 /exit、/help、/clear screen、/dir、/knowledge on）；"
+                "未加 / 的输入将交给 AI。盘符切换（如 d:）仍可直接输入。"
+            )
+        print("=" * 80)
 
         import subprocess
         import re
@@ -1839,153 +2072,240 @@ big_image.jpg
                 # 保存到历史记录（非空输入）
                 if user_input.strip():
                     self.history_manager.add_entry(user_input)
-                
-                if user_input.lower() in ['exit', 'quit', '退出']:
-                    break
-                if user_input.lower() == 'cls' or user_input.lower() == 'clear' or user_input.lower() == '清空屏幕':
-                    # 清空屏幕
-                    import os
-                    os.system('cls' if os_name == 'nt' else 'clear')
-                    continue
-                if user_input.lower() == 'clear history' or user_input.lower() == '清除历史记录':
-                    # 清除历史记录
-                    self.history_manager.clear_history()
-                    print("✅ 历史记录已清除")
-                    continue
-                
-                # 知识库开关命令（不受当前开关状态限制）
-                if user_input.lower() in ['knowledge on', 'knowledge enable', '开启知识库']:
-                    self.execute_command({"action": "knowledge_on", "params": {}})
-                    continue
-                if user_input.lower() in ['knowledge off', 'knowledge disable', '关闭知识库']:
-                    self.execute_command({"action": "knowledge_off", "params": {}})
+
+                stripped_in = user_input.strip()
+                if not stripped_in:
                     continue
 
-                # 知识库相关命令
-                if self.knowledge_enabled and self.knowledge_manager:
-                    if user_input.lower() in ['knowledge sync', '同步知识库', '知识库同步']:
-                        result = self.execute_command({"action": "knowledge_sync", "params": {}})
-                        continue
-                    
-                    if user_input.lower() in ['knowledge stats', '知识库统计', '查看知识库']:
-                        result = self.execute_command({"action": "knowledge_stats", "params": {}})
-                        continue
-                    
-                    if user_input.lower().startswith('knowledge search ') or user_input.lower().startswith('搜索知识库 '):
-                        query = user_input[16:] if user_input.lower().startswith('knowledge search ') else user_input[5:]
-                        if query.strip():
-                            result = self.execute_command({
-                                "action": "knowledge_search", 
-                                "params": {"query": query.strip()}
-                            })
-                        else:
-                            print("❌ 请提供搜索查询内容")
-                        continue
+                # Windows: built-in commands and direct shell require "/" prefix; POSIX unchanged
+                builtin_line: Optional[str] = None
+                if os_name == "nt":
+                    if stripped_in.startswith("/"):
+                        builtin_line = stripped_in[1:].lstrip()
+                        if not builtin_line:
+                            print(
+                                "ℹ️ 在 Windows 下，内置命令与本地直接执行的命令均需以 / 开头，"
+                                "例如 /exit、/help、/clear screen、/knowledge on、/dir；单独输入 / 无效。"
+                            )
+                            continue
                 else:
-                    # 如果知识库关闭，拦截相关命令并提示
-                    if user_input.lower().startswith('knowledge '):
-                        print("ℹ️ 知识库已关闭，可使用 'knowledge on' 开启")
+                    builtin_line = stripped_in
+
+                if builtin_line is not None:
+                    bl = builtin_line.lower()
+                    if bl in ('exit', 'quit'):
+                        break
+                    # clear screen: /clear screen (Windows); POSIX may still use single-token "clear"
+                    if bl == 'cls' or bl == 'clear screen' or (os_name != 'nt' and bl == 'clear'):
+                        os.system('cls' if os_name == 'nt' else 'clear')
                         continue
-                if user_input.lower() == 'help' or user_input.lower() == '帮助':
-                    # 显示帮助信息
-                    print("\n🌟 Smart Shell 帮助信息")
-                    print("=" * 80)
-                    print("\n📌 内置命令：")
-                    print("  1. exit, quit, 退出            - 退出程序")
-                    print("  2. cls, clear, 清空屏幕        - 清空屏幕")
-                    print("  3. clear history, 清除历史记录 - 清除命令历史记录")
-                    print("  4. help, 帮助                  - 显示此帮助信息")
-                    
-                    if self.knowledge_enabled:
-                        print("\n📚 知识库命令：")
-                        print("  5. knowledge on/off, 开启/关闭知识库  - 开关知识库功能（状态会保存到config.json）")
-                        print("  6. knowledge sync, 同步知识库        - 同步知识库文档")
-                        print("  7. knowledge stats, 知识库统计       - 查看知识库统计信息")
-                        print("  8. knowledge search <查询>           - 搜索知识库")
-                    
-                    print("\n📌 系统命令：")
-                    print("  在PATH环境变量中能够找到的命令都可以直接使用")
-                    print("\n📌 自然语言命令：")
-                    print("您可以使用自然语言描述您的需求，例如：")
-                    print("  1. 创建一个名为test的文件夹")
-                    print("  2. 将文件a.txt重命名为b.txt")
-                    print("  3. 分析这张图片的内容")
-                    print("  4. 总结这个文本文件")
-                    print("  5. 将视频转换为mp4格式")
-                    print("  6. 比较两个文件的差异")
-                    print("  7. 查找最近修改的文件")
-                    print("  8. 删除所有临时文件")
-                    
-                    if self.knowledge_manager:
-                        print("  9. 同步知识库")
-                        print("  10. 查看知识库统计")
-                        print("  11. 在知识库中搜索特定内容")
-                    
-                    print("\n💡 提示：")
-                    print("  - Tab键可以自动补全文件路径")
-                    print("  - 上下方向键可以浏览历史命令")
-                    print("  - AI会理解您的自然语言指令并执行相应操作")
-                    if self.knowledge_manager:
-                        print("  - 知识库会自动检索相关信息来辅助AI回答")
-                    print("=" * 80)
-                    continue
-                if not user_input:
-                    continue
+                    if bl == 'clear history':
+                        self.history_manager.clear_history()
+                        if self.input_handler is not None and hasattr(
+                            self.input_handler, "reset_command_history"
+                        ):
+                            self.input_handler.reset_command_history(
+                                self.history_manager.get_all_history()
+                            )
+                        print("✅ 历史记录已清除")
+                        continue
+                    if bl == "clear context":
+                        self.conversation_history.clear()
+                        self.operation_results.clear()
+                        self._last_auto_removed_ephemeral = None
+                        print("✅ 已清空 AI 上下文（对话历史与近期操作结果缓存，不影响命令行输入历史）")
+                        continue
+
+                    if bl == 'knowledge on':
+                        self.execute_command({"action": "knowledge_on", "params": {}})
+                        continue
+                    if bl == 'knowledge off':
+                        self.execute_command({"action": "knowledge_off", "params": {}})
+                        continue
+
+                    if bl == 'freedom on':
+                        self.execute_command({"action": "freedom_on", "params": {}})
+                        continue
+                    if bl == 'freedom off':
+                        self.execute_command({"action": "freedom_off", "params": {}})
+                        continue
+
+                    if self.knowledge_enabled and self.knowledge_manager:
+                        if bl == 'knowledge sync':
+                            self.execute_command({"action": "knowledge_sync", "params": {}})
+                            continue
+
+                        if bl == 'knowledge stats':
+                            self.execute_command({"action": "knowledge_stats", "params": {}})
+                            continue
+
+                        if bl.startswith('knowledge search '):
+                            query = builtin_line[len('knowledge search ') :]
+                            if query.strip():
+                                self.execute_command({
+                                    "action": "knowledge_search",
+                                    "params": {"query": query.strip()},
+                                })
+                            else:
+                                print("❌ 请提供搜索查询内容")
+                            continue
+                    else:
+                        if bl.startswith('knowledge '):
+                            _kh = "`/knowledge on`" if os_name == "nt" else "'knowledge on'"
+                            print(f"ℹ️ 知识库已关闭，可使用 {_kh} 开启")
+                            continue
+
+                    if bl == 'help':
+                        print("\n🌟 Smart Shell 帮助信息")
+                        print("=" * 80)
+                        print("\n📌 内置命令：")
+                        if os_name == "nt":
+                            print("  1. /exit, /quit                 - 退出程序")
+                            print("  2. /cls, /clear screen          - 清空屏幕")
+                            print("  3. /clear history               - 清除命令历史记录")
+                            print("  4. /clear context           - 清空 AI 上下文与操作结果缓存")
+                            print("  5. /help                        - 显示此帮助信息")
+                        else:
+                            print("  1. exit, quit                   - 退出程序")
+                            print("  2. cls, clear screen (或 clear) - 清空屏幕")
+                            print("  3. clear history                - 清除命令历史记录")
+                            print("  4. clear context                - 清空 AI 对话上下文与操作结果缓存")
+                            print("  5. help                         - 显示此帮助信息")
+
+                        if self.knowledge_enabled:
+                            print("\n📚 知识库命令：")
+                            if os_name == "nt":
+                                print("  6. /knowledge on|off            - 开关（状态写入 config.json）")
+                                print("  7. /knowledge sync              - 同步文档")
+                                print("  8. /knowledge stats             - 统计信息")
+                                print("  9. /knowledge search <query>    - 搜索知识库")
+                            else:
+                                print("  6. knowledge on/off             - 开关知识库（状态写入 config.json）")
+                                print("  7. knowledge sync               - 同步知识库文档")
+                                print("  8. knowledge stats              - 查看统计信息")
+                                print("  9. knowledge search <query>   - 搜索知识库")
+
+                        print("\n🦅 自由模式命令：")
+                        if os_name == "nt":
+                            print("  /freedom on|/freedom off  - 可逆操作自动跳过确认（写入 config.json）")
+                        else:
+                            print("  freedom on/off  - 可逆操作自动跳过确认（状态写入 config.json）")
+
+                        print("\n📌 系统命令（不经 AI，本机直接执行）：")
+                        if os_name == "nt":
+                            print("  Windows：必须以 / 开头，例如 /dir、/ping、/type file.txt、/git status")
+                            print("  （盘符切换如 d: 仍可直接输入，无需 /）")
+                        else:
+                            print("  常见系统命令（如 cd、ls、cat 等）可直接输入；可执行文件也可直接运行")
+                        print("\n📌 自然语言命令：")
+                        print("您可以使用自然语言描述您的需求，例如：")
+                        print("  1. 创建一个名为test的文件夹")
+                        print("  2. 将文件a.txt重命名为b.txt")
+                        print("  3. 分析这张图片的内容")
+                        print("  4. 总结这个文本文件")
+                        print("  5. 将视频转换为mp4格式")
+                        print("  6. 比较两个文件的差异")
+                        print("  7. 查找最近修改的文件")
+                        print("  8. 删除所有临时文件")
+
+                        if self.knowledge_manager:
+                            print("  9. 同步知识库")
+                            print("  10. 查看知识库统计")
+                            print("  11. 在知识库中搜索特定内容")
+
+                        print("\n💡 提示：")
+                        print("  - Tab键可以自动补全文件路径")
+                        print("  - 上下方向键可以浏览历史命令")
+                        print("  - AI会理解您的自然语言指令并执行相应操作")
+                        if self.knowledge_manager:
+                            print("  - 知识库会自动检索相关信息来辅助AI回答")
+                        print("=" * 80)
+                        continue
 
                 # Windows: single drive letter (e.g. "d:" or "D:") -> switch to that drive root, do not trigger AI
-                if os_name == 'nt' and re.match(r'^[a-zA-Z]:\s*$', user_input.strip()):
-                    drive_letter = user_input.strip()[0].upper()
+                if os_name == 'nt' and re.match(r'^[a-zA-Z]:\s*$', stripped_in):
+                    drive_letter = stripped_in[0].upper()
                     result = self.action_change_directory(drive_letter + ":\\")
                     if not result["success"]:
                         print(f"❌ {result['error']}")
                     continue
 
-                # 检查是否为可执行文件，如果是则直接执行
-                if self._is_executable_file(user_input):
-                    # 检测到可执行文件，直接运行
-                    self._execute_file_directly(user_input)
-                    continue
+                # Direct local execution without AI: Windows requires leading "/"; POSIX keeps legacy ("/" is absolute paths)
+                run_direct_shell: Optional[str] = None
+                if os_name == "nt":
+                    if stripped_in.startswith("/"):
+                        run_direct_shell = stripped_in[1:].lstrip()
+                        if not run_direct_shell:
+                            print(
+                                "ℹ️ 在 Windows 下，不经过 AI 直接执行的系统命令或可执行文件需以 / 开头，"
+                                "例如 /dir、/ping 127.0.0.1、/git status；单独输入 / 无效。"
+                            )
+                            continue
+                else:
+                    if system_cmd_re.match(stripped_in) or self._is_executable_file(stripped_in):
+                        run_direct_shell = stripped_in
 
-                # 判断是否为常见系统命令
-                if system_cmd_re.match(user_input):
-                    if user_input.lower().startswith('ls') and os_name == 'nt':
-                        user_input = 'dir ' + user_input[2:].strip()
-                    elif user_input.lower().startswith('list') and os_name == 'nt':
-                        user_input = 'dir ' + user_input[4:].strip()
-                    elif user_input.lower().startswith('dir') and os_name != 'nt':
-                        user_input = 'ls ' + user_input[3:].strip()
+                if run_direct_shell is not None:
+                    ui = run_direct_shell
+                    if self._is_executable_file(ui):
+                        self._execute_file_directly(ui)
+                        continue
 
-                    # 直接执行系统命令
-                    try:
-                        # Windows下cd命令特殊处理
-                        if user_input.lower().startswith('cd '):
-                            path = user_input[3:].strip()
-                            result = self.action_change_directory(path)
-                            if not result["success"]:
-                                print(f"❌ {result['error']}")
-                        else:
-                            # 其它命令直接用subprocess，继承当前终端
-                            try:
-                                process = subprocess.Popen(
-                                    user_input,
-                                    shell=True,
-                                    stdin=sys.stdin,
-                                    stdout=sys.stdout,
-                                    stderr=sys.stderr,
-                                    cwd=str(self.work_directory)
-                                )
-                                
-                                # 等待进程结束
-                                return_code = process.wait()
-                            except Exception as e:
-                                print(f"❌ 命令执行异常: {e}")
-                    except Exception as e:
-                        print(f"❌ 系统命令执行异常: {e}")
-                    continue
+                    user_input_cmd = ui
+                    if system_cmd_re.match(ui):
+                        if user_input_cmd.lower().startswith('ls') and os_name == 'nt':
+                            user_input_cmd = 'dir ' + user_input_cmd[2:].strip()
+                        elif user_input_cmd.lower().startswith('list') and os_name == 'nt':
+                            user_input_cmd = 'dir ' + user_input_cmd[4:].strip()
+                        elif user_input_cmd.lower().startswith('dir') and os_name != 'nt':
+                            user_input_cmd = 'ls ' + user_input_cmd[3:].strip()
+
+                        try:
+                            if user_input_cmd.lower().startswith('cd '):
+                                path = user_input_cmd[3:].strip()
+                                result = self.action_change_directory(path)
+                                if not result["success"]:
+                                    print(f"❌ {result['error']}")
+                            else:
+                                try:
+                                    process = subprocess.Popen(
+                                        user_input_cmd,
+                                        shell=True,
+                                        stdin=sys.stdin,
+                                        stdout=sys.stdout,
+                                        stderr=sys.stderr,
+                                        cwd=str(self.work_directory)
+                                    )
+                                    process.wait()
+                                except Exception as e:
+                                    print(f"❌ 命令执行异常: {e}")
+                        except Exception as e:
+                            print(f"❌ 系统命令执行异常: {e}")
+                        continue
+
+                    if os_name == "nt":
+                        # e.g. /git status — not in the small whitelist but still direct shell
+                        try:
+                            process = subprocess.Popen(
+                                ui,
+                                shell=True,
+                                stdin=sys.stdin,
+                                stdout=sys.stdout,
+                                stderr=sys.stderr,
+                                cwd=str(self.work_directory)
+                            )
+                            process.wait()
+                        except Exception as e:
+                            print(f"❌ 命令执行异常: {e}")
+                        continue
 
                 last_result = None
+                self._last_auto_removed_ephemeral = None
+                original_user_task = user_input.strip()
                 next_input = user_input
                 is_first_round = True  # 标记是否为第一轮
+                followup_json_misses = 0
+                max_followup_json_misses = 4
                 while True:
                     # 获取AI回复
                     print("🤖 AI正在思考...")
@@ -2009,11 +2329,71 @@ big_image.jpg
                     # 提取并执行命令
                     command = self.extract_json_command(ai_response)
                     if not command:
-                        # 未检测到有效命令，终止本轮
+                        # After a command with last_action false (or any mid-chain step), model must keep emitting JSON
+                        if last_result is not None and followup_json_misses < max_followup_json_misses:
+                            followup_json_misses += 1
+                            print(
+                                f"\n⚠️ 未解析到 JSON 操作指令（续步重试 {followup_json_misses}/{max_followup_json_misses}）。"
+                                "已提醒模型必须输出 ```json 代码块。"
+                            )
+                            next_input = (
+                                next_input
+                                + "\n\n【系统约束】上一条回复中没有任何可执行的 ```json``` 指令。"
+                                "当前多步任务尚未结束。你必须在下一条回复中**包含恰好一个** ```json 代码块**，"
+                                "内含一条操作 JSON（例如 script、shell、batch、move 等）；"
+                                "仅当用户任务已全部完成时，才输出 {\"action\": \"done\"}。"
+                                "禁止仅用纯文字罗列结果代替 JSON。"
+                                "若原始需求含「创建脚本」「执行脚本」等，下一步必须是 script 或 shell/batch，"
+                                "禁止再用 list + last_action:true 结束。"
+                            )
+                            is_first_round = False
+                            continue
+                        print("\nℹ️ 未检测到可执行 JSON 指令，结束本轮。")
                         break
                     if command.get("action") == "done":
+                        followup_json_misses = 0
                         print("✅ AI已声明所有操作完成。");
                         break
+
+                    # After last_action:false, refuse list+last_action:true when task clearly needs script/shell
+                    if last_result is not None and self.operation_results:
+                        prev_wrap = self.operation_results[-1]
+                        prev_cmd = prev_wrap.get("command") or {}
+                        if prev_cmd.get("last_action") is not True:
+                            if command.get("action") == "list" and command.get("last_action") is True:
+                                task_hints = (
+                                    "脚本",
+                                    "执行",
+                                    "junction",
+                                    "联结",
+                                    "mklink",
+                                    "批处理",
+                                    ".bat",
+                                    "自动",
+                                    "运行",
+                                    "软链",
+                                    "符号",
+                                )
+                                if any(h in original_user_task for h in task_hints):
+                                    followup_json_misses += 1
+                                    if followup_json_misses > max_followup_json_misses:
+                                        print("\n❌ 多次收到无效的提前结束指令，终止本轮。")
+                                        break
+                                    print(
+                                        "\n⚠️ 已拒绝执行：上一步为 last_action:false，"
+                                        "当前需求含脚本/执行/junction 等，不能用 list + last_action:true 收尾。"
+                                    )
+                                    next_input = (
+                                        f"【用户原始需求】\n{original_user_task}\n\n"
+                                        f"【上一有效步骤及返回】\n"
+                                        f"{json.dumps(self.operation_results[-1], ensure_ascii=False)}\n\n"
+                                        "【错误】请输出 script（写入 .bat/.ps1 等），再 shell 执行；"
+                                        "或使用 batch。不要 list 工作目录结束。"
+                                    )
+                                    is_first_round = False
+                                    continue
+
+                    followup_json_misses = 0
                     print("⚡ 执行操作...")
                     result = self.execute_command(command)
                     # 保存操作结果
@@ -2031,14 +2411,26 @@ big_image.jpg
                         "用户取消" in result.get("error", "")
                     ):
                         is_first_round = False
+                        followup_json_misses = 0
                         # 向AI发送明确的取消消息，要求输出done命令
-                        next_input = "用户取消了操作，请不要再继续执行任何命令，直接输出'{\"action\": \"done\"}'"
+                        next_input = (
+                            f"【用户原始需求】\n{original_user_task}\n\n"
+                            "用户取消了操作，请不要再继续执行任何命令，直接输出'{\"action\": \"done\"}'"
+                        )
                         continue
                     
                     # 第一轮结束后，后续轮次不再查询知识库
                     is_first_round = False
-                    # 若AI未自动输出done，则继续将本次结果传给AI生成下一个命令
-                    next_input = "命令执行结果：" + json.dumps(self.operation_results[-1], ensure_ascii=False)
+                    # 续步时必须带上原始需求，否则模型容易忘记「创建脚本/执行」等后续步骤
+                    next_input = (
+                        f"【用户原始需求（须全部完成；未完成前禁止用无意义的 list + last_action:true 结束）】\n"
+                        f"{original_user_task}\n\n"
+                        f"【上一条已执行命令及系统返回】\n"
+                        f"{json.dumps(self.operation_results[-1], ensure_ascii=False)}\n\n"
+                        "请根据原始需求继续输出下一条 ```json``` 指令。"
+                        "若需求包含创建并执行脚本、批处理、junction 等，通常应先 script 写入文件，再 shell 执行；"
+                        "不要仅列出当前工作目录来结束。"
+                    )
 
                     if result.get("success", True) and command.get("last_action") == True:
                         print("✅ 操作已完成")
