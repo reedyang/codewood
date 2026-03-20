@@ -5,9 +5,12 @@ Windows兼容的输入处理模块
 """
 
 import os
+import re
 import sys
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Tuple
+
+from .builtin_slash_commands import windows_slash_builtin_completions
 
 try:
     from prompt_toolkit import PromptSession
@@ -25,10 +28,33 @@ class FileCompleter(Completer):
     
     def __init__(self, work_directory: Path):
         self.work_directory = work_directory
-    
+
+    @staticmethod
+    def _leading_slash_builtin_fragment(text: str) -> Tuple[int, str]:
+        """
+        If the first non-whitespace character is '/', return (index of '/', fragment from '/' to end).
+        Otherwise (-1, '').
+        """
+        m = re.match(r"^\s*", text)
+        i = m.end() if m else 0
+        if i < len(text) and text[i] == "/":
+            return i, text[i:]
+        return -1, ""
+
     def get_completions(self, document, complete_event):
         """获取补全选项"""
         text = document.text_before_cursor
+
+        # Windows: first non-space char is "/" -> complete built-in slash commands only
+        if os.name == "nt":
+            idx, slash_part = self._leading_slash_builtin_fragment(text)
+            if idx >= 0 and slash_part:
+                matches = windows_slash_builtin_completions(slash_part)
+                if matches:
+                    spos = -len(slash_part)
+                    for mc in matches:
+                        yield Completion(mc, start_position=spos)
+                return
         
         # 如果输入为空或只有空白字符，直接返回所有文件
         if not text or text.strip() == "":
@@ -478,6 +504,28 @@ class WindowsInputHandler:
         if self.session and hasattr(self, 'completer'):
             self.completer.work_directory = new_directory
 
+    def reset_command_history(self, entries: Optional[List[str]] = None) -> None:
+        """
+        Rebuild prompt_toolkit InMemoryHistory from entries (e.g. after HistoryManager.clear_history()).
+        Must be called when disk history is cleared; otherwise arrow-key history stays stale in RAM.
+        """
+        self.history = []
+        if not PROMPT_TOOLKIT_AVAILABLE or not getattr(self, "session", None):
+            return
+        entries = entries if entries is not None else []
+        self._pt_history = InMemoryHistory()
+        for entry in entries:
+            try:
+                self._pt_history.append_string(entry)
+            except Exception:
+                pass
+        self.session = PromptSession(
+            completer=self.completer,
+            history=self._pt_history,
+            enable_system_prompt=True,
+            enable_suspend=True,
+            complete_in_thread=True,
+        )
 
 def create_windows_input_handler(work_directory: Path, initial_history: Optional[List[str]] = None) -> WindowsInputHandler:
     """创建Windows输入处理器"""
