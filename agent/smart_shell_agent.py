@@ -41,6 +41,39 @@ else:
         TAB_COMPLETION_AVAILABLE = False
         INPUT_HANDLER_TYPE = "none"
 
+
+def _enable_windows_console_vt() -> None:
+    """Enable ANSI escape sequences on Windows 10+ console when stdout is a TTY."""
+    if sys.platform != "win32":
+        return
+    if not hasattr(sys.stdout, "isatty") or not sys.stdout.isatty():
+        return
+    try:
+        import ctypes
+
+        kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
+        STD_OUTPUT_HANDLE = -11
+        ENABLE_VIRTUAL_TERMINAL_PROCESSING = 0x0004
+        h = kernel32.GetStdHandle(STD_OUTPUT_HANDLE)
+        mode = ctypes.c_ulong()
+        if kernel32.GetConsoleMode(h, ctypes.byref(mode)):
+            kernel32.SetConsoleMode(h, mode.value | ENABLE_VIRTUAL_TERMINAL_PROCESSING)
+    except Exception:
+        pass
+
+
+def _ansi_red(text: str) -> str:
+    if not hasattr(sys.stdout, "isatty") or not sys.stdout.isatty():
+        return text
+    return f"\033[31m{text}\033[0m"
+
+
+def _ansi_yellow(text: str) -> str:
+    if not hasattr(sys.stdout, "isatty") or not sys.stdout.isatty():
+        return text
+    return f"\033[33m{text}\033[0m"
+
+
 class SmartShellAgent:
     def __init__(self, model_name: str = "gemma3:4b", work_directory: Optional[str] = None, provider: str = "ollama", openai_conf: Optional[dict] = None, openwebui_conf: Optional[dict] = None, params: Optional[dict] = None, normal_config: Optional[dict] = None, vision_config: Optional[dict] = None, config_dir: Optional[str] = None):
         """
@@ -2033,20 +2066,28 @@ big_image.jpg
                 + " 暂时关闭。"
             )
 
+        _fon = "`/freedom on`" if _win else "'freedom on'"
+        _foff = "`/freedom off`" if _win else "'freedom off'"
         if self.freedom_enabled:
-            _fh = "`/freedom off`" if _win else "'freedom off'"
+            _enable_windows_console_vt()
+            print(_ansi_red("自由模式：已开启"))
             print(
-                "自由模式已开启：移动/删除/shell/脚本/Git 写操作在执行前会由 AI 判定是否可逆，"
-                f"可逆则自动跳过 y/n 确认。输入 {_fh} 可关闭。"
+                "  移动/删除/shell/脚本/Git 写操作在执行前会由 AI 判定是否可逆，"
+                f"可逆则自动跳过 y/n 确认。输入 {_foff} 可关闭。"
+            )
+            print(
+                _ansi_yellow(
+                    "  警告：AI 对「可逆」的判定可能错误；自动跳过确认仍可能导致误删文件、错误 Git 操作或破坏性 shell/脚本执行。"
+                )
+            )
+        else:
+            print("自由模式：已关闭")
+            print(
+                "  需确认的操作将始终询问 y/n。"
+                f"输入 {_fon} 可开启（可逆操作可由 AI 判定后自动跳过确认）。"
             )
 
-        print("输入 'help' 查看帮助（Windows 下内置命令与本地命令多需 / 前缀）")
-        if os_name == "nt":
-            print(
-                "在 Windows 下：退出、帮助、知识库、自由模式、清屏、清空上下文等内置命令，"
-                "以及本机直接执行的系统命令，均须以 / 开头（如 /exit、/help、/clear screen、/dir、/knowledge on）；"
-                "未加 / 的输入将交给 AI。盘符切换（如 d:）仍可直接输入。"
-            )
+        print("输入 '/help' 查看帮助")
         print("=" * 80)
 
         import subprocess
