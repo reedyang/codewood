@@ -32,7 +32,9 @@ def main():
     local_config = os.path.join(current_dir, ".smartshell/config.json")
     
     config_dir = None  # 配置文件目录，用于历史记录保存
-    
+    # Built-in Agent Skills: <main.py 所在目录>/skills/（与 config 侧 skills 合并时，外部优先）
+    builtin_skills_dir = str(current_dir / "skills")
+
     if os.path.exists(user_config):
         config_path = user_config
         config_dir = os.path.dirname(user_config)  # 获取配置文件所在目录
@@ -83,7 +85,8 @@ def main():
                 work_directory=work_directory,
                 normal_config=normal_config,
                 vision_config=vision_config,
-                config_dir=config_dir
+                config_dir=config_dir,
+                builtin_skills_dir=builtin_skills_dir,
             )
             agent.run()
             return 0
@@ -99,7 +102,8 @@ def main():
                 work_directory=work_directory,
                 provider="openai",
                 params=params,
-                config_dir=config_dir
+                config_dir=config_dir,
+                builtin_skills_dir=builtin_skills_dir,
             )
             agent.run()
             return 0
@@ -113,7 +117,8 @@ def main():
                 work_directory=work_directory,
                 provider="openwebui",
                 params=params,
-                config_dir=config_dir
+                config_dir=config_dir,
+                builtin_skills_dir=builtin_skills_dir,
             )
             agent.run()
             return 0
@@ -153,7 +158,8 @@ def main():
                 model_name=model_name,
                 work_directory=work_directory,
                 provider="ollama",
-                config_dir=config_dir
+                config_dir=config_dir,
+                builtin_skills_dir=builtin_skills_dir,
             )
             agent.run()
             return 0

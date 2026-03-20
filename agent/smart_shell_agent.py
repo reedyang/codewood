@@ -4,12 +4,13 @@ import sys
 import json
 import re
 from pathlib import Path
-from typing import List, Dict, Optional, Any, Tuple
+from typing import List, Dict, Optional, Any, Tuple, Set
 import shutil
 from datetime import datetime
 
 # 导入历史记录管理器
 from .history_manager import HistoryManager
+from .skills_loader import build_skills_routing_prefix, build_skills_system_append, load_skills_merged
 
 # Import knowledge manager; KNOWLEDGE_AVAILABLE is set by knowledge_manager (e.g. False when ChromaDB fails on Python 3.14)
 try:
@@ -75,7 +76,7 @@ def _ansi_yellow(text: str) -> str:
 
 
 class SmartShellAgent:
-    def __init__(self, model_name: str = "gemma3:4b", work_directory: Optional[str] = None, provider: str = "ollama", openai_conf: Optional[dict] = None, openwebui_conf: Optional[dict] = None, params: Optional[dict] = None, normal_config: Optional[dict] = None, vision_config: Optional[dict] = None, config_dir: Optional[str] = None):
+    def __init__(self, model_name: str = "gemma3:4b", work_directory: Optional[str] = None, provider: str = "ollama", openai_conf: Optional[dict] = None, openwebui_conf: Optional[dict] = None, params: Optional[dict] = None, normal_config: Optional[dict] = None, vision_config: Optional[dict] = None, config_dir: Optional[str] = None, builtin_skills_dir: Optional[str] = None):
         """
         初始化Smart Shell
         Args:
@@ -88,12 +89,15 @@ class SmartShellAgent:
             normal_config: 普通任务模型配置（新格式）
             vision_config: 视觉模型配置（新格式）
             config_dir: 配置文件目录（可选，用于指定历史记录保存位置）
+            builtin_skills_dir: 内建 Agent Skills 根目录（通常为 main.py 同目录下的 skills/）；未传则使用 agent 包上级目录的 skills/
         """
         self.work_directory = Path(work_directory) if work_directory else Path.cwd()
         self.conversation_history = []
         self.operation_results = []
         # Session-local paths created by action "script"; may be auto-removed after shell runs them
-        self._ephemeral_script_paths = set()
+        self._ephemeral_script_paths: Set[str] = set()
+        # All path keys for files AI created this session (scripts + outputs detected from shell), for freedom auto-confirm
+        self._ai_created_path_keys: Set[str] = set()
         # Basename of last ephemeral script auto-removed after shell (avoid redundant delete + freedom prompt)
         self._last_auto_removed_ephemeral: Optional[str] = None
         
@@ -118,6 +122,13 @@ class SmartShellAgent:
                 
             self.history_manager = HistoryManager(str(config_dir))
             self.config_dir = Path(config_dir)
+
+        # AI-generated script files live under config_dir/workspace/; shell cwd stays work_directory so outputs go there.
+        self.ai_workspace_dir = self.config_dir / "workspace"
+        try:
+            self.ai_workspace_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            print(f"⚠️ 无法创建 AI workspace 目录 {self.ai_workspace_dir}: {e}")
 
         # 加载配置以确定知识库开关（默认开启）、自由模式开关（默认关闭）
         self.knowledge_enabled = True
@@ -185,6 +196,15 @@ class SmartShellAgent:
         prompt_path = os.path.join(os.path.dirname(__file__), 'system_prompt.md')
         with open(prompt_path, 'r', encoding='utf-8') as f:
             self.system_prompt = f.read()
+
+        self._builtin_skills_root = (
+            Path(builtin_skills_dir).expanduser().resolve()
+            if builtin_skills_dir
+            else Path(__file__).resolve().parent.parent / "skills"
+        )
+        self.skills = load_skills_merged(self.config_dir, self._builtin_skills_root)
+        self._skills_routing_prefix = build_skills_routing_prefix(self.skills)
+        self._skills_system_append = build_skills_system_append(self.skills)
 
         # 初始化输入处理器，确保属性存在
         self.input_handler = None
@@ -324,6 +344,89 @@ class SmartShellAgent:
                         break
         return False, "无法解析可逆性判定"
 
+    def _parse_safe_auto_response(self, text: str) -> Tuple[bool, str]:
+        """Parse script freedom review JSON: {\"safe_auto\": bool, \"reason\": ...}."""
+        if not text or not isinstance(text, str):
+            return False, "空响应"
+        s = text.strip()
+        if s.startswith("❌"):
+            return False, s[:120]
+        fence = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", s, re.DOTALL)
+        if fence:
+            s = fence.group(1)
+        for i, ch in enumerate(s):
+            if ch != "{":
+                continue
+            depth = 0
+            for j in range(i, len(s)):
+                if s[j] == "{":
+                    depth += 1
+                elif s[j] == "}":
+                    depth -= 1
+                    if depth == 0:
+                        chunk = s[i : j + 1]
+                        try:
+                            obj = json.loads(chunk)
+                            if "safe_auto" in obj:
+                                r = obj["safe_auto"]
+                                if isinstance(r, str):
+                                    r = r.strip().lower() in ("true", "1", "yes", "是")
+                                reason = str(obj.get("reason", "")).strip()[:240]
+                                ok = bool(r)
+                                return ok, (reason or ("允许自动" if ok else "需确认"))
+                        except json.JSONDecodeError:
+                            pass
+                        break
+        return False, "无法解析脚本审查结果"
+
+    @staticmethod
+    def _freedom_script_quick_deny(content: str) -> bool:
+        """Fast heuristic: likely system/config modification or dangerous mass delete."""
+        if not content:
+            return False
+        low = content.lower()
+        needles = (
+            "winreg.",
+            "hkey_",
+            r"\\registry\\",
+            "_winreg",
+            "ctypes.windll",
+            "netsh ",
+            "sc.exe",
+            "reg add",
+            "reg delete",
+            "set-itemproperty",
+            "new-itemproperty",
+            "/etc/sudoers",
+            "/etc/ssh/sshd",
+            "os.environ[",
+            "putenv(",
+            "machine\\system\\currentcontrolset",
+        )
+        return any(n in low for n in needles)
+
+    def _ai_assess_script_freedom(self, script_path: Path, content: str) -> Tuple[bool, str]:
+        """Ask classifier whether script only touches AI/workspace outputs and not system config."""
+        keys = sorted(self._ai_created_path_keys)[:120]
+        payload = (
+            f"work_directory={self.work_directory.resolve()}\n"
+            f"ai_workspace_dir={self.ai_workspace_dir.resolve()}\n"
+            f"os={os.name}\n"
+            f"ai_tracked_path_keys_normalized={json.dumps(keys, ensure_ascii=False)}\n"
+            f"script_file={script_path.resolve()}\n\n"
+            f"--- script source ---\n{content}\n--- end ---"
+        )
+        raw = self.call_ai(
+            payload,
+            context="",
+            stream=False,
+            include_knowledge=False,
+            freedom_script_review=True,
+        )
+        if not isinstance(raw, str):
+            return False, "模型返回类型异常"
+        return self._parse_safe_auto_response(raw)
+
     def _ai_assess_reversible(self, command: Dict[str, Any]) -> Tuple[bool, str]:
         payload = json.dumps(command, ensure_ascii=False)
         raw = self.call_ai(
@@ -339,6 +442,85 @@ class SmartShellAgent:
         """Return True to skip interactive confirmation (move/delete/shell/script/git write)."""
         if not getattr(self, "freedom_enabled", False):
             return False
+        action = command.get("action")
+        params = command.get("params") or {}
+
+        if action == "script":
+            print("🦅 自由模式：创建/覆盖脚本为会话内操作，跳过确认。")
+            return True
+
+        if action == "delete":
+            p = params.get("path") or params.get("file_name") or params.get("name")
+            if p and self._is_ai_created_path(str(p)):
+                print("🦅 自由模式：删除目标为本会话 AI 创建或产出的文件，跳过确认。")
+                return True
+
+        if action == "move":
+            src = params.get("source")
+            if src and self._is_ai_created_path(str(src)):
+                print("🦅 自由模式：移动源为本会话 AI 创建或产出的文件，跳过确认。")
+                return True
+
+        if action == "shell":
+            cmd = params.get("command") or ""
+            s = (cmd or "").strip()
+
+            # Inline Python (-c): no script file on disk to review here
+            if re.search(
+                r"(?i)(?:^|[\s;&|])(?:py(?:thon)?(?:\d(?:\.\d)?)?|pythonw)\s+-\s*c\s+", s
+            ):
+                print("🦅 自由模式：工作目录内联 Python（-c），跳过确认。")
+                return True
+
+            sp = self._parse_shell_invoked_script_path(s)
+            if sp is not None:
+                k = self._ephemeral_path_key(sp)
+                # AI-written script file: review source for non-AI file damage / system config
+                if k in self._ephemeral_script_paths and sp.is_file():
+                    try:
+                        body = sp.read_text(encoding="utf-8", errors="replace")
+                    except OSError as e:
+                        print(f"⚠️ 无法读取待审查脚本: {e}")
+                        body = ""
+                    max_len = 200_000
+                    if len(body) > max_len:
+                        body = body[:max_len] + "\n# ... [truncated for review] ..."
+                    if self._freedom_script_quick_deny(body):
+                        print(
+                            "🦅 自由模式：脚本内容命中高风险启发规则（如注册表/系统配置相关），"
+                            "改由操作级可逆判定。"
+                        )
+                        reversible, reason = self._ai_assess_reversible(command)
+                        if reversible:
+                            print(f"🦅 判定为可逆，自动跳过确认 — {reason}")
+                        else:
+                            print(f"🦅 判定为不可逆或不确定，仍需手动确认 — {reason}")
+                        return reversible
+                    print("🦅 自由模式：正在审查脚本是否仅影响工作区/AI 产出且无系统级副作用…")
+                    safe, sreason = self._ai_assess_script_freedom(sp, body)
+                    if safe:
+                        print(f"🦅 脚本审查通过 — {sreason}")
+                        return True
+                    print(f"🦅 脚本审查未通过自动执行 — {sreason}")
+                    reversible, reason = self._ai_assess_reversible(command)
+                    if reversible:
+                        print(f"🦅 操作级可逆判定 — {reason}")
+                    else:
+                        print(f"🦅 操作级判定 — {reason}")
+                    return reversible
+
+                if k in self._ai_created_path_keys:
+                    print("🦅 自由模式：命令作用于本会话已跟踪的 AI 产出路径，跳过确认。")
+                    return True
+
+            print("🦅 自由模式：正在请 AI 判定操作是否可逆…")
+            reversible, reason = self._ai_assess_reversible(command)
+            if reversible:
+                print(f"🦅 判定为可逆，自动跳过确认 — {reason}")
+            else:
+                print(f"🦅 判定为不可逆或不确定，仍需手动确认 — {reason}")
+            return reversible
+
         print("🦅 自由模式：正在请 AI 判定操作是否可逆…")
         reversible, reason = self._ai_assess_reversible(command)
         if reversible:
@@ -391,6 +573,7 @@ class SmartShellAgent:
         stream: bool = False,
         include_knowledge: bool = True,
         minimal_classifier: bool = False,
+        freedom_script_review: bool = False,
     ):
         """调用大模型API获取AI回复，支持流式输出。stream=True时返回生成器"""
         try:
@@ -399,7 +582,31 @@ class SmartShellAgent:
             os_info = os.uname() if hasattr(os, 'uname') else os.name
             date_time = datetime.now().strftime("%Y-%m-%d %A %H:%M:%S")
 
-            if minimal_classifier:
+            if freedom_script_review:
+                if stream:
+                    return "❌ 错误：脚本自由模式审查不支持流式模式。"
+                script_reviewer_system = (
+                    "You review script source BEFORE it runs (Smart Shell freedom mode). "
+                    'Reply with ONLY one JSON object (no markdown code fence): '
+                    '{"safe_auto": true or false, "reason": "brief Chinese"}. '
+                    "safe_auto=true ONLY if the script is unlikely to: "
+                    "(1) modify or delete files except under work_directory, under ai_workspace_dir (config-side workspace for AI intermediates), "
+                    "and except files listed as ai_tracked_path_keys (session AI-created), or clearly NEW outputs under those dirs; "
+                    "(2) modify system configuration: Windows registry/services/firewall/hosts/machine env, Linux /etc system files, etc. "
+                    "Reading a user path (e.g. CSV) without deleting it, while writing new files only under work_directory or ai_workspace_dir, is usually safe_auto=true. "
+                    "When uncertain, set safe_auto=false."
+                )
+                messages = [
+                    {"role": "system", "content": script_reviewer_system},
+                    {
+                        "role": "user",
+                        "content": (
+                            f"当前操作系统: {os_info}\n本地时间: {date_time}\n\n{user_input}"
+                        ),
+                    },
+                ]
+                record_history = False
+            elif minimal_classifier:
                 if stream:
                     return "❌ 错误：内部可逆性判定不支持流式模式。"
                 classifier_system = (
@@ -433,7 +640,10 @@ class SmartShellAgent:
                 messages = [
                     {
                         "role": "system",
-                        "content": f"{self.system_prompt}\n当前操作系统信息：{os_info}\n当前日期时间：{date_time}",
+                        "content": (
+                            f"{self._skills_routing_prefix}{self.system_prompt}\n{self._skills_system_append}"
+                            f"当前操作系统信息：{os_info}\n当前日期时间：{date_time}"
+                        ),
                     }
                 ]
                 for msg in self.conversation_history[-5:]:
@@ -752,37 +962,94 @@ class SmartShellAgent:
             error_msg = f"调用多模态大模型API时出错: {str(e)} (provider: {provider}, model: {model_name})"
             return error_msg
 
+    @staticmethod
+    def _extract_balanced_json_object(text: str, start: int) -> Optional[str]:
+        """Slice from start (must be '{') through the matching '}', respecting JSON string rules."""
+        if start >= len(text) or text[start] != "{":
+            return None
+        depth = 0
+        i = start
+        in_str = False
+        esc = False
+        while i < len(text):
+            c = text[i]
+            if in_str:
+                if esc:
+                    esc = False
+                elif c == "\\":
+                    esc = True
+                elif c == '"':
+                    in_str = False
+                i += 1
+                continue
+            if c == '"':
+                in_str = True
+                i += 1
+                continue
+            if c == "{":
+                depth += 1
+            elif c == "}":
+                depth -= 1
+                if depth == 0:
+                    return text[start : i + 1]
+            i += 1
+        return None
+
     def extract_json_command(self, text: str) -> Optional[Dict]:
-        """从AI回复中提取JSON命令"""
+        """从AI回复中提取JSON命令（优先完整 ```json 代码块，再尝试平衡括号对象）。"""
         try:
-            # 先尝试查找markdown代码块中的JSON
-            json_code_pattern = r'```(?:json)?\s*(\{.*?"action".*?\})\s*```'
-            code_matches = re.findall(json_code_pattern, text, re.DOTALL)
-            
-            if code_matches:
-                # 尝试解析找到的JSON
-                for match in code_matches:
+            # 1) Full fenced block: ```json ... ``` (avoid regex that stops at first '}')
+            search_pos = 0
+            while True:
+                m = re.search(r"```(?:json)?\s*", text[search_pos:], re.IGNORECASE)
+                if not m:
+                    break
+                block_start = search_pos + m.end()
+                close = text.find("```", block_start)
+                if close == -1:
+                    break
+                raw = text[block_start:close].strip()
+                if raw:
                     try:
-                        parsed = json.loads(match.strip())
-                        if "action" in parsed:
+                        parsed = json.loads(raw)
+                        if isinstance(parsed, dict) and "action" in parsed:
                             return parsed
-                    except:
-                        continue
-            
-            # 如果没找到代码块，尝试直接查找JSON
-            # 使用更复杂的方法来匹配嵌套的JSON
-            lines = text.split('\n')
-            for line in lines:
-                line = line.strip()
-                if line.startswith('{') and '"action"' in line:
+                    except json.JSONDecodeError:
+                        pass
+                search_pos = close + 3
+
+            # 2) Balanced object starting at each '{"action"' (handles nested params)
+            pos = 0
+            while True:
+                key = '"action"'
+                idx = text.find(key, pos)
+                if idx == -1:
+                    break
+                open_brace = text.rfind("{", 0, idx)
+                if open_brace == -1:
+                    pos = idx + len(key)
+                    continue
+                sub = self._extract_balanced_json_object(text, open_brace)
+                if sub:
                     try:
-                        # 尝试解析这一行作为JSON
+                        parsed = json.loads(sub)
+                        if isinstance(parsed, dict) and "action" in parsed:
+                            return parsed
+                    except json.JSONDecodeError:
+                        pass
+                pos = idx + len(key)
+
+            # 3) Single-line JSON (legacy)
+            for line in text.split("\n"):
+                line = line.strip()
+                if line.startswith("{") and '"action"' in line:
+                    try:
                         parsed = json.loads(line)
                         if "action" in parsed:
                             return parsed
-                    except:
+                    except json.JSONDecodeError:
                         continue
-            
+
             return None
         except Exception as e:
             print(f"⚠️ JSON提取错误: {e}")
@@ -1239,8 +1506,129 @@ big_image.jpg
             s = os.path.normcase(s)
         return s
 
+    def _safe_script_basename(self, filename: str) -> str:
+        """Only the last path segment; prevents traversal out of ai_workspace_dir."""
+        return Path(filename or "").name.strip()
+
     def _register_ephemeral_script(self, script_path: Path) -> None:
-        self._ephemeral_script_paths.add(self._ephemeral_path_key(script_path))
+        key = self._ephemeral_path_key(script_path)
+        self._ephemeral_script_paths.add(key)
+        self._ai_created_path_keys.add(key)
+
+    def _try_register_ai_output_literal(self, raw: str) -> None:
+        """Register a path string as AI-created if it resolves under work_directory or ai_workspace_dir."""
+        raw = (raw or "").strip()
+        if not raw or ".." in raw:
+            return
+        try:
+            p = Path(raw)
+            if not p.is_absolute():
+                for base in (self.work_directory, self.ai_workspace_dir):
+                    try:
+                        q = (base / p).resolve()
+                        q.relative_to(base.resolve())
+                        self._ai_created_path_keys.add(self._ephemeral_path_key(q))
+                        return
+                    except ValueError:
+                        continue
+            else:
+                q = p.resolve()
+                for base in (self.work_directory, self.ai_workspace_dir):
+                    try:
+                        q.relative_to(base.resolve())
+                        self._ai_created_path_keys.add(self._ephemeral_path_key(q))
+                        return
+                    except ValueError:
+                        continue
+        except OSError:
+            pass
+
+    def _register_outputs_from_shell_command(self, command: str) -> None:
+        """Heuristic: pandas/openpyxl output paths in -c one-liners → session AI outputs."""
+        for pat in (
+            r"to_excel\s*\(\s*['\"]([^'\"]+)['\"]",
+            r"to_csv\s*\(\s*['\"]([^'\"]+)['\"]",
+            r"ExcelWriter\s*\(\s*['\"]([^'\"]+)['\"]",
+        ):
+            for m in re.finditer(pat, command, re.I):
+                self._try_register_ai_output_literal(m.group(1))
+
+    def _is_ai_created_path(self, path_str: str) -> bool:
+        if not path_str or not str(path_str).strip():
+            return False
+        try:
+            p = Path(path_str.strip())
+            if not p.is_absolute():
+                for base in (self.work_directory, self.ai_workspace_dir):
+                    q = (base / p).resolve()
+                    if self._ephemeral_path_key(q) in self._ai_created_path_keys:
+                        return True
+                return False
+            p = p.resolve()
+            return self._ephemeral_path_key(p) in self._ai_created_path_keys
+        except OSError:
+            return False
+
+    def _parse_shell_invoked_script_path(self, command: str) -> Optional[Path]:
+        """
+        Path to the script/data file invoked by shell (e.g. second arg of `python x.py`).
+        Returns None for `python -c ...` (no script file).
+        """
+        import shlex
+
+        s = command.strip()
+        if not s:
+            return None
+        if s.lower().startswith("call "):
+            s = s[5:].strip()
+        try:
+            parts = shlex.split(s, posix=os.name != "nt")
+        except ValueError:
+            parts = s.split()
+        if not parts:
+            return None
+        base0 = parts[0].replace("\\", "/").split("/")[-1].lower().rstrip(".exe")
+        if len(parts) >= 3 and base0 == "cmd" and parts[1].lower() in ("/c", "/k"):
+            return self._parse_shell_invoked_script_path(" ".join(parts[2:]))
+        exe = base0
+        if exe in ("python", "pythonw", "py") and len(parts) >= 2:
+            if parts[1] in ("-c", "-m") or parts[1].startswith("-"):
+                return None
+            tok = parts[1].strip('"').strip("'")
+            if tok.startswith(".\\") or tok.startswith("./"):
+                tok = tok[2:]
+            p = Path(tok)
+            if not p.is_absolute():
+                p_wd = (self.work_directory / p).resolve()
+                if p_wd.is_file():
+                    return p_wd
+                p_ws = (self.ai_workspace_dir / p).resolve()
+                if p_ws.is_file():
+                    return p_ws
+                return p_wd
+            try:
+                return p.resolve()
+            except OSError:
+                return p
+        tok = parts[0].strip('"').strip("'")
+        low = tok.lower()
+        if low.endswith((".py", ".ps1", ".bat", ".cmd")):
+            if tok.startswith(".\\") or tok.startswith("./"):
+                tok = tok[2:]
+            p = Path(tok)
+            if not p.is_absolute():
+                p_wd = (self.work_directory / p).resolve()
+                if p_wd.is_file():
+                    return p_wd
+                p_ws = (self.ai_workspace_dir / p).resolve()
+                if p_ws.is_file():
+                    return p_ws
+                return p_wd
+            try:
+                return p.resolve()
+            except OSError:
+                return p
+        return None
 
     def _parse_shell_invoked_executable(self, command: str) -> Optional[Path]:
         """Best-effort: path to the primary script/exe the user asked to run (first token)."""
@@ -1266,7 +1654,13 @@ big_image.jpg
             token = token[2:]
         p = Path(token)
         if not p.is_absolute():
-            p = self.work_directory / p
+            p_wd = (self.work_directory / p).resolve()
+            if p_wd.is_file():
+                return p_wd
+            p_ws = (self.ai_workspace_dir / p).resolve()
+            if p_ws.is_file():
+                return p_ws
+            return p_wd
         try:
             return p.resolve()
         except OSError:
@@ -1274,7 +1668,7 @@ big_image.jpg
 
     def _try_remove_ephemeral_script_after_shell(self, command: str) -> Optional[str]:
         """Returns basename if an ephemeral script was removed, else None."""
-        invoked = self._parse_shell_invoked_executable(command)
+        invoked = self._parse_shell_invoked_script_path(command)
         if invoked is None:
             return None
         key = self._ephemeral_path_key(invoked)
@@ -1285,6 +1679,7 @@ big_image.jpg
                 name = invoked.name
                 invoked.unlink()
                 self._ephemeral_script_paths.discard(key)
+                self._ai_created_path_keys.discard(key)
                 print(f"🗑️ 已自动删除本会话创建的临时脚本: {name}")
                 return name
         except OSError as e:
@@ -1310,13 +1705,14 @@ big_image.jpg
                 stdin=sys.stdin,      # 继承当前终端的输入
                 stdout=sys.stdout,    # 继承当前终端的输出
                 stderr=sys.stderr,    # 继承当前终端的错误输出
-                cwd=str(self.work_directory)
+                cwd=str(self.work_directory.resolve()),
             )
             
             # 等待进程结束
             return_code = process.wait()
             
             if return_code == 0:
+                self._register_outputs_from_shell_command(command)
                 removed = self._try_remove_ephemeral_script_after_shell(command)
                 if removed:
                     self._last_auto_removed_ephemeral = removed
@@ -1335,22 +1731,34 @@ big_image.jpg
         except Exception as e:
             return {"success": False, "error": f"系统命令执行异常: {str(e)}"}
         
-    def action_create_script(self, filename: str, content: str, confirmed: bool = False) -> dict:
-        """创建脚本文件，支持任意内容和扩展名"""
-        print(f"请求创建脚本文件: {filename}")
+    def action_create_script(
+        self, filename: str, content: str, confirmed: bool = False, overwrite: bool = False
+    ) -> dict:
+        """Create a script under config_dir/workspace/. Only the basename is used (no subpaths)."""
+        if not filename or not content:
+            return {"success": False, "error": "缺少文件名或内容"}
+        safe_name = self._safe_script_basename(filename)
+        if not safe_name:
+            return {"success": False, "error": "无效的文件名"}
+        print(f"请求创建脚本文件: {safe_name} → {self.ai_workspace_dir / safe_name}")
         print(f"内容:\n{content}")
         if not confirmed:
-            confirm = input(f"⚠️ 确认创建脚本文件: {filename} ? (y/n): ")
+            confirm = input(f"⚠️ 确认创建脚本文件: {safe_name} ? (y/n): ")
             if confirm.lower() != "y":
                 return {"success": False, "error": "用户取消了操作"}
 
         try:
-            if not filename or not content:
-                return {"success": False, "error": "缺少文件名或内容"}
-            # 只允许创建在当前工作目录下
-            script_path = self.work_directory / filename
-            if script_path.exists():
-                return {"success": False, "error": f"文件 '{filename}' 已存在"}
+            # AI script files go under config_dir/workspace (not user work_directory)
+            script_path = self.ai_workspace_dir / safe_name
+            existed_before = script_path.exists()
+            if existed_before and not overwrite:
+                return {
+                    "success": False,
+                    "error": (
+                        f"文件 '{safe_name}' 已存在。"
+                        "若需覆盖，请在 JSON 的 params 中设置 \"overwrite\": true。"
+                    ),
+                }
             with open(script_path, 'w', encoding='utf-8', errors='replace') as f:
                 f.write(content)
             # 可选：为 .sh/.bat/.ps1/.py 等脚本加可执行权限（仅Linux/Mac）
@@ -1362,7 +1770,13 @@ big_image.jpg
                     pass
             resolved = script_path.resolve()
             self._register_ephemeral_script(resolved)
-            return {"success": True, "filename": filename, "full_path": str(resolved), "message": f"成功创建脚本文件 '{filename}'"}
+            verb = "覆盖写入" if overwrite and existed_before else "创建"
+            return {
+                "success": True,
+                "filename": safe_name,
+                "full_path": str(resolved),
+                "message": f"成功{verb}脚本文件 '{safe_name}'（位于 config 侧 workspace）",
+            }
         except Exception as e:
             return {"success": False, "error": f"创建脚本文件失败: {str(e)}"}
 
@@ -1371,7 +1785,14 @@ big_image.jpg
         try:
             abs_path = Path(file_path)
             if not abs_path.is_absolute():
-                abs_path = self.work_directory / file_path
+                p1 = self.work_directory / file_path
+                p2 = self.ai_workspace_dir / file_path
+                if p1.is_file():
+                    abs_path = p1
+                elif p2.is_file():
+                    abs_path = p2
+                else:
+                    abs_path = p1
             if not abs_path.exists():
                 return {"success": False, "error": f"文件 '{file_path}' 不存在"}
             if not abs_path.is_file():
@@ -1407,7 +1828,14 @@ big_image.jpg
         try:
             abs_path = Path(file_path)
             if not abs_path.is_absolute():
-                abs_path = self.work_directory / file_path
+                p1 = self.work_directory / file_path
+                p2 = self.ai_workspace_dir / file_path
+                if p1.is_file():
+                    abs_path = p1
+                elif p2.is_file():
+                    abs_path = p2
+                else:
+                    abs_path = p1
             if not abs_path.exists():
                 return {"success": False, "error": f"图片文件 '{file_path}' 不存在"}
             if not abs_path.is_file():
@@ -1841,11 +2269,14 @@ big_image.jpg
         elif action == "script":
             filename = params.get("filename")
             content = params.get("content")
+            overwrite = bool(params.get("overwrite", False))
             if filename and content:
                 assess_content = content if len(content) <= 6000 else content[:6000] + "\n/* ... truncated for reversibility check ... */"
                 script_cmd = {"action": "script", "params": {"filename": filename, "content": assess_content}}
                 confirmed = self._freedom_auto_confirm(script_cmd)
-                result = self.action_create_script(filename, content, confirmed=confirmed)
+                result = self.action_create_script(
+                    filename, content, confirmed=confirmed, overwrite=overwrite
+                )
                 if result["success"]:
                     print(f"✅ {result['message']}")
                 else:
@@ -2066,6 +2497,9 @@ big_image.jpg
                 + " 暂时关闭。"
             )
 
+        if self.skills:
+            _sk_path = self.config_dir / "skills"
+
         _fon = "`/freedom on`" if _win else "'freedom on'"
         _foff = "`/freedom off`" if _win else "'freedom off'"
         if self.freedom_enabled:
@@ -2260,6 +2694,11 @@ big_image.jpg
                         print("  - AI会理解您的自然语言指令并执行相应操作")
                         if self.knowledge_manager:
                             print("  - 知识库会自动检索相关信息来辅助AI回答")
+                        if self.skills:
+                            print(
+                                f"  - 已载入 {len(self.skills)} 个 Agent Skills（内建 {self._builtin_skills_root} + 外部 {self.config_dir / 'skills'}），"
+                                "任务匹配时模型会优先遵循对应 SKILL.md"
+                            )
                         print("=" * 80)
                         continue
 

@@ -127,8 +127,11 @@
 
 ## 创建脚本文件（`script`）
 
-- `{"action": "script", "params": {"filename": "脚本文件名（如 test.py 或 run.sh）", "content": "脚本内容字符串"}}`
+- `{"action": "script", "params": {"filename": "脚本文件名（如 test.py 或 run.sh）", "content": "脚本内容字符串", "overwrite": false}}`
+- **落盘位置**：脚本始终写入 **`config.json` 所在目录下的 `workspace/`**（仅使用文件名，不支持路径片段）。**执行**该脚本时，`shell` 的进程工作目录仍是用户当前「工作目录」：脚本内**相对路径**写出的目标文件（如 `to_excel('out.xlsx')`）应落在当前工作目录，而不是 `workspace/`。若需读取脚本同目录下的资源，请在脚本中用 `Path(__file__).resolve().parent` 定位 `workspace/`。
+- `overwrite` 可选，默认 `false`。若同名文件已存在且需更新脚本，设 `"overwrite": true`，无需先 `delete`。
 - 例如：`{"action": "script", "params": {"filename": "hello.py", "content": "print('hello')"}}`
+- **在脚本字符串中嵌入 Windows 绝对路径时**：须与用户给出的路径**逐字一致**（尤其 GUID、花括号 `{...}` 勿增删字符）；在 Python 中优先使用 `pathlib.Path(r"C:\...")` 或**单根**原始串 `r'C:\...'`（每段一个 `\`），或使用正斜杠 `C:/...`。**禁止**写成 `r'C:\\\\...'` 这类过多反斜杠，否则路径无效。JSON 的 `content` 里换行用 `\n`，反斜杠按 JSON 规则转义即可。
 
 ## 直接调用系统命令（`shell`）
 
@@ -176,12 +179,17 @@
 
 ## 重要提示
 
+- 每条操作指令必须是**合法 JSON**，且含 `"action"`；`params` 内嵌套对象时，**每个 markdown json 代码块里只写一条指令**，花括号必须配对，禁止在 `params` 闭合后多写 `}`（否则无法解析）。
 - 不要「预测」或「编造」文件列表，系统会执行你的命令并显示实际结果。
 - 当执行列表命令时，只提供 JSON 指令和说明，不要列出具体的文件名。
 - 等待系统执行命令后，你会收到实际的操作结果用于后续建议。
 - 只把包含通配符 `*` 的用户输入字串当作过滤条件，否则可以考虑作为目录名、文件名或者其它信息。
 - 如果用户需要处理媒体文件，使用 `ffmpeg` 命令（内置媒体处理）。
 - 如果用户需要批量执行多个命令，并且执行这些命令的前提都已具备，使用 `batch` 命令。
+
+## Agent Skills（动态注入）
+
+系统提示**最前面**有 **「Agent Skills 索引」**（含各技能名称与简述）；**后面**另有 **「Agent Skills（详细内容）」** 含完整 `SKILL.md` 正文及 **Skill bundle root**（技能目录绝对路径）。技能正文中的 `scripts/` 等路径相对于该目录；`shell` 在用户工作目录执行，调用随包脚本须使用提示中给出的**绝对路径**（或「Detected bundled scripts」列表）。已从 `config.json` 同目录下的 `skills/` 加载（参见 [Agent Skills 说明](https://github.com/anthropics/skills/blob/main/README.md)）。当用户需求与索引中某项相符时，必须先按详细内容中该技能的流程执行，并与上述 JSON 操作规范一并遵守（冲突时以技能正文为准）。
 
 ## 安全原则
 
