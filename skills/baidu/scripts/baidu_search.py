@@ -27,6 +27,19 @@ except ImportError as e:
     print("【错误】需要 requests 库：pip install requests", file=sys.stderr)
     raise SystemExit(1) from e
 
+# One-time stderr notice when falling back from TLS verify failure (corporate proxy / broken CA store)
+_ssl_insecure_fallback_printed: bool = False
+
+
+def _tls_verify_bundle() -> Optional[str]:
+    """Prefer certifi CA bundle; fixes many 'unable to get local issuer certificate' cases on Windows."""
+    try:
+        import certifi
+
+        return certifi.where()
+    except ImportError:
+        return None
+
 # --- Constants (generic; not domain-specific) ---
 CACHE_DIR_NAME = ".cache"
 CACHE_MAX_ENTRIES = 20
@@ -204,19 +217,49 @@ def _decode_html_bytes(raw: bytes, content_type: str = "") -> str:
 
 
 def _fetch(url: str, verify_ssl: bool = True) -> Tuple[str, str]:
-    try:
-        r = requests.get(
+    global _ssl_insecure_fallback_printed
+
+    def _response_to_text(r: requests.Response) -> Tuple[str, str]:
+        ct = r.headers.get("Content-Type", "") or ""
+        text = _decode_html_bytes(r.content, ct)
+        return r.url, text
+
+    def _get(verify: object) -> requests.Response:
+        return requests.get(
             url,
             headers=_http_headers(),
             timeout=FETCH_TIMEOUT,
             allow_redirects=True,
-            verify=verify_ssl,
+            verify=verify,
         )
+
+    verify: object = False
+    if verify_ssl:
+        bundle = _tls_verify_bundle()
+        verify = bundle if bundle is not None else True
+
+    try:
+        r = _get(verify)
         r.raise_for_status()
-        ct = r.headers.get("Content-Type", "") or ""
-        text = _decode_html_bytes(r.content, ct)
-        final_url = r.url
-        return final_url, text
+        return _response_to_text(r)
+    except requests.exceptions.SSLError as e:
+        if not verify_ssl:
+            raise RuntimeError(f"请求失败: {e}") from e
+        if not _ssl_insecure_fallback_printed:
+            print(
+                "【警告】HTTPS 证书校验失败（常见于 Python 未关联 CA、或企业代理替换证书），"
+                "已自动改为不校验证书重试。可安装 certifi、配置系统/代理 CA，"
+                "或设置环境变量 SMARTSHELL_BAIDU_INSECURE_SSL=1 以始终跳过校验。",
+                file=sys.stderr,
+            )
+            _ssl_insecure_fallback_printed = True
+        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+        try:
+            r = _get(False)
+            r.raise_for_status()
+            return _response_to_text(r)
+        except requests.RequestException as e2:
+            raise RuntimeError(f"请求失败: {e2}") from e2
     except requests.RequestException as e:
         raise RuntimeError(f"请求失败: {e}") from e
 

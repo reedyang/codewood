@@ -130,7 +130,7 @@
 ## 创建脚本文件（`script`）
 
 - `{"action": "script", "params": {"filename": "脚本文件名（如 test.py 或 run.sh）", "content": "脚本内容字符串", "overwrite": false}}`
-- **落盘位置**：脚本始终写入 **`config.json` 所在目录下的 `workspace/`**（仅使用文件名，不支持路径片段）。**执行**该脚本时，`shell` 的进程工作目录仍是用户当前「工作目录」：脚本内**相对路径**写出的目标文件（如 `to_excel('out.xlsx')`）应落在当前工作目录，而不是 `workspace/`。若需读取脚本同目录下的资源，请在脚本中用 `Path(__file__).resolve().parent` 定位 `workspace/`。
+- **落盘位置**：脚本写入**用户当前工作目录**（与 `shell` 的进程工作目录一致；仅使用文件名，不支持路径片段）。因此紧接着用 `{"action":"shell","params":{"command":"python 某文件名.py"}}` 即可找到文件；脚本内相对路径（如 `to_excel('out.xlsx')`）也自然落在该工作目录。**禁止**为「能运行到脚本」而把临时任务脚本通过 `copy`/其它路径写到**工作目录以外**再执行；也不要依赖 `.smartshell/workspace` 等 config 侧目录来放本次任务的脚本（除非用户明确要求操作那些路径）。
 - `overwrite` 可选，默认 `false`。若同名文件已存在且需更新脚本，设 `"overwrite": true`，无需先 `delete`。
 - 例如：`{"action": "script", "params": {"filename": "hello.py", "content": "print('hello')"}}`
 - **在脚本字符串中嵌入 Windows 绝对路径时**：须与用户给出的路径**逐字一致**（尤其 GUID、花括号 `{...}` 勿增删字符）；在 Python 中优先使用 `pathlib.Path(r"C:\...")` 或**单根**原始串 `r'C:\...'`（每段一个 `\`），或使用正斜杠 `C:/...`。**禁止**写成 `r'C:\\\\...'` 这类过多反斜杠，否则路径无效。JSON 的 `content` 里换行用 `\n`，反斜杠按 JSON 规则转义即可。
