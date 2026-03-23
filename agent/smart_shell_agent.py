@@ -8,6 +8,29 @@ from typing import List, Dict, Optional, Any, Tuple, Set
 import shutil
 from datetime import datetime
 
+def _decode_subprocess_output(data: Optional[bytes]) -> str:
+    """
+    Decode shell stdout/stderr: prefer UTF-8 (Python tools / baidu_search.py), else system locale.
+    Fixes mojibake when a UTF-8 child is decoded as cp936 on Chinese Windows.
+    """
+    if not data:
+        return ""
+    if data.startswith(b"\xef\xbb\xbf"):
+        return data[3:].decode("utf-8", errors="replace")
+    for dec in ("utf-8", "utf-8-sig"):
+        try:
+            return data.decode(dec, errors="strict")
+        except UnicodeDecodeError:
+            continue
+    import locale
+
+    enc = locale.getpreferredencoding(False) or "utf-8"
+    try:
+        return data.decode(enc, errors="replace")
+    except LookupError:
+        return data.decode("utf-8", errors="replace")
+
+
 # 导入历史记录管理器
 from .history_manager import HistoryManager
 from .skills_loader import build_skills_routing_prefix, build_skills_system_append, load_skills_merged
@@ -1687,7 +1710,7 @@ big_image.jpg
         return None
     
     def action_shell_command(self, command: str, confirmed: bool = False) -> dict:
-        """执行任意系统命令，支持实时输出和交互输入"""
+        """Run a shell command; capture stdout/stderr for AI context while echoing to the terminal."""
         if not command.strip():
             return {"success": False, "error": "命令不能为空"}
         if not confirmed:
@@ -1698,19 +1721,26 @@ big_image.jpg
         import subprocess
         import sys
         try:
-            # 使用Popen启动进程，让进程继承当前终端，支持交互
-            process = subprocess.Popen(
+            completed = subprocess.run(
                 command,
                 shell=True,
-                stdin=sys.stdin,      # 继承当前终端的输入
-                stdout=sys.stdout,    # 继承当前终端的输出
-                stderr=sys.stderr,    # 继承当前终端的错误输出
                 cwd=str(self.work_directory.resolve()),
+                capture_output=True,
             )
-            
-            # 等待进程结束
-            return_code = process.wait()
-            
+            out = _decode_subprocess_output(completed.stdout)
+            err = _decode_subprocess_output(completed.stderr)
+            if out:
+                print(out, end="" if out.endswith("\n") else "\n")
+            if err:
+                print(err, end="" if err.endswith("\n") else "\n", file=sys.stderr)
+
+            return_code = completed.returncode
+            base_out: Dict[str, Any] = {
+                "output": out,
+                "stderr": err,
+                "return_code": return_code,
+            }
+
             if return_code == 0:
                 self._register_outputs_from_shell_command(command)
                 removed = self._try_remove_ephemeral_script_after_shell(command)
@@ -1723,11 +1753,15 @@ big_image.jpg
                             "请勿再对该文件执行 delete。"
                         ),
                         "auto_removed_ephemeral_script": removed,
+                        **base_out,
                     }
-                return {"success": True, "message": "命令执行成功"}
-            else:
-                return {"success": False, "error": f"命令执行失败，退出码: {return_code}"}
-                
+                return {"success": True, "message": "命令执行成功", **base_out}
+            return {
+                "success": False,
+                "error": f"命令执行失败，退出码: {return_code}",
+                **base_out,
+            }
+
         except Exception as e:
             return {"success": False, "error": f"系统命令执行异常: {str(e)}"}
         
