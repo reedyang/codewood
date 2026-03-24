@@ -36,6 +36,11 @@ python "<BUNDLE_ROOT>/scripts/baidu_search.py" "<query>" [--max-pages N] [--no-c
 
 The script always prints **【当前本机时间】** (ISO-like local timestamp). For news, weather, rates, etc., keep that line in mind when judging freshness in later turns.
 
+For queries containing recency constraints (e.g., “最近/近一个月/近期/最新/走势/行情/预测”):
+- Prefer adding `--no-cache` to avoid stale SERP snapshots.
+- Do **not** output hard numeric conclusions (percentages, market cap, index points) unless those numbers are explicitly present in **【正文摘录与要点】**.
+- If output shows insufficient recent evidence in **【时效性检查】**, report uncertainty and ask for narrower, verifiable data-source queries instead of fabricating a forecast.
+
 ## Cache
 
 - Directory: `<bundle root for baidu>/.cache/` (e.g. `skills/baidu/.cache/` in the repo).
