@@ -32,6 +32,40 @@ def _decode_subprocess_output(data: Optional[bytes]) -> str:
         return data.decode("utf-8", errors="replace")
 
 
+def _safe_console_write(text: str, stream: Any = None) -> None:
+    """
+    Write text to console safely on Windows terminals with legacy encodings (e.g. GBK).
+    Falls back to replacement encoding instead of raising UnicodeEncodeError.
+    """
+    if text is None:
+        return
+    s = stream or sys.stdout
+    try:
+        s.write(text)
+        if not text.endswith("\n"):
+            s.write("\n")
+        s.flush()
+        return
+    except UnicodeEncodeError:
+        pass
+
+    enc = getattr(s, "encoding", None) or "utf-8"
+    payload = text if text.endswith("\n") else (text + "\n")
+    try:
+        if hasattr(s, "buffer"):
+            s.buffer.write(payload.encode(enc, errors="replace"))
+            s.flush()
+        else:
+            s.write(payload.encode(enc, errors="replace").decode(enc, errors="replace"))
+            s.flush()
+    except Exception:
+        # Last-resort fallback; avoid crashing the agent on terminal encoding issues.
+        try:
+            print(payload.encode("ascii", errors="replace").decode("ascii"), end="")
+        except Exception:
+            pass
+
+
 # 导入历史记录管理器
 from .history_manager import HistoryManager
 from .skills_loader import build_skills_routing_prefix, build_skills_system_append, load_skills_merged
@@ -139,6 +173,8 @@ class SmartShellAgent:
             builtin_skills_dir: 内建 Agent Skills 根目录（通常为 main.py 同目录下的 skills/）；未传则使用 agent 包上级目录的 skills/
         """
         self.work_directory = Path(work_directory) if work_directory else Path.cwd()
+        # Runtime guard: prevent AI from modifying smart-shell itself.
+        self._self_repo_root = Path(__file__).resolve().parent.parent
         self.conversation_history = []
         self.operation_results = []
         # Session-local paths created by action "script"; may be auto-removed after shell runs them
@@ -1711,6 +1747,8 @@ big_image.jpg
         try:
             old_path = self.work_directory / old_name
             new_path = self.work_directory / new_name
+            if self._is_smart_shell_protected_path(old_path) or self._is_smart_shell_protected_path(new_path):
+                return self._blocked_by_self_protection("rename")
             
             if not old_path.exists():
                 return {"success": False, "error": f"文件 '{old_name}' 不存在"}
@@ -1743,6 +1781,10 @@ big_image.jpg
                     dest_path = Path(destination)
                 else:
                     dest_path = self.work_directory / destination
+                if self._is_smart_shell_protected_path(dest_path) or any(
+                    self._is_smart_shell_protected_path(p) for p in matched_files
+                ):
+                    return self._blocked_by_self_protection("move")
                 dest_path.mkdir(parents=True, exist_ok=True)
                 
                 # 请求用户确认批量移动
@@ -1773,6 +1815,8 @@ big_image.jpg
                     dest_path = Path(destination)
                 else:
                     dest_path = self.work_directory / destination
+                if self._is_smart_shell_protected_path(source_path) or self._is_smart_shell_protected_path(dest_path):
+                    return self._blocked_by_self_protection("move")
                 if not source_path.exists():
                     return {"success": False, "error": f"源文件 '{source}' 不存在"}
                 
@@ -1803,6 +1847,8 @@ big_image.jpg
         if '*' in file_name or '?' in file_name:
             pattern = str((self.work_directory / file_name).resolve())
             matched_files = [Path(p) for p in glob.glob(pattern)]
+            if any(self._is_smart_shell_protected_path(p) for p in matched_files):
+                return self._blocked_by_self_protection("delete")
             if not matched_files:
                 return {"success": False, "error": f"未找到匹配的文件: {file_name}"}
             if not confirmed:
@@ -1841,6 +1887,8 @@ big_image.jpg
                 }
         try:
             file_path = self.work_directory / file_name
+            if self._is_smart_shell_protected_path(file_path):
+                return self._blocked_by_self_protection("delete")
             if not file_path.exists():
                 return {"success": False, "error": f"文件 '{file_name}' 不存在"}
             if file_path.is_dir():
@@ -1866,6 +1914,8 @@ big_image.jpg
         """创建新文件夹"""
         try:
             dir_path = self.work_directory / dir_name
+            if self._is_smart_shell_protected_path(dir_path):
+                return self._blocked_by_self_protection("mkdir")
             
             if dir_path.exists():
                 return {"success": False, "error": f"文件夹 '{dir_name}' 已存在"}
@@ -2226,6 +2276,58 @@ big_image.jpg
         except OSError:
             return p
 
+    def _is_path_under(self, child: Path, root: Path) -> bool:
+        try:
+            child.resolve().relative_to(root.resolve())
+            return True
+        except Exception:
+            return False
+
+    def _is_smart_shell_protected_path(self, path: Path) -> bool:
+        """
+        Protected targets include:
+        1) smart-shell repository root (code/skills/.smartshell in repo)
+        2) active config directory (~/.smartshell or local .smartshell)
+        """
+        # Always allow AI temporary workspace operations.
+        if self._is_path_under(path, self.ai_workspace_dir):
+            return False
+        return self._is_path_under(path, self._self_repo_root) or self._is_path_under(path, self.config_dir)
+
+    def _is_dependency_install_command(self, command: str) -> bool:
+        s = (command or "").strip().lower()
+        if not s:
+            return False
+        install_patterns = [
+            r"^(python(\d+(\.\d+)*)?\s+-m\s+pip)\s+install\b",
+            r"^(pip(\d+(\.\d+)*)?)\s+install\b",
+            r"^uv\s+pip\s+install\b",
+            r"^poetry\s+add\b",
+            r"^pipenv\s+install\b",
+            r"^conda\s+install\b",
+            r"^mamba\s+install\b",
+            r"^npm\s+install\b",
+            r"^pnpm\s+add\b",
+            r"^yarn\s+add\b",
+            r"^bun\s+add\b",
+        ]
+        return any(re.match(pat, s) for pat in install_patterns)
+
+    def _is_ai_workspace_script_command(self, command: str) -> bool:
+        invoked = self._parse_shell_invoked_script_path(command or "")
+        if invoked is None:
+            return False
+        return self._is_path_under(invoked, self.ai_workspace_dir)
+
+    def _blocked_by_self_protection(self, action: str) -> Dict[str, Any]:
+        return {
+            "success": False,
+            "error": (
+                f"已拦截操作 '{action}'：运行时保护已启用，"
+                "AI 不可修改 smart-shell 自身（代码/配置/skills）。"
+            ),
+        }
+
     def _try_remove_ephemeral_script_after_shell(self, command: str) -> Optional[str]:
         """Returns basename if an ephemeral script was removed, else None."""
         invoked = self._parse_shell_invoked_script_path(command)
@@ -2251,6 +2353,18 @@ big_image.jpg
         if not command.strip():
             return {"success": False, "error": "命令不能为空"}
         command = self._ensure_absolute_script_for_shell_cwd(command.strip())
+        if self._is_path_under(self.work_directory, self._self_repo_root):
+            if not (
+                self._is_dependency_install_command(command)
+                or self._is_ai_workspace_script_command(command)
+            ):
+                return {
+                    "success": False,
+                    "error": (
+                        "已拦截 shell 命令：当前位于 smart-shell 目录内，仅允许依赖安装命令"
+                        "或执行 ai_workspace_dir 下的 AI 临时脚本。"
+                    ),
+                }
         if not confirmed and not self._shell_command_in_allowlist(command):
             ok = self._prompt_confirm_yes_no_maybe_always(
                 f"⚠️ 确认执行系统命令: {command} ?",
@@ -2264,18 +2378,23 @@ big_image.jpg
         import subprocess
         import sys
         try:
+            run_env = os.environ.copy()
+            # Ensure Python child processes can print non-ASCII safely on Windows.
+            run_env.setdefault("PYTHONUTF8", "1")
+            run_env.setdefault("PYTHONIOENCODING", "utf-8")
             completed = subprocess.run(
                 command,
                 shell=True,
                 cwd=str(self.work_directory.resolve()),
                 capture_output=True,
+                env=run_env,
             )
             out = _decode_subprocess_output(completed.stdout)
             err = _decode_subprocess_output(completed.stderr)
             if out:
-                print(out, end="" if out.endswith("\n") else "\n")
+                _safe_console_write(out, sys.stdout)
             if err:
-                print(err, end="" if err.endswith("\n") else "\n", file=sys.stderr)
+                _safe_console_write(err, sys.stderr)
 
             return_code = completed.returncode
             base_out: Dict[str, Any] = {
@@ -2318,6 +2437,8 @@ big_image.jpg
         if not safe_name:
             return {"success": False, "error": "无效的文件名"}
         script_path = self.ai_workspace_dir / safe_name
+        if self._is_smart_shell_protected_path(script_path):
+            return self._blocked_by_self_protection("script")
         existed_before = script_path.exists()
         if existed_before and not overwrite:
             return {
@@ -2373,6 +2494,8 @@ big_image.jpg
         if not safe_name:
             return {"success": False, "error": "无效的文件名"}
         file_path = self.work_directory / safe_name
+        if self._is_smart_shell_protected_path(file_path):
+            return self._blocked_by_self_protection("text_file")
         existed_before = file_path.exists()
         if existed_before and not overwrite:
             return {
@@ -2976,6 +3099,11 @@ big_image.jpg
                     "checkout", "branch", "tag", "remote", "fetch", "clone", "init",
                     "stash", "cherry-pick", "revert", "clean", "rm", "mv",
                 ]
+                if (
+                    self._is_path_under(self.work_directory, self._self_repo_root)
+                    and git_command.lower() in git_write_subcommands
+                ):
+                    return self._blocked_by_self_protection("git")
                 needs_confirm = git_command.lower() in git_write_subcommands
                 git_cmd = {"action": "git", "params": {"command": git_command, "args": git_args}}
                 confirmed = self._freedom_auto_confirm(git_cmd) if needs_confirm else False
