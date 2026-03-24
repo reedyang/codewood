@@ -10,7 +10,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from office.soffice import get_soffice_env
+from office.soffice import get_soffice_env, resolve_soffice_executable
 
 from openpyxl import load_workbook
 
@@ -52,8 +52,9 @@ def setup_libreoffice_macro():
         return True
 
     if not os.path.exists(macro_dir):
+        soffice_bin = resolve_soffice_executable()
         subprocess.run(
-            ["soffice", "--headless", "--terminate_after_init"],
+            [soffice_bin, "--headless", "--terminate_after_init"],
             capture_output=True,
             timeout=10,
             env=get_soffice_env(),
@@ -76,8 +77,19 @@ def recalc(filename, timeout=30):
     if not setup_libreoffice_macro():
         return {"error": "Failed to setup LibreOffice macro"}
 
+    try:
+        soffice_bin = resolve_soffice_executable()
+    except FileNotFoundError as exc:
+        return {
+            "error": (
+                "LibreOffice not found. Please install LibreOffice and ensure "
+                "soffice is available in PATH."
+            ),
+            "details": str(exc),
+        }
+
     cmd = [
-        "soffice",
+        soffice_bin,
         "--headless",
         "--norestore",
         "vnd.sun.star.script:Standard.Module1.RecalculateAndSave?language=Basic&location=application",
@@ -89,7 +101,16 @@ def recalc(filename, timeout=30):
     elif platform.system() == "Darwin" and has_gtimeout():
         cmd = ["gtimeout", str(timeout)] + cmd
 
-    result = subprocess.run(cmd, capture_output=True, text=True, env=get_soffice_env())
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, env=get_soffice_env())
+    except FileNotFoundError as exc:
+        return {
+            "error": (
+                "LibreOffice not found. Please install LibreOffice and ensure "
+                "soffice is available in PATH."
+            ),
+            "details": str(exc),
+        }
 
     if result.returncode != 0 and result.returncode != 124:  
         error_msg = result.stderr or "Unknown error during recalculation"
