@@ -3,6 +3,7 @@ import os
 import sys
 import json
 import hashlib
+import secrets
 import re
 from pathlib import Path
 from typing import List, Dict, Optional, Any, Tuple, Set
@@ -227,9 +228,10 @@ class SmartShellAgent:
             print(f"⚠️ 读取配置中的知识库开关失败，默认开启: {e}")
 
         # Per-target allowlist for y/n confirmations (see confirm_allowlist.json)
-        self._allowlist_shell_paths: Set[str] = set()
+        self._allowlist_shell_paths: Dict[str, str] = {}
         self._allowlist_shell_exes: Set[str] = set()
         self._allowlist_script: Set[str] = set()
+        self._confirm_allowlist_salt: str = ""
         self._load_confirm_allowlist()
         # Cached combined script review for non-session scripts (path + content + command hash)
         self._freedom_script_review_entries: Dict[str, Dict[str, Any]] = {}
@@ -317,6 +319,15 @@ class SmartShellAgent:
                 print(f"⚠️ 输入处理器初始化失败: {e}")
         else:
             print("⚠️ Tab补全功能不可用")
+
+    def _reload_skills(self) -> None:
+        """Reload skills and derived prompt snippets to support hot updates."""
+        try:
+            self.skills = load_skills_merged(self.config_dir, self._builtin_skills_root)
+            self._skills_routing_prefix = build_skills_routing_prefix(self.skills)
+            self._skills_system_append = build_skills_system_append(self.skills)
+        except Exception as e:
+            print(f"⚠️ Skill 热更新失败，继续使用当前已加载版本: {e}")
 
     def _save_knowledge_enabled_to_config(self) -> bool:
         """将知识库开关状态保存到 config.json"""
@@ -503,6 +514,24 @@ class SmartShellAgent:
             return None
         return self._normalize_path_allowlist_key(invoked)
 
+    def _salted_sha256(self, text: str, salt: str) -> str:
+        return hashlib.sha256(f"{salt}\n{text}".encode("utf-8")).hexdigest()
+
+    def _shell_script_hash(self, script_path: Path) -> Optional[str]:
+        """
+        Compute salted hash for an allowlisted script file.
+        Returns None if file cannot be read or salt is unavailable.
+        """
+        salt = getattr(self, "_confirm_allowlist_salt", "") or ""
+        if not salt:
+            return None
+        try:
+            body = script_path.read_text(encoding="utf-8", errors="replace")
+        except OSError as e:
+            print(f"⚠️ 无法读取脚本以计算免确认哈希: {e}")
+            return None
+        return self._salted_sha256(body, salt)
+
     def _shell_executable_allowlist_key(self, command: str) -> str:
         """
         Stable key for invocations without a script path: same executable / bare name
@@ -539,55 +568,58 @@ class SmartShellAgent:
         return Path(tok).name.lower() if os.name == "nt" else Path(tok).name
 
     def _load_confirm_allowlist(self) -> None:
-        """Load shell targets (script paths / exe keys) and script basenames that skip confirm."""
-        self._allowlist_shell_paths = set()
+        """Load shell targets that skip confirm with path+salted-hash verification."""
+        self._allowlist_shell_paths = {}
         self._allowlist_shell_exes = set()
         self._allowlist_script = set()
+        self._confirm_allowlist_salt = ""
         p = self._confirm_allowlist_path()
         if not p.is_file():
+            self._confirm_allowlist_salt = secrets.token_hex(16)
             return
         try:
             data = json.loads(p.read_text(encoding="utf-8"))
             if not isinstance(data, dict):
+                self._confirm_allowlist_salt = secrets.token_hex(16)
                 return
-            for x in data.get("shell_script_paths") or []:
-                if isinstance(x, str) and x.strip():
-                    t = x.strip()
-                    if os.name == "nt":
-                        t = t.lower()
-                    self._allowlist_shell_paths.add(t)
+            salt = data.get("salt")
+            self._confirm_allowlist_salt = (
+                salt.strip() if isinstance(salt, str) and salt.strip() else secrets.token_hex(16)
+            )
+            for x in data.get("shell_scripts") or []:
+                if not isinstance(x, dict):
+                    continue
+                path_v = x.get("path")
+                hash_v = x.get("hash")
+                if not isinstance(path_v, str) or not path_v.strip():
+                    continue
+                if not isinstance(hash_v, str) or not hash_v.strip():
+                    continue
+                t = path_v.strip()
+                if os.name == "nt":
+                    t = t.lower()
+                self._allowlist_shell_paths[t] = hash_v.strip().lower()
             for x in data.get("shell_exe_tokens") or []:
                 if isinstance(x, str) and x.strip():
                     t = x.strip()
                     self._allowlist_shell_exes.add(t.lower() if os.name == "nt" else t)
-            # Legacy v1: full command lines -> derive path or exe key
-            for x in data.get("shell_commands") or []:
-                if not isinstance(x, str) or not x.strip():
-                    continue
-                line = x.strip()
-                sk = self._shell_script_allowlist_key(line)
-                if sk is not None:
-                    self._allowlist_shell_paths.add(sk)
-                else:
-                    ek = self._shell_executable_allowlist_key(line)
-                    if ek:
-                        self._allowlist_shell_exes.add(ek)
-            for x in data.get("script_basenames") or []:
-                if isinstance(x, str) and x.strip():
-                    sn = self._safe_script_basename(x.strip())
-                    if sn:
-                        self._allowlist_script.add(sn)
         except Exception as e:
             print(f"⚠️ 读取 confirm_allowlist.json 失败: {e}")
+            self._confirm_allowlist_salt = secrets.token_hex(16)
 
     def _save_confirm_allowlist(self) -> bool:
         try:
             p = self._confirm_allowlist_path()
+            if not self._confirm_allowlist_salt:
+                self._confirm_allowlist_salt = secrets.token_hex(16)
             payload = {
-                "version": 2,
-                "shell_script_paths": sorted(self._allowlist_shell_paths),
+                "version": 3,
+                "salt": self._confirm_allowlist_salt,
+                "shell_scripts": [
+                    {"path": k, "hash": v}
+                    for k, v in sorted(self._allowlist_shell_paths.items(), key=lambda x: x[0])
+                ],
                 "shell_exe_tokens": sorted(self._allowlist_shell_exes),
-                "script_basenames": sorted(self._allowlist_script),
             }
             p.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
             return True
@@ -598,7 +630,14 @@ class SmartShellAgent:
     def _shell_command_in_allowlist(self, command: str) -> bool:
         sk = self._shell_script_allowlist_key(command)
         if sk is not None:
-            return sk in self._allowlist_shell_paths
+            expected = self._allowlist_shell_paths.get(sk)
+            if not expected:
+                return False
+            sp = self._parse_shell_invoked_script_path(command)
+            if sp is None:
+                return False
+            actual = self._shell_script_hash(sp)
+            return bool(actual) and actual == expected
         ek = self._shell_executable_allowlist_key(command)
         return bool(ek) and ek in self._allowlist_shell_exes
 
@@ -622,7 +661,14 @@ class SmartShellAgent:
     def _add_shell_command_allowlist(self, command: str) -> None:
         sk = self._shell_script_allowlist_key(command)
         if sk is not None:
-            self._allowlist_shell_paths.add(sk)
+            sp = self._parse_shell_invoked_script_path(command)
+            if sp is None:
+                return
+            h = self._shell_script_hash(sp)
+            if not h:
+                print("⚠️ 无法记录该脚本到免确认列表：哈希计算失败。")
+                return
+            self._allowlist_shell_paths[sk] = h
         else:
             ek = self._shell_executable_allowlist_key(command)
             if ek:
@@ -640,6 +686,7 @@ class SmartShellAgent:
         self._allowlist_shell_paths.clear()
         self._allowlist_shell_exes.clear()
         self._allowlist_script.clear()
+        self._confirm_allowlist_salt = ""
         removed = False
         try:
             p = self._confirm_allowlist_path()
@@ -668,18 +715,11 @@ class SmartShellAgent:
         """
         kind: 'shell' | 'script' | 'text_file'. Returns True if user proceeds.
         The **a / always** option is only used for **shell** (execute command / run script via OS)
-        when offer_always is True; it records shell_script_paths or shell_exe_tokens.
+        when offer_always is True; it records shell script path+hash or shell exe token.
         Workspace `script` and `text_file` are file writes: y/n only (no a).
-        Legacy: kind 'script' may still skip prompt if script_basename is in confirm_allowlist (old entries).
         """
         if kind == "shell" and shell_command is not None and self._shell_command_in_allowlist(
             shell_command
-        ):
-            return True
-        if (
-            kind == "script"
-            and script_basename is not None
-            and self._script_basename_in_allowlist(script_basename)
         ):
             return True
         if offer_always:
@@ -690,9 +730,6 @@ class SmartShellAgent:
         if offer_always and raw in ("a", "always"):
             if kind == "shell" and shell_command is not None:
                 self._add_shell_command_allowlist(shell_command)
-            elif kind == "script" and script_basename is not None:
-                # Legacy path: script action no longer sets offer_always=True; kept for compatibility
-                self._add_script_basename_allowlist(script_basename)
             print(
                 f"ℹ️ 已写入 {self._confirm_allowlist_path()}。"
                 "可使用 always_confirm reset 清空列表。"
@@ -943,6 +980,16 @@ class SmartShellAgent:
 
             sp = self._parse_shell_invoked_script_path(s)
             if sp is not None:
+                # Reload allowlist so manual edits to confirm_allowlist.json can take effect immediately.
+                self._load_confirm_allowlist()
+                sk = self._normalize_path_allowlist_key(sp)
+                expected = self._allowlist_shell_paths.get(sk)
+                if expected:
+                    actual = self._shell_script_hash(sp)
+                    if actual and actual == expected:
+                        print("🦅 自由模式：命中免确认脚本哈希校验，跳过 AI 审核并直接执行。")
+                        return True
+
                 k = self._ephemeral_path_key(sp)
                 session_ephemeral = k in self._ephemeral_script_paths
                 combined_eligible = sp.is_file() and (
@@ -1146,6 +1193,7 @@ class SmartShellAgent:
                 ]
                 record_history = False
             else:
+                self._reload_skills()
                 record_history = True
                 messages = [
                     {
@@ -3308,13 +3356,12 @@ big_image.jpg
         _ns = (
             len(self._allowlist_shell_paths)
             + len(self._allowlist_shell_exes)
-            + len(self._allowlist_script)
         )
         if _ns:
             print(
-                f"免确认列表：{len(self._allowlist_shell_paths)} 个 shell 脚本路径、"
+                f"免确认列表：{len(self._allowlist_shell_paths)} 个 shell 脚本路径+哈希、"
                 f"{len(self._allowlist_shell_exes)} 个 shell 可执行键、"
-                f"{len(self._allowlist_script)} 个遗留 workspace 脚本名（{self._confirm_allowlist_path()}）；"
+                f"配置文件 {self._confirm_allowlist_path()}；"
                 f"输入 {_acr} 可清空。"
             )
 
@@ -3472,13 +3519,13 @@ big_image.jpg
                         print("\n🔔 确认免列表（confirm_allowlist.json）：")
                         if os_name == "nt":
                             print(
-                                "  /always_confirm reset  - 清空免确认列表（shell 目标、可执行键、"
-                                "遗留的 workspace 脚本名），恢复每次 y/n 询问"
+                                "  /always_confirm reset  - 清空免确认列表（shell 脚本路径+加盐哈希、"
+                                "可执行键），恢复每次 y/n 询问"
                             )
                         else:
                             print(
-                                "  always_confirm reset  - 清空免确认列表（shell 目标、可执行键、"
-                                "遗留的 workspace 脚本名），恢复每次 y/n 询问"
+                                "  always_confirm reset  - 清空免确认列表（shell 脚本路径+加盐哈希、"
+                                "可执行键），恢复每次 y/n 询问"
                             )
                         print(
                             "  仅在 **shell** 确认提示中可输入 a：记入当前命令解析出的脚本路径或可执行键；"
