@@ -13,7 +13,7 @@ class AIAnalyzer:
     """AI 分析器 - 由 Smart Shell 托管推理，不再直接调用外部 LLM"""
 
     def __init__(self):
-        logger.info("stock-daily-analysis 使用 Smart Shell 托管分析模式（内部 LLM 已停用）")
+        pass
 
     def analyze(self, code: str, name: str, technical_data: Dict[str, Any]) -> Dict[str, Any]:
         """

@@ -18,6 +18,7 @@ import os
 import socket
 import subprocess
 import tempfile
+import shutil
 from pathlib import Path
 
 
@@ -25,16 +26,55 @@ def get_soffice_env() -> dict:
     env = os.environ.copy()
     env["SAL_USE_VCLPLUGIN"] = "svp"
 
-    if _needs_shim():
+    # LD_PRELOAD shim is Linux/Unix specific.
+    if os.name == "posix" and _needs_shim():
         shim = _ensure_shim()
         env["LD_PRELOAD"] = str(shim)
 
     return env
 
 
+def resolve_soffice_executable() -> str:
+    """
+    Resolve soffice executable path across platforms.
+    Returns executable path/name usable by subprocess.
+    Raises FileNotFoundError when not found.
+    """
+    candidates: list[str] = []
+    if os.name == "nt":
+        # PATH first
+        candidates.extend(["soffice.exe", "soffice.com", "soffice"])
+        # Common Windows install locations
+        program_files = os.environ.get("PROGRAMFILES", r"C:\Program Files")
+        program_files_x86 = os.environ.get("PROGRAMFILES(X86)", r"C:\Program Files (x86)")
+        candidates.extend(
+            [
+                str(Path(program_files) / "LibreOffice" / "program" / "soffice.exe"),
+                str(Path(program_files_x86) / "LibreOffice" / "program" / "soffice.exe"),
+            ]
+        )
+    else:
+        candidates.extend(["soffice", "libreoffice"])
+
+    for item in candidates:
+        # Absolute/relative file path candidate
+        p = Path(item)
+        if p.is_absolute() and p.exists():
+            return str(p)
+        hit = shutil.which(item)
+        if hit:
+            return hit
+
+    raise FileNotFoundError(
+        "LibreOffice executable not found. Please install LibreOffice and ensure "
+        "'soffice' is available in PATH."
+    )
+
+
 def run_soffice(args: list[str], **kwargs) -> subprocess.CompletedProcess:
     env = get_soffice_env()
-    return subprocess.run(["soffice"] + args, env=env, **kwargs)
+    soffice_bin = resolve_soffice_executable()
+    return subprocess.run([soffice_bin] + args, env=env, **kwargs)
 
 
 
@@ -42,6 +82,9 @@ _SHIM_SO = Path(tempfile.gettempdir()) / "lo_socket_shim.so"
 
 
 def _needs_shim() -> bool:
+    # Windows Python may not expose AF_UNIX.
+    if not hasattr(socket, "AF_UNIX"):
+        return False
     try:
         s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         s.close()
