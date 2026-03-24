@@ -48,6 +48,8 @@ MAX_BODY_CHARS = 12000
 FETCH_TIMEOUT = 14
 EARLY_STOP_SCORE = 0.68
 EARLY_STOP_CHARS = 420
+RECENT_DAYS_FOR_TIME_QUERY = 45
+MIN_RECENT_SOURCES_FOR_TIME_QUERY = 2
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
@@ -319,6 +321,46 @@ def _relevance_score(text: str, query: str) -> float:
     return min(1.0, base + term_score)
 
 
+def _is_time_sensitive_query(query: str) -> bool:
+    q = query.strip()
+    if not q:
+        return False
+    patterns = (
+        r"最近",
+        r"近期",
+        r"最新",
+        r"今日",
+        r"本月",
+        r"一个月",
+        r"近一个月",
+        r"行情",
+        r"走势",
+        r"预测",
+    )
+    return any(re.search(p, q) for p in patterns)
+
+
+def _extract_publish_datetime(text: str) -> Optional[datetime]:
+    if not text:
+        return None
+    patterns = [
+        r"(?P<y>20\d{2}|19\d{2})[-/\.](?P<m>0?[1-9]|1[0-2])[-/\.](?P<d>0?[1-9]|[12]\d|3[01])",
+        r"(?P<y>20\d{2}|19\d{2})年(?P<m>0?[1-9]|1[0-2])月(?P<d>0?[1-9]|[12]\d|3[01])日",
+    ]
+    for p in patterns:
+        m = re.search(p, text)
+        if not m:
+            continue
+        try:
+            y = int(m.group("y"))
+            mo = int(m.group("m"))
+            d = int(m.group("d"))
+            return datetime(y, mo, d)
+        except ValueError:
+            continue
+    return None
+
+
 def _parse_serp(html: str) -> List[Dict[str, str]]:
     """Extract organic results: title, url, optional snippet."""
     results: List[Dict[str, str]] = []
@@ -431,6 +473,8 @@ def run_search(
     lines: List[str] = []
 
     local_now = datetime.now().astimezone()
+    now_naive = datetime.now()
+    time_sensitive = _is_time_sensitive_query(query)
     lines.append(f"【当前本机时间】{local_now.isoformat(timespec='seconds')}")
     lines.append("")
 
@@ -483,8 +527,12 @@ def run_search(
     lines.append("")
 
     fetched_texts: List[str] = []
+    recent_pages = 0
+    stale_pages = 0
+    unknown_date_pages = 0
     pages_done = 0
     acc = ""
+    acc_recent = ""
 
     for it in serp_items:
         if pages_done >= max_pages:
@@ -498,12 +546,30 @@ def run_search(
             if len(text) < 80:
                 continue
             rel = _relevance_score(text, query)
+            pub_dt = _extract_publish_datetime(text)
+            if pub_dt is None:
+                date_note = "发布时间：未知"
+                unknown_date_pages += 1
+                is_recent = False
+            else:
+                age_days = (now_naive - pub_dt).days
+                if age_days <= RECENT_DAYS_FOR_TIME_QUERY:
+                    date_note = f"发布时间：{pub_dt.date().isoformat()}（近{RECENT_DAYS_FOR_TIME_QUERY}天内）"
+                    recent_pages += 1
+                    is_recent = True
+                else:
+                    date_note = f"发布时间：{pub_dt.date().isoformat()}（较旧，距今约{age_days}天）"
+                    stale_pages += 1
+                    is_recent = False
             fetched_texts.append(
-                f"来源：{it.get('title','')}\n最终URL：{final_u}\n相关性得分（启发式）：{rel:.2f}\n正文摘录：{text[:2800]}"
+                f"来源：{it.get('title','')}\n最终URL：{final_u}\n相关性得分（启发式）：{rel:.2f}\n{date_note}\n正文摘录：{text[:2800]}"
             )
             acc += "\n" + text
+            if is_recent:
+                acc_recent += "\n" + text
             pages_done += 1
-            if _enough_material(acc, query, pages_done, max_pages):
+            effective_acc = acc_recent if time_sensitive else acc
+            if _enough_material(effective_acc, query, pages_done, max_pages):
                 break
         except RuntimeError as e:
             fetched_texts.append(f"来源：{it.get('title','')} URL：{url}\n（抓取失败：{e}）")
@@ -515,11 +581,32 @@ def run_search(
         lines.append("\n\n---\n\n".join(fetched_texts))
     lines.append("")
 
+    lines.append("【时效性检查】")
+    if not time_sensitive:
+        lines.append("查询未命中强时效关键词，未启用近期待证据门槛。")
+    else:
+        lines.append(
+            f"已启用近期待证据门槛（近{RECENT_DAYS_FOR_TIME_QUERY}天）。"
+            f"近期待证据页：{recent_pages}；较旧页：{stale_pages}；发布时间未知页：{unknown_date_pages}。"
+        )
+    lines.append("")
+
     all_sents: List[str] = []
-    for chunk in acc.split("\n"):
+    answer_source = acc
+    if time_sensitive:
+        answer_source = acc_recent
+    for chunk in answer_source.split("\n"):
         all_sents.extend(_split_sentences(chunk))
 
-    answer = _build_answer(all_sents, query, serp_items)
+    if time_sensitive and recent_pages < MIN_RECENT_SOURCES_FOR_TIME_QUERY:
+        answer = (
+            "当前检索结果里，近期待证据不足（发布时间满足“最近一段时间”的来源过少），"
+            "无法可靠支持“最近一个月/近期走势”的定量判断。"
+            "建议改用更具体且可验证的数据源关键词（例如：交易所官方、权威财经终端、"
+            "公司公告、财报日期）后再检索。"
+        )
+    else:
+        answer = _build_answer(all_sents, query, serp_items)
     lines.append("【回答】")
     lines.append(answer)
     lines.append("")

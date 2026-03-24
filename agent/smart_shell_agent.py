@@ -3473,17 +3473,24 @@ big_image.jpg
                 last_result = None
                 self._last_auto_removed_ephemeral = None
                 original_user_task = user_input.strip()
+                first_round_input = (
+                    f"{user_input}\n\n"
+                    "【多步任务执行要求】若任务需要多步，请先给出 Step 1..N 的简短步骤编排，"
+                    "并为每步标注状态（pending/in_progress/completed/failed），再输出当前要执行的一条 JSON 指令。"
+                    "后续每轮都要先更新步骤状态再续步。"
+                )
                 next_input = user_input
                 is_first_round = True  # 标记是否为第一轮
                 followup_json_misses = 0
                 max_followup_json_misses = 4
+                last_announced_skill_key: Optional[str] = None
                 while True:
                     # 获取AI回复
                     print("🤖 AI正在思考...")
                     # 流式输出AI回复
                     # 只在第一轮用户输入时查询知识库，后续所有命令执行结果回传都不查询
                     stream_gen = self.call_ai(
-                        user_input if last_result is None else next_input,
+                        first_round_input if last_result is None else next_input,
                         context=json.dumps(last_result, ensure_ascii=False) if last_result else "",
                         stream=True,
                         include_knowledge=is_first_round  # 只有第一轮查询知识库
@@ -3513,6 +3520,7 @@ big_image.jpg
                                 "当前多步任务尚未结束。你必须在下一条回复中**包含恰好一个** ```json 代码块**，"
                                 "内含一条操作 JSON（例如 script、shell、batch、move 等；临时任务脚本用 script，勿误用 text_file）；"
                                 "仅当用户任务已全部完成时，才输出 {\"action\": \"done\"}。"
+                                "并先更新步骤编排中的状态（pending/in_progress/completed/failed）后再给出下一条指令。"
                                 "禁止仅用纯文字罗列结果代替 JSON。"
                                 "若原始需求含「创建脚本」「执行脚本」等，下一步必须是 script + shell/batch（或 batch），"
                                 "text_file 仅当用户明确要文件留在当前目录；禁止再用 list + last_action:true 结束。"
@@ -3522,6 +3530,33 @@ big_image.jpg
                         print("\nℹ️ 未检测到可执行 JSON 指令，结束本轮。")
                         break
                     if command.get("action") == "done":
+                        # Guardrail: when recent-evidence checks already say "insufficient",
+                        # do not allow a numeric market forecast to end the task.
+                        if (
+                            self._task_requires_fresh_market_data(original_user_task)
+                            and self._recent_evidence_insufficient()
+                            and self._response_has_hard_numeric_claims(ai_response)
+                        ):
+                            followup_json_misses += 1
+                            if followup_json_misses > max_followup_json_misses:
+                                print("\n❌ 多次收到不满足证据约束的收尾内容，终止本轮。")
+                                break
+                            print(
+                                "\n⚠️ 已拒绝执行 done：检索结果已提示“近期待证据不足”，"
+                                "但最终答复仍包含具体数值预测。已要求改写为定性结论。"
+                            )
+                            next_input = (
+                                f"【用户原始需求】\n{original_user_task}\n\n"
+                                "【证据约束】最近检索结果已提示“近期待证据不足”，"
+                                "因此禁止输出具体点位/涨跌幅/市值/资金流等硬数字预测。\n"
+                                "请改写最终答复：\n"
+                                "1) 明确说明证据不足与时间范围限制；\n"
+                                "2) 仅给定性判断和风险提示；\n"
+                                "3) 不得新增任何未在证据中可核验的数字事实；\n"
+                                "4) 答复末尾再输出 {\"action\":\"done\"}。"
+                            )
+                            is_first_round = False
+                            continue
                         followup_json_misses = 0
                         print("✅ AI已声明所有操作完成。");
                         break
@@ -3565,6 +3600,13 @@ big_image.jpg
                                     continue
 
                     followup_json_misses = 0
+                    selected_skill = self._infer_selected_skill(command, ai_response)
+                    if selected_skill:
+                        skill_key = f"{selected_skill.get('skill_id')}::{selected_skill.get('name')}"
+                        if skill_key != last_announced_skill_key:
+                            print(f"🧩 本步使用 Skill: {selected_skill.get('name')} ({selected_skill.get('skill_id')})")
+                            last_announced_skill_key = skill_key
+
                     print("⚡ 执行操作...")
                     result = self.execute_command(command)
                     # 保存操作结果
@@ -3592,13 +3634,15 @@ big_image.jpg
                     
                     # 第一轮结束后，后续轮次不再查询知识库
                     is_first_round = False
+                    step_progress = self._build_step_progress_context()
                     # 续步时必须带上原始需求，否则模型容易忘记「创建脚本/执行」等后续步骤
                     next_input = (
                         f"【用户原始需求（须全部完成；未完成前禁止用无意义的 list + last_action:true 结束）】\n"
                         f"{original_user_task}\n\n"
+                        f"{step_progress}\n\n"
                         f"【上一条已执行命令及系统返回】\n"
                         f"{json.dumps(self.operation_results[-1], ensure_ascii=False)}\n\n"
-                        "请根据原始需求继续输出下一条 ```json``` 指令。"
+                        "请先更新步骤状态（pending/in_progress/completed/failed），再根据原始需求继续输出下一条 ```json``` 指令。"
                         "若需求包含创建并执行脚本、批处理、junction 等，通常应先 script 写入临时脚本再 shell；"
                         "仅当用户明确要求在当前目录保留交付物时才用 text_file。不要仅列出当前工作目录来结束。"
                     )
@@ -3612,6 +3656,114 @@ big_image.jpg
                 break
             except Exception as e:
                 print(f"❌ 发生错误: {str(e)}")
+
+    def _build_step_progress_context(self) -> str:
+        """Build concise step progress summary from executed operations."""
+        if not self.operation_results:
+            return "【步骤进度】暂无已执行步骤。"
+
+        lines = ["【步骤进度（按执行顺序）】"]
+        for i, item in enumerate(self.operation_results, start=1):
+            cmd = item.get("command") or {}
+            res = item.get("result") or {}
+            action = cmd.get("action", "unknown")
+            ok = bool(res.get("success", True))
+            status = "completed" if ok else "failed"
+            detail = str(res.get("message") or res.get("error") or "").replace("\n", " ").strip()
+            if len(detail) > 160:
+                detail = detail[:160] + "..."
+            lines.append(
+                f"- Step {i}: [{status}] action={action}, last_action={cmd.get('last_action')}, detail={detail or '-'}"
+            )
+        return "\n".join(lines)
+
+    def _infer_selected_skill(self, command: Dict[str, Any], ai_response: str) -> Optional[Dict[str, str]]:
+        """
+        Infer selected skill from command metadata / script path / model text.
+        Returns {"skill_id": "...", "name": "..."} or None.
+        """
+        if not self.skills:
+            return None
+
+        id_to_name = {str(s.skill_id): str(s.name) for s in self.skills}
+        alias_to_id: Dict[str, str] = {}
+        for s in self.skills:
+            sid = str(s.skill_id).strip().lower()
+            sname = str(s.name).strip().lower()
+            if sid:
+                alias_to_id[sid] = str(s.skill_id)
+            if sname:
+                alias_to_id[sname] = str(s.skill_id)
+
+        for key in ("skill", "skill_name", "skill_id", "use_skill"):
+            val = command.get(key)
+            if isinstance(val, str) and val.strip():
+                raw = val.strip()
+                low = raw.lower()
+                sid = alias_to_id.get(low) or alias_to_id.get(low.replace("_", "-"))
+                if sid:
+                    return {"skill_id": sid, "name": id_to_name.get(sid, sid)}
+
+        blobs = [json.dumps(command, ensure_ascii=False), ai_response or ""]
+        for blob in blobs:
+            for m in re.finditer(r"[\\/](?:skills)[\\/](?P<sid>[a-zA-Z0-9._-]+)[\\/]", blob, flags=re.IGNORECASE):
+                sid_raw = m.group("sid")
+                sid = alias_to_id.get(sid_raw.lower()) or sid_raw
+                if sid in id_to_name:
+                    return {"skill_id": sid, "name": id_to_name.get(sid, sid)}
+
+        merged = " ".join(blobs).lower()
+        for alias, sid in alias_to_id.items():
+            if alias and alias in merged:
+                return {"skill_id": sid, "name": id_to_name.get(sid, sid)}
+        return None
+
+    def _task_requires_fresh_market_data(self, task: str) -> bool:
+        t = (task or "").lower()
+        if not t:
+            return False
+        keys = (
+            "最近",
+            "近30天",
+            "近一个月",
+            "近期",
+            "行情",
+            "走势",
+            "市值",
+            "预测",
+            "a股",
+            "美股",
+            "港股",
+            "标普",
+            "恒生",
+        )
+        return any(k in t for k in keys)
+
+    def _recent_evidence_insufficient(self) -> bool:
+        recent = self.operation_results[-8:] if self.operation_results else []
+        for wrap in reversed(recent):
+            res = wrap.get("result") or {}
+            parts = []
+            for k in ("output", "message", "error", "stderr"):
+                v = res.get(k)
+                if isinstance(v, str) and v:
+                    parts.append(v)
+            blob = "\n".join(parts)
+            if "近期待证据不足" in blob:
+                return True
+        return False
+
+    def _response_has_hard_numeric_claims(self, text: str) -> bool:
+        if not text:
+            return False
+        patterns = [
+            r"\d+(?:\.\d+)?\s*(?:%|％|点|亿元|亿港元|万美元|美元|港元|元|bp|基点)",
+            r"\d+(?:\.\d+)?\s*[-~至到]\s*\d+(?:\.\d+)?",
+        ]
+        hits = 0
+        for p in patterns:
+            hits += len(re.findall(p, text, flags=re.IGNORECASE))
+        return hits >= 2
 
     def _is_executable_file(self, user_input: str) -> bool:
         """
