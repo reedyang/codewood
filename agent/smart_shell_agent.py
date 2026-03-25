@@ -296,7 +296,11 @@ class SmartShellAgent:
             if builtin_skills_dir
             else Path(__file__).resolve().parent.parent / "skills"
         )
-        self.skills = load_skills_merged(self.config_dir, self._builtin_skills_root)
+        self.skills = load_skills_merged(
+            self.config_dir,
+            self._builtin_skills_root,
+            self.ai_workspace_dir,
+        )
         self._skills_routing_prefix = build_skills_routing_prefix(self.skills)
         self._skills_system_append = build_skills_system_append(self.skills)
 
@@ -323,7 +327,11 @@ class SmartShellAgent:
     def _reload_skills(self) -> None:
         """Reload skills and derived prompt snippets to support hot updates."""
         try:
-            self.skills = load_skills_merged(self.config_dir, self._builtin_skills_root)
+            self.skills = load_skills_merged(
+                self.config_dir,
+                self._builtin_skills_root,
+                self.ai_workspace_dir,
+            )
             self._skills_routing_prefix = build_skills_routing_prefix(self.skills)
             self._skills_system_append = build_skills_system_append(self.skills)
         except Exception as e:
