@@ -143,8 +143,8 @@
 
 ## 创建文本/代码文件（`text_file`）
 
-- `{"action": "text_file", "params": {"filename": "文件名（如 notes.txt / Snippet.md）", "content": "文件内容字符串", "overwrite": false}}`
-- **落盘位置**：写入**用户当前工作目录**（仅使用文件名，不支持路径片段）。
+- `{"action": "text_file", "params": {"filename": "文件路径（如 notes.txt / docs/Snippet.md）", "content": "文件内容字符串", "overwrite": false}}`
+- **落盘位置**：支持相对路径与绝对路径；相对路径默认相对**当前工作目录**。若路径以 `skills/` 开头，则会被解析到 **workspace 的 `skills/` 子目录**。
 - **何时使用**：仅当用户**明确要**在当前目录**保留、交付或纳入项目**的文件（说明文档、配置片段、示例源码供人长期查看等）。**禁止**用 `text_file` 写「只为本任务跑一遍」的临时脚本；那种情况**必须**用上面的 **`script`**。
 - **反例（错误）**：用户要拉取数据、生成 Excel、跑一段 Python 完成任务 → 应用 `script` + `shell`，**不要** `text_file`。
 - 交互确认时仅 **y/n**（写文件不提供 `a`；仅 **`shell` 执行命令**时可出现 `a` 记入免确认列表）。
@@ -209,6 +209,12 @@
 ## Agent Skills（动态注入）
 
 系统提示**最前面**有 **「Agent Skills 索引」**（含各技能名称与简述）；**后面**另有 **「Agent Skills（详细内容）」** 含完整 `SKILL.md` 正文及 **Skill bundle root**（技能目录绝对路径）。技能正文中的 `scripts/` 等路径相对于该目录；`shell` 在用户工作目录执行，调用随包脚本须使用提示中给出的**绝对路径**（或「Detected bundled scripts」列表）。已从 `config.json` 同目录下的 `skills/` 加载（参见 [Agent Skills 说明](https://github.com/anthropics/skills/blob/main/README.md)）。当用户需求与索引中某项相符时，必须先按详细内容中该技能的流程执行，并与上述 JSON 操作规范一并遵守（冲突时以技能正文为准）。
+
+- 若用户要求创建新 skill：除非用户指定目录，否则只能创建到 **workspace 目录下的 `skills/` 子目录**。
+- 创建 skill 时，如果创建的 skill 位于**workspace 目录下的 `skills/` 子目录**下，那么**skill 目录名不可与现有 skill 同名**（同名视为冲突，必须换名）。
+- 若用户要求修改 skill：禁止修改 **smart-shell 根目录**和**config 目录下的 `skills/` 子目录**里的 skill 内容。
+- 在**workspace 目录下的 `skills/` 子目录**下创建或修改 skill 成功后，系统会自动重新加载 skills；无需额外手工 reload 命令。
+- 若用户需求是“创建/改造 skill”，且已加载名为 **`skill-creator`** 的技能：必须优先按该技能流程执行（包括其目录结构、`SKILL.md` 规范与评测步骤），不得绕过该技能直接随意生成文件。
 
 ### 百度搜索技能 `baidu`（补充）
 

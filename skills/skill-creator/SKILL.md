@@ -44,6 +44,19 @@ It's OK to briefly explain terms if you're in doubt, and feel free to clarify te
 
 ## Creating a skill
 
+### Smart-Shell Execution Gate (Mandatory)
+
+When you are operating in a Smart Shell style environment (JSON actions with `last_action` / `done`), follow these rules strictly:
+
+1. **Never finish early.** Do not output `last_action: true` (or `{"action":"done"}`) until all required deliverables for the user's request are complete.
+2. **Required deliverables for "create a skill"** (unless user explicitly opts out):
+   - Skill directory created in the required skill location
+   - `SKILL.md` written inside that skill directory
+   - `evals/evals.json` created (or an explicit user-confirmed skip)
+3. **Ask before guessing.** If any required input is missing (runtime choice, output format, eval scope, dependency constraints, etc.), ask a clear question first and wait for user reply. Do not mark complete while waiting.
+4. **Single-step progress only.** In each turn, execute one concrete next step that advances completion; after each result, continue with the next pending step.
+5. **Completion check.** Before finalizing, explicitly verify path + files exist and report them to the user.
+
 ### Capture Intent
 
 Start by understanding the user's intent. The current conversation might already contain a workflow the user wants to capture (e.g., they say "turn this into a skill"). If so, extract answers from the conversation history first — the tools used, the sequence of steps, corrections the user made, input/output formats observed. The user may need to fill the gaps, and should confirm before proceeding to the next step.

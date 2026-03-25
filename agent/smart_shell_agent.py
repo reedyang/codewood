@@ -1208,7 +1208,10 @@ class SmartShellAgent:
                         "role": "system",
                         "content": (
                             f"{self._skills_routing_prefix}{self.system_prompt}\n{self._skills_system_append}"
-                            f"当前操作系统信息：{os_info}\n当前日期时间：{date_time}"
+                            f"当前操作系统信息：{os_info}\n当前日期时间：{date_time}\n"
+                            f"当前 smart-shell 根目录（绝对路径）：{self._self_repo_root}\n"
+                            f"当前 config 目录（绝对路径）：{self.config_dir}\n"
+                            f"当前 workspace 目录（绝对路径）：{self.ai_workspace_dir}\n"
                         ),
                     }
                 ]
@@ -1813,6 +1816,7 @@ big_image.jpg
                 return {"success": False, "error": f"目标文件 '{new_name}' 已存在"}
             
             old_path.rename(new_path)
+            self._reload_skills_if_workspace_skill_changed([old_path, new_path])
             return {
                 "success": True,
                 "old_name": old_name,
@@ -1829,14 +1833,11 @@ big_image.jpg
         try:
             # 判断是否为通配符批量移动
             if '*' in source or '?' in source:
-                pattern = str((self.work_directory / source).resolve())
+                pattern = str(self._resolve_user_path(source))
                 matched_files = [Path(p) for p in glob.glob(pattern) if Path(p).is_file()]
                 if not matched_files:
                     return {"success": False, "error": f"未找到匹配的文件: {source}"}
-                if destination.startswith("/") or destination.startswith("\\") or (len(destination) > 1 and destination[1] == ":"):
-                    dest_path = Path(destination)
-                else:
-                    dest_path = self.work_directory / destination
+                dest_path = self._resolve_user_path(destination)
                 if self._is_smart_shell_protected_path(dest_path) or any(
                     self._is_smart_shell_protected_path(p) for p in matched_files
                 ):
@@ -1858,6 +1859,8 @@ big_image.jpg
                     target = dest_path / file_path.name
                     shutil.move(str(file_path), str(target))
                     moved.append(file_path.name)
+                changed_paths = matched_files + [dest_path / p.name for p in matched_files]
+                self._reload_skills_if_workspace_skill_changed(changed_paths)
                 return {
                     "success": True,
                     "source": source,
@@ -1866,11 +1869,8 @@ big_image.jpg
                     "message": f"成功批量移动 {len(moved)} 个文件到 '{dest_path}'"
                 }
             else:
-                source_path = self.work_directory / source
-                if destination.startswith("/") or destination.startswith("\\") or (len(destination) > 1 and destination[1] == ":"):
-                    dest_path = Path(destination)
-                else:
-                    dest_path = self.work_directory / destination
+                source_path = self._resolve_user_path(source)
+                dest_path = self._resolve_user_path(destination)
                 if self._is_smart_shell_protected_path(source_path) or self._is_smart_shell_protected_path(dest_path):
                     return self._blocked_by_self_protection("move")
                 if not source_path.exists():
@@ -1887,6 +1887,7 @@ big_image.jpg
                         }
                 
                 shutil.move(str(source_path), str(dest_path))
+                self._reload_skills_if_workspace_skill_changed([source_path, dest_path])
                 return {
                     "success": True,
                     "source": source,
@@ -1930,6 +1931,8 @@ big_image.jpg
                 except Exception as e:
                     results.append({"file": str(file_path), "success": False, "error": f"删除失败: {str(e)}"})
             all_success = all(r.get("success", False) for r in results)
+            if all_success:
+                self._reload_skills_if_workspace_skill_changed(matched_files)
             return {"success": all_success, "deleted": results, "count": len(results)}
 
         # 单文件/目录删除
@@ -1949,6 +1952,7 @@ big_image.jpg
                 return {"success": False, "error": f"文件 '{file_name}' 不存在"}
             if file_path.is_dir():
                 shutil.rmtree(file_path)
+                self._reload_skills_if_workspace_skill_changed([file_path])
                 return {
                     "success": True,
                     "file_name": file_name,
@@ -1957,6 +1961,7 @@ big_image.jpg
                 }
             else:
                 file_path.unlink()
+                self._reload_skills_if_workspace_skill_changed([file_path])
                 return {
                     "success": True,
                     "file_name": file_name,
@@ -1969,19 +1974,29 @@ big_image.jpg
     def action_create_directory(self, dir_name: str) -> Dict[str, Any]:
         """创建新文件夹"""
         try:
-            dir_path = self.work_directory / dir_name
+            dir_path = self._resolve_user_path(dir_name)
             if self._is_smart_shell_protected_path(dir_path):
                 return self._blocked_by_self_protection("mkdir")
+
+            # Creating a new skill folder is only allowed when its id does not conflict.
+            if dir_path.parent.resolve() == self._workspace_skills_root():
+                skill_id = dir_path.name
+                if self._skill_id_exists(skill_id):
+                    return {
+                        "success": False,
+                        "error": f"技能 '{skill_id}' 已存在（不可与现有 skill 同名）",
+                    }
             
             if dir_path.exists():
                 return {"success": False, "error": f"文件夹 '{dir_name}' 已存在"}
             
             dir_path.mkdir(parents=True)
+            self._reload_skills_if_workspace_skill_changed([dir_path])
             return {
                 "success": True,
                 "dir_name": dir_name,
                 "full_path": str(dir_path),
-                "message": f"成功创建文件夹 '{dir_name}'"
+                "message": f"成功创建文件夹 '{dir_name}'（路径: {dir_path}）"
             }
             
         except Exception as e:
@@ -2345,10 +2360,66 @@ big_image.jpg
         1) smart-shell repository root (code/skills/.smartshell in repo)
         2) active config directory (~/.smartshell or local .smartshell)
         """
+        # Allow AI to create/modify workspace skills under repository skills/ subtree.
+        if self._is_workspace_skill_path(path):
+            return False
         # Always allow AI temporary workspace operations.
         if self._is_path_under(path, self.ai_workspace_dir):
             return False
         return self._is_path_under(path, self._self_repo_root) or self._is_path_under(path, self.config_dir)
+
+    def _workspace_skills_root(self) -> Path:
+        return (self.ai_workspace_dir / "skills").resolve()
+
+    def _resolve_user_path(self, raw_path: str) -> Path:
+        """
+        Resolve user-provided path with special handling:
+        - relative paths starting with `workspace/` are anchored to ai workspace root.
+        - relative paths starting with `workspace/skills/` or `skills/` are anchored to workspace skills root.
+        """
+        p_raw = (raw_path or "").strip()
+        if not p_raw:
+            return self.work_directory
+        norm = p_raw.replace("\\", "/").lstrip("./")
+        if norm == "workspace":
+            return self.ai_workspace_dir.resolve()
+        if norm.startswith("workspace/skills/"):
+            rest = norm[len("workspace/skills/") :]
+            return (self._workspace_skills_root() / Path(rest)).resolve()
+        if norm.startswith("workspace/"):
+            rest = norm[len("workspace/") :]
+            return (self.ai_workspace_dir / Path(rest)).resolve()
+        if norm.startswith("skills/"):
+            rest = norm[len("skills/") :]
+            return (self._workspace_skills_root() / Path(rest)).resolve()
+        p = Path(p_raw)
+        if p.is_absolute():
+            return p.resolve()
+        return (self.work_directory / p).resolve()
+
+    def _is_workspace_skill_path(self, path: Path) -> bool:
+        try:
+            return self._is_path_under(path.resolve(), self._workspace_skills_root())
+        except Exception:
+            return False
+
+    def _skill_id_exists(self, skill_id: str) -> bool:
+        sid = (skill_id or "").strip().lower()
+        if not sid:
+            return False
+        for s in self.skills or []:
+            cur = str(getattr(s, "skill_id", "")).strip().lower()
+            if cur == sid:
+                return True
+        return False
+
+    def _reload_skills_if_workspace_skill_changed(self, paths: List[Path]) -> None:
+        try:
+            if any(self._is_workspace_skill_path(p) for p in paths):
+                self._reload_skills()
+                print("🔄 检测到 workspace/skills 变更，已自动重新加载 skills。")
+        except Exception as e:
+            print(f"⚠️ 自动重载 skills 失败: {e}")
 
     def _is_dependency_install_command(self, command: str) -> bool:
         s = (command or "").strip().lower()
@@ -2380,7 +2451,7 @@ big_image.jpg
             "success": False,
             "error": (
                 f"已拦截操作 '{action}'：运行时保护已启用，"
-                "AI 不可修改 smart-shell 自身（代码/配置/skills）。"
+                "AI 不可修改 smart-shell 自身（代码/配置）；`workspace/skills` 子目录除外。"
             ),
         }
 
@@ -2461,6 +2532,8 @@ big_image.jpg
 
             if return_code == 0:
                 self._register_outputs_from_shell_command(command)
+                if self._is_workspace_skill_path(self.work_directory):
+                    self._reload_skills_if_workspace_skill_changed([self.work_directory])
                 removed = self._try_remove_ephemeral_script_after_shell(command)
                 if removed:
                     self._last_auto_removed_ephemeral = removed
@@ -2543,13 +2616,14 @@ big_image.jpg
     def action_create_text_file(
         self, filename: str, content: str, confirmed: bool = False, overwrite: bool = False
     ) -> dict:
-        """Create a user-requested file under current work directory. Only basename is used."""
+        """Create a user-requested file; supports relative paths."""
         if not filename or content is None:
             return {"success": False, "error": "缺少文件名或内容"}
-        safe_name = self._safe_script_basename(filename)
-        if not safe_name:
+        filename_s = str(filename).strip()
+        if not filename_s:
             return {"success": False, "error": "无效的文件名"}
-        file_path = self.work_directory / safe_name
+        file_path = self._resolve_user_path(filename_s)
+        safe_name = file_path.name
         if self._is_smart_shell_protected_path(file_path):
             return self._blocked_by_self_protection("text_file")
         existed_before = file_path.exists()
@@ -2561,11 +2635,18 @@ big_image.jpg
                     "若需覆盖，请在 JSON 的 params 中设置 \"overwrite\": true。"
                 ),
             }
+        try:
+            file_path.parent.mkdir(parents=True, exist_ok=True)
+        except Exception as e:
+            return {"success": False, "error": f"创建父目录失败: {str(e)}"}
         print(f"请求创建文本文件: {safe_name} → {file_path}")
         print(f"内容:\n{content}")
+        # Writes under config-side workspace are session artifacts; skip interactive prompt.
+        if self._is_path_under(file_path, self.ai_workspace_dir):
+            confirmed = True
         if not confirmed:
             ok = self._prompt_confirm_yes_no_maybe_always(
-                f"⚠️ 确认创建文本文件: {safe_name} ?",
+                f"⚠️ 确认创建文本文件: {file_path} ?",
                 offer_always=False,
                 kind="text_file",
             )
@@ -2577,12 +2658,13 @@ big_image.jpg
                 f.write(content)
             resolved = file_path.resolve()
             self._ai_created_path_keys.add(self._ephemeral_path_key(resolved))
+            self._reload_skills_if_workspace_skill_changed([resolved])
             verb = "覆盖写入" if overwrite and existed_before else "创建"
             return {
                 "success": True,
                 "filename": safe_name,
                 "full_path": str(resolved),
-                "message": f"成功{verb}文本文件 '{safe_name}'（位于当前工作目录）",
+                "message": f"成功{verb}文本文件 '{safe_name}'（路径: {resolved}）",
             }
         except Exception as e:
             return {"success": False, "error": f"创建文本文件失败: {str(e)}"}
