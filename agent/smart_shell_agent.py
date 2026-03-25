@@ -314,7 +314,11 @@ class SmartShellAgent:
                         initial_history = self.history_manager.get_all_history()
                     except Exception:
                         initial_history = []
-                    self.input_handler = create_windows_input_handler(self.work_directory, initial_history)
+                    self.input_handler = create_windows_input_handler(
+                        self.work_directory,
+                        initial_history,
+                        self._get_slash_skill_commands(),
+                    )
                 elif INPUT_HANDLER_TYPE == "readline":
                     self.input_handler = create_tab_completer(self.work_directory)
                 else:
@@ -334,8 +338,53 @@ class SmartShellAgent:
             )
             self._skills_routing_prefix = build_skills_routing_prefix(self.skills)
             self._skills_system_append = build_skills_system_append(self.skills)
+            self._refresh_input_handler_skill_completions()
         except Exception as e:
             print(f"⚠️ Skill 热更新失败，继续使用当前已加载版本: {e}")
+
+    def _get_slash_skill_commands(self) -> List[str]:
+        cmds: List[str] = []
+        seen: Set[str] = set()
+        for s in self.skills or []:
+            sid = str(getattr(s, "skill_id", "")).strip()
+            if sid:
+                c = f"/{sid}"
+                if c.lower() not in seen:
+                    seen.add(c.lower())
+                    cmds.append(c)
+        return sorted(cmds, key=str.lower)
+
+    def _refresh_input_handler_skill_completions(self) -> None:
+        try:
+            if self.input_handler is not None and hasattr(self.input_handler, "set_slash_skill_commands"):
+                self.input_handler.set_slash_skill_commands(self._get_slash_skill_commands())
+        except Exception:
+            pass
+
+    def _extract_forced_skill_reference(self, user_text: str) -> Optional[Dict[str, str]]:
+        """
+        Find '/skill-id' token anywhere in user text and match loaded skills by skill_id or name.
+        Returns {"skill_id","name","rest"} when matched, where rest is the cleaned task text.
+        """
+        raw = (user_text or "").strip()
+        if not raw:
+            return None
+        # token boundary: start or whitespace before '/', then read token until whitespace
+        matches = list(re.finditer(r"(?<!\S)/([^\s/]+)", raw))
+        if not matches:
+            return None
+        for m in reversed(matches):
+            token_l = (m.group(1) or "").strip().lower()
+            if not token_l:
+                continue
+            for s in self.skills or []:
+                sid = str(getattr(s, "skill_id", "")).strip()
+                sname = str(getattr(s, "name", "")).strip()
+                if token_l == sid.lower() or token_l == sname.lower():
+                    cleaned = (raw[: m.start()] + " " + raw[m.end() :]).strip()
+                    cleaned = re.sub(r"\s{2,}", " ", cleaned)
+                    return {"skill_id": sid, "name": sname or sid, "rest": cleaned}
+        return None
 
     def _save_knowledge_enabled_to_config(self) -> bool:
         """将知识库开关状态保存到 config.json"""
@@ -3486,10 +3535,26 @@ big_image.jpg
                 if not stripped_in:
                     continue
 
+                forced_skill: Optional[Dict[str, str]] = None
+                if os_name == "nt":
+                    forced_skill = self._extract_forced_skill_reference(stripped_in)
+                    if forced_skill and not forced_skill.get("rest"):
+                        print(
+                            f"🧩 已指定强制技能: {forced_skill.get('name')} ({forced_skill.get('skill_id')})。"
+                            "请在同一行提供任务内容，例如："
+                            f"你好 /{forced_skill.get('skill_id')}"
+                        )
+                        continue
+                    if forced_skill and forced_skill.get("rest"):
+                        user_input = forced_skill["rest"]
+                        stripped_in = user_input.strip()
+                        if not stripped_in:
+                            continue
+
                 # Windows: built-in commands and direct shell require "/" prefix; POSIX unchanged
                 builtin_line: Optional[str] = None
                 if os_name == "nt":
-                    if stripped_in.startswith("/"):
+                    if stripped_in.startswith("/") and forced_skill is None:
                         builtin_line = stripped_in[1:].lstrip()
                         if not builtin_line:
                             print(
@@ -3655,6 +3720,11 @@ big_image.jpg
                                 f"  - 已载入 {len(self.skills)} 个 Agent Skills（内建 {self._builtin_skills_root} + 外部 {self.config_dir / 'skills'}），"
                                 "任务匹配时模型会优先遵循对应 SKILL.md"
                             )
+                            print("  - 可用 `/skill-id 你的任务` 指定本轮强制使用某个 skill")
+                            skill_cmds = self._get_slash_skill_commands()
+                            if skill_cmds:
+                                print("  - 已加载技能快捷前缀（输入 / 可自动提示）：")
+                                print("    " + ", ".join(skill_cmds))
                         print("=" * 80)
                         continue
 
@@ -3738,8 +3808,16 @@ big_image.jpg
                 last_result = None
                 self._last_auto_removed_ephemeral = None
                 original_user_task = user_input.strip()
+                forced_skill_prefix = ""
+                if forced_skill:
+                    forced_skill_prefix = (
+                        f"【强制技能】本轮必须使用 skill `{forced_skill.get('name')}` "
+                        f"(skill_id=`{forced_skill.get('skill_id')}`)。"
+                        "请在后续 JSON 中显式携带该 skill_id（字段可用 `skill_id` 或 `skill`），"
+                        "并按该技能 SKILL.md 执行；不得改用其他 skill。\n\n"
+                    )
                 first_round_input = (
-                    f"{user_input}\n\n"
+                    f"{forced_skill_prefix}{user_input}\n\n"
                     "【多步任务执行要求】若任务需要多步，请先给出 Step 1..N 的简短步骤编排，"
                     "并为每步标注状态（pending/in_progress/completed/failed），再输出当前要执行的一条 JSON 指令。"
                     "后续每轮都要先更新步骤状态再续步。"
@@ -3902,6 +3980,8 @@ big_image.jpg
                     step_progress = self._build_step_progress_context()
                     # 续步时必须带上原始需求，否则模型容易忘记「创建脚本/执行」等后续步骤
                     next_input = (
+                        (forced_skill_prefix if forced_skill else "")
+                        + 
                         f"【用户原始需求（须全部完成；未完成前禁止用无意义的 list + last_action:true 结束）】\n"
                         f"{original_user_task}\n\n"
                         f"{step_progress}\n\n"

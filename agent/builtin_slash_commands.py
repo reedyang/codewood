@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from typing import List
+from typing import List, Optional
 
 WINDOWS_SLASH_BUILTIN_COMMANDS: List[str] = [
     "/exit",
@@ -23,7 +23,9 @@ WINDOWS_SLASH_BUILTIN_COMMANDS: List[str] = [
 ]
 
 
-def windows_slash_builtin_completions(prefix_from_slash: str) -> List[str]:
+def windows_slash_builtin_completions(
+    prefix_from_slash: str, dynamic_commands: Optional[List[str]] = None
+) -> List[str]:
     """
     prefix_from_slash: text from the first '/' through the cursor (e.g. '/', '/he', '/knowledge ').
     Returns matching full '/...' commands, sorted, deduplicated.
@@ -33,7 +35,11 @@ def windows_slash_builtin_completions(prefix_from_slash: str) -> List[str]:
     pl = prefix_from_slash.lower()
     seen = set()
     out: List[str] = []
-    for c in WINDOWS_SLASH_BUILTIN_COMMANDS:
+    all_commands = list(WINDOWS_SLASH_BUILTIN_COMMANDS)
+    if dynamic_commands:
+        all_commands.extend(dynamic_commands)
+
+    for c in all_commands:
         if c.lower().startswith(pl):
             if c not in seen:
                 seen.add(c)
