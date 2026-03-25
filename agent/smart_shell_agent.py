@@ -2524,7 +2524,13 @@ big_image.jpg
             print(f"⚠️ 自动删除临时脚本失败 ({invoked}): {e}")
         return None
     
-    def action_shell_command(self, command: str, confirmed: bool = False) -> dict:
+    def action_shell_command(
+        self,
+        command: str,
+        confirmed: bool = False,
+        interactive: bool = True,
+        input_data: Optional[str] = None,
+    ) -> dict:
         """Run a shell command; capture stdout/stderr for AI context while echoing to the terminal."""
         if not command.strip():
             return {"success": False, "error": "命令不能为空"}
@@ -2558,26 +2564,91 @@ big_image.jpg
             # Ensure Python child processes can print non-ASCII safely on Windows.
             run_env.setdefault("PYTHONUTF8", "1")
             run_env.setdefault("PYTHONIOENCODING", "utf-8")
-            completed = subprocess.run(
-                command,
-                shell=True,
-                cwd=str(self.work_directory.resolve()),
-                capture_output=True,
-                env=run_env,
-            )
-            out = _decode_subprocess_output(completed.stdout)
-            err = _decode_subprocess_output(completed.stderr)
-            if out:
-                _safe_console_write(out, sys.stdout)
-            if err:
-                _safe_console_write(err, sys.stderr)
+            # Always run in interactive mode to avoid mis-judging whether stdin is needed.
+            interactive = True
+            if interactive:
+                import threading
+                print("⌨️ shell 交互模式已开启：请按命令提示在终端中输入。")
+                stdout_chunks: List[str] = []
+                stderr_chunks: List[str] = []
 
-            return_code = completed.returncode
-            base_out: Dict[str, Any] = {
-                "output": out,
-                "stderr": err,
-                "return_code": return_code,
-            }
+                def _stream_and_capture(pipe: Any, target: Any, bucket: List[str]) -> None:
+                    try:
+                        while True:
+                            line = pipe.readline()
+                            if not line:
+                                break
+                            bucket.append(line)
+                            _safe_console_write(line, target)
+                    except Exception:
+                        pass
+                    finally:
+                        try:
+                            pipe.close()
+                        except Exception:
+                            pass
+
+                process = subprocess.Popen(
+                    command,
+                    shell=True,
+                    cwd=str(self.work_directory.resolve()),
+                    env=run_env,
+                    stdin=sys.stdin,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                )
+                t_out = threading.Thread(
+                    target=_stream_and_capture,
+                    args=(process.stdout, sys.stdout, stdout_chunks),  # type: ignore[arg-type]
+                    daemon=True,
+                )
+                t_err = threading.Thread(
+                    target=_stream_and_capture,
+                    args=(process.stderr, sys.stderr, stderr_chunks),  # type: ignore[arg-type]
+                    daemon=True,
+                )
+                t_out.start()
+                t_err.start()
+                return_code = process.wait()
+                t_out.join(timeout=1.0)
+                t_err.join(timeout=1.0)
+                out = "".join(stdout_chunks)
+                err = "".join(stderr_chunks)
+                base_out: Dict[str, Any] = {
+                    "output": out,
+                    "stderr": err,
+                    "return_code": return_code,
+                    "interactive": True,
+                }
+            else:
+                run_input = None
+                if input_data is not None:
+                    run_input = str(input_data).encode("utf-8")
+                completed = subprocess.run(
+                    command,
+                    shell=True,
+                    cwd=str(self.work_directory.resolve()),
+                    capture_output=True,
+                    env=run_env,
+                    input=run_input,
+                )
+                out = _decode_subprocess_output(completed.stdout)
+                err = _decode_subprocess_output(completed.stderr)
+                if out:
+                    _safe_console_write(out, sys.stdout)
+                if err:
+                    _safe_console_write(err, sys.stderr)
+
+                return_code = completed.returncode
+                base_out = {
+                    "output": out,
+                    "stderr": err,
+                    "return_code": return_code,
+                    "interactive": False,
+                }
 
             if return_code == 0:
                 self._register_outputs_from_shell_command(command)
@@ -2595,6 +2666,8 @@ big_image.jpg
                         "auto_removed_ephemeral_script": removed,
                         **base_out,
                     }
+                if interactive:
+                    return {"success": True, "message": "命令执行成功（交互模式）", **base_out}
                 return {"success": True, "message": "命令执行成功", **base_out}
             return {
                 "success": False,
@@ -2718,8 +2791,8 @@ big_image.jpg
         except Exception as e:
             return {"success": False, "error": f"创建文本文件失败: {str(e)}"}
 
-    def action_read_file(self, file_path: str, max_lines: int = 100) -> dict:
-        """读取文本文件内容，返回前max_lines行，支持自动编码检测，适合预览文本文件。"""
+    def action_read_file(self, file_path: str, max_lines: Optional[int] = None) -> dict:
+        """读取文本文件内容，支持自动编码检测，适合预览文本文件。"""
         try:
             abs_path = Path(file_path)
             if not abs_path.is_absolute():
@@ -2742,22 +2815,46 @@ big_image.jpg
             # 自动尝试多种编码
             encodings = ['utf-8', 'gbk', 'gb2312', 'utf-16', 'latin1']
             content = None
+            effective_max = int(max_lines) if max_lines is not None else 100
+            if effective_max <= 0:
+                effective_max = 100
+            used_max = effective_max
+            read_plan = [effective_max]
+            # Auto-expand only when caller does not explicitly provide max_lines.
+            if max_lines is None:
+                for candidate in (300, 800):
+                    if candidate > read_plan[-1]:
+                        read_plan.append(candidate)
             for enc in encodings:
                 try:
-                    with open(abs_path, 'r', encoding=enc, errors='replace') as f:
-                        lines = []
-                        for i, line in enumerate(f):
-                            if i >= max_lines:
-                                lines.append('... (内容过长已截断)')
-                                break
-                            lines.append(line.rstrip('\n'))
-                        content = '\n'.join(lines)
+                    for plan_max in read_plan:
+                        with open(abs_path, 'r', encoding=enc, errors='replace') as f:
+                            lines = []
+                            truncated = False
+                            for i, line in enumerate(f):
+                                if i >= plan_max:
+                                    truncated = True
+                                    lines.append('... (内容过长已截断)')
+                                    break
+                                lines.append(line.rstrip('\n'))
+                            content = '\n'.join(lines)
+                            used_max = plan_max
+                        # Keep expanding only when it is still truncated and auto mode is enabled.
+                        if max_lines is None and truncated and plan_max < 800:
+                            continue
+                        break
                     break
                 except Exception:
                     continue
             if content is None:
                 return {"success": False, "error": "无法读取文件内容，可能编码不受支持"}
-            return {"success": True, "file": str(abs_path), "content": content}
+            return {
+                "success": True,
+                "file": str(abs_path),
+                "content": content,
+                "max_lines_used": used_max,
+                "auto_expand_max_lines": max_lines is None,
+            }
         except Exception as e:
             return {"success": False, "error": f"读取文件失败: {str(e)}"}
 
@@ -3192,9 +3289,50 @@ big_image.jpg
         elif action == "shell":
             shell_cmd = params.get("command")
             if shell_cmd:
-                shell_cmd_dict = {"action": "shell", "params": {"command": shell_cmd}}
+                shell_force = bool(params.get("force", False))
+                if not shell_force:
+                    # Guardrail: avoid accidental duplicate execution loops in multi-step tasks.
+                    for item in reversed(self.operation_results[-6:]):
+                        prev_cmd = item.get("command") or {}
+                        prev_res = item.get("result") or {}
+                        if prev_cmd.get("action") != "shell":
+                            continue
+                        prev_params = prev_cmd.get("params") or {}
+                        if str(prev_params.get("command", "")).strip() == str(shell_cmd).strip():
+                            if prev_res.get("success", False):
+                                msg = (
+                                    "检测到重复 shell 命令，已跳过本次执行。"
+                                    "如确需重复运行，请在 params 中设置 force=true。"
+                                )
+                                print(f"ℹ️ {msg}")
+                                return {
+                                    "success": True,
+                                    "message": msg,
+                                    "skipped_duplicate": True,
+                                    "interactive": True,
+                                    "output": "",
+                                    "stderr": "",
+                                    "return_code": 0,
+                                }
+                            break
+                shell_interactive = True
+                shell_input = params.get("input")
+                shell_cmd_dict = {
+                    "action": "shell",
+                    "params": {
+                        "command": shell_cmd,
+                        "interactive": shell_interactive,
+                        "force": shell_force,
+                        "input": shell_input if isinstance(shell_input, str) else None,
+                    },
+                }
                 confirmed = self._freedom_auto_confirm(shell_cmd_dict)
-                result = self.action_shell_command(shell_cmd, confirmed=confirmed)
+                result = self.action_shell_command(
+                    shell_cmd,
+                    confirmed=confirmed,
+                    interactive=True,
+                    input_data=None,
+                )
                 if result["success"]:
                     print(f"\n💻 系统命令执行成功: {result['message']}")
                 else:
@@ -3248,7 +3386,7 @@ big_image.jpg
         
         elif action == "read":
             file_path = params.get("path")
-            max_lines = params.get("max_lines", 100)
+            max_lines = params.get("max_lines") if "max_lines" in params else None
             if file_path:
                 result = self.action_read_file(file_path, max_lines)
                 if result["success"]:
@@ -3990,6 +4128,7 @@ big_image.jpg
                         "请先更新步骤状态（pending/in_progress/completed/failed），再根据原始需求继续输出下一条 ```json``` 指令。"
                         "若需求包含创建并执行脚本、批处理、junction 等，通常应先 script 写入临时脚本再 shell；"
                         "仅当用户明确要求在当前目录保留交付物时才用 text_file。不要仅列出当前工作目录来结束。"
+                        "除非用户明确要求重跑或你在 params 里设置 force=true，否则不要重复执行相同 shell command。"
                     )
 
                     if result.get("success", True) and command.get("last_action") == True:
