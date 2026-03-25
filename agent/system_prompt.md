@@ -155,11 +155,14 @@
 
 - `{"action": "shell", "params": {"command": "系统命令字符串"}}`
 - 例如：`{"action": "shell", "params": {"command": "dir"}}`
+- 运行时会**始终**以交互模式执行命令（继承当前终端 stdin/stdout/stderr），无需也不应传 `interactive` / `input`。
+- 为避免误触发重复执行，系统会自动跳过近期已成功执行过的同一 `command`；若你**确实需要重复运行同一命令**，请显式传 `{"force": true}`。
 - 需用户确认时，提示中可出现 **`a`**（将本条命令目标记入免确认列表）；本会话临时脚本路径等例外见上文。
 
 ## 读取文本文件（`read`）
 
 - `{"action": "read", "params": {"path": "文件路径", "max_lines": 最大读取行数}}`
+- `max_lines` 可选；未提供时系统会自动按 `100 → 300 → 800` 扩展读取（最多 800 行）。若你显式传入 `max_lines`，则严格按该值读取。
 
 ## 解读图片内容（`analyze_image`）
 
