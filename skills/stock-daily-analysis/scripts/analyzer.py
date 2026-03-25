@@ -9,6 +9,7 @@ and formats analysis outputs for terminal usage.
 import argparse
 import json
 import logging
+import sys
 from typing import Any, Dict, List, Optional
 
 logging.basicConfig(
@@ -170,8 +171,18 @@ def _load_quote_by_code(
         except json.JSONDecodeError:
             # PowerShell may pass single-quoted dict-like strings.
             import ast
+            try:
+                raw = ast.literal_eval(quote_json)
+            except Exception:
+                # Last-resort recovery for heavily escaped/quote-lost payloads
+                # like {\688795\:{\name\:\摩尔线程\,\price\:552.0}}.
+                compact = quote_json.replace("\\", "").strip()
+                try:
+                    raw = json.loads(compact)
+                except Exception:
+                    import yaml
 
-            raw = ast.literal_eval(quote_json)
+                    raw = yaml.safe_load(compact)
     else:
         return {}
 
@@ -187,6 +198,30 @@ def _load_quote_by_code(
         if isinstance(value, dict):
             out[str(key).strip()] = value
     return out
+
+
+def _extract_quote_json_from_argv(argv: List[str]) -> Optional[str]:
+    """
+    Recover --quote-json payload from raw argv.
+
+    This is a defensive parser for shells (notably PowerShell) where complex
+    quoted JSON may be split into multiple argv tokens unexpectedly.
+    """
+    for idx, token in enumerate(argv):
+        if token != "--quote-json":
+            continue
+        payload_parts: List[str] = []
+        j = idx + 1
+        while j < len(argv):
+            cur = argv[j]
+            if cur.startswith("--"):
+                break
+            payload_parts.append(cur)
+            j += 1
+        if not payload_parts:
+            return ""
+        return " ".join(payload_parts).strip()
+    return None
 
 
 def main() -> int:
@@ -217,11 +252,22 @@ def main() -> int:
         default="",
         help="Path to injected quote snapshot JSON file",
     )
-    args = parser.parse_args()
+    args, unknown = parser.parse_known_args()
+    if unknown:
+        logger.debug("Ignored unknown argv tokens: %s", unknown)
+
+    # Prefer a payload reconstructed from raw argv when available.
+    # It is more robust under shell quoting differences.
+    recovered_quote_json = _extract_quote_json_from_argv(sys.argv[1:])
+    quote_json = (
+        recovered_quote_json
+        if recovered_quote_json is not None
+        else (args.quote_json or None)
+    )
 
     codes = _parse_codes_arg(args.codes) if args.codes else ["600519"]
     quote_by_code = _load_quote_by_code(
-        quote_json=args.quote_json or None,
+        quote_json=quote_json,
         quote_file=args.quote_file or None,
         codes=codes,
     )

@@ -1,8 +1,9 @@
 """
 Load Agent Skills from Anthropic-style folders: ``<skills_root>/<id>/SKILL.md`` (YAML frontmatter + body).
 
-- **External:** ``<config_dir>/skills/`` (beside ``config.json``)
-- **Builtin:** typically ``<main.py dir>/skills/``; merged with ``load_skills_merged`` where external overrides on same ``skill_id``
+- **Workspace:** ``<workspace_dir>/skills/`` (lowest priority)
+- **Builtin:** typically ``<main.py dir>/skills/``
+- **External:** ``<config_dir>/skills/`` (beside ``config.json``, highest priority)
 
 See: https://github.com/anthropics/skills/blob/main/README.md
 """
@@ -111,22 +112,31 @@ def load_skills_from_config_dir(config_dir: Path) -> List[SkillRecord]:
 
 
 def load_skills_merged(
-    config_dir: Path, builtin_skills_dir: Optional[Path] = None
+    config_dir: Path,
+    builtin_skills_dir: Optional[Path] = None,
+    workspace_dir: Optional[Path] = None,
 ) -> List[SkillRecord]:
     """
-    Merge builtin and external Agent Skills.
+    Merge workspace, builtin and external Agent Skills.
 
-    - External: ``<config_dir>/skills/`` (user / config-side skills)
+    Priority (low -> high):
+    - Workspace: ``<workspace_dir>/skills/`` (workspace-side skills)
     - Builtin: ``builtin_skills_dir`` (typically ``<main.py dir>/skills/``)
+    - External: ``<config_dir>/skills/`` (user / config-side skills)
 
-    Same ``skill_id`` (folder name): **external overrides builtin**.
+    Same ``skill_id`` (folder name): higher-priority source overrides lower-priority source.
     """
+    workspace: List[SkillRecord] = []
+    if workspace_dir is not None:
+        workspace = _scan_skills_root(Path(workspace_dir).expanduser().resolve() / "skills")
     external = _scan_skills_root(Path(config_dir).expanduser().resolve() / "skills")
     builtin: List[SkillRecord] = []
     if builtin_skills_dir is not None:
         builtin = _scan_skills_root(builtin_skills_dir)
 
     by_id: Dict[str, SkillRecord] = {}
+    for s in workspace:
+        by_id[s.skill_id] = s
     for s in builtin:
         by_id[s.skill_id] = s
     for s in external:
@@ -154,7 +164,7 @@ def build_skills_routing_prefix(skills: List[SkillRecord]) -> str:
     lines = [
         "## Agent Skills 索引（系统提示最前，必读）",
         "",
-        "下列技能由内建 `skills/`（与 `main.py` 同目录）与 `config.json` 同目录下的外部 `skills/` 合并加载；**同名技能以外部为准**。",
+        "下列技能按优先级由低到高合并加载：`workspace/skills/` → 内建 `skills/`（与 `main.py` 同目录）→ `config.json` 同目录下的外部 `skills/`；**同名技能以后者覆盖前者**。",
         "**在输出任何 JSON 操作指令之前**：若当前用户任务与下文中某项「简述」在语义上相符（含同义表述与相关子任务，例如「CSV/表格/Excel/xlsx/转表」与表格处理类技能），你必须：",
         "**表格类任务特别提示**：若已加载名为 **`xlsx`** 的技能，则「CSV/TSV 转 xlsx、编辑表格、读写 `.xlsx`」等均属该技能；打开其正文后必须先按其中的 **Task routing (mandatory)** 选工具。**禁止**用该技能包内的 `scripts/recalc.py` 作为 CSV→xlsx 的第一步（`recalc.py` 仅用于已有 `.xlsx` 内公式的重算）。CSV→xlsx 应使用 **pandas**（`read_csv` + `to_excel`）或等价 `script`。",
         "",
