@@ -145,7 +145,7 @@ class McpServerClient:
         if self.process is not None and self.process.poll() is None:
             return
         if "url" in self.config:
-            raise McpError("当前最小实现仅支持 stdio MCP server，暂不支持 url 远端传输")
+            raise McpError("当前客户端实例仅支持 stdio 配置；检测到 url 配置，请改由 McpUrlClient 处理")
         command = self.config.get("command")
         if not command:
             raise McpError("MCP server 缺少 command")
