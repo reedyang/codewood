@@ -4383,9 +4383,18 @@ big_image.jpg
                 if sid in id_to_name:
                     return {"skill_id": sid, "name": id_to_name.get(sid, sid)}
 
-        merged = " ".join(blobs).lower()
+        # Conservative fallback: only trust explicit textual markers in AI output.
+        # Avoid broad substring matching that may cause false-positive skill attribution.
+        ai = (ai_response or "").lower()
         for alias, sid in alias_to_id.items():
-            if alias and alias in merged:
+            if not alias:
+                continue
+            if (
+                f"skill: {alias}" in ai
+                or f"skill=`{alias}`" in ai
+                or f"skill_id={alias}" in ai
+                or f"skill_id=`{alias}`" in ai
+            ):
                 return {"skill_id": sid, "name": id_to_name.get(sid, sid)}
         return None
 

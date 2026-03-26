@@ -3,10 +3,13 @@ import logging
 import os
 import platform
 import queue
+import re
 import shutil
 import subprocess
 import threading
 import time
+import urllib.error
+import urllib.request
 from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -506,6 +509,303 @@ class McpServerClient:
         )
 
 
+@dataclass
+class McpUrlClient:
+    name: str
+    config: Dict[str, Any]
+    next_id: int = 1
+    initialized: bool = False
+    session_id: Optional[str] = None
+    lock: threading.Lock = field(default_factory=threading.Lock)
+
+    def _debug_enabled(self) -> bool:
+        env_flag = str(os.environ.get("SMART_SHELL_MCP_HANDSHAKE_DEBUG", "")).strip().lower()
+        if env_flag in ("1", "true", "yes", "on"):
+            return True
+        return bool(self.config.get("debug_handshake", False))
+
+    def _debug_log(self, message: str) -> None:
+        if not self._debug_enabled():
+            return
+        try:
+            logging.getLogger("smart_shell.mcp").info(f"[HSDBG-URL] server={self.name} {message}")
+        except Exception:
+            pass
+
+    @staticmethod
+    def _redact_text(text: str) -> str:
+        if text is None:
+            return ""
+        s = str(text)
+        # Common direct identifiers / secrets
+        s = re.sub(r"(?i)\b[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}\b", "{E}<email>{/E}", s)
+        s = re.sub(r"(?i)\b(?:\d{1,3}\.){3}\d{1,3}\b", "{E}<ip>{/E}", s)
+        s = re.sub(r"(?i)\b(glpat-[A-Za-z0-9\-_]+)\b", "<token:redacted>", s)
+        s = re.sub(r"(?i)\b(bearer)\s+[A-Za-z0-9\-_\.=:+/]+\b", r"\1 <token:redacted>", s)
+        # Keep logs readable and bounded.
+        if len(s) > 2000:
+            s = s[:2000] + "...<truncated>"
+        return s
+
+    @classmethod
+    def _redact_obj(cls, value: Any) -> Any:
+        sensitive_key_parts = (
+            "authorization",
+            "token",
+            "cookie",
+            "secret",
+            "password",
+            "api-key",
+            "apikey",
+            "session",
+            "set-cookie",
+            "email",
+        )
+        if isinstance(value, dict):
+            out: Dict[str, Any] = {}
+            for k, v in value.items():
+                key = str(k)
+                key_l = key.lower()
+                if any(p in key_l for p in sensitive_key_parts):
+                    out[key] = "<redacted>"
+                else:
+                    out[key] = cls._redact_obj(v)
+            return out
+        if isinstance(value, list):
+            return [cls._redact_obj(v) for v in value]
+        if isinstance(value, str):
+            return cls._redact_text(value)
+        return value
+
+    def _base_headers(self) -> Dict[str, str]:
+        headers: Dict[str, str] = {
+            "Content-Type": "application/json",
+            "Accept": "application/json, text/event-stream",
+        }
+        extra = self.config.get("headers", {})
+        if isinstance(extra, dict):
+            for k, v in extra.items():
+                headers[str(k)] = str(v)
+        if self.session_id:
+            headers["mcp-session-id"] = str(self.session_id)
+        return headers
+
+    @staticmethod
+    def _is_session_lost_error(err: Exception) -> bool:
+        msg = str(err).lower()
+        return (
+            "session not found" in msg
+            or "invalid session" in msg
+            or "unknown session" in msg
+            or ("404" in msg and "session" in msg)
+        )
+
+    def _post_jsonrpc(self, method: str, params: Optional[Dict[str, Any]], timeout_s: float) -> Dict[str, Any]:
+        url = str(self.config.get("url", "")).strip()
+        if not url:
+            raise McpError("URL MCP server 缺少 url 配置")
+        req_id = self.next_id
+        self.next_id += 1
+        payload: Dict[str, Any] = {"jsonrpc": "2.0", "id": req_id, "method": method}
+        if params is not None:
+            payload["params"] = params
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        headers = self._base_headers()
+        request = urllib.request.Request(url=url, data=body, headers=headers, method="POST")
+        self._debug_log(
+            "tx "
+            + json.dumps(
+                {
+                    "url": url,
+                    "method": method,
+                    "id": req_id,
+                    "headers": self._redact_obj(headers),
+                    "body": self._redact_obj(payload),
+                    "timeout_s": timeout_s,
+                },
+                ensure_ascii=False,
+            )
+        )
+        content_type = ""
+        try:
+            with urllib.request.urlopen(request, timeout=max(0.5, float(timeout_s))) as resp:
+                status_code = getattr(resp, "status", None)
+                sid = None
+                try:
+                    sid = resp.headers.get("mcp-session-id")
+                except Exception:
+                    sid = None
+                if sid:
+                    self.session_id = sid
+                try:
+                    content_type = str(resp.headers.get("content-type", "") or "")
+                except Exception:
+                    content_type = ""
+                raw = resp.read().decode("utf-8", errors="replace").strip()
+                try:
+                    resp_headers = dict(resp.headers.items())
+                except Exception:
+                    resp_headers = {}
+                self._debug_log(
+                    "rx "
+                    + json.dumps(
+                        {
+                            "status": status_code,
+                            "content_type": content_type,
+                            "headers": self._redact_obj(resp_headers),
+                            "raw": self._redact_text(raw),
+                        },
+                        ensure_ascii=False,
+                    )
+                )
+        except urllib.error.HTTPError as e:
+            detail = ""
+            try:
+                detail = e.read().decode("utf-8", errors="replace")
+                if len(detail) > 600:
+                    detail = detail[:600] + "..."
+            except Exception:
+                detail = ""
+            self._debug_log(
+                "http_error "
+                + json.dumps(
+                    {
+                        "status": e.code,
+                        "reason": str(e.reason),
+                        "body": self._redact_text(detail),
+                    },
+                    ensure_ascii=False,
+                )
+            )
+            raise McpError(f"URL MCP HTTP错误: {e.code} {e.reason}" + (f"；{detail}" if detail else ""))
+        except Exception as e:
+            self._debug_log(f"transport_error {repr(e)}")
+            raise McpError(f"URL MCP请求失败: {e}")
+
+        if not raw:
+            raise McpError("URL MCP返回空响应")
+        try:
+            data = json.loads(raw)
+        except Exception as e:
+            # Some MCP HTTP servers may respond in SSE-like format:
+            # event: message\n
+            # data: {...}\n\n
+            data = None
+            if "data:" in raw or "text/event-stream" in content_type.lower():
+                for line in raw.splitlines():
+                    s = line.strip()
+                    if not s.startswith("data:"):
+                        continue
+                    payload = s[5:].strip()
+                    if not payload:
+                        continue
+                    try:
+                        data = json.loads(payload)
+                        break
+                    except Exception:
+                        continue
+            if data is None:
+                sample = self._redact_text(raw[:1200].replace("\n", "\\n").replace("\r", "\\r"))
+                self._debug_log(f"parse_error sample={sample}")
+                raise McpError(f"URL MCP响应非JSON: {e}；sample={sample}")
+        if isinstance(data, list):
+            # pick matching id entry if server returned batch
+            for item in data:
+                if isinstance(item, dict) and str(item.get("id")) == str(req_id):
+                    data = item
+                    break
+        if not isinstance(data, dict):
+            raise McpError("URL MCP响应格式无效")
+        if "error" in data:
+            raise McpError(str(data.get("error")))
+        result = data.get("result", {})
+        return result if isinstance(result, dict) else {"value": result}
+
+    def initialize(self, timeout_s: float = 8.0) -> None:
+        if self.initialized:
+            return
+        protocol_candidates = ["2025-11-25", "2024-11-05", "2024-10-07", "2024-06-01"]
+        last_error = None
+        for pv in protocol_candidates:
+            try:
+                self._post_jsonrpc(
+                    "initialize",
+                    {
+                        "protocolVersion": pv,
+                        "clientInfo": {"name": "smart-shell", "version": "0.1.0"},
+                        "capabilities": {},
+                    },
+                    timeout_s=timeout_s,
+                )
+                self.initialized = True
+                # best-effort initialized notification
+                try:
+                    self._post_jsonrpc("notifications/initialized", {}, timeout_s=min(3.0, timeout_s))
+                except Exception:
+                    pass
+                return
+            except Exception as e:
+                last_error = str(e)
+                # Some HTTP MCP servers are stateful and may return
+                # "Server already initialized" for repeated initialize calls.
+                if "already initialized" in last_error.lower():
+                    self.initialized = True
+                    return
+                continue
+        raise McpError(f"URL MCP initialize失败: {last_error or 'unknown'}")
+
+    def list_tools(self, timeout_s: float = 8.0) -> List[Dict[str, Any]]:
+        with self.lock:
+            self.initialize(timeout_s=timeout_s)
+            try:
+                result = self._post_jsonrpc("tools/list", {}, timeout_s=timeout_s)
+            except Exception as e:
+                # Recover once when server-side session is lost.
+                if not self._is_session_lost_error(e):
+                    raise
+                self._debug_log("session_lost on tools/list, reinitialize and retry once")
+                self.session_id = None
+                self.initialized = False
+                self.initialize(timeout_s=timeout_s)
+                result = self._post_jsonrpc("tools/list", {}, timeout_s=timeout_s)
+            tools = result.get("tools", [])
+            return tools if isinstance(tools, list) else []
+
+    def call_tool(self, tool_name: str, arguments: Dict[str, Any], timeout_s: float = 20.0) -> Dict[str, Any]:
+        with self.lock:
+            self.initialize(timeout_s=timeout_s)
+            try:
+                return self._post_jsonrpc(
+                    "tools/call",
+                    {"name": tool_name, "arguments": arguments or {}},
+                    timeout_s=timeout_s,
+                )
+            except Exception as e:
+                # Recover once when server-side session is lost.
+                if not self._is_session_lost_error(e):
+                    raise
+                self._debug_log(
+                    f"session_lost on tools/call name={tool_name}, reinitialize and retry once"
+                )
+                self.session_id = None
+                self.initialized = False
+                self.initialize(timeout_s=timeout_s)
+                return self._post_jsonrpc(
+                    "tools/call",
+                    {"name": tool_name, "arguments": arguments or {}},
+                    timeout_s=timeout_s,
+                )
+
+    def _shutdown_unlocked(self) -> None:
+        """
+        Keep interface parity with stdio client.
+        URL transport has no child process to terminate; reset session state only.
+        """
+        with self.lock:
+            self.initialized = False
+            self.session_id = None
+
+
 class McpManager:
     def __init__(self, config_dir: Path, mcp_config: Dict[str, Any], workspace_dir: Optional[Path] = None):
         self.config_dir = Path(config_dir)
@@ -619,10 +919,15 @@ class McpManager:
     def _classify_failure(self, server: str, err: str) -> Tuple[str, str]:
         e = (err or "").lower()
         conf = self._server_conf(server)
+        if "session not found" in e or "invalid session" in e or "unknown session" in e:
+            return (
+                "connect_failed",
+                "URL MCP 会话失效：已建议自动重连；请重试当前操作，或执行 mcp_reconnect 刷新会话。",
+            )
         if "url" in conf or "暂不支持 url" in e:
             return (
-                "unsupported",
-                "当前实现暂不支持 URL transport；可改用 stdio server，或在 mcp.json 设置 skip_preload=true。",
+                "connect_failed",
+                "URL MCP 连接/鉴权失败：请检查 url 可达性、headers/token 配置，或临时设置 skip_preload=true。",
             )
         if "winerror 2" in e or "cannot find the file specified" in e or "no such file or directory" in e:
             cmd = str(conf.get("command", "")).strip() or "<unknown>"
@@ -670,7 +975,11 @@ class McpManager:
 
     def _client(self, server: str) -> McpServerClient:
         if server not in self._clients:
-            self._clients[server] = McpServerClient(name=server, config=self._server_conf(server))
+            conf = self._server_conf(server)
+            if "url" in conf:
+                self._clients[server] = McpUrlClient(name=server, config=conf)
+            else:
+                self._clients[server] = McpServerClient(name=server, config=conf)
         return self._clients[server]
 
     def _try_cli_schemas_fallback(self, server: str, timeout_s: float) -> Optional[List[Dict[str, Any]]]:
@@ -739,17 +1048,19 @@ class McpManager:
         for _ in range(2):
             try:
                 tools = self._client(server).list_tools(timeout_s=timeout_s)
-                self._tools_cache[server] = {"tools": tools, "ts": time.time(), "source": "stdio"}
+                conf = self._server_conf(server)
+                source = "url" if isinstance(conf, dict) and "url" in conf else "stdio"
+                self._tools_cache[server] = {"tools": tools, "ts": time.time(), "source": source}
                 self._set_status(
                     server,
                     "success",
                     tool_count=len(tools) if isinstance(tools, list) else 0,
-                    source="stdio",
+                    source=source,
                     is_cached=False,
                     failure_type="",
                     suggestion="",
                 )
-                self._log("INFO", f"list_tools success server={server}, source=stdio, tool_count={len(tools) if isinstance(tools, list) else 0}")
+                self._log("INFO", f"list_tools success server={server}, source={source}, tool_count={len(tools) if isinstance(tools, list) else 0}")
                 self._mark_op(server, -1)
                 return tools, False
             except Exception as e:
@@ -761,6 +1072,7 @@ class McpManager:
                         self._clients[server]._shutdown_unlocked()
                     except Exception:
                         pass
+                    self._clients.pop(server, None)
         fallback_tools = self._try_cli_schemas_fallback(server, timeout_s=timeout_s)
         if fallback_tools is not None:
             self._tools_cache[server] = {"tools": fallback_tools, "ts": time.time(), "source": "cli_schemas"}
@@ -978,6 +1290,8 @@ class McpManager:
                 self._clients[server]._shutdown_unlocked()
             except Exception:
                 pass
+            # Force create a fresh client object to avoid reusing stale URL session state.
+            self._clients.pop(server, None)
         self._tools_cache.pop(server, None)
         tools, _ = self.list_tools(server, timeout_s=timeout_s, use_cache=False)
         return tools
