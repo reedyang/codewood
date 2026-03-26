@@ -146,6 +146,7 @@ smart-shell/
 ├── skills/                        # 内建 Agent Skills
 ├── .smartshell                    # 配置目录
 |   ├── config.json                # 配置文件
+|   ├── mcp.json                   # MCP servers 配置（可选）
 |   ├── knowledge/                 # 知识库文档目录
 |   ├── skills/                    # 外部 Agent Skills（可选；优先级高于内建 skills/）
 |   ├── workspace/                 # `script` 动作写入的临时/任务脚本（config 侧，非用户 cwd）
@@ -191,6 +192,49 @@ smart-shell/
 - `vision_model`: 用于图像处理的视觉模型（需要支持视觉功能）
 - `provider`: 支持 `ollama`、`openai`、`openwebui`
 - `params`: 包含API密钥、基础URL和模型名称
+
+### MCP 配置（`mcp.json`）
+
+Smart Shell 会在启动时自动从 **`config.json` 同目录**读取 `mcp.json`（即 `<config_dir>/mcp.json`）。
+
+- 若存在且格式合法，会加载 `mcpServers` 并注入到系统提示中供 AI 使用。
+- 启动时会在后台线程异步预加载所有 MCP server 的 tools 信息并缓存在内存中（不阻塞交互）。
+- 若不存在或格式错误，程序继续运行，仅 MCP server 列表为空。
+- 建议将敏感信息放在环境变量中，不要明文提交到仓库。
+- MCP 连接/重试日志不会输出到命令行，统一写入 `workspace/logs/mcp_manager.log`。
+
+可用 MCP 动作：
+
+- `mcp_status`：查看是否已完成全部 MCP 预加载、成功/失败列表及每个 server 详细状态
+- `mcp_status_refresh`：同步刷新 MCP 状态（可全量或指定 servers）
+- `mcp_list_tools`：查询指定 server 的 tools
+- `mcp_reconnect`：强制重连并刷新指定 server 的 tools 缓存
+- `mcp_call_tool`：调用指定 tool
+- 失败状态会细分为：`unsupported` / `missing_dependency` / `connect_failed`，`mcp_status` 会返回对应修复建议（`fix_suggestions`）。
+
+示例（`~/.smartshell/mcp.json` 或 `.smartshell/mcp.json`）：
+
+```json
+{
+  "mcpServers": {
+    "playwright": {
+      "command": "npx",
+      "args": ["-y", "@playwright/mcp@latest"]
+    },
+    "figma": {
+      "url": "https://mcp.figma.com/mcp",
+      "headers": {}
+    },
+    "custom-stdio": {
+      "command": "python",
+      "args": ["-m", "my_mcp_server"],
+      "env": {
+        "MY_API_BASE": "https://example.com"
+      }
+    }
+  }
+}
+```
 
 ### 媒体处理配置
 

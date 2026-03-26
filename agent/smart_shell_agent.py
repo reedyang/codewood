@@ -70,6 +70,7 @@ def _safe_console_write(text: str, stream: Any = None) -> None:
 # 导入历史记录管理器
 from .history_manager import HistoryManager
 from .skills_loader import build_skills_routing_prefix, build_skills_system_append, load_skills_merged
+from .mcp_manager import McpManager, McpError
 
 # Import knowledge manager; KNOWLEDGE_AVAILABLE is set by knowledge_manager (e.g. False when ChromaDB fails on Python 3.14)
 try:
@@ -289,7 +290,12 @@ class SmartShellAgent:
         # 系统提示词
         prompt_path = os.path.join(os.path.dirname(__file__), 'system_prompt.md')
         with open(prompt_path, 'r', encoding='utf-8') as f:
-            self.system_prompt = f.read()
+            self._base_system_prompt = f.read()
+        self.mcp_config = self._load_mcp_config()
+        self.mcp_manager = McpManager(self.config_dir, self.mcp_config, self.ai_workspace_dir)
+        # Async preload MCP tools cache on startup (non-blocking).
+        self.mcp_manager.preload_all_async(timeout_s=12.0, force=False)
+        self.system_prompt = self._base_system_prompt + self._build_mcp_system_append()
 
         self._builtin_skills_root = (
             Path(builtin_skills_dir).expanduser().resolve()
@@ -341,6 +347,81 @@ class SmartShellAgent:
             self._refresh_input_handler_skill_completions()
         except Exception as e:
             print(f"⚠️ Skill 热更新失败，继续使用当前已加载版本: {e}")
+
+    def _load_mcp_config(self) -> Dict[str, Any]:
+        """Load MCP configuration from <config_dir>/mcp.json."""
+        mcp_path = self.config_dir / "mcp.json"
+        if not mcp_path.is_file():
+            return {"mcpServers": {}}
+        try:
+            with open(mcp_path, "r", encoding="utf-8", errors="replace") as f:
+                data = json.load(f)
+            if not isinstance(data, dict):
+                print("⚠️ mcp.json 格式无效：根对象必须为 JSON object")
+                return {"mcpServers": {}}
+            servers = data.get("mcpServers", {})
+            if not isinstance(servers, dict):
+                print("⚠️ mcp.json 格式无效：mcpServers 必须为 object")
+                return {"mcpServers": {}}
+            return {"mcpServers": servers}
+        except Exception as e:
+            print(f"⚠️ 读取 mcp.json 失败: {e}")
+            return {"mcpServers": {}}
+
+    def _build_mcp_system_append(self) -> str:
+        """Build MCP section appended to system prompt (with redacted env values)."""
+        servers = (self.mcp_config or {}).get("mcpServers", {})
+        if not isinstance(servers, dict) or not servers:
+            return "\n\n## MCP 配置\n未检测到可用 MCP server（config 目录下无 mcp.json 或配置为空）。"
+        status_servers: Dict[str, Any] = {}
+        try:
+            status_servers = (self.mcp_manager.get_status().get("servers", {}) or {}) if self.mcp_manager else {}
+        except Exception:
+            status_servers = {}
+        loaded: List[str] = []
+        not_loaded: List[str] = []
+        lines: List[str] = [
+            "",
+            "",
+            "## MCP 配置",
+            "已从 config 目录下的 mcp.json 加载 MCP servers。调用前请优先选择最匹配的 server。",
+            "仅可引用“已加载”server 的工具能力；未加载 server 禁止在自然语言中当作可用能力引用。",
+            "决策约束：当“已加载 + 已缓存 tools”中存在可覆盖用户意图的工具时，必须优先走 mcp_call_tool，"
+            "不得先创建临时脚本或调用 shell 模拟实现（除非工具调用已明确失败且无等价 MCP 工具）。",
+            "可用 servers（敏感 env 已脱敏，仅显示键名）：",
+        ]
+        for name, conf in servers.items():
+            if not isinstance(conf, dict):
+                lines.append(f"- {name}: 配置无效（应为 object）")
+                continue
+            st = status_servers.get(name, {})
+            state_raw = str(st.get("state", "pending") or "pending").lower()
+            state = "loaded" if state_raw == "success" else state_raw
+            if state == "loaded":
+                loaded.append(str(name))
+            else:
+                not_loaded.append(str(name))
+            if "url" in conf:
+                lines.append(f"- {name}: state={state}, type=remote, url={conf.get('url')}")
+            else:
+                cmd = str(conf.get("command", "")).strip() or "<missing>"
+                args = conf.get("args", [])
+                arg_preview = " ".join(str(x) for x in args[:3]) if isinstance(args, list) else ""
+                if len(arg_preview) > 120:
+                    arg_preview = arg_preview[:117] + "..."
+                lines.append(f"- {name}: state={state}, type=stdio, command={cmd}, args={arg_preview}")
+            env = conf.get("env")
+            if isinstance(env, dict) and env:
+                env_keys = ", ".join(str(k) for k in sorted(env.keys()))
+                lines.append(f"  env_keys: {env_keys}")
+        lines.append(f"已加载 servers: {', '.join(loaded) if loaded else '无'}")
+        lines.append(f"未加载 servers: {', '.join(not_loaded) if not_loaded else '无'}")
+        lines.append("已缓存 tools（调用 mcp_list_tools 后更新）：")
+        try:
+            lines.append(self.mcp_manager.cached_tools_for_prompt())
+        except Exception:
+            lines.append("尚无已缓存的 MCP tools。")
+        return "\n".join(lines)
 
     def _get_slash_skill_commands(self) -> List[str]:
         cmds: List[str] = []
@@ -1252,6 +1333,9 @@ class SmartShellAgent:
             else:
                 self._reload_skills()
                 record_history = True
+                # Refresh MCP prompt append at call time so newly loaded tool caches
+                # are always reflected in the current LLM context.
+                self.system_prompt = self._base_system_prompt + self._build_mcp_system_append()
                 messages = [
                     {
                         "role": "system",
@@ -1613,6 +1697,101 @@ class SmartShellAgent:
             i += 1
         return None
 
+    @staticmethod
+    def _strip_json_comments(text: str) -> str:
+        """Remove // and /* */ comments outside JSON strings."""
+        out: List[str] = []
+        i = 0
+        in_str = False
+        esc = False
+        while i < len(text):
+            c = text[i]
+            if in_str:
+                out.append(c)
+                if esc:
+                    esc = False
+                elif c == "\\":
+                    esc = True
+                elif c == '"':
+                    in_str = False
+                i += 1
+                continue
+            if c == '"':
+                in_str = True
+                out.append(c)
+                i += 1
+                continue
+            if c == "/" and i + 1 < len(text):
+                n = text[i + 1]
+                if n == "/":
+                    i += 2
+                    while i < len(text) and text[i] not in ("\n", "\r"):
+                        i += 1
+                    continue
+                if n == "*":
+                    i += 2
+                    while i + 1 < len(text) and not (text[i] == "*" and text[i + 1] == "/"):
+                        i += 1
+                    i += 2 if i + 1 < len(text) else 0
+                    continue
+            out.append(c)
+            i += 1
+        return "".join(out)
+
+    @staticmethod
+    def _remove_trailing_commas(text: str) -> str:
+        """Remove trailing commas before '}' or ']' outside strings."""
+        out: List[str] = []
+        i = 0
+        in_str = False
+        esc = False
+        while i < len(text):
+            c = text[i]
+            if in_str:
+                out.append(c)
+                if esc:
+                    esc = False
+                elif c == "\\":
+                    esc = True
+                elif c == '"':
+                    in_str = False
+                i += 1
+                continue
+            if c == '"':
+                in_str = True
+                out.append(c)
+                i += 1
+                continue
+            if c == ",":
+                j = i + 1
+                while j < len(text) and text[j] in (" ", "\t", "\r", "\n"):
+                    j += 1
+                if j < len(text) and text[j] in ("]", "}"):
+                    i += 1
+                    continue
+            out.append(c)
+            i += 1
+        return "".join(out)
+
+    def _parse_possible_json_command(self, raw: str) -> Optional[Dict[str, Any]]:
+        """Parse command JSON with tolerant fallback for JSON-in-Markdown output."""
+        candidates = [raw.strip()]
+        no_comments = self._strip_json_comments(raw).strip()
+        if no_comments and no_comments not in candidates:
+            candidates.append(no_comments)
+        no_trailing_commas = self._remove_trailing_commas(no_comments).strip()
+        if no_trailing_commas and no_trailing_commas not in candidates:
+            candidates.append(no_trailing_commas)
+
+        for chunk in candidates:
+            try:
+                parsed = json.loads(chunk)
+                if isinstance(parsed, dict) and "action" in parsed:
+                    return parsed
+            except json.JSONDecodeError:
+                continue
+        return None
+
     def extract_json_command(self, text: str) -> Optional[Dict]:
         """从AI回复中提取JSON命令（优先完整 ```json 代码块，再尝试平衡括号对象）。"""
         try:
@@ -1628,12 +1807,9 @@ class SmartShellAgent:
                     break
                 raw = text[block_start:close].strip()
                 if raw:
-                    try:
-                        parsed = json.loads(raw)
-                        if isinstance(parsed, dict) and "action" in parsed:
-                            return parsed
-                    except json.JSONDecodeError:
-                        pass
+                    parsed = self._parse_possible_json_command(raw)
+                    if parsed:
+                        return parsed
                 search_pos = close + 3
 
             # 2) Balanced object starting at each '{"action"' (handles nested params)
@@ -1649,24 +1825,18 @@ class SmartShellAgent:
                     continue
                 sub = self._extract_balanced_json_object(text, open_brace)
                 if sub:
-                    try:
-                        parsed = json.loads(sub)
-                        if isinstance(parsed, dict) and "action" in parsed:
-                            return parsed
-                    except json.JSONDecodeError:
-                        pass
+                    parsed = self._parse_possible_json_command(sub)
+                    if parsed:
+                        return parsed
                 pos = idx + len(key)
 
             # 3) Single-line JSON (legacy)
             for line in text.split("\n"):
                 line = line.strip()
                 if line.startswith("{") and '"action"' in line:
-                    try:
-                        parsed = json.loads(line)
-                        if "action" in parsed:
-                            return parsed
-                    except json.JSONDecodeError:
-                        continue
+                    parsed = self._parse_possible_json_command(line)
+                    if parsed:
+                        return parsed
 
             return None
         except Exception as e:
@@ -2894,91 +3064,6 @@ big_image.jpg
         except Exception as e:
             return {"success": False, "error": f"图片分析失败: {str(e)}"}
 
-    def action_git(self, command: str, args: Optional[str] = None, confirmed: bool = False) -> dict:
-        """执行Git命令，支持所有Git操作，写操作需要用户确认"""
-        try:
-            import subprocess
-            import sys
-            
-            # 构建完整的Git命令
-            if args:
-                full_command = f"git {command} {args}"
-            else:
-                full_command = f"git {command}"
-            
-            # 检查是否为写操作，需要用户确认
-            write_commands = [
-                'add', 'commit', 'push', 'pull', 'merge', 'rebase', 'reset', 
-                'checkout', 'branch', 'tag', 'remote', 'fetch', 'clone', 'init',
-                'stash', 'cherry-pick', 'revert', 'clean', 'rm', 'mv'
-            ]
-            
-            is_write_operation = command.lower() in write_commands
-            
-            if is_write_operation and not confirmed:
-                # 显示将要执行的命令并请求用户确认
-                print(f"⚠️ 即将执行Git写操作: {full_command}")
-                confirm = input("确认执行此Git命令吗？(y/n): ")
-                if confirm.lower() != 'y':
-                    return {
-                        "success": False, 
-                        "command": full_command,
-                        "error": "用户取消了Git写操作",
-                        "message": "Git命令已取消"
-                    }
-            
-            # 检查是否在Git仓库中
-            try:
-                result = subprocess.run(
-                    ["git", "rev-parse", "--git-dir"],
-                    capture_output=True,
-                    text=True,
-                    encoding='utf-8',
-                    errors='replace',
-                    cwd=str(self.work_directory),
-                    timeout=10
-                )
-                if result.returncode != 0:
-                    return {"success": False, "error": "当前目录不是Git仓库"}
-            except subprocess.TimeoutExpired:
-                return {"success": False, "error": "Git仓库检查超时"}
-            except FileNotFoundError:
-                return {"success": False, "error": "Git未安装或不在PATH中"}
-            
-            # 执行Git命令，使用UTF-8编码并处理编码错误
-            process = subprocess.Popen(
-                full_command,
-                shell=True,
-                stdin=sys.stdin,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                encoding='utf-8',
-                errors='replace',
-                cwd=str(self.work_directory)
-            )
-            
-            stdout, stderr = process.communicate()
-            return_code = process.returncode
-            
-            if return_code == 0:
-                return {
-                    "success": True, 
-                    "command": full_command,
-                    "output": stdout.strip() if stdout else "",
-                    "message": "Git命令执行成功"
-                }
-            else:
-                return {
-                    "success": False, 
-                    "command": full_command,
-                    "error": stderr.strip() if stderr else f"Git命令执行失败，退出码: {return_code}",
-                    "output": stdout.strip() if stdout else ""
-                }
-                
-        except Exception as e:
-            return {"success": False, "error": f"Git命令执行异常: {str(e)}"}
-
     def action_diff(self, file1: str, file2: str, options: Optional[str] = None) -> dict:
         """跨平台文件比较：Windows上优先使用diff.exe，否则使用fc命令；其他平台使用diff命令"""
         try:
@@ -3289,6 +3374,15 @@ big_image.jpg
         elif action == "shell":
             shell_cmd = params.get("command")
             if shell_cmd:
+                lowered_shell = str(shell_cmd).lower()
+                if " mcp start" in lowered_shell or ("helper.exe" in lowered_shell and " mcp " in lowered_shell):
+                    return {
+                        "success": False,
+                        "error": (
+                            "禁止通过 shell 手工启停 MCP server。"
+                            "请使用 mcp_list_tools / mcp_call_tool，并通过 timeout_s/use_cache 重试。"
+                        ),
+                    }
                 shell_force = bool(params.get("force", False))
                 if not shell_force:
                     # Guardrail: avoid accidental duplicate execution loops in multi-step tasks.
@@ -3415,43 +3509,6 @@ big_image.jpg
                 print("❌ analyze_image命令缺少path参数")
                 return {"success": False, "error": "缺少path参数"}
 
-        elif action == "git":
-            git_command = params.get("command")
-            git_args = params.get("args")
-            if git_command:
-                git_write_subcommands = [
-                    "add", "commit", "push", "pull", "merge", "rebase", "reset",
-                    "checkout", "branch", "tag", "remote", "fetch", "clone", "init",
-                    "stash", "cherry-pick", "revert", "clean", "rm", "mv",
-                ]
-                if (
-                    self._is_path_under(self.work_directory, self._self_repo_root)
-                    and git_command.lower() in git_write_subcommands
-                ):
-                    return self._blocked_by_self_protection("git")
-                needs_confirm = git_command.lower() in git_write_subcommands
-                git_cmd = {"action": "git", "params": {"command": git_command, "args": git_args}}
-                confirmed = self._freedom_auto_confirm(git_cmd) if needs_confirm else False
-                result = self.action_git(git_command, git_args, confirmed=confirmed)
-                if result["success"]:
-                    print(f"\n🔧 Git命令执行成功: {result['command']}")
-                    if result.get("output"):
-                        print("📤 输出:")
-                        print(result["output"])
-                else:
-                    # 检查是否为用户取消的情况
-                    if "用户取消了Git写操作" in result.get("error", ""):
-                        print(f"ℹ️ {result['message']}")
-                    else:
-                        print(f"❌ Git命令执行失败: {result['error']}")
-                    if result.get("output"):
-                        print("📤 输出:")
-                        print(result["output"])
-                return result
-            else:
-                print("❌ git命令缺少command参数")
-                return {"success": False, "error": "缺少command参数"}
-
         elif action == "diff":
             file1 = params.get("file1")
             file2 = params.get("file2")
@@ -3474,6 +3531,136 @@ big_image.jpg
             else:
                 print("❌ diff命令缺少file1或file2参数")
                 return {"success": False, "error": "缺少file1或file2参数"}
+
+        elif action == "mcp_list_tools":
+            server = params.get("server")
+            use_cache = bool(params.get("use_cache", True))
+            timeout_s = float(params.get("timeout_s", 8.0))
+            if not server:
+                return {"success": False, "error": "缺少server参数"}
+            try:
+                tools, from_cache = self.mcp_manager.list_tools(
+                    str(server),
+                    timeout_s=timeout_s,
+                    use_cache=use_cache,
+                )
+                # Refresh prompt append with latest cache.
+                self.system_prompt = self._base_system_prompt + self._build_mcp_system_append()
+                status = self.mcp_manager.get_status().get("servers", {}).get(str(server), {})
+                return {
+                    "success": True,
+                    "server": server,
+                    "tools": tools,
+                    "from_cache": from_cache,
+                    "source": status.get("source", ""),
+                    "count": len(tools) if isinstance(tools, list) else 0,
+                    "message": f"MCP tools 获取成功（server={server}）",
+                }
+            except McpError as e:
+                return {"success": False, "error": f"MCP tools 获取失败: {e}"}
+            except Exception as e:
+                return {"success": False, "error": f"MCP tools 获取异常: {e}"}
+
+        elif action == "mcp_status":
+            log_limit = int(params.get("log_limit", 20))
+            status = self.mcp_manager.get_status(log_limit=log_limit)
+            return {
+                "success": True,
+                "cache_only": True,
+                "status": status,
+                "message": "MCP 缓存状态获取成功（未触发任何实时 MCP 调用）",
+            }
+
+        elif action == "mcp_status_refresh":
+            timeout_s = float(params.get("timeout_s", 12.0))
+            force = bool(params.get("force", True))
+            log_limit = int(params.get("log_limit", 20))
+            servers = params.get("servers")
+            if servers is not None and not isinstance(servers, list):
+                return {"success": False, "error": "servers 必须为字符串数组"}
+            try:
+                status = self.mcp_manager.refresh_status_sync(
+                    servers=[str(s) for s in servers] if isinstance(servers, list) else None,
+                    timeout_s=timeout_s,
+                    force=force,
+                )
+                # ensure latest prompt append includes refreshed cache snapshot
+                self.system_prompt = self._base_system_prompt + self._build_mcp_system_append()
+                # apply output-side log limit without triggering any new MCP calls
+                status["recent_logs"] = self.mcp_manager.get_recent_logs(log_limit)
+                return {
+                    "success": True,
+                    "cache_only": False,
+                    "status": status,
+                    "message": "MCP 状态同步刷新完成",
+                }
+            except Exception as e:
+                return {"success": False, "error": f"MCP 状态同步刷新失败: {e}"}
+
+        elif action == "mcp_reconnect":
+            server = params.get("server")
+            timeout_s = float(params.get("timeout_s", 15.0))
+            if not server:
+                return {"success": False, "error": "缺少server参数"}
+            try:
+                tools = self.mcp_manager.reconnect_server(str(server), timeout_s=timeout_s)
+                self.system_prompt = self._base_system_prompt + self._build_mcp_system_append()
+                status = self.mcp_manager.get_status().get("servers", {}).get(str(server), {})
+                return {
+                    "success": True,
+                    "server": server,
+                    "tools": tools,
+                    "count": len(tools) if isinstance(tools, list) else 0,
+                    "source": status.get("source", ""),
+                    "message": f"MCP server 重连成功（server={server}）",
+                }
+            except McpError as e:
+                return {"success": False, "error": f"MCP server 重连失败: {e}"}
+            except Exception as e:
+                return {"success": False, "error": f"MCP server 重连异常: {e}"}
+
+        elif action == "mcp_call_tool":
+            server = params.get("server")
+            tool_name = params.get("tool")
+            arguments = params.get("arguments", {})
+            timeout_s = float(params.get("timeout_s", 20.0))
+            if not server:
+                return {"success": False, "error": "缺少server参数"}
+            if not tool_name:
+                return {"success": False, "error": "缺少tool参数"}
+            if not isinstance(arguments, dict):
+                return {"success": False, "error": "arguments 必须为 object"}
+            try:
+                st = self.mcp_manager.get_status().get("servers", {}).get(str(server), {})
+                state_raw = str(st.get("state", "pending") or "pending").lower()
+                if state_raw != "success":
+                    return {
+                        "success": False,
+                        "error": (
+                            f"server={server} 当前未加载完成(state={state_raw})，"
+                            "禁止直接引用其工具。请先执行 mcp_list_tools(use_cache=false) 加载后再调用。"
+                        ),
+                    }
+            except Exception:
+                pass
+            try:
+                result = self.mcp_manager.call_tool(
+                    str(server),
+                    str(tool_name),
+                    arguments,
+                    timeout_s=timeout_s,
+                )
+                return {
+                    "success": True,
+                    "server": server,
+                    "tool": tool_name,
+                    "result": result,
+                    "message": f"MCP tool 调用成功（{server}/{tool_name}）",
+                }
+            except McpError as e:
+                return {"success": False, "error": f"MCP tool 调用失败: {e}"}
+            except Exception as e:
+                return {"success": False, "error": f"MCP tool 调用异常: {e}"}
 
         elif action == "knowledge_sync":
             """同步知识库"""
