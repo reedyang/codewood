@@ -51,7 +51,7 @@
 
 ### 支持的操作类型
 
-`list`, `rename`, `move`, `delete`, `mkdir`, `info`, `cd`, `ffmpeg`, `cls`, `batch`, `shell`, `script`, `text_file`, `read`, `analyze_image`, `diff`, `mcp_list_tools`, `mcp_call_tool`, `mcp_status`, `mcp_status_refresh`, `mcp_reconnect`
+`list`, `rename`, `move`, `delete`, `mkdir`, `info`, `cd`, `ffmpeg`, `cls`, `batch`, `shell`, `script`, `text_file`, `read`, `analyze_image`, `diff`, `mcp_list_tools`, `mcp_call_tool`, `mcp_call_tool_batch`, `mcp_list_resources`, `mcp_read_resource`, `mcp_list_resource_templates`, `mcp_list_prompts`, `mcp_get_prompt`, `mcp_sampling_create_message`, `mcp_completion_complete`, `mcp_status`, `mcp_status_refresh`, `mcp_reconnect`
 
 ## 批量命令
 
@@ -199,6 +199,61 @@
 - `arguments` 必须是 JSON object。
 - 例如：`{"action":"mcp_call_tool","params":{"server":"DevHelper","tool":"jira_get_issue","arguments":{"issue_key":"ZOOM-12345"}}}`
 - MCP 生命周期由宿主统一管理；**禁止**通过 `shell` 启停 MCP server 进程。
+
+## MCP 工具批量调用（`mcp_call_tool_batch`）
+
+- `{"action":"mcp_call_tool_batch","params":{"server":"server名","calls":[{"tool":"toolA","arguments":{}},{"tool":"toolB","arguments":{}}],"timeout_s":30,"allow_partial_failure":false}}`
+- 批量发起 JSON-RPC 调用（batch request），按输入顺序返回结果数组。
+- `calls` 必须是数组，元素为 `{tool, arguments}`，其中 `arguments` 必须是 object。
+- `allow_partial_failure` 可选，默认 `false`。为 `true` 时，单项失败不会中断整批，返回每项 `{ok,result|error}`。
+- 返回包含汇总字段：`count/total_count/ok_count/error_count/has_error`，便于 UI 直接展示批处理结果。
+
+## MCP 资源列表（`mcp_list_resources`）
+
+- `{"action": "mcp_list_resources", "params": {"server": "server名", "use_cache": true, "timeout_s": 8}}`
+- 从 MCP server 拉取资源目录（`resources/list`）。
+- `use_cache` 可选，默认 `true`；设为 `false` 可强制刷新。
+- 例如：`{"action":"mcp_list_resources","params":{"server":"playwright","use_cache":false}}`
+
+## MCP 资源读取（`mcp_read_resource`）
+
+- `{"action": "mcp_read_resource", "params": {"server": "server名", "uri": "资源URI", "timeout_s": 20}}`
+- 读取指定 URI 的资源内容（`resources/read`）。
+- 例如：`{"action":"mcp_read_resource","params":{"server":"figma","uri":"figma://file/abc123"}}`
+
+## MCP 资源模板列表（`mcp_list_resource_templates`）
+
+- `{"action": "mcp_list_resource_templates", "params": {"server": "server名", "use_cache": true, "timeout_s": 8}}`
+- 拉取资源模板列表（`resources/templates/list`）。
+- 例如：`{"action":"mcp_list_resource_templates","params":{"server":"playwright","use_cache":false}}`
+
+## MCP Prompt 列表（`mcp_list_prompts`）
+
+- `{"action": "mcp_list_prompts", "params": {"server": "server名", "use_cache": true, "timeout_s": 8}}`
+- 从 MCP server 拉取 prompt 列表（`prompts/list`）。
+- `use_cache` 可选，默认 `true`；设为 `false` 可强制刷新。
+- 例如：`{"action":"mcp_list_prompts","params":{"server":"playwright","use_cache":false}}`
+
+## MCP Prompt 获取（`mcp_get_prompt`）
+
+- `{"action": "mcp_get_prompt", "params": {"server": "server名", "prompt": "prompt名", "arguments": {"key":"value"}, "timeout_s": 20}}`
+- 获取指定 prompt 展开结果（`prompts/get`）。
+- `arguments` 必须是 JSON object。
+- 例如：`{"action":"mcp_get_prompt","params":{"server":"playwright","prompt":"summarize","arguments":{"text":"hello"}}}`
+
+## MCP Sampling 创建消息（`mcp_sampling_create_message`）
+
+- `{"action": "mcp_sampling_create_message", "params": {"server": "server名", "sampling_params": {"messages":[...], "maxTokens": 256}, "timeout_s": 30}}`
+- 调用 MCP sampling 能力（`sampling/createMessage`）。
+- `sampling_params` 必须是 JSON object，原样透传给 MCP server。
+- 例如：`{"action":"mcp_sampling_create_message","params":{"server":"playwright","sampling_params":{"messages":[{"role":"user","content":{"type":"text","text":"hello"}}],"maxTokens":64}}}`
+
+## MCP Completion 补全（`mcp_completion_complete`）
+
+- `{"action": "mcp_completion_complete", "params": {"server": "server名", "completion_params": {"ref": {...}, "argument": {...}}, "timeout_s": 20}}`
+- 调用 MCP completion 能力（`completion/complete`）。
+- `completion_params` 必须是 JSON object，原样透传给 MCP server。
+- 例如：`{"action":"mcp_completion_complete","params":{"server":"playwright","completion_params":{"ref":{"name":"summarize_text"},"argument":{"name":"text","value":"hel"}}}}`
 
 ## MCP 加载状态（`mcp_status`）
 

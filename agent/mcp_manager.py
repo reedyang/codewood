@@ -13,11 +13,168 @@ import urllib.request
 from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 
 class McpError(Exception):
     pass
+
+
+_SENSITIVE_KEY_PARTS: Tuple[str, ...] = (
+    "authorization",
+    "token",
+    "cookie",
+    "secret",
+    "password",
+    "api-key",
+    "apikey",
+    "session",
+    "set-cookie",
+    "email",
+)
+
+
+def _redact_text(text: Any, *, max_len: int = 2000) -> str:
+    if text is None:
+        return ""
+    s = str(text)
+    # Common direct identifiers / secrets.
+    s = re.sub(r"(?i)\b[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}\b", "{E}<email>{/E}", s)
+    s = re.sub(r"(?i)\b(?:\d{1,3}\.){3}\d{1,3}\b", "{E}<ip>{/E}", s)
+    s = re.sub(r"(?i)\b(glpat-[A-Za-z0-9\-_]+)\b", "<token:redacted>", s)
+    s = re.sub(r"(?i)\b(bearer)\s+[A-Za-z0-9\-_\.=:+/]+\b", r"\1 <token:redacted>", s)
+    # Keep logs readable and bounded.
+    if len(s) > max(64, int(max_len)):
+        s = s[: max(64, int(max_len))] + "...<truncated>"
+    return s
+
+
+def _redact_obj(value: Any) -> Any:
+    if isinstance(value, dict):
+        out: Dict[str, Any] = {}
+        for k, v in value.items():
+            key = str(k)
+            key_l = key.lower()
+            if any(p in key_l for p in _SENSITIVE_KEY_PARTS):
+                out[key] = "<redacted>"
+            else:
+                out[key] = _redact_obj(v)
+        return out
+    if isinstance(value, list):
+        return [_redact_obj(v) for v in value]
+    if isinstance(value, str):
+        return _redact_text(value)
+    return value
+
+
+def _json_schema_type_ok(expected_type: str, value: Any) -> bool:
+    t = str(expected_type or "").strip().lower()
+    if t == "string":
+        return isinstance(value, str)
+    if t == "number":
+        return isinstance(value, (int, float)) and not isinstance(value, bool)
+    if t == "integer":
+        return isinstance(value, int) and not isinstance(value, bool)
+    if t == "boolean":
+        return isinstance(value, bool)
+    if t == "object":
+        return isinstance(value, dict)
+    if t == "array":
+        return isinstance(value, list)
+    if t == "null":
+        return value is None
+    return True
+
+
+def _validate_json_schema_like(
+    schema: Dict[str, Any],
+    value: Any,
+    *,
+    path: str = "arguments",
+) -> List[str]:
+    """
+    Validate a practical subset of JSON Schema for MCP tool arguments.
+    Supported keys: type, required, properties, items, enum, additionalProperties.
+    """
+    if not isinstance(schema, dict):
+        return []
+    errors: List[str] = []
+
+    st = schema.get("type")
+    if isinstance(st, str) and not _json_schema_type_ok(st, value):
+        errors.append(f"{path} expected type={st}, got={type(value).__name__}")
+        return errors
+
+    enum_vals = schema.get("enum")
+    if isinstance(enum_vals, list) and enum_vals and value not in enum_vals:
+        errors.append(f"{path} must be one of {enum_vals}, got={value!r}")
+
+    if isinstance(value, dict):
+        required = schema.get("required", [])
+        if isinstance(required, list):
+            for key in required:
+                if not isinstance(key, str):
+                    continue
+                if key not in value:
+                    errors.append(f"{path}.{key} is required")
+        props = schema.get("properties", {})
+        if isinstance(props, dict):
+            for key, child_schema in props.items():
+                if not isinstance(key, str):
+                    continue
+                if key not in value:
+                    continue
+                if isinstance(child_schema, dict):
+                    errors.extend(_validate_json_schema_like(child_schema, value.get(key), path=f"{path}.{key}"))
+        if schema.get("additionalProperties") is False and isinstance(props, dict):
+            allowed = {k for k in props.keys() if isinstance(k, str)}
+            for key in value.keys():
+                if str(key) not in allowed:
+                    errors.append(f"{path}.{key} is not allowed")
+
+    if isinstance(value, list):
+        items_schema = schema.get("items")
+        if isinstance(items_schema, dict):
+            for idx, item in enumerate(value):
+                errors.extend(_validate_json_schema_like(items_schema, item, path=f"{path}[{idx}]"))
+
+    return errors
+
+
+def _extract_tool_schema(tool_desc: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    if not isinstance(tool_desc, dict):
+        return None
+    schema = tool_desc.get("inputSchema")
+    if isinstance(schema, dict):
+        return schema
+    params = tool_desc.get("parameters")
+    if isinstance(params, dict):
+        return params
+    return None
+
+
+def _extract_tool_stream_chunk(method: str, params: Dict[str, Any]) -> str:
+    """
+    Extract text chunk from MCP streaming tool-result notifications.
+    Supported method patterns:
+    - notifications/tools/call/stream
+    - notifications/tools/call/progress
+    """
+    m = str(method or "").strip().lower()
+    if not (m.endswith("/stream") or m.endswith("/progress")):
+        return ""
+    p = params if isinstance(params, dict) else {}
+    if isinstance(p.get("chunk"), str):
+        return str(p.get("chunk"))
+    delta = p.get("delta")
+    if isinstance(delta, dict) and isinstance(delta.get("text"), str):
+        return str(delta.get("text"))
+    content = p.get("content")
+    if isinstance(content, dict) and str(content.get("type", "")).lower() == "text":
+        text = content.get("text")
+        if isinstance(text, str):
+            return text
+    return ""
 
 
 def _parse_content_length(header_blob: bytes) -> int:
@@ -48,6 +205,7 @@ class McpServerClient:
     wire_mode: str = "framed_crlf"  # framed_crlf / framed_lf / line
     process_started_ts: float = 0.0
     _hs_last_raw_log_ts: float = 0.0
+    peer_request_handler: Optional[Callable[[str, Dict[str, Any]], Dict[str, Any]]] = None
 
     def _handshake_debug_enabled(self) -> bool:
         """Enable handshake debug by env or per-server config."""
@@ -63,7 +221,7 @@ class McpServerClient:
             "id": msg.get("id"),
             "method": msg.get("method"),
             "has_error": "error" in msg,
-            "error": str(msg.get("error"))[:240] if "error" in msg else "",
+            "error": _redact_text(msg.get("error"), max_len=240) if "error" in msg else "",
         }
 
     def _trace_handshake_msg(self, event: str, msg: Dict[str, Any]) -> None:
@@ -88,6 +246,7 @@ class McpServerClient:
         self._hs_last_raw_log_ts = now
         try:
             sample = payload[:80].decode("utf-8", errors="replace").replace("\r", "\\r").replace("\n", "\\n")
+            sample = _redact_text(sample, max_len=160)
             has_len = b"content-length:" in payload.lower()
             has_sep = (b"\r\n\r\n" in payload) or (b"\n\n" in payload)
             logging.getLogger("smart_shell.mcp").info(
@@ -213,6 +372,11 @@ class McpServerClient:
                         if isinstance(msg, dict):
                             self._trace_handshake_msg("rx_line", msg)
                             self.response_queue.put(msg)
+                        elif isinstance(msg, list):
+                            for item in msg:
+                                if isinstance(item, dict):
+                                    self._trace_handshake_msg("rx_line_batch_item", item)
+                                    self.response_queue.put(item)
                     except Exception:
                         continue
                 else:
@@ -250,6 +414,11 @@ class McpServerClient:
                                 if isinstance(msg, dict):
                                     self._trace_handshake_msg("rx_framed", msg)
                                     self.response_queue.put(msg)
+                                elif isinstance(msg, list):
+                                    for item in msg:
+                                        if isinstance(item, dict):
+                                            self._trace_handshake_msg("rx_framed_batch_item", item)
+                                            self.response_queue.put(item)
                             except Exception:
                                 continue
                             continue
@@ -312,7 +481,7 @@ class McpServerClient:
                     tail = self._tail_stderr(6)
                     if tail:
                         logging.getLogger("smart_shell.mcp").info(
-                            f"[HSDBG] server={self.name} event=stderr_tail tail={json.dumps(tail, ensure_ascii=False)}"
+                            f"[HSDBG] server={self.name} event=stderr_tail tail={json.dumps(_redact_text(tail), ensure_ascii=False)}"
                         )
                 except Exception:
                     pass
@@ -322,7 +491,7 @@ class McpServerClient:
             return ""
         return " | ".join(self.stderr_lines[-n:])
 
-    def _write_message(self, payload: Dict[str, Any]) -> None:
+    def _write_message(self, payload: Any) -> None:
         if self.process is None or self.process.stdin is None:
             raise McpError("MCP server 未启动")
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -367,6 +536,7 @@ class McpServerClient:
                 suffix = f"；stderr: {err_tail}" if err_tail else ""
                 raise McpError(f"MCP 写入失败(method={method}, id={req_id}): {e}{suffix}")
             deadline = time.time() + max(0.2, timeout_s)
+            stream_chunks: List[str] = []
             while True:
                 left = deadline - time.time()
                 if left <= 0:
@@ -381,7 +551,48 @@ class McpServerClient:
                     msg = self.response_queue.get(timeout=min(0.5, left))
                 except queue.Empty:
                     continue
-                # notifications / requests from server are ignored in minimal client
+                # Handle server->client notifications/requests (bidirectional MCP).
+                if isinstance(msg, dict) and "method" in msg and "result" not in msg and "error" not in msg:
+                    incoming_method = str(msg.get("method", "")).strip()
+                    incoming_params = msg.get("params", {})
+                    incoming_id = msg.get("id")
+                    if incoming_id is None:
+                        # Stream notifications during tools/call.
+                        if method == "tools/call" and isinstance(incoming_params, dict):
+                            chunk = _extract_tool_stream_chunk(incoming_method, incoming_params)
+                            if chunk:
+                                stream_chunks.append(chunk)
+                        # Notification: best-effort handle and continue.
+                        try:
+                            if callable(self.peer_request_handler):
+                                p = incoming_params if isinstance(incoming_params, dict) else {}
+                                self.peer_request_handler(incoming_method, p)
+                        except Exception:
+                            pass
+                        continue
+                    # Request: must respond with result/error to unblock peer.
+                    try:
+                        if callable(self.peer_request_handler):
+                            p = incoming_params if isinstance(incoming_params, dict) else {}
+                            res = self.peer_request_handler(incoming_method, p)
+                            resp = {"jsonrpc": "2.0", "id": incoming_id, "result": res if isinstance(res, dict) else {}}
+                        else:
+                            resp = {
+                                "jsonrpc": "2.0",
+                                "id": incoming_id,
+                                "error": {"code": -32601, "message": f"Method not found: {incoming_method}"},
+                            }
+                    except Exception as e:
+                        resp = {
+                            "jsonrpc": "2.0",
+                            "id": incoming_id,
+                            "error": {"code": -32000, "message": f"Client handler error: {e}"},
+                        }
+                    try:
+                        self._write_message(resp)
+                    except Exception:
+                        pass
+                    continue
                 msg_id = msg.get("id")
                 # Be tolerant to JSON-RPC id type differences (e.g. "2" vs 2).
                 if not (msg_id == req_id or str(msg_id) == str(req_id)):
@@ -390,7 +601,100 @@ class McpServerClient:
                     err_tail = self._tail_stderr()
                     suffix = f"；stderr: {err_tail}" if err_tail else ""
                     raise McpError(f"{msg.get('error')}{suffix}")
-                return msg.get("result", {})
+                result = msg.get("result", {})
+                if not isinstance(result, dict):
+                    result = {"value": result}
+                if stream_chunks:
+                    result["_stream"] = {
+                        "chunks": stream_chunks,
+                        "text": "".join(stream_chunks),
+                        "chunk_count": len(stream_chunks),
+                    }
+                    content = result.get("content")
+                    if not content:
+                        result["content"] = [{"type": "text", "text": result["_stream"]["text"]}]
+                return result
+
+    def _request_batch(
+        self,
+        calls: List[Tuple[str, Optional[Dict[str, Any]]]],
+        timeout_s: float,
+        *,
+        allow_partial_failure: bool = False,
+    ) -> List[Dict[str, Any]]:
+        with self.lock:
+            self._start_if_needed()
+            if not calls:
+                return []
+            reqs: List[Dict[str, Any]] = []
+            id_to_idx: Dict[str, int] = {}
+            for idx, (method, params) in enumerate(calls):
+                req_id = self.next_id
+                self.next_id += 1
+                req: Dict[str, Any] = {"jsonrpc": "2.0", "id": req_id, "method": str(method)}
+                if params is not None:
+                    req["params"] = params
+                reqs.append(req)
+                id_to_idx[str(req_id)] = idx
+
+            if self.process is None or self.process.poll() is not None:
+                err_tail = self._tail_stderr()
+                suffix = f"；stderr: {err_tail}" if err_tail else ""
+                code = self.process.returncode if self.process is not None else "unknown"
+                raise McpError(f"MCP server 已退出(method=batch, code={code}){suffix}")
+
+            try:
+                self._write_message(reqs)  # type: ignore[arg-type]
+            except OSError as e:
+                err_tail = self._tail_stderr()
+                suffix = f"；stderr: {err_tail}" if err_tail else ""
+                raise McpError(f"MCP 写入失败(method=batch): {e}{suffix}")
+
+            deadline = time.time() + max(0.2, timeout_s)
+            pending = set(id_to_idx.keys())
+            results: List[Optional[Dict[str, Any]]] = [None] * len(calls)
+            while pending:
+                left = deadline - time.time()
+                if left <= 0:
+                    err_tail = self._tail_stderr()
+                    suffix = f"；stderr: {err_tail}" if err_tail else ""
+                    raise McpError(f"MCP 批量请求超时(pending={len(pending)}){suffix}")
+                if self.process is not None and self.process.poll() is not None:
+                    err_tail = self._tail_stderr()
+                    suffix = f"；stderr: {err_tail}" if err_tail else ""
+                    raise McpError(f"MCP server 已退出(method=batch, code={self.process.returncode}){suffix}")
+                try:
+                    msg = self.response_queue.get(timeout=min(0.5, left))
+                except queue.Empty:
+                    continue
+                if not isinstance(msg, dict):
+                    continue
+                # ignore notifications/requests in batch context
+                if "method" in msg and "result" not in msg and "error" not in msg:
+                    continue
+                msg_id = str(msg.get("id"))
+                if msg_id not in pending:
+                    continue
+                idx = id_to_idx[msg_id]
+                if "error" in msg:
+                    if allow_partial_failure:
+                        results[idx] = {
+                            "ok": False,
+                            "error": msg.get("error"),
+                        }
+                        pending.remove(msg_id)
+                        continue
+                    err_tail = self._tail_stderr()
+                    suffix = f"；stderr: {err_tail}" if err_tail else ""
+                    raise McpError(f"{msg.get('error')}{suffix}")
+                r = msg.get("result", {})
+                if not isinstance(r, dict):
+                    r = {"value": r}
+                results[idx] = {"ok": True, "result": r} if allow_partial_failure else r
+                pending.remove(msg_id)
+            if allow_partial_failure:
+                return [r if isinstance(r, dict) else {"ok": False, "error": "missing"} for r in results]
+            return [r if isinstance(r, dict) else {} for r in results]
 
     def _startup_grace_seconds(self) -> float:
         # Do not delay initialize for npx-based MCP servers.
@@ -425,7 +729,7 @@ class McpServerClient:
                             {
                                 "protocolVersion": pv,
                                 "clientInfo": {"name": "smart-shell", "version": "0.1.0"},
-                                "capabilities": {},
+                                "capabilities": {"elicitation": {"form": {}}},
                             },
                             timeout_s=min(left, per_try_floor),
                         )
@@ -508,6 +812,77 @@ class McpServerClient:
             timeout_s=timeout_s,
         )
 
+    def call_tools_batch(
+        self, calls: List[Dict[str, Any]], timeout_s: float = 30.0, *, allow_partial_failure: bool = False
+    ) -> List[Dict[str, Any]]:
+        reqs: List[Tuple[str, Optional[Dict[str, Any]]]] = []
+        for c in calls:
+            if not isinstance(c, dict):
+                continue
+            reqs.append(
+                (
+                    "tools/call",
+                    {
+                        "name": str(c.get("tool", "")),
+                        "arguments": c.get("arguments", {}) if isinstance(c.get("arguments", {}), dict) else {},
+                    },
+                )
+            )
+        return self._request_batch(reqs, timeout_s=timeout_s, allow_partial_failure=allow_partial_failure)
+
+    def list_resources(self, timeout_s: float = 8.0) -> List[Dict[str, Any]]:
+        self.initialize(timeout_s=timeout_s)
+        result = self._request("resources/list", {}, timeout_s=timeout_s)
+        resources = result.get("resources", [])
+        return resources if isinstance(resources, list) else []
+
+    def read_resource(self, uri: str, timeout_s: float = 20.0) -> Dict[str, Any]:
+        self.initialize(timeout_s=timeout_s)
+        return self._request(
+            "resources/read",
+            {"uri": str(uri)},
+            timeout_s=timeout_s,
+        )
+
+    def list_resource_templates(self, timeout_s: float = 8.0) -> List[Dict[str, Any]]:
+        self.initialize(timeout_s=timeout_s)
+        result = self._request("resources/templates/list", {}, timeout_s=timeout_s)
+        templates = result.get("resourceTemplates")
+        if not isinstance(templates, list):
+            templates = result.get("templates", [])
+        return templates if isinstance(templates, list) else []
+
+    def list_prompts(self, timeout_s: float = 8.0) -> List[Dict[str, Any]]:
+        self.initialize(timeout_s=timeout_s)
+        result = self._request("prompts/list", {}, timeout_s=timeout_s)
+        prompts = result.get("prompts", [])
+        return prompts if isinstance(prompts, list) else []
+
+    def get_prompt(self, prompt_name: str, arguments: Dict[str, Any], timeout_s: float = 20.0) -> Dict[str, Any]:
+        self.initialize(timeout_s=timeout_s)
+        return self._request(
+            "prompts/get",
+            {"name": str(prompt_name), "arguments": arguments or {}},
+            timeout_s=timeout_s,
+        )
+
+    def sampling_create_message(self, params: Dict[str, Any], timeout_s: float = 30.0) -> Dict[str, Any]:
+        self.initialize(timeout_s=timeout_s)
+        return self._request(
+            "sampling/createMessage",
+            params or {},
+            timeout_s=timeout_s,
+        )
+
+    def completion_complete(self, params: Dict[str, Any], timeout_s: float = 20.0) -> Dict[str, Any]:
+        self.initialize(timeout_s=timeout_s)
+        return self._request(
+            "completion/complete",
+            params or {},
+            timeout_s=timeout_s,
+        )
+
+
 
 @dataclass
 class McpUrlClient:
@@ -517,6 +892,7 @@ class McpUrlClient:
     initialized: bool = False
     session_id: Optional[str] = None
     lock: threading.Lock = field(default_factory=threading.Lock)
+    peer_request_handler: Optional[Callable[[str, Dict[str, Any]], Dict[str, Any]]] = None
 
     def _debug_enabled(self) -> bool:
         env_flag = str(os.environ.get("SMART_SHELL_MCP_HANDSHAKE_DEBUG", "")).strip().lower()
@@ -528,54 +904,19 @@ class McpUrlClient:
         if not self._debug_enabled():
             return
         try:
-            logging.getLogger("smart_shell.mcp").info(f"[HSDBG-URL] server={self.name} {message}")
+            logging.getLogger("smart_shell.mcp").info(
+                f"[HSDBG-URL] server={self.name} {_redact_text(message, max_len=3000)}"
+            )
         except Exception:
             pass
 
     @staticmethod
     def _redact_text(text: str) -> str:
-        if text is None:
-            return ""
-        s = str(text)
-        # Common direct identifiers / secrets
-        s = re.sub(r"(?i)\b[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}\b", "{E}<email>{/E}", s)
-        s = re.sub(r"(?i)\b(?:\d{1,3}\.){3}\d{1,3}\b", "{E}<ip>{/E}", s)
-        s = re.sub(r"(?i)\b(glpat-[A-Za-z0-9\-_]+)\b", "<token:redacted>", s)
-        s = re.sub(r"(?i)\b(bearer)\s+[A-Za-z0-9\-_\.=:+/]+\b", r"\1 <token:redacted>", s)
-        # Keep logs readable and bounded.
-        if len(s) > 2000:
-            s = s[:2000] + "...<truncated>"
-        return s
+        return _redact_text(text)
 
     @classmethod
     def _redact_obj(cls, value: Any) -> Any:
-        sensitive_key_parts = (
-            "authorization",
-            "token",
-            "cookie",
-            "secret",
-            "password",
-            "api-key",
-            "apikey",
-            "session",
-            "set-cookie",
-            "email",
-        )
-        if isinstance(value, dict):
-            out: Dict[str, Any] = {}
-            for k, v in value.items():
-                key = str(k)
-                key_l = key.lower()
-                if any(p in key_l for p in sensitive_key_parts):
-                    out[key] = "<redacted>"
-                else:
-                    out[key] = cls._redact_obj(v)
-            return out
-        if isinstance(value, list):
-            return [cls._redact_obj(v) for v in value]
-        if isinstance(value, str):
-            return cls._redact_text(value)
-        return value
+        return _redact_obj(value)
 
     def _base_headers(self) -> Dict[str, str]:
         headers: Dict[str, str] = {
@@ -627,6 +968,56 @@ class McpUrlClient:
             )
         )
         content_type = ""
+        raw = ""
+        data: Any = None
+        stream_chunks: List[str] = []
+
+        def _consume_jsonrpc_obj(obj: Any) -> Optional[Dict[str, Any]]:
+            nonlocal stream_chunks
+            if isinstance(obj, list):
+                for item in obj:
+                    out = _consume_jsonrpc_obj(item)
+                    if out is not None:
+                        return out
+                return None
+            if not isinstance(obj, dict):
+                return None
+            # Notifications / server requests from server.
+            if "method" in obj and "result" not in obj and "error" not in obj:
+                m = str(obj.get("method", "")).strip()
+                p = obj.get("params", {})
+                incoming_id = obj.get("id")
+                if isinstance(p, dict):
+                    chunk = _extract_tool_stream_chunk(m, p)
+                    if chunk:
+                        stream_chunks.append(chunk)
+                # URL transport can carry server->client request frames in SSE.
+                # When request id exists, best-effort dispatch and respond.
+                if incoming_id is not None:
+                    try:
+                        if callable(self.peer_request_handler):
+                            result = self.peer_request_handler(m, p if isinstance(p, dict) else {})
+                            self._post_jsonrpc_response(incoming_id, result=result, timeout_s=min(10.0, timeout_s))
+                        else:
+                            self._post_jsonrpc_response(
+                                incoming_id,
+                                error={"code": -32601, "message": f"Client method not supported: {m}"},
+                                timeout_s=min(10.0, timeout_s),
+                            )
+                    except Exception as e:
+                        try:
+                            self._post_jsonrpc_response(
+                                incoming_id,
+                                error={"code": -32000, "message": str(e)},
+                                timeout_s=min(10.0, timeout_s),
+                            )
+                        except Exception:
+                            pass
+                return None
+            if str(obj.get("id")) == str(req_id):
+                return obj
+            return None
+
         try:
             with urllib.request.urlopen(request, timeout=max(0.5, float(timeout_s))) as resp:
                 status_code = getattr(resp, "status", None)
@@ -641,7 +1032,50 @@ class McpUrlClient:
                     content_type = str(resp.headers.get("content-type", "") or "")
                 except Exception:
                     content_type = ""
-                raw = resp.read().decode("utf-8", errors="replace").strip()
+                if "text/event-stream" in content_type.lower():
+                    data_lines: List[str] = []
+                    terminal_obj: Optional[Dict[str, Any]] = None
+                    raw_preview_parts: List[str] = []
+
+                    def _flush_event() -> None:
+                        nonlocal data_lines, terminal_obj
+                        if not data_lines:
+                            return
+                        payload_text = "\n".join(data_lines).strip()
+                        data_lines = []
+                        if not payload_text:
+                            return
+                        if len(raw_preview_parts) < 20:
+                            raw_preview_parts.append(payload_text[:200])
+                        try:
+                            parsed = json.loads(payload_text)
+                        except Exception:
+                            return
+                        hit = _consume_jsonrpc_obj(parsed)
+                        if hit is not None:
+                            terminal_obj = hit
+
+                    while True:
+                        line_b = resp.readline()
+                        if not line_b:
+                            break
+                        line = line_b.decode("utf-8", errors="replace").rstrip("\r\n")
+                        if line == "":
+                            _flush_event()
+                            if terminal_obj is not None:
+                                break
+                            continue
+                        if line.startswith("data:"):
+                            data_lines.append(line[5:].strip())
+                    _flush_event()
+
+                    if raw_preview_parts:
+                        raw = "\n".join(raw_preview_parts)
+                    else:
+                        raw = ""
+                    data = terminal_obj
+                else:
+                    raw = resp.read().decode("utf-8", errors="replace").strip()
                 try:
                     resp_headers = dict(resp.headers.items())
                 except Exception:
@@ -682,32 +1116,36 @@ class McpUrlClient:
             self._debug_log(f"transport_error {repr(e)}")
             raise McpError(f"URL MCP请求失败: {e}")
 
-        if not raw:
+        if data is None and not raw:
             raise McpError("URL MCP返回空响应")
-        try:
-            data = json.loads(raw)
-        except Exception as e:
-            # Some MCP HTTP servers may respond in SSE-like format:
-            # event: message\n
-            # data: {...}\n\n
-            data = None
-            if "data:" in raw or "text/event-stream" in content_type.lower():
-                for line in raw.splitlines():
-                    s = line.strip()
-                    if not s.startswith("data:"):
-                        continue
-                    payload = s[5:].strip()
-                    if not payload:
-                        continue
-                    try:
-                        data = json.loads(payload)
-                        break
-                    except Exception:
-                        continue
-            if data is None:
-                sample = self._redact_text(raw[:1200].replace("\n", "\\n").replace("\r", "\\r"))
-                self._debug_log(f"parse_error sample={sample}")
-                raise McpError(f"URL MCP响应非JSON: {e}；sample={sample}")
+        if data is None:
+            try:
+                data = json.loads(raw)
+            except Exception as e:
+                # Some MCP HTTP servers may respond in SSE-like format:
+                # event: message\n
+                # data: {...}\n\n
+                data = None
+                if "data:" in raw or "text/event-stream" in content_type.lower():
+                    for line in raw.splitlines():
+                        s = line.strip()
+                        if not s.startswith("data:"):
+                            continue
+                        payload = s[5:].strip()
+                        if not payload:
+                            continue
+                        try:
+                            parsed = json.loads(payload)
+                        except Exception:
+                            continue
+                        hit = _consume_jsonrpc_obj(parsed)
+                        if hit is not None:
+                            data = hit
+                            break
+                if data is None:
+                    sample = self._redact_text(raw[:1200].replace("\n", "\\n").replace("\r", "\\r"))
+                    self._debug_log(f"parse_error sample={sample}")
+                    raise McpError(f"URL MCP响应非JSON: {e}；sample={sample}")
         if isinstance(data, list):
             # pick matching id entry if server returned batch
             for item in data:
@@ -719,7 +1157,122 @@ class McpUrlClient:
         if "error" in data:
             raise McpError(str(data.get("error")))
         result = data.get("result", {})
-        return result if isinstance(result, dict) else {"value": result}
+        out = result if isinstance(result, dict) else {"value": result}
+        if stream_chunks:
+            out["_stream"] = {
+                "chunks": stream_chunks,
+                "text": "".join(stream_chunks),
+                "chunk_count": len(stream_chunks),
+            }
+            if not out.get("content"):
+                out["content"] = [{"type": "text", "text": out["_stream"]["text"]}]
+        return out
+
+    def _post_jsonrpc_response(
+        self,
+        req_id: Any,
+        *,
+        result: Optional[Dict[str, Any]] = None,
+        error: Optional[Dict[str, Any]] = None,
+        timeout_s: float = 8.0,
+    ) -> None:
+        url = str(self.config.get("url", "")).strip()
+        if not url:
+            raise McpError("URL MCP server 缺少 url 配置")
+        payload: Dict[str, Any] = {"jsonrpc": "2.0", "id": req_id}
+        if error is not None:
+            payload["error"] = error
+        else:
+            payload["result"] = result if isinstance(result, dict) else {}
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        headers = self._base_headers()
+        request = urllib.request.Request(url=url, data=body, headers=headers, method="POST")
+        with urllib.request.urlopen(request, timeout=max(0.5, float(timeout_s))) as resp:
+            try:
+                sid = resp.headers.get("mcp-session-id")
+            except Exception:
+                sid = None
+            if sid:
+                self.session_id = sid
+            try:
+                _ = resp.read()
+            except Exception:
+                pass
+
+    def _post_jsonrpc_batch(
+        self,
+        calls: List[Tuple[str, Optional[Dict[str, Any]]]],
+        timeout_s: float,
+        *,
+        allow_partial_failure: bool = False,
+    ) -> List[Dict[str, Any]]:
+        url = str(self.config.get("url", "")).strip()
+        if not url:
+            raise McpError("URL MCP server 缺少 url 配置")
+        if not calls:
+            return []
+        payloads: List[Dict[str, Any]] = []
+        id_to_idx: Dict[str, int] = {}
+        for idx, (method, params) in enumerate(calls):
+            req_id = self.next_id
+            self.next_id += 1
+            p: Dict[str, Any] = {"jsonrpc": "2.0", "id": req_id, "method": str(method)}
+            if params is not None:
+                p["params"] = params
+            payloads.append(p)
+            id_to_idx[str(req_id)] = idx
+        body = json.dumps(payloads, ensure_ascii=False).encode("utf-8")
+        headers = self._base_headers()
+        request = urllib.request.Request(url=url, data=body, headers=headers, method="POST")
+        try:
+            with urllib.request.urlopen(request, timeout=max(0.5, float(timeout_s))) as resp:
+                sid = None
+                try:
+                    sid = resp.headers.get("mcp-session-id")
+                except Exception:
+                    sid = None
+                if sid:
+                    self.session_id = sid
+                raw = resp.read().decode("utf-8", errors="replace").strip()
+        except urllib.error.HTTPError as e:
+            detail = ""
+            try:
+                detail = e.read().decode("utf-8", errors="replace")
+            except Exception:
+                detail = ""
+            raise McpError(f"URL MCP HTTP错误: {e.code} {e.reason}" + (f"；{detail}" if detail else ""))
+        except Exception as e:
+            raise McpError(f"URL MCP请求失败: {e}")
+        if not raw:
+            raise McpError("URL MCP返回空响应")
+        try:
+            data = json.loads(raw)
+        except Exception as e:
+            raise McpError(f"URL MCP响应非JSON: {e}")
+        items = data if isinstance(data, list) else [data]
+        results: List[Optional[Dict[str, Any]]] = [None] * len(calls)
+        for it in items:
+            if not isinstance(it, dict):
+                continue
+            msg_id = str(it.get("id"))
+            if msg_id not in id_to_idx:
+                continue
+            if "error" in it:
+                if allow_partial_failure:
+                    results[id_to_idx[msg_id]] = {"ok": False, "error": it.get("error")}
+                    continue
+                raise McpError(str(it.get("error")))
+            idx = id_to_idx[msg_id]
+            r = it.get("result", {})
+            if not isinstance(r, dict):
+                r = {"value": r}
+            results[idx] = {"ok": True, "result": r} if allow_partial_failure else r
+        missing = [i for i, r in enumerate(results) if r is None]
+        if missing:
+            raise McpError(f"URL MCP batch 响应缺失: {missing}")
+        if allow_partial_failure:
+            return [r if isinstance(r, dict) else {"ok": False, "error": "missing"} for r in results]
+        return [r if isinstance(r, dict) else {} for r in results]
 
     def initialize(self, timeout_s: float = 8.0) -> None:
         if self.initialized:
@@ -733,7 +1286,7 @@ class McpUrlClient:
                     {
                         "protocolVersion": pv,
                         "clientInfo": {"name": "smart-shell", "version": "0.1.0"},
-                        "capabilities": {},
+                        "capabilities": {"elicitation": {"form": {}}},
                     },
                     timeout_s=timeout_s,
                 )
@@ -796,6 +1349,150 @@ class McpUrlClient:
                     timeout_s=timeout_s,
                 )
 
+    def call_tools_batch(
+        self, calls: List[Dict[str, Any]], timeout_s: float = 30.0, *, allow_partial_failure: bool = False
+    ) -> List[Dict[str, Any]]:
+        with self.lock:
+            self.initialize(timeout_s=timeout_s)
+            reqs: List[Tuple[str, Optional[Dict[str, Any]]]] = []
+            for c in calls:
+                if not isinstance(c, dict):
+                    continue
+                reqs.append(
+                    (
+                        "tools/call",
+                        {
+                            "name": str(c.get("tool", "")),
+                            "arguments": c.get("arguments", {}) if isinstance(c.get("arguments", {}), dict) else {},
+                        },
+                    )
+                )
+            try:
+                return self._post_jsonrpc_batch(
+                    reqs, timeout_s=timeout_s, allow_partial_failure=allow_partial_failure
+                )
+            except Exception as e:
+                if not self._is_session_lost_error(e):
+                    raise
+                self._debug_log("session_lost on tools/call batch, reinitialize and retry once")
+                self.session_id = None
+                self.initialized = False
+                self.initialize(timeout_s=timeout_s)
+                return self._post_jsonrpc_batch(
+                    reqs, timeout_s=timeout_s, allow_partial_failure=allow_partial_failure
+                )
+
+    def list_resources(self, timeout_s: float = 8.0) -> List[Dict[str, Any]]:
+        with self.lock:
+            self.initialize(timeout_s=timeout_s)
+            try:
+                result = self._post_jsonrpc("resources/list", {}, timeout_s=timeout_s)
+            except Exception as e:
+                if not self._is_session_lost_error(e):
+                    raise
+                self._debug_log("session_lost on resources/list, reinitialize and retry once")
+                self.session_id = None
+                self.initialized = False
+                self.initialize(timeout_s=timeout_s)
+                result = self._post_jsonrpc("resources/list", {}, timeout_s=timeout_s)
+            resources = result.get("resources", [])
+            return resources if isinstance(resources, list) else []
+
+    def read_resource(self, uri: str, timeout_s: float = 20.0) -> Dict[str, Any]:
+        with self.lock:
+            self.initialize(timeout_s=timeout_s)
+            params = {"uri": str(uri)}
+            try:
+                return self._post_jsonrpc("resources/read", params, timeout_s=timeout_s)
+            except Exception as e:
+                if not self._is_session_lost_error(e):
+                    raise
+                self._debug_log("session_lost on resources/read, reinitialize and retry once")
+                self.session_id = None
+                self.initialized = False
+                self.initialize(timeout_s=timeout_s)
+                return self._post_jsonrpc("resources/read", params, timeout_s=timeout_s)
+
+    def list_resource_templates(self, timeout_s: float = 8.0) -> List[Dict[str, Any]]:
+        with self.lock:
+            self.initialize(timeout_s=timeout_s)
+            try:
+                result = self._post_jsonrpc("resources/templates/list", {}, timeout_s=timeout_s)
+            except Exception as e:
+                if not self._is_session_lost_error(e):
+                    raise
+                self._debug_log("session_lost on resources/templates/list, reinitialize and retry once")
+                self.session_id = None
+                self.initialized = False
+                self.initialize(timeout_s=timeout_s)
+                result = self._post_jsonrpc("resources/templates/list", {}, timeout_s=timeout_s)
+            templates = result.get("resourceTemplates")
+            if not isinstance(templates, list):
+                templates = result.get("templates", [])
+            return templates if isinstance(templates, list) else []
+
+    def list_prompts(self, timeout_s: float = 8.0) -> List[Dict[str, Any]]:
+        with self.lock:
+            self.initialize(timeout_s=timeout_s)
+            try:
+                result = self._post_jsonrpc("prompts/list", {}, timeout_s=timeout_s)
+            except Exception as e:
+                if not self._is_session_lost_error(e):
+                    raise
+                self._debug_log("session_lost on prompts/list, reinitialize and retry once")
+                self.session_id = None
+                self.initialized = False
+                self.initialize(timeout_s=timeout_s)
+                result = self._post_jsonrpc("prompts/list", {}, timeout_s=timeout_s)
+            prompts = result.get("prompts", [])
+            return prompts if isinstance(prompts, list) else []
+
+    def get_prompt(self, prompt_name: str, arguments: Dict[str, Any], timeout_s: float = 20.0) -> Dict[str, Any]:
+        with self.lock:
+            self.initialize(timeout_s=timeout_s)
+            params = {"name": str(prompt_name), "arguments": arguments or {}}
+            try:
+                return self._post_jsonrpc("prompts/get", params, timeout_s=timeout_s)
+            except Exception as e:
+                if not self._is_session_lost_error(e):
+                    raise
+                self._debug_log("session_lost on prompts/get, reinitialize and retry once")
+                self.session_id = None
+                self.initialized = False
+                self.initialize(timeout_s=timeout_s)
+                return self._post_jsonrpc("prompts/get", params, timeout_s=timeout_s)
+
+    def sampling_create_message(self, params: Dict[str, Any], timeout_s: float = 30.0) -> Dict[str, Any]:
+        with self.lock:
+            self.initialize(timeout_s=timeout_s)
+            payload = params if isinstance(params, dict) else {}
+            try:
+                return self._post_jsonrpc("sampling/createMessage", payload, timeout_s=timeout_s)
+            except Exception as e:
+                if not self._is_session_lost_error(e):
+                    raise
+                self._debug_log("session_lost on sampling/createMessage, reinitialize and retry once")
+                self.session_id = None
+                self.initialized = False
+                self.initialize(timeout_s=timeout_s)
+                return self._post_jsonrpc("sampling/createMessage", payload, timeout_s=timeout_s)
+
+    def completion_complete(self, params: Dict[str, Any], timeout_s: float = 20.0) -> Dict[str, Any]:
+        with self.lock:
+            self.initialize(timeout_s=timeout_s)
+            payload = params if isinstance(params, dict) else {}
+            try:
+                return self._post_jsonrpc("completion/complete", payload, timeout_s=timeout_s)
+            except Exception as e:
+                if not self._is_session_lost_error(e):
+                    raise
+                self._debug_log("session_lost on completion/complete, reinitialize and retry once")
+                self.session_id = None
+                self.initialized = False
+                self.initialize(timeout_s=timeout_s)
+                return self._post_jsonrpc("completion/complete", payload, timeout_s=timeout_s)
+
+
     def _shutdown_unlocked(self) -> None:
         """
         Keep interface parity with stdio client.
@@ -813,6 +1510,10 @@ class McpManager:
         self.mcp_config = mcp_config or {}
         self._clients: Dict[str, McpServerClient] = {}
         self._tools_cache: Dict[str, Dict[str, Any]] = {}
+        self._resources_cache: Dict[str, Dict[str, Any]] = {}
+        self._resource_templates_cache: Dict[str, Dict[str, Any]] = {}
+        self._prompts_cache: Dict[str, Dict[str, Any]] = {}
+        self._client_method_handlers: Dict[str, Callable[[str, Dict[str, Any]], Dict[str, Any]]] = {}
         self._status: Dict[str, Dict[str, Any]] = {}
         self._active_ops: Dict[str, int] = {}
         self._preload_thread: Optional[threading.Thread] = None
@@ -917,8 +1618,60 @@ class McpManager:
                 st["suggestion"] = suggestion
 
     def _classify_failure(self, server: str, err: str) -> Tuple[str, str]:
-        e = (err or "").lower()
+        err_text = str(err or "")
+        e = err_text.lower()
         conf = self._server_conf(server)
+        # Layer 1: prefer structured JSON-RPC error.code classification.
+        # Accept common stringified formats:
+        # - {"code": -32601, ...}
+        # - {'code': -32601, ...}
+        # - code=-32601 / code: -32601
+        code: Optional[int] = None
+        m = re.search(r"[\"']code[\"']\s*[:=]\s*(-?\d+)", err_text, flags=re.IGNORECASE)
+        if m is None:
+            m = re.search(r"\bcode\s*[:=]\s*(-?\d+)\b", err_text, flags=re.IGNORECASE)
+        if m is not None:
+            try:
+                code = int(m.group(1))
+            except Exception:
+                code = None
+        if code in (-32601, -32602, -32600):
+            return (
+                "unsupported",
+                "MCP 返回 error.code 表示当前方法/参数在该 server 上不可用；请核对 capability 与方法参数，必要时升级或切换 server。",
+            )
+        if code is not None and -32099 <= code <= -32000:
+            return (
+                "connect_failed",
+                "MCP 返回 server error（-320xx）；请检查 server 运行状态、连接配置与日志后重试。",
+            )
+        if code == -32700:
+            return (
+                "connect_failed",
+                "MCP 返回 parse error（-32700）；请检查传输链路与请求格式是否完整。",
+            )
+        # Layer 2: fallback to keyword-based heuristics.
+        # Capability/method unsupported cases should be surfaced explicitly
+        # instead of falling through to generic connect_failed.
+        unsupported_markers = (
+            "method not found",
+            "未支持该 server 请求方法",
+            "not implemented",
+            "unsupported",
+            "不支持",
+            "unknown method",
+            "unknown tool",
+            "unknown prompt",
+            "-32601",
+            "resources/list 失败",
+            "resources/templates/list 失败",
+            "prompts/list 失败",
+        )
+        if any(m in e for m in unsupported_markers):
+            return (
+                "unsupported",
+                "该 MCP server/客户端组合暂不支持当前能力或方法；请核对 server capability、工具名/方法名，必要时升级 server 或切换支持该能力的 server。",
+            )
         if "session not found" in e or "invalid session" in e or "unknown session" in e:
             return (
                 "connect_failed",
@@ -941,14 +1694,15 @@ class McpManager:
         )
 
     def _log(self, level: str, message: str) -> None:
-        line = f"[{level}] {message}"
+        safe_message = _redact_text(message, max_len=3000)
+        line = f"[{level}] {safe_message}"
         self._recent_logs.append(line)
         if level == "WARNING":
-            self._logger.warning(message)
+            self._logger.warning(safe_message)
         elif level == "ERROR":
-            self._logger.error(message)
+            self._logger.error(safe_message)
         else:
-            self._logger.info(message)
+            self._logger.info(safe_message)
 
     def _server_conf(self, server: str) -> Dict[str, Any]:
         servers = self.mcp_config.get("mcpServers", {})
@@ -973,13 +1727,81 @@ class McpManager:
             return max(t, 25.0)
         return t
 
-    def _client(self, server: str) -> McpServerClient:
+    def _dispatch_server_request_to_client(self, server: str, method: str, params: Dict[str, Any]) -> Dict[str, Any]:
+        method_name = str(method or "").strip()
+        payload = params if isinstance(params, dict) else {}
+        handler = self._client_method_handlers.get(method_name)
+        if callable(handler):
+            return handler(str(server), payload)
+        if method_name == "sampling/createMessage":
+            # Safe default fallback for bidirectional sampling.
+            messages = payload.get("messages", [])
+            max_tokens = payload.get("maxTokens", 256)
+            if not isinstance(max_tokens, int):
+                max_tokens = 256
+            last_text = ""
+            if isinstance(messages, list) and messages:
+                last = messages[-1]
+                if isinstance(last, dict):
+                    content = last.get("content")
+                    if isinstance(content, dict):
+                        last_text = str(content.get("text", ""))
+                    elif isinstance(content, str):
+                        last_text = content
+            return {
+                "model": "smart-shell-client",
+                "role": "assistant",
+                "content": {"type": "text", "text": f"[client-sampled maxTokens={max_tokens}] {last_text}".strip()},
+                "stopReason": "endTurn",
+            }
+        if method_name == "elicitation/create":
+            # Safe default fallback for bidirectional elicitation (form mode only).
+            mode = str(payload.get("mode", "form") or "form").strip().lower()
+            if mode not in ("", "form"):
+                raise McpError(f"不支持的 elicitation mode: {mode}")
+            requested = payload.get("requestedSchema")
+            if not isinstance(requested, dict):
+                requested = {}
+            props = requested.get("properties")
+            content: Dict[str, Any] = {}
+            if isinstance(props, dict):
+                for key in props.keys():
+                    k = str(key).strip()
+                    if k:
+                        content[k] = ""
+            return {
+                "action": "accept",
+                "content": content,
+            }
+        raise McpError(f"客户端未支持该 server 请求方法: {method_name}")
+
+    def register_client_method_handler(
+        self, method: str, handler: Callable[[str, Dict[str, Any]], Dict[str, Any]]
+    ) -> None:
+        key = str(method or "").strip()
+        if not key:
+            raise McpError("method 不能为空")
+        if not callable(handler):
+            raise McpError("handler 必须可调用")
+        self._client_method_handlers[key] = handler
+
+    def _client(self, server: str) -> Any:
         if server not in self._clients:
             conf = self._server_conf(server)
             if "url" in conf:
                 self._clients[server] = McpUrlClient(name=server, config=conf)
+                self._clients[server].peer_request_handler = (
+                    lambda method, params, _server=server: self._dispatch_server_request_to_client(
+                        _server, method, params
+                    )
+                )
             else:
                 self._clients[server] = McpServerClient(name=server, config=conf)
+                self._clients[server].peer_request_handler = (
+                    lambda method, params, _server=server: self._dispatch_server_request_to_client(
+                        _server, method, params
+                    )
+                )
         return self._clients[server]
 
     def _try_cli_schemas_fallback(self, server: str, timeout_s: float) -> Optional[List[Dict[str, Any]]]:
@@ -1106,6 +1928,29 @@ class McpManager:
                 self.list_tools(server, timeout_s=min(8.0, timeout_s), use_cache=False)
             except Exception:
                 pass
+        # Local schema validation before remote call.
+        try:
+            cached_tools = self._tools_cache.get(server, {}).get("tools", [])
+            if isinstance(cached_tools, list):
+                for t in cached_tools:
+                    if not isinstance(t, dict):
+                        continue
+                    name = str(t.get("name", "")).strip()
+                    if name != str(tool_name):
+                        continue
+                    schema = _extract_tool_schema(t)
+                    if isinstance(schema, dict):
+                        errs = _validate_json_schema_like(schema, arguments if isinstance(arguments, dict) else {})
+                        if errs:
+                            raise McpError(
+                                "tool arguments schema 校验失败: " + "; ".join(errs[:8])
+                            )
+                    break
+        except McpError:
+            raise
+        except Exception:
+            # Non-fatal for unknown schema shape.
+            pass
         self._set_status(server, "loading")
         timeout_s = self._effective_timeout(server, timeout_s)
         try:
@@ -1116,6 +1961,213 @@ class McpManager:
             ft, sugg = self._classify_failure(server, str(e))
             self._set_status(server, "failed", last_error=str(e), failure_type=ft, suggestion=sugg)
             self._log("WARNING", f"call_tool failed for {server}/{tool_name}: {e}")
+            raise
+
+    def call_tools_batch(
+        self,
+        server: str,
+        calls: List[Dict[str, Any]],
+        timeout_s: float = 30.0,
+        *,
+        allow_partial_failure: bool = False,
+    ) -> List[Dict[str, Any]]:
+        if not isinstance(calls, list) or not calls:
+            raise McpError("calls 必须为非空数组")
+        # Ensure tools cache exists for local validation.
+        if server not in self._tools_cache:
+            try:
+                self.list_tools(server, timeout_s=min(8.0, timeout_s), use_cache=False)
+            except Exception:
+                pass
+        # Local schema validation per call.
+        tools_map: Dict[str, Dict[str, Any]] = {}
+        cached_tools = self._tools_cache.get(server, {}).get("tools", [])
+        if isinstance(cached_tools, list):
+            for t in cached_tools:
+                if isinstance(t, dict):
+                    tools_map[str(t.get("name", "")).strip()] = t
+        normalized: List[Dict[str, Any]] = []
+        for idx, c in enumerate(calls):
+            if not isinstance(c, dict):
+                raise McpError(f"calls[{idx}] 必须为 object")
+            tool_name = str(c.get("tool", "")).strip()
+            if not tool_name:
+                raise McpError(f"calls[{idx}].tool 不能为空")
+            args = c.get("arguments", {})
+            if not isinstance(args, dict):
+                raise McpError(f"calls[{idx}].arguments 必须为 object")
+            desc = tools_map.get(tool_name)
+            if isinstance(desc, dict):
+                schema = _extract_tool_schema(desc)
+                if isinstance(schema, dict):
+                    errs = _validate_json_schema_like(schema, args, path=f"calls[{idx}].arguments")
+                    if errs:
+                        raise McpError("tool arguments schema 校验失败: " + "; ".join(errs[:8]))
+            normalized.append({"tool": tool_name, "arguments": args})
+        self._set_status(server, "loading")
+        timeout_s = self._effective_timeout(server, timeout_s)
+        try:
+            client = self._client(server)
+            if hasattr(client, "call_tools_batch"):
+                res = client.call_tools_batch(
+                    normalized, timeout_s=timeout_s, allow_partial_failure=allow_partial_failure
+                )
+            else:
+                res = [client.call_tool(c["tool"], c["arguments"], timeout_s=timeout_s) for c in normalized]
+            self._set_status(server, "success", failure_type="", suggestion="")
+            return res if isinstance(res, list) else []
+        except Exception as e:
+            ft, sugg = self._classify_failure(server, str(e))
+            self._set_status(server, "failed", last_error=str(e), failure_type=ft, suggestion=sugg)
+            self._log("WARNING", f"call_tools_batch failed for {server}: {e}")
+            raise
+
+    def list_resources(self, server: str, timeout_s: float = 8.0, use_cache: bool = True) -> Tuple[List[Dict[str, Any]], bool]:
+        if use_cache and server in self._resources_cache:
+            cached = self._resources_cache[server]
+            resources = cached.get("resources", [])
+            return resources if isinstance(resources, list) else [], True
+        if use_cache and server not in self._resources_cache:
+            raise McpError("resources 缓存未命中（use_cache=true），已跳过实时连接")
+        self._mark_op(server, +1)
+        timeout_s = self._effective_timeout(server, timeout_s)
+        last_error: Optional[str] = None
+        for _ in range(2):
+            try:
+                resources = self._client(server).list_resources(timeout_s=timeout_s)
+                conf = self._server_conf(server)
+                source = "url" if isinstance(conf, dict) and "url" in conf else "stdio"
+                self._resources_cache[server] = {
+                    "resources": resources if isinstance(resources, list) else [],
+                    "ts": time.time(),
+                    "source": source,
+                }
+                self._mark_op(server, -1)
+                return resources if isinstance(resources, list) else [], False
+            except Exception as e:
+                last_error = str(e)
+                self._log("WARNING", f"list_resources failed for {server}: {last_error}")
+                if server in self._clients:
+                    try:
+                        self._clients[server]._shutdown_unlocked()
+                    except Exception:
+                        pass
+                    self._clients.pop(server, None)
+        self._mark_op(server, -1)
+        raise McpError(last_error or "resources/list 失败")
+
+    def read_resource(self, server: str, uri: str, timeout_s: float = 20.0) -> Dict[str, Any]:
+        uri_s = str(uri or "").strip()
+        if not uri_s:
+            raise McpError("缺少资源 URI")
+        timeout_s = self._effective_timeout(server, timeout_s)
+        try:
+            return self._client(server).read_resource(uri_s, timeout_s=timeout_s)
+        except Exception as e:
+            self._log("WARNING", f"read_resource failed for {server} uri={uri_s}: {e}")
+            raise
+
+    def list_resource_templates(
+        self, server: str, timeout_s: float = 8.0, use_cache: bool = True
+    ) -> Tuple[List[Dict[str, Any]], bool]:
+        if use_cache and server in self._resource_templates_cache:
+            cached = self._resource_templates_cache[server]
+            templates = cached.get("templates", [])
+            return templates if isinstance(templates, list) else [], True
+        if use_cache and server not in self._resource_templates_cache:
+            raise McpError("resource templates 缓存未命中（use_cache=true），已跳过实时连接")
+        self._mark_op(server, +1)
+        timeout_s = self._effective_timeout(server, timeout_s)
+        last_error: Optional[str] = None
+        for _ in range(2):
+            try:
+                templates = self._client(server).list_resource_templates(timeout_s=timeout_s)
+                conf = self._server_conf(server)
+                source = "url" if isinstance(conf, dict) and "url" in conf else "stdio"
+                self._resource_templates_cache[server] = {
+                    "templates": templates if isinstance(templates, list) else [],
+                    "ts": time.time(),
+                    "source": source,
+                }
+                self._mark_op(server, -1)
+                return templates if isinstance(templates, list) else [], False
+            except Exception as e:
+                last_error = str(e)
+                self._log("WARNING", f"list_resource_templates failed for {server}: {last_error}")
+                if server in self._clients:
+                    try:
+                        self._clients[server]._shutdown_unlocked()
+                    except Exception:
+                        pass
+                    self._clients.pop(server, None)
+        self._mark_op(server, -1)
+        raise McpError(last_error or "resources/templates/list 失败")
+
+    def list_prompts(self, server: str, timeout_s: float = 8.0, use_cache: bool = True) -> Tuple[List[Dict[str, Any]], bool]:
+        if use_cache and server in self._prompts_cache:
+            cached = self._prompts_cache[server]
+            prompts = cached.get("prompts", [])
+            return prompts if isinstance(prompts, list) else [], True
+        if use_cache and server not in self._prompts_cache:
+            raise McpError("prompts 缓存未命中（use_cache=true），已跳过实时连接")
+        self._mark_op(server, +1)
+        timeout_s = self._effective_timeout(server, timeout_s)
+        last_error: Optional[str] = None
+        for _ in range(2):
+            try:
+                prompts = self._client(server).list_prompts(timeout_s=timeout_s)
+                conf = self._server_conf(server)
+                source = "url" if isinstance(conf, dict) and "url" in conf else "stdio"
+                self._prompts_cache[server] = {
+                    "prompts": prompts if isinstance(prompts, list) else [],
+                    "ts": time.time(),
+                    "source": source,
+                }
+                self._mark_op(server, -1)
+                return prompts if isinstance(prompts, list) else [], False
+            except Exception as e:
+                last_error = str(e)
+                self._log("WARNING", f"list_prompts failed for {server}: {last_error}")
+                if server in self._clients:
+                    try:
+                        self._clients[server]._shutdown_unlocked()
+                    except Exception:
+                        pass
+                    self._clients.pop(server, None)
+        self._mark_op(server, -1)
+        raise McpError(last_error or "prompts/list 失败")
+
+    def get_prompt(self, server: str, prompt_name: str, arguments: Dict[str, Any], timeout_s: float = 20.0) -> Dict[str, Any]:
+        name = str(prompt_name or "").strip()
+        if not name:
+            raise McpError("缺少 prompt 名称")
+        if not isinstance(arguments, dict):
+            raise McpError("prompt arguments 必须为 object")
+        timeout_s = self._effective_timeout(server, timeout_s)
+        try:
+            return self._client(server).get_prompt(name, arguments, timeout_s=timeout_s)
+        except Exception as e:
+            self._log("WARNING", f"get_prompt failed for {server} prompt={name}: {e}")
+            raise
+
+    def sampling_create_message(self, server: str, params: Dict[str, Any], timeout_s: float = 30.0) -> Dict[str, Any]:
+        if not isinstance(params, dict):
+            raise McpError("sampling params 必须为 object")
+        timeout_s = self._effective_timeout(server, timeout_s)
+        try:
+            return self._client(server).sampling_create_message(params, timeout_s=timeout_s)
+        except Exception as e:
+            self._log("WARNING", f"sampling_create_message failed for {server}: {e}")
+            raise
+
+    def completion_complete(self, server: str, params: Dict[str, Any], timeout_s: float = 20.0) -> Dict[str, Any]:
+        if not isinstance(params, dict):
+            raise McpError("completion params 必须为 object")
+        timeout_s = self._effective_timeout(server, timeout_s)
+        try:
+            return self._client(server).completion_complete(params, timeout_s=timeout_s)
+        except Exception as e:
+            self._log("WARNING", f"completion_complete failed for {server}: {e}")
             raise
 
     def preload_all_async(self, timeout_s: float = 12.0, force: bool = False) -> bool:
@@ -1293,6 +2345,9 @@ class McpManager:
             # Force create a fresh client object to avoid reusing stale URL session state.
             self._clients.pop(server, None)
         self._tools_cache.pop(server, None)
+        self._resources_cache.pop(server, None)
+        self._resource_templates_cache.pop(server, None)
+        self._prompts_cache.pop(server, None)
         tools, _ = self.list_tools(server, timeout_s=timeout_s, use_cache=False)
         return tools
 
@@ -1376,5 +2431,57 @@ class McpManager:
             show = " | ".join(entries) if entries else "(none)"
             if isinstance(tools, list) and len(tools) > 20:
                 show += f" | ... total={len(tools)}"
+            lines.append(f"- {server}: {show}")
+        return "\n".join(lines)
+
+    def cached_resources_for_prompt(self) -> str:
+        if not self._resources_cache:
+            return "尚无已缓存的 MCP resources（需先执行 mcp_list_resources）。"
+        lines: List[str] = []
+        for server, info in self._resources_cache.items():
+            resources = info.get("resources", [])
+            entries: List[str] = []
+            if isinstance(resources, list):
+                for r in resources[:20]:
+                    if not isinstance(r, dict):
+                        continue
+                    name = str(r.get("name", "")).strip()
+                    uri = str(r.get("uri", "")).strip()
+                    desc = str(r.get("description", "")).strip()
+                    label = name or uri or "<unnamed>"
+                    if desc:
+                        if len(desc) > 80:
+                            desc = desc[:77] + "..."
+                        entries.append(f"{label} - {desc}")
+                    else:
+                        entries.append(label)
+            show = " | ".join(entries) if entries else "(none)"
+            if isinstance(resources, list) and len(resources) > 20:
+                show += f" | ... total={len(resources)}"
+            lines.append(f"- {server}: {show}")
+        return "\n".join(lines)
+
+    def cached_prompts_for_prompt(self) -> str:
+        if not self._prompts_cache:
+            return "尚无已缓存的 MCP prompts（需先执行 mcp_list_prompts）。"
+        lines: List[str] = []
+        for server, info in self._prompts_cache.items():
+            prompts = info.get("prompts", [])
+            entries: List[str] = []
+            if isinstance(prompts, list):
+                for p in prompts[:20]:
+                    if not isinstance(p, dict):
+                        continue
+                    name = str(p.get("name", "")).strip() or "<unnamed>"
+                    desc = str(p.get("description", "")).strip()
+                    if desc:
+                        if len(desc) > 80:
+                            desc = desc[:77] + "..."
+                        entries.append(f"{name} - {desc}")
+                    else:
+                        entries.append(name)
+            show = " | ".join(entries) if entries else "(none)"
+            if isinstance(prompts, list) and len(prompts) > 20:
+                show += f" | ... total={len(prompts)}"
             lines.append(f"- {server}: {show}")
         return "\n".join(lines)

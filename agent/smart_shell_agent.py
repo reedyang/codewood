@@ -293,6 +293,7 @@ class SmartShellAgent:
             self._base_system_prompt = f.read()
         self.mcp_config = self._load_mcp_config()
         self.mcp_manager = McpManager(self.config_dir, self.mcp_config, self.ai_workspace_dir)
+        self.mcp_manager.register_client_method_handler("elicitation/create", self._handle_mcp_elicitation_create)
         # Async preload MCP tools cache on startup (non-blocking).
         self.mcp_manager.preload_all_async(timeout_s=12.0, force=False)
         self.system_prompt = self._base_system_prompt + self._build_mcp_system_append()
@@ -421,6 +422,16 @@ class SmartShellAgent:
             lines.append(self.mcp_manager.cached_tools_for_prompt())
         except Exception:
             lines.append("尚无已缓存的 MCP tools。")
+        lines.append("已缓存 resources（调用 mcp_list_resources 后更新）：")
+        try:
+            lines.append(self.mcp_manager.cached_resources_for_prompt())
+        except Exception:
+            lines.append("尚无已缓存的 MCP resources。")
+        lines.append("已缓存 prompts（调用 mcp_list_prompts 后更新）：")
+        try:
+            lines.append(self.mcp_manager.cached_prompts_for_prompt())
+        except Exception:
+            lines.append("尚无已缓存的 MCP prompts。")
         return "\n".join(lines)
 
     def _get_slash_skill_commands(self) -> List[str]:
@@ -1792,9 +1803,62 @@ class SmartShellAgent:
                 continue
         return None
 
+    def _is_executable_action(self, parsed: Dict[str, Any]) -> bool:
+        action = str(parsed.get("action", "")).strip()
+        if not action:
+            return False
+        # "done" is handled by run-loop and should be treated as executable terminator.
+        if action == "done":
+            return True
+        allowed_actions = {
+            "batch",
+            "list",
+            "cd",
+            "rename",
+            "move",
+            "delete",
+            "mkdir",
+            "info",
+            "ffmpeg",
+            "summarize",
+            "shell",
+            "script",
+            "text_file",
+            "read",
+            "analyze_image",
+            "diff",
+            "mcp_list_tools",
+            "mcp_status",
+            "mcp_status_refresh",
+            "mcp_reconnect",
+            "mcp_call_tool",
+            "mcp_call_tool_batch",
+            "mcp_list_resources",
+            "mcp_read_resource",
+            "mcp_list_resource_templates",
+            "mcp_list_prompts",
+            "mcp_get_prompt",
+            "mcp_sampling_create_message",
+            "mcp_completion_complete",
+            "knowledge_sync",
+            "knowledge_stats",
+            "knowledge_search",
+            "knowledge_enable",
+            "knowledge_on",
+            "knowledge_disable",
+            "knowledge_off",
+            "freedom_enable",
+            "freedom_on",
+            "freedom_disable",
+            "freedom_off",
+            "always_confirm_reset",
+        }
+        return action in allowed_actions
+
     def extract_json_command(self, text: str) -> Optional[Dict]:
         """从AI回复中提取JSON命令（优先完整 ```json 代码块，再尝试平衡括号对象）。"""
         try:
+            fallback_candidate: Optional[Dict[str, Any]] = None
             # 1) Full fenced block: ```json ... ``` (avoid regex that stops at first '}')
             search_pos = 0
             while True:
@@ -1809,7 +1873,10 @@ class SmartShellAgent:
                 if raw:
                     parsed = self._parse_possible_json_command(raw)
                     if parsed:
-                        return parsed
+                        if self._is_executable_action(parsed):
+                            return parsed
+                        if fallback_candidate is None:
+                            fallback_candidate = parsed
                 search_pos = close + 3
 
             # 2) Balanced object starting at each '{"action"' (handles nested params)
@@ -1827,7 +1894,10 @@ class SmartShellAgent:
                 if sub:
                     parsed = self._parse_possible_json_command(sub)
                     if parsed:
-                        return parsed
+                        if self._is_executable_action(parsed):
+                            return parsed
+                        if fallback_candidate is None:
+                            fallback_candidate = parsed
                 pos = idx + len(key)
 
             # 3) Single-line JSON (legacy)
@@ -1836,9 +1906,12 @@ class SmartShellAgent:
                 if line.startswith("{") and '"action"' in line:
                     parsed = self._parse_possible_json_command(line)
                     if parsed:
-                        return parsed
+                        if self._is_executable_action(parsed):
+                            return parsed
+                        if fallback_candidate is None:
+                            fallback_candidate = parsed
 
-            return None
+            return fallback_candidate
         except Exception as e:
             print(f"⚠️ JSON提取错误: {e}")
             return None
@@ -3380,7 +3453,7 @@ big_image.jpg
                         "success": False,
                         "error": (
                             "禁止通过 shell 手工启停 MCP server。"
-                            "请使用 mcp_list_tools / mcp_call_tool，并通过 timeout_s/use_cache 重试。"
+                            "请使用 mcp_list_tools / mcp_list_resources / mcp_read_resource / mcp_list_prompts / mcp_get_prompt / mcp_sampling_create_message / mcp_completion_complete / mcp_call_tool，并通过 timeout_s/use_cache 重试。"
                         ),
                     }
                 shell_force = bool(params.get("force", False))
@@ -3661,6 +3734,246 @@ big_image.jpg
                 return {"success": False, "error": f"MCP tool 调用失败: {e}"}
             except Exception as e:
                 return {"success": False, "error": f"MCP tool 调用异常: {e}"}
+
+        elif action == "mcp_call_tool_batch":
+            server = params.get("server")
+            calls = params.get("calls", [])
+            timeout_s = float(params.get("timeout_s", 30.0))
+            allow_partial_failure = bool(params.get("allow_partial_failure", False))
+            if not server:
+                return {"success": False, "error": "缺少server参数"}
+            if not isinstance(calls, list):
+                return {"success": False, "error": "calls 必须为数组"}
+            try:
+                st = self.mcp_manager.get_status().get("servers", {}).get(str(server), {})
+                state_raw = str(st.get("state", "pending") or "pending").lower()
+                if state_raw != "success":
+                    return {
+                        "success": False,
+                        "error": (
+                            f"server={server} 当前未加载完成(state={state_raw})，"
+                            "禁止直接引用其工具。请先执行 mcp_list_tools(use_cache=false) 加载后再调用。"
+                        ),
+                    }
+            except Exception:
+                pass
+            try:
+                results = self.mcp_manager.call_tools_batch(
+                    str(server),
+                    calls,
+                    timeout_s=timeout_s,
+                    allow_partial_failure=allow_partial_failure,
+                )
+                total_count = len(results) if isinstance(results, list) else 0
+                if allow_partial_failure and isinstance(results, list):
+                    ok_count = 0
+                    error_count = 0
+                    for item in results:
+                        if isinstance(item, dict) and item.get("ok") is True:
+                            ok_count += 1
+                        else:
+                            error_count += 1
+                else:
+                    ok_count = total_count
+                    error_count = 0
+                return {
+                    "success": True,
+                    "server": server,
+                    "results": results,
+                    "count": total_count,
+                    "total_count": total_count,
+                    "ok_count": ok_count,
+                    "error_count": error_count,
+                    "has_error": error_count > 0,
+                    "message": f"MCP tool 批量调用成功（server={server}）",
+                }
+            except McpError as e:
+                return {"success": False, "error": f"MCP tool 批量调用失败: {e}"}
+            except Exception as e:
+                return {"success": False, "error": f"MCP tool 批量调用异常: {e}"}
+
+        elif action == "mcp_list_resources":
+            server = params.get("server")
+            use_cache = bool(params.get("use_cache", True))
+            timeout_s = float(params.get("timeout_s", 8.0))
+            if not server:
+                return {"success": False, "error": "缺少server参数"}
+            try:
+                resources, from_cache = self.mcp_manager.list_resources(
+                    str(server),
+                    timeout_s=timeout_s,
+                    use_cache=use_cache,
+                )
+                self.system_prompt = self._base_system_prompt + self._build_mcp_system_append()
+                return {
+                    "success": True,
+                    "server": server,
+                    "resources": resources,
+                    "from_cache": from_cache,
+                    "count": len(resources) if isinstance(resources, list) else 0,
+                    "message": f"MCP resources 获取成功（server={server}）",
+                }
+            except McpError as e:
+                return {"success": False, "error": f"MCP resources 获取失败: {e}"}
+            except Exception as e:
+                return {"success": False, "error": f"MCP resources 获取异常: {e}"}
+
+        elif action == "mcp_read_resource":
+            server = params.get("server")
+            uri = params.get("uri")
+            timeout_s = float(params.get("timeout_s", 20.0))
+            if not server:
+                return {"success": False, "error": "缺少server参数"}
+            if not uri:
+                return {"success": False, "error": "缺少uri参数"}
+            try:
+                result = self.mcp_manager.read_resource(
+                    str(server),
+                    str(uri),
+                    timeout_s=timeout_s,
+                )
+                return {
+                    "success": True,
+                    "server": server,
+                    "uri": uri,
+                    "result": result,
+                    "message": f"MCP resource 读取成功（{server}::{uri}）",
+                }
+            except McpError as e:
+                return {"success": False, "error": f"MCP resource 读取失败: {e}"}
+            except Exception as e:
+                return {"success": False, "error": f"MCP resource 读取异常: {e}"}
+
+        elif action == "mcp_list_resource_templates":
+            server = params.get("server")
+            use_cache = bool(params.get("use_cache", True))
+            timeout_s = float(params.get("timeout_s", 8.0))
+            if not server:
+                return {"success": False, "error": "缺少server参数"}
+            try:
+                templates, from_cache = self.mcp_manager.list_resource_templates(
+                    str(server),
+                    timeout_s=timeout_s,
+                    use_cache=use_cache,
+                )
+                return {
+                    "success": True,
+                    "server": server,
+                    "templates": templates,
+                    "from_cache": from_cache,
+                    "count": len(templates) if isinstance(templates, list) else 0,
+                    "message": f"MCP resource templates 获取成功（server={server}）",
+                }
+            except McpError as e:
+                return {"success": False, "error": f"MCP resource templates 获取失败: {e}"}
+            except Exception as e:
+                return {"success": False, "error": f"MCP resource templates 获取异常: {e}"}
+
+        elif action == "mcp_list_prompts":
+            server = params.get("server")
+            use_cache = bool(params.get("use_cache", True))
+            timeout_s = float(params.get("timeout_s", 8.0))
+            if not server:
+                return {"success": False, "error": "缺少server参数"}
+            try:
+                prompts, from_cache = self.mcp_manager.list_prompts(
+                    str(server),
+                    timeout_s=timeout_s,
+                    use_cache=use_cache,
+                )
+                self.system_prompt = self._base_system_prompt + self._build_mcp_system_append()
+                return {
+                    "success": True,
+                    "server": server,
+                    "prompts": prompts,
+                    "from_cache": from_cache,
+                    "count": len(prompts) if isinstance(prompts, list) else 0,
+                    "message": f"MCP prompts 获取成功（server={server}）",
+                }
+            except McpError as e:
+                return {"success": False, "error": f"MCP prompts 获取失败: {e}"}
+            except Exception as e:
+                return {"success": False, "error": f"MCP prompts 获取异常: {e}"}
+
+        elif action == "mcp_get_prompt":
+            server = params.get("server")
+            prompt_name = params.get("prompt")
+            arguments = params.get("arguments", {})
+            timeout_s = float(params.get("timeout_s", 20.0))
+            if not server:
+                return {"success": False, "error": "缺少server参数"}
+            if not prompt_name:
+                return {"success": False, "error": "缺少prompt参数"}
+            if not isinstance(arguments, dict):
+                return {"success": False, "error": "arguments 必须为 object"}
+            try:
+                result = self.mcp_manager.get_prompt(
+                    str(server),
+                    str(prompt_name),
+                    arguments,
+                    timeout_s=timeout_s,
+                )
+                return {
+                    "success": True,
+                    "server": server,
+                    "prompt": prompt_name,
+                    "result": result,
+                    "message": f"MCP prompt 获取成功（{server}/{prompt_name}）",
+                }
+            except McpError as e:
+                return {"success": False, "error": f"MCP prompt 获取失败: {e}"}
+            except Exception as e:
+                return {"success": False, "error": f"MCP prompt 获取异常: {e}"}
+
+        elif action == "mcp_sampling_create_message":
+            server = params.get("server")
+            sampling_params = params.get("sampling_params", {})
+            timeout_s = float(params.get("timeout_s", 30.0))
+            if not server:
+                return {"success": False, "error": "缺少server参数"}
+            if not isinstance(sampling_params, dict):
+                return {"success": False, "error": "sampling_params 必须为 object"}
+            try:
+                result = self.mcp_manager.sampling_create_message(
+                    str(server),
+                    sampling_params,
+                    timeout_s=timeout_s,
+                )
+                return {
+                    "success": True,
+                    "server": server,
+                    "result": result,
+                    "message": f"MCP sampling/createMessage 调用成功（server={server}）",
+                }
+            except McpError as e:
+                return {"success": False, "error": f"MCP sampling/createMessage 调用失败: {e}"}
+            except Exception as e:
+                return {"success": False, "error": f"MCP sampling/createMessage 调用异常: {e}"}
+
+        elif action == "mcp_completion_complete":
+            server = params.get("server")
+            completion_params = params.get("completion_params", {})
+            timeout_s = float(params.get("timeout_s", 20.0))
+            if not server:
+                return {"success": False, "error": "缺少server参数"}
+            if not isinstance(completion_params, dict):
+                return {"success": False, "error": "completion_params 必须为 object"}
+            try:
+                result = self.mcp_manager.completion_complete(
+                    str(server),
+                    completion_params,
+                    timeout_s=timeout_s,
+                )
+                return {
+                    "success": True,
+                    "server": server,
+                    "result": result,
+                    "message": f"MCP completion/complete 调用成功（server={server}）",
+                }
+            except McpError as e:
+                return {"success": False, "error": f"MCP completion/complete 调用失败: {e}"}
+            except Exception as e:
+                return {"success": False, "error": f"MCP completion/complete 调用异常: {e}"}
 
         elif action == "knowledge_sync":
             """同步知识库"""
@@ -4564,7 +4877,108 @@ big_image.jpg
             except KeyboardInterrupt:
                 print("\n👋 程序已中断，再见！")
                 sys.exit(0)
-    
+
+    def _normalize_elicitation_value(self, raw: str, schema: Dict[str, Any]) -> Any:
+        t = str((schema or {}).get("type", "string")).strip().lower()
+        if t == "integer":
+            return int(raw.strip())
+        if t == "number":
+            return float(raw.strip())
+        if t == "boolean":
+            v = raw.strip().lower()
+            if v in ("1", "true", "t", "yes", "y", "on"):
+                return True
+            if v in ("0", "false", "f", "no", "n", "off"):
+                return False
+            raise ValueError("boolean input expected")
+        return raw
+
+    def _handle_mcp_elicitation_create(self, server: str, params: Dict[str, Any]) -> Dict[str, Any]:
+        p = params if isinstance(params, dict) else {}
+        mode = str(p.get("mode", "form") or "form").strip().lower()
+        message = str(p.get("message", "") or "").strip()
+        if mode not in ("form", "url"):
+            raise McpError(f"不支持的 elicitation mode: {mode}")
+
+        # Non-interactive fallback for tests/piped execution.
+        if not sys.stdin.isatty():
+            if mode == "url":
+                return {"action": "accept"}
+            requested = p.get("requestedSchema", {})
+            props = requested.get("properties", {}) if isinstance(requested, dict) else {}
+            content: Dict[str, Any] = {}
+            if isinstance(props, dict):
+                for key, meta in props.items():
+                    k = str(key).strip()
+                    if not k:
+                        continue
+                    default = meta.get("default") if isinstance(meta, dict) else None
+                    content[k] = default if default is not None else ""
+            return {"action": "accept", "content": content}
+
+        print(f"\n📩 MCP elicitation 请求来自 server={server}")
+        if message:
+            print(f"说明: {message}")
+
+        if mode == "url":
+            target_url = str(p.get("url", "") or "").strip()
+            print(f"URL: {target_url}")
+            consent = input("是否同意继续该 URL 流程？(y=accept / n=decline / Enter=cancel): ").strip().lower()
+            if consent == "y":
+                return {"action": "accept"}
+            if consent == "n":
+                return {"action": "decline"}
+            return {"action": "cancel"}
+
+        requested = p.get("requestedSchema", {})
+        if not isinstance(requested, dict):
+            requested = {}
+        props = requested.get("properties", {})
+        required = requested.get("required", [])
+        required_set = {str(x) for x in required} if isinstance(required, list) else set()
+        content: Dict[str, Any] = {}
+        if not isinstance(props, dict) or not props:
+            consent = input("未提供 requestedSchema，是否接受本次请求？(y/n): ").strip().lower()
+            return {"action": "accept" if consent == "y" else "decline", "content": content}
+
+        for key, meta in props.items():
+            k = str(key).strip()
+            if not k:
+                continue
+            s = meta if isinstance(meta, dict) else {}
+            title = str(s.get("title", "") or "").strip()
+            desc = str(s.get("description", "") or "").strip()
+            default = s.get("default")
+            label = title or k
+            hint_parts = []
+            if desc:
+                hint_parts.append(desc)
+            if k in required_set:
+                hint_parts.append("required")
+            if default is not None:
+                hint_parts.append(f"default={default}")
+            hint = f" ({', '.join(hint_parts)})" if hint_parts else ""
+            while True:
+                raw = input(f"请输入 {label}{hint}: ")
+                if raw == "" and default is not None:
+                    content[k] = default
+                    break
+                if raw == "" and k not in required_set:
+                    content[k] = ""
+                    break
+                try:
+                    content[k] = self._normalize_elicitation_value(raw, s)
+                    break
+                except Exception:
+                    print("输入格式无效，请重试。")
+
+        submit = input("提交本次 elicitation 数据？(y=accept / n=decline / Enter=cancel): ").strip().lower()
+        if submit == "y":
+            return {"action": "accept", "content": content}
+        if submit == "n":
+            return {"action": "decline"}
+        return {"action": "cancel"}
+
     def _execute_file_directly(self, user_input: str) -> bool:
         """
         直接执行可执行文件，实时显示输出并支持交互输入
