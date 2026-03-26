@@ -51,7 +51,7 @@
 
 ### 支持的操作类型
 
-`list`, `rename`, `move`, `delete`, `mkdir`, `info`, `cd`, `ffmpeg`, `cls`, `batch`, `shell`, `script`, `text_file`, `read`, `analyze_image`, `git`, `diff`
+`list`, `rename`, `move`, `delete`, `mkdir`, `info`, `cd`, `ffmpeg`, `cls`, `batch`, `shell`, `script`, `text_file`, `read`, `analyze_image`, `diff`, `mcp_list_tools`, `mcp_call_tool`, `mcp_status`, `mcp_status_refresh`, `mcp_reconnect`
 
 ## 批量命令
 
@@ -172,21 +172,6 @@
 - 例如：`{"action": "analyze_image", "params": {"path": "screenshot.png"}}`
 - 例如：`{"action": "analyze_image", "params": {"path": "photo.jpg", "prompt": "描述图片中的主要物体和场景"}}`
 
-## Git 版本控制（`git`）
-
-- `{"action": "git", "params": {"command": "git子命令", "args": "可选的参数"}}`
-- 支持所有 Git 命令，如 status, add, commit, push, pull, branch, checkout 等。
-- 例如：`{"action": "git", "params": {"command": "status"}}`
-- 例如：`{"action": "git", "params": {"command": "add", "args": "."}}`
-- 例如：`{"action": "git", "params": {"command": "commit", "args": "-m \"提交信息\""}}`
-- 例如：`{"action": "git", "params": {"command": "push", "args": "origin main"}}`
-- 例如：`{"action": "git", "params": {"command": "pull", "args": "origin main"}}`
-- 例如：`{"action": "git", "params": {"command": "branch", "args": "new-feature"}}`
-- 例如：`{"action": "git", "params": {"command": "checkout", "args": "main"}}`
-- 例如：`{"action": "git", "params": {"command": "log", "args": "--oneline -10"}}`
-- 自动检查当前目录是否为 Git 仓库，如果不是会提示错误。
-- 自动检查 Git 是否已安装。
-
 ## 文件差异比较（`diff`）
 
 - `{"action": "diff", "params": {"file1": "第一个文件路径", "file2": "第二个文件路径", "options": "可选的fc参数"}}`
@@ -196,8 +181,72 @@
 - 例如：`{"action": "diff", "params": {"file1": "old.py", "file2": "new.py", "options": "/N"}}`
 - 例如：`{"action": "diff", "params": {"file1": "config1.ini", "file2": "config2.ini", "options": "/W"}}`
 - 自动检查文件是否存在。
-- 使用 Windows 内置的 `fc` 命令，无需额外安装。
+- 在Windows系统上使用内置的 `fc` 命令
 - 返回码 0 表示文件相同，返回码 1 表示有差异。
+
+## MCP 工具列表（`mcp_list_tools`）
+
+- `{"action": "mcp_list_tools", "params": {"server": "server名", "use_cache": true, "timeout_s": 8}}`
+- 从 `mcp.json` 中已配置的 server 拉取工具列表。
+- `use_cache` 可选，默认 `true`；设为 `false` 可强制刷新。
+- 例如：`{"action":"mcp_list_tools","params":{"server":"playwright","use_cache":false}}`
+- 当该动作失败时，优先重试 `mcp_list_tools`（可调大 `timeout_s`），**不要**改用 `shell` 手工执行 `xxx mcp start`、`taskkill` 等进程管理命令。
+- 若你输出了上述 shell 命令，宿主会直接拒绝执行并返回错误。
+
+## MCP 工具调用（`mcp_call_tool`）
+
+- `{"action": "mcp_call_tool", "params": {"server": "server名", "tool": "工具名", "arguments": {"key":"value"}, "timeout_s": 20}}`
+- `arguments` 必须是 JSON object。
+- 例如：`{"action":"mcp_call_tool","params":{"server":"DevHelper","tool":"jira_get_issue","arguments":{"issue_key":"ZOOM-12345"}}}`
+- MCP 生命周期由宿主统一管理；**禁止**通过 `shell` 启停 MCP server 进程。
+
+## MCP 加载状态（`mcp_status`）
+
+- `{"action": "mcp_status", "params": {"log_limit": 20}}`
+- 仅从内存缓存返回状态（**不会触发任何实时 MCP 调用**）。
+- 返回是否已完成所有 MCP 预加载、成功/失败数量、每个 server 的状态与缓存来源。
+- 额外返回 `loading_servers` 与 `recent_logs`（最近 N 条连接日志摘要）。
+- 失败 server 还会包含 `failure_type`（`unsupported` / `missing_dependency` / `connect_failed`）与 `suggestion`，并提供聚合 `fix_suggestions`。
+- 当用户问“当前加载了哪些 MCP / 加载进度”等状态问题时，优先使用 `mcp_status`，不要用 `batch` 对所有 server 逐个 `mcp_list_tools`。
+- **输出格式要求（强制）**：展示 MCP 状态时，必须使用下面的固定 Markdown 模板（字段名与结构保持一致，可替换具体值）：
+
+```markdown
+**MCP Server Loading Status (Current Working Directory: `<cwd>`)**
+
+| Server      | State   | Tools | Details / Suggestion |
+|-------------|---------|-------|----------------------|
+| **<serverA>** | <state> | <tool_count> | <details_or_suggestion> |
+| **<serverB>** | <state> | <tool_count> | <details_or_suggestion> |
+
+**Summary**
+- **Total servers:** <n>
+- **Total tools:** <n>
+- **Currently loading:** <n> (<comma_separated_names_or_none>)
+- **Failed:** <n> – <brief_reason_or_none>
+- **Skipped:** <n>
+- **All loaded:** **<true_or_false>**
+
+**Fix suggestions** (from cache):
+- <suggestion_1>
+- <suggestion_2_or_none>
+```
+
+- `State` 仅使用：`loaded` / `loading` / `failed` / `idle` / `unknown`。
+- `Tools` 使用每个 server 的 `tool_count`（缺失时显示 `0`）。
+- `Details / Suggestion` 优先显示 `suggestion`；若无建议，显示状态说明（例如 `Actively loading tools (active_ops=1)`）。
+- 没有失败项时，`Fix suggestions` 必须写 `- None`。
+
+## MCP 重连（`mcp_reconnect`）
+
+- `{"action": "mcp_reconnect", "params": {"server": "server名", "timeout_s": 15}}`
+- 强制重连指定 MCP server，并刷新该 server 的 tools 缓存。
+
+## MCP 状态同步刷新（`mcp_status_refresh`）
+
+- `{"action": "mcp_status_refresh", "params": {"servers": ["serverA","serverB"], "timeout_s": 12, "force": true, "log_limit": 20}}`
+- 主动对指定 servers（不传则全部）执行同步刷新，并返回最新状态。
+- 这是**会触发实时 MCP 调用**的动作，用于排障或手工刷新。
+- 刷新后向用户展示状态时，同样必须使用上面的固定 `MCP Server Loading Status` 模板。
 
 ## 重要提示
 
