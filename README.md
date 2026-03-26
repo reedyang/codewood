@@ -220,6 +220,43 @@ Smart Shell 会在启动时自动从 **`config.json` 同目录**读取 `mcp.json
 - `mcp_completion_complete`：调用 completion 能力获取补全（`completion/complete`）
 - 失败状态会细分为：`unsupported` / `missing_dependency` / `connect_failed`，`mcp_status` 会返回对应修复建议（`fix_suggestions`）。
 
+#### URL MCP 的 OAuth 2.0（Authorization Code + PKCE）
+
+URL 传输已支持在收到 `401 Unauthorized` 挑战后自动执行 OAuth 流程：
+
+- 解析 `WWW-Authenticate`（含 `resource_metadata` / `scope`）
+- 发现 Protected Resource Metadata 与 Authorization Server Metadata（OAuth/OIDC well-known）
+- 走 Authorization Code + PKCE（`S256`）获取 token
+- 自动保存/加载 token（`<config_dir>/oauth_tokens.json`），并在过期后尝试 refresh token
+- 若未配置 `client_id` 且授权服务器提供 `registration_endpoint`，会尝试 Dynamic Client Registration
+
+推荐在对应 server 下配置 `oauth`：
+
+```json
+{
+  "mcpServers": {
+    "secure-url-server": {
+      "url": "https://mcp.example.com/mcp",
+      "headers": {},
+      "oauth": {
+        "client_id": "https://app.example.com/oauth/client-metadata.json",
+        "client_secret": "",
+        "redirect_host": "127.0.0.1",
+        "redirect_port": 0,
+        "scope": "files:read files:write",
+        "open_browser": true
+      }
+    }
+  }
+}
+```
+
+说明：
+
+- `redirect_port: 0` 表示自动分配本地回调端口
+- 如 `open_browser=false`，程序会打印授权链接供手动打开
+- 若未配置 `scope`，优先使用 401 challenge 的 `scope`，否则回退 `scopes_supported`
+
 示例（`~/.smartshell/mcp.json` 或 `.smartshell/mcp.json`）：
 
 ```json
