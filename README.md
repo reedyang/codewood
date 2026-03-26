@@ -210,6 +210,14 @@ Smart Shell 会在启动时自动从 **`config.json` 同目录**读取 `mcp.json
 - `mcp_list_tools`：查询指定 server 的 tools
 - `mcp_reconnect`：强制重连并刷新指定 server 的 tools 缓存
 - `mcp_call_tool`：调用指定 tool
+- `mcp_call_tool_batch`：批量调用多个 tool（JSON-RPC batch，支持 `allow_partial_failure=true` 返回逐项状态，并附带 `ok_count/error_count/has_error` 汇总）
+- `mcp_list_resources`：查询指定 server 的 resources（`resources/list`）
+- `mcp_read_resource`：读取指定 resource URI（`resources/read`）
+- `mcp_list_resource_templates`：查询指定 server 的 resource templates（`resources/templates/list`）
+- `mcp_list_prompts`：查询指定 server 的 prompts（`prompts/list`）
+- `mcp_get_prompt`：按名称和参数获取 prompt 结果（`prompts/get`）
+- `mcp_sampling_create_message`：调用 sampling 能力创建消息（`sampling/createMessage`）
+- `mcp_completion_complete`：调用 completion 能力获取补全（`completion/complete`）
 - 失败状态会细分为：`unsupported` / `missing_dependency` / `connect_failed`，`mcp_status` 会返回对应修复建议（`fix_suggestions`）。
 
 示例（`~/.smartshell/mcp.json` 或 `.smartshell/mcp.json`）：
