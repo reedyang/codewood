@@ -5,6 +5,7 @@ import json
 import hashlib
 import secrets
 import re
+import time
 from pathlib import Path
 from typing import List, Dict, Optional, Any, Tuple, Set
 import shutil
@@ -185,6 +186,8 @@ class SmartShellAgent:
         self._ai_created_path_keys: Set[str] = set()
         # Basename of last ephemeral script auto-removed after shell (avoid redundant delete + freedom prompt)
         self._last_auto_removed_ephemeral: Optional[str] = None
+        # MCP auth-gate: avoid repeated token-prompt shell loops.
+        self._mcp_pending_user_input: Dict[str, Dict[str, Any]] = {}
         
         # 初始化历史记录管理器，使用指定的配置目录或自动查找
         if config_dir:
@@ -3448,6 +3451,28 @@ big_image.jpg
             shell_cmd = params.get("command")
             if shell_cmd:
                 lowered_shell = str(shell_cmd).lower()
+                if self._mcp_pending_user_input:
+                    promptish = (
+                        ("token" in lowered_shell)
+                        or ("auth" in lowered_shell)
+                        or ("credential" in lowered_shell)
+                        or ("set /p" in lowered_shell)
+                    )
+                    mcpish = ("mcp" in lowered_shell) or ("figma" in lowered_shell)
+                    echoish = ("echo " in lowered_shell) or ("set /p" in lowered_shell)
+                    if promptish and mcpish and echoish:
+                        waiting = ", ".join(sorted(self._mcp_pending_user_input.keys()))
+                        return {
+                            "success": False,
+                            "retryable": False,
+                            "blocked_by_guard": True,
+                            "needs_user_input": True,
+                            "input_type": "token",
+                            "error": (
+                                f"检测到重复的 token 提示循环（server={waiting}），已阻止本次 shell 提示。"
+                                "请等待用户提供新 token 后，再执行一次 mcp_reconnect。"
+                            ),
+                        }
                 if " mcp start" in lowered_shell or ("helper.exe" in lowered_shell and " mcp " in lowered_shell):
                     return {
                         "success": False,
@@ -3677,6 +3702,7 @@ big_image.jpg
                 return {"success": False, "error": "缺少server参数"}
             try:
                 tools = self.mcp_manager.reconnect_server(str(server), timeout_s=timeout_s)
+                self._mcp_pending_user_input.pop(str(server), None)
                 self.system_prompt = self._base_system_prompt + self._build_mcp_system_append()
                 status = self.mcp_manager.get_status().get("servers", {}).get(str(server), {})
                 return {
@@ -3688,7 +3714,32 @@ big_image.jpg
                     "message": f"MCP server 重连成功（server={server}）",
                 }
             except McpError as e:
-                return {"success": False, "error": f"MCP server 重连失败: {e}"}
+                err = str(e)
+                err_l = err.lower()
+                auth_like = (
+                    ("401" in err_l)
+                    or ("unauthorized" in err_l)
+                    or ("invalid token" in err_l)
+                    or ("token 无效" in err_l)
+                    or ("token 已验证失败" in err_l)
+                )
+                if auth_like:
+                    self._mcp_pending_user_input[str(server)] = {
+                        "input_type": "token",
+                        "ts": time.time(),
+                    }
+                    return {
+                        "success": False,
+                        "error": f"MCP server 重连失败: {err}",
+                        "retryable": False,
+                        "needs_user_input": True,
+                        "input_type": "token",
+                        "suggestion": (
+                            "检测到认证失败。请等待用户提供新的有效 token 后再重试；"
+                            "在同一轮中不要继续自动重试或重复提示。"
+                        ),
+                    }
+                return {"success": False, "error": f"MCP server 重连失败: {err}"}
             except Exception as e:
                 return {"success": False, "error": f"MCP server 重连异常: {e}"}
 
@@ -4612,6 +4663,17 @@ big_image.jpg
                             "用户取消了操作，请不要再继续执行任何命令，直接输出'{\"action\": \"done\"}'"
                         )
                         continue
+
+                    # Hard stop: when system explicitly requires user input and is non-retryable,
+                    # end current auto-execution loop to avoid prompt/list/shell churn.
+                    if (
+                        (not result.get("success", True))
+                        and bool(result.get("needs_user_input", False))
+                        and (result.get("retryable", True) is False)
+                    ):
+                        hint = str(result.get("error", "") or "需要用户输入后再继续。")
+                        print(f"⏸️ 已暂停自动续步：{hint}")
+                        break
                     
                     # 第一轮结束后，后续轮次不再查询知识库
                     is_first_round = False

@@ -8,7 +8,14 @@ import shutil
 import subprocess
 import threading
 import time
+import sys
+import getpass
+import secrets
+import hashlib
+import base64
+import webbrowser
 import urllib.error
+import urllib.parse
 import urllib.request
 from collections import deque
 from dataclasses import dataclass, field
@@ -893,6 +900,9 @@ class McpUrlClient:
     session_id: Optional[str] = None
     lock: threading.Lock = field(default_factory=threading.Lock)
     peer_request_handler: Optional[Callable[[str, Dict[str, Any]], Dict[str, Any]]] = None
+    token_store_path: Optional[str] = None
+    oauth_token: Dict[str, Any] = field(default_factory=dict)
+    _manual_rejected_token_fps: set = field(default_factory=set)
 
     def _debug_enabled(self) -> bool:
         env_flag = str(os.environ.get("SMART_SHELL_MCP_HANDSHAKE_DEBUG", "")).strip().lower()
@@ -927,6 +937,11 @@ class McpUrlClient:
         if isinstance(extra, dict):
             for k, v in extra.items():
                 headers[str(k)] = str(v)
+        # Only inject OAuth bearer token if caller didn't already set Authorization.
+        if "Authorization" not in headers and isinstance(self.oauth_token, dict):
+            at = str(self.oauth_token.get("access_token", "") or "").strip()
+            if at:
+                headers["Authorization"] = f"Bearer {at}"
         if self.session_id:
             headers["mcp-session-id"] = str(self.session_id)
         return headers
@@ -941,10 +956,520 @@ class McpUrlClient:
             or ("404" in msg and "session" in msg)
         )
 
-    def _post_jsonrpc(self, method: str, params: Optional[Dict[str, Any]], timeout_s: float) -> Dict[str, Any]:
+    def _oauth_conf(self) -> Dict[str, Any]:
+        oauth = self.config.get("oauth", {})
+        return oauth if isinstance(oauth, dict) else {}
+
+    def _manual_auth_fallback_enabled(self, mcp_url: str) -> bool:
+        conf_flag = self.config.get("manual_auth_fallback")
+        if isinstance(conf_flag, bool):
+            return conf_flag
+        try:
+            host = str(urllib.parse.urlsplit(str(mcp_url or "")).hostname or "").lower()
+        except Exception:
+            host = ""
+        # Provider-specific fallback defaults (can still be overridden by config).
+        return host.endswith("mcp.figma.com")
+
+    @staticmethod
+    def _extract_bearer_token(raw: str) -> str:
+        s = str(raw or "").strip()
+        if not s:
+            return ""
+        m = re.search(r"(?i)\bauthorization\s*:\s*bearer\s+(.+)$", s)
+        if m:
+            return str(m.group(1)).strip()
+        m = re.search(r"(?i)\bbearer\s+(.+)$", s)
+        if m:
+            return str(m.group(1)).strip()
+        return s
+
+    def _manual_token_prompt_and_store(self, mcp_url: str) -> bool:
+        # Only available in interactive terminal sessions.
+        try:
+            allow_non_tty = bool(self.config.get("manual_auth_allow_non_tty", False))
+            if not sys.stdin.isatty() and not allow_non_tty:
+                return False
+        except Exception:
+            return False
+        print("\n检测到 MCP 返回 401 且未提供可用 challenge。")
+        print(f"server={self.name} url={mcp_url}")
+        print("请先在浏览器完成该 provider 登录，然后粘贴：")
+        print("- Authorization: Bearer <token>")
+        print("- 或直接粘贴 <token>")
+        # Do not echo token back to terminal output.
+        raw = getpass.getpass("请输入 token（回车取消）: ").strip()
+        token = self._extract_bearer_token(raw)
+        if not token:
+            return False
+        fp = self._token_fp(token)
+        if fp and fp in self._manual_rejected_token_fps:
+            print("该 token 之前已验证失败，请更换新的 token。")
+            return False
+        self.oauth_token = {
+            "access_token": token,
+            "token_type": "Bearer",
+            "scope": "",
+            "token_endpoint": "",
+        }
+        self._save_oauth_token_to_store()
+        return True
+
+    @staticmethod
+    def _token_fp(token: str) -> str:
+        s = str(token or "").strip()
+        if not s:
+            return ""
+        try:
+            return hashlib.sha256(s.encode("utf-8", errors="ignore")).hexdigest()[:16]
+        except Exception:
+            return ""
+
+    def _is_current_manual_token_rejected(self) -> bool:
+        at = ""
+        if isinstance(self.oauth_token, dict):
+            at = str(self.oauth_token.get("access_token", "") or "").strip()
+        fp = self._token_fp(at)
+        return bool(fp and fp in self._manual_rejected_token_fps)
+
+    def _mark_current_manual_token_rejected(self) -> None:
+        at = ""
+        if isinstance(self.oauth_token, dict):
+            at = str(self.oauth_token.get("access_token", "") or "").strip()
+        fp = self._token_fp(at)
+        if fp:
+            self._manual_rejected_token_fps.add(fp)
+            self._save_oauth_token_to_store()
+
+    def _server_resource_uri(self) -> str:
+        """
+        Canonical resource URI for RFC8707 resource parameter.
+        Keep scheme+host(+port)+path, drop query/fragment.
+        """
+        url = str(self.config.get("url", "") or "").strip()
+        if not url:
+            return ""
+        u = urllib.parse.urlsplit(url)
+        scheme = str(u.scheme or "").lower()
+        netloc = str(u.netloc or "").lower()
+        path = str(u.path or "")
+        return urllib.parse.urlunsplit((scheme, netloc, path, "", ""))
+
+    def _token_store_key(self) -> str:
+        res = self._server_resource_uri() or str(self.config.get("url", "")).strip()
+        return f"{self.name}::{res}"
+
+    def _load_oauth_token_from_store(self) -> None:
+        p = str(self.token_store_path or "").strip()
+        if not p:
+            return
+        try:
+            path = Path(p)
+            if not path.exists():
+                return
+            payload = json.loads(path.read_text(encoding="utf-8") or "{}")
+            if not isinstance(payload, dict):
+                return
+            item = payload.get(self._token_store_key(), {})
+            if isinstance(item, dict):
+                self.oauth_token = dict(item)
+                rejected = item.get("_manual_rejected_token_fps", [])
+                if isinstance(rejected, list):
+                    self._manual_rejected_token_fps = {
+                        str(x).strip() for x in rejected if str(x).strip()
+                    }
+        except Exception:
+            return
+
+    def _save_oauth_token_to_store(self) -> None:
+        p = str(self.token_store_path or "").strip()
+        if not p:
+            return
+        try:
+            path = Path(p)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            payload: Dict[str, Any] = {}
+            if path.exists():
+                try:
+                    current = json.loads(path.read_text(encoding="utf-8") or "{}")
+                    if isinstance(current, dict):
+                        payload = current
+                except Exception:
+                    payload = {}
+            token_obj = dict(self.oauth_token if isinstance(self.oauth_token, dict) else {})
+            if self._manual_rejected_token_fps:
+                token_obj["_manual_rejected_token_fps"] = sorted(self._manual_rejected_token_fps)
+            payload[self._token_store_key()] = token_obj
+            path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        except Exception:
+            return
+
+    def _token_expired(self) -> bool:
+        if not isinstance(self.oauth_token, dict):
+            return True
+        at = str(self.oauth_token.get("access_token", "") or "").strip()
+        if not at:
+            return True
+        exp = float(self.oauth_token.get("expires_at", 0.0) or 0.0)
+        if exp <= 0:
+            return False
+        # Refresh a bit earlier for clock skew.
+        return time.time() >= (exp - 30.0)
+
+    @staticmethod
+    def _parse_www_authenticate(header_value: str) -> Dict[str, str]:
+        s = str(header_value or "").strip()
+        out: Dict[str, str] = {}
+        if not s:
+            return out
+        if s.lower().startswith("bearer"):
+            s = s[6:].strip()
+        # key="value", key=value
+        for m in re.finditer(r'([a-zA-Z_][a-zA-Z0-9_\-]*)\s*=\s*("([^"]*)"|[^,\s]+)', s):
+            k = str(m.group(1)).strip()
+            v = str(m.group(3) if m.group(3) is not None else m.group(2)).strip().strip('"')
+            out[k] = v
+        return out
+
+    def _oauth_fetch_json(self, url: str, headers: Optional[Dict[str, str]] = None, timeout_s: float = 8.0) -> Dict[str, Any]:
+        req = urllib.request.Request(url=url, headers=headers or {}, method="GET")
+        with urllib.request.urlopen(req, timeout=max(0.5, float(timeout_s))) as resp:
+            raw = resp.read().decode("utf-8", errors="replace")
+            data = json.loads(raw or "{}")
+            return data if isinstance(data, dict) else {}
+
+    def _oauth_discover_resource_metadata(self, mcp_url: str, challenge: Dict[str, str], timeout_s: float) -> Dict[str, Any]:
+        # 1) WWW-Authenticate resource_metadata
+        rm = str(challenge.get("resource_metadata", "") or "").strip()
+        if rm:
+            return self._oauth_fetch_json(rm, timeout_s=timeout_s)
+        # 2) Well-known fallback (path-specific then root), per MCP auth draft.
+        u = urllib.parse.urlsplit(mcp_url)
+        origin = urllib.parse.urlunsplit((u.scheme, u.netloc, "", "", ""))
+        path = str(u.path or "").lstrip("/")
+        candidates: List[str] = []
+        if path:
+            candidates.append(f"{origin}/.well-known/oauth-protected-resource/{path}")
+        candidates.append(f"{origin}/.well-known/oauth-protected-resource")
+        last_err = ""
+        for c in candidates:
+            try:
+                return self._oauth_fetch_json(c, timeout_s=timeout_s)
+            except Exception as e:
+                last_err = str(e)
+                continue
+        raise McpError(f"OAuth 资源元数据发现失败: {last_err or 'unknown'}")
+
+    def _oauth_discover_authorization_server_metadata(self, issuer: str, timeout_s: float) -> Dict[str, Any]:
+        iu = urllib.parse.urlsplit(str(issuer or "").strip())
+        if not iu.scheme or not iu.netloc:
+            raise McpError("OAuth authorization server URL 无效")
+        base = urllib.parse.urlunsplit((iu.scheme, iu.netloc, "", "", ""))
+        path = str(iu.path or "").strip("/")
+        candidates: List[str] = []
+        if path:
+            candidates.extend(
+                [
+                    f"{base}/.well-known/oauth-authorization-server/{path}",
+                    f"{base}/.well-known/openid-configuration/{path}",
+                    f"{base}/{path}/.well-known/openid-configuration",
+                ]
+            )
+        else:
+            candidates.extend(
+                [
+                    f"{base}/.well-known/oauth-authorization-server",
+                    f"{base}/.well-known/openid-configuration",
+                ]
+            )
+        last_err = ""
+        for url in candidates:
+            try:
+                md = self._oauth_fetch_json(url, timeout_s=timeout_s)
+                if md:
+                    return md
+            except Exception as e:
+                last_err = str(e)
+                continue
+        raise McpError(f"OAuth authorization server metadata 发现失败: {last_err or 'unknown'}")
+
+    @staticmethod
+    def _pkce_challenge(verifier: str) -> str:
+        digest = hashlib.sha256(verifier.encode("utf-8")).digest()
+        return base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
+
+    def _oauth_exchange_token(
+        self,
+        token_endpoint: str,
+        form: Dict[str, str],
+        client_id: str,
+        client_secret: str,
+        timeout_s: float,
+    ) -> Dict[str, Any]:
+        body = urllib.parse.urlencode(form).encode("utf-8")
+        headers = {"Content-Type": "application/x-www-form-urlencoded"}
+        if client_secret:
+            # Use basic auth when confidential client secret exists.
+            basic = base64.b64encode(f"{client_id}:{client_secret}".encode("utf-8")).decode("ascii")
+            headers["Authorization"] = f"Basic {basic}"
+        req = urllib.request.Request(url=token_endpoint, data=body, headers=headers, method="POST")
+        with urllib.request.urlopen(req, timeout=max(0.5, float(timeout_s))) as resp:
+            raw = resp.read().decode("utf-8", errors="replace")
+            data = json.loads(raw or "{}")
+            return data if isinstance(data, dict) else {}
+
+    def _oauth_dynamic_register(
+        self,
+        registration_endpoint: str,
+        redirect_uri: str,
+        timeout_s: float,
+    ) -> Dict[str, Any]:
+        payload = {
+            "client_name": f"smart-shell-{self.name}",
+            "redirect_uris": [redirect_uri],
+            "grant_types": ["authorization_code", "refresh_token"],
+            "response_types": ["code"],
+            "token_endpoint_auth_method": "none",
+        }
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        req = urllib.request.Request(
+            url=registration_endpoint,
+            data=body,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=max(0.5, float(timeout_s))) as resp:
+            raw = resp.read().decode("utf-8", errors="replace")
+            data = json.loads(raw or "{}")
+            return data if isinstance(data, dict) else {}
+
+    def _oauth_refresh_token(self, timeout_s: float = 10.0) -> bool:
+        oauth = self._oauth_conf()
+        rt = str(self.oauth_token.get("refresh_token", "") if isinstance(self.oauth_token, dict) else "").strip()
+        token_ep = str(self.oauth_token.get("token_endpoint", "") if isinstance(self.oauth_token, dict) else "").strip()
+        client_id = str(oauth.get("client_id", "")).strip()
+        client_secret = str(oauth.get("client_secret", "")).strip()
+        if not (rt and token_ep and client_id):
+            return False
+        try:
+            data = self._oauth_exchange_token(
+                token_ep,
+                {
+                    "grant_type": "refresh_token",
+                    "refresh_token": rt,
+                    "client_id": client_id,
+                },
+                client_id=client_id,
+                client_secret=client_secret,
+                timeout_s=timeout_s,
+            )
+            at = str(data.get("access_token", "")).strip()
+            if not at:
+                return False
+            self.oauth_token["access_token"] = at
+            if isinstance(data.get("refresh_token"), str) and data.get("refresh_token"):
+                self.oauth_token["refresh_token"] = str(data.get("refresh_token"))
+            exp_in = data.get("expires_in")
+            if isinstance(exp_in, (int, float)) and float(exp_in) > 0:
+                self.oauth_token["expires_at"] = time.time() + float(exp_in)
+            self._save_oauth_token_to_store()
+            return True
+        except Exception:
+            return False
+
+    def _oauth_authorize_interactive(self, mcp_url: str, challenge: Dict[str, str], timeout_s: float = 30.0) -> None:
+        oauth = self._oauth_conf()
+        resource_md = self._oauth_discover_resource_metadata(mcp_url, challenge, timeout_s=min(10.0, timeout_s))
+        auth_servers = resource_md.get("authorization_servers", [])
+        if isinstance(auth_servers, str):
+            auth_servers = [auth_servers]
+        if not isinstance(auth_servers, list) or not auth_servers:
+            raise McpError("OAuth 资源元数据缺少 authorization_servers")
+        auth_server = str(oauth.get("authorization_server", "") or "").strip() or str(auth_servers[0]).strip()
+        as_md = self._oauth_discover_authorization_server_metadata(auth_server, timeout_s=min(10.0, timeout_s))
+        authorization_endpoint = str(as_md.get("authorization_endpoint", "")).strip()
+        token_endpoint = str(as_md.get("token_endpoint", "")).strip()
+        methods = as_md.get("code_challenge_methods_supported", [])
+        if not authorization_endpoint or not token_endpoint:
+            raise McpError("OAuth metadata 缺少 authorization_endpoint/token_endpoint")
+        if not isinstance(methods, list) or "S256" not in [str(x) for x in methods]:
+            raise McpError("Authorization Server 不支持 PKCE S256，MCP 客户端拒绝继续")
+
+        client_id = str(oauth.get("client_id", "")).strip()
+        client_secret = str(oauth.get("client_secret", "")).strip()
+        redirect_host = str(oauth.get("redirect_host", "127.0.0.1")).strip() or "127.0.0.1"
+        redirect_port_cfg = oauth.get("redirect_port", 0)
+        try:
+            redirect_port = int(redirect_port_cfg)
+        except Exception:
+            redirect_port = 0
+
+        scope_from_challenge = str(challenge.get("scope", "")).strip()
+        scopes_supported = resource_md.get("scopes_supported", [])
+        conf_scope = oauth.get("scope")
+        scope = ""
+        if isinstance(conf_scope, str) and conf_scope.strip():
+            scope = conf_scope.strip()
+        elif isinstance(conf_scope, list) and conf_scope:
+            scope = " ".join([str(x).strip() for x in conf_scope if str(x).strip()])
+        elif scope_from_challenge:
+            scope = scope_from_challenge
+        elif isinstance(scopes_supported, list) and scopes_supported:
+            scope = " ".join([str(x).strip() for x in scopes_supported if str(x).strip()])
+
+        # loopback callback server
+        import http.server
+        import socketserver
+
+        callback_box: Dict[str, Any] = {"code": "", "state": "", "error": ""}
+        done_ev = threading.Event()
+
+        class _CbHandler(http.server.BaseHTTPRequestHandler):
+            def log_message(self, format: str, *args: Any) -> None:  # noqa: A003
+                return
+
+            def do_GET(self) -> None:  # noqa: N802
+                try:
+                    pu = urllib.parse.urlsplit(self.path)
+                    qs = urllib.parse.parse_qs(pu.query or "")
+                    callback_box["code"] = str((qs.get("code") or [""])[0])
+                    callback_box["state"] = str((qs.get("state") or [""])[0])
+                    callback_box["error"] = str((qs.get("error") or [""])[0])
+                    done_ev.set()
+                    body = b"OAuth authorization completed. You can close this tab."
+                    self.send_response(200)
+                    self.send_header("Content-Type", "text/plain; charset=utf-8")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+                except Exception:
+                    self.send_response(500)
+                    self.end_headers()
+
+        class _Srv(socketserver.TCPServer):
+            allow_reuse_address = True
+
+        with _Srv((redirect_host, max(0, redirect_port)), _CbHandler) as srv:
+            actual_port = int(srv.server_address[1])
+            redirect_uri = f"http://{redirect_host}:{actual_port}/callback"
+            # Dynamic client registration fallback when no pre-registered client_id exists.
+            if not client_id:
+                reg_ep = str(as_md.get("registration_endpoint", "")).strip()
+                if not reg_ep:
+                    raise McpError("缺少 OAuth client_id，且 authorization server 未提供 registration_endpoint")
+                reg = self._oauth_dynamic_register(reg_ep, redirect_uri=redirect_uri, timeout_s=min(10.0, timeout_s))
+                client_id = str(reg.get("client_id", "")).strip()
+                client_secret = str(reg.get("client_secret", "")).strip()
+                if not client_id:
+                    raise McpError("OAuth 动态注册失败：返回缺少 client_id")
+            verifier = base64.urlsafe_b64encode(secrets.token_bytes(32)).decode("ascii").rstrip("=")
+            challenge_s256 = self._pkce_challenge(verifier)
+            state = secrets.token_urlsafe(16)
+            resource_uri = self._server_resource_uri()
+            auth_params = {
+                "response_type": "code",
+                "client_id": client_id,
+                "redirect_uri": redirect_uri,
+                "code_challenge": challenge_s256,
+                "code_challenge_method": "S256",
+                "state": state,
+                "resource": resource_uri,
+            }
+            if scope:
+                auth_params["scope"] = scope
+            auth_url = authorization_endpoint + ("&" if "?" in authorization_endpoint else "?") + urllib.parse.urlencode(auth_params)
+            self._debug_log(
+                "oauth_authorize "
+                + json.dumps(
+                    {"authorization_endpoint": authorization_endpoint, "redirect_uri": redirect_uri, "resource": resource_uri},
+                    ensure_ascii=False,
+                )
+            )
+            if oauth.get("open_browser", True) is False:
+                print(f"\n请在浏览器中完成 OAuth 授权：\n{auth_url}\n")
+            else:
+                try:
+                    webbrowser.open(auth_url)
+                    print("\n已尝试打开浏览器进行 OAuth 授权。如未自动打开，请手动访问以下链接：")
+                    print(auth_url)
+                except Exception:
+                    print("\n请在浏览器中完成 OAuth 授权：")
+                    print(auth_url)
+            t = threading.Thread(target=srv.serve_forever, daemon=True)
+            t.start()
+            ok = done_ev.wait(timeout=max(10.0, float(timeout_s)))
+            try:
+                srv.shutdown()
+            except Exception:
+                pass
+            if not ok:
+                raise McpError("OAuth 授权超时，未收到回调 code")
+            if callback_box.get("error"):
+                raise McpError(f"OAuth 授权失败: {callback_box.get('error')}")
+            code = str(callback_box.get("code", "")).strip()
+            if not code:
+                raise McpError("OAuth 回调缺少 code")
+            if str(callback_box.get("state", "")).strip() != state:
+                raise McpError("OAuth state 校验失败")
+            token_data = self._oauth_exchange_token(
+                token_endpoint,
+                {
+                    "grant_type": "authorization_code",
+                    "code": code,
+                    "redirect_uri": redirect_uri,
+                    "client_id": client_id,
+                    "code_verifier": verifier,
+                    "resource": resource_uri,
+                },
+                client_id=client_id,
+                client_secret=client_secret,
+                timeout_s=max(10.0, float(timeout_s)),
+            )
+            at = str(token_data.get("access_token", "")).strip()
+            if not at:
+                raise McpError("OAuth token 响应缺少 access_token")
+            self.oauth_token = {
+                "access_token": at,
+                "refresh_token": str(token_data.get("refresh_token", "") or ""),
+                "token_type": str(token_data.get("token_type", "Bearer") or "Bearer"),
+                "scope": str(token_data.get("scope", "") or ""),
+                "token_endpoint": token_endpoint,
+            }
+            exp_in = token_data.get("expires_in")
+            if isinstance(exp_in, (int, float)) and float(exp_in) > 0:
+                self.oauth_token["expires_at"] = time.time() + float(exp_in)
+            self._save_oauth_token_to_store()
+
+    def _ensure_oauth_token(self, timeout_s: float = 20.0) -> None:
+        # Lazy load token once from store.
+        if not self.oauth_token:
+            self._load_oauth_token_from_store()
+        if not self._token_expired():
+            return
+        if self._oauth_refresh_token(timeout_s=min(10.0, timeout_s)):
+            return
+
+    @staticmethod
+    def _is_insufficient_scope_challenge(www_authenticate: str) -> bool:
+        wa = str(www_authenticate or "").lower()
+        return "insufficient_scope" in wa
+
+    def _post_jsonrpc(
+        self,
+        method: str,
+        params: Optional[Dict[str, Any]],
+        timeout_s: float,
+        *,
+        allow_oauth_retry: bool = True,
+    ) -> Dict[str, Any]:
         url = str(self.config.get("url", "")).strip()
         if not url:
             raise McpError("URL MCP server 缺少 url 配置")
+        # Best-effort refresh existing OAuth token before request.
+        try:
+            self._ensure_oauth_token(timeout_s=min(10.0, timeout_s))
+        except Exception:
+            pass
         req_id = self.next_id
         self.next_id += 1
         payload: Dict[str, Any] = {"jsonrpc": "2.0", "id": req_id, "method": method}
@@ -1094,18 +1619,55 @@ class McpUrlClient:
                 )
         except urllib.error.HTTPError as e:
             detail = ""
+            headers_map: Dict[str, str] = {}
             try:
                 detail = e.read().decode("utf-8", errors="replace")
                 if len(detail) > 600:
                     detail = detail[:600] + "..."
             except Exception:
                 detail = ""
+            try:
+                headers_map = dict(e.headers.items()) if e.headers is not None else {}
+            except Exception:
+                headers_map = {}
+            # OAuth 2.0 challenge flow (HTTP transport only).
+            if allow_oauth_retry and int(getattr(e, "code", 0) or 0) == 401:
+                try:
+                    wa = str(headers_map.get("WWW-Authenticate", "") or "")
+                    challenge = self._parse_www_authenticate(wa)
+                    if challenge or self._oauth_conf():
+                        self._oauth_authorize_interactive(url, challenge, timeout_s=max(15.0, float(timeout_s)))
+                        # Retry original request once with new token.
+                        return self._post_jsonrpc(method, params, timeout_s=timeout_s, allow_oauth_retry=False)
+                    # Provider-specific/manual fallback when challenge is absent.
+                    if self._manual_auth_fallback_enabled(url):
+                        if self._is_current_manual_token_rejected():
+                            raise McpError("手动提供的 token 已验证失败，请更换 token 后重试")
+                        if self._manual_token_prompt_and_store(url):
+                            try:
+                                return self._post_jsonrpc(method, params, timeout_s=timeout_s, allow_oauth_retry=False)
+                            except Exception:
+                                self._mark_current_manual_token_rejected()
+                                raise McpError("手动提供的 token 无效或权限不足，请更换 token 后重试")
+                except Exception as auth_e:
+                    self._debug_log(f"oauth_flow_failed {repr(auth_e)}")
+            # Scope step-up flow for runtime insufficient_scope challenges.
+            if allow_oauth_retry and int(getattr(e, "code", 0) or 0) == 403:
+                try:
+                    wa = str(headers_map.get("WWW-Authenticate", "") or "")
+                    if self._is_insufficient_scope_challenge(wa):
+                        challenge = self._parse_www_authenticate(wa)
+                        self._oauth_authorize_interactive(url, challenge, timeout_s=max(15.0, float(timeout_s)))
+                        return self._post_jsonrpc(method, params, timeout_s=timeout_s, allow_oauth_retry=False)
+                except Exception as auth_e:
+                    self._debug_log(f"oauth_stepup_failed {repr(auth_e)}")
             self._debug_log(
                 "http_error "
                 + json.dumps(
                     {
                         "status": e.code,
                         "reason": str(e.reason),
+                        "headers": self._redact_obj(headers_map),
                         "body": self._redact_text(detail),
                     },
                     ensure_ascii=False,
@@ -1175,6 +1737,7 @@ class McpUrlClient:
         result: Optional[Dict[str, Any]] = None,
         error: Optional[Dict[str, Any]] = None,
         timeout_s: float = 8.0,
+        allow_oauth_retry: bool = True,
     ) -> None:
         url = str(self.config.get("url", "")).strip()
         if not url:
@@ -1187,17 +1750,53 @@ class McpUrlClient:
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         headers = self._base_headers()
         request = urllib.request.Request(url=url, data=body, headers=headers, method="POST")
-        with urllib.request.urlopen(request, timeout=max(0.5, float(timeout_s))) as resp:
-            try:
-                sid = resp.headers.get("mcp-session-id")
-            except Exception:
-                sid = None
-            if sid:
-                self.session_id = sid
-            try:
-                _ = resp.read()
-            except Exception:
-                pass
+        try:
+            with urllib.request.urlopen(request, timeout=max(0.5, float(timeout_s))) as resp:
+                try:
+                    sid = resp.headers.get("mcp-session-id")
+                except Exception:
+                    sid = None
+                if sid:
+                    self.session_id = sid
+                try:
+                    _ = resp.read()
+                except Exception:
+                    pass
+        except urllib.error.HTTPError as e:
+            if allow_oauth_retry and int(getattr(e, "code", 0) or 0) == 401:
+                headers_map: Dict[str, str] = {}
+                try:
+                    headers_map = dict(e.headers.items()) if e.headers is not None else {}
+                except Exception:
+                    headers_map = {}
+                wa = str(headers_map.get("WWW-Authenticate", "") or "")
+                challenge = self._parse_www_authenticate(wa)
+                self._oauth_authorize_interactive(url, challenge, timeout_s=max(15.0, float(timeout_s)))
+                return self._post_jsonrpc_response(
+                    req_id,
+                    result=result,
+                    error=error,
+                    timeout_s=timeout_s,
+                    allow_oauth_retry=False,
+                )
+            if allow_oauth_retry and int(getattr(e, "code", 0) or 0) == 403:
+                headers_map: Dict[str, str] = {}
+                try:
+                    headers_map = dict(e.headers.items()) if e.headers is not None else {}
+                except Exception:
+                    headers_map = {}
+                wa = str(headers_map.get("WWW-Authenticate", "") or "")
+                if self._is_insufficient_scope_challenge(wa):
+                    challenge = self._parse_www_authenticate(wa)
+                    self._oauth_authorize_interactive(url, challenge, timeout_s=max(15.0, float(timeout_s)))
+                    return self._post_jsonrpc_response(
+                        req_id,
+                        result=result,
+                        error=error,
+                        timeout_s=timeout_s,
+                        allow_oauth_retry=False,
+                    )
+            raise
 
     def _post_jsonrpc_batch(
         self,
@@ -1205,10 +1804,15 @@ class McpUrlClient:
         timeout_s: float,
         *,
         allow_partial_failure: bool = False,
+        allow_oauth_retry: bool = True,
     ) -> List[Dict[str, Any]]:
         url = str(self.config.get("url", "")).strip()
         if not url:
             raise McpError("URL MCP server 缺少 url 配置")
+        try:
+            self._ensure_oauth_token(timeout_s=min(10.0, timeout_s))
+        except Exception:
+            pass
         if not calls:
             return []
         payloads: List[Dict[str, Any]] = []
@@ -1236,10 +1840,51 @@ class McpUrlClient:
                 raw = resp.read().decode("utf-8", errors="replace").strip()
         except urllib.error.HTTPError as e:
             detail = ""
+            headers_map: Dict[str, str] = {}
             try:
                 detail = e.read().decode("utf-8", errors="replace")
             except Exception:
                 detail = ""
+            try:
+                headers_map = dict(e.headers.items()) if e.headers is not None else {}
+            except Exception:
+                headers_map = {}
+            if allow_oauth_retry and int(getattr(e, "code", 0) or 0) == 401:
+                wa = str(headers_map.get("WWW-Authenticate", "") or "")
+                challenge = self._parse_www_authenticate(wa)
+                if challenge or self._oauth_conf():
+                    self._oauth_authorize_interactive(url, challenge, timeout_s=max(15.0, float(timeout_s)))
+                    return self._post_jsonrpc_batch(
+                        calls,
+                        timeout_s=timeout_s,
+                        allow_partial_failure=allow_partial_failure,
+                        allow_oauth_retry=False,
+                    )
+                if self._manual_auth_fallback_enabled(url):
+                    if self._is_current_manual_token_rejected():
+                        raise McpError("手动提供的 token 已验证失败，请更换 token 后重试")
+                    if self._manual_token_prompt_and_store(url):
+                        try:
+                            return self._post_jsonrpc_batch(
+                                calls,
+                                timeout_s=timeout_s,
+                                allow_partial_failure=allow_partial_failure,
+                                allow_oauth_retry=False,
+                            )
+                        except Exception:
+                            self._mark_current_manual_token_rejected()
+                            raise McpError("手动提供的 token 无效或权限不足，请更换 token 后重试")
+            if allow_oauth_retry and int(getattr(e, "code", 0) or 0) == 403:
+                wa = str(headers_map.get("WWW-Authenticate", "") or "")
+                if self._is_insufficient_scope_challenge(wa):
+                    challenge = self._parse_www_authenticate(wa)
+                    self._oauth_authorize_interactive(url, challenge, timeout_s=max(15.0, float(timeout_s)))
+                    return self._post_jsonrpc_batch(
+                        calls,
+                        timeout_s=timeout_s,
+                        allow_partial_failure=allow_partial_failure,
+                        allow_oauth_retry=False,
+                    )
             raise McpError(f"URL MCP HTTP错误: {e.code} {e.reason}" + (f"；{detail}" if detail else ""))
         except Exception as e:
             raise McpError(f"URL MCP请求失败: {e}")
@@ -1789,7 +2434,11 @@ class McpManager:
         if server not in self._clients:
             conf = self._server_conf(server)
             if "url" in conf:
-                self._clients[server] = McpUrlClient(name=server, config=conf)
+                self._clients[server] = McpUrlClient(
+                    name=server,
+                    config=conf,
+                    token_store_path=str(self.config_dir / "oauth_tokens.json"),
+                )
                 self._clients[server].peer_request_handler = (
                     lambda method, params, _server=server: self._dispatch_server_request_to_client(
                         _server, method, params
