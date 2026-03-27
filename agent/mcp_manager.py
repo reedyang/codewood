@@ -2164,9 +2164,151 @@ class McpManager:
         self._preload_thread: Optional[threading.Thread] = None
         self._preload_lock = threading.Lock()
         self._status_lock = threading.Lock()
+        self._policy_lock = threading.Lock()
+        self._tool_policy_path = self.config_dir / "mcp_tool_policy.json"
+        self._disabled_tools_by_server: Dict[str, set[str]] = self._load_disabled_tools_policy()
         self._logger = self._build_logger()
         self._recent_logs: "deque[str]" = deque(maxlen=200)
         self._init_server_status()
+
+    def _load_disabled_tools_policy(self) -> Dict[str, set[str]]:
+        out: Dict[str, set[str]] = {}
+        try:
+            if not self._tool_policy_path.exists():
+                return out
+            raw = json.loads(self._tool_policy_path.read_text(encoding="utf-8") or "{}")
+            servers = raw.get("servers", {}) if isinstance(raw, dict) else {}
+            if not isinstance(servers, dict):
+                return out
+            for server, conf in servers.items():
+                if not isinstance(server, str) or not isinstance(conf, dict):
+                    continue
+                disabled = conf.get("disabled_tools", [])
+                if not isinstance(disabled, list):
+                    continue
+                names = {str(x).strip() for x in disabled if str(x).strip()}
+                if names:
+                    out[server] = names
+        except Exception as e:
+            self._log("WARNING", f"load mcp tool policy failed: {e}")
+        return out
+
+    def _save_disabled_tools_policy(self) -> None:
+        data: Dict[str, Any] = {"servers": {}}
+        with self._policy_lock:
+            for server, names in self._disabled_tools_by_server.items():
+                if not names:
+                    continue
+                data["servers"][server] = {
+                    "disabled_tools": sorted(names),
+                }
+        self.config_dir.mkdir(parents=True, exist_ok=True)
+        self._tool_policy_path.write_text(
+            json.dumps(data, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+    def _filter_disabled_tools(self, server: str, tools: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        with self._policy_lock:
+            disabled = set(self._disabled_tools_by_server.get(str(server), set()))
+        if not disabled:
+            return [t for t in tools if isinstance(t, dict)]
+        filtered: List[Dict[str, Any]] = []
+        for t in tools:
+            if not isinstance(t, dict):
+                continue
+            name = str(t.get("name", "")).strip()
+            if name and name in disabled:
+                continue
+            filtered.append(t)
+        return filtered
+
+    def is_tool_disabled(self, server: str, tool_name: str) -> bool:
+        name = str(tool_name or "").strip()
+        if not name:
+            return False
+        with self._policy_lock:
+            return name in self._disabled_tools_by_server.get(str(server), set())
+
+    def list_disabled_tools(self, server: Optional[str] = None) -> Dict[str, List[str]]:
+        with self._policy_lock:
+            if server is not None and str(server).strip():
+                s = str(server).strip()
+                return {s: sorted(self._disabled_tools_by_server.get(s, set()))}
+            return {
+                s: sorted(names)
+                for s, names in self._disabled_tools_by_server.items()
+                if names
+            }
+
+    def list_tools_with_disabled(
+        self, server: str, timeout_s: float = 8.0, use_cache: bool = True
+    ) -> Tuple[List[Dict[str, Any]], bool]:
+        """
+        Return full tools list for a server and annotate disabled tools with
+        display suffix "(disabled)" for reporting.
+        Unlike list_tools(), this method does NOT hide disabled tools.
+        """
+        srv = str(server or "").strip()
+        if not srv:
+            raise McpError("缺少 server")
+
+        from_cache = False
+        if use_cache and srv in self._tools_cache:
+            from_cache = True
+        else:
+            # Ensure raw cache exists; list_tools applies filtering only to return value.
+            self.list_tools(srv, timeout_s=timeout_s, use_cache=False)
+            from_cache = False
+
+        raw_tools = self._tools_cache.get(srv, {}).get("tools", [])
+        tools = raw_tools if isinstance(raw_tools, list) else []
+        with self._policy_lock:
+            disabled = set(self._disabled_tools_by_server.get(srv, set()))
+
+        annotated: List[Dict[str, Any]] = []
+        for item in tools:
+            if not isinstance(item, dict):
+                continue
+            copied = dict(item)
+            name = str(copied.get("name", "")).strip()
+            is_disabled = bool(name and name in disabled)
+            copied["disabled"] = is_disabled
+            copied["display_name"] = f"{name} (disabled)" if is_disabled and name else name
+            annotated.append(copied)
+        return annotated, from_cache
+
+    def disable_tools(self, server: str, tool_names: List[str]) -> List[str]:
+        srv = str(server or "").strip()
+        if not srv:
+            raise McpError("缺少 server")
+        self._server_conf(srv)
+        norm = sorted({str(x).strip() for x in tool_names if str(x).strip()})
+        if not norm:
+            return sorted(self._disabled_tools_by_server.get(srv, set()))
+        with self._policy_lock:
+            cur = set(self._disabled_tools_by_server.get(srv, set()))
+            cur.update(norm)
+            self._disabled_tools_by_server[srv] = cur
+        self._save_disabled_tools_policy()
+        return sorted(self._disabled_tools_by_server.get(srv, set()))
+
+    def enable_tools(self, server: str, tool_names: List[str]) -> List[str]:
+        srv = str(server or "").strip()
+        if not srv:
+            raise McpError("缺少 server")
+        self._server_conf(srv)
+        norm = {str(x).strip() for x in tool_names if str(x).strip()}
+        with self._policy_lock:
+            cur = set(self._disabled_tools_by_server.get(srv, set()))
+            if norm:
+                cur -= norm
+            if cur:
+                self._disabled_tools_by_server[srv] = cur
+            else:
+                self._disabled_tools_by_server.pop(srv, None)
+        self._save_disabled_tools_policy()
+        return sorted(self._disabled_tools_by_server.get(srv, set()))
 
     def _build_logger(self) -> logging.Logger:
         logs_dir = self.workspace_dir / "logs"
@@ -2490,7 +2632,10 @@ class McpManager:
     def list_tools(self, server: str, timeout_s: float = 8.0, use_cache: bool = True) -> Tuple[List[Dict[str, Any]], bool]:
         if use_cache and server in self._tools_cache:
             cached = self._tools_cache[server]
-            tools = cached.get("tools", [])
+            tools_raw = cached.get("tools", [])
+            tools = self._filter_disabled_tools(
+                str(server), tools_raw if isinstance(tools_raw, list) else []
+            )
             self._set_status(
                 server,
                 "success",
@@ -2522,18 +2667,21 @@ class McpManager:
                 conf = self._server_conf(server)
                 source = "url" if isinstance(conf, dict) and "url" in conf else "stdio"
                 self._tools_cache[server] = {"tools": tools, "ts": time.time(), "source": source}
+                visible_tools = self._filter_disabled_tools(
+                    str(server), tools if isinstance(tools, list) else []
+                )
                 self._set_status(
                     server,
                     "success",
-                    tool_count=len(tools) if isinstance(tools, list) else 0,
+                    tool_count=len(visible_tools),
                     source=source,
                     is_cached=False,
                     failure_type="",
                     suggestion="",
                 )
-                self._log("INFO", f"list_tools success server={server}, source={source}, tool_count={len(tools) if isinstance(tools, list) else 0}")
+                self._log("INFO", f"list_tools success server={server}, source={source}, tool_count={len(visible_tools)}")
                 self._mark_op(server, -1)
-                return tools, False
+                return visible_tools, False
             except Exception as e:
                 last_error = str(e)
                 self._log("WARNING", f"list_tools failed for {server}: {last_error}")
@@ -2547,18 +2695,19 @@ class McpManager:
         fallback_tools = self._try_cli_schemas_fallback(server, timeout_s=timeout_s)
         if fallback_tools is not None:
             self._tools_cache[server] = {"tools": fallback_tools, "ts": time.time(), "source": "cli_schemas"}
+            visible_tools = self._filter_disabled_tools(str(server), fallback_tools)
             self._set_status(
                 server,
                 "success",
-                tool_count=len(fallback_tools),
+                tool_count=len(visible_tools),
                 source="cli_schemas",
                 is_cached=False,
                 failure_type="",
                 suggestion="",
             )
-            self._log("INFO", f"list_tools success server={server}, source=cli_schemas, tool_count={len(fallback_tools)}")
+            self._log("INFO", f"list_tools success server={server}, source=cli_schemas, tool_count={len(visible_tools)}")
             self._mark_op(server, -1)
-            return fallback_tools, False
+            return visible_tools, False
         ft, sugg = self._classify_failure(server, last_error or "tools/list 失败")
         self._set_status(
             server,
@@ -2571,6 +2720,8 @@ class McpManager:
         raise McpError(last_error or "tools/list 失败")
 
     def call_tool(self, server: str, tool_name: str, arguments: Dict[str, Any], timeout_s: float = 20.0) -> Dict[str, Any]:
+        if self.is_tool_disabled(str(server), str(tool_name)):
+            raise McpError(f"MCP tool 已被禁用（server={server}, tool={tool_name}）")
         # Refresh cache on first tool call if absent; failure is non-fatal.
         if server not in self._tools_cache:
             try:
@@ -2642,6 +2793,8 @@ class McpManager:
             tool_name = str(c.get("tool", "")).strip()
             if not tool_name:
                 raise McpError(f"calls[{idx}].tool 不能为空")
+            if self.is_tool_disabled(str(server), tool_name):
+                raise McpError(f"calls[{idx}].tool 已被禁用（server={server}, tool={tool_name}）")
             args = c.get("arguments", {})
             if not isinstance(args, dict):
                 raise McpError(f"calls[{idx}].arguments 必须为 object")
@@ -2905,8 +3058,11 @@ class McpManager:
             # If tools are already cached, reflect that in status view even during transient loading.
             cached = self._tools_cache.get(name)
             if isinstance(cached, dict):
-                cached_tools = cached.get("tools", [])
-                cached_count = len(cached_tools) if isinstance(cached_tools, list) else 0
+                cached_tools_raw = cached.get("tools", [])
+                cached_tools = self._filter_disabled_tools(
+                    str(name), cached_tools_raw if isinstance(cached_tools_raw, list) else []
+                )
+                cached_count = len(cached_tools)
                 if cached_count > 0:
                     if int(v.get("tool_count", 0) or 0) <= 0:
                         v["tool_count"] = cached_count
@@ -3047,7 +3203,10 @@ class McpManager:
             return "尚无已缓存的 MCP tools（需先执行 mcp_list_tools）。"
         lines: List[str] = []
         for server, info in self._tools_cache.items():
-            tools = info.get("tools", [])
+            tools_raw = info.get("tools", [])
+            tools = self._filter_disabled_tools(
+                str(server), tools_raw if isinstance(tools_raw, list) else []
+            )
             entries: List[str] = []
             if isinstance(tools, list):
                 for t in tools[:20]:
@@ -3080,6 +3239,11 @@ class McpManager:
             show = " | ".join(entries) if entries else "(none)"
             if isinstance(tools, list) and len(tools) > 20:
                 show += f" | ... total={len(tools)}"
+            disabled_count = 0
+            with self._policy_lock:
+                disabled_count = len(self._disabled_tools_by_server.get(str(server), set()))
+            if disabled_count > 0:
+                show += f" | disabled={disabled_count}"
             lines.append(f"- {server}: {show}")
         return "\n".join(lines)
 

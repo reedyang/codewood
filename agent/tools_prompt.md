@@ -65,6 +65,8 @@
 关键要求：调用 `mcp_server_info` 后，不要立即输出 done。
 你必须先按模板输出详情报告，再在下一步输出 done。
 并且在“完整列表（全量）”中必须列出返回结果里的全部 tools/resources/prompts，禁止截断、禁止仅展示前 N 条。
+当 tools 条目中存在 `display_name` 字段时，完整列表必须优先使用 `display_name` 渲染；
+若某项被禁用，则必须显示为 `<tool_name> (disabled)`，不得省略该后缀。
 用户若仅请求“查询指定 MCP 信息”，在完成该模板渲染后，下一步必须直接输出 `{"tool":"done","args":{}}`，
 是否“仅请求查询指定 MCP 信息”由 AI 基于用户原始需求自行判断（语义判断，不做关键字匹配）。
 若原始需求包含其他未完成目标，则继续完成原始需求；但禁止额外调用 `mcp_status` / `mcp_status_refresh` 或 `shell` 来做无关补充。
