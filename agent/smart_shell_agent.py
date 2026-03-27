@@ -3665,6 +3665,109 @@ big_image.jpg
                 print("❌ diff命令缺少file1或file2参数")
                 return {"success": False, "error": "缺少file1或file2参数"}
 
+        elif action == "mcp_server_info":
+            server = params.get("server")
+            if not server:
+                return {"success": False, "error": "缺少server参数"}
+            server = str(server).strip()
+            all_servers = self.mcp_manager.mcp_config.get("mcpServers", {})
+            if not isinstance(all_servers, dict) or server not in all_servers:
+                return {"success": False, "error": f"未配置 MCP server: {server}"}
+
+            refresh = bool(params.get("refresh", False))
+            timeout_s = float(params.get("timeout_s", 8.0))
+            include_tools = bool(params.get("include_tools", True))
+            include_resources = bool(params.get("include_resources", True))
+            include_resource_templates = bool(params.get("include_resource_templates", True))
+            include_prompts = bool(params.get("include_prompts", True))
+            use_cache = not refresh
+
+            info: Dict[str, Any] = {
+                "server": server,
+                "refresh": refresh,
+                "use_cache": use_cache,
+                "sections": {},
+                "errors": {},
+            }
+
+            def _pack_items(payload: Any) -> List[Dict[str, Any]]:
+                if not isinstance(payload, list):
+                    return []
+                return [item for item in payload if isinstance(item, dict)]
+
+            try:
+                if include_tools:
+                    try:
+                        tools, tools_from_cache = self.mcp_manager.list_tools(
+                            server, timeout_s=timeout_s, use_cache=use_cache
+                        )
+                        tools_items = _pack_items(tools)
+                        info["sections"]["tools"] = {
+                            "count": len(tools_items),
+                            "from_cache": bool(tools_from_cache),
+                            "items": tools_items,
+                        }
+                    except Exception as e:
+                        info["errors"]["tools"] = str(e)
+
+                if include_resources:
+                    try:
+                        resources, resources_from_cache = self.mcp_manager.list_resources(
+                            server, timeout_s=timeout_s, use_cache=use_cache
+                        )
+                        resources_items = _pack_items(resources)
+                        info["sections"]["resources"] = {
+                            "count": len(resources_items),
+                            "from_cache": bool(resources_from_cache),
+                            "items": resources_items,
+                        }
+                    except Exception as e:
+                        info["errors"]["resources"] = str(e)
+
+                if include_resource_templates:
+                    try:
+                        templates, templates_from_cache = self.mcp_manager.list_resource_templates(
+                            server, timeout_s=timeout_s, use_cache=use_cache
+                        )
+                        template_items = _pack_items(templates)
+                        info["sections"]["resource_templates"] = {
+                            "count": len(template_items),
+                            "from_cache": bool(templates_from_cache),
+                            "items": template_items,
+                        }
+                    except Exception as e:
+                        info["errors"]["resource_templates"] = str(e)
+
+                if include_prompts:
+                    try:
+                        prompts, prompts_from_cache = self.mcp_manager.list_prompts(
+                            server, timeout_s=timeout_s, use_cache=use_cache
+                        )
+                        prompt_items = _pack_items(prompts)
+                        info["sections"]["prompts"] = {
+                            "count": len(prompt_items),
+                            "from_cache": bool(prompts_from_cache),
+                            "items": prompt_items,
+                        }
+                    except Exception as e:
+                        info["errors"]["prompts"] = str(e)
+
+                self.system_prompt = self._base_system_prompt + self._build_mcp_system_append()
+                status_all = self.mcp_manager.get_status()
+                info["status"] = status_all.get("servers", {}).get(server, {})
+                info["status_summary"] = {
+                    "all_loaded": bool(status_all.get("all_loaded", False)),
+                    "loading_count": int(status_all.get("loading_count", 0) or 0),
+                }
+                return {
+                    "success": True,
+                    "server": server,
+                    "info": info,
+                    "message": f"MCP server 聚合信息获取成功（server={server}, refresh={refresh}）",
+                }
+            except Exception as e:
+                return {"success": False, "error": f"MCP server 聚合信息获取异常: {e}"}
+
         elif action == "mcp_list_tools":
             server = params.get("server")
             use_cache = bool(params.get("use_cache", True))
@@ -4550,6 +4653,9 @@ big_image.jpg
                     "3) 若需要先请求某个 skill 完整提示，也必须先给出上述步骤编排，再在结尾输出 "
                     "{\"tool\":\"request_skill_prompt\",\"args\":{\"skill_id\":\"...\"}}。\n"
                     "4) 禁止首轮直接只给工具调用 JSON 而不做步骤编排。\n\n"
+                    "【MCP 工具选择补充约束】\n"
+                    "- 用户若请求“指定 MCP server 的信息/详情”，首个查询工具必须是 mcp_server_info。\n"
+                    "- mcp_status/mcp_status_refresh 仅用于全局 MCP 状态总览，不可替代指定 server 的详情查询。\n\n"
                     "首轮输出模板示例：\n"
                     "Step 1 [in_progress]: <当前要执行的步骤>\n"
                     "Step 2 [pending]: <后续步骤>\n\n"
@@ -4677,6 +4783,17 @@ big_image.jpg
                         post_status_rule = (
                             "你刚执行了 MCP 状态查询工具。下一步必须先根据上一条工具返回里的 status 字段，"
                             "按固定模板输出完整状态报告；该轮禁止直接 done。状态报告输出完成后的下一步再输出 done。"
+                        )
+                    elif tool_name == "mcp_server_info":
+                        post_status_rule = (
+                            "你刚执行了 mcp_server_info。下一步必须先根据上一条工具返回里的 info/status 字段，"
+                            "按固定模板输出该 server 的详情报告；该轮禁止直接 done。"
+                            "详情报告输出完成后，请基于【用户原始需求】自行判断："
+                            "若原始需求仅为查询/展示该指定 MCP 信息，则下一步必须直接输出 done；"
+                            "若原始需求还包含其他未完成目标，则继续输出与原始需求相关的下一条工具调用。"
+                            "查询/展示类需求默认只需自然语言回复，禁止创建 text_file/script 或执行 shell 落盘；"
+                            "仅当用户明确要求“导出/保存/写入文件”时，才允许创建文件。"
+                            "禁止为凑步骤而调用 mcp_status/mcp_status_refresh 或 shell 等无关工具。"
                         )
                     post_result_synthesis_rule = self._build_post_result_synthesis_rule(
                         tool_name=tool_name,
