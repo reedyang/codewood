@@ -1,0 +1,733 @@
+// Tool specs loaded at runtime (JSONC supported).
+[
+  {
+    "type": "function",
+    "function": {
+      "name": "list",
+      "description": "列出目录条目，支持基础过滤与智能过滤。",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "路径或名称；若非绝对路径则相对当前工作目录"
+          },
+          "filter": {
+            "type": "string",
+            "description": "简单名称/扩展名过滤"
+          },
+          "smart_filter": {
+            "type": "string",
+            "description": "用于大小/时间/复合条件的自然语言过滤"
+          }
+        }
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "cd",
+      "description": "校验后切换当前工作目录。",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "rename",
+      "description": "重命名当前工作区中的文件或目录。",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "old_name": {
+            "type": "string"
+          },
+          "new_name": {
+            "type": "string"
+          }
+        },
+        "required": ["old_name", "new_name"]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "move",
+      "description": "移动文件或文件夹；支持通配符源路径模式。",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "source": {
+            "type": "string"
+          },
+          "destination": {
+            "type": "string"
+          }
+        },
+        "required": ["source", "destination"]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "delete",
+      "description": "删除文件/文件夹（支持通配符模式）。",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string"
+          }
+        },
+        "required": ["path"]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "mkdir",
+      "description": "创建目录。",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string"
+          }
+        },
+        "required": ["path"]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "info",
+      "description": "获取文件或目录的详细元数据。",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string"
+          }
+        },
+        "required": ["path"]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "ffmpeg",
+      "description": "使用内置 ffmpeg 封装处理单个媒体文件。",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "source": {
+            "type": "string"
+          },
+          "target": {
+            "type": "string"
+          },
+          "options": {
+            "type": "string"
+          }
+        },
+        "required": ["source", "target"]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "summarize",
+      "description": "将文件内容总结为简洁文本。",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string"
+          }
+        },
+        "required": ["path"]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "cls",
+      "description": "清空终端屏幕。",
+      "parameters": {
+        "type": "object",
+        "properties": {}
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "batch",
+      "description": "按顺序执行多个工具操作。",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "commands": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          }
+        },
+        "required": ["commands"]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "shell",
+      "description": "在当前工作目录执行系统 shell 命令。",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "command": {
+            "type": "string"
+          },
+          "force": {
+            "type": "boolean"
+          }
+        },
+        "required": ["command"]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "script",
+      "description": "在工作区创建临时任务脚本，供后续 shell 执行。",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "filename": {
+            "type": "string"
+          },
+          "content": {
+            "type": "string"
+          },
+          "overwrite": {
+            "type": "boolean"
+          }
+        },
+        "required": ["filename", "content"]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "text_file",
+      "description": "在目标路径创建可长期保留的文本/代码文件。",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "filename": {
+            "type": "string"
+          },
+          "content": {
+            "type": "string"
+          },
+          "overwrite": {
+            "type": "boolean"
+          }
+        },
+        "required": ["filename", "content"]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "read",
+      "description": "读取文本文件内容，可选限制最大行数。",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "max_lines": {
+            "type": "integer"
+          }
+        }
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "analyze_image",
+      "description": "分析图片文件并返回视觉理解结果。",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "prompt": {
+            "type": "string"
+          }
+        },
+        "required": ["path"]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "diff",
+      "description": "比较两个文件并返回文本差异。",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "file1": {
+            "type": "string"
+          },
+          "file2": {
+            "type": "string"
+          },
+          "options": {
+            "type": "string"
+          }
+        },
+        "required": ["file1", "file2"]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "mcp_list_tools",
+      "description": "列出指定 MCP 服务器可用的工具。",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "server": {
+            "type": "string"
+          },
+          "use_cache": {
+            "type": "boolean"
+          },
+          "timeout_s": {
+            "type": "number"
+          }
+        },
+        "required": ["server"]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "mcp_call_tool",
+      "description": "使用 JSON 参数调用单个 MCP 工具。",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "server": {
+            "type": "string"
+          },
+          "tool": {
+            "type": "string"
+          },
+          "arguments": {
+            "type": "object"
+          },
+          "timeout_s": {
+            "type": "number"
+          }
+        },
+        "required": ["server", "tool"]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "mcp_call_tool_batch",
+      "description": "在一次批处理请求中调用多个 MCP 工具。",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "server": {
+            "type": "string"
+          },
+          "calls": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          },
+          "timeout_s": {
+            "type": "number"
+          },
+          "allow_partial_failure": {
+            "type": "boolean"
+          }
+        },
+        "required": ["server", "calls"]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "mcp_list_resources",
+      "description": "列出指定 MCP 服务器的资源。",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "server": {
+            "type": "string"
+          },
+          "use_cache": {
+            "type": "boolean"
+          },
+          "timeout_s": {
+            "type": "number"
+          }
+        },
+        "required": ["server"]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "mcp_read_resource",
+      "description": "按 URI 读取 MCP 资源内容。",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "server": {
+            "type": "string"
+          },
+          "uri": {
+            "type": "string"
+          },
+          "timeout_s": {
+            "type": "number"
+          }
+        },
+        "required": ["server", "uri"]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "mcp_list_resource_templates",
+      "description": "列出 MCP 资源模板。",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "server": {
+            "type": "string"
+          },
+          "use_cache": {
+            "type": "boolean"
+          },
+          "timeout_s": {
+            "type": "number"
+          }
+        },
+        "required": ["server"]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "mcp_list_prompts",
+      "description": "列出指定 MCP 服务器的 prompts。",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "server": {
+            "type": "string"
+          },
+          "use_cache": {
+            "type": "boolean"
+          },
+          "timeout_s": {
+            "type": "number"
+          }
+        },
+        "required": ["server"]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "mcp_get_prompt",
+      "description": "使用可选参数解析单个 MCP prompt。",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "server": {
+            "type": "string"
+          },
+          "prompt": {
+            "type": "string"
+          },
+          "arguments": {
+            "type": "object"
+          },
+          "timeout_s": {
+            "type": "number"
+          }
+        },
+        "required": ["server", "prompt"]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "mcp_sampling_create_message",
+      "description": "调用 MCP sampling/createMessage 能力。",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "server": {
+            "type": "string"
+          },
+          "sampling_params": {
+            "type": "object"
+          },
+          "timeout_s": {
+            "type": "number"
+          }
+        },
+        "required": ["server", "sampling_params"]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "mcp_completion_complete",
+      "description": "调用 MCP completion/complete 能力。",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "server": {
+            "type": "string"
+          },
+          "completion_params": {
+            "type": "object"
+          },
+          "timeout_s": {
+            "type": "number"
+          }
+        },
+        "required": ["server", "completion_params"]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "mcp_status",
+      "description": "仅从内存缓存读取 MCP 状态。",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "log_limit": {
+            "type": "integer"
+          }
+        }
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "mcp_status_refresh",
+      "description": "通过实时服务器检查刷新 MCP 状态。",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "servers": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "timeout_s": {
+            "type": "number"
+          },
+          "force": {
+            "type": "boolean"
+          },
+          "log_limit": {
+            "type": "integer"
+          }
+        }
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "mcp_reconnect",
+      "description": "重连单个 MCP 服务器并刷新其工具列表。",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "server": {
+            "type": "string"
+          },
+          "timeout_s": {
+            "type": "number"
+          }
+        },
+        "required": ["server"]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "knowledge_sync",
+      "description": "同步本地知识库索引。",
+      "parameters": {
+        "type": "object",
+        "properties": {}
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "knowledge_stats",
+      "description": "读取知识库统计信息。",
+      "parameters": {
+        "type": "object",
+        "properties": {}
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "knowledge_search",
+      "description": "使用查询语句搜索知识库。",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string"
+          },
+          "limit": {
+            "type": "integer"
+          }
+        }
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "knowledge_on",
+      "description": "为后续轮次开启知识检索。",
+      "parameters": {
+        "type": "object",
+        "properties": {}
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "knowledge_off",
+      "description": "为后续轮次关闭知识检索。",
+      "parameters": {
+        "type": "object",
+        "properties": {}
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "freedom_on",
+      "description": "开启自由模式确认策略。",
+      "parameters": {
+        "type": "object",
+        "properties": {}
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "freedom_off",
+      "description": "关闭自由模式确认策略。",
+      "parameters": {
+        "type": "object",
+        "properties": {}
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "always_confirm_reset",
+      "description": "清空免确认白名单并强制重新确认。",
+      "parameters": {
+        "type": "object",
+        "properties": {}
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "request_skill_prompt",
+      "description": "请求注入指定 skill 的完整提示（虚拟控制工具，不直接执行业务操作）。",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "skill_id": {
+            "type": "string"
+          }
+        },
+        "required": ["skill_id"]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "done",
+      "description": "标记当前用户任务已完成。",
+      "parameters": {
+        "type": "object",
+        "properties": {}
+      }
+    }
+  }
+]
