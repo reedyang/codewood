@@ -318,6 +318,40 @@
   {
     "type": "function",
     "function": {
+      "name": "mcp_server_info",
+      "description": "查询指定 MCP 服务器的聚合信息（状态、tools/resources/prompts）。",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "server": {
+            "type": "string"
+          },
+          "refresh": {
+            "type": "boolean"
+          },
+          "timeout_s": {
+            "type": "number"
+          },
+          "include_tools": {
+            "type": "boolean"
+          },
+          "include_resources": {
+            "type": "boolean"
+          },
+          "include_resource_templates": {
+            "type": "boolean"
+          },
+          "include_prompts": {
+            "type": "boolean"
+          }
+        },
+        "required": ["server"]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
       "name": "mcp_list_tools",
       "description": "列出指定 MCP 服务器可用的工具。",
       "parameters": {

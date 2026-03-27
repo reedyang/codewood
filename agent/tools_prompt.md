@@ -33,6 +33,44 @@
 关键要求：调用 `mcp_status` 或 `mcp_status_refresh` 后，不要立即输出 done。
 你必须先基于返回 JSON 字段按模板渲染状态报告，再在下一步输出 done。
 
+工具选择边界（强制）：
+- `mcp_status` / `mcp_status_refresh` 仅用于“全局 MCP 状态总览”（多服务汇总、加载健康度、失败统计）。
+- 当用户请求“指定某个 MCP server 的详细信息”时，必须优先调用 `mcp_server_info`，不要用 `mcp_status` 代替。
+- 若用户已明确 server（如 playwright/gitlab 等），首个查询工具应为 `mcp_server_info`（而非 `mcp_status`）。
+
+当用户查询指定 MCP 详情（`mcp_server_info`）时，助手的自然语言输出必须使用以下固定 Markdown 模板：
+
+**MCP 服务详情：`<server>`**
+
+| 字段 | 值 |
+|------|----|
+| 状态 | `<state>` |
+| 来源 | `<source_or_unknown>` |
+| 工具数 | `<tool_count>` |
+| 活跃操作数 | `<active_ops>` |
+| 最近错误 | `<last_error_or_none>` |
+| 建议 | `<suggestion_or_none>` |
+
+**能力汇总**
+- **Tools：** `<tools_count>`（`<tools_cache_mode>`）
+- **Resources：** `<resources_count>`（`<resources_cache_mode>`）
+- **Resource Templates：** `<resource_templates_count>`（`<resource_templates_cache_mode>`）
+- **Prompts：** `<prompts_count>`（`<prompts_cache_mode>`）
+
+**完整列表（全量）**
+- **Tools：** `<tool_name_1, tool_name_2, ... or None>`
+- **Resources：** `<resource_1, resource_2, ... or None>`
+- **Prompts：** `<prompt_1, prompt_2, ... or None>`
+
+关键要求：调用 `mcp_server_info` 后，不要立即输出 done。
+你必须先按模板输出详情报告，再在下一步输出 done。
+并且在“完整列表（全量）”中必须列出返回结果里的全部 tools/resources/prompts，禁止截断、禁止仅展示前 N 条。
+用户若仅请求“查询指定 MCP 信息”，在完成该模板渲染后，下一步必须直接输出 `{"tool":"done","args":{}}`，
+是否“仅请求查询指定 MCP 信息”由 AI 基于用户原始需求自行判断（语义判断，不做关键字匹配）。
+若原始需求包含其他未完成目标，则继续完成原始需求；但禁止额外调用 `mcp_status` / `mcp_status_refresh` 或 `shell` 来做无关补充。
+对于“查询/展示 MCP 信息”类需求，默认只做自然语言回复并结束；不要创建 `text_file`/`script` 等文件。
+只有当用户明确提出“导出/保存/写入文件”时，才允许创建文件。
+
 多步任务输出模板（强制）：
 Step 1 [completed]: <已完成步骤>
 Step 2 [in_progress]: <当前步骤>
