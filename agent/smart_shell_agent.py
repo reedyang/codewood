@@ -1213,8 +1213,10 @@ class SmartShellAgent:
         """Return True to skip interactive confirmation (move/delete/shell/script/text_file/git write)."""
         if not getattr(self, "freedom_enabled", False):
             return False
-        action = command.get("action")
-        params = command.get("params") or {}
+        action = command.get("tool") or command.get("action")
+        params = command.get("args")
+        if not isinstance(params, dict):
+            params = command.get("params") or {}
 
         if action == "script":
             print("🦅 自由模式：创建/覆盖脚本为会话内操作，跳过确认。")
@@ -3125,12 +3127,6 @@ big_image.jpg
         except Exception as e:
             return {"success": False, "error": f"文件比较命令执行异常: {str(e)}"}
 
-    def execute_tool_call(self, tool_name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
-        """Execute one tool call from model response."""
-        if tool_name == "done":
-            return {"success": True, "message": "任务已完成", "finished": True}
-        return self.execute_command({"action": tool_name, "params": arguments})
-
     def _parse_tool_plan_from_response(self, text: str) -> Optional[Tuple[str, Dict[str, Any]]]:
         """Parse model response into tool plan under strict rule: exactly one tool JSON at reply end."""
         if not isinstance(text, str):
@@ -3276,10 +3272,12 @@ big_image.jpg
                 return (tool_name.strip(), args)
         return None
 
-    def execute_command(self, command: Dict) -> Dict[str, Any]:
-        """执行工具命令，支持批量命令和cls命令"""
-        action = command.get("tool") or command.get("action")
-        params = command.get("params", {})
+    def execute_tool_call(self, tool_name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
+        """执行工具命令，支持批量命令和 cls 命令。"""
+        action = (tool_name or "").strip()
+        params = arguments if isinstance(arguments, dict) else {}
+        if action == "done":
+            return {"success": True, "message": "任务已完成", "finished": True}
 
         if action == "cls":
             import os
@@ -3291,8 +3289,13 @@ big_image.jpg
             results = []
             all_success = True
             for subcmd in commands:
-                sub_action = subcmd.get("action")
-                sub_result = self.execute_command(subcmd)
+                sub_action = (subcmd.get("tool") or subcmd.get("action") or "").strip()
+                sub_args = subcmd.get("args")
+                if not isinstance(sub_args, dict):
+                    sub_args = subcmd.get("params")
+                if not isinstance(sub_args, dict):
+                    sub_args = {}
+                sub_result = self.execute_tool_call(sub_action, sub_args)
                 results.append({"action": sub_action, "result": sub_result})
                 
                 # 检查用户是否取消了子命令
@@ -3369,7 +3372,7 @@ big_image.jpg
             source = params.get("source")
             destination = params.get("destination")
             if source and destination:
-                move_cmd = {"action": "move", "params": {"source": source, "destination": destination}}
+                move_cmd = {"tool": "move", "args": {"source": source, "destination": destination}}
                 confirmed = self._freedom_auto_confirm(move_cmd)
                 result = self.action_move_file(source, destination, confirmed=confirmed)
 
@@ -3400,7 +3403,7 @@ big_image.jpg
                         "message": f"文件 «{base}» 已不存在（已由系统自动清理）",
                         "skipped_duplicate_delete": True,
                     }
-                del_cmd = {"action": "delete", "params": {"path": file_name}}
+                del_cmd = {"tool": "delete", "args": {"path": file_name}}
                 confirmed = self._freedom_auto_confirm(del_cmd)
                 result = self.action_delete_file(file_name, confirmed=confirmed)
 
@@ -3572,7 +3575,7 @@ big_image.jpg
             overwrite = bool(params.get("overwrite", False))
             if filename and content:
                 assess_content = content if len(content) <= 6000 else content[:6000] + "\n/* ... truncated for reversibility check ... */"
-                script_cmd = {"action": "script", "params": {"filename": filename, "content": assess_content}}
+                script_cmd = {"tool": "script", "args": {"filename": filename, "content": assess_content}}
                 confirmed = self._freedom_auto_confirm(script_cmd)
                 result = self.action_create_script(
                     filename, content, confirmed=confirmed, overwrite=overwrite
@@ -4312,41 +4315,36 @@ big_image.jpg
                         continue
 
                     if bl == 'knowledge on':
-                        self.execute_command({"action": "knowledge_on", "params": {}})
+                        self.execute_tool_call("knowledge_on", {})
                         continue
                     if bl == 'knowledge off':
-                        self.execute_command({"action": "knowledge_off", "params": {}})
+                        self.execute_tool_call("knowledge_off", {})
                         continue
 
                     if bl == 'freedom on':
-                        self.execute_command({"action": "freedom_on", "params": {}})
+                        self.execute_tool_call("freedom_on", {})
                         continue
                     if bl == 'freedom off':
-                        self.execute_command({"action": "freedom_off", "params": {}})
+                        self.execute_tool_call("freedom_off", {})
                         continue
 
                     if bl == "always_confirm reset":
-                        self.execute_command(
-                            {"action": "always_confirm_reset", "params": {}}
-                        )
+                        self.execute_tool_call("always_confirm_reset", {})
                         continue
 
                     if self.knowledge_enabled and self.knowledge_manager:
                         if bl == 'knowledge sync':
-                            self.execute_command({"action": "knowledge_sync", "params": {}})
+                            self.execute_tool_call("knowledge_sync", {})
                             continue
 
                         if bl == 'knowledge stats':
-                            self.execute_command({"action": "knowledge_stats", "params": {}})
+                            self.execute_tool_call("knowledge_stats", {})
                             continue
 
                         if bl.startswith('knowledge search '):
                             query = builtin_line[len('knowledge search ') :]
                             if query.strip():
-                                self.execute_command({
-                                    "action": "knowledge_search",
-                                    "params": {"query": query.strip()},
-                                })
+                                self.execute_tool_call("knowledge_search", {"query": query.strip()})
                             else:
                                 print("❌ 请提供搜索查询内容")
                             continue
@@ -4540,7 +4538,7 @@ big_image.jpg
                     sid = str(forced_skill.get("skill_id") or "").strip()
                     full_prompt = self._build_single_skill_prompt(sid)
                     if full_prompt:
-                        print(f"🧩 即将启用 Skill 完整提示: {forced_skill.get('name')} ({sid})")
+                        print(f"🧩 启用 Skill 完整提示: {forced_skill.get('name')} ({sid})")
                         self._active_skill_full_prompt = full_prompt
                         self._active_skill_id = sid
                 first_round_contract = (
@@ -4641,7 +4639,7 @@ big_image.jpg
                         no_tool_rounds = 0
                         continue
 
-                    pseudo_command = {"action": tool_name, "params": args}
+                    pseudo_command = {"tool": tool_name, "args": args}
                     selected_skill = self._infer_selected_skill(pseudo_command, ai_response)
                     if selected_skill:
                         skill_key = f"{selected_skill.get('skill_id')}::{selected_skill.get('name')}"
