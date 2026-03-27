@@ -3665,6 +3665,83 @@ big_image.jpg
                 print("❌ diff命令缺少file1或file2参数")
                 return {"success": False, "error": "缺少file1或file2参数"}
 
+        elif action == "mcp_list_disabled_tools":
+            server = params.get("server")
+            try:
+                result = self.mcp_manager.list_disabled_tools(
+                    str(server).strip() if server else None
+                )
+                total = sum(len(v) for v in result.values()) if isinstance(result, dict) else 0
+                return {
+                    "success": True,
+                    "server": server,
+                    "disabled_tools": result,
+                    "count": total,
+                    "message": "MCP 禁用 tools 清单获取成功",
+                }
+            except Exception as e:
+                return {"success": False, "error": f"MCP 禁用 tools 清单获取异常: {e}"}
+
+        elif action == "mcp_disable_tools":
+            server = params.get("server")
+            tools_param = params.get("tools")
+            if not server:
+                return {"success": False, "error": "缺少server参数"}
+            names: List[str] = []
+            if isinstance(tools_param, str):
+                names = [x.strip() for x in tools_param.split(",") if x.strip()]
+            elif isinstance(tools_param, list):
+                names = [str(x).strip() for x in tools_param if str(x).strip()]
+            else:
+                return {"success": False, "error": "tools 必须为逗号分隔字符串或字符串数组"}
+            if not names:
+                return {"success": False, "error": "tools 不能为空"}
+            try:
+                disabled = self.mcp_manager.disable_tools(str(server), names)
+                # refresh prompt snapshot because visible MCP tools changed
+                self.system_prompt = self._base_system_prompt + self._build_mcp_system_append()
+                return {
+                    "success": True,
+                    "server": server,
+                    "disabled_tools": disabled,
+                    "count": len(disabled),
+                    "message": f"MCP tools 禁用成功（server={server}）",
+                }
+            except McpError as e:
+                return {"success": False, "error": f"MCP tools 禁用失败: {e}"}
+            except Exception as e:
+                return {"success": False, "error": f"MCP tools 禁用异常: {e}"}
+
+        elif action == "mcp_enable_tools":
+            server = params.get("server")
+            tools_param = params.get("tools")
+            if not server:
+                return {"success": False, "error": "缺少server参数"}
+            names: List[str] = []
+            if isinstance(tools_param, str):
+                names = [x.strip() for x in tools_param.split(",") if x.strip()]
+            elif isinstance(tools_param, list):
+                names = [str(x).strip() for x in tools_param if str(x).strip()]
+            else:
+                return {"success": False, "error": "tools 必须为逗号分隔字符串或字符串数组"}
+            if not names:
+                return {"success": False, "error": "tools 不能为空"}
+            try:
+                disabled = self.mcp_manager.enable_tools(str(server), names)
+                # refresh prompt snapshot because visible MCP tools changed
+                self.system_prompt = self._base_system_prompt + self._build_mcp_system_append()
+                return {
+                    "success": True,
+                    "server": server,
+                    "disabled_tools": disabled,
+                    "count": len(disabled),
+                    "message": f"MCP tools 启用成功（server={server}）",
+                }
+            except McpError as e:
+                return {"success": False, "error": f"MCP tools 启用失败: {e}"}
+            except Exception as e:
+                return {"success": False, "error": f"MCP tools 启用异常: {e}"}
+
         elif action == "mcp_server_info":
             server = params.get("server")
             if not server:
@@ -3698,14 +3775,27 @@ big_image.jpg
             try:
                 if include_tools:
                     try:
-                        tools, tools_from_cache = self.mcp_manager.list_tools(
+                        tools, tools_from_cache = self.mcp_manager.list_tools_with_disabled(
                             server, timeout_s=timeout_s, use_cache=use_cache
                         )
                         tools_items = _pack_items(tools)
+                        tool_display_names: List[str] = []
+                        disabled_tool_count = 0
+                        for t in tools_items:
+                            dn = str(t.get("display_name", "")).strip()
+                            nm = str(t.get("name", "")).strip()
+                            if bool(t.get("disabled", False)):
+                                disabled_tool_count += 1
+                            if dn:
+                                tool_display_names.append(dn)
+                            elif nm:
+                                tool_display_names.append(nm)
                         info["sections"]["tools"] = {
                             "count": len(tools_items),
                             "from_cache": bool(tools_from_cache),
                             "items": tools_items,
+                            "display_names": tool_display_names,
+                            "disabled_count": disabled_tool_count,
                         }
                     except Exception as e:
                         info["errors"]["tools"] = str(e)
@@ -3755,6 +3845,7 @@ big_image.jpg
                 self.system_prompt = self._base_system_prompt + self._build_mcp_system_append()
                 status_all = self.mcp_manager.get_status()
                 info["status"] = status_all.get("servers", {}).get(server, {})
+                info["disabled_tools"] = self.mcp_manager.list_disabled_tools(server).get(server, [])
                 info["status_summary"] = {
                     "all_loaded": bool(status_all.get("all_loaded", False)),
                     "loading_count": int(status_all.get("loading_count", 0) or 0),

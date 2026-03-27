@@ -352,6 +352,73 @@
   {
     "type": "function",
     "function": {
+      "name": "mcp_disable_tools",
+      "description": "禁用指定 MCP server 的 tools（支持逗号分隔字符串或数组）。",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "server": {
+            "type": "string"
+          },
+          "tools": {
+            "description": "tool 名称列表，支持 \"a,b,c\" 或 [\"a\",\"b\"]",
+            "oneOf": [
+              { "type": "string" },
+              {
+                "type": "array",
+                "items": { "type": "string" }
+              }
+            ]
+          }
+        },
+        "required": ["server", "tools"]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "mcp_enable_tools",
+      "description": "启用（解除禁用）指定 MCP server 的 tools（支持逗号分隔字符串或数组）。",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "server": {
+            "type": "string"
+          },
+          "tools": {
+            "description": "tool 名称列表，支持 \"a,b,c\" 或 [\"a\",\"b\"]",
+            "oneOf": [
+              { "type": "string" },
+              {
+                "type": "array",
+                "items": { "type": "string" }
+              }
+            ]
+          }
+        },
+        "required": ["server", "tools"]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "mcp_list_disabled_tools",
+      "description": "查看 MCP tool 禁用清单（可按 server 查询）。",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "server": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
       "name": "mcp_list_tools",
       "description": "列出指定 MCP 服务器可用的工具。",
       "parameters": {
