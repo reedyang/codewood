@@ -4247,6 +4247,7 @@ big_image.jpg
         system_cmd_re = re.compile('|'.join(system_cmd_patterns), re.IGNORECASE)
 
         while True:
+            in_task_execution = False
             try:
                 # 获取用户输入，支持历史记录
                 user_input = self._get_user_input_with_history()
@@ -4527,6 +4528,7 @@ big_image.jpg
                 last_result = None
                 self._last_auto_removed_ephemeral = None
                 original_user_task = user_input.strip()
+                in_task_execution = True
                 self._active_skill_full_prompt = ""
                 self._active_skill_id = None
                 forced_skill_prefix = ""
@@ -4691,10 +4693,27 @@ big_image.jpg
                         + (f"\n{post_status_rule}" if post_status_rule else "")
                         + (f"\n{post_result_synthesis_rule}" if post_result_synthesis_rule else "")
                     )
+                in_task_execution = False
 
             except KeyboardInterrupt:
-                print("\n👋 程序已中断，再见！")
-                break
+                if in_task_execution:
+                    in_task_execution = False
+                    self._active_skill_full_prompt = ""
+                    self._active_skill_id = None
+                    self._last_auto_removed_ephemeral = None
+                    print("\n⏹️ 已取消当前任务")
+                    continue
+
+                print("")
+                try:
+                    should_exit = input("是否结束 Smart Shell？(y/n): ").strip().lower() == "y"
+                except KeyboardInterrupt:
+                    should_exit = False
+
+                if should_exit:
+                    print("👋 已退出 Smart Shell，再见！")
+                    break
+                continue
             except Exception as e:
                 print(f"❌ 发生错误: {str(e)}")
 
@@ -4894,7 +4913,6 @@ big_image.jpg
         Returns:
             用户输入的字符串
         """
-        import sys
         import platform
         
         prompt = f"🤖 [{str(self.work_directory)}]: "
@@ -4944,8 +4962,7 @@ big_image.jpg
                         self.history_manager.add_entry(user_input)
                     return user_input
                 except KeyboardInterrupt:
-                    print("\n👋 程序已中断，再见！")
-                    sys.exit(0)
+                    raise KeyboardInterrupt
             except Exception as e:
                 # 如果prompt_toolkit出错，回退到标准input
                 print(f"⚠️ prompt_toolkit 出错，回退到标准输入: {e}")
@@ -4955,8 +4972,7 @@ big_image.jpg
                         self.history_manager.add_entry(user_input)
                     return user_input
                 except KeyboardInterrupt:
-                    print("\n👋 程序已中断，再见！")
-                    sys.exit(0)
+                    raise KeyboardInterrupt
         else:
             # 非Windows系统使用简单的input
             try:
@@ -4965,8 +4981,7 @@ big_image.jpg
                     self.history_manager.add_entry(user_input)
                 return user_input
             except KeyboardInterrupt:
-                print("\n👋 程序已中断，再见！")
-                sys.exit(0)
+                raise KeyboardInterrupt
 
     def _normalize_elicitation_value(self, raw: str, schema: Dict[str, Any]) -> Any:
         t = str((schema or {}).get("type", "string")).strip().lower()
