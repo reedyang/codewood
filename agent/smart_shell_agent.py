@@ -13,7 +13,7 @@ from datetime import datetime
 
 def _decode_subprocess_output(data: Optional[bytes]) -> str:
     """
-    Decode shell stdout/stderr: prefer UTF-8 (Python tools / baidu_search.py), else system locale.
+    Decode shell stdout/stderr: prefer UTF-8, else system locale.
     Fixes mojibake when a UTF-8 child is decoded as cp936 on Chinese Windows.
     """
     if not data:
@@ -300,6 +300,8 @@ class SmartShellAgent:
         # Async preload MCP tools cache on startup (non-blocking).
         self.mcp_manager.preload_all_async(timeout_s=12.0, force=False)
         self.system_prompt = self._base_system_prompt + self._build_mcp_system_append()
+        self.tool_specs = self._load_tools_spec_from_jsonc()
+        self.tools_prompt_template = self._load_tools_prompt_template()
 
         self._builtin_skills_root = (
             Path(builtin_skills_dir).expanduser().resolve()
@@ -313,6 +315,8 @@ class SmartShellAgent:
         )
         self._skills_routing_prefix = build_skills_routing_prefix(self.skills)
         self._skills_system_append = build_skills_system_append(self.skills)
+        self._active_skill_full_prompt: str = ""
+        self._active_skill_id: Optional[str] = None
 
         # 初始化输入处理器，确保属性存在
         self.input_handler = None
@@ -435,6 +439,115 @@ class SmartShellAgent:
             lines.append(self.mcp_manager.cached_prompts_for_prompt())
         except Exception:
             lines.append("尚无已缓存的 MCP prompts。")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _strip_jsonc_comments(text: str) -> str:
+        """Remove // and /* */ comments from JSONC while preserving string literals."""
+        out: List[str] = []
+        i = 0
+        in_str = False
+        esc = False
+        n = len(text)
+        while i < n:
+            c = text[i]
+            if in_str:
+                out.append(c)
+                if esc:
+                    esc = False
+                elif c == "\\":
+                    esc = True
+                elif c == '"':
+                    in_str = False
+                i += 1
+                continue
+            if c == '"':
+                in_str = True
+                out.append(c)
+                i += 1
+                continue
+            if c == "/" and i + 1 < n:
+                nxt = text[i + 1]
+                if nxt == "/":
+                    i += 2
+                    while i < n and text[i] not in ("\n", "\r"):
+                        i += 1
+                    continue
+                if nxt == "*":
+                    i += 2
+                    while i + 1 < n and not (text[i] == "*" and text[i + 1] == "/"):
+                        i += 1
+                    i = i + 2 if i + 1 < n else n
+                    continue
+            out.append(c)
+            i += 1
+        return "".join(out)
+
+    def _load_tools_spec_from_jsonc(self) -> List[Dict[str, Any]]:
+        """Load tool specs from tools.jsonc with comment stripping."""
+        path = Path(__file__).resolve().parent / "tools.jsonc"
+        try:
+            raw = path.read_text(encoding="utf-8")
+            clean = self._strip_jsonc_comments(raw)
+            parsed = json.loads(clean)
+            if not isinstance(parsed, list):
+                raise ValueError("tools.jsonc root must be array")
+            return [x for x in parsed if isinstance(x, dict)]
+        except Exception as e:
+            print(f"⚠️ tools.jsonc 加载失败: {e}")
+            return []
+
+    def _build_tools_prompt_append(self) -> str:
+        """Build tool catalog text injected into system prompt from external md template."""
+        lines: List[str] = [self.tools_prompt_template.strip(), "", "Available tools:"]
+        lines.insert(
+            1,
+            "如需调用某个技能的完整正文，先输出：{\"tool\":\"request_skill_prompt\",\"args\":{\"skill_id\":\"<skill_id>\"}}，"
+            "收到后系统会注入该技能完整提示，再继续后续步骤。",
+        )
+        for t in (self.tool_specs or []):
+            fn = (t or {}).get("function", {})
+            name = str(fn.get("name") or "").strip()
+            if not name:
+                continue
+            desc = str(fn.get("description") or "").strip()
+            params = fn.get("parameters") if isinstance(fn.get("parameters"), dict) else {}
+            props = params.get("properties") if isinstance(params.get("properties"), dict) else {}
+            arg_keys = ", ".join(sorted(str(k) for k in props.keys())) if props else "-"
+            lines.append(f"- {name}: {desc} | args: {arg_keys}")
+        return "\n".join(lines)
+
+    def _load_tools_prompt_template(self) -> str:
+        """Load tools-related prompt template from external markdown file."""
+        path = Path(__file__).resolve().parent / "tools_prompt.md"
+        try:
+            return path.read_text(encoding="utf-8")
+        except Exception as e:
+            print(f"⚠️ tools_prompt.md 加载失败: {e}")
+            return "## Tool Catalog (prompt-injected)"
+
+    def _build_single_skill_prompt(self, skill_id: str) -> Optional[str]:
+        """Build full prompt appendix for one selected skill."""
+        sid = (skill_id or "").strip().lower()
+        if not sid:
+            return None
+        target = None
+        for s in self.skills or []:
+            if str(getattr(s, "skill_id", "")).strip().lower() == sid:
+                target = s
+                break
+        if target is None:
+            return None
+        lines = [
+            "",
+            "## Agent Skill（按需加载）",
+            f"### Skill: `{target.name}` · 目录 `{target.skill_id}`",
+            f"**Description:** {target.description}",
+            "",
+            f"**Skill bundle root (absolute path on this machine):** `{target.bundle_root}`",
+            target.body,
+            "",
+        ]
         return "\n".join(lines)
 
     def _get_slash_skill_commands(self) -> List[str]:
@@ -1271,8 +1384,9 @@ class SmartShellAgent:
         include_knowledge: bool = True,
         minimal_classifier: bool = False,
         freedom_combined_review: bool = False,
+        return_message: bool = False,
     ):
-        """调用大模型API获取AI回复，支持流式输出。stream=True时返回生成器"""
+        """调用大模型 API 获取回复；支持流式输出。"""
         try:
             # 确保os未被局部变量遮蔽
             import os
@@ -1349,12 +1463,17 @@ class SmartShellAgent:
                 record_history = True
                 # Refresh MCP prompt append at call time so newly loaded tool caches
                 # are always reflected in the current LLM context.
-                self.system_prompt = self._base_system_prompt + self._build_mcp_system_append()
+                self.system_prompt = (
+                    self._base_system_prompt
+                    + self._build_mcp_system_append()
+                    + "\n"
+                    + self._build_tools_prompt_append()
+                )
                 messages = [
                     {
                         "role": "system",
                         "content": (
-                            f"{self._skills_routing_prefix}{self.system_prompt}\n{self._skills_system_append}"
+                            f"{self._skills_routing_prefix}{self.system_prompt}\n{self._active_skill_full_prompt}"
                             f"当前操作系统信息：{os_info}\n当前日期时间：{date_time}\n"
                             f"当前 smart-shell 根目录（绝对路径）：{self._self_repo_root}\n"
                             f"当前 config 目录（绝对路径）：{self.config_dir}\n"
@@ -1476,11 +1595,12 @@ class SmartShellAgent:
                     return gen()
                 else:
                     data = resp.json()
-                    ai_response = data["choices"][0]["message"]["content"]
+                    message = data["choices"][0]["message"]
+                    ai_response = message.get("content", "") or ""
                     if record_history:
                         self.conversation_history.append({"role": "user", "content": user_input})
                         self.conversation_history.append({"role": "assistant", "content": ai_response})
-                    return ai_response
+                    return message if return_message else ai_response
             elif provider == "openwebui" and openwebui_conf:
                 import requests
                 import urllib3
@@ -1533,11 +1653,12 @@ class SmartShellAgent:
                     return gen()
                 else:
                     data = resp.json()
-                    ai_response = data["choices"][0]["message"]["content"]
+                    message = data["choices"][0]["message"]
+                    ai_response = message.get("content", "") or ""
                     if record_history:
                         self.conversation_history.append({"role": "user", "content": user_input})
                         self.conversation_history.append({"role": "assistant", "content": ai_response})
-                    return ai_response
+                    return message if return_message else ai_response
             else:
                 # 检查是否为Ollama提供者
                 if provider != "ollama":
@@ -1572,16 +1693,18 @@ class SmartShellAgent:
                             self.conversation_history.append({"role": "assistant", "content": buffer})
                     return gen()
                 else:
-                    response = ollama.chat(
-                        model=model_name,
-                        messages=messages,
-                        stream=False
-                    )
-                    ai_response = response['message']['content']
+                    chat_kwargs: Dict[str, Any] = {
+                        "model": model_name,
+                        "messages": messages,
+                        "stream": False,
+                    }
+                    response = ollama.chat(**chat_kwargs)
+                    message = response.get("message", {}) or {}
+                    ai_response = message.get("content", "") or ""
                     if record_history:
                         self.conversation_history.append({"role": "user", "content": user_input})
                         self.conversation_history.append({"role": "assistant", "content": ai_response})
-                    return ai_response
+                    return message if return_message else ai_response
         except Exception as e:
             error_msg = f"调用大模型API时出错: {str(e)} (provider: {provider}, model: {model_name})"
             return error_msg
@@ -1677,247 +1800,6 @@ class SmartShellAgent:
         except Exception as e:
             error_msg = f"调用多模态大模型API时出错: {str(e)} (provider: {provider}, model: {model_name})"
             return error_msg
-
-    @staticmethod
-    def _extract_balanced_json_object(text: str, start: int) -> Optional[str]:
-        """Slice from start (must be '{') through the matching '}', respecting JSON string rules."""
-        if start >= len(text) or text[start] != "{":
-            return None
-        depth = 0
-        i = start
-        in_str = False
-        esc = False
-        while i < len(text):
-            c = text[i]
-            if in_str:
-                if esc:
-                    esc = False
-                elif c == "\\":
-                    esc = True
-                elif c == '"':
-                    in_str = False
-                i += 1
-                continue
-            if c == '"':
-                in_str = True
-                i += 1
-                continue
-            if c == "{":
-                depth += 1
-            elif c == "}":
-                depth -= 1
-                if depth == 0:
-                    return text[start : i + 1]
-            i += 1
-        return None
-
-    @staticmethod
-    def _strip_json_comments(text: str) -> str:
-        """Remove // and /* */ comments outside JSON strings."""
-        out: List[str] = []
-        i = 0
-        in_str = False
-        esc = False
-        while i < len(text):
-            c = text[i]
-            if in_str:
-                out.append(c)
-                if esc:
-                    esc = False
-                elif c == "\\":
-                    esc = True
-                elif c == '"':
-                    in_str = False
-                i += 1
-                continue
-            if c == '"':
-                in_str = True
-                out.append(c)
-                i += 1
-                continue
-            if c == "/" and i + 1 < len(text):
-                n = text[i + 1]
-                if n == "/":
-                    i += 2
-                    while i < len(text) and text[i] not in ("\n", "\r"):
-                        i += 1
-                    continue
-                if n == "*":
-                    i += 2
-                    while i + 1 < len(text) and not (text[i] == "*" and text[i + 1] == "/"):
-                        i += 1
-                    i += 2 if i + 1 < len(text) else 0
-                    continue
-            out.append(c)
-            i += 1
-        return "".join(out)
-
-    @staticmethod
-    def _remove_trailing_commas(text: str) -> str:
-        """Remove trailing commas before '}' or ']' outside strings."""
-        out: List[str] = []
-        i = 0
-        in_str = False
-        esc = False
-        while i < len(text):
-            c = text[i]
-            if in_str:
-                out.append(c)
-                if esc:
-                    esc = False
-                elif c == "\\":
-                    esc = True
-                elif c == '"':
-                    in_str = False
-                i += 1
-                continue
-            if c == '"':
-                in_str = True
-                out.append(c)
-                i += 1
-                continue
-            if c == ",":
-                j = i + 1
-                while j < len(text) and text[j] in (" ", "\t", "\r", "\n"):
-                    j += 1
-                if j < len(text) and text[j] in ("]", "}"):
-                    i += 1
-                    continue
-            out.append(c)
-            i += 1
-        return "".join(out)
-
-    def _parse_possible_json_command(self, raw: str) -> Optional[Dict[str, Any]]:
-        """Parse command JSON with tolerant fallback for JSON-in-Markdown output."""
-        candidates = [raw.strip()]
-        no_comments = self._strip_json_comments(raw).strip()
-        if no_comments and no_comments not in candidates:
-            candidates.append(no_comments)
-        no_trailing_commas = self._remove_trailing_commas(no_comments).strip()
-        if no_trailing_commas and no_trailing_commas not in candidates:
-            candidates.append(no_trailing_commas)
-
-        for chunk in candidates:
-            try:
-                parsed = json.loads(chunk)
-                if isinstance(parsed, dict) and "action" in parsed:
-                    return parsed
-            except json.JSONDecodeError:
-                continue
-        return None
-
-    def _is_executable_action(self, parsed: Dict[str, Any]) -> bool:
-        action = str(parsed.get("action", "")).strip()
-        if not action:
-            return False
-        # "done" is handled by run-loop and should be treated as executable terminator.
-        if action == "done":
-            return True
-        allowed_actions = {
-            "batch",
-            "list",
-            "cd",
-            "rename",
-            "move",
-            "delete",
-            "mkdir",
-            "info",
-            "ffmpeg",
-            "summarize",
-            "shell",
-            "script",
-            "text_file",
-            "read",
-            "analyze_image",
-            "diff",
-            "mcp_list_tools",
-            "mcp_status",
-            "mcp_status_refresh",
-            "mcp_reconnect",
-            "mcp_call_tool",
-            "mcp_call_tool_batch",
-            "mcp_list_resources",
-            "mcp_read_resource",
-            "mcp_list_resource_templates",
-            "mcp_list_prompts",
-            "mcp_get_prompt",
-            "mcp_sampling_create_message",
-            "mcp_completion_complete",
-            "knowledge_sync",
-            "knowledge_stats",
-            "knowledge_search",
-            "knowledge_enable",
-            "knowledge_on",
-            "knowledge_disable",
-            "knowledge_off",
-            "freedom_enable",
-            "freedom_on",
-            "freedom_disable",
-            "freedom_off",
-            "always_confirm_reset",
-        }
-        return action in allowed_actions
-
-    def extract_json_command(self, text: str) -> Optional[Dict]:
-        """从AI回复中提取JSON命令（优先完整 ```json 代码块，再尝试平衡括号对象）。"""
-        try:
-            fallback_candidate: Optional[Dict[str, Any]] = None
-            # 1) Full fenced block: ```json ... ``` (avoid regex that stops at first '}')
-            search_pos = 0
-            while True:
-                m = re.search(r"```(?:json)?\s*", text[search_pos:], re.IGNORECASE)
-                if not m:
-                    break
-                block_start = search_pos + m.end()
-                close = text.find("```", block_start)
-                if close == -1:
-                    break
-                raw = text[block_start:close].strip()
-                if raw:
-                    parsed = self._parse_possible_json_command(raw)
-                    if parsed:
-                        if self._is_executable_action(parsed):
-                            return parsed
-                        if fallback_candidate is None:
-                            fallback_candidate = parsed
-                search_pos = close + 3
-
-            # 2) Balanced object starting at each '{"action"' (handles nested params)
-            pos = 0
-            while True:
-                key = '"action"'
-                idx = text.find(key, pos)
-                if idx == -1:
-                    break
-                open_brace = text.rfind("{", 0, idx)
-                if open_brace == -1:
-                    pos = idx + len(key)
-                    continue
-                sub = self._extract_balanced_json_object(text, open_brace)
-                if sub:
-                    parsed = self._parse_possible_json_command(sub)
-                    if parsed:
-                        if self._is_executable_action(parsed):
-                            return parsed
-                        if fallback_candidate is None:
-                            fallback_candidate = parsed
-                pos = idx + len(key)
-
-            # 3) Single-line JSON (legacy)
-            for line in text.split("\n"):
-                line = line.strip()
-                if line.startswith("{") and '"action"' in line:
-                    parsed = self._parse_possible_json_command(line)
-                    if parsed:
-                        if self._is_executable_action(parsed):
-                            return parsed
-                        if fallback_candidate is None:
-                            fallback_candidate = parsed
-
-            return fallback_candidate
-        except Exception as e:
-            print(f"⚠️ JSON提取错误: {e}")
-            return None
 
     def action_list_directory(self, path: Optional[str] = None, file_filter: Optional[str] = None) -> Dict[str, Any]:
         """列出目录内容"""
@@ -3243,10 +3125,160 @@ big_image.jpg
         except Exception as e:
             return {"success": False, "error": f"文件比较命令执行异常: {str(e)}"}
 
+    def execute_tool_call(self, tool_name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
+        """Execute one tool call from model response."""
+        if tool_name == "done":
+            return {"success": True, "message": "任务已完成", "finished": True}
+        return self.execute_command({"action": tool_name, "params": arguments})
+
+    def _parse_tool_plan_from_response(self, text: str) -> Optional[Tuple[str, Dict[str, Any]]]:
+        """Parse model response into tool plan under strict rule: exactly one tool JSON at reply end."""
+        if not isinstance(text, str):
+            return None
+        text = text.strip()
+        if not text:
+            return None
+        # Prefer fenced payloads first, supporting:
+        # ```json\n{"tool":"...","args":{...}}\n```
+        # ```\n`{"tool":"...","args":{...}}`\n```
+        fence_payloads: List[str] = []
+        for fm in re.finditer(r"```(?:json)?\s*(.*?)\s*```", text, flags=re.IGNORECASE | re.DOTALL):
+            body = (fm.group(1) or "").strip()
+            if body.startswith("`") and body.endswith("`") and len(body) >= 2:
+                body = body[1:-1].strip()
+            if body:
+                fence_payloads.append(body)
+
+        # Collect balanced JSON objects with their byte ranges.
+        spans: List[Tuple[int, int, str]] = []
+        for m_obj in re.finditer(r"\{", text):
+            start = m_obj.start()
+            depth = 0
+            in_str = False
+            esc = False
+            end = -1
+            i = start
+            while i < len(text):
+                ch = text[i]
+                if in_str:
+                    if esc:
+                        esc = False
+                    elif ch == "\\":
+                        esc = True
+                    elif ch == '"':
+                        in_str = False
+                    i += 1
+                    continue
+                if ch == '"':
+                    in_str = True
+                    i += 1
+                    continue
+                if ch == "{":
+                    depth += 1
+                elif ch == "}":
+                    depth -= 1
+                    if depth == 0:
+                        end = i
+                        break
+                i += 1
+            if end != -1:
+                chunk = text[start : end + 1].strip()
+                spans.append((start, end + 1, chunk))
+
+        valid: List[Tuple[int, int, Tuple[str, Dict[str, Any]]]] = []
+        for payload in fence_payloads:
+            try:
+                obj = json.loads(payload)
+            except Exception:
+                continue
+            if not isinstance(obj, dict):
+                continue
+            tool_name = obj.get("tool") or obj.get("action")
+            args = obj.get("args") or obj.get("params") or {}
+            if isinstance(tool_name, str) and tool_name.strip():
+                if not isinstance(args, dict):
+                    args = {}
+                # Fenced payload has highest priority when valid.
+                return (tool_name.strip(), args)
+
+        for start, end, c in spans:
+            try:
+                obj = json.loads(c)
+            except Exception:
+                continue
+            if not isinstance(obj, dict):
+                continue
+            tool_name = obj.get("tool") or obj.get("action")
+            args = obj.get("args") or obj.get("params") or {}
+            if isinstance(tool_name, str) and tool_name.strip():
+                if not isinstance(args, dict):
+                    args = {}
+                valid.append((start, end, (tool_name.strip(), args)))
+
+        if not valid:
+            return None
+
+        # Prefer the last valid JSON whose tail is only harmless closers.
+        for start, end, plan in sorted(valid, key=lambda x: x[1], reverse=True):
+            tail = text[end:].strip()
+            if not tail or re.fullmatch(r"[\s`\-]*", tail):
+                return plan
+        return None
+
+    def _find_tool_plan_anywhere(self, text: str) -> Optional[Tuple[str, Dict[str, Any]]]:
+        """Find any valid tool plan JSON in response, regardless of position."""
+        if not isinstance(text, str):
+            return None
+        for m_obj in re.finditer(r"\{", text):
+            start = m_obj.start()
+            depth = 0
+            in_str = False
+            esc = False
+            end = -1
+            i = start
+            while i < len(text):
+                ch = text[i]
+                if in_str:
+                    if esc:
+                        esc = False
+                    elif ch == "\\":
+                        esc = True
+                    elif ch == '"':
+                        in_str = False
+                    i += 1
+                    continue
+                if ch == '"':
+                    in_str = True
+                    i += 1
+                    continue
+                if ch == "{":
+                    depth += 1
+                elif ch == "}":
+                    depth -= 1
+                    if depth == 0:
+                        end = i
+                        break
+                i += 1
+            if end == -1:
+                continue
+            chunk = text[start : end + 1].strip()
+            try:
+                obj = json.loads(chunk)
+            except Exception:
+                continue
+            if not isinstance(obj, dict):
+                continue
+            tool_name = obj.get("tool") or obj.get("action")
+            args = obj.get("args") or obj.get("params") or {}
+            if isinstance(tool_name, str) and tool_name.strip():
+                if not isinstance(args, dict):
+                    args = {}
+                return (tool_name.strip(), args)
+        return None
+
     def execute_command(self, command: Dict) -> Dict[str, Any]:
-        """执行AI生成的命令，支持批量命令和cls命令"""
-        print(f"🔍 正在执行命令: {command}")
-        action = command.get("action")
+        """执行工具命令，支持批量命令和cls命令"""
+        action = command.get("tool") or command.get("action")
         params = command.get("params", {})
 
         if action == "cls":
@@ -4137,7 +4169,7 @@ big_image.jpg
         return {"success": False, "error": "未知的操作类型"}
 
     def run(self):
-        """运行AI Agent主循环，支持自动多轮命令执行，AI可根据上次执行结果继续生成命令，遇到{"action": "done"}时终止。"""
+        """运行 AI Agent 主循环，使用 OpenAI tools 进行多轮自动执行，调用 done 结束。"""
         import sys
         import os
         os_name = os.name
@@ -4497,175 +4529,139 @@ big_image.jpg
                 last_result = None
                 self._last_auto_removed_ephemeral = None
                 original_user_task = user_input.strip()
+                self._active_skill_full_prompt = ""
+                self._active_skill_id = None
                 forced_skill_prefix = ""
                 if forced_skill:
                     forced_skill_prefix = (
                         f"【强制技能】本轮必须使用 skill `{forced_skill.get('name')}` "
-                        f"(skill_id=`{forced_skill.get('skill_id')}`)。"
-                        "请在后续 JSON 中显式携带该 skill_id（字段可用 `skill_id` 或 `skill`），"
-                        "并按该技能 SKILL.md 执行；不得改用其他 skill。\n\n"
+                        f"(skill_id=`{forced_skill.get('skill_id')}`)，并按该技能 SKILL.md 执行。\n\n"
                     )
-                first_round_input = (
-                    f"{forced_skill_prefix}{user_input}\n\n"
-                    "【多步任务执行要求】若任务需要多步，请先给出 Step 1..N 的简短步骤编排，"
-                    "并为每步标注状态（pending/in_progress/completed/failed），再输出当前要执行的一条 JSON 指令。"
-                    "后续每轮都要先更新步骤状态再续步。"
+                    sid = str(forced_skill.get("skill_id") or "").strip()
+                    full_prompt = self._build_single_skill_prompt(sid)
+                    if full_prompt:
+                        print(f"🧩 即将启用 Skill 完整提示: {forced_skill.get('name')} ({sid})")
+                        self._active_skill_full_prompt = full_prompt
+                        self._active_skill_id = sid
+                first_round_contract = (
+                    "\n\n【首轮回复硬性要求（必须遵守）】\n"
+                    "1) 对于需要两步及以上完成的任务，先输出任务编排：Step 1..N，并为每步标注状态（pending/in_progress/completed/failed）。\n"
+                    "2) 在同一条回复结尾输出且仅输出一个工具调用 JSON。\n"
+                    "3) 若需要先请求某个 skill 完整提示，也必须先给出上述步骤编排，再在结尾输出 "
+                    "{\"tool\":\"request_skill_prompt\",\"args\":{\"skill_id\":\"...\"}}。\n"
+                    "4) 禁止首轮直接只给工具调用 JSON 而不做步骤编排。\n\n"
+                    "首轮输出模板示例：\n"
+                    "Step 1 [in_progress]: <当前要执行的步骤>\n"
+                    "Step 2 [pending]: <后续步骤>\n\n"
+                    "```json\n"
+                    "{\"tool\":\"<tool_name>\",\"args\":{...}}\n"
+                    "```"
                 )
-                next_input = user_input
-                is_first_round = True  # 标记是否为第一轮
-                followup_json_misses = 0
-                max_followup_json_misses = 4
+                next_input = f"{forced_skill_prefix}{user_input}{first_round_contract}"
+                is_first_round = True
                 last_announced_skill_key: Optional[str] = None
-                while True:
-                    # 获取AI回复
+                max_tool_rounds = 20
+                max_no_tool_rounds = 3
+                no_tool_rounds = 0
+                tool_round = 0
+                while tool_round < max_tool_rounds:
+                    tool_round += 1
                     print("🤖 AI正在思考...")
-                    # 流式输出AI回复
-                    # 只在第一轮用户输入时查询知识库，后续所有命令执行结果回传都不查询
-                    stream_gen = self.call_ai(
-                        first_round_input if last_result is None else next_input,
+                    ai_response = self.call_ai(
+                        next_input,
                         context=json.dumps(last_result, ensure_ascii=False) if last_result else "",
-                        stream=True,
-                        include_knowledge=is_first_round  # 只有第一轮查询知识库
+                        stream=False,
+                        include_knowledge=is_first_round,
+                        return_message=False,
                     )
-                    ai_response = ""
-                    try:
-                        for chunk in stream_gen:
-                            print(chunk, end="", flush=True)
-                            ai_response += chunk
-                        # AI输出完成后添加换行符
-                        print()
-                    except Exception as e:
-                        print(f"\n❌ AI流式输出异常: {e}")
-                    # 提取并执行命令
-                    command = self.extract_json_command(ai_response)
-                    if not command:
-                        # After a command with last_action false (or any mid-chain step), model must keep emitting JSON
-                        if last_result is not None and followup_json_misses < max_followup_json_misses:
-                            followup_json_misses += 1
-                            print(
-                                f"\n⚠️ 未解析到 JSON 操作指令（续步重试 {followup_json_misses}/{max_followup_json_misses}）。"
-                                "已提醒模型必须输出 ```json 代码块。"
-                            )
-                            next_input = (
-                                next_input
-                                + "\n\n【系统约束】上一条回复中没有任何可执行的 ```json``` 指令。"
-                                "当前多步任务尚未结束。你必须在下一条回复中**包含恰好一个** ```json 代码块**，"
-                                "内含一条操作 JSON（例如 script、shell、batch、move 等；临时任务脚本用 script，勿误用 text_file）；"
-                                "仅当用户任务已全部完成时，才输出 {\"action\": \"done\"}。"
-                                "并先更新步骤编排中的状态（pending/in_progress/completed/failed）后再给出下一条指令。"
-                                "禁止仅用纯文字罗列结果代替 JSON。"
-                                "若原始需求含「创建脚本」「执行脚本」等，下一步必须是 script + shell/batch（或 batch），"
-                                "text_file 仅当用户明确要文件留在当前目录；禁止再用 list + last_action:true 结束。"
-                            )
-                            is_first_round = False
-                            continue
-                        print("\nℹ️ 未检测到可执行 JSON 指令，结束本轮。")
+                    if not isinstance(ai_response, str):
+                        print(f"❌ AI返回异常: {ai_response}")
                         break
-                    if command.get("action") == "done":
-                        # Guardrail: when recent-evidence checks already say "insufficient",
-                        # do not allow a numeric market forecast to end the task.
-                        if (
-                            self._task_requires_fresh_market_data(original_user_task)
-                            and self._recent_evidence_insufficient()
-                            and self._response_has_hard_numeric_claims(ai_response)
-                        ):
-                            followup_json_misses += 1
-                            if followup_json_misses > max_followup_json_misses:
-                                print("\n❌ 多次收到不满足证据约束的收尾内容，终止本轮。")
-                                break
-                            print(
-                                "\n⚠️ 已拒绝执行 done：检索结果已提示“近期待证据不足”，"
-                                "但最终答复仍包含具体数值预测。已要求改写为定性结论。"
-                            )
+                    if ai_response:
+                        sys.stdout.write(ai_response)
+                        if not ai_response.endswith("\n"):
+                            sys.stdout.write("\n")
+                        sys.stdout.flush()
+
+                    fallback_plan = self._parse_tool_plan_from_response(ai_response)
+                    if not fallback_plan:
+                        misplaced_plan = self._find_tool_plan_anywhere(ai_response)
+                        no_tool_rounds += 1
+                        if no_tool_rounds >= max_no_tool_rounds:
+                            print("❌ 模型连续未给出可执行 JSON 工具计划，已停止本轮自动执行。")
+                            break
+                        print(
+                            f"⚠️ 未检测到可执行 JSON 工具计划（重试 {no_tool_rounds}/{max_no_tool_rounds}）："
+                            "将继续要求模型输出 {\"tool\":\"...\",\"args\":{...}}。"
+                        )
+                        if misplaced_plan:
+                            m_tool, m_args = misplaced_plan
                             next_input = (
                                 f"【用户原始需求】\n{original_user_task}\n\n"
-                                "【证据约束】最近检索结果已提示“近期待证据不足”，"
-                                "因此禁止输出具体点位/涨跌幅/市值/资金流等硬数字预测。\n"
-                                "请改写最终答复：\n"
-                                "1) 明确说明证据不足与时间范围限制；\n"
-                                "2) 仅给定性判断和风险提示；\n"
-                                "3) 不得新增任何未在证据中可核验的数字事实；\n"
-                                "4) 答复末尾再输出 {\"action\":\"done\"}。"
+                                "你上一条回复包含工具调用 JSON，但它不在回复结尾（后面仍有文本），因此被判无效。\n"
+                                "请在下一条回复中把该工具调用原样放在最后一行，且其后不要再有任何文本。\n"
+                                f"请输出：{{\"tool\":\"{m_tool}\",\"args\":{json.dumps(m_args, ensure_ascii=False)} }}"
                             )
-                            is_first_round = False
-                            continue
-                        followup_json_misses = 0
-                        print("✅ AI已声明所有操作完成。");
+                        else:
+                            next_input = (
+                                f"【用户原始需求】\n{original_user_task}\n\n"
+                                "你上一条回复没有给出可执行 JSON。\n"
+                                "请只输出一个 JSON 对象：{\"tool\":\"工具名\",\"args\":{...}}；"
+                                "任务完成时输出 {\"tool\":\"done\",\"args\":{}}。"
+                                "若你判断任务已完成，下一条必须直接输出 done，禁止再调用无关工具。"
+                            )
+                        is_first_round = False
+                        continue
+
+                    tool_name, args = fallback_plan
+
+                    if not tool_name:
+                        print("❌ 工具计划缺少名称，结束本轮。")
                         break
 
-                    # After last_action:false, refuse list+last_action:true when task clearly needs script/shell
-                    if last_result is not None and self.operation_results:
-                        prev_wrap = self.operation_results[-1]
-                        prev_cmd = prev_wrap.get("command") or {}
-                        if prev_cmd.get("last_action") is not True:
-                            if command.get("action") == "list" and command.get("last_action") is True:
-                                task_hints = (
-                                    "脚本",
-                                    "执行",
-                                    "junction",
-                                    "联结",
-                                    "mklink",
-                                    "批处理",
-                                    ".bat",
-                                    "自动",
-                                    "运行",
-                                    "软链",
-                                    "符号",
-                                )
-                                if any(h in original_user_task for h in task_hints):
-                                    followup_json_misses += 1
-                                    if followup_json_misses > max_followup_json_misses:
-                                        print("\n❌ 多次收到无效的提前结束指令，终止本轮。")
-                                        break
-                                    print(
-                                        "\n⚠️ 已拒绝执行：上一步为 last_action:false，"
-                                        "当前需求含脚本/执行/junction 等，不能用 list + last_action:true 收尾。"
-                                    )
-                                    next_input = (
-                                        f"【用户原始需求】\n{original_user_task}\n\n"
-                                        f"【上一有效步骤及返回】\n"
-                                        f"{json.dumps(self.operation_results[-1], ensure_ascii=False)}\n\n"
-                                        "【错误】请先输出 script（临时 .bat/.ps1/.py 等到 workspace），再 shell 执行；"
-                                        "勿用 text_file 写任务临时脚本。或使用 batch。不要 list 工作目录结束。"
-                                    )
-                                    is_first_round = False
-                                    continue
+                    if tool_name == "request_skill_prompt":
+                        sid = str(args.get("skill_id") or "").strip()
+                        full_prompt = self._build_single_skill_prompt(sid)
+                        if not full_prompt:
+                            no_tool_rounds += 1
+                            next_input = (
+                                f"【用户原始需求】\n{original_user_task}\n\n"
+                                f"你请求的 skill_id=`{sid}` 不存在。"
+                                "请基于已加载技能索引重试，输出有效的 request_skill_prompt，或直接继续输出业务工具调用 JSON。"
+                            )
+                            continue
+                        if self._active_skill_id != sid:
+                            print(f"🧩 即将启用 Skill 完整提示: {sid}")
+                        self._active_skill_full_prompt = full_prompt
+                        self._active_skill_id = sid
+                        next_input = (
+                            f"【用户原始需求】\n{original_user_task}\n\n"
+                            f"已注入 skill_id=`{sid}` 的完整提示。请继续输出下一条工具调用 JSON。"
+                        )
+                        no_tool_rounds = 0
+                        continue
 
-                    followup_json_misses = 0
-                    selected_skill = self._infer_selected_skill(command, ai_response)
+                    pseudo_command = {"action": tool_name, "params": args}
+                    selected_skill = self._infer_selected_skill(pseudo_command, ai_response)
                     if selected_skill:
                         skill_key = f"{selected_skill.get('skill_id')}::{selected_skill.get('name')}"
                         if skill_key != last_announced_skill_key:
                             print(f"🧩 本步使用 Skill: {selected_skill.get('name')} ({selected_skill.get('skill_id')})")
                             last_announced_skill_key = skill_key
 
-                    print("⚡ 执行操作...")
-                    result = self.execute_command(command)
-                    # 保存操作结果
+                    result = self.execute_tool_call(tool_name, args)
+                    no_tool_rounds = 0
                     self.operation_results.append({
-                        "command": command,
+                        "command": pseudo_command,
                         "result": result,
                         "timestamp": datetime.now().isoformat()
                     })
                     last_result = result
-                    
-                    # 检查用户是否取消了操作
-                    if not result.get("success", True) and (
-                        "用户取消了操作" in result.get("error", "") or 
-                        "用户拒绝" in result.get("error", "") or
-                        "用户取消" in result.get("error", "")
-                    ):
-                        is_first_round = False
-                        followup_json_misses = 0
-                        # 向AI发送明确的取消消息，要求输出done命令
-                        next_input = (
-                            f"【用户原始需求】\n{original_user_task}\n\n"
-                            "用户取消了操作，请不要再继续执行任何命令，直接输出'{\"action\": \"done\"}'"
-                        )
-                        continue
+                    is_first_round = False
 
-                    # Hard stop: when system explicitly requires user input and is non-retryable,
-                    # end current auto-execution loop to avoid prompt/list/shell churn.
+                    if result.get("finished"):
+                        print("✅ AI已声明所有操作完成。")
+                        break
                     if (
                         (not result.get("success", True))
                         and bool(result.get("needs_user_input", False))
@@ -4674,28 +4670,29 @@ big_image.jpg
                         hint = str(result.get("error", "") or "需要用户输入后再继续。")
                         print(f"⏸️ 已暂停自动续步：{hint}")
                         break
-                    
-                    # 第一轮结束后，后续轮次不再查询知识库
-                    is_first_round = False
-                    step_progress = self._build_step_progress_context()
-                    # 续步时必须带上原始需求，否则模型容易忘记「创建脚本/执行」等后续步骤
-                    next_input = (
-                        (forced_skill_prefix if forced_skill else "")
-                        + 
-                        f"【用户原始需求（须全部完成；未完成前禁止用无意义的 list + last_action:true 结束）】\n"
-                        f"{original_user_task}\n\n"
-                        f"{step_progress}\n\n"
-                        f"【上一条已执行命令及系统返回】\n"
-                        f"{json.dumps(self.operation_results[-1], ensure_ascii=False)}\n\n"
-                        "请先更新步骤状态（pending/in_progress/completed/failed），再根据原始需求继续输出下一条 ```json``` 指令。"
-                        "若需求包含创建并执行脚本、批处理、junction 等，通常应先 script 写入临时脚本再 shell；"
-                        "仅当用户明确要求在当前目录保留交付物时才用 text_file。不要仅列出当前工作目录来结束。"
-                        "除非用户明确要求重跑或你在 params 里设置 force=true，否则不要重复执行相同 shell command。"
-                    )
 
-                    if result.get("success", True) and command.get("last_action") == True:
-                        print("✅ 操作已完成")
-                        break
+                    step_progress = self._build_step_progress_context()
+                    post_status_rule = ""
+                    if tool_name in ("mcp_status", "mcp_status_refresh"):
+                        post_status_rule = (
+                            "你刚执行了 MCP 状态查询工具。下一步必须先根据上一条工具返回里的 status 字段，"
+                            "按固定模板输出完整状态报告；该轮禁止直接 done。状态报告输出完成后的下一步再输出 done。"
+                        )
+                    post_result_synthesis_rule = self._build_post_result_synthesis_rule(
+                        tool_name=tool_name,
+                        args=args,
+                        result=result,
+                    )
+                    next_input = (
+                        f"【用户原始需求】\n{original_user_task}\n\n"
+                        f"{step_progress}\n\n"
+                        f"【上一条工具执行结果】\n{json.dumps(self.operation_results[-1], ensure_ascii=False)}\n\n"
+                        "请继续输出下一条 JSON 工具计划：{\"tool\":\"工具名\",\"args\":{...}}；"
+                        "任务全部完成时输出 {\"tool\":\"done\",\"args\":{}}。"
+                        "若上一条结果已满足原始需求，下一条必须直接输出 done。"
+                        + (f"\n{post_status_rule}" if post_status_rule else "")
+                        + (f"\n{post_result_synthesis_rule}" if post_result_synthesis_rule else "")
+                    )
 
             except KeyboardInterrupt:
                 print("\n👋 程序已中断，再见！")
@@ -4712,16 +4709,49 @@ big_image.jpg
         for i, item in enumerate(self.operation_results, start=1):
             cmd = item.get("command") or {}
             res = item.get("result") or {}
-            action = cmd.get("action", "unknown")
+            action = cmd.get("action") or cmd.get("tool") or "unknown"
             ok = bool(res.get("success", True))
             status = "completed" if ok else "failed"
             detail = str(res.get("message") or res.get("error") or "").replace("\n", " ").strip()
             if len(detail) > 160:
                 detail = detail[:160] + "..."
             lines.append(
-                f"- Step {i}: [{status}] action={action}, last_action={cmd.get('last_action')}, detail={detail or '-'}"
+                f"- Step {i}: [{status}] tool={action}, detail={detail or '-'}"
             )
         return "\n".join(lines)
+
+    def _build_post_result_synthesis_rule(
+        self, tool_name: str, args: Dict[str, Any], result: Dict[str, Any]
+    ) -> str:
+        """
+        Build extra guardrails for outputs that must be synthesized for the user
+        before declaring done (e.g. raw web-search/script dumps).
+        """
+        if tool_name != "shell":
+            return ""
+        output_text = str(result.get("output") or "")
+        markers = (
+            "【检索摘要】",
+            "【正文摘录与要点】",
+            "【回答】",
+            "【AI 审核】",
+            "最终URL：",
+            "链接：http",
+            "链接：https",
+        )
+        has_research_markers = any(m in output_text for m in markers)
+        looks_like_long_raw_dump = len(output_text) >= 4000
+        if not (has_research_markers or looks_like_long_raw_dump):
+            return ""
+        return (
+            "你刚得到的是原始信息输出。下一条回复必须先做“面向用户的结果提炼”，"
+            "再决定是否 done：\n"
+            "- 先给出 1-2 句最终结论（直接回答用户问题）；\n"
+            "- 再给出不超过 3 条关键依据（优先最新来源，并标注时间）；\n"
+            "- 给出时效性/不确定性提示；\n"
+            "- 禁止原样粘贴大段网页正文。\n"
+            "若上述提炼未完成，禁止直接输出 done。"
+        )
 
     def _infer_selected_skill(self, command: Dict[str, Any], ai_response: str) -> Optional[Dict[str, str]]:
         """
