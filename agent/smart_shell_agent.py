@@ -299,6 +299,10 @@ class SmartShellAgent:
         self.mcp_manager.register_client_method_handler("elicitation/create", self._handle_mcp_elicitation_create)
         # Async preload MCP tools cache on startup (non-blocking).
         self.mcp_manager.preload_all_async(timeout_s=12.0, force=False)
+        self._mcp_config_path = self.config_dir / "mcp.json"
+        self._mcp_config_file_sig = self._get_mcp_config_file_sig()
+        self._mcp_config_struct_sig = self._calc_mcp_config_sig(self.mcp_config)
+        self._mcp_config_last_failed_file_sig: Optional[Tuple[bool, int, int]] = None
         self.system_prompt = self._base_system_prompt + self._build_mcp_system_append()
         self.tool_specs = self._load_tools_spec_from_jsonc()
         self.tools_prompt_template = self._load_tools_prompt_template()
@@ -375,6 +379,73 @@ class SmartShellAgent:
         except Exception as e:
             print(f"⚠️ 读取 mcp.json 失败: {e}")
             return {"mcpServers": {}}
+
+    def _get_mcp_config_file_sig(self) -> Tuple[bool, int, int]:
+        p = self._mcp_config_path
+        try:
+            if not p.is_file():
+                return (False, 0, 0)
+            st = p.stat()
+            return (True, int(getattr(st, "st_mtime_ns", int(st.st_mtime * 1e9))), int(st.st_size))
+        except Exception:
+            return (False, 0, 0)
+
+    @staticmethod
+    def _calc_mcp_config_sig(cfg: Dict[str, Any]) -> str:
+        try:
+            servers = cfg.get("mcpServers", {}) if isinstance(cfg, dict) else {}
+            if not isinstance(servers, dict):
+                servers = {}
+            return json.dumps({"mcpServers": servers}, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        except Exception:
+            return ""
+
+    def _load_mcp_config_strict(self) -> Tuple[bool, Dict[str, Any], str]:
+        """
+        Strict mcp config loader for hot-reload:
+        - parse failure returns ok=False and keeps current runtime config unchanged.
+        """
+        p = self._mcp_config_path
+        if not p.is_file():
+            return True, {"mcpServers": {}}, ""
+        try:
+            with open(p, "r", encoding="utf-8", errors="replace") as f:
+                data = json.load(f)
+            if not isinstance(data, dict):
+                return False, {}, "mcp.json 根对象必须为 JSON object"
+            servers = data.get("mcpServers", {})
+            if not isinstance(servers, dict):
+                return False, {}, "mcp.json 的 mcpServers 必须为 object"
+            return True, {"mcpServers": servers}, ""
+        except Exception as e:
+            return False, {}, str(e)
+
+    def _reload_mcp_config_now(self) -> Dict[str, Any]:
+        """
+        Manual trigger for MCP config reload.
+        Always parse current mcp.json and apply diff against in-memory config.
+        """
+        cur_sig = self._get_mcp_config_file_sig()
+        ok, new_cfg, err = self._load_mcp_config_strict()
+        if not ok:
+            self._mcp_config_last_failed_file_sig = cur_sig
+            return {"success": False, "changed": False, "error": f"mcp.json 解析失败: {err}"}
+        self._mcp_config_last_failed_file_sig = None
+        new_struct_sig = self._calc_mcp_config_sig(new_cfg)
+        if new_struct_sig == self._mcp_config_struct_sig:
+            self._mcp_config_file_sig = cur_sig
+            return {"success": True, "changed": False, "message": "MCP 配置未变化"}
+        summary = self.mcp_manager.apply_config_changes(new_cfg, timeout_s=12.0)
+        self.mcp_config = new_cfg
+        self._mcp_config_struct_sig = new_struct_sig
+        self._mcp_config_file_sig = cur_sig
+        self.system_prompt = self._base_system_prompt + self._build_mcp_system_append()
+        return {
+            "success": True,
+            "changed": True,
+            "summary": summary,
+            "message": "MCP 配置重载完成",
+        }
 
     def _build_mcp_system_append(self) -> str:
         """Build MCP section appended to system prompt (with redacted env values)."""
@@ -997,7 +1068,7 @@ class SmartShellAgent:
                 self._add_shell_command_allowlist(shell_command)
             print(
                 f"ℹ️ 已写入 {self._confirm_allowlist_path()}。"
-                "可使用 always_confirm reset 清空列表。"
+                "可使用 /always_confirm-reset 清空列表。"
             )
             return True
         return raw in ("y", "yes")
@@ -3682,6 +3753,17 @@ big_image.jpg
             except Exception as e:
                 return {"success": False, "error": f"MCP 禁用 tools 清单获取异常: {e}"}
 
+        elif action == "mcp_reload_config":
+            result = self._reload_mcp_config_now()
+            if result.get("success"):
+                return {
+                    "success": True,
+                    "changed": bool(result.get("changed", False)),
+                    "summary": result.get("summary", {}),
+                    "message": str(result.get("message", "MCP 配置重载完成")),
+                }
+            return {"success": False, "error": str(result.get("error", "MCP 配置重载失败"))}
+
         elif action == "mcp_disable_tools":
             server = params.get("server")
             tools_param = params.get("tools")
@@ -4258,7 +4340,7 @@ big_image.jpg
         elif action == "knowledge_sync":
             """同步知识库"""
             if not self.knowledge_enabled:
-                return {"success": False, "error": "知识库功能已关闭，可使用 'knowledge on' 开启"}
+                return {"success": False, "error": "知识库功能已关闭，可使用 '/knowledge-on' 开启"}
             if not self.knowledge_manager:
                 return {"success": False, "error": "知识库功能不可用"}
             
@@ -4271,7 +4353,7 @@ big_image.jpg
         elif action == "knowledge_stats":
             """获取知识库统计信息"""
             if not self.knowledge_enabled:
-                return {"success": False, "error": "知识库功能已关闭，可使用 'knowledge on' 开启"}
+                return {"success": False, "error": "知识库功能已关闭，可使用 '/knowledge-on' 开启"}
             if not self.knowledge_manager:
                 return {"success": False, "error": "知识库功能不可用"}
             
@@ -4298,7 +4380,7 @@ big_image.jpg
         elif action == "knowledge_search":
             """搜索知识库"""
             if not self.knowledge_enabled:
-                return {"success": False, "error": "知识库功能已关闭，可使用 'knowledge on' 开启"}
+                return {"success": False, "error": "知识库功能已关闭，可使用 '/knowledge-on' 开启"}
             if not self.knowledge_manager:
                 return {"success": False, "error": "知识库功能不可用"}
             
@@ -4365,6 +4447,203 @@ big_image.jpg
 
         return {"success": False, "error": "未知的操作类型"}
 
+    def _parse_mcp_shortcut_command(self, builtin_line: str) -> Tuple[Optional[str], Dict[str, Any], Optional[str]]:
+        """
+        Parse '/mcp-...' shortcuts into tool calls.
+        Rules:
+        - Only required parameters are accepted.
+        - Optional parameters are not supported in shortcuts.
+        - For 'mcp_list_disabled_tools', server is optional.
+        """
+        raw = (builtin_line or "").strip()
+        if not raw:
+            return None, {}, "命令为空"
+        parts = raw.split()
+        low = [p.lower() for p in parts]
+        if not low:
+            return None, {}, None
+        cmd = low[0]
+
+        if cmd == "mcp-reload-config" and len(parts) == 1:
+            return "mcp_reload_config", {}, None
+        if cmd == "mcp-reload-config" and len(parts) != 1:
+            return None, {}, "用法: /mcp-reload-config"
+        if cmd == "mcp-status" and len(parts) == 1:
+            return "mcp_status", {}, None
+        if cmd == "mcp-status" and len(parts) != 1:
+            return None, {}, "用法: /mcp-status"
+        if cmd == "mcp-status-refresh" and len(parts) == 1:
+            return "mcp_status_refresh", {}, None
+        if cmd == "mcp-status-refresh" and len(parts) != 1:
+            return None, {}, "用法: /mcp-status-refresh"
+        if cmd == "mcp-reconnect" and len(parts) == 2:
+            return "mcp_reconnect", {"server": parts[1]}, None
+        if cmd == "mcp-reconnect":
+            return None, {}, "用法: /mcp-reconnect <server>"
+        if cmd == "mcp-server-info" and len(parts) == 2:
+            return "mcp_server_info", {"server": parts[1]}, None
+        if cmd == "mcp-server-info":
+            return None, {}, "用法: /mcp-server-info <server>"
+        if cmd == "mcp-list-tools" and len(parts) == 2:
+            return "mcp_list_tools", {"server": parts[1]}, None
+        if cmd == "mcp-list-tools":
+            return None, {}, "用法: /mcp-list-tools <server>"
+        if cmd == "mcp-list-resources" and len(parts) == 2:
+            return "mcp_list_resources", {"server": parts[1]}, None
+        if cmd == "mcp-list-resources":
+            return None, {}, "用法: /mcp-list-resources <server>"
+        if cmd == "mcp-list-resource-templates" and len(parts) == 2:
+            return "mcp_list_resource_templates", {"server": parts[1]}, None
+        if cmd == "mcp-list-resource-templates":
+            return None, {}, "用法: /mcp-list-resource-templates <server>"
+        if cmd == "mcp-list-prompts" and len(parts) == 2:
+            return "mcp_list_prompts", {"server": parts[1]}, None
+        if cmd == "mcp-list-prompts":
+            return None, {}, "用法: /mcp-list-prompts <server>"
+        if cmd == "mcp-list-disabled-tools":
+            if len(parts) == 1:
+                return "mcp_list_disabled_tools", {}, None
+            if len(parts) == 2:
+                return "mcp_list_disabled_tools", {"server": parts[1]}, None
+            return None, {}, "用法: /mcp-list-disabled-tools [server]"
+
+        if cmd == "mcp-disable-tools" and len(parts) >= 3:
+            server = parts[1]
+            tools_csv = " ".join(parts[2:]).strip()
+            tools = [x.strip() for x in tools_csv.split(",") if x.strip()]
+            if not tools:
+                return None, {}, "缺少 tools 参数，请使用逗号分隔，例如: /mcp-disable-tools playwright browser_click,browser_type"
+            return "mcp_disable_tools", {"server": server, "tools": tools}, None
+        if cmd == "mcp-disable-tools":
+            return None, {}, "用法: /mcp-disable-tools <server> <tool1,tool2>"
+
+        if cmd == "mcp-enable-tools" and len(parts) >= 3:
+            server = parts[1]
+            tools_csv = " ".join(parts[2:]).strip()
+            tools = [x.strip() for x in tools_csv.split(",") if x.strip()]
+            if not tools:
+                return None, {}, "缺少 tools 参数，请使用逗号分隔，例如: /mcp-enable-tools playwright browser_click,browser_type"
+            return "mcp_enable_tools", {"server": server, "tools": tools}, None
+        if cmd == "mcp-enable-tools":
+            return None, {}, "用法: /mcp-enable-tools <server> <tool1,tool2>"
+
+        return None, {}, (
+            "无效 MCP 快捷命令。可用示例："
+            "/mcp-status, /mcp-status-refresh, /mcp-reload-config, "
+            "/mcp-reconnect <server>, /mcp-server-info <server>, "
+            "/mcp-list-tools <server>, /mcp-list-resources <server>, "
+            "/mcp-list-resource-templates <server>, /mcp-list-prompts <server>, "
+            "/mcp-list-disabled-tools [server], "
+            "/mcp-disable-tools <server> <tool1,tool2>, /mcp-enable-tools <server> <tool1,tool2>"
+        )
+
+    @staticmethod
+    def _mcp_item_label(item: Any) -> str:
+        if not isinstance(item, dict):
+            return str(item)
+        for k in ("display_name", "name", "uri", "id", "title"):
+            v = item.get(k)
+            if isinstance(v, str) and v.strip():
+                return v.strip()
+        return str(item)
+
+    def _print_mcp_shortcut_result(self, tool_name: str, args: Dict[str, Any], result: Dict[str, Any]) -> None:
+        print("\n=== MCP Command Result ===")
+        print(f"Command: {tool_name}")
+        if not result.get("success", False):
+            print(f"Status : FAILED")
+            print(f"Error  : {result.get('error', '未知错误')}")
+            print("==========================\n")
+            return
+
+        print("Status : OK")
+        if tool_name == "mcp_reload_config":
+            print(f"Changed: {bool(result.get('changed', False))}")
+            summary = result.get("summary", {}) if isinstance(result.get("summary"), dict) else {}
+            added = ", ".join(summary.get("added", [])) or "None"
+            changed = ", ".join(summary.get("changed", [])) or "None"
+            removed = ", ".join(summary.get("removed", [])) or "None"
+            print(f"Added  : {added}")
+            print(f"Updated: {changed}")
+            print(f"Removed: {removed}")
+        elif tool_name in ("mcp_status", "mcp_status_refresh"):
+            status = result.get("status", {}) if isinstance(result.get("status"), dict) else {}
+            print(f"Total  : {status.get('total', 0)}")
+            print(f"Success: {status.get('success', 0)}")
+            print(f"Failed : {status.get('failed', 0)}")
+            print(f"Loading: {status.get('loading_count', 0)}")
+            print(f"Loaded : {status.get('all_loaded', False)}")
+            servers = status.get("servers", {}) if isinstance(status.get("servers"), dict) else {}
+            if servers:
+                print("Servers:")
+                for s, st in servers.items():
+                    if not isinstance(st, dict):
+                        continue
+                    print(f"- {s}: state={st.get('state','')}, tools={st.get('tool_count',0)}, source={st.get('source','')}")
+        elif tool_name == "mcp_reconnect":
+            print(f"Server : {result.get('server', args.get('server', ''))}")
+            print(f"Source : {result.get('source', '')}")
+            print(f"Tools  : {result.get('count', 0)}")
+        elif tool_name == "mcp_server_info":
+            info = result.get("info", {}) if isinstance(result.get("info"), dict) else {}
+            status = info.get("status", {}) if isinstance(info.get("status"), dict) else {}
+            print(f"Server : {result.get('server', args.get('server', ''))}")
+            print(f"State  : {status.get('state', '')}")
+            print(f"Source : {status.get('source', '')}")
+            sections = info.get("sections", {}) if isinstance(info.get("sections"), dict) else {}
+            for sec_key, title in (
+                ("tools", "Tools"),
+                ("resources", "Resources"),
+                ("resource_templates", "ResourceTemplates"),
+                ("prompts", "Prompts"),
+            ):
+                sec = sections.get(sec_key, {}) if isinstance(sections.get(sec_key), dict) else {}
+                count = sec.get("count", 0)
+                print(f"{title:<16}: {count}")
+                items = sec.get("items", []) if isinstance(sec.get("items"), list) else []
+                if items and sec_key in ("tools", "resources", "prompts"):
+                    labels = [self._mcp_item_label(x) for x in items]
+                    print(f"  - {', '.join(labels)}")
+        elif tool_name in ("mcp_disable_tools", "mcp_enable_tools"):
+            print(f"Server : {result.get('server', args.get('server', ''))}")
+            disabled = result.get("disabled_tools", [])
+            if not isinstance(disabled, list):
+                disabled = []
+            print(f"Disabled tools ({len(disabled)}): {', '.join(disabled) if disabled else 'None'}")
+        elif tool_name == "mcp_list_disabled_tools":
+            data = result.get("disabled_tools", {})
+            if isinstance(data, dict):
+                for s, arr in data.items():
+                    tools = arr if isinstance(arr, list) else []
+                    print(f"- {s}: {', '.join(tools) if tools else 'None'}")
+            else:
+                print("Disabled tools: None")
+        elif tool_name in (
+            "mcp_list_tools",
+            "mcp_list_resources",
+            "mcp_list_resource_templates",
+            "mcp_list_prompts",
+        ):
+            server = result.get("server", args.get("server", ""))
+            count = result.get("count", 0)
+            print(f"Server : {server}")
+            print(f"Count  : {count}")
+            key = {
+                "mcp_list_tools": "tools",
+                "mcp_list_resources": "resources",
+                "mcp_list_resource_templates": "templates",
+                "mcp_list_prompts": "prompts",
+            }.get(tool_name, "")
+            items = result.get(key, []) if isinstance(result.get(key), list) else []
+            if items:
+                labels = [self._mcp_item_label(x) for x in items]
+                print(f"Items  : {', '.join(labels)}")
+        else:
+            msg = result.get("message", "")
+            if msg:
+                print(f"Message: {msg}")
+        print("==========================\n")
+
     def run(self):
         """运行 AI Agent 主循环，使用 OpenAI tools 进行多轮自动执行，调用 done 结束。"""
         import sys
@@ -4372,25 +4651,20 @@ big_image.jpg
         os_name = os.name
 
         # 启动时提示知识库状态
-        _win = os_name == "nt"
         if not self.knowledge_enabled:
             print(
-                "知识库当前处于关闭状态。可使用 "
-                + ("`/knowledge on`" if _win else "'knowledge on'")
-                + " 来开启"
+                "知识库当前处于关闭状态。可使用 `/knowledge-on` 来开启"
             )
         elif not self.knowledge_manager:
             print(
-                "知识库已开启但当前不可用。请检查依赖或稍后重试。可使用 "
-                + ("`/knowledge off`" if _win else "'knowledge off'")
-                + " 暂时关闭。"
+                "知识库已开启但当前不可用。请检查依赖或稍后重试。可使用 `/knowledge-off` 暂时关闭。"
             )
 
         if self.skills:
             _sk_path = self.config_dir / "skills"
 
-        _fon = "`/freedom on`" if _win else "'freedom on'"
-        _foff = "`/freedom off`" if _win else "'freedom off'"
+        _fon = "`/freedom-on`"
+        _foff = "`/freedom-off`"
         if self.freedom_enabled:
             print(_ansi_red("自由模式：已开启"))
             print(
@@ -4409,7 +4683,7 @@ big_image.jpg
                 f"输入 {_fon} 可开启（可逆操作可由 AI 判定后自动跳过确认）。"
             )
 
-        _acr = "`/always_confirm reset`" if _win else "'always_confirm reset'"
+        _acr = "`/always_confirm-reset`"
         _ns = (
             len(self._allowlist_shell_paths)
             + len(self._allowlist_shell_exes)
@@ -4454,45 +4728,48 @@ big_image.jpg
                 if not stripped_in:
                     continue
 
-                forced_skill: Optional[Dict[str, str]] = None
-                if os_name == "nt":
-                    forced_skill = self._extract_forced_skill_reference(stripped_in)
-                    if forced_skill and not forced_skill.get("rest"):
+                forced_skill: Optional[Dict[str, str]] = self._extract_forced_skill_reference(stripped_in)
+                if forced_skill and not forced_skill.get("rest"):
+                    print(
+                        f"🧩 已指定强制技能: {forced_skill.get('name')} ({forced_skill.get('skill_id')})。"
+                        "请在同一行提供任务内容，例如："
+                        f"你好 /{forced_skill.get('skill_id')}"
+                    )
+                    continue
+                if forced_skill and forced_skill.get("rest"):
+                    user_input = forced_skill["rest"]
+                    stripped_in = user_input.strip()
+                    if not stripped_in:
+                        continue
+
+                # Unified UX: built-in commands and direct shell require "/" prefix on all platforms.
+                builtin_line: Optional[str] = None
+                if stripped_in.startswith("/") and forced_skill is None:
+                    builtin_line = stripped_in[1:].lstrip()
+                    if not builtin_line:
                         print(
-                            f"🧩 已指定强制技能: {forced_skill.get('name')} ({forced_skill.get('skill_id')})。"
-                            "请在同一行提供任务内容，例如："
-                            f"你好 /{forced_skill.get('skill_id')}"
+                            "ℹ️ 内置命令与本地直接执行的命令均需以 / 开头，"
+                            "例如 /exit、/help、/clear-screen、/knowledge-on、/ls；单独输入 / 无效。"
                         )
                         continue
-                    if forced_skill and forced_skill.get("rest"):
-                        user_input = forced_skill["rest"]
-                        stripped_in = user_input.strip()
-                        if not stripped_in:
-                            continue
-
-                # Windows: built-in commands and direct shell require "/" prefix; POSIX unchanged
-                builtin_line: Optional[str] = None
-                if os_name == "nt":
-                    if stripped_in.startswith("/") and forced_skill is None:
-                        builtin_line = stripped_in[1:].lstrip()
-                        if not builtin_line:
-                            print(
-                                "ℹ️ 在 Windows 下，内置命令与本地直接执行的命令均需以 / 开头，"
-                                "例如 /exit、/help、/clear screen、/knowledge on、/dir；单独输入 / 无效。"
-                            )
-                            continue
-                else:
-                    builtin_line = stripped_in
 
                 if builtin_line is not None:
                     bl = builtin_line.lower()
+                    mcp_tool, mcp_args, mcp_err = self._parse_mcp_shortcut_command(builtin_line)
+                    if mcp_tool:
+                        mcp_res = self.execute_tool_call(mcp_tool, mcp_args)
+                        self._print_mcp_shortcut_result(mcp_tool, mcp_args, mcp_res if isinstance(mcp_res, dict) else {})
+                        continue
+                    if bl.startswith("mcp-") and mcp_err:
+                        print(f"❌ {mcp_err}")
+                        continue
                     if bl in ('exit', 'quit'):
                         break
-                    # clear screen: /clear screen (Windows); POSIX may still use single-token "clear"
-                    if bl == 'cls' or bl == 'clear screen' or (os_name != 'nt' and bl == 'clear'):
+                    # clear screen
+                    if bl == 'cls' or bl == 'clear-screen':
                         os.system('cls' if os_name == 'nt' else 'clear')
                         continue
-                    if bl == 'clear history':
+                    if bl == 'clear-history':
                         self.history_manager.clear_history()
                         if self.input_handler is not None and hasattr(
                             self.input_handler, "reset_command_history"
@@ -4502,50 +4779,50 @@ big_image.jpg
                             )
                         print("✅ 历史记录已清除")
                         continue
-                    if bl == "clear context":
+                    if bl == "clear-context":
                         self.conversation_history.clear()
                         self.operation_results.clear()
                         self._last_auto_removed_ephemeral = None
                         print("✅ 已清空 AI 上下文（对话历史与近期操作结果缓存，不影响命令行输入历史）")
                         continue
 
-                    if bl == 'knowledge on':
+                    if bl == 'knowledge-on':
                         self.execute_tool_call("knowledge_on", {})
                         continue
-                    if bl == 'knowledge off':
+                    if bl == 'knowledge-off':
                         self.execute_tool_call("knowledge_off", {})
                         continue
 
-                    if bl == 'freedom on':
+                    if bl == 'freedom-on':
                         self.execute_tool_call("freedom_on", {})
                         continue
-                    if bl == 'freedom off':
+                    if bl == 'freedom-off':
                         self.execute_tool_call("freedom_off", {})
                         continue
 
-                    if bl == "always_confirm reset":
+                    if bl == "always_confirm-reset":
                         self.execute_tool_call("always_confirm_reset", {})
                         continue
 
                     if self.knowledge_enabled and self.knowledge_manager:
-                        if bl == 'knowledge sync':
+                        if bl == 'knowledge-sync':
                             self.execute_tool_call("knowledge_sync", {})
                             continue
 
-                        if bl == 'knowledge stats':
+                        if bl == 'knowledge-stats':
                             self.execute_tool_call("knowledge_stats", {})
                             continue
 
-                        if bl.startswith('knowledge search '):
-                            query = builtin_line[len('knowledge search ') :]
+                        if bl.startswith('knowledge-search '):
+                            query = builtin_line[len('knowledge-search ') :]
                             if query.strip():
                                 self.execute_tool_call("knowledge_search", {"query": query.strip()})
                             else:
                                 print("❌ 请提供搜索查询内容")
                             continue
                     else:
-                        if bl.startswith('knowledge '):
-                            _kh = "`/knowledge on`" if os_name == "nt" else "'knowledge on'"
+                        if bl.startswith('knowledge-'):
+                            _kh = "`/knowledge-on`"
                             print(f"ℹ️ 知识库已关闭，可使用 {_kh} 开启")
                             continue
 
@@ -4553,60 +4830,47 @@ big_image.jpg
                         print("\n🌟 Smart Shell 帮助信息")
                         print("=" * 80)
                         print("\n📌 内置命令：")
-                        if os_name == "nt":
-                            print("  1. /exit, /quit                 - 退出程序")
-                            print("  2. /cls, /clear screen          - 清空屏幕")
-                            print("  3. /clear history               - 清除命令历史记录")
-                            print("  4. /clear context           - 清空 AI 上下文与操作结果缓存")
-                            print("  5. /help                        - 显示此帮助信息")
-                        else:
-                            print("  1. exit, quit                   - 退出程序")
-                            print("  2. cls, clear screen (或 clear) - 清空屏幕")
-                            print("  3. clear history                - 清除命令历史记录")
-                            print("  4. clear context                - 清空 AI 对话上下文与操作结果缓存")
-                            print("  5. help                         - 显示此帮助信息")
+                        print("  1. /exit, /quit                 - 退出程序")
+                        print("  2. /cls, /clear-screen           - 清空屏幕")
+                        print("  3. /clear-history               - 清除命令历史记录")
+                        print("  4. /clear-context               - 清空 AI 上下文与操作结果缓存")
+                        print("  5. /help                        - 显示此帮助信息")
+                        print("\n🧩 MCP 快捷命令：")
+                        print("  /mcp-status")
+                        print("  /mcp-status-refresh")
+                        print("  /mcp-reload-config")
+                        print("  /mcp-reconnect <server>")
+                        print("  /mcp-server-info <server>")
+                        print("  /mcp-list-tools <server>")
+                        print("  /mcp-list-resources <server>")
+                        print("  /mcp-list-resource-templates <server>")
+                        print("  /mcp-list-prompts <server>")
+                        print("  /mcp-list-disabled-tools [server]")
+                        print("  /mcp-disable-tools <server> <tool1,tool2>")
+                        print("  /mcp-enable-tools <server> <tool1,tool2>")
 
                         if self.knowledge_enabled:
                             print("\n📚 知识库命令：")
-                            if os_name == "nt":
-                                print("  6. /knowledge on|off            - 开关（状态写入 config.json）")
-                                print("  7. /knowledge sync              - 同步文档")
-                                print("  8. /knowledge stats             - 统计信息")
-                                print("  9. /knowledge search <query>    - 搜索知识库")
-                            else:
-                                print("  6. knowledge on/off             - 开关知识库（状态写入 config.json）")
-                                print("  7. knowledge sync               - 同步知识库文档")
-                                print("  8. knowledge stats              - 查看统计信息")
-                                print("  9. knowledge search <query>   - 搜索知识库")
+                            print("  6. /knowledge-on|/knowledge-off - 开关知识库（状态写入 config.json）")
+                            print("  7. /knowledge-sync              - 同步文档")
+                            print("  8. /knowledge-stats             - 查看统计信息")
+                            print("  9. /knowledge-search <query>    - 搜索知识库")
 
                         print("\n🦅 自由模式命令：")
-                        if os_name == "nt":
-                            print("  /freedom on|/freedom off  - 可逆操作自动跳过确认（写入 config.json）")
-                        else:
-                            print("  freedom on/off  - 可逆操作自动跳过确认（状态写入 config.json）")
+                        print("  /freedom-on|/freedom-off  - 可逆操作自动跳过确认（写入 config.json）")
 
                         print("\n🔔 确认免列表（confirm_allowlist.json）：")
-                        if os_name == "nt":
-                            print(
-                                "  /always_confirm reset  - 清空免确认列表（shell 脚本路径+加盐哈希、"
-                                "可执行键），恢复每次 y/n 询问"
-                            )
-                        else:
-                            print(
-                                "  always_confirm reset  - 清空免确认列表（shell 脚本路径+加盐哈希、"
-                                "可执行键），恢复每次 y/n 询问"
-                            )
+                        print(
+                            "  /always_confirm-reset  - 清空免确认列表（shell 脚本路径+加盐哈希、"
+                            "可执行键），恢复每次 y/n 询问"
+                        )
                         print(
                             "  仅在 **shell** 确认提示中可输入 a：记入当前命令解析出的脚本路径或可执行键；"
                             "script/text_file 落盘仅 y/n。"
                         )
 
                         print("\n📌 系统命令（不经 AI，本机直接执行）：")
-                        if os_name == "nt":
-                            print("  Windows：必须以 / 开头，例如 /dir、/ping、/type file.txt、/git status")
-                            print("  （盘符切换如 d: 仍可直接输入，无需 /）")
-                        else:
-                            print("  常见系统命令（如 cd、ls、cat 等）可直接输入；可执行文件也可直接运行")
+                        print("  所有平台都必须以 / 开头，例如 /ls、/dir、/cd ..、/cat a.txt、/git status")
                         print("\n📌 自然语言命令：")
                         print("您可以使用自然语言描述您的需求，例如：")
                         print("  1. 创建一个名为test的文件夹")
@@ -4642,28 +4906,16 @@ big_image.jpg
                         print("=" * 80)
                         continue
 
-                # Windows: single drive letter (e.g. "d:" or "D:") -> switch to that drive root, do not trigger AI
-                if os_name == 'nt' and re.match(r'^[a-zA-Z]:\s*$', stripped_in):
-                    drive_letter = stripped_in[0].upper()
-                    result = self.action_change_directory(drive_letter + ":\\")
-                    if not result["success"]:
-                        print(f"❌ {result['error']}")
-                    continue
-
-                # Direct local execution without AI: Windows requires leading "/"; POSIX keeps legacy ("/" is absolute paths)
+                # Direct local execution without AI: requires leading "/" on all platforms.
                 run_direct_shell: Optional[str] = None
-                if os_name == "nt":
-                    if stripped_in.startswith("/"):
-                        run_direct_shell = stripped_in[1:].lstrip()
-                        if not run_direct_shell:
-                            print(
-                                "ℹ️ 在 Windows 下，不经过 AI 直接执行的系统命令或可执行文件需以 / 开头，"
-                                "例如 /dir、/ping 127.0.0.1、/git status；单独输入 / 无效。"
-                            )
-                            continue
-                else:
-                    if system_cmd_re.match(stripped_in) or self._is_executable_file(stripped_in):
-                        run_direct_shell = stripped_in
+                if stripped_in.startswith("/"):
+                    run_direct_shell = stripped_in[1:].lstrip()
+                    if not run_direct_shell:
+                        print(
+                            "ℹ️ 不经过 AI 直接执行的系统命令或可执行文件需以 / 开头，"
+                            "例如 /ls、/dir、/ping 127.0.0.1、/git status；单独输入 / 无效。"
+                        )
+                        continue
 
                 if run_direct_shell is not None:
                     ui = run_direct_shell
@@ -4703,21 +4955,20 @@ big_image.jpg
                             print(f"❌ 系统命令执行异常: {e}")
                         continue
 
-                    if os_name == "nt":
-                        # e.g. /git status — not in the small whitelist but still direct shell
-                        try:
-                            process = subprocess.Popen(
-                                ui,
-                                shell=True,
-                                stdin=sys.stdin,
-                                stdout=sys.stdout,
-                                stderr=sys.stderr,
-                                cwd=str(self.work_directory)
-                            )
-                            process.wait()
-                        except Exception as e:
-                            print(f"❌ 命令执行异常: {e}")
-                        continue
+                    # e.g. /git status — not in the small whitelist but still direct shell
+                    try:
+                        process = subprocess.Popen(
+                            ui,
+                            shell=True,
+                            stdin=sys.stdin,
+                            stdout=sys.stdout,
+                            stderr=sys.stderr,
+                            cwd=str(self.work_directory)
+                        )
+                        process.wait()
+                    except Exception as e:
+                        print(f"❌ 命令执行异常: {e}")
+                    continue
 
                 last_result = None
                 self._last_auto_removed_ephemeral = None
