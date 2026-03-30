@@ -2347,6 +2347,111 @@ class McpManager:
                 }
                 self._active_ops[str(name)] = 0
 
+    @staticmethod
+    def _server_conf_fingerprint(conf: Any) -> str:
+        try:
+            return json.dumps(conf, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        except Exception:
+            return str(conf)
+
+    def _remove_server_runtime(self, server: str) -> None:
+        if server in self._clients:
+            try:
+                self._clients[server]._shutdown_unlocked()
+            except Exception:
+                pass
+            self._clients.pop(server, None)
+        self._tools_cache.pop(server, None)
+        self._resources_cache.pop(server, None)
+        self._resource_templates_cache.pop(server, None)
+        self._prompts_cache.pop(server, None)
+        with self._status_lock:
+            self._status.pop(server, None)
+            self._active_ops.pop(server, None)
+        self._log("INFO", f"mcp server unloaded: {server}")
+
+    def apply_config_changes(self, new_config: Dict[str, Any], timeout_s: float = 12.0) -> Dict[str, Any]:
+        """
+        Apply new mcp config incrementally:
+        - load newly added servers
+        - reconnect changed servers
+        - unload removed servers
+        """
+        old_servers = self.mcp_config.get("mcpServers", {})
+        old_servers = old_servers if isinstance(old_servers, dict) else {}
+        incoming = (new_config or {}).get("mcpServers", {})
+        new_servers = incoming if isinstance(incoming, dict) else {}
+
+        old_keys = set(str(k) for k in old_servers.keys())
+        new_keys = set(str(k) for k in new_servers.keys())
+        added = sorted(new_keys - old_keys)
+        removed = sorted(old_keys - new_keys)
+        maybe_common = sorted(old_keys & new_keys)
+
+        changed: List[str] = []
+        for s in maybe_common:
+            if self._server_conf_fingerprint(old_servers.get(s)) != self._server_conf_fingerprint(new_servers.get(s)):
+                changed.append(s)
+
+        # Switch to new config first so subsequent reconnect uses new params.
+        self.mcp_config = {"mcpServers": dict(new_servers)}
+
+        # Ensure status entries exist for new/changed servers.
+        now = time.time()
+        with self._status_lock:
+            for s in sorted(set(added + changed)):
+                self._status.setdefault(
+                    s,
+                    {
+                        "state": "pending",
+                        "last_error": "",
+                        "last_updated_ts": now,
+                        "loading_since_ts": 0.0,
+                        "tool_count": 0,
+                        "source": "",
+                        "is_cached": False,
+                        "failure_type": "",
+                        "suggestion": "",
+                    },
+                )
+                self._active_ops.setdefault(s, 0)
+
+        for s in removed:
+            self._remove_server_runtime(s)
+
+        reloaded: List[str] = []
+        skipped: List[str] = []
+        failed: Dict[str, str] = {}
+
+        targets = sorted(set(added + changed))
+        for s in targets:
+            conf = new_servers.get(s, {})
+            if isinstance(conf, dict) and bool(conf.get("skip_preload", False)):
+                self._set_status(
+                    s,
+                    "skipped",
+                    last_error="skip_preload=true",
+                    failure_type="",
+                    suggestion="该 server 已配置 skip_preload=true；如需自动加载请改为 false。",
+                )
+                skipped.append(s)
+                continue
+            try:
+                self.reconnect_server(s, timeout_s=timeout_s)
+                reloaded.append(s)
+            except Exception as e:
+                failed[s] = str(e)
+                self._log("WARNING", f"reload server failed during config change: {s}: {e}")
+
+        return {
+            "added": added,
+            "removed": removed,
+            "changed": changed,
+            "reloaded": reloaded,
+            "skipped": skipped,
+            "failed": failed,
+        }
+
     def _mark_op(self, server: str, delta: int) -> None:
         with self._status_lock:
             cur = int(self._active_ops.get(server, 0))

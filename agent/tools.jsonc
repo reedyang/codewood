@@ -352,6 +352,17 @@
   {
     "type": "function",
     "function": {
+      "name": "mcp_reload_config",
+      "description": "手动重载 mcp.json 配置并按增量规则热更新 MCP（新增/变更/删除）。",
+      "parameters": {
+        "type": "object",
+        "properties": {}
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
       "name": "mcp_disable_tools",
       "description": "禁用指定 MCP server 的 tools（支持逗号分隔字符串或数组）。",
       "parameters": {
