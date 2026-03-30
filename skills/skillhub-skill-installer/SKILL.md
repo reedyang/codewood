@@ -1,0 +1,109 @@
+---
+name: skillhub-skill-installer
+description: Search skills from SkillHub and install a selected skill into config_dir/skills with explicit user confirmation. Use whenever the user asks to browse/find/install skills from skillhub.club, especially for "检索并安装 skill". Installation must stop on name conflicts with currently loaded skills.
+license: Proprietary
+---
+
+# SkillHub Skill Installer (built-in)
+
+## Purpose
+
+- Search skill entries from `https://www.skillhub.club/skills`
+- Install selected skill into `<config_dir>/skills/<skill_id>/`
+- Enforce explicit confirmation before installation
+- Abort installation when conflict with currently loaded skill is detected
+
+## CLI
+
+Use bundled script:
+
+```text
+python "<BUNDLE_ROOT>/scripts/skillhub_installer.py" search --query "<keyword>" [--page N] [--insecure|--no-verify]
+python "<BUNDLE_ROOT>/scripts/skillhub_installer.py" install --detail-url "<skill detail url>" --config-dir "<config dir>" --confirm "YES" [--insecure|--no-verify]
+python "<BUNDLE_ROOT>/scripts/skillhub_installer.py" install --query "<keyword>" --config-dir "<config dir>" --confirm "YES" [--max-results 8] [--insecure|--no-verify]
+```
+
+## Workflow constraints
+
+- `install` requires `--confirm YES`; otherwise script exits without writing files.
+- For slash route `/skillhub-skill-installer <text>`, always treat `<text>` as the query.
+- Never reuse prior-turn selection/index/detail_url.
+- Selection and confirmation must happen inside installer script terminal prompts.
+- Do not ask chat-level index/YES/NO.
+- Do not run placeholder shell commands (`echo waiting`, etc.).
+- Task boundary is installation only; do not switch to unrelated tasks.
+
+## Mandatory routing for slash usage
+
+When user input is slash-routed as:
+
+- `/skillhub-skill-installer <text>`
+
+the `<text>` part MUST be treated as the initial search query immediately.
+
+Required behavior:
+
+1. Do not ask for another keyword if `<text>` is non-empty.
+2. Run search once:
+
+```text
+python "<BUNDLE_ROOT>/scripts/skillhub_installer.py" search --query "<text>"
+```
+
+3. Run installer interactively:
+
+```text
+python "<BUNDLE_ROOT>/scripts/skillhub_installer.py" install --query "<text>" --config-dir "<config dir>" --confirm "YES"
+```
+
+4. For slash route `/skillhub-skill-installer <text>`, MUST NOT use `--detail-url` default selection.
+5. `--detail-url` is allowed only when user explicitly provides that URL in current message.
+6. Do not perform non-installer actions until install finishes or user cancels.
+
+## Interactive inputs (script-side)
+
+- Install confirmation prompt: `Confirm installation Yes(y)/No(n):` (input `y/n`).
+- Conflict prompt: `overwrite(o)/rename(r)/cancel(c)` (input `o/r/c`).
+
+## Success closure
+
+- After installer returns success, immediately end with:
+
+```json
+{"tool":"done","args":{}}
+```
+
+- Success response should contain install result only (id/name/path and related installer output).
+- Forbidden after success:
+  - re-running installer for same selection
+  - additional unrelated shell commands
+  - asking user for unrelated next tasks
+
+## Frontmatter requirement
+
+Installer uses strict validation:
+
+- Source `SKILL.md` must be standard frontmatter format and include at least:
+  - `name`
+  - `description`
+
+If source format is not compliant, installation must fail immediately.
+Do not attempt automatic conversion in installer workflow.
+Special terminal condition:
+
+- If installer output contains:
+  - `Install aborted: source SKILL.md is not standard frontmatter format (requires name and description).`
+- Then treat as final terminal state for this task:
+  - report this exact failure reason to user
+  - provide only retry options within installer scope (choose another index / cancel)
+  - immediately end with `{"tool":"done","args":{}}`
+
+## Failure discipline
+
+- On any non-zero exit from installer script, output error summary and next actionable options only.
+- On any non-zero exit from installer script, after one concise error summary, immediately end with `{"tool":"done","args":{}}`.
+- If installer output contains `Installation aborted by user.` (for example user entered `n` at `Yes(y)/No(n)`), treat it as final terminal state and immediately end with `{"tool":"done","args":{}}`.
+- Forbidden after failure:
+  - switching to unrelated workflows
+  - asking unrelated inputs
+  - repeated idle shell loops
