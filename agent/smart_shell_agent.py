@@ -34,7 +34,7 @@ def _decode_subprocess_output(data: Optional[bytes]) -> str:
         return data.decode("utf-8", errors="replace")
 
 
-def _safe_console_write(text: str, stream: Any = None) -> None:
+def _safe_console_write(text: str, stream: Any = None, append_newline: bool = True) -> None:
     """
     Write text to console safely on Windows terminals with legacy encodings (e.g. GBK).
     Falls back to replacement encoding instead of raising UnicodeEncodeError.
@@ -44,7 +44,7 @@ def _safe_console_write(text: str, stream: Any = None) -> None:
     s = stream or sys.stdout
     try:
         s.write(text)
-        if not text.endswith("\n"):
+        if append_newline and not text.endswith("\n"):
             s.write("\n")
         s.flush()
         return
@@ -52,7 +52,7 @@ def _safe_console_write(text: str, stream: Any = None) -> None:
         pass
 
     enc = getattr(s, "encoding", None) or "utf-8"
-    payload = text if text.endswith("\n") else (text + "\n")
+    payload = text if (text.endswith("\n") or not append_newline) else (text + "\n")
     try:
         if hasattr(s, "buffer"):
             s.buffer.write(payload.encode(enc, errors="replace"))
@@ -2765,6 +2765,7 @@ big_image.jpg
             # Ensure Python child processes can print non-ASCII safely on Windows.
             run_env.setdefault("PYTHONUTF8", "1")
             run_env.setdefault("PYTHONIOENCODING", "utf-8")
+            run_env.setdefault("PYTHONUNBUFFERED", "1")
             # Always run in interactive mode to avoid mis-judging whether stdin is needed.
             interactive = True
             if interactive:
@@ -2776,11 +2777,13 @@ big_image.jpg
                 def _stream_and_capture(pipe: Any, target: Any, bucket: List[str]) -> None:
                     try:
                         while True:
-                            line = pipe.readline()
-                            if not line:
+                            # Use char-level streaming so prompts without trailing newline
+                            # (e.g. input("...: ")) are rendered immediately.
+                            chunk = pipe.read(1)
+                            if not chunk:
                                 break
-                            bucket.append(line)
-                            _safe_console_write(line, target)
+                            bucket.append(chunk)
+                            _safe_console_write(chunk, target, append_newline=False)
                     except Exception:
                         pass
                     finally:
@@ -2870,6 +2873,20 @@ big_image.jpg
                 if interactive:
                     return {"success": True, "message": "命令执行成功（交互模式）", **base_out}
                 return {"success": True, "message": "命令执行成功", **base_out}
+
+            # Hard stop for user-cancelled skillhub installer flow.
+            combo = f"{out}\n{err}"
+            cmd_l = command.lower()
+            is_skillhub_install = ("skillhub_installer.py" in cmd_l) and (" install " in f" {cmd_l} ")
+            user_cancelled = ("installation aborted by user." in combo.lower()) or (return_code == 2)
+            if is_skillhub_install and user_cancelled:
+                return {
+                    "success": True,
+                    "cancelled": True,
+                    "terminal_state": "user_cancelled",
+                    "message": "安装已由用户取消，流程结束（不应自动重试）。",
+                    **base_out,
+                }
             return {
                 "success": False,
                 "error": f"命令执行失败，退出码: {return_code}",
