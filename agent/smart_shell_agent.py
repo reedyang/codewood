@@ -771,6 +771,63 @@ class SmartShellAgent:
             "policy": pol,
         }
 
+    def _print_execution_policy_details(self) -> None:
+        _pm = "`/execution-policy moderate`"
+        _pc = "`/execution-policy confirmation`"
+        _pu = "`/execution-policy unlimited`"
+        pol = str(getattr(self, "execution_policy", "confirmation")).lower()
+        print(f"执行策略 execution_policy：{pol}")
+        if pol == "unlimited":
+            print(
+                _ansi_red(
+                    "  所有操作直接执行，不做可逆性检测与确认。"
+                    f"输入 {_pm} 可切换到 moderate；输入 {_pc} 可切回 confirmation。"
+                )
+            )
+            print("  注意事项：高风险操作也会直接执行，仅建议在完全可控环境使用。")
+        elif pol == "moderate":
+            print(
+                _ansi_yellow(
+                    "  可逆操作在执行前会由 AI 判定，可逆则自动跳过 y/n 确认。AI 可逆性判定可能会犯错，请谨慎使用。"
+                    f"输入 {_pc} 可切回 confirmation。"
+                )
+            )
+            print("  注意事项：判定结果非 100% 准确，关键操作建议手动复核后再执行。")
+        else:
+            print(
+                "  需确认的操作将始终询问 y/n。"
+                f"输入 {_pm} 可切换到 moderate；输入 {_pu} 可切换到 unlimited。"
+            )
+            print("  注意事项：最安全模式，推荐日常默认使用。")
+
+    def _print_knowledge_status_details(self) -> None:
+        enabled = bool(getattr(self, "knowledge_enabled", False))
+        manager_ready = getattr(self, "knowledge_manager", None) is not None
+        dep_ready = bool(KNOWLEDGE_AVAILABLE)
+        print("知识库状态详情：")
+        print(f"  knowledge_enabled: {'on' if enabled else 'off'}")
+        print(f"  runtime_ready: {'yes' if manager_ready else 'no'}")
+        print(f"  dependency_ready: {'yes' if dep_ready else 'no'}")
+        if enabled and manager_ready:
+            try:
+                stats = self.knowledge_manager.get_knowledge_stats()  # type: ignore[union-attr]
+                if isinstance(stats, dict):
+                    docs = stats.get("documents_count", "-")
+                    chunks = stats.get("chunks_count", "-")
+                    emb = stats.get("embedding_model", "-")
+                    print(f"  documents_count: {docs}")
+                    print(f"  chunks_count: {chunks}")
+                    print(f"  embedding_model: {emb}")
+            except Exception as e:
+                print(f"  stats_error: {e}")
+            print("  注意事项：检索结果可能过时或不完整，关键结论请回到原文件复核。")
+        elif enabled and not manager_ready:
+            print("  当前为“已开启但不可用”状态。可先 `/knowledge off` 再 `/knowledge on` 尝试恢复。")
+            print("  注意事项：依赖异常时不会提供知识库增强检索。")
+        else:
+            print("  当前知识库处于关闭状态。可用 `/knowledge on` 开启。")
+            print("  注意事项：关闭后 AI 仅基于当前输入与上下文回答。")
+
     def _confirm_allowlist_path(self) -> Path:
         return self.config_dir / "confirm_allowlist.json"
 
@@ -4735,28 +4792,7 @@ big_image.jpg
         if self.skills:
             _sk_path = self.config_dir / "skills"
 
-        _pm = "`/execution-policy moderate`"
-        _pc = "`/execution-policy confirmation`"
-        _pu = "`/execution-policy unlimited`"
-        pol = str(getattr(self, "execution_policy", "confirmation")).lower()
-        print(f"执行策略 execution_policy：{pol}")
-        if pol == "unlimited":
-            print(
-                _ansi_red(
-                    "  所有操作直接执行，不做可逆性检测与确认。"
-                    f"输入 {_pm} 可切换到 moderate；输入 {_pc} 可切回 confirmation。"
-                )
-            )
-        elif pol == "moderate":
-            print(
-                _ansi_yellow("  可逆操作在执行前会由 AI 判定，可逆则自动跳过 y/n 确认。AI 可逆性判定可能会犯错，请谨慎使用。"
-                f"输入 {_pc} 可切回 confirmation。")
-            )
-        else:
-            print(
-                "  需确认的操作将始终询问 y/n。"
-                f"输入 {_pm} 可切换到 moderate；输入 {_pu} 可切换到 unlimited。"
-            )
+        self._print_execution_policy_details()
 
         _acr = "`/always_confirm-reset`"
         _ns = (
@@ -4870,19 +4906,25 @@ big_image.jpg
                         self.execute_tool_call("knowledge_off", {})
                         continue
                     if bl == "knowledge":
-                        print("❌ 用法: /knowledge <on|off|sync|stats|search <query>>")
+                        print("❌ 用法: /knowledge <status|on|off|sync|stats|search <query>>")
+                        continue
+                    if bl == "knowledge status":
+                        self._print_knowledge_status_details()
                         continue
 
                     if bl.startswith("execution-policy "):
                         policy = ""
                         policy = bl.split(" ", 1)[1].strip().lower()
+                        if policy == "show":
+                            self._print_execution_policy_details()
+                            continue
                         if not policy:
-                            print("❌ 用法: /execution-policy <unlimited|moderate|confirmation>")
+                            print("❌ 用法: /execution-policy <show|unlimited|moderate|confirmation>")
                         else:
                             self.execute_tool_call("execution_policy_set", {"policy": policy})
                         continue
                     if bl == "execution-policy":
-                        print("❌ 用法: /execution-policy <unlimited|moderate|confirmation>")
+                        print("❌ 用法: /execution-policy <show|unlimited|moderate|confirmation>")
                         continue
                     if bl == "always_confirm-reset":
                         self.execute_tool_call("always_confirm_reset", {})
@@ -4932,14 +4974,15 @@ big_image.jpg
                         print("  /mcp disable-tools <server> <tool1,tool2>  - 禁用工具（逗号分隔）")
                         print("  /mcp enable-tools <server> <tool1,tool2>   - 启用工具（逗号分隔）")
 
-                        if self.knowledge_enabled:
-                            print("\n📚 知识库命令：")
-                            print("  6. /knowledge on|/knowledge off - 开关知识库（状态写入 config.json）")
-                            print("  7. /knowledge sync              - 同步文档")
-                            print("  8. /knowledge stats             - 查看统计信息")
-                            print("  9. /knowledge search <query>    - 搜索知识库")
+                        print("\n📚 知识库命令：")
+                        print("  6. /knowledge status            - 显示知识库状态详情与注意事项")
+                        print("  7. /knowledge on|/knowledge off - 开关知识库（状态写入 config.json）")
+                        print("  8. /knowledge sync              - 同步文档")
+                        print("  9. /knowledge stats             - 查看统计信息")
+                        print("  10. /knowledge search <query>   - 搜索知识库")
 
                         print("\n🦅 执行策略命令：")
+                        print("  /execution-policy show          - 显示当前策略详情与注意事项")
                         print("  /execution-policy unlimited     - 无需确认，直接执行所有操作")
                         print("  /execution-policy moderate      - AI 判定可逆后自动跳过确认")
                         print("  /execution-policy confirmation  - 始终 y/n 确认后执行")
