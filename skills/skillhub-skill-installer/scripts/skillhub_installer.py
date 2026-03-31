@@ -228,6 +228,21 @@ def _extract_cards_from_list_html(html: str) -> List[SkillCard]:
     return cards
 
 
+def _is_skillhub_detail_url(text: str) -> bool:
+    s = (text or "").strip()
+    if not s:
+        return False
+    try:
+        p = urlparse(s)
+    except Exception:
+        return False
+    if p.scheme not in ("http", "https"):
+        return False
+    if p.netloc not in ("www.skillhub.club", "skillhub.club"):
+        return False
+    return p.path.startswith("/skills/") and len(p.path.strip("/").split("/")) >= 2
+
+
 def _detail_matches_query(detail_url: str, query: str, verify_ssl: bool) -> bool:
     try:
         html = _fetch(detail_url, verify_ssl=verify_ssl)
@@ -719,44 +734,47 @@ def cmd_install(args: argparse.Namespace) -> int:
         if not query:
             print("Invalid install arguments: provide --detail-url or --query.")
             return 2
-        try:
-            cards = _search(
-                query=query,
-                page=1,
-                verify_ssl=verify_ssl,
-                scan_pages=1,
-                deep_match=False,
-                max_detail_fetch=0,
-                max_results=max(1, min(args.max_results, 30)),
-            )
-        except RuntimeError as exc:
-            print(f"Install aborted: search failed: {exc}")
-            return 1
-        if not cards:
-            print(f"Install aborted: no skill found for query: {query}")
-            return 1
+        if _is_skillhub_detail_url(query):
+            detail_url = query
+        else:
+            try:
+                cards = _search(
+                    query=query,
+                    page=1,
+                    verify_ssl=verify_ssl,
+                    scan_pages=1,
+                    deep_match=False,
+                    max_detail_fetch=0,
+                    max_results=max(1, min(args.max_results, 30)),
+                )
+            except RuntimeError as exc:
+                print(f"Install aborted: search failed: {exc}")
+                return 1
+            if not cards:
+                print(f"Install aborted: no skill found for query: {query}")
+                return 1
 
-        print("Interactive selection required.", flush=True)
-        print(f"query: {query}", flush=True)
-        print(f"count: {len(cards)}", flush=True)
-        for i, c in enumerate(cards, 1):
-            print(f"{i}. {c.name}", flush=True)
-            print(f"   detail_url: {c.detail_url}", flush=True)
-            if c.snippet:
-                print(f"   snippet: {c.snippet}", flush=True)
-        try:
-            picked = _prompt_inline(f"Type index to install (1-{len(cards)}): ").strip()
-        except EOFError:
-            print("Installation aborted: no interactive index received.")
-            return 2
-        if not picked.isdigit():
-            print("Installation aborted: invalid index input.")
-            return 2
-        idx = int(picked)
-        if idx < 1 or idx > len(cards):
-            print("Installation aborted: index out of range.")
-            return 2
-        detail_url = cards[idx - 1].detail_url
+            print("Interactive selection required.", flush=True)
+            print(f"query: {query}", flush=True)
+            print(f"count: {len(cards)}", flush=True)
+            for i, c in enumerate(cards, 1):
+                print(f"{i}. {c.name}", flush=True)
+                print(f"   detail_url: {c.detail_url}", flush=True)
+                if c.snippet:
+                    print(f"   snippet: {c.snippet}", flush=True)
+            try:
+                picked = _prompt_inline(f"Type index to install (1-{len(cards)}): ").strip()
+            except EOFError:
+                print("Installation aborted: no interactive index received.")
+                return 2
+            if not picked.isdigit():
+                print("Installation aborted: invalid index input.")
+                return 2
+            idx = int(picked)
+            if idx < 1 or idx > len(cards):
+                print("Installation aborted: index out of range.")
+                return 2
+            detail_url = cards[idx - 1].detail_url
 
     parsed = urlparse(detail_url)
     if parsed.scheme not in ("http", "https") or parsed.netloc != "www.skillhub.club":

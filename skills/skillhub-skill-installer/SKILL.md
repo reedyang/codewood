@@ -59,6 +59,7 @@ python "<BUNDLE_ROOT>/scripts/skillhub_installer.py" install --query "<text>" --
 4. For slash route `/skillhub-skill-installer <text>`, MUST NOT use `--detail-url` default selection.
 5. `--detail-url` is allowed only when user explicitly provides that URL in current message.
 6. Do not perform non-installer actions until install finishes or user cancels.
+7. If `<text>` itself is a SkillHub detail URL (e.g. `https://www.skillhub.club/skills/...`), skip search/index selection and install this URL directly.
 
 ## Interactive inputs (script-side)
 
