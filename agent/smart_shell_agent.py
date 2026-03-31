@@ -3453,6 +3453,35 @@ big_image.jpg
         params = arguments if isinstance(arguments, dict) else {}
         if action == "done":
             return {"success": True, "message": "任务已完成", "finished": True}
+        if action == "ask_more_info":
+            question = str(params.get("question") or "").strip()
+            if not question:
+                question = "请提供完成任务所需的补充信息。"
+            expected = params.get("expected_fields")
+            if not isinstance(expected, list):
+                expected = []
+            expected_fields = [str(x).strip() for x in expected if str(x).strip()]
+            return {
+                "success": True,
+                "needs_user_input": True,
+                "input_type": "supplement",
+                "question": question,
+                "expected_fields": expected_fields,
+                "retryable": False,
+                "message": "已请求用户补充信息",
+            }
+        if action == "task_changed":
+            new_task = str(params.get("new_task") or "").strip()
+            reason = str(params.get("reason") or "").strip()
+            if not new_task:
+                return {"success": False, "error": "task_changed 缺少 new_task 参数"}
+            return {
+                "success": True,
+                "task_changed": True,
+                "new_task": new_task,
+                "reason": reason or "用户输入与原始需求无关，已切换任务",
+                "message": "任务已切换",
+            }
 
         if action == "cls":
             import os
@@ -5238,6 +5267,44 @@ big_image.jpg
                     if result.get("finished"):
                         print("✅ AI已声明所有操作完成。")
                         break
+                    if bool(result.get("task_changed", False)):
+                        new_task = str(result.get("new_task") or "").strip()
+                        if not new_task:
+                            print("❌ task_changed 返回缺少 new_task，已停止本轮自动执行。")
+                            break
+                        old_task = original_user_task
+                        original_user_task = new_task
+                        print("🔄 AI判定用户补充信息与原需求无关，已切换为新任务。")
+                        print(f"   旧任务: {old_task}")
+                        print(f"   新任务: {original_user_task}")
+                        reason = str(result.get("reason") or "").strip()
+                        next_input = (
+                            f"【用户原始需求】\n{original_user_task}\n\n"
+                            "你刚调用了 task_changed，系统已将原始需求切换为“新任务”。\n"
+                            + (f"切换原因：{reason}\n" if reason else "")
+                            + "请基于新的原始需求继续输出下一条 JSON 工具计划。"
+                        )
+                        continue
+                    if bool(result.get("needs_user_input", False)) and str(result.get("input_type", "")).strip() == "supplement":
+                        q = str(result.get("question") or "").strip() or "请提供补充信息："
+                        print("🙋 需要你补充信息后才能继续。")
+                        print(f"❓ {q}")
+                        try:
+                            supplement_text = self._get_user_input_with_history().strip()
+                        except KeyboardInterrupt:
+                            print("\n⏸️ 已取消补充信息输入，本轮任务暂停。")
+                            break
+                        if not supplement_text:
+                            print("⚠️ 未收到补充信息，本轮任务暂停。")
+                            break
+                        next_input = (
+                            f"【用户原始需求】\n{original_user_task}\n\n"
+                            f"【用户补充信息】\n{supplement_text}\n\n"
+                            "请判断该补充信息是否与原始需求相关：\n"
+                            "- 若完全无关：调用 {\"tool\":\"task_changed\",\"args\":{\"new_task\":\"<用户补充信息提炼后的新需求>\",\"reason\":\"...\"}}；\n"
+                            "- 若相关：继续输出下一条工具调用 JSON；若信息仍不充分，可再次调用 ask_more_info。"
+                        )
+                        continue
                     if (
                         (not result.get("success", True))
                         and bool(result.get("needs_user_input", False))
