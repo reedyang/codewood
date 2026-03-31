@@ -834,6 +834,47 @@
   {
     "type": "function",
     "function": {
+      "name": "ask_more_info",
+      "description": "当缺少关键输入时，向用户请求补充信息并暂停自动续步，待用户输入后继续。",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "question": {
+            "type": "string"
+          },
+          "expected_fields": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": ["question"]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "task_changed",
+      "description": "当用户补充信息与原始需求完全无关时，声明切换到新任务。",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "new_task": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": ["new_task"]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
       "name": "done",
       "description": "标记当前用户任务已完成。",
       "parameters": {
