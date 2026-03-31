@@ -2857,6 +2857,13 @@ big_image.jpg
                 print("⌨️ shell 交互模式已开启：请按命令提示在终端中输入。")
                 stdout_chunks: List[str] = []
                 stderr_chunks: List[str] = []
+                preserve_tty_output = (
+                    os.environ.get("SMART_SHELL_PIPE_INTERACTIVE_OUTPUT", "").strip().lower()
+                    not in {"1", "true", "yes", "on"}
+                )
+                stdout_is_tty = hasattr(sys.stdout, "isatty") and sys.stdout.isatty()
+                stderr_is_tty = hasattr(sys.stderr, "isatty") and sys.stderr.isatty()
+                use_passthrough_stdio = preserve_tty_output and stdout_is_tty and stderr_is_tty
 
                 def _stream_and_capture(pipe: Any, target: Any, bucket: List[str]) -> None:
                     try:
@@ -2876,35 +2883,54 @@ big_image.jpg
                         except Exception:
                             pass
 
-                process = subprocess.Popen(
-                    command,
-                    shell=True,
-                    cwd=str(self.work_directory.resolve()),
-                    env=run_env,
-                    stdin=sys.stdin,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    text=True,
-                    encoding="utf-8",
-                    errors="replace",
-                )
-                t_out = threading.Thread(
-                    target=_stream_and_capture,
-                    args=(process.stdout, sys.stdout, stdout_chunks),  # type: ignore[arg-type]
-                    daemon=True,
-                )
-                t_err = threading.Thread(
-                    target=_stream_and_capture,
-                    args=(process.stderr, sys.stderr, stderr_chunks),  # type: ignore[arg-type]
-                    daemon=True,
-                )
-                t_out.start()
-                t_err.start()
-                return_code = process.wait()
-                t_out.join(timeout=1.0)
-                t_err.join(timeout=1.0)
-                out = "".join(stdout_chunks)
-                err = "".join(stderr_chunks)
+                if use_passthrough_stdio:
+                    # Keep child process attached to a real TTY so progress bars
+                    # that rely on carriage-return updates can stay on one line.
+                    process = subprocess.Popen(
+                        command,
+                        shell=True,
+                        cwd=str(self.work_directory.resolve()),
+                        env=run_env,
+                        stdin=sys.stdin,
+                        stdout=sys.stdout,
+                        stderr=sys.stderr,
+                        text=True,
+                        encoding="utf-8",
+                        errors="replace",
+                    )
+                    return_code = process.wait()
+                    out = ""
+                    err = ""
+                else:
+                    process = subprocess.Popen(
+                        command,
+                        shell=True,
+                        cwd=str(self.work_directory.resolve()),
+                        env=run_env,
+                        stdin=sys.stdin,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        text=True,
+                        encoding="utf-8",
+                        errors="replace",
+                    )
+                    t_out = threading.Thread(
+                        target=_stream_and_capture,
+                        args=(process.stdout, sys.stdout, stdout_chunks),  # type: ignore[arg-type]
+                        daemon=True,
+                    )
+                    t_err = threading.Thread(
+                        target=_stream_and_capture,
+                        args=(process.stderr, sys.stderr, stderr_chunks),  # type: ignore[arg-type]
+                        daemon=True,
+                    )
+                    t_out.start()
+                    t_err.start()
+                    return_code = process.wait()
+                    t_out.join(timeout=1.0)
+                    t_err.join(timeout=1.0)
+                    out = "".join(stdout_chunks)
+                    err = "".join(stderr_chunks)
                 base_out: Dict[str, Any] = {
                     "output": out,
                     "stderr": err,
