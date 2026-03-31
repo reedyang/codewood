@@ -218,18 +218,21 @@ class SmartShellAgent:
         except OSError as e:
             print(f"⚠️ 无法创建 AI workspace 目录 {self.ai_workspace_dir}: {e}")
 
-        # 加载配置以确定知识库开关（默认开启）、自由模式开关（默认关闭）
+        # 加载配置以确定知识库开关（默认开启）、执行策略（默认 confirmation）
         self.knowledge_enabled = True
-        self.freedom_enabled = False
+        self.execution_policy = "confirmation"
         try:
             cfg_path = self.config_dir / "config.json"
             if cfg_path.exists():
                 with open(cfg_path, "r", encoding="utf-8") as f:
                     cfg_data = json.load(f)
                 self.knowledge_enabled = bool(cfg_data.get("knowledge_enabled", True))
-                self.freedom_enabled = bool(cfg_data.get("freedom_enabled", False))
+                pol = str(cfg_data.get("execution_policy", "confirmation")).strip().lower()
+                if pol not in ("unlimited", "moderate", "confirmation"):
+                    pol = "confirmation"
+                self.execution_policy = pol
         except Exception as e:
-            print(f"⚠️ 读取配置中的知识库开关失败，默认开启: {e}")
+            print(f"⚠️ 读取配置中的知识库/执行策略失败，使用默认值: {e}")
 
         # Per-target allowlist for y/n confirmations (see confirm_allowlist.json)
         self._allowlist_shell_paths: Dict[str, str] = {}
@@ -713,8 +716,8 @@ class SmartShellAgent:
         self.knowledge_manager = None
         return {"success": True, "message": f"知识库已关闭{'（已保存配置）' if saved else ''}"}
 
-    def _save_freedom_enabled_to_config(self) -> bool:
-        """将自由模式开关状态保存到 config.json"""
+    def _save_execution_policy_to_config(self) -> bool:
+        """将执行策略保存到 config.json"""
         try:
             cfg_path = self.config_dir / "config.json"
             cfg_data = {}
@@ -724,31 +727,49 @@ class SmartShellAgent:
                         cfg_data = json.load(f) or {}
                 except Exception:
                     cfg_data = {}
-            cfg_data["freedom_enabled"] = bool(self.freedom_enabled)
+            cfg_data["execution_policy"] = str(self.execution_policy)
             with open(cfg_path, "w", encoding="utf-8") as f:
                 json.dump(cfg_data, f, ensure_ascii=False, indent=2)
             return True
         except Exception as e:
-            print(f"⚠️ 保存自由模式开关到配置失败: {e}")
+            print(f"⚠️ 保存执行策略到配置失败: {e}")
             return False
 
     def _enable_freedom(self) -> Dict[str, Any]:
-        """开启自由模式：可逆操作在需确认前由 AI 判定，可逆则自动执行"""
-        if self.freedom_enabled:
-            return {"success": True, "message": "自由模式已处于开启状态"}
-        self.freedom_enabled = True
-        saved = self._save_freedom_enabled_to_config()
+        """兼容命令：设置 execution_policy=moderate"""
+        if self.execution_policy == "moderate":
+            return {"success": True, "message": "execution_policy 已处于 moderate"}
+        self.execution_policy = "moderate"
+        saved = self._save_execution_policy_to_config()
         return {
             "success": True,
-            "message": f"自由模式已开启：可逆操作将自动跳过确认{'（已保存配置）' if saved else ''}",
+            "message": f"execution_policy 已设置为 moderate{'（已保存配置）' if saved else ''}",
         }
 
     def _disable_freedom(self) -> Dict[str, Any]:
-        if not self.freedom_enabled:
-            return {"success": True, "message": "自由模式已处于关闭状态"}
-        self.freedom_enabled = False
-        saved = self._save_freedom_enabled_to_config()
-        return {"success": True, "message": f"自由模式已关闭{'（已保存配置）' if saved else ''}"}
+        """兼容命令：设置 execution_policy=confirmation"""
+        if self.execution_policy == "confirmation":
+            return {"success": True, "message": "execution_policy 已处于 confirmation"}
+        self.execution_policy = "confirmation"
+        saved = self._save_execution_policy_to_config()
+        return {"success": True, "message": f"execution_policy 已设置为 confirmation{'（已保存配置）' if saved else ''}"}
+
+    def _set_execution_policy(self, policy: str) -> Dict[str, Any]:
+        pol = str(policy or "").strip().lower()
+        if pol not in ("unlimited", "moderate", "confirmation"):
+            return {
+                "success": False,
+                "error": "无效 execution_policy。可选值: unlimited, moderate, confirmation",
+            }
+        if self.execution_policy == pol:
+            return {"success": True, "message": f"execution_policy 已处于 {pol}", "policy": pol}
+        self.execution_policy = pol
+        saved = self._save_execution_policy_to_config()
+        return {
+            "success": True,
+            "message": f"execution_policy 已设置为 {pol}{'（已保存配置）' if saved else ''}",
+            "policy": pol,
+        }
 
     def _confirm_allowlist_path(self) -> Path:
         return self.config_dir / "confirm_allowlist.json"
@@ -1282,8 +1303,11 @@ class SmartShellAgent:
 
     def _freedom_auto_confirm(self, command: Dict[str, Any]) -> bool:
         """Return True to skip interactive confirmation (move/delete/shell/script/text_file/git write)."""
-        if not getattr(self, "freedom_enabled", False):
+        policy = str(getattr(self, "execution_policy", "confirmation")).lower()
+        if policy == "confirmation":
             return False
+        if policy == "unlimited":
+            return True
         action = command.get("tool") or command.get("action")
         params = command.get("args")
         if not isinstance(params, dict):
@@ -4357,7 +4381,7 @@ big_image.jpg
         elif action == "knowledge_sync":
             """同步知识库"""
             if not self.knowledge_enabled:
-                return {"success": False, "error": "知识库功能已关闭，可使用 '/knowledge-on' 开启"}
+                return {"success": False, "error": "知识库功能已关闭，可使用 '/knowledge on' 开启"}
             if not self.knowledge_manager:
                 return {"success": False, "error": "知识库功能不可用"}
             
@@ -4370,7 +4394,7 @@ big_image.jpg
         elif action == "knowledge_stats":
             """获取知识库统计信息"""
             if not self.knowledge_enabled:
-                return {"success": False, "error": "知识库功能已关闭，可使用 '/knowledge-on' 开启"}
+                return {"success": False, "error": "知识库功能已关闭，可使用 '/knowledge on' 开启"}
             if not self.knowledge_manager:
                 return {"success": False, "error": "知识库功能不可用"}
             
@@ -4397,7 +4421,7 @@ big_image.jpg
         elif action == "knowledge_search":
             """搜索知识库"""
             if not self.knowledge_enabled:
-                return {"success": False, "error": "知识库功能已关闭，可使用 '/knowledge-on' 开启"}
+                return {"success": False, "error": "知识库功能已关闭，可使用 '/knowledge on' 开启"}
             if not self.knowledge_manager:
                 return {"success": False, "error": "知识库功能不可用"}
             
@@ -4440,6 +4464,27 @@ big_image.jpg
                 print(f"❌ {result.get('error', '关闭失败')}")
             return result
 
+        elif action == "execution_policy_set":
+            result = self._set_execution_policy(arguments.get("policy", ""))
+            if result.get("success"):
+                print(f"✅ {result.get('message', 'execution_policy 已更新')}")
+                pol = str(result.get("policy", "")).lower()
+                if pol == "moderate":
+                    print(
+                        _ansi_yellow(
+                            "⚠️ 警告：moderate 模式会在 AI 判定“可逆”时自动执行，判定可能出错；请谨慎用于潜在高风险命令。"
+                        )
+                    )
+                elif pol == "unlimited":
+                    print(
+                        _ansi_red(
+                            "⚠️ 警告：unlimited 模式将跳过所有确认与可逆性检测，存在高风险误操作。"
+                        )
+                    )
+            else:
+                print(f"❌ {result.get('error', 'execution_policy 更新失败')}")
+            return result
+
         elif action == "freedom_enable" or action == "freedom_on":
             result = self._enable_freedom()
             if result.get("success"):
@@ -4466,7 +4511,7 @@ big_image.jpg
 
     def _parse_mcp_shortcut_command(self, builtin_line: str) -> Tuple[Optional[str], Dict[str, Any], Optional[str]]:
         """
-        Parse '/mcp-...' shortcuts into tool calls.
+        Parse '/mcp ...' shortcuts into tool calls.
         Rules:
         - Only required parameters are accepted.
         - Optional parameters are not supported in shortcuts.
@@ -4479,79 +4524,83 @@ big_image.jpg
         low = [p.lower() for p in parts]
         if not low:
             return None, {}, None
-        cmd = low[0]
+        if low[0] != "mcp":
+            return None, {}, None
+        if len(parts) < 2:
+            return None, {}, "用法: /mcp <subcommand> [args]"
+        cmd = low[1]
 
-        if cmd == "mcp-reload-config" and len(parts) == 1:
+        if cmd == "reload-config" and len(parts) == 2:
             return "mcp_reload_config", {}, None
-        if cmd == "mcp-reload-config" and len(parts) != 1:
-            return None, {}, "用法: /mcp-reload-config"
-        if cmd == "mcp-status" and len(parts) == 1:
+        if cmd == "reload-config" and len(parts) != 2:
+            return None, {}, "用法: /mcp reload-config"
+        if cmd == "status" and len(parts) == 2:
             return "mcp_status", {}, None
-        if cmd == "mcp-status" and len(parts) != 1:
-            return None, {}, "用法: /mcp-status"
-        if cmd == "mcp-status-refresh" and len(parts) == 1:
+        if cmd == "status" and len(parts) != 2:
+            return None, {}, "用法: /mcp status"
+        if cmd == "status-refresh" and len(parts) == 2:
             return "mcp_status_refresh", {}, None
-        if cmd == "mcp-status-refresh" and len(parts) != 1:
-            return None, {}, "用法: /mcp-status-refresh"
-        if cmd == "mcp-reconnect" and len(parts) == 2:
-            return "mcp_reconnect", {"server": parts[1]}, None
-        if cmd == "mcp-reconnect":
-            return None, {}, "用法: /mcp-reconnect <server>"
-        if cmd == "mcp-server-info" and len(parts) == 2:
-            return "mcp_server_info", {"server": parts[1]}, None
-        if cmd == "mcp-server-info":
-            return None, {}, "用法: /mcp-server-info <server>"
-        if cmd == "mcp-list-tools" and len(parts) == 2:
-            return "mcp_list_tools", {"server": parts[1]}, None
-        if cmd == "mcp-list-tools":
-            return None, {}, "用法: /mcp-list-tools <server>"
-        if cmd == "mcp-list-resources" and len(parts) == 2:
-            return "mcp_list_resources", {"server": parts[1]}, None
-        if cmd == "mcp-list-resources":
-            return None, {}, "用法: /mcp-list-resources <server>"
-        if cmd == "mcp-list-resource-templates" and len(parts) == 2:
-            return "mcp_list_resource_templates", {"server": parts[1]}, None
-        if cmd == "mcp-list-resource-templates":
-            return None, {}, "用法: /mcp-list-resource-templates <server>"
-        if cmd == "mcp-list-prompts" and len(parts) == 2:
-            return "mcp_list_prompts", {"server": parts[1]}, None
-        if cmd == "mcp-list-prompts":
-            return None, {}, "用法: /mcp-list-prompts <server>"
-        if cmd == "mcp-list-disabled-tools":
-            if len(parts) == 1:
-                return "mcp_list_disabled_tools", {}, None
+        if cmd == "status-refresh" and len(parts) != 2:
+            return None, {}, "用法: /mcp status-refresh"
+        if cmd == "reconnect" and len(parts) == 3:
+            return "mcp_reconnect", {"server": parts[2]}, None
+        if cmd == "reconnect":
+            return None, {}, "用法: /mcp reconnect <server>"
+        if cmd == "server-info" and len(parts) == 3:
+            return "mcp_server_info", {"server": parts[2]}, None
+        if cmd == "server-info":
+            return None, {}, "用法: /mcp server-info <server>"
+        if cmd == "list-tools" and len(parts) == 3:
+            return "mcp_list_tools", {"server": parts[2]}, None
+        if cmd == "list-tools":
+            return None, {}, "用法: /mcp list-tools <server>"
+        if cmd == "list-resources" and len(parts) == 3:
+            return "mcp_list_resources", {"server": parts[2]}, None
+        if cmd == "list-resources":
+            return None, {}, "用法: /mcp list-resources <server>"
+        if cmd == "list-resource-templates" and len(parts) == 3:
+            return "mcp_list_resource_templates", {"server": parts[2]}, None
+        if cmd == "list-resource-templates":
+            return None, {}, "用法: /mcp list-resource-templates <server>"
+        if cmd == "list-prompts" and len(parts) == 3:
+            return "mcp_list_prompts", {"server": parts[2]}, None
+        if cmd == "list-prompts":
+            return None, {}, "用法: /mcp list-prompts <server>"
+        if cmd == "list-disabled-tools":
             if len(parts) == 2:
-                return "mcp_list_disabled_tools", {"server": parts[1]}, None
-            return None, {}, "用法: /mcp-list-disabled-tools [server]"
+                return "mcp_list_disabled_tools", {}, None
+            if len(parts) == 3:
+                return "mcp_list_disabled_tools", {"server": parts[2]}, None
+            return None, {}, "用法: /mcp list-disabled-tools [server]"
 
-        if cmd == "mcp-disable-tools" and len(parts) >= 3:
-            server = parts[1]
-            tools_csv = " ".join(parts[2:]).strip()
+        if cmd == "disable-tools" and len(parts) >= 4:
+            server = parts[2]
+            tools_csv = " ".join(parts[3:]).strip()
             tools = [x.strip() for x in tools_csv.split(",") if x.strip()]
             if not tools:
-                return None, {}, "缺少 tools 参数，请使用逗号分隔，例如: /mcp-disable-tools playwright browser_click,browser_type"
+                return None, {}, "缺少 tools 参数，请使用逗号分隔，例如: /mcp disable-tools playwright browser_click,browser_type"
             return "mcp_disable_tools", {"server": server, "tools": tools}, None
-        if cmd == "mcp-disable-tools":
-            return None, {}, "用法: /mcp-disable-tools <server> <tool1,tool2>"
+        if cmd == "disable-tools":
+            return None, {}, "用法: /mcp disable-tools <server> <tool1,tool2>"
 
-        if cmd == "mcp-enable-tools" and len(parts) >= 3:
-            server = parts[1]
-            tools_csv = " ".join(parts[2:]).strip()
+        if cmd == "enable-tools" and len(parts) >= 4:
+            server = parts[2]
+            tools_csv = " ".join(parts[3:]).strip()
             tools = [x.strip() for x in tools_csv.split(",") if x.strip()]
             if not tools:
-                return None, {}, "缺少 tools 参数，请使用逗号分隔，例如: /mcp-enable-tools playwright browser_click,browser_type"
+                return None, {}, "缺少 tools 参数，请使用逗号分隔，例如: /mcp enable-tools playwright browser_click,browser_type"
             return "mcp_enable_tools", {"server": server, "tools": tools}, None
-        if cmd == "mcp-enable-tools":
-            return None, {}, "用法: /mcp-enable-tools <server> <tool1,tool2>"
+        if cmd == "enable-tools":
+            return None, {}, "用法: /mcp enable-tools <server> <tool1,tool2>"
 
         return None, {}, (
             "无效 MCP 快捷命令。可用示例："
-            "/mcp-status, /mcp-status-refresh, /mcp-reload-config, "
-            "/mcp-reconnect <server>, /mcp-server-info <server>, "
-            "/mcp-list-tools <server>, /mcp-list-resources <server>, "
-            "/mcp-list-resource-templates <server>, /mcp-list-prompts <server>, "
-            "/mcp-list-disabled-tools [server], "
-            "/mcp-disable-tools <server> <tool1,tool2>, /mcp-enable-tools <server> <tool1,tool2>"
+            "/mcp status, /mcp status-refresh, /mcp reload-config, "
+            "/mcp reconnect <server>, /mcp server-info <server>, "
+            "/mcp list-tools <server>, /mcp list-resources <server>, "
+            "/mcp list-resource-templates <server>, /mcp list-prompts <server>, "
+            "/mcp list-disabled-tools [server], "
+            "/mcp disable-tools <server> <tool1,tool2>, /mcp enable-tools <server> <tool1,tool2>"
         )
 
     @staticmethod
@@ -4670,34 +4719,37 @@ big_image.jpg
         # 启动时提示知识库状态
         if not self.knowledge_enabled:
             print(
-                "知识库当前处于关闭状态。可使用 `/knowledge-on` 来开启"
+                "知识库当前处于关闭状态。可使用 `/knowledge on` 来开启"
             )
         elif not self.knowledge_manager:
             print(
-                "知识库已开启但当前不可用。请检查依赖或稍后重试。可使用 `/knowledge-off` 暂时关闭。"
+                "知识库已开启但当前不可用。请检查依赖或稍后重试。可使用 `/knowledge off` 暂时关闭。"
             )
 
         if self.skills:
             _sk_path = self.config_dir / "skills"
 
-        _fon = "`/freedom-on`"
-        _foff = "`/freedom-off`"
-        if self.freedom_enabled:
-            print(_ansi_red("自由模式：已开启"))
+        _pm = "`/execution-policy moderate`"
+        _pc = "`/execution-policy confirmation`"
+        _pu = "`/execution-policy unlimited`"
+        pol = str(getattr(self, "execution_policy", "confirmation")).lower()
+        print(f"执行策略 execution_policy：{pol}")
+        if pol == "unlimited":
             print(
-                "  移动/删除/shell/脚本/Git 写操作在执行前会由 AI 判定是否可逆，"
-                f"可逆则自动跳过 y/n 确认。输入 {_foff} 可关闭。"
-            )
-            print(
-                _ansi_yellow(
-                    "  警告：AI 对「可逆」的判定可能错误；自动跳过确认仍可能导致误删文件、错误 Git 操作或破坏性 shell/脚本执行。"
+                _ansi_red(
+                    "  所有操作直接执行，不做可逆性检测与确认。"
+                    f"输入 {_pm} 可切换到 moderate；输入 {_pc} 可切回 confirmation。"
                 )
             )
+        elif pol == "moderate":
+            print(
+                _ansi_yellow("  可逆操作在执行前会由 AI 判定，可逆则自动跳过 y/n 确认。AI 可逆性判定可能会犯错，请谨慎使用。"
+                f"输入 {_pc} 可切回 confirmation。")
+            )
         else:
-            print("自由模式：已关闭")
             print(
                 "  需确认的操作将始终询问 y/n。"
-                f"输入 {_fon} 可开启（可逆操作可由 AI 判定后自动跳过确认）。"
+                f"输入 {_pm} 可切换到 moderate；输入 {_pu} 可切换到 unlimited。"
             )
 
         _acr = "`/always_confirm-reset`"
@@ -4766,7 +4818,7 @@ big_image.jpg
                     if not builtin_line:
                         print(
                             "ℹ️ 内置命令与本地直接执行的命令均需以 / 开头，"
-                            "例如 /exit、/help、/clear-screen、/knowledge-on、/ls；单独输入 / 无效。"
+                            "例如 /exit、/help、/clear screen、/knowledge on、/ls；单独输入 / 无效。"
                         )
                         continue
 
@@ -4777,16 +4829,19 @@ big_image.jpg
                         mcp_res = self.execute_tool_call(mcp_tool, mcp_args)
                         self._print_mcp_shortcut_result(mcp_tool, mcp_args, mcp_res if isinstance(mcp_res, dict) else {})
                         continue
-                    if bl.startswith("mcp-") and mcp_err:
+                    if bl == "mcp" or bl.startswith("mcp "):
                         print(f"❌ {mcp_err}")
                         continue
                     if bl in ('exit', 'quit'):
                         break
                     # clear screen
-                    if bl == 'cls' or bl == 'clear-screen':
+                    if bl == 'cls' or bl == 'clear screen':
                         os.system('cls' if os_name == 'nt' else 'clear')
                         continue
-                    if bl == 'clear-history':
+                    if bl == "clear":
+                        print("❌ 用法: /clear <screen|history|context>")
+                        continue
+                    if bl == 'clear history':
                         self.history_manager.clear_history()
                         if self.input_handler is not None and hasattr(
                             self.input_handler, "reset_command_history"
@@ -4796,85 +4851,92 @@ big_image.jpg
                             )
                         print("✅ 历史记录已清除")
                         continue
-                    if bl == "clear-context":
+                    if bl == "clear context":
                         self.conversation_history.clear()
                         self.operation_results.clear()
                         self._last_auto_removed_ephemeral = None
                         print("✅ 已清空 AI 上下文（对话历史与近期操作结果缓存，不影响命令行输入历史）")
                         continue
-
-                    if bl == 'knowledge-on':
+                    if bl == 'knowledge on':
                         self.execute_tool_call("knowledge_on", {})
                         continue
-                    if bl == 'knowledge-off':
+                    if bl == 'knowledge off':
                         self.execute_tool_call("knowledge_off", {})
                         continue
-
-                    if bl == 'freedom-on':
-                        self.execute_tool_call("freedom_on", {})
-                        continue
-                    if bl == 'freedom-off':
-                        self.execute_tool_call("freedom_off", {})
+                    if bl == "knowledge":
+                        print("❌ 用法: /knowledge <on|off|sync|stats|search <query>>")
                         continue
 
+                    if bl.startswith("execution-policy "):
+                        policy = ""
+                        policy = bl.split(" ", 1)[1].strip().lower()
+                        if not policy:
+                            print("❌ 用法: /execution-policy <unlimited|moderate|confirmation>")
+                        else:
+                            self.execute_tool_call("execution_policy_set", {"policy": policy})
+                        continue
+                    if bl == "execution-policy":
+                        print("❌ 用法: /execution-policy <unlimited|moderate|confirmation>")
+                        continue
                     if bl == "always_confirm-reset":
                         self.execute_tool_call("always_confirm_reset", {})
                         continue
 
                     if self.knowledge_enabled and self.knowledge_manager:
-                        if bl == 'knowledge-sync':
+                        if bl == 'knowledge sync':
                             self.execute_tool_call("knowledge_sync", {})
                             continue
 
-                        if bl == 'knowledge-stats':
+                        if bl == 'knowledge stats':
                             self.execute_tool_call("knowledge_stats", {})
                             continue
 
-                        if bl.startswith('knowledge-search '):
-                            query = builtin_line[len('knowledge-search ') :]
+                        if bl.startswith('knowledge search '):
+                            query = builtin_line[len('knowledge search ') :]
                             if query.strip():
                                 self.execute_tool_call("knowledge_search", {"query": query.strip()})
                             else:
                                 print("❌ 请提供搜索查询内容")
                             continue
                     else:
-                        if bl.startswith('knowledge-'):
-                            _kh = "`/knowledge-on`"
+                        if bl.startswith('knowledge '):
+                            _kh = "`/knowledge on`"
                             print(f"ℹ️ 知识库已关闭，可使用 {_kh} 开启")
                             continue
-
                     if bl == 'help':
                         print("\n🌟 Smart Shell 帮助信息")
                         print("=" * 80)
                         print("\n📌 内置命令：")
                         print("  1. /exit, /quit                 - 退出程序")
-                        print("  2. /cls, /clear-screen           - 清空屏幕")
-                        print("  3. /clear-history               - 清除命令历史记录")
-                        print("  4. /clear-context               - 清空 AI 上下文与操作结果缓存")
+                        print("  2. /cls, /clear screen          - 清空屏幕")
+                        print("  3. /clear history               - 清除命令历史记录")
+                        print("  4. /clear context               - 清空 AI 上下文与操作结果缓存")
                         print("  5. /help                        - 显示此帮助信息")
                         print("\n🧩 MCP 快捷命令：")
-                        print("  /mcp-status")
-                        print("  /mcp-status-refresh")
-                        print("  /mcp-reload-config")
-                        print("  /mcp-reconnect <server>")
-                        print("  /mcp-server-info <server>")
-                        print("  /mcp-list-tools <server>")
-                        print("  /mcp-list-resources <server>")
-                        print("  /mcp-list-resource-templates <server>")
-                        print("  /mcp-list-prompts <server>")
-                        print("  /mcp-list-disabled-tools [server]")
-                        print("  /mcp-disable-tools <server> <tool1,tool2>")
-                        print("  /mcp-enable-tools <server> <tool1,tool2>")
+                        print("  /mcp status                                - 查看 MCP 总体状态")
+                        print("  /mcp status-refresh                        - 刷新并查看 MCP 状态")
+                        print("  /mcp reload-config                         - 重新加载 MCP 配置")
+                        print("  /mcp reconnect <server>                    - 重连指定 MCP server")
+                        print("  /mcp server-info <server>                  - 查看 server 连接与能力信息")
+                        print("  /mcp list-tools <server>                   - 列出 server 可用工具")
+                        print("  /mcp list-resources <server>               - 列出 server 资源")
+                        print("  /mcp list-resource-templates <server>      - 列出 server 资源模板")
+                        print("  /mcp list-prompts <server>                 - 列出 server prompts")
+                        print("  /mcp list-disabled-tools [server]          - 查看已禁用工具（可选限定 server）")
+                        print("  /mcp disable-tools <server> <tool1,tool2>  - 禁用工具（逗号分隔）")
+                        print("  /mcp enable-tools <server> <tool1,tool2>   - 启用工具（逗号分隔）")
 
                         if self.knowledge_enabled:
                             print("\n📚 知识库命令：")
-                            print("  6. /knowledge-on|/knowledge-off - 开关知识库（状态写入 config.json）")
-                            print("  7. /knowledge-sync              - 同步文档")
-                            print("  8. /knowledge-stats             - 查看统计信息")
-                            print("  9. /knowledge-search <query>    - 搜索知识库")
+                            print("  6. /knowledge on|/knowledge off - 开关知识库（状态写入 config.json）")
+                            print("  7. /knowledge sync              - 同步文档")
+                            print("  8. /knowledge stats             - 查看统计信息")
+                            print("  9. /knowledge search <query>    - 搜索知识库")
 
-                        print("\n🦅 自由模式命令：")
-                        print("  /freedom-on|/freedom-off  - 可逆操作自动跳过确认（写入 config.json）")
+                        print("\n🦅 执行策略命令：")
+                        print("  /execution-policy unlimited     - 无需确认，直接执行所有操作")
+                        print("  /execution-policy moderate      - AI 判定可逆后自动跳过确认")
+                        print("  /execution-policy confirmation  - 始终 y/n 确认后执行")
 
                         print("\n🔔 确认免列表（confirm_allowlist.json）：")
                         print(
@@ -5482,7 +5544,11 @@ big_image.jpg
             raise McpError(f"不支持的 elicitation mode: {mode}")
 
         # Non-interactive fallback for tests/piped execution.
-        if not sys.stdin.isatty():
+        # SMART_SHELL_AUTO_ACCEPT_ELICITATION=1 can force auto-accept in test runners.
+        auto_accept_elicitation = str(
+            os.environ.get("SMART_SHELL_AUTO_ACCEPT_ELICITATION", "")
+        ).strip().lower() in ("1", "true", "yes", "on")
+        if auto_accept_elicitation or (not sys.stdin.isatty()):
             if mode == "url":
                 return {"action": "accept"}
             requested = p.get("requestedSchema", {})
