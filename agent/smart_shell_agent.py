@@ -2772,6 +2772,9 @@ big_image.jpg
                         "或执行 ai_workspace_dir 下的 AI 临时脚本。"
                     ),
                 }
+        # Reload allowlist so manual edits to confirm_allowlist.json
+        # also take effect under execution_policy=confirmation.
+        self._load_confirm_allowlist()
         if not confirmed and not self._shell_command_in_allowlist(command):
             ok = self._prompt_confirm_yes_no_maybe_always(
                 f"⚠️ 确认执行系统命令: {command} ?",
@@ -2943,6 +2946,9 @@ big_image.jpg
             }
         print(f"请求创建脚本文件: {safe_name} → {script_path}")
         print(f"内容:\n{content}")
+        # Reload allowlist so manual edits to confirm_allowlist.json
+        # also take effect under execution_policy=confirmation.
+        self._load_confirm_allowlist()
         if not confirmed and not self._script_basename_in_allowlist(safe_name):
             ok = self._prompt_confirm_yes_no_maybe_always(
                 f"⚠️ 确认创建脚本文件: {safe_name} ?",
