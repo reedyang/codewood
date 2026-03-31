@@ -93,7 +93,9 @@ class FileCompleter(Completer):
                 # from the 2nd char for single-token '/...'.
                 token_matches = self._get_workspace_path_completions_for_slash(token)
                 if not token_matches:
-                    token_matches = self._get_path_completions(token)
+                    fallback_matches = self._get_path_completions(token)
+                    # Keep leading '/' for slash-style input tokens.
+                    token_matches = ["/" + m.lstrip("\\/") for m in fallback_matches]
             elif "/" in token or "\\" in token:
                 token_matches = self._get_path_completions(token)
             else:
@@ -364,7 +366,8 @@ class FileCompleter(Completer):
                 if not item.name.lower().startswith(file_part.lower()):
                     continue
                 if dir_part:
-                    candidate = f"/{dir_part}/{item.name}".replace("\\", "/")
+                    win_dir = dir_part.replace("/", "\\")
+                    candidate = f"/{win_dir}\\{item.name}"
                 else:
                     candidate = f"/{item.name}"
                 matches.append(candidate)
@@ -392,6 +395,10 @@ class FileCompleter(Completer):
     def _get_path_completions(self, text: str) -> List[str]:
         """获取路径补全"""
         try:
+            if os.name == "nt":
+                # Normalize to Windows separator for completion candidates.
+                text = text.replace("/", "\\")
+
             # 分离目录和文件名部分
             if '/' in text:
                 separator = '/'
