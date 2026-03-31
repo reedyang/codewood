@@ -15,6 +15,7 @@ from .builtin_slash_commands import windows_slash_builtin_completions
 try:
     from prompt_toolkit import PromptSession
     from prompt_toolkit.completion import Completer, Completion
+    from prompt_toolkit.key_binding import KeyBindings
     from prompt_toolkit.history import InMemoryHistory
     from prompt_toolkit.formatted_text import FormattedText
     from prompt_toolkit.styles import Style
@@ -59,6 +60,11 @@ class FileCompleter(Completer):
         """获取补全选项"""
         text = document.text_before_cursor
 
+        # Token-based path completion from the last whitespace boundary.
+        # This enables completion while typing commands like: "open agent/win"
+        # where only the trailing token should be replaced.
+        token_start, token = self._extract_last_token(text)
+
         # Windows: if current token starts with "/" -> complete built-in + skill slash commands
         if os.name == "nt":
             idx, slash_part = self._slash_fragment_for_completion(text)
@@ -66,20 +72,44 @@ class FileCompleter(Completer):
                 matches = windows_slash_builtin_completions(
                     slash_part, dynamic_commands=self.slash_skill_commands
                 )
+                # Also suggest workspace-relative file paths for slash token,
+                # including non-leading cases after the last space.
+                if " " not in slash_part and len(slash_part) > 1:
+                    matches.extend(self._get_workspace_path_completions_for_slash(slash_part))
                 if matches:
                     spos = -len(slash_part)
+                    seen = set()
                     for mc in matches:
+                        if mc in seen:
+                            continue
+                        seen.add(mc)
                         yield Completion(mc, start_position=spos)
+                    return
+
+        # Generic token-based file/path completion (from last whitespace boundary)
+        if token:
+            if token.startswith("/") and len(token) > 1:
+                # Rule: when input starts with '/', support workspace-relative path completion
+                # from the 2nd char for single-token '/...'.
+                token_matches = self._get_workspace_path_completions_for_slash(token)
+                if not token_matches:
+                    token_matches = self._get_path_completions(token)
+            elif "/" in token or "\\" in token:
+                token_matches = self._get_path_completions(token)
+            else:
+                token_matches = self._get_local_completions(token)
+
+            if token_matches:
+                seen = set()
+                for mc in token_matches:
+                    if mc in seen:
+                        continue
+                    seen.add(mc)
+                    yield Completion(mc, start_position=-len(token))
                 return
         
-        # 如果输入为空或只有空白字符，直接返回所有文件
+        # If input becomes empty, hide completion menu.
         if not text or text.strip() == "":
-            completions = self._get_directory_contents()
-            seen = set()
-            for completion in completions:
-                if completion not in seen:
-                    seen.add(completion)
-                    yield Completion(completion, start_position=-len(text))
             return
         
         # 智能检测文件名部分
@@ -186,6 +216,9 @@ class FileCompleter(Completer):
     def _get_local_completions(self, text: str) -> List[str]:
         """获取当前目录下的本地补全"""
         try:
+            # Avoid noisy completion when fragment is exactly "."
+            if text == ".":
+                return []
             matches = []
             for item in self.work_directory.iterdir():
                 if item.name.lower().startswith(text.lower()):
@@ -213,6 +246,10 @@ class FileCompleter(Completer):
             智能补全的文件/文件夹名列表
         """
         matches = []
+
+        # Avoid fuzzy matching all dot-containing filenames for a single dot fragment.
+        if text == ".":
+            return matches
         
         # 常见文件扩展名
         common_extensions = ['.txt', '.py', '.js', '.html', '.css', '.json', '.xml', '.md', '.log', '.ini', '.cfg', '.conf']
@@ -296,6 +333,61 @@ class FileCompleter(Completer):
             return sorted(matches)
         except Exception:
             return []
+
+    def _get_workspace_path_completions_for_slash(self, slash_part: str) -> List[str]:
+        """
+        Build workspace-relative path completions for leading '/...'.
+        Example: '/agent/win' -> '/agent/windows_input.py'
+        """
+        try:
+            if not slash_part.startswith("/"):
+                return []
+            rel = slash_part[1:]
+            if not rel:
+                return []
+
+            normalized = rel.replace("\\", "/")
+            if "/" in normalized:
+                dir_part, file_part = normalized.rsplit("/", 1)
+                base_dir = (self.work_directory / dir_part).resolve()
+            else:
+                dir_part, file_part = "", normalized
+                base_dir = self.work_directory
+
+            if not base_dir.exists() or not base_dir.is_dir():
+                return []
+
+            matches = []
+            for item in base_dir.iterdir():
+                if item.name.startswith("."):
+                    continue
+                if not item.name.lower().startswith(file_part.lower()):
+                    continue
+                if dir_part:
+                    candidate = f"/{dir_part}/{item.name}".replace("\\", "/")
+                else:
+                    candidate = f"/{item.name}"
+                matches.append(candidate)
+            return sorted(matches)
+        except Exception:
+            return []
+
+    @staticmethod
+    def _extract_last_token(text: str) -> Tuple[int, str]:
+        """
+        Extract the trailing token after the last whitespace before cursor.
+        Returns (start_index, token), or (-1, "") when unavailable.
+        """
+        if not text:
+            return -1, ""
+        m = re.search(r"(^|\s)([^\s]+)$", text)
+        if not m:
+            return -1, ""
+        token = m.group(2) or ""
+        if not token:
+            return -1, ""
+        start = len(text) - len(token)
+        return start, token
     
     def _get_path_completions(self, text: str) -> List[str]:
         """获取路径补全"""
@@ -469,6 +561,7 @@ class WindowsInputHandler:
         if PROMPT_TOOLKIT_AVAILABLE:
             # 使用prompt_toolkit，并将历史记录注入到会话中
             self.completer = FileCompleter(work_directory, slash_skill_commands)
+            self._key_bindings = self._create_key_bindings()
             self._pt_history = InMemoryHistory()
             if initial_history:
                 for entry in initial_history:
@@ -479,9 +572,11 @@ class WindowsInputHandler:
             self.session = PromptSession(
                 completer=self.completer,
                 history=self._pt_history,
+                key_bindings=self._key_bindings,
                 enable_system_prompt=True,
                 enable_suspend=True,
-                complete_in_thread=True
+                complete_in_thread=True,
+                complete_while_typing=True,
             )
         else:
             # 回退到标准input
@@ -518,6 +613,28 @@ class WindowsInputHandler:
         except Exception as e:
             print(f"\n输入错误: {e}")
             return ""
+
+    def _create_key_bindings(self):
+        """
+        Keep completion menu updated while deleting characters.
+        """
+        kb = KeyBindings()
+
+        @kb.add("backspace")
+        def _on_backspace(event):
+            buf = event.current_buffer
+            buf.delete_before_cursor(count=1)
+            # Recompute completions immediately after deletion.
+            buf.start_completion(select_first=False)
+
+        @kb.add("delete")
+        def _on_delete(event):
+            buf = event.current_buffer
+            buf.delete(count=1)
+            # Recompute completions immediately after deletion.
+            buf.start_completion(select_first=False)
+
+        return kb
     
     def update_work_directory(self, new_directory: Path):
         """更新工作目录"""
@@ -547,9 +664,11 @@ class WindowsInputHandler:
         self.session = PromptSession(
             completer=self.completer,
             history=self._pt_history,
+            key_bindings=self._key_bindings,
             enable_system_prompt=True,
             enable_suspend=True,
             complete_in_thread=True,
+            complete_while_typing=True,
         )
 
 def create_windows_input_handler(
