@@ -89,7 +89,7 @@ class AgentMcpCompletionActionsE2ETests(unittest.TestCase):
 
     def _write_config(self, payload: dict) -> None:
         (self.config_dir / "config.json").write_text(
-            json.dumps({"knowledge_enabled": False, "freedom_enabled": False}, ensure_ascii=False),
+            json.dumps({"knowledge_enabled": False, "execution_policy": "confirmation"}, ensure_ascii=False),
             encoding="utf-8",
         )
         (self.config_dir / "mcp.json").write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
@@ -109,15 +109,13 @@ class AgentMcpCompletionActionsE2ETests(unittest.TestCase):
     def _assert_completion_action(self, server_name: str):
         sink = io.StringIO()
         with contextlib.redirect_stdout(sink), contextlib.redirect_stderr(sink):
-            completion_result = self.agent.execute_command(
+            completion_result = self.agent.execute_tool_call(
+                "mcp_completion_complete",
                 {
-                    "action": "mcp_completion_complete",
-                    "params": {
-                        "server": server_name,
-                        "completion_params": {"ref": {"name": "summarize_text"}, "argument": {"name": "text", "value": "hel"}},
-                        "timeout_s": 8.0,
-                    },
-                }
+                    "server": server_name,
+                    "completion_params": {"ref": {"name": "summarize_text"}, "argument": {"name": "text", "value": "hel"}},
+                    "timeout_s": 8.0,
+                },
             )
         self.assertTrue(completion_result.get("success"), completion_result)
         values = completion_result.get("result", {}).get("completion", {}).get("values", [])

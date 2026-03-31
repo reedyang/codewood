@@ -89,7 +89,7 @@ class AgentMcpActionsE2ETests(unittest.TestCase):
 
     def _write_config(self, payload: dict) -> None:
         (self.config_dir / "config.json").write_text(
-            json.dumps({"knowledge_enabled": False, "freedom_enabled": False}, ensure_ascii=False),
+            json.dumps({"knowledge_enabled": False, "execution_policy": "confirmation"}, ensure_ascii=False),
             encoding="utf-8",
         )
         (self.config_dir / "mcp.json").write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
@@ -109,70 +109,63 @@ class AgentMcpActionsE2ETests(unittest.TestCase):
     def _assert_actions(self, server_name: str):
         sink = io.StringIO()
         with contextlib.redirect_stdout(sink), contextlib.redirect_stderr(sink):
-            tools_result = self.agent.execute_command(
-                {"action": "mcp_list_tools", "params": {"server": server_name, "use_cache": False, "timeout_s": 8.0}}
+            tools_result = self.agent.execute_tool_call(
+                "mcp_list_tools",
+                {"server": server_name, "use_cache": False, "timeout_s": 8.0},
             )
         self.assertTrue(tools_result.get("success"), tools_result)
 
         if server_name == "fake_stdio":
             with contextlib.redirect_stdout(sink), contextlib.redirect_stderr(sink):
-                stream_result = self.agent.execute_command(
+                stream_result = self.agent.execute_tool_call(
+                    "mcp_call_tool",
                     {
-                        "action": "mcp_call_tool",
-                        "params": {
-                            "server": server_name,
-                            "tool": "echo_stream",
-                            "arguments": {"message": "flow"},
-                            "timeout_s": 10.0,
-                        },
-                    }
+                        "server": server_name,
+                        "tool": "echo_stream",
+                        "arguments": {"message": "flow"},
+                        "timeout_s": 10.0,
+                    },
                 )
             self.assertTrue(stream_result.get("success"), stream_result)
             stream_meta = stream_result.get("result", {}).get("_stream", {})
             self.assertEqual(stream_meta.get("chunk_count"), 3)
             self.assertIn("flow-A", str(stream_meta.get("text", "")))
             with contextlib.redirect_stdout(sink), contextlib.redirect_stderr(sink):
-                bad_call = self.agent.execute_command(
+                bad_call = self.agent.execute_tool_call(
+                    "mcp_call_tool",
                     {
-                        "action": "mcp_call_tool",
-                        "params": {
-                            "server": server_name,
-                            "tool": "echo",
-                            "arguments": {"message": 123},
-                            "timeout_s": 10.0,
-                        },
-                    }
+                        "server": server_name,
+                        "tool": "echo",
+                        "arguments": {"message": 123},
+                        "timeout_s": 10.0,
+                    },
                 )
             self.assertFalse(bad_call.get("success", True))
             self.assertIn("schema", str(bad_call.get("error", "")))
             with contextlib.redirect_stdout(sink), contextlib.redirect_stderr(sink):
-                bidi_result = self.agent.execute_command(
+                bidi_result = self.agent.execute_tool_call(
+                    "mcp_call_tool",
                     {
-                        "action": "mcp_call_tool",
-                        "params": {
-                            "server": server_name,
-                            "tool": "ask_client",
-                            "arguments": {"message": "from-server", "maxTokens": 16},
-                            "timeout_s": 10.0,
-                        },
-                    }
+                        "server": server_name,
+                        "tool": "ask_client",
+                        "arguments": {"message": "from-server", "maxTokens": 16},
+                        "timeout_s": 10.0,
+                    },
                 )
             self.assertTrue(bidi_result.get("success"), bidi_result)
             self.assertIn("ask_client:[client-sampled", str(bidi_result.get("result", {}).get("content", [{}])[0].get("text", "")))
 
         with contextlib.redirect_stdout(sink), contextlib.redirect_stderr(sink):
-            batch_result = self.agent.execute_command(
+            batch_result = self.agent.execute_tool_call(
+                "mcp_call_tool_batch",
                 {
-                    "action": "mcp_call_tool_batch",
-                    "params": {
-                        "server": server_name,
-                        "calls": [
-                            {"tool": "echo", "arguments": {"message": "b1"}},
-                            {"tool": "echo", "arguments": {"message": "b2"}},
-                        ],
-                        "timeout_s": 10.0,
-                    },
-                }
+                    "server": server_name,
+                    "calls": [
+                        {"tool": "echo", "arguments": {"message": "b1"}},
+                        {"tool": "echo", "arguments": {"message": "b2"}},
+                    ],
+                    "timeout_s": 10.0,
+                },
             )
         self.assertTrue(batch_result.get("success"), batch_result)
         results = batch_result.get("results", [])
@@ -183,19 +176,17 @@ class AgentMcpActionsE2ETests(unittest.TestCase):
         self.assertEqual(batch_result.get("error_count"), 0)
         self.assertFalse(batch_result.get("has_error"))
         with contextlib.redirect_stdout(sink), contextlib.redirect_stderr(sink):
-            tolerant_batch = self.agent.execute_command(
+            tolerant_batch = self.agent.execute_tool_call(
+                "mcp_call_tool_batch",
                 {
-                    "action": "mcp_call_tool_batch",
-                    "params": {
-                        "server": server_name,
-                        "calls": [
-                            {"tool": "echo", "arguments": {"message": "ok"}},
-                            {"tool": "tool_not_found_for_partial_test", "arguments": {}},
-                        ],
-                        "allow_partial_failure": True,
-                        "timeout_s": 10.0,
-                    },
-                }
+                    "server": server_name,
+                    "calls": [
+                        {"tool": "echo", "arguments": {"message": "ok"}},
+                        {"tool": "tool_not_found_for_partial_test", "arguments": {}},
+                    ],
+                    "allow_partial_failure": True,
+                    "timeout_s": 10.0,
+                },
             )
         self.assertTrue(tolerant_batch.get("success"), tolerant_batch)
         tolerant_results = tolerant_batch.get("results", [])
@@ -209,24 +200,23 @@ class AgentMcpActionsE2ETests(unittest.TestCase):
         self.assertTrue(tolerant_batch.get("has_error"))
 
         with contextlib.redirect_stdout(sink), contextlib.redirect_stderr(sink):
-            list_result = self.agent.execute_command(
-                {"action": "mcp_list_resources", "params": {"server": server_name, "use_cache": False, "timeout_s": 8.0}}
+            list_result = self.agent.execute_tool_call(
+                "mcp_list_resources",
+                {"server": server_name, "use_cache": False, "timeout_s": 8.0},
             )
         self.assertTrue(list_result.get("success"), list_result)
         resources = list_result.get("resources", [])
         self.assertIn("fake://docs/readme", [str(x.get("uri", "")) for x in resources if isinstance(x, dict)])
 
         with contextlib.redirect_stdout(sink), contextlib.redirect_stderr(sink):
-            stream_result = self.agent.execute_command(
+            stream_result = self.agent.execute_tool_call(
+                "mcp_call_tool",
                 {
-                    "action": "mcp_call_tool",
-                    "params": {
-                        "server": server_name,
-                        "tool": "echo_stream",
-                        "arguments": {"message": "flow"},
-                        "timeout_s": 10.0,
-                    },
-                }
+                    "server": server_name,
+                    "tool": "echo_stream",
+                    "arguments": {"message": "flow"},
+                    "timeout_s": 10.0,
+                },
             )
         self.assertTrue(stream_result.get("success"), stream_result)
         stream_meta = stream_result.get("result", {}).get("_stream", {})
@@ -236,60 +226,56 @@ class AgentMcpActionsE2ETests(unittest.TestCase):
         if server_name == "fake_url":
             self.assertIn("flow-U1", str(stream_meta.get("text", "")))
         with contextlib.redirect_stdout(sink), contextlib.redirect_stderr(sink):
-            elicited_tool = self.agent.execute_command(
+            elicited_tool = self.agent.execute_tool_call(
+                "mcp_call_tool",
                 {
-                    "action": "mcp_call_tool",
-                    "params": {
-                        "server": server_name,
-                        "tool": "ask_elicitation",
-                        "arguments": {"title": "Need inputs", "message": "collect fields"},
-                        "timeout_s": 10.0,
-                    },
-                }
+                    "server": server_name,
+                    "tool": "ask_elicitation",
+                    "arguments": {"title": "Need inputs", "message": "collect fields"},
+                    "timeout_s": 10.0,
+                },
             )
         self.assertTrue(elicited_tool.get("success"), elicited_tool)
         text = str(elicited_tool.get("result", {}).get("content", [{}])[0].get("text", ""))
         self.assertIn("ask_elicitation:accept", text)
 
         with contextlib.redirect_stdout(sink), contextlib.redirect_stderr(sink):
-            read_result = self.agent.execute_command(
-                {"action": "mcp_read_resource", "params": {"server": server_name, "uri": "fake://docs/readme", "timeout_s": 8.0}}
+            read_result = self.agent.execute_tool_call(
+                "mcp_read_resource",
+                {"server": server_name, "uri": "fake://docs/readme", "timeout_s": 8.0},
             )
         self.assertTrue(read_result.get("success"), read_result)
 
         with contextlib.redirect_stdout(sink), contextlib.redirect_stderr(sink):
-            list_prompts_result = self.agent.execute_command(
-                {"action": "mcp_list_prompts", "params": {"server": server_name, "use_cache": False, "timeout_s": 8.0}}
+            list_prompts_result = self.agent.execute_tool_call(
+                "mcp_list_prompts",
+                {"server": server_name, "use_cache": False, "timeout_s": 8.0},
             )
         self.assertTrue(list_prompts_result.get("success"), list_prompts_result)
 
         with contextlib.redirect_stdout(sink), contextlib.redirect_stderr(sink):
-            get_prompt_result = self.agent.execute_command(
+            get_prompt_result = self.agent.execute_tool_call(
+                "mcp_get_prompt",
                 {
-                    "action": "mcp_get_prompt",
-                    "params": {
-                        "server": server_name,
-                        "prompt": "summarize_text",
-                        "arguments": {"text": "hello world"},
-                        "timeout_s": 8.0,
-                    },
-                }
+                    "server": server_name,
+                    "prompt": "summarize_text",
+                    "arguments": {"text": "hello world"},
+                    "timeout_s": 8.0,
+                },
             )
         self.assertTrue(get_prompt_result.get("success"), get_prompt_result)
 
         with contextlib.redirect_stdout(sink), contextlib.redirect_stderr(sink):
-            sampling_result = self.agent.execute_command(
+            sampling_result = self.agent.execute_tool_call(
+                "mcp_sampling_create_message",
                 {
-                    "action": "mcp_sampling_create_message",
-                    "params": {
-                        "server": server_name,
-                        "sampling_params": {
-                            "messages": [{"role": "user", "content": {"type": "text", "text": "hi sampling"}}],
-                            "maxTokens": 32,
-                        },
-                        "timeout_s": 8.0,
+                    "server": server_name,
+                    "sampling_params": {
+                        "messages": [{"role": "user", "content": {"type": "text", "text": "hi sampling"}}],
+                        "maxTokens": 32,
                     },
-                }
+                    "timeout_s": 8.0,
+                },
             )
         self.assertTrue(sampling_result.get("success"), sampling_result)
         self.assertIn("hi sampling", str(sampling_result.get("result", {}).get("content", {}).get("text", "")))

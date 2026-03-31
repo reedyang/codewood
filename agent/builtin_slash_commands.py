@@ -9,31 +9,47 @@ WINDOWS_SLASH_BUILTIN_COMMANDS: List[str] = [
     "/exit",
     "/quit",
     "/cls",
-    "/clear-screen",
-    "/clear-history",
-    "/clear-context",
-    "/knowledge-on",
-    "/knowledge-off",
-    "/knowledge-sync",
-    "/knowledge-stats",
-    "/knowledge-search ",
-    "/freedom-on",
-    "/freedom-off",
+    "/clear ",
+    "/clear screen",
+    "/clear history",
+    "/clear context",
+    "/knowledge ",
+    "/knowledge on",
+    "/knowledge off",
+    "/knowledge sync",
+    "/knowledge stats",
+    "/knowledge search ",
+    "/execution-policy",
+    "/execution-policy unlimited",
+    "/execution-policy moderate",
+    "/execution-policy confirmation",
     "/always_confirm-reset",
-    "/mcp-reload-config",
-    "/mcp-status",
-    "/mcp-status-refresh",
-    "/mcp-reconnect ",
-    "/mcp-server-info ",
-    "/mcp-list-tools ",
-    "/mcp-list-resources ",
-    "/mcp-list-resource-templates ",
-    "/mcp-list-prompts ",
-    "/mcp-list-disabled-tools",
-    "/mcp-disable-tools ",
-    "/mcp-enable-tools ",
+    "/mcp ",
+    "/mcp status",
+    "/mcp status-refresh",
+    "/mcp reload-config",
+    "/mcp reconnect ",
+    "/mcp server-info ",
+    "/mcp list-tools ",
+    "/mcp list-resources ",
+    "/mcp list-resource-templates ",
+    "/mcp list-prompts ",
+    "/mcp list-disabled-tools",
+    "/mcp disable-tools ",
+    "/mcp enable-tools ",
     "/help",
 ]
+
+# Keep built-in completion list unique while preserving order.
+_seen_builtin = set()
+_deduped_builtin: List[str] = []
+for _cmd in WINDOWS_SLASH_BUILTIN_COMMANDS:
+    _key = _cmd.lower()
+    if _key in _seen_builtin:
+        continue
+    _seen_builtin.add(_key)
+    _deduped_builtin.append(_cmd)
+WINDOWS_SLASH_BUILTIN_COMMANDS = _deduped_builtin
 
 
 def windows_slash_builtin_completions(
@@ -54,8 +70,9 @@ def windows_slash_builtin_completions(
 
     for c in all_commands:
         if c.lower().startswith(pl):
-            if c not in seen:
-                seen.add(c)
+            key = c.lower()
+            if key not in seen:
+                seen.add(key)
                 out.append(c)
     out.sort(key=str.lower)
     return out

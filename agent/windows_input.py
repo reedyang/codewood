@@ -35,10 +35,17 @@ class FileCompleter(Completer):
         """
         Return the slash-command fragment being edited at cursor tail.
         Matches either:
-        - line starts with '/...'
+        - line starts with '/...' (supports spaces in slash command)
         - or last token after whitespace is '/...'
         Returns (index_of_slash, fragment_from_slash_to_cursor), or (-1, '').
         """
+        # Full-line slash built-in command (e.g. "/mcp ", "/knowledge search q")
+        stripped = text.lstrip()
+        if stripped.startswith("/"):
+            slash_idx = len(text) - len(stripped)
+            return slash_idx, text[slash_idx:]
+
+        # Fallback token-style slash completion for non built-in contexts.
         m = re.search(r"(^|\s)(/[^\s]*)$", text)
         if not m:
             return -1, ""
