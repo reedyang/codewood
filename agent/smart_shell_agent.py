@@ -2642,6 +2642,36 @@ big_image.jpg
             )
         return new_cmd
 
+    def _tune_7z_output_for_piped_terminal(self, command: str) -> str:
+        """
+        Improve 7z visibility under piped/non-tty execution by adding stable output switches.
+        Keep defaults unchanged for non-7z commands.
+        """
+        if not command.strip():
+            return command
+        # Best-effort detection for common 7z invocations.
+        if not re.search(r'(^|[\\/\s"])7z(?:\.exe)?(?=\s|"|$)', command, re.IGNORECASE):
+            return command
+
+        tuned = command
+        appended: List[str] = []
+        lower = command.lower()
+        if " -bsp" not in lower:
+            tuned += " -bsp1"
+            appended.append("-bsp1")
+        if " -bb" not in lower:
+            tuned += " -bb1"
+            appended.append("-bb1")
+        if " -bso" not in lower:
+            tuned += " -bso1"
+            appended.append("-bso1")
+        if " -bse" not in lower:
+            tuned += " -bse2"
+            appended.append("-bse2")
+        if appended:
+            print(f"ℹ️ 已为 7z 命令启用兼容输出参数: {' '.join(appended)}")
+        return tuned
+
     def _parse_shell_invoked_executable(self, command: str) -> Optional[Path]:
         """Best-effort: path to the primary script/exe the user asked to run (first token)."""
         import shlex
@@ -2817,6 +2847,7 @@ big_image.jpg
         if not command.strip():
             return {"success": False, "error": "命令不能为空"}
         command = self._ensure_absolute_script_for_shell_cwd(command.strip())
+        command = self._tune_7z_output_for_piped_terminal(command)
         if self._is_path_under(self.work_directory, self._self_repo_root):
             if not (
                 self._is_dependency_install_command(command)
@@ -2854,27 +2885,45 @@ big_image.jpg
             interactive = True
             if interactive:
                 import threading
+                import codecs
                 print("⌨️ shell 交互模式已开启：请按命令提示在终端中输入。")
                 stdout_chunks: List[str] = []
                 stderr_chunks: List[str] = []
-                preserve_tty_output = (
-                    os.environ.get("SMART_SHELL_PIPE_INTERACTIVE_OUTPUT", "").strip().lower()
+                merge_stderr_for_interactive = (
+                    os.environ.get("SMART_SHELL_SEPARATE_STDERR", "").strip().lower()
                     not in {"1", "true", "yes", "on"}
                 )
-                stdout_is_tty = hasattr(sys.stdout, "isatty") and sys.stdout.isatty()
-                stderr_is_tty = hasattr(sys.stderr, "isatty") and sys.stderr.isatty()
-                use_passthrough_stdio = preserve_tty_output and stdout_is_tty and stderr_is_tty
+
+                def _restore_console_after_interactive() -> None:
+                    # Best-effort reset to avoid sticky input modes after Ctrl+C / ANSI-heavy tools.
+                    if sys.platform != "win32":
+                        return
+                    try:
+                        # Reset attributes; ensure cursor visible; disable bracketed paste mode.
+                        _safe_console_write("\x1b[0m\x1b[?25h\x1b[?2004l", sys.stdout, append_newline=False)
+                    except Exception:
+                        pass
 
                 def _stream_and_capture(pipe: Any, target: Any, bucket: List[str]) -> None:
+                    decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
                     try:
                         while True:
-                            # Use char-level streaming so prompts without trailing newline
-                            # (e.g. input("...: ")) are rendered immediately.
-                            chunk = pipe.read(1)
+                            # Read available bytes with low latency to avoid blocking prompts
+                            # (e.g. input("...")) while preserving carriage returns (\r).
+                            if hasattr(pipe, "read1"):
+                                chunk = pipe.read1(1)
+                            else:
+                                chunk = pipe.read(1)
                             if not chunk:
                                 break
-                            bucket.append(chunk)
-                            _safe_console_write(chunk, target, append_newline=False)
+                            text_chunk = decoder.decode(chunk, final=False)
+                            if text_chunk:
+                                bucket.append(text_chunk)
+                                _safe_console_write(text_chunk, target, append_newline=False)
+                        tail = decoder.decode(b"", final=True)
+                        if tail:
+                            bucket.append(tail)
+                            _safe_console_write(tail, target, append_newline=False)
                     except Exception:
                         pass
                     finally:
@@ -2883,25 +2932,7 @@ big_image.jpg
                         except Exception:
                             pass
 
-                if use_passthrough_stdio:
-                    # Keep child process attached to a real TTY so progress bars
-                    # that rely on carriage-return updates can stay on one line.
-                    process = subprocess.Popen(
-                        command,
-                        shell=True,
-                        cwd=str(self.work_directory.resolve()),
-                        env=run_env,
-                        stdin=sys.stdin,
-                        stdout=sys.stdout,
-                        stderr=sys.stderr,
-                        text=True,
-                        encoding="utf-8",
-                        errors="replace",
-                    )
-                    return_code = process.wait()
-                    out = ""
-                    err = ""
-                else:
+                try:
                     process = subprocess.Popen(
                         command,
                         shell=True,
@@ -2909,28 +2940,31 @@ big_image.jpg
                         env=run_env,
                         stdin=sys.stdin,
                         stdout=subprocess.PIPE,
-                        stderr=subprocess.PIPE,
-                        text=True,
-                        encoding="utf-8",
-                        errors="replace",
+                        stderr=subprocess.STDOUT if merge_stderr_for_interactive else subprocess.PIPE,
+                        text=False,
                     )
                     t_out = threading.Thread(
                         target=_stream_and_capture,
                         args=(process.stdout, sys.stdout, stdout_chunks),  # type: ignore[arg-type]
                         daemon=True,
                     )
-                    t_err = threading.Thread(
-                        target=_stream_and_capture,
-                        args=(process.stderr, sys.stderr, stderr_chunks),  # type: ignore[arg-type]
-                        daemon=True,
-                    )
                     t_out.start()
-                    t_err.start()
+                    t_err: Optional[threading.Thread] = None
+                    if not merge_stderr_for_interactive:
+                        t_err = threading.Thread(
+                            target=_stream_and_capture,
+                            args=(process.stderr, sys.stderr, stderr_chunks),  # type: ignore[arg-type]
+                            daemon=True,
+                        )
+                        t_err.start()
                     return_code = process.wait()
                     t_out.join(timeout=1.0)
-                    t_err.join(timeout=1.0)
+                    if t_err is not None:
+                        t_err.join(timeout=1.0)
                     out = "".join(stdout_chunks)
-                    err = "".join(stderr_chunks)
+                    err = "" if merge_stderr_for_interactive else "".join(stderr_chunks)
+                finally:
+                    _restore_console_after_interactive()
                 base_out: Dict[str, Any] = {
                     "output": out,
                     "stderr": err,
