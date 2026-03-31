@@ -5147,15 +5147,16 @@ big_image.jpg
                         self._active_skill_id = sid
                 first_round_contract = (
                     "\n\n【首轮回复硬性要求（必须遵守）】\n"
-                    "1) 对于需要两步及以上完成的任务，先输出任务编排：Step 1..N，并为每步标注状态（pending/in_progress/completed/failed）。\n"
+                    "1) 对于需要两步及以上完成的任务，先简要说明“将要完成哪些事情”，紧随其后再输出任务编排：Step 1..N，并为每步标注状态（pending/in_progress/completed/failed）。\n"
                     "2) 在同一条回复结尾输出且仅输出一个工具调用 JSON。\n"
                     "3) 若需要先请求某个 skill 完整提示，也必须先给出上述步骤编排，再在结尾输出 "
                     "{\"tool\":\"request_skill_prompt\",\"args\":{\"skill_id\":\"...\"}}。\n"
-                    "4) 禁止首轮直接只给工具调用 JSON 而不做步骤编排。\n\n"
+                    "4) 对于需要两步及以上完成的任务，禁止首轮直接只给工具调用 JSON 而不做“事项简述 + 步骤编排”。\n\n"
                     "【MCP 工具选择补充约束】\n"
                     "- 用户若请求“指定 MCP server 的信息/详情”，首个查询工具必须是 mcp_server_info。\n"
                     "- mcp_status/mcp_status_refresh 仅用于全局 MCP 状态总览，不可替代指定 server 的详情查询。\n\n"
                     "首轮输出模板示例：\n"
+                    "我将帮你获取并显示 playwright MCP 最新状态。\n"
                     "Step 1 [in_progress]: <当前要执行的步骤>\n"
                     "Step 2 [pending]: <后续步骤>\n\n"
                     "```json\n"
