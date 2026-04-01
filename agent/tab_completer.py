@@ -300,9 +300,15 @@ class TabCompleter:
             解析后的Path对象，如果无效则返回None
         """
         try:
+            # On non-Windows, treat any all-slash prefix ("//", "///", ...)
+            # as root for stable completion behavior.
+            if dir_part and set(dir_part) == {'/'}:
+                return Path('/')
             if dir_part.startswith('/'):
-                # Unix绝对路径
-                return Path(dir_part)
+                # Unix absolute path: normalize repeated leading slashes
+                # so "//Personal" resolves consistently as "/Personal".
+                normalized = '/' + dir_part.lstrip('/')
+                return Path(normalized)
             elif len(dir_part) > 1 and dir_part[1] == ':':
                 # Windows: "d:" must be "d:\\" to mean drive root (Path("d:") is current dir on that drive)
                 if len(dir_part) == 2 and dir_part[0].isalpha():
