@@ -69,13 +69,15 @@ class FileCompleter(Completer):
         if os.name == "nt":
             idx, slash_part = self._slash_fragment_for_completion(text)
             if idx >= 0 and slash_part:
-                matches = windows_slash_builtin_completions(
+                builtin_matches = windows_slash_builtin_completions(
                     slash_part, dynamic_commands=self.slash_skill_commands
                 )
+                path_matches = []
                 # Also suggest workspace-relative file paths for slash token,
                 # including non-leading cases after the last space.
                 if " " not in slash_part and len(slash_part) > 1:
-                    matches.extend(self._get_workspace_path_completions_for_slash(slash_part))
+                    path_matches = self._get_workspace_path_completions_for_slash(slash_part)
+                matches = builtin_matches + path_matches
                 if matches:
                     spos = -len(slash_part)
                     seen = set()
@@ -83,7 +85,14 @@ class FileCompleter(Completer):
                         if mc in seen:
                             continue
                         seen.add(mc)
-                        yield Completion(mc, start_position=spos)
+                        if mc in path_matches:
+                            yield Completion(
+                                mc,
+                                start_position=spos,
+                                display=self._path_leaf_name(mc),
+                            )
+                        else:
+                            yield Completion(mc, start_position=spos)
                     return
 
         # Generic token-based file/path completion (from last whitespace boundary)
@@ -95,7 +104,16 @@ class FileCompleter(Completer):
                 if not token_matches:
                     fallback_matches = self._get_path_completions(token)
                     # Keep leading '/' for slash-style input tokens.
-                    token_matches = ["/" + m.lstrip("\\/") for m in fallback_matches]
+                    # Preserve root-style prefix semantics by platform.
+                    if token.startswith("/\\"):
+                        token_matches = ["/\\" + m.lstrip("\\/") for m in fallback_matches]
+                    elif token.startswith("//"):
+                        if os.name == "nt":
+                            token_matches = ["/\\" + m.lstrip("\\/") for m in fallback_matches]
+                        else:
+                            token_matches = ["//" + m.lstrip("\\/") for m in fallback_matches]
+                    else:
+                        token_matches = ["/" + m.lstrip("\\/") for m in fallback_matches]
             elif "/" in token or "\\" in token:
                 token_matches = self._get_path_completions(token)
             else:
@@ -107,7 +125,14 @@ class FileCompleter(Completer):
                     if mc in seen:
                         continue
                     seen.add(mc)
-                    yield Completion(mc, start_position=-len(token))
+                    if "/" in token or "\\" in token or token.startswith("/"):
+                        yield Completion(
+                            mc,
+                            start_position=-len(token),
+                            display=self._path_leaf_name(mc),
+                        )
+                    else:
+                        yield Completion(mc, start_position=-len(token))
                 return
         
         # If input becomes empty, hide completion menu.
@@ -347,6 +372,9 @@ class FileCompleter(Completer):
             rel = slash_part[1:]
             if not rel:
                 return []
+            # "/\\" and "//" should be treated as root-path listing, not workspace-relative.
+            if rel in ("\\", "/"):
+                return []
 
             normalized = rel.replace("\\", "/")
             if "/" in normalized:
@@ -391,6 +419,14 @@ class FileCompleter(Completer):
             return -1, ""
         start = len(text) - len(token)
         return start, token
+
+    @staticmethod
+    def _path_leaf_name(candidate: str) -> str:
+        """Display only leaf name for path-like completion candidates."""
+        cleaned = candidate.rstrip("\\/")
+        if not cleaned:
+            return candidate
+        return cleaned.replace("/", "\\").split("\\")[-1]
     
     def _get_path_completions(self, text: str) -> List[str]:
         """获取路径补全"""
@@ -405,8 +441,12 @@ class FileCompleter(Completer):
             else:
                 separator = '\\'
             
-            # 特殊处理：如果输入只是单个分隔符，显示根目录内容
-            if text == '\\' or text == '/':
+            # Root trigger: one or more pure separators should list root entries.
+            # Windows: "\\", "\\\\", etc. (including normalized "//")
+            # Others: "/", "//", etc.
+            if (separator == "\\" and text and set(text) == {"\\"}) or (
+                separator == "/" and text and set(text) == {"/"}
+            ):
                 return self._get_root_directory_completions(separator)
             
             parts = text.split(separator)

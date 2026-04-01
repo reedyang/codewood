@@ -98,9 +98,12 @@ class TabCompleter:
         Returns:
             补全选项列表
         """
-        if not text:
-            # 空文本，返回当前目录的所有文件和文件夹
-            return self._get_directory_contents()
+        # Keep consistent with Windows input handler: no suggestions on empty input.
+        if not text or text.strip() == "":
+            return []
+        # Avoid noisy suggestions when fragment is exactly "."
+        if text == ".":
+            return []
         
         # 检查是否包含路径分隔符
         if '/' in text or '\\' in text:
@@ -130,6 +133,8 @@ class TabCompleter:
             匹配的文件/文件夹名列表
         """
         try:
+            if text == ".":
+                return []
             matches = []
             for item in self.work_directory.iterdir():
                 if item.name.lower().startswith(text.lower()):
@@ -138,13 +143,6 @@ class TabCompleter:
             # 如果没有找到匹配项，尝试智能补全
             if not matches and text:
                 matches = self._smart_local_completion(text)
-            
-            # 如果有多个匹配项，找到共同前缀
-            if len(matches) > 1:
-                common_prefix = self._find_common_prefix(matches)
-                if common_prefix and len(common_prefix) > len(text):
-                    # 返回共同前缀作为唯一补全选项
-                    return [common_prefix]
             
             return sorted(matches)
         except Exception:
@@ -159,6 +157,8 @@ class TabCompleter:
             智能补全的文件/文件夹名列表
         """
         matches = []
+        if text == ".":
+            return matches
         
         # 常见文件扩展名
         common_extensions = ['.txt', '.py', '.js', '.html', '.css', '.json', '.xml', '.md', '.log', '.ini', '.cfg', '.conf']
@@ -239,8 +239,10 @@ class TabCompleter:
             else:
                 return self._get_local_completions(text)
             
-            # 特殊处理：如果输入只是单个分隔符，显示根目录内容
-            if text == '\\' or text == '/':
+            # Root trigger: one or more pure separators should list root entries.
+            if (separator == "\\" and text and set(text) == {"\\"}) or (
+                separator == "/" and text and set(text) == {"/"}
+            ):
                 return self._get_root_directory_completions(separator)
             
             # 统一路径分隔符进行处理
@@ -284,13 +286,6 @@ class TabCompleter:
             # 如果没有找到匹配项，尝试智能补全
             if not matches and file_part:
                 matches = self._smart_path_completion(base_dir, file_part, separator, dir_part)
-            
-            # 如果有多个匹配项，找到共同前缀
-            if len(matches) > 1:
-                common_prefix = self._find_common_prefix(matches)
-                if common_prefix and len(common_prefix) > len(text):
-                    # 返回共同前缀作为唯一补全选项
-                    return [common_prefix]
             
             return sorted(matches)
         except Exception:
