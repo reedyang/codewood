@@ -104,14 +104,10 @@ class FileCompleter(Completer):
                 if not token_matches:
                     fallback_matches = self._get_path_completions(token)
                     # Keep leading '/' for slash-style input tokens.
-                    # Preserve root-style prefix semantics by platform.
                     if token.startswith("/\\"):
                         token_matches = ["/\\" + m.lstrip("\\/") for m in fallback_matches]
                     elif token.startswith("//"):
-                        if os.name == "nt":
-                            token_matches = ["/\\" + m.lstrip("\\/") for m in fallback_matches]
-                        else:
-                            token_matches = ["//" + m.lstrip("\\/") for m in fallback_matches]
+                        token_matches = ["/\\" + m.lstrip("\\/") for m in fallback_matches]
                     else:
                         token_matches = ["/" + m.lstrip("\\/") for m in fallback_matches]
             elif "/" in token or "\\" in token:
@@ -321,15 +317,9 @@ class FileCompleter(Completer):
             根目录下的文件/文件夹列表
         """
         try:
-            import platform
-            
-            if platform.system() == "Windows":
-                # Windows系统：获取当前驱动器的根目录
-                current_drive = Path.cwd().anchor  # 例如 'C:\\'
-                root_dir = Path(current_drive)
-            else:
-                # Unix系统：根目录是 '/'
-                root_dir = Path('/')
+            # Windows-only input handler: always use current drive root.
+            current_drive = Path.cwd().anchor  # 例如 'C:\\'
+            root_dir = Path(current_drive)
             
             if not root_dir.exists() or not root_dir.is_dir():
                 return []
@@ -345,11 +335,8 @@ class FileCompleter(Completer):
                     if file_part and not item.name.lower().startswith(file_part.lower()):
                         continue
                     
-                    # 构建路径
-                    if separator == '/':
-                        path = f"/{item.name}"
-                    else:
-                        path = f"\\{item.name}"
+                    # 构建Windows风格路径
+                    path = f"\\{item.name}"
                     
                     matches.append(path)
                     
@@ -372,8 +359,9 @@ class FileCompleter(Completer):
             rel = slash_part[1:]
             if not rel:
                 return []
-            # "/\\" and "//" should be treated as root-path listing, not workspace-relative.
-            if rel in ("\\", "/"):
+            # '/\...' or '//' style should be treated as root-path input,
+            # not workspace-relative path input.
+            if rel.startswith("\\") or rel.startswith("/"):
                 return []
 
             normalized = rel.replace("\\", "/")
@@ -431,22 +419,12 @@ class FileCompleter(Completer):
     def _get_path_completions(self, text: str) -> List[str]:
         """获取路径补全"""
         try:
-            if os.name == "nt":
-                # Normalize to Windows separator for completion candidates.
-                text = text.replace("/", "\\")
-
-            # 分离目录和文件名部分
-            if '/' in text:
-                separator = '/'
-            else:
-                separator = '\\'
+            # Windows-only input handler: normalize to Windows separator.
+            text = text.replace("/", "\\")
+            separator = '\\'
             
             # Root trigger: one or more pure separators should list root entries.
-            # Windows: "\\", "\\\\", etc. (including normalized "//")
-            # Others: "/", "//", etc.
-            if (separator == "\\" and text and set(text) == {"\\"}) or (
-                separator == "/" and text and set(text) == {"/"}
-            ):
+            if text and set(text) == {"\\"}:
                 return self._get_root_directory_completions(separator)
             
             parts = text.split(separator)
@@ -462,9 +440,14 @@ class FileCompleter(Completer):
                 return self._get_root_directory_completions(separator, file_part)
             
             # 解析目录路径
-            if dir_part.startswith('/') or (len(dir_part) > 1 and dir_part[1] == ':'):
-                # 绝对路径；Windows 下 "d:" 需规范为 "d:\\" 才表示该盘根目录
-                if len(dir_part) == 2 and dir_part[0].isalpha() and dir_part[1] == ':':
+            if dir_part.startswith("\\") or (len(dir_part) > 1 and dir_part[1] == ':'):
+                # Absolute path on Windows:
+                # - leading "\" is drive-root relative (map to current drive root)
+                # - "d:" should be normalized to "d:\\" for drive root
+                if dir_part.startswith("\\"):
+                    current_drive = Path.cwd().anchor  # e.g. "D:\\"
+                    base_dir = (Path(current_drive) / dir_part.lstrip("\\")).resolve()
+                elif len(dir_part) == 2 and dir_part[0].isalpha() and dir_part[1] == ':':
                     base_dir = Path(dir_part + "\\")
                 else:
                     base_dir = Path(dir_part)
@@ -479,13 +462,8 @@ class FileCompleter(Completer):
             matches = []
             for item in base_dir.iterdir():
                 if item.name.lower().startswith(file_part.lower()):
-                    # 构建相对路径，保持原始分隔符风格
-                    if separator == '/':
-                        # Unix风格路径
-                        relative_path = f"{dir_part}/{item.name}"
-                    else:
-                        # Windows风格路径
-                        relative_path = f"{dir_part}\\{item.name}"
+                    # 构建Windows风格路径
+                    relative_path = f"{dir_part}\\{item.name}"
                     
                     # Only append separator for directories when input ends with separator
                     if text.endswith(separator) and item.is_dir():
@@ -526,10 +504,7 @@ class FileCompleter(Completer):
         # 1. 尝试直接匹配（不区分大小写）
         for item in base_dir.iterdir():
             if item.name.lower().startswith(file_part.lower()):
-                if separator == '/':
-                    relative_path = f"{dir_part}/{item.name}"
-                else:
-                    relative_path = f"{dir_part}\\{item.name}"
+                relative_path = f"{dir_part}\\{item.name}"
                 matches.append(relative_path)
         
         # 2. 如果没有直接匹配，尝试添加常见扩展名
@@ -537,20 +512,14 @@ class FileCompleter(Completer):
             for ext in common_extensions:
                 potential_file = base_dir / (file_part + ext)
                 if potential_file.exists() and potential_file.is_file():
-                    if separator == '/':
-                        relative_path = f"{dir_part}/{file_part}{ext}"
-                    else:
-                        relative_path = f"{dir_part}\\{file_part}{ext}"
+                    relative_path = f"{dir_part}\\{file_part}{ext}"
                     matches.append(relative_path)
         
         # 3. 如果还是没有，尝试模糊匹配（包含子字符串）
         if not matches:
             for item in base_dir.iterdir():
                 if file_part.lower() in item.name.lower():
-                    if separator == '/':
-                        relative_path = f"{dir_part}/{item.name}"
-                    else:
-                        relative_path = f"{dir_part}\\{item.name}"
+                    relative_path = f"{dir_part}\\{item.name}"
                     matches.append(relative_path)
         
         # 4. 如果文件名部分看起来像是不完整的扩展名，尝试补全
@@ -561,10 +530,7 @@ class FileCompleter(Completer):
                 if ext.startswith('.' + partial_ext):
                     potential_file = base_dir / (base_name + ext)
                     if potential_file.exists() and potential_file.is_file():
-                        if separator == '/':
-                            relative_path = f"{dir_part}/{base_name}{ext}"
-                        else:
-                            relative_path = f"{dir_part}\\{base_name}{ext}"
+                        relative_path = f"{dir_part}\\{base_name}{ext}"
                         matches.append(relative_path)
         
         return matches
