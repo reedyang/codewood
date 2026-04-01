@@ -46,9 +46,9 @@ It's OK to briefly explain terms if you're in doubt, and feel free to clarify te
 
 ### Smart-Shell Execution Gate (Mandatory)
 
-When you are operating in a Smart Shell style environment (JSON actions with `last_action` / `done`), follow these rules strictly:
+When you are operating in a Smart Shell style environment (tool call protocol with explicit `done` tool), follow these rules strictly:
 
-1. **Never finish early.** Do not output `last_action: true` (or `{"action":"done"}`) until all required deliverables for the user's request are complete.
+1. **Never finish early.** Do not call `{"tool":"done","args":{}}` until all required deliverables for the user's request are complete.
 2. **Required deliverables for "create a skill"** (unless user explicitly opts out):
    - Skill directory created in the required skill location
    - `SKILL.md` written inside that skill directory
