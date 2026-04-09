@@ -42,7 +42,8 @@ class TabCompleter:
             # 设置tab键为补全触发键
             readline.parse_and_bind('tab: complete')
             # 设置补全分隔符
-            readline.set_completer_delims(' \t\n`!@#$%^&*()=+[{]}\\|;:\'",<>?')
+            # Keep '!' out of delims so '!path' is one word for workspace path completion.
+            readline.set_completer_delims(' \t\n`@#$%^&*()=+[{]}\\|;:\'",<>?')
         except Exception as e:
             print(f"⚠️ 警告: 无法设置tab补全功能: {e}")
     
@@ -58,6 +59,7 @@ class TabCompleter:
         if state == 0:
             # Use full line buffer so path completion works for "cd C:\Users\..." etc.
             path_fragment = text
+            completions: Optional[List[str]] = None
             if READLINE_AVAILABLE:
                 try:
                     line = readline.get_line_buffer()
@@ -71,12 +73,19 @@ class TabCompleter:
                         if idx >= 0:
                             path_start = idx + 3
                             path_fragment = line[path_start:endidx].strip()
+                    elif line.lstrip().startswith("!"):
+                        idx = line.find("!")
+                        path_fragment = line[idx:endidx]
+                        completions = self._get_workspace_path_completions_for_bang(path_fragment)
                     else:
                         path_fragment = line[begidx:endidx]
                 except Exception:
                     pass
             self._path_fragment_for_suffix = path_fragment
-            self._completions = self._get_completions(path_fragment)
+            if completions is not None:
+                self._completions = completions
+            else:
+                self._completions = self._get_completions(path_fragment)
             self._completion_index = 0
 
         if self._completion_index < len(self._completions):
@@ -84,12 +93,58 @@ class TabCompleter:
             self._completion_index += 1
             # Return only the suffix that replaces the current word (so path completion works)
             path_frag = getattr(self, "_path_fragment_for_suffix", text)
-            if path_frag and ("/" in path_frag or "\\" in path_frag or (len(path_frag) > 1 and path_frag[1] == ":")):
+            if path_frag and (
+                path_frag.startswith("!")
+                or "/" in path_frag
+                or "\\" in path_frag
+                or (len(path_frag) > 1 and path_frag[1] == ":")
+            ):
                 if len(completion) >= len(path_frag) and completion[: len(path_frag)].lower() == path_frag.lower():
                     return completion[len(path_frag) :]
             return completion
         return None
-    
+
+    def _get_workspace_path_completions_for_bang(self, bang_part: str) -> List[str]:
+        """
+        Workspace-relative path after '!', same semantics as smart-shell Windows handler.
+        Example: '!agent/w' -> '!agent/windows_input.py'
+        """
+        try:
+            if not bang_part.startswith("!"):
+                return []
+            rel = bang_part[1:]
+            if rel.startswith("\\") or rel.startswith("/"):
+                return []
+            # Lone "!" only: no completions
+            if not rel:
+                return []
+            else:
+                normalized = rel.replace("\\", "/")
+                if "/" in normalized:
+                    dir_part, file_part = normalized.rsplit("/", 1)
+                    base_dir = (self.work_directory / dir_part).resolve()
+                else:
+                    dir_part, file_part = "", normalized
+                    base_dir = self.work_directory
+
+            if not base_dir.exists() or not base_dir.is_dir():
+                return []
+
+            matches: List[str] = []
+            for item in base_dir.iterdir():
+                if item.name.startswith("."):
+                    continue
+                if file_part and not item.name.lower().startswith(file_part.lower()):
+                    continue
+                if dir_part:
+                    candidate = f"!{dir_part}/{item.name}"
+                else:
+                    candidate = f"!{item.name}"
+                matches.append(candidate)
+            return sorted(matches)
+        except Exception:
+            return []
+
     def _get_completions(self, text: str) -> List[str]:
         """
         获取补全列表
