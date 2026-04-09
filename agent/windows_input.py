@@ -10,6 +10,8 @@ import sys
 from pathlib import Path
 from typing import List, Optional, Tuple
 
+_WIN_DRIVE_BANG = re.compile(r"^([A-Za-z]:)(/.*)?$")
+
 from .builtin_slash_commands import windows_slash_builtin_completions
 
 try:
@@ -56,6 +58,28 @@ class FileCompleter(Completer):
         slash_idx = len(text) - len(frag)
         return slash_idx, frag
 
+    @staticmethod
+    def _bang_fragment_for_completion(text: str) -> Tuple[int, str]:
+        """
+        Return the '!...' path fragment at cursor tail (workspace-relative path after '!').
+        Matches either:
+        - line starts with '!...'
+        - or last token after whitespace is '!...'
+        Returns (index_of_bang, fragment_from_bang_to_cursor), or (-1, '').
+        """
+        stripped = text.lstrip()
+        if stripped.startswith("!"):
+            bang_idx = len(text) - len(stripped)
+            return bang_idx, text[bang_idx:]
+        m = re.search(r"(^|\s)(![^\s]*)$", text)
+        if not m:
+            return -1, ""
+        frag = m.group(2) or ""
+        if not frag.startswith("!"):
+            return -1, ""
+        bang_idx = len(text) - len(frag)
+        return bang_idx, frag
+
     def get_completions(self, document, complete_event):
         """获取补全选项"""
         text = document.text_before_cursor
@@ -65,52 +89,45 @@ class FileCompleter(Completer):
         # where only the trailing token should be replaced.
         token_start, token = self._extract_last_token(text)
 
-        # Windows: if current token starts with "/" -> complete built-in + skill slash commands
+        # Windows: '!' + workspace-relative path -> path completion only
+        if os.name == "nt":
+            bidx, bang_part = self._bang_fragment_for_completion(text)
+            if bidx >= 0 and bang_part:
+                path_matches = self._get_workspace_path_completions_for_bang(bang_part)
+                if path_matches:
+                    spos = -len(bang_part)
+                    seen = set()
+                    for mc in path_matches:
+                        if mc in seen:
+                            continue
+                        seen.add(mc)
+                        yield Completion(
+                            mc,
+                            start_position=spos,
+                            display=self._path_leaf_name(mc),
+                        )
+                    return
+
+        # Windows: "/" -> built-in + skill slash commands only (no path-as-/foo)
         if os.name == "nt":
             idx, slash_part = self._slash_fragment_for_completion(text)
             if idx >= 0 and slash_part:
                 builtin_matches = windows_slash_builtin_completions(
                     slash_part, dynamic_commands=self.slash_skill_commands
                 )
-                path_matches = []
-                # Also suggest workspace-relative file paths for slash token,
-                # including non-leading cases after the last space.
-                if " " not in slash_part and len(slash_part) > 1:
-                    path_matches = self._get_workspace_path_completions_for_slash(slash_part)
-                matches = builtin_matches + path_matches
-                if matches:
+                if builtin_matches:
                     spos = -len(slash_part)
                     seen = set()
-                    for mc in matches:
+                    for mc in builtin_matches:
                         if mc in seen:
                             continue
                         seen.add(mc)
-                        if mc in path_matches:
-                            yield Completion(
-                                mc,
-                                start_position=spos,
-                                display=self._path_leaf_name(mc),
-                            )
-                        else:
-                            yield Completion(mc, start_position=spos)
+                        yield Completion(mc, start_position=spos)
                     return
 
         # Generic token-based file/path completion (from last whitespace boundary)
         if token:
-            if token.startswith("/") and len(token) > 1:
-                # Rule: when input starts with '/', support workspace-relative path completion
-                # from the 2nd char for single-token '/...'.
-                token_matches = self._get_workspace_path_completions_for_slash(token)
-                if not token_matches:
-                    fallback_matches = self._get_path_completions(token)
-                    # Keep leading '/' for slash-style input tokens.
-                    if token.startswith("/\\"):
-                        token_matches = ["/\\" + m.lstrip("\\/") for m in fallback_matches]
-                    elif token.startswith("//"):
-                        token_matches = ["/\\" + m.lstrip("\\/") for m in fallback_matches]
-                    else:
-                        token_matches = ["/" + m.lstrip("\\/") for m in fallback_matches]
-            elif "/" in token or "\\" in token:
+            if "/" in token or "\\" in token:
                 token_matches = self._get_path_completions(token)
             else:
                 token_matches = self._get_local_completions(token)
@@ -121,7 +138,7 @@ class FileCompleter(Completer):
                     if mc in seen:
                         continue
                     seen.add(mc)
-                    if "/" in token or "\\" in token or token.startswith("/"):
+                    if "/" in token or "\\" in token:
                         yield Completion(
                             mc,
                             start_position=-len(token),
@@ -348,21 +365,67 @@ class FileCompleter(Completer):
         except Exception:
             return []
 
-    def _get_workspace_path_completions_for_slash(self, slash_part: str) -> List[str]:
+    @staticmethod
+    def _windows_bang_drive_base(rel: str) -> Optional[Tuple[Path, str]]:
         """
-        Build workspace-relative path completions for leading '/...'.
-        Example: '/agent/win' -> '/agent/windows_input.py'
+        If rel is a Windows path starting with X: (absolute drive), return (directory to
+        list, filename prefix). pathlib's (workdir / 'd:') is not drive root when cwd is
+        on the same letter — use Path('d:\\') instead.
+        """
+        norm = rel.replace("\\", "/")
+        m = _WIN_DRIVE_BANG.match(norm)
+        if not m:
+            return None
+        drive = m.group(1)
+        rest_raw = m.group(2)
+        tail = rest_raw.lstrip("/") if rest_raw else ""
+        root = Path(drive + "\\")
+        if not tail:
+            return root, ""
+        if "/" in tail:
+            dir_rel, file_part = tail.rsplit("/", 1)
+            base_dir = root / dir_rel.replace("/", "\\")
+        else:
+            base_dir = root
+            file_part = tail
+        return base_dir, file_part
+
+    def _get_workspace_path_completions_for_bang(self, bang_part: str) -> List[str]:
+        """
+        Build workspace-relative path completions for leading '!...'.
+        Example: '!agent/win' -> '!agent\\windows_input.py'
+        On Windows, '!d:\\' lists D:\\ root (not the workspace when it is on D:).
         """
         try:
-            if not slash_part.startswith("/"):
+            if not bang_part.startswith("!"):
                 return []
-            rel = slash_part[1:]
-            if not rel:
-                return []
-            # '/\...' or '//' style should be treated as root-path input,
-            # not workspace-relative path input.
+            rel = bang_part[1:]
+            # '!\\...' or '!//' style: not workspace-relative
             if rel.startswith("\\") or rel.startswith("/"):
                 return []
+            # Lone "!" only: no completions (avoid popping up the full workspace list)
+            if not rel:
+                return []
+
+            if os.name == "nt":
+                nd = rel.replace("\\", "/")
+                # Bare "x:" only — do not list drive root until user types !x:\ or !x:/
+                if re.fullmatch(r"[A-Za-z]:", nd):
+                    return []
+                drive_pair = self._windows_bang_drive_base(rel)
+                if drive_pair is not None:
+                    base_dir, file_part = drive_pair
+                    if not base_dir.exists() or not base_dir.is_dir():
+                        return []
+                    matches = []
+                    for item in base_dir.iterdir():
+                        if item.name.startswith("."):
+                            continue
+                        if file_part and not item.name.lower().startswith(file_part.lower()):
+                            continue
+                        candidate = "!" + os.path.normpath(str((base_dir / item.name)))
+                        matches.append(candidate)
+                    return sorted(matches)
 
             normalized = rel.replace("\\", "/")
             if "/" in normalized:
@@ -379,13 +442,13 @@ class FileCompleter(Completer):
             for item in base_dir.iterdir():
                 if item.name.startswith("."):
                     continue
-                if not item.name.lower().startswith(file_part.lower()):
+                if file_part and not item.name.lower().startswith(file_part.lower()):
                     continue
                 if dir_part:
                     win_dir = dir_part.replace("/", "\\")
-                    candidate = f"/{win_dir}\\{item.name}"
+                    candidate = f"!{win_dir}\\{item.name}"
                 else:
-                    candidate = f"/{item.name}"
+                    candidate = f"!{item.name}"
                 matches.append(candidate)
             return sorted(matches)
         except Exception:

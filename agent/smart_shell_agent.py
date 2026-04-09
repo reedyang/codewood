@@ -4942,14 +4942,15 @@ big_image.jpg
                     if not stripped_in:
                         continue
 
-                # Unified UX: built-in commands and direct shell require "/" prefix on all platforms.
+                # Built-in slash commands use "/" prefix; direct shell uses "!" prefix.
                 builtin_line: Optional[str] = None
                 if stripped_in.startswith("/") and forced_skill is None:
                     builtin_line = stripped_in[1:].lstrip()
                     if not builtin_line:
                         print(
-                            "ℹ️ 内置命令与本地直接执行的命令均需以 / 开头，"
-                            "例如 /exit、/help、/clear screen、/knowledge on、/ls；单独输入 / 无效。"
+                            "ℹ️ 内置命令需以 / 开头，"
+                            "例如 /exit、/help、/clear screen、/knowledge on；单独输入 / 无效。"
+                            "不经过 AI 的本机命令与脚本请以 ! 开头，例如 !ls、!git status。"
                         )
                         continue
 
@@ -5087,7 +5088,7 @@ big_image.jpg
                         )
 
                         print("\n📌 系统命令（不经 AI，本机直接执行）：")
-                        print("  所有平台都必须以 / 开头，例如 /ls、/dir、/cd ..、/cat a.txt、/git status")
+                        print("  所有平台都必须以 ! 开头，例如 !ls、!dir、!cd ..、!cat a.txt、!git status")
                         print("\n📌 自然语言命令：")
                         print("您可以使用自然语言描述您的需求，例如：")
                         print("  1. 创建一个名为test的文件夹")
@@ -5123,14 +5124,20 @@ big_image.jpg
                         print("=" * 80)
                         continue
 
-                # Direct local execution without AI: requires leading "/" on all platforms.
+                    print(
+                        "❌ 未识别的内置命令。请使用 /help 查看列表。"
+                        "在本机直接执行 shell 或脚本请使用 ! 前缀，例如 !git status、!dir。"
+                    )
+                    continue
+
+                # Direct local execution without AI: requires leading "!" on all platforms.
                 run_direct_shell: Optional[str] = None
-                if stripped_in.startswith("/"):
+                if stripped_in.startswith("!"):
                     run_direct_shell = stripped_in[1:].lstrip()
                     if not run_direct_shell:
                         print(
-                            "ℹ️ 不经过 AI 直接执行的系统命令或可执行文件需以 / 开头，"
-                            "例如 /ls、/dir、/ping 127.0.0.1、/git status；单独输入 / 无效。"
+                            "ℹ️ 不经过 AI 直接执行的系统命令或可执行文件需以 ! 开头，"
+                            "例如 !ls、!dir、!ping 127.0.0.1、!git status；单独输入 ! 无效。"
                         )
                         continue
 
@@ -5172,7 +5179,7 @@ big_image.jpg
                             print(f"❌ 系统命令执行异常: {e}")
                         continue
 
-                    # e.g. /git status — not in the small whitelist but still direct shell
+                    # e.g. !git status — not in the small whitelist but still direct shell
                     try:
                         process = subprocess.Popen(
                             ui,
