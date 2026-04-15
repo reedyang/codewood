@@ -133,38 +133,13 @@ def main():
             print(f"❌ OpenWebUI API模式运行错误: {str(e)}")
             return 1
     elif provider == "ollama" and params:
-        # ollama本地
-        try:
-            import ollama
-            models = ollama.list()
-            available_models = []
-            for model in models.get('models', []):
-                if hasattr(model, 'model'):
-                    available_models.append(model.model)
-                elif isinstance(model, dict):
-                    available_models.append(model.get('name', model.get('model', 'unknown')))
-                else:
-                    available_models.append(str(model))
-            if model_name not in available_models:
-                print(f"⚠️ 指定模型 {model_name} 不可用")
-                if available_models:
-                    model_name = available_models[0]
-                    print(f"💡 使用默认模型: {model_name}")
-                else:
-                    print("❌ 没有可用的模型")
-                    return 1
-        except ImportError:
-            print("❌ 请先安装 ollama 包: pip install ollama")
-            return 1
-        except Exception as e:
-            print(f"❌ 无法连接到Ollama: {str(e)}")
-            print("请确保Ollama服务正在运行")
-            return 1
+        # ollama：不在此处 import ollama（未使用 ollama 的配置不会加载该包）；校验在 SmartShellAgent 后台线程中完成
         try:
             agent = SmartShellAgent(
                 model_name=model_name,
                 work_directory=work_directory,
                 provider="ollama",
+                params=params,
                 config_dir=config_dir,
                 builtin_skills_dir=builtin_skills_dir,
             )
