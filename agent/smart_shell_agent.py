@@ -6,6 +6,7 @@ import secrets
 import re
 import time
 import threading
+import importlib
 from pathlib import Path
 from typing import List, Dict, Optional, Any, Tuple, Set
 import shutil
@@ -74,16 +75,14 @@ from .history_manager import HistoryManager
 from .skills_loader import build_skills_routing_prefix, build_skills_system_append, load_skills_merged
 from .mcp_manager import McpManager, McpError
 
-# knowledge_manager 在 SmartShellAgent.__init__ 中按需导入，避免 import smart_shell_agent 时拉取 Chroma 等重依赖。
-# KNOWLEDGE_AVAILABLE / KnowledgeService 在 __init__ 内赋到模块上；单测可在构造前设置 KNOWLEDGE_AVAILABLE=False 以跳过知识库加载。
+# knowledge_manager 在后台线程中导入（见 _schedule_knowledge_service_background），避免主线程拉取 Chroma/torch 等。
+# KNOWLEDGE_AVAILABLE / KnowledgeService 由该线程赋到模块上；单测可在构造前设置 KNOWLEDGE_AVAILABLE=False 以跳过。
 KnowledgeService = None  # type: ignore
 KNOWLEDGE_AVAILABLE = True  # 构造前为「未探测」；单测设为 False 可跳过 knowledge 包加载
 
-# 导入tab补全模块
-import os
+# 根据操作系统选择合适的输入处理器
 import platform
 
-# 根据操作系统选择合适的输入处理器
 if platform.system() == "Windows":
     try:
         from .windows_input import create_windows_input_handler
@@ -157,6 +156,14 @@ def _ansi_yellow(text: str) -> str:
     return f"\033[33m{text}\033[0m"
 
 
+def _import_ollama_client():
+    """
+    惰性加载 ollama Python 包；仅在调用方已确认使用 ollama provider 时使用。
+    避免仅配置 openai/openwebui 时启动阶段执行 import ollama。
+    """
+    return importlib.import_module("ollama")
+
+
 class SmartShellAgent:
     def __init__(self, model_name: str = "gemma3:4b", work_directory: Optional[str] = None, provider: str = "ollama", openai_conf: Optional[dict] = None, openwebui_conf: Optional[dict] = None, params: Optional[dict] = None, normal_config: Optional[dict] = None, vision_config: Optional[dict] = None, config_dir: Optional[str] = None, builtin_skills_dir: Optional[str] = None):
         """
@@ -211,20 +218,9 @@ class SmartShellAgent:
 
         setup_app_logging(self.config_dir)
 
-        # 按需加载知识库（Chroma/sentence-transformers）；单测可在构造前将本模块 KNOWLEDGE_AVAILABLE=False 以跳过
+        # 知识库：不在主线程 import knowledge_manager（否则会同步加载 chromadb、transformers、torch 等，冷启动可达数秒）。
+        # 实际加载见 _schedule_knowledge_service_background；单测可在构造前将本模块 KNOWLEDGE_AVAILABLE=False 以跳过。
         self.knowledge_manager = None
-        _mod = sys.modules[__name__]
-        if getattr(_mod, "KNOWLEDGE_AVAILABLE", None) is not False:
-            try:
-                from .knowledge_manager import KnowledgeService as _KS, KNOWLEDGE_AVAILABLE as _KAV
-
-                _mod.KnowledgeService = _KS
-                _mod.KNOWLEDGE_AVAILABLE = _KAV
-                if _KAV and _KS is not None:
-                    self.knowledge_manager = _KS(str(self.config_dir))
-            except ImportError:
-                _mod.KnowledgeService = None  # type: ignore
-                _mod.KNOWLEDGE_AVAILABLE = False
 
         # Ephemeral task scripts from action "script" go here (config side, not user cwd).
         self.ai_workspace_dir = self.config_dir / "workspace"
@@ -266,8 +262,12 @@ class SmartShellAgent:
             self.normal_provider = normal_config.get("provider", "ollama")
             self.normal_params = normal_config.get("params", {})
             self.normal_model_name = self.normal_params.get("model", "gemma3:4b")
-            # 设置视觉模型
-            self.vision_provider = vision_config.get("provider", "ollama")
+            # 设置视觉模型（未写 provider 时与普通模型一致，避免默认成 ollama 导致误加载 ollama 包）
+            _vp = vision_config.get("provider")
+            if _vp is None or (isinstance(_vp, str) and not str(_vp).strip()):
+                self.vision_provider = self.normal_provider
+            else:
+                self.vision_provider = str(_vp).strip()
             self.vision_params = vision_config.get("params", {})
             self.vision_model_name = self.vision_params.get("model", "qwen2.5vl:7b")
             # 兼容旧接口
@@ -289,6 +289,14 @@ class SmartShellAgent:
                 self.openai_conf = params
             if self.provider == 'openwebui' and self.openwebui_conf is None and params is not None:
                 self.openwebui_conf = params
+
+        # 双模型且仅视觉为 ollama 时：启动阶段不校验视觉模型，首次多模态调用前再加载 ollama 包
+        self._defer_vision_ollama_validation = (
+            bool(getattr(self, "dual_model_mode", False))
+            and getattr(self, "normal_provider", "") != "ollama"
+            and getattr(self, "vision_provider", "") == "ollama"
+        )
+        self._vision_ollama_validated_once = False
 
         # 模型可用性校验（ollama.list）可能阻塞网络；见 _schedule_model_validation_background，在后台执行
 
@@ -329,7 +337,6 @@ class SmartShellAgent:
         if TAB_COMPLETION_AVAILABLE:
             try:
                 if INPUT_HANDLER_TYPE == "windows":
-                    # 构建初始历史供 prompt_toolkit 使用
                     try:
                         initial_history = self.history_manager.get_all_history()
                     except Exception:
@@ -349,6 +356,49 @@ class SmartShellAgent:
             print("⚠️ Tab补全功能不可用")
 
         self._schedule_model_validation_background()
+        self._schedule_knowledge_service_background()
+
+    def _schedule_knowledge_service_background(self) -> None:
+        """
+        在后台线程中执行 knowledge_manager 的 import 与 KnowledgeService 构造。
+        import 链会加载 ChromaDB、sentence_transformers、PyTorch、langchain 等，若在主线程执行会明显拖慢到提示符的时间。
+        """
+        _mod = sys.modules[__name__]
+        if getattr(_mod, "KNOWLEDGE_AVAILABLE", None) is False:
+            return
+        if os.environ.get("SMARTSHELL_SKIP_KNOWLEDGE", "").strip().lower() in ("1", "true", "yes"):
+            return
+
+        self._knowledge_import_done = threading.Event()
+
+        def _run() -> None:
+            try:
+                try:
+                    from .knowledge_manager import KnowledgeService as _KS, KNOWLEDGE_AVAILABLE as _KAV
+                except ImportError:
+                    _mod.KnowledgeService = None  # type: ignore
+                    _mod.KNOWLEDGE_AVAILABLE = False
+                    return
+                _mod.KnowledgeService = _KS
+                _mod.KNOWLEDGE_AVAILABLE = _KAV
+                if _KAV and _KS is not None:
+                    try:
+                        self.knowledge_manager = _KS(str(self.config_dir))
+                    except Exception:
+                        try:
+                            get_logger().exception("知识库 KnowledgeService 构造失败")
+                        except Exception:
+                            pass
+                        _mod.KnowledgeService = None  # type: ignore
+                        _mod.KNOWLEDGE_AVAILABLE = False
+            finally:
+                self._knowledge_import_done.set()
+
+        threading.Thread(
+            target=_run,
+            name="smartshell-kb-import",
+            daemon=True,
+        ).start()
 
     def _schedule_model_validation_background(self) -> None:
         """
@@ -367,7 +417,8 @@ class SmartShellAgent:
 
         def _run() -> None:
             try:
-                self._validate_model()
+                defer_vis = getattr(self, "_defer_vision_ollama_validation", False)
+                self._validate_model(include_vision=not defer_vis)
             except Exception:
                 pass
 
@@ -700,6 +751,11 @@ class SmartShellAgent:
         """等待知识库服务就绪。依赖不可用或初始化失败时返回 False。"""
         if not KNOWLEDGE_AVAILABLE:
             return False
+        # 后台线程可能仍在 import chromadb/torch；先等到赋值完成或确认失败
+        if self.knowledge_manager is None:
+            done = getattr(self, "_knowledge_import_done", None)
+            if done is not None:
+                done.wait(timeout=120.0)
         svc = self.knowledge_manager
         if svc is None:
             return False
@@ -1494,22 +1550,21 @@ class SmartShellAgent:
             print(f"🦅 判定为不可逆或不确定，仍需手动确认 — {reason}")
         return reversible
 
-    def _validate_model(self):
-        """验证模型是否可用（仅ollama模式）"""
+    def _validate_model(self, *, include_vision: bool = True) -> None:
+        """验证模型是否可用（仅 ollama 模式）。include_vision=False 时跳过视觉模型（推迟到首次多模态）。"""
         if self.dual_model_mode:
-            # 双模型模式：验证两个模型
             self._validate_single_model(self.normal_provider, self.normal_model_name, "普通任务模型")
-            self._validate_single_model(self.vision_provider, self.vision_model_name, "视觉模型")
+            if include_vision:
+                self._validate_single_model(self.vision_provider, self.vision_model_name, "视觉模型")
         else:
-            # 单模型模式：验证单个模型
             self._validate_single_model(self.provider, self.model_name, "模型")
-    
+
     def _validate_single_model(self, provider: str, model_name: str, model_type: str):
         """验证单个模型是否可用"""
         if provider != "ollama":
             return
         try:
-            import ollama
+            ollama = _import_ollama_client()
             models = ollama.list()
             available_models = []
             for model in models.get('models', []):
@@ -1792,7 +1847,7 @@ class SmartShellAgent:
                     return f"❌ 错误：不支持的模型提供者 '{provider}'。支持的提供者：ollama, openai, openwebui"
                 
                 try:
-                    import ollama
+                    ollama = _import_ollama_client()
                 except ImportError:
                     return "❌ 错误：未安装 ollama 包。请运行：pip install ollama"
                 
@@ -1883,8 +1938,14 @@ class SmartShellAgent:
                     return "❌ 错误：模型未正确配置。请检查 llm-filemgr.json 配置文件。"
 
             if provider == "ollama":
+                if (
+                    getattr(self, "_defer_vision_ollama_validation", False)
+                    and not getattr(self, "_vision_ollama_validated_once", False)
+                ):
+                    self._validate_single_model(self.vision_provider, self.vision_model_name, "视觉模型")
+                    self._vision_ollama_validated_once = True
                 try:
-                    import ollama
+                    ollama = _import_ollama_client()
                 except ImportError:
                     return "❌ 错误：未安装 ollama 包。请运行：pip install ollama"
                 
