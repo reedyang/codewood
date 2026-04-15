@@ -9,6 +9,7 @@
 每个已完成任务的最终回复必须且只能包含一次 done 调用。
 如果当前结果已经满足用户请求，下一步必须立即输出 done。
 在调用 `done` 之前，必须先进行“信息完备性自检”：
+
 - 若当前任务需要用户侧事实/参数/约束才能给出可靠结论，而这些信息尚未由用户提供，你必须先调用 `ask_more_info`，禁止直接 `done`。
 - 此规则是语义规则，不允许通过关键词硬编码判断；应基于任务目标与已知信息是否足够来判断。
 - 对“个体化判断/定制建议/参数驱动计算”类请求，若缺少必要输入，优先 `ask_more_info`。
@@ -28,26 +29,31 @@
 
 **MCP 服务加载状态（当前工作目录：`<cwd>`）**
 
-| 服务 | 状态 | 工具数 | 详情 / 建议 |
-|-------------|---------|-------|----------------------|
-| **<serverA>** | <state> | <tool_count> | <details_or_suggestion> |
-| **<serverB>** | <state> | <tool_count> | <details_or_suggestion> |
+
+| 服务  | 状态  | 工具数 | 详情 / 建议 |
+| --- | --- | --- | ------- |
+|     |     |     |         |
+|     |     |     |         |
+
 
 **汇总**
-- **服务总数：** <n>
-- **工具总数：** <n>
-- **正在加载：** <n>（<comma_separated_names_or_none>）
-- **失败：** <n> - <brief_reason_or_none>
-- **已跳过：** <n>
-- **是否全部加载完成：** **<true_or_false>**
+
+- **服务总数：** 
+- **工具总数：** 
+- **正在加载：** （）
+- **失败：**  - 
+- **已跳过：** 
+- **是否全部加载完成：** 
 
 **修复建议**（来自缓存）：
-- <suggestion_1_or_None>
+
+- 
 
 关键要求：调用 `mcp_status` 或 `mcp_status_refresh` 后，不要立即输出 done。
 你必须先基于返回 JSON 字段按模板渲染状态报告，再在下一步输出 done。
 
 工具选择边界（强制）：
+
 - `mcp_status` / `mcp_status_refresh` 仅用于“全局 MCP 状态总览”（多服务汇总、加载健康度、失败统计）。
 - 当用户请求“指定某个 MCP server 的详细信息”时，必须优先调用 `mcp_server_info`，不要用 `mcp_status` 代替。
 - 若用户已明确 server（如 playwright/gitlab 等），首个查询工具应为 `mcp_server_info`（而非 `mcp_status`）。
@@ -56,22 +62,26 @@
 
 **MCP 服务详情：`<server>`**
 
-| 字段 | 值 |
-|------|----|
-| 状态 | `<state>` |
-| 来源 | `<source_or_unknown>` |
-| 工具数 | `<tool_count>` |
-| 活跃操作数 | `<active_ops>` |
-| 最近错误 | `<last_error_or_none>` |
-| 建议 | `<suggestion_or_none>` |
+
+| 字段    | 值                      |
+| ----- | ---------------------- |
+| 状态    | `<state>`              |
+| 来源    | `<source_or_unknown>`  |
+| 工具数   | `<tool_count>`         |
+| 活跃操作数 | `<active_ops>`         |
+| 最近错误  | `<last_error_or_none>` |
+| 建议    | `<suggestion_or_none>` |
+
 
 **能力汇总**
+
 - **Tools：** `<tools_count>`（`<tools_cache_mode>`）
 - **Resources：** `<resources_count>`（`<resources_cache_mode>`）
 - **Resource Templates：** `<resource_templates_count>`（`<resource_templates_cache_mode>`）
 - **Prompts：** `<prompts_count>`（`<prompts_cache_mode>`）
 
 **完整列表（全量）**
+
 - **Tools：** `<tool_name_1, tool_name_2, ... or None>`
 - **Resources：** `<resource_1, resource_2, ... or None>`
 - **Prompts：** `<prompt_1, prompt_2, ... or None>`
@@ -91,6 +101,14 @@
 我将先<事项A>，再<事项B>，最后<事项C>。
 Step 1 [completed]: <已完成步骤>
 Step 2 [in_progress]: <当前步骤>
+
 ```json
 {"tool":"<tool_name>","args":{...}}
 ```
+
+## 知识库 `knowledge_search`（语义判定，禁止滥用）
+
+- **禁止调用**：用户未在本轮对话中明确要求检索知识库、或参考知识库/本地文档库中的信息时，不得调用 `knowledge_search`（包括不要为了“更完整”而主动查库）。
+- **必须调用**：当且仅当用户明确表达上述意图时，必须先调用 `knowledge_search` 获取片段，再基于结果回答或继续其他工具；禁止在未调用的情况下声称已参考知识库。
+- 判定依赖对用户原话的语义理解，而非固定关键词列表。
+
