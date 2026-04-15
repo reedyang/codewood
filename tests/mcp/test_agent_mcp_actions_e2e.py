@@ -88,6 +88,12 @@ class AgentMcpActionsE2ETests(unittest.TestCase):
                 logger.removeHandler(handler)
             except Exception:
                 pass
+        try:
+            from agent.app_logging import shutdown_app_logging_handlers
+
+            shutdown_app_logging_handlers()
+        except Exception:
+            pass
         self.temp_dir.cleanup()
 
     def _write_config(self, payload: dict) -> None:

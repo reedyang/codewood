@@ -3,7 +3,9 @@ import sys
 import json
 import hashlib
 import contextlib
+import concurrent.futures
 import logging
+import threading
 from pathlib import Path
 from typing import List, Dict, Optional, Any, Iterator, Tuple
 from datetime import datetime
@@ -39,9 +41,15 @@ except Exception as e:
         print(msg)
     except UnicodeEncodeError:
         print(msg.encode("ascii", errors="replace").decode("ascii"))
+    try:
+        logging.getLogger("smartshell.knowledge").warning("%s", msg)
+    except Exception:
+        pass
 
 # Local Sentence-Transformers model id (Hugging Face Hub); no Ollama or cloud LLM API required.
 DEFAULT_LOCAL_EMBEDDING_MODEL = "all-MiniLM-L6-v2"
+
+_kb_log = logging.getLogger("smartshell.knowledge")
 
 
 @contextlib.contextmanager
@@ -195,10 +203,10 @@ class KnowledgeManager:
                 metadata={"hnsw:space": "cosine"}
             )
             
-            print(f"✅ 知识库初始化成功")
+            _kb_log.info("Chroma 与嵌入模型就绪，embedding_model=%s", self.embedding_model)
             
         except Exception as e:
-            print(f"❌ 知识库初始化失败: {e}")
+            _kb_log.exception("知识库 Chroma/嵌入初始化失败: %s", e)
             raise
     
     def _load_document_status(self) -> Dict[str, Any]:
@@ -208,7 +216,7 @@ class KnowledgeManager:
                 with open(self.status_file, 'r', encoding='utf-8') as f:
                     return json.load(f)
             except Exception as e:
-                print(f"⚠️ 加载文档状态失败: {e}")
+                _kb_log.warning("加载文档状态失败: %s", e)
         return {}
     
     def _save_document_status(self):
@@ -217,7 +225,7 @@ class KnowledgeManager:
             with open(self.status_file, 'w', encoding='utf-8') as f:
                 json.dump(self.document_status, f, ensure_ascii=False, indent=2)
         except Exception as e:
-            print(f"⚠️ 保存文档状态失败: {e}")
+            _kb_log.warning("保存文档状态失败: %s", e)
     
     def _get_file_hash(self, file_path: Path) -> str:
         """获取文件的MD5哈希值"""
@@ -270,7 +278,7 @@ class KnowledgeManager:
                 return "\n\n".join([doc.page_content for doc in documents])
                 
         except Exception as e:
-            print(f"⚠️ 加载文档失败 {file_path}: {e}")
+            _kb_log.warning("加载文档失败 %s: %s", file_path, e)
             return None
     
     def _add_document_to_db(self, file_info: Dict[str, Any], content: str):
@@ -304,10 +312,10 @@ class KnowledgeManager:
                     ids=batch_ids
                 )
             
-            print(f"  ✅ 添加文档: {file_info['name']} ({len(chunks)} 个片段)")
+            _kb_log.info("已索引文档: %s，片段数=%s", file_info["name"], len(chunks))
             
         except Exception as e:
-            print(f"  ❌ 添加文档到数据库失败 {file_info['name']}: {e}")
+            _kb_log.warning("添加文档到数据库失败 %s: %s", file_info["name"], e)
     
     def _remove_document_from_db(self, file_name: str):
         """从数据库中删除文档"""
@@ -319,14 +327,27 @@ class KnowledgeManager:
             
             if results['ids']:
                 self.collection.delete(ids=results['ids'])
-                print(f"  ✅ 删除文档: {file_name}")
+                _kb_log.info("已从索引删除文档: %s", file_name)
             
         except Exception as e:
-            print(f"  ❌ 从数据库删除文档失败 {file_name}: {e}")
+            _kb_log.warning("从数据库删除文档失败 %s: %s", file_name, e)
     
     def sync_knowledge_base(self):
         """同步知识库"""
-        print("🔄 开始同步知识库...")
+        _kb_log.info("开始同步知识库，目录=%s", self.knowledge_dir)
+
+        # 向量库与 knowledge_status 不一致时（例如误删 knowledge_db、历史版本索引失败），
+        # 若仍保留状态则同步会跳过「未变更」文件，导致集合一直为空、检索无结果。
+        try:
+            if self.collection.count() == 0 and self.document_status:
+                _kb_log.warning(
+                    "检测到向量索引为空但仍有 %s 条文档状态记录，将清空状态并重新全量索引",
+                    len(self.document_status),
+                )
+                self.document_status = {}
+                self._save_document_status()
+        except Exception as e:
+            _kb_log.warning("知识库索引一致性检查失败: %s", e)
         
         # 获取当前目录下的所有文件
         current_files = {}
@@ -339,7 +360,7 @@ class KnowledgeManager:
         # 检查需要删除的文件
         for file_name in list(self.document_status.keys()):
             if file_name not in current_files:
-                print(f"🗑️ 发现已删除的文档: {file_name}")
+                _kb_log.info("检测到已删除的文档，从索引移除: %s", file_name)
                 self._remove_document_from_db(file_name)
                 del self.document_status[file_name]
         
@@ -347,7 +368,7 @@ class KnowledgeManager:
         for file_name, file_info in current_files.items():
             if file_name not in self.document_status:
                 # 新文件
-                print(f"📄 发现新文档: {file_name}")
+                _kb_log.info("发现新文档: %s", file_name)
                 content = self._load_document(Path(file_info['path']))
                 if content:
                     self._add_document_to_db(file_info, content)
@@ -357,7 +378,7 @@ class KnowledgeManager:
                 old_info = self.document_status[file_name]
                 if (file_info['modified_time'] != old_info['modified_time'] or 
                     file_info['hash'] != old_info['hash']):
-                    print(f"🔄 发现更新的文档: {file_name}")
+                    _kb_log.info("发现已更新文档，重新索引: %s", file_name)
                     # 先删除旧版本
                     self._remove_document_from_db(file_name)
                     # 添加新版本
@@ -372,7 +393,11 @@ class KnowledgeManager:
         # 显示统计信息
         total_docs = len(self.document_status)
         total_chunks = self.collection.count()
-        print(f"📊 知识库同步完成: {total_docs} 个文档, {total_chunks} 个文本片段")
+        _kb_log.info("知识库同步完成: %s 个文档, %s 个文本片段", total_docs, total_chunks)
+        if total_docs > 0 and total_chunks == 0:
+            _kb_log.error(
+                "知识库异常：有文档记录但向量片段为 0，请检查 PDF/加载日志或删除 knowledge_db 与 knowledge_status.json 后执行 /knowledge sync"
+            )
     
     def search_knowledge(self, query: str, top_k: int = 5) -> List[Dict[str, Any]]:
         """
@@ -414,7 +439,7 @@ class KnowledgeManager:
             return formatted_results
             
         except Exception as e:
-            print(f"⚠️ 知识库搜索失败: {e}")
+            _kb_log.warning("知识库搜索失败: %s", e)
             return []
     
     def get_knowledge_context(self, query: str, max_length: int = 2000) -> str:
@@ -481,5 +506,99 @@ class KnowledgeManager:
                 "embedding_model": self.embedding_model,
             }
         except Exception as e:
-            print(f"⚠️ 获取知识库统计信息失败: {e}")
+            _kb_log.warning("获取知识库统计信息失败: %s", e)
             return {}
+
+
+class KnowledgeService:
+    """
+    在单一线程池工作线程上执行全部 KnowledgeManager 操作（初始化、同步、检索）。
+    Chroma 使用 SQLite 持久化时，要求在创建客户端的线程内访问；若在后台线程初始化、在主线程 query，会导致检索为空或异常。
+    """
+
+    def __init__(self, config_dir: str, embedding_model: str = DEFAULT_LOCAL_EMBEDDING_MODEL):
+        self._config_dir = str(Path(config_dir))
+        self._embedding_model = embedding_model
+        self._executor = concurrent.futures.ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="smartshell-kb"
+        )
+        self._km: Optional[KnowledgeManager] = None
+        self._ready = threading.Event()
+        self._executor.submit(self._bootstrap)
+
+    def _bootstrap(self) -> None:
+        try:
+            _kb_log.info("知识库工作线程开始初始化, config_dir=%s", self._config_dir)
+            km = KnowledgeManager(self._config_dir, self._embedding_model)
+            km.sync_knowledge_base()
+            self._km = km
+            _kb_log.info("知识库工作线程初始化与同步完成")
+        except Exception:
+            _kb_log.exception("知识库工作线程初始化失败")
+            self._km = None
+        finally:
+            self._ready.set()
+
+    def wait_ready(self, timeout: float = 600.0) -> bool:
+        return self._ready.wait(timeout=timeout)
+
+    def is_ready(self) -> bool:
+        return self._ready.is_set()
+
+    def is_available(self) -> bool:
+        """初始化已结束且 KnowledgeManager 构建成功。"""
+        if not self.is_ready():
+            return False
+        return self._km is not None
+
+    def sync_knowledge_base(self) -> None:
+        def _do() -> None:
+            if self._km is None:
+                return
+            self._km.sync_knowledge_base()
+
+        if not self.wait_ready(600.0):
+            return
+        if self._km is None:
+            return
+        self._executor.submit(_do).result(timeout=600.0)
+
+    def search_knowledge(self, query: str, top_k: int = 5) -> List[Dict[str, Any]]:
+        def _do() -> List[Dict[str, Any]]:
+            if self._km is None:
+                return []
+            return self._km.search_knowledge(query, top_k)
+
+        if not self.wait_ready(600.0):
+            return []
+        if self._km is None:
+            return []
+        return self._executor.submit(_do).result(timeout=120.0)
+
+    def get_knowledge_stats(self) -> Dict[str, Any]:
+        def _do() -> Dict[str, Any]:
+            if self._km is None:
+                return {}
+            return self._km.get_knowledge_stats()
+
+        if not self.wait_ready(600.0):
+            return {}
+        if self._km is None:
+            return {}
+        return self._executor.submit(_do).result(timeout=60.0)
+
+    def get_knowledge_context(self, query: str, max_length: int = 2000) -> str:
+        def _do() -> str:
+            if self._km is None:
+                return ""
+            return self._km.get_knowledge_context(query, max_length)
+
+        if not self.wait_ready(600.0):
+            return ""
+        if self._km is None:
+            return ""
+        return self._executor.submit(_do).result(timeout=120.0)
+
+    def shutdown(self, wait: bool = False) -> None:
+        """释放线程池（测试或进程退出前可选调用）。"""
+        self._executor.shutdown(wait=wait)

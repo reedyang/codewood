@@ -1,4 +1,3 @@
-import ollama
 import os
 import sys
 import json
@@ -6,6 +5,7 @@ import hashlib
 import secrets
 import re
 import time
+import threading
 from pathlib import Path
 from typing import List, Dict, Optional, Any, Tuple, Set
 import shutil
@@ -69,17 +69,15 @@ def _safe_console_write(text: str, stream: Any = None, append_newline: bool = Tr
 
 
 # 导入历史记录管理器
+from .app_logging import get_log_file_path, get_logger, setup_app_logging
 from .history_manager import HistoryManager
 from .skills_loader import build_skills_routing_prefix, build_skills_system_append, load_skills_merged
 from .mcp_manager import McpManager, McpError
 
-# Import knowledge manager; KNOWLEDGE_AVAILABLE is set by knowledge_manager (e.g. False when ChromaDB fails on Python 3.14)
-try:
-    from .knowledge_manager import KnowledgeManager, KNOWLEDGE_AVAILABLE
-except ImportError:
-    KnowledgeManager = None  # type: ignore
-    KNOWLEDGE_AVAILABLE = False
-    print("⚠️ 知识库功能不可用")
+# knowledge_manager 在 SmartShellAgent.__init__ 中按需导入，避免 import smart_shell_agent 时拉取 Chroma 等重依赖。
+# KNOWLEDGE_AVAILABLE / KnowledgeService 在 __init__ 内赋到模块上；单测可在构造前设置 KNOWLEDGE_AVAILABLE=False 以跳过知识库加载。
+KnowledgeService = None  # type: ignore
+KNOWLEDGE_AVAILABLE = True  # 构造前为「未探测」；单测设为 False 可跳过 knowledge 包加载
 
 # 导入tab补全模块
 import os
@@ -211,6 +209,23 @@ class SmartShellAgent:
             self.history_manager = HistoryManager(str(config_dir))
             self.config_dir = Path(config_dir)
 
+        setup_app_logging(self.config_dir)
+
+        # 按需加载知识库（Chroma/sentence-transformers）；单测可在构造前将本模块 KNOWLEDGE_AVAILABLE=False 以跳过
+        self.knowledge_manager = None
+        _mod = sys.modules[__name__]
+        if getattr(_mod, "KNOWLEDGE_AVAILABLE", None) is not False:
+            try:
+                from .knowledge_manager import KnowledgeService as _KS, KNOWLEDGE_AVAILABLE as _KAV
+
+                _mod.KnowledgeService = _KS
+                _mod.KNOWLEDGE_AVAILABLE = _KAV
+                if _KAV and _KS is not None:
+                    self.knowledge_manager = _KS(str(self.config_dir))
+            except ImportError:
+                _mod.KnowledgeService = None  # type: ignore
+                _mod.KNOWLEDGE_AVAILABLE = False
+
         # Ephemeral task scripts from action "script" go here (config side, not user cwd).
         self.ai_workspace_dir = self.config_dir / "workspace"
         try:
@@ -241,17 +256,6 @@ class SmartShellAgent:
         # Cached combined script review for non-session scripts (path + content + command hash)
         self._freedom_script_review_entries: Dict[str, Dict[str, Any]] = {}
         self._load_freedom_script_review_cache()
-
-        # 初始化知识库管理器（依赖可用时始终尝试加载）
-        self.knowledge_manager = None
-        if KNOWLEDGE_AVAILABLE:
-            try:
-                self.knowledge_manager = KnowledgeManager(str(config_dir))
-                # 启动时同步知识库
-                self.knowledge_manager.sync_knowledge_base()
-            except Exception as e:
-                print(f"⚠️ 知识库初始化失败: {e}")
-                self.knowledge_manager = None
 
         # 继续初始化其余组件（双模型配置、系统提示词、输入处理器）
         if normal_config and vision_config:
@@ -286,8 +290,7 @@ class SmartShellAgent:
             if self.provider == 'openwebui' and self.openwebui_conf is None and params is not None:
                 self.openwebui_conf = params
 
-        # 验证模型
-        self._validate_model()
+        # 模型可用性校验（ollama.list）可能阻塞网络；见 _schedule_model_validation_background，在后台执行
 
         # 系统提示词
         prompt_path = os.path.join(os.path.dirname(__file__), 'system_prompt.md')
@@ -344,6 +347,35 @@ class SmartShellAgent:
                 print(f"⚠️ 输入处理器初始化失败: {e}")
         else:
             print("⚠️ Tab补全功能不可用")
+
+        self._schedule_model_validation_background()
+
+    def _schedule_model_validation_background(self) -> None:
+        """
+        Ollama 模型列表探测可能阻塞；在后台线程执行，缩短 main 打印模型信息后到出现提示符的等待。
+        非 ollama provider 不启动线程。
+        """
+        ollama_needed = False
+        if getattr(self, "dual_model_mode", False):
+            ollama_needed = (getattr(self, "normal_provider", "") == "ollama") or (
+                getattr(self, "vision_provider", "") == "ollama"
+            )
+        else:
+            ollama_needed = getattr(self, "provider", "") == "ollama"
+        if not ollama_needed:
+            return
+
+        def _run() -> None:
+            try:
+                self._validate_model()
+            except Exception:
+                pass
+
+        threading.Thread(
+            target=_run,
+            name="smartshell-ollama-validate",
+            daemon=True,
+        ).start()
 
     def _reload_skills(self) -> None:
         """Reload skills and derived prompt snippets to support hot updates."""
@@ -665,19 +697,18 @@ class SmartShellAgent:
         return None
 
     def _ensure_knowledge_manager(self) -> bool:
-        """懒加载知识库管理器。依赖不可用或初始化失败时返回 False。"""
-        if self.knowledge_manager is not None:
-            return True
+        """等待知识库服务就绪。依赖不可用或初始化失败时返回 False。"""
         if not KNOWLEDGE_AVAILABLE:
             return False
-        try:
-            self.knowledge_manager = KnowledgeManager(str(self.config_dir))
-            self.knowledge_manager.sync_knowledge_base()
-            return True
-        except Exception as e:
-            print(f"⚠️ 知识库初始化失败: {e}")
-            self.knowledge_manager = None
+        svc = self.knowledge_manager
+        if svc is None:
             return False
+        if not svc.wait_ready(600.0):
+            get_logger("smartshell.knowledge").warning(
+                "等待知识库初始化超时（600s），请稍后在 /knowledge sync 重试"
+            )
+            return False
+        return svc.is_available()
 
     def _save_execution_policy_to_config(self) -> bool:
         """将执行策略保存到 config.json"""
@@ -764,7 +795,10 @@ class SmartShellAgent:
             print("  注意事项：最安全模式，推荐日常默认使用。")
 
     def _print_knowledge_status_details(self) -> None:
-        manager_ready = getattr(self, "knowledge_manager", None) is not None
+        svc = getattr(self, "knowledge_manager", None)
+        manager_ready = bool(
+            svc is not None and getattr(svc, "is_available", lambda: False)()
+        )
         dep_ready = bool(KNOWLEDGE_AVAILABLE)
         print("知识库状态详情：")
         print(f"  feature: 始终启用（依赖可用时加载）")
@@ -774,8 +808,8 @@ class SmartShellAgent:
             try:
                 stats = self.knowledge_manager.get_knowledge_stats()  # type: ignore[union-attr]
                 if isinstance(stats, dict):
-                    docs = stats.get("documents_count", "-")
-                    chunks = stats.get("chunks_count", "-")
+                    docs = stats.get("total_documents", stats.get("documents_count", "-"))
+                    chunks = stats.get("total_chunks", stats.get("chunks_count", "-"))
                     emb = stats.get("embedding_model", "-")
                     print(f"  documents_count: {docs}")
                     print(f"  chunks_count: {chunks}")
@@ -784,7 +818,12 @@ class SmartShellAgent:
                 print(f"  stats_error: {e}")
             print("  注意事项：模型仅在用户明确要求检索或参考知识库时调用 knowledge_search；结果可能过时，关键结论请复核原文件。")
         elif dep_ready and not manager_ready:
-            print("  当前依赖可用但运行时未就绪。可检查 sentence-transformers 与 .smartshell/knowledge/ 后重启。")
+            if svc is not None and not svc.is_ready():
+                print("  知识库正在后台建立索引，请稍候；详情见 smartshell.log。")
+            elif svc is not None and svc.is_ready() and not svc.is_available():
+                print("  知识库初始化失败，请查看 smartshell.log。")
+            else:
+                print("  当前依赖可用但运行时未就绪。请查看日志、sentence-transformers 与 .smartshell/knowledge/。")
         else:
             if sys.version_info >= (3, 14):
                 print("  当前环境不满足知识库依赖（例如 Python 3.14 下 ChromaDB 限制）。请使用 Python 3.12/3.13 并安装依赖。")
@@ -4505,7 +4544,7 @@ big_image.jpg
                 return {"success": False, "error": "知识库不可用（依赖未安装或初始化失败）"}
             
             query = params.get("query", "")
-            top_k = params.get("top_k", 5)
+            top_k = params.get("top_k", params.get("limit", 5))
             
             if not query:
                 return {"success": False, "error": "缺少搜索查询参数"}
@@ -4517,7 +4556,7 @@ big_image.jpg
                     print("=" * 80)
                     for i, result in enumerate(results, 1):
                         print(f"{i}. 来源: {result['source']}")
-                        print(f"   相似度: {1 - result['similarity']:.3f}")
+                        print(f"   相似度: {result['similarity']:.3f}")
                         print(f"   内容: {result['content'][:200]}...")
                         print("-" * 40)
                 else:
@@ -4787,8 +4826,15 @@ big_image.jpg
                 )
             else:
                 print("知识库依赖未就绪；主程序可继续运行。需要时请安装 requirements 中的知识库相关包。")
-        elif not self.knowledge_manager:
-            print("知识库当前不可用（初始化失败）。请检查 sentence-transformers、网络（首次需下载模型）与目录 .smartshell/knowledge/。")
+        elif KNOWLEDGE_AVAILABLE and self.knowledge_manager is not None:
+            svc = self.knowledge_manager
+            if svc.is_ready() and not svc.is_available():
+                lp = get_log_file_path()
+                print(
+                    "知识库初始化失败；请查看日志"
+                    + (f" ({lp})" if lp else "")
+                    + "，并检查 sentence-transformers、网络（首次需下载模型）与 .smartshell/knowledge/。"
+                )
 
         if self.skills:
             _sk_path = self.config_dir / "skills"
@@ -4810,6 +4856,10 @@ big_image.jpg
 
         print("输入 '/help' 查看帮助")
         print("=" * 80)
+        try:
+            sys.stdout.flush()
+        except Exception:
+            pass
 
         import subprocess
         import re
