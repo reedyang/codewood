@@ -14,7 +14,7 @@
 - 📚 **知识库**: 自动索引文档，提供智能检索和上下文增强
 - 🔄 **跨平台**: 支持Windows、Linux、macOS
 - 🎯 **双模型支持**: 可配置不同模型用于普通任务和图像处理
-- 📎 **Agent Skills**: 在 `config.json` 所在目录的 `skills/` 下按 [Anthropic Agent Skills](https://github.com/anthropics/skills/blob/main/README.md) 放置 `SKILL.md`，启动时加载并注入系统提示
+- 📎 **Agent Skills**: 在 `config.json` 所在目录的 `skills/` 下按 [Anthropic Agent Skills](https://github.com/anthropics/skills/blob/main/README.md) 放置 `SKILL.md`，启动时加载并注入系统提示（架构原则见 **[docs/skill-architecture.md](docs/skill-architecture.md)**，便于在其他 AI 编程工具中复用）
 
 ## 🚀 快速开始
 

@@ -44,9 +44,9 @@ It's OK to briefly explain terms if you're in doubt, and feel free to clarify te
 
 ## Creating a skill
 
-### Smart-Shell Execution Gate (Mandatory)
+### Host execution gate (mandatory)
 
-When you are operating in a Smart Shell style environment (tool call protocol with explicit `done` tool), follow these rules strictly:
+When the host uses an explicit tool-call protocol with a terminal `done` tool, follow these rules strictly:
 
 1. **Never finish early.** Do not call `{"tool":"done","args":{}}` until all required deliverables for the user's request are complete.
 2. **Required deliverables for "create a skill"** (unless user explicitly opts out):

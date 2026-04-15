@@ -35,6 +35,7 @@ python "<BUNDLE_ROOT>/scripts/deep_crawl.py" "<url>" --goal "<what to extract>" 
 - `--exclude-pattern` (repeatable): Skip URLs matching any regex.
 - `--timeout-sec` (optional): Request timeout (seconds), default `12`.
 - `--insecure` (optional): Disable TLS verification only when SSL trust chain is broken in local/corporate network.
+- Environment variable **`DEEPCRAWL_SKILL_INSECURE_SSL=1`**: same effect as `--insecure` (optional; host may set).
 
 ## Orchestration (mandatory)
 

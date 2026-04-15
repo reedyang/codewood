@@ -11,6 +11,7 @@ import warnings
 from pathlib import Path
 from typing import List, Dict, Optional, Any, Tuple, Set
 import shutil
+import tempfile
 from datetime import datetime
 
 # call_ai 对 OpenAI/OpenWebUI 使用 verify=False 时 urllib3 会对每条请求发出 InsecureRequestWarning；
@@ -3156,7 +3157,68 @@ big_image.jpg
         except OSError as e:
             print(f"⚠️ 自动删除临时脚本失败 ({invoked}): {e}")
         return None
-    
+
+    def _resolve_model_context_file_env(self, command: str) -> Optional[str]:
+        """
+        If the invoked script lives under a skill bundle whose ``SKILL.md`` YAML
+        frontmatter supplies ``model_context_file_env`` (or ``modelContextFileEnv``),
+        return that env name so the host can set it to a temp file path. Longest
+        ``bundle_root`` wins when multiple skills match.
+        """
+        invoked = self._parse_shell_invoked_script_path(command or "")
+        if invoked is None:
+            return None
+        try:
+            ip = invoked.resolve()
+        except OSError:
+            ip = Path(invoked)
+        best_len = -1
+        best_env: Optional[str] = None
+        for s in self.skills or []:
+            env = getattr(s, "model_context_file_env", None)
+            if not env:
+                continue
+            try:
+                root = Path(s.bundle_root).resolve()
+                ip.relative_to(root)
+            except (ValueError, OSError):
+                continue
+            ln = len(str(root))
+            if ln > best_len:
+                best_len = ln
+                best_env = env
+        return best_env
+
+    def _append_shell_merge_output_path(
+        self,
+        stdout_text: str,
+        return_code: int,
+        merge_path: Optional[str],
+    ) -> str:
+        """
+        After exit 0, if the child wrote UTF-8 text to the temp file path that was
+        exposed via the skill-defined env var, append it to captured stdout for
+        tool ``output``.
+        """
+        if return_code != 0 or not merge_path:
+            return stdout_text
+        path = Path(merge_path)
+        if not path.is_file():
+            return stdout_text
+        marker = "【附加输出（shell merge file）】"
+        if marker in (stdout_text or ""):
+            return stdout_text
+        try:
+            extra = path.read_text(encoding="utf-8")
+        except OSError:
+            return stdout_text
+        if not extra.strip():
+            return stdout_text
+        head = (stdout_text or "").strip()
+        if not head:
+            return marker + "\n" + extra
+        return head + "\n\n---\n" + marker + "\n" + extra
+
     def action_shell_command(
         self,
         command: str,
@@ -3196,128 +3258,152 @@ big_image.jpg
 
         import subprocess
         import sys
+        merge_path: Optional[str] = None
         try:
             run_env = os.environ.copy()
             # Ensure Python child processes can print non-ASCII safely on Windows.
             run_env.setdefault("PYTHONUTF8", "1")
             run_env.setdefault("PYTHONIOENCODING", "utf-8")
             run_env.setdefault("PYTHONUNBUFFERED", "1")
+            merge_env_name = self._resolve_model_context_file_env(command)
+            if merge_env_name:
+                try:
+                    fd, merge_p = tempfile.mkstemp(prefix="modelctx_", suffix=".txt")
+                    os.close(fd)
+                    merge_path = merge_p
+                    run_env[merge_env_name] = merge_path
+                except OSError:
+                    merge_path = None
             # Always run in interactive mode to avoid mis-judging whether stdin is needed.
             interactive = True
-            if interactive:
-                import threading
-                import codecs
-                print("⌨️ shell 交互模式已开启：请按命令提示在终端中输入。")
-                stdout_chunks: List[str] = []
-                stderr_chunks: List[str] = []
-                merge_stderr_for_interactive = (
-                    os.environ.get("SMART_SHELL_SEPARATE_STDERR", "").strip().lower()
-                    not in {"1", "true", "yes", "on"}
-                )
+            return_code = -1
+            out = ""
+            err = ""
+            try:
+                if interactive:
+                    import threading
+                    import codecs
 
-                def _restore_console_after_interactive() -> None:
-                    # Best-effort reset to avoid sticky input modes after Ctrl+C / ANSI-heavy tools.
-                    if sys.platform != "win32":
-                        return
-                    try:
-                        # Reset attributes; ensure cursor visible; disable bracketed paste mode.
-                        _safe_console_write("\x1b[0m\x1b[?25h\x1b[?2004l", sys.stdout, append_newline=False)
-                    except Exception:
-                        pass
+                    print("⌨️ shell 交互模式已开启：请按命令提示在终端中输入。")
+                    stdout_chunks: List[str] = []
+                    stderr_chunks: List[str] = []
+                    merge_stderr_for_interactive = (
+                        os.environ.get("SMART_SHELL_SEPARATE_STDERR", "").strip().lower()
+                        not in {"1", "true", "yes", "on"}
+                    )
 
-                def _stream_and_capture(pipe: Any, target: Any, bucket: List[str]) -> None:
-                    decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
-                    try:
-                        while True:
-                            # Read available bytes with low latency to avoid blocking prompts
-                            # (e.g. input("...")) while preserving carriage returns (\r).
-                            if hasattr(pipe, "read1"):
-                                chunk = pipe.read1(1)
-                            else:
-                                chunk = pipe.read(1)
-                            if not chunk:
-                                break
-                            text_chunk = decoder.decode(chunk, final=False)
-                            if text_chunk:
-                                bucket.append(text_chunk)
-                                _safe_console_write(text_chunk, target, append_newline=False)
-                        tail = decoder.decode(b"", final=True)
-                        if tail:
-                            bucket.append(tail)
-                            _safe_console_write(tail, target, append_newline=False)
-                    except Exception:
-                        pass
-                    finally:
+                    def _restore_console_after_interactive() -> None:
+                        # Best-effort reset to avoid sticky input modes after Ctrl+C / ANSI-heavy tools.
+                        if sys.platform != "win32":
+                            return
                         try:
-                            pipe.close()
+                            # Reset attributes; ensure cursor visible; disable bracketed paste mode.
+                            _safe_console_write(
+                                "\x1b[0m\x1b[?25h\x1b[?2004l",
+                                sys.stdout,
+                                append_newline=False,
+                            )
                         except Exception:
                             pass
 
-                try:
-                    process = subprocess.Popen(
+                    def _stream_and_capture(pipe: Any, target: Any, bucket: List[str]) -> None:
+                        decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+                        try:
+                            while True:
+                                # Read available bytes with low latency to avoid blocking prompts
+                                # (e.g. input("...")) while preserving carriage returns (\r).
+                                if hasattr(pipe, "read1"):
+                                    chunk = pipe.read1(1)
+                                else:
+                                    chunk = pipe.read(1)
+                                if not chunk:
+                                    break
+                                text_chunk = decoder.decode(chunk, final=False)
+                                if text_chunk:
+                                    bucket.append(text_chunk)
+                                    _safe_console_write(text_chunk, target, append_newline=False)
+                            tail = decoder.decode(b"", final=True)
+                            if tail:
+                                bucket.append(tail)
+                                _safe_console_write(tail, target, append_newline=False)
+                        except Exception:
+                            pass
+                        finally:
+                            try:
+                                pipe.close()
+                            except Exception:
+                                pass
+
+                    try:
+                        process = subprocess.Popen(
+                            command,
+                            shell=True,
+                            cwd=str(self.work_directory.resolve()),
+                            env=run_env,
+                            stdin=sys.stdin,
+                            stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT
+                            if merge_stderr_for_interactive
+                            else subprocess.PIPE,
+                            text=False,
+                        )
+                        t_out = threading.Thread(
+                            target=_stream_and_capture,
+                            args=(process.stdout, sys.stdout, stdout_chunks),  # type: ignore[arg-type]
+                            daemon=True,
+                        )
+                        t_out.start()
+                        t_err: Optional[threading.Thread] = None
+                        if not merge_stderr_for_interactive:
+                            t_err = threading.Thread(
+                                target=_stream_and_capture,
+                                args=(process.stderr, sys.stderr, stderr_chunks),  # type: ignore[arg-type]
+                                daemon=True,
+                            )
+                            t_err.start()
+                        return_code = process.wait()
+                        t_out.join(timeout=1.0)
+                        if t_err is not None:
+                            t_err.join(timeout=1.0)
+                        out = "".join(stdout_chunks)
+                        err = "" if merge_stderr_for_interactive else "".join(stderr_chunks)
+                    finally:
+                        _restore_console_after_interactive()
+                else:
+                    run_input = None
+                    if input_data is not None:
+                        run_input = str(input_data).encode("utf-8")
+                    completed = subprocess.run(
                         command,
                         shell=True,
                         cwd=str(self.work_directory.resolve()),
+                        capture_output=True,
                         env=run_env,
-                        stdin=sys.stdin,
-                        stdout=subprocess.PIPE,
-                        stderr=subprocess.STDOUT if merge_stderr_for_interactive else subprocess.PIPE,
-                        text=False,
+                        input=run_input,
                     )
-                    t_out = threading.Thread(
-                        target=_stream_and_capture,
-                        args=(process.stdout, sys.stdout, stdout_chunks),  # type: ignore[arg-type]
-                        daemon=True,
-                    )
-                    t_out.start()
-                    t_err: Optional[threading.Thread] = None
-                    if not merge_stderr_for_interactive:
-                        t_err = threading.Thread(
-                            target=_stream_and_capture,
-                            args=(process.stderr, sys.stderr, stderr_chunks),  # type: ignore[arg-type]
-                            daemon=True,
-                        )
-                        t_err.start()
-                    return_code = process.wait()
-                    t_out.join(timeout=1.0)
-                    if t_err is not None:
-                        t_err.join(timeout=1.0)
-                    out = "".join(stdout_chunks)
-                    err = "" if merge_stderr_for_interactive else "".join(stderr_chunks)
-                finally:
-                    _restore_console_after_interactive()
+                    return_code = completed.returncode
+                    raw_stdout = _decode_subprocess_output(completed.stdout)
+                    out = raw_stdout
+                    err = _decode_subprocess_output(completed.stderr)
+                    if raw_stdout:
+                        _safe_console_write(raw_stdout, sys.stdout)
+                    if err:
+                        _safe_console_write(err, sys.stderr)
+
+                out = self._append_shell_merge_output_path(out, return_code, merge_path)
+
                 base_out: Dict[str, Any] = {
                     "output": out,
                     "stderr": err,
                     "return_code": return_code,
-                    "interactive": True,
+                    "interactive": interactive,
                 }
-            else:
-                run_input = None
-                if input_data is not None:
-                    run_input = str(input_data).encode("utf-8")
-                completed = subprocess.run(
-                    command,
-                    shell=True,
-                    cwd=str(self.work_directory.resolve()),
-                    capture_output=True,
-                    env=run_env,
-                    input=run_input,
-                )
-                out = _decode_subprocess_output(completed.stdout)
-                err = _decode_subprocess_output(completed.stderr)
-                if out:
-                    _safe_console_write(out, sys.stdout)
-                if err:
-                    _safe_console_write(err, sys.stderr)
-
-                return_code = completed.returncode
-                base_out = {
-                    "output": out,
-                    "stderr": err,
-                    "return_code": return_code,
-                    "interactive": False,
-                }
+            finally:
+                if merge_path:
+                    try:
+                        os.unlink(merge_path)
+                    except OSError:
+                        pass
 
             if return_code == 0:
                 self._register_outputs_from_shell_command(command)
@@ -5958,24 +6044,15 @@ big_image.jpg
         self, tool_name: str, args: Dict[str, Any], result: Dict[str, Any]
     ) -> str:
         """
-        Build extra guardrails for outputs that must be synthesized for the user
-        before declaring done (e.g. raw web-search/script dumps).
+        When shell output is very large or includes merged file content (see
+        ``_append_shell_merge_output_path``), ask the model to synthesize for the user.
         """
         if tool_name != "shell":
             return ""
         output_text = str(result.get("output") or "")
-        markers = (
-            "【检索摘要】",
-            "【正文摘录与要点】",
-            "【回答】",
-            "【AI 审核】",
-            "最终URL：",
-            "链接：http",
-            "链接：https",
-        )
-        has_research_markers = any(m in output_text for m in markers)
-        looks_like_long_raw_dump = len(output_text) >= 4000
-        if not (has_research_markers or looks_like_long_raw_dump):
+        # Must match marker in _append_shell_merge_output_path (generic bridge output).
+        merge_marker = "【附加输出（shell merge file）】"
+        if merge_marker not in output_text and len(output_text) < 4000:
             return ""
         return (
             "你刚得到的是原始信息输出。下一条回复必须先做“面向用户的结果提炼”，"
@@ -6036,53 +6113,6 @@ big_image.jpg
             ):
                 return {"skill_id": sid, "name": id_to_name.get(sid, sid)}
         return None
-
-    def _task_requires_fresh_market_data(self, task: str) -> bool:
-        t = (task or "").lower()
-        if not t:
-            return False
-        keys = (
-            "最近",
-            "近30天",
-            "近一个月",
-            "近期",
-            "行情",
-            "走势",
-            "市值",
-            "预测",
-            "a股",
-            "美股",
-            "港股",
-            "标普",
-            "恒生",
-        )
-        return any(k in t for k in keys)
-
-    def _recent_evidence_insufficient(self) -> bool:
-        recent = self.operation_results[-8:] if self.operation_results else []
-        for wrap in reversed(recent):
-            res = wrap.get("result") or {}
-            parts = []
-            for k in ("output", "message", "error", "stderr"):
-                v = res.get(k)
-                if isinstance(v, str) and v:
-                    parts.append(v)
-            blob = "\n".join(parts)
-            if "近期待证据不足" in blob:
-                return True
-        return False
-
-    def _response_has_hard_numeric_claims(self, text: str) -> bool:
-        if not text:
-            return False
-        patterns = [
-            r"\d+(?:\.\d+)?\s*(?:%|％|点|亿元|亿港元|万美元|美元|港元|元|bp|基点)",
-            r"\d+(?:\.\d+)?\s*[-~至到]\s*\d+(?:\.\d+)?",
-        ]
-        hits = 0
-        for p in patterns:
-            hits += len(re.findall(p, text, flags=re.IGNORECASE))
-        return hits >= 2
 
     def _is_executable_file(self, user_input: str) -> bool:
         """

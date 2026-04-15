@@ -2,7 +2,8 @@
 # -*- coding: utf-8 -*-
 """
 Baidu web search helper: SERP first screen, optional page fetches, extractive summary.
-Full report to stdout only; uses local cache under <skill_dir>/.cache/
+When the host sets BAIDU_SKILL_MERGE_OUTPUT to a file path (see ``model_context_file_env``
+in ``SKILL.md`` frontmatter), the full report is written there. Otherwise prints to stdout.
 """
 
 from __future__ import annotations
@@ -41,6 +42,11 @@ def _tls_verify_bundle() -> Optional[str]:
         return None
 
 # --- Constants (generic; not domain-specific) ---
+# Must match skills/baidu/SKILL.md frontmatter model_context_file_env
+MERGE_OUTPUT_ENV_VAR = "BAIDU_SKILL_MERGE_OUTPUT"
+# Optional toggles (host-agnostic; not tied to any single agent product).
+ENV_VERBOSE = "BAIDU_SKILL_VERBOSE"
+ENV_INSECURE_SSL = "BAIDU_SKILL_INSECURE_SSL"
 CACHE_DIR_NAME = ".cache"
 CACHE_MAX_ENTRIES = 20
 CACHE_TTL_SEC = 30 * 60
@@ -64,6 +70,26 @@ def _cache_dir() -> Path:
     d = _skill_root() / CACHE_DIR_NAME
     d.mkdir(parents=True, exist_ok=True)
     return d
+
+
+def _emit_report(report: str) -> None:
+    """Host sets MERGE_OUTPUT_ENV_VAR to a temp file; standalone CLI prints to stdout."""
+    path = os.environ.get(MERGE_OUTPUT_ENV_VAR, "").strip()
+    if path:
+        try:
+            Path(path).write_text(report, encoding="utf-8")
+        except OSError:
+            pass
+        return
+    print(report)
+
+
+def _env_truthy(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _env_verbose() -> bool:
+    return _env_truthy(ENV_VERBOSE)
 
 
 def _cache_path() -> Path:
@@ -248,12 +274,13 @@ def _fetch(url: str, verify_ssl: bool = True) -> Tuple[str, str]:
         if not verify_ssl:
             raise RuntimeError(f"请求失败: {e}") from e
         if not _ssl_insecure_fallback_printed:
-            print(
-                "【警告】HTTPS 证书校验失败（常见于 Python 未关联 CA、或企业代理替换证书），"
-                "已自动改为不校验证书重试。可安装 certifi、配置系统/代理 CA，"
-                "或设置环境变量 SMARTSHELL_BAIDU_INSECURE_SSL=1 以始终跳过校验。",
-                file=sys.stderr,
-            )
+            if _env_verbose():
+                print(
+                    "【警告】HTTPS 证书校验失败（常见于 Python 未关联 CA、或企业代理替换证书），"
+                    "已自动改为不校验证书重试。可安装 certifi、配置系统/代理 CA，"
+                    "或设置环境变量 BAIDU_SKILL_INSECURE_SSL=1 以始终跳过校验。",
+                    file=sys.stderr,
+                )
             _ssl_insecure_fallback_printed = True
         urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
         try:
@@ -636,7 +663,8 @@ def _configure_stdio() -> None:
 def main() -> None:
     _configure_stdio()
     parser = argparse.ArgumentParser(
-        description="Baidu SERP + optional page fetch + extractive summary (stdout only)."
+        description="Baidu SERP + optional page fetch + extractive summary. "
+        "If BAIDU_SKILL_MERGE_OUTPUT is set, write there; else stdout."
     )
     parser.add_argument("query", help="Search query (quote if spaces)")
     parser.add_argument(
@@ -662,11 +690,7 @@ def main() -> None:
         raise SystemExit(2)
 
     verify_ssl = not args.insecure
-    if os.environ.get("SMARTSHELL_BAIDU_INSECURE_SSL", "").strip().lower() in (
-        "1",
-        "true",
-        "yes",
-    ):
+    if _env_truthy(ENV_INSECURE_SSL):
         verify_ssl = False
     if not verify_ssl:
         urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -674,7 +698,7 @@ def main() -> None:
     out = run_search(
         args.query, args.max_pages, use_cache=not args.no_cache, verify_ssl=verify_ssl
     )
-    print(out)
+    _emit_report(out)
 
 
 if __name__ == "__main__":

@@ -10,11 +10,34 @@ See: https://github.com/anthropics/skills/blob/main/README.md
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 import yaml
+
+
+def _parse_model_context_file_env_from_meta(meta: Optional[dict]) -> Optional[str]:
+    """
+    Optional YAML frontmatter in ``SKILL.md`` may declare how a host passes a temp
+    file path to child processes (extended model context). Keys
+    ``model_context_file_env`` or ``modelContextFileEnv`` = env var name.
+    """
+    if not meta or not isinstance(meta, dict):
+        return None
+    v = meta.get("model_context_file_env")
+    if v is None:
+        v = meta.get("modelContextFileEnv")
+    if not isinstance(v, str):
+        return None
+    s = v.strip()
+    if not s:
+        return None
+    if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", s):
+        print(f"⚠️ SKILL.md frontmatter 中 model_context_file_env 无效: {s!r}，已忽略")
+        return None
+    return s
 
 
 @dataclass(frozen=True)
@@ -27,6 +50,8 @@ class SkillRecord:
     skill_id: str
     # Absolute path to the skill directory (sibling of SKILL.md); bundled scripts live under here.
     bundle_root: str
+    # From optional SKILL.md YAML frontmatter (model_context_file_env): host-supplied temp file path env.
+    model_context_file_env: Optional[str] = None
 
 
 def _split_frontmatter(text: str) -> Tuple[Optional[dict], str]:
@@ -67,6 +92,7 @@ def _scan_skills_root(skills_root: Path) -> List[SkillRecord]:
             continue
 
         meta, body = _split_frontmatter(raw)
+        bundle_path = child.resolve()
         if meta is None:
             # No valid frontmatter: use whole file as body, id from folder name
             if raw.lstrip("\ufeff").startswith("---"):
@@ -78,7 +104,8 @@ def _scan_skills_root(skills_root: Path) -> List[SkillRecord]:
                     description="",
                     body=raw.strip(),
                     skill_id=child.name,
-                    bundle_root=str(child.resolve()),
+                    bundle_root=str(bundle_path),
+                    model_context_file_env=None,
                 )
             )
             continue
@@ -94,13 +121,15 @@ def _scan_skills_root(skills_root: Path) -> List[SkillRecord]:
         else:
             desc_s = str(desc).strip()
 
+        bridge_env = _parse_model_context_file_env_from_meta(meta)
         out.append(
             SkillRecord(
                 name=name,
                 description=desc_s,
                 body=body.strip(),
                 skill_id=child.name,
-                bundle_root=str(child.resolve()),
+                bundle_root=str(bundle_path),
+                model_context_file_env=bridge_env,
             )
         )
     return out
@@ -165,8 +194,7 @@ def build_skills_routing_prefix(skills: List[SkillRecord]) -> str:
         "## Agent Skills 索引（系统提示最前，必读）",
         "",
         "下列技能按优先级由低到高合并加载：`workspace/skills/` → 内建 `skills/`（与 `main.py` 同目录）→ `config.json` 同目录下的外部 `skills/`；**同名技能以后者覆盖前者**。",
-        "**在输出任何 JSON 操作指令之前**：若当前用户任务与下文中某项「简述」在语义上相符（含同义表述与相关子任务，例如「CSV/表格/Excel/xlsx/转表」与表格处理类技能），你必须：",
-        "**表格类任务特别提示**：若已加载名为 **`xlsx`** 的技能，则「CSV/TSV 转 xlsx、编辑表格、读写 `.xlsx`」等均属该技能；打开其正文后必须先按其中的 **Task routing (mandatory)** 选工具。**禁止**用该技能包内的 `scripts/recalc.py` 作为 CSV→xlsx 的第一步（`recalc.py` 仅用于已有 `.xlsx` 内公式的重算）。CSV→xlsx 应使用 **pandas**（`read_csv` + `to_excel`）或等价 `script`。",
+        "**在输出任何 JSON 操作指令之前**：若当前用户任务与下文中某项「简述」在语义上相符（含同义表述与相关子任务），你必须：",
         "",
         "1. 在本提示靠后的 **「Agent Skills（详细内容）」** 一节中找到对应技能；",
         "2. **严格按该技能正文**中的步骤、推荐工具、脚本形态与约束执行，不得擅自改用与技能冲突的捷径；",
@@ -219,6 +247,12 @@ def build_skills_system_append(skills: List[SkillRecord]) -> str:
             lines.append("**Detected bundled `scripts/*.py` (use these full paths in `shell`):**")
             for p in bundled:
                 lines.append(f"- `{p}`")
+            lines.append("")
+        if s.model_context_file_env:
+            lines.append(
+                f"**SKILL.md frontmatter** (`model_context_file_env`): `{s.model_context_file_env}` — "
+                "hosts that support this contract may set this env var to a temp file path (see tools_prompt)."
+            )
             lines.append("")
         lines.append(s.body)
         lines.append("")
