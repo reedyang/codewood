@@ -246,9 +246,7 @@ class SmartShellAgent:
         self.knowledge_manager = None
         if KNOWLEDGE_AVAILABLE:
             try:
-                # 使用轻量级的中文向量模型
-                embedding_model = "nomic-embed-text"
-                self.knowledge_manager = KnowledgeManager(str(config_dir), embedding_model)
+                self.knowledge_manager = KnowledgeManager(str(config_dir))
                 # 启动时同步知识库
                 self.knowledge_manager.sync_knowledge_base()
             except Exception as e:
@@ -673,8 +671,7 @@ class SmartShellAgent:
         if not KNOWLEDGE_AVAILABLE:
             return False
         try:
-            embedding_model = "nomic-embed-text"
-            self.knowledge_manager = KnowledgeManager(str(self.config_dir), embedding_model)
+            self.knowledge_manager = KnowledgeManager(str(self.config_dir))
             self.knowledge_manager.sync_knowledge_base()
             return True
         except Exception as e:
@@ -787,7 +784,7 @@ class SmartShellAgent:
                 print(f"  stats_error: {e}")
             print("  注意事项：模型仅在用户明确要求检索或参考知识库时调用 knowledge_search；结果可能过时，关键结论请复核原文件。")
         elif dep_ready and not manager_ready:
-            print("  当前依赖可用但运行时未就绪。可检查 Ollama/嵌入模型与 .smartshell/knowledge/ 后重启。")
+            print("  当前依赖可用但运行时未就绪。可检查 sentence-transformers 与 .smartshell/knowledge/ 后重启。")
         else:
             if sys.version_info >= (3, 14):
                 print("  当前环境不满足知识库依赖（例如 Python 3.14 下 ChromaDB 限制）。请使用 Python 3.12/3.13 并安装依赖。")
@@ -4791,7 +4788,7 @@ big_image.jpg
             else:
                 print("知识库依赖未就绪；主程序可继续运行。需要时请安装 requirements 中的知识库相关包。")
         elif not self.knowledge_manager:
-            print("知识库当前不可用（初始化失败）。请检查 Ollama/嵌入模型与目录 .smartshell/knowledge/。")
+            print("知识库当前不可用（初始化失败）。请检查 sentence-transformers、网络（首次需下载模型）与目录 .smartshell/knowledge/。")
 
         if self.skills:
             _sk_path = self.config_dir / "skills"

@@ -21,8 +21,8 @@
 ### 环境要求
 
 - Python 3.8+（**知识库功能**建议使用 Python 3.12 或 3.13；Python 3.14 下 ChromaDB 存在兼容性问题，主程序可运行但知识库不可用）
-- 网络连接（用于AI模型调用）
-- Ollama（安装 nomic-embed-text 模型用于知识库向量化，可选）
+- 网络连接（用于AI模型调用；知识库首次索引时会从 Hugging Face 下载本地嵌入模型，可事先配置镜像或离线缓存）
+- **知识库向量化**：使用本地 `sentence-transformers`（默认 `all-MiniLM-L6-v2`）
 
 ### 安装依赖
 
@@ -307,7 +307,8 @@ brew install ffmpeg      # macOS
 ### 知识库问题
 
 - 确保已安装知识库相关依赖：`pip install chromadb langchain langchain-experimental sentence-transformers`
-- 对于知识库向量化，需要安装并运行Ollama服务
+- 知识库嵌入在本地通过 `sentence-transformers` 完成，**不需要**为知识库单独安装或运行 Ollama；首次使用需能下载默认模型（或提前配置 Hugging Face 缓存/镜像）
+- 若从旧版本（曾用其他嵌入方式）升级后检索异常，可删除配置目录下的 `knowledge_db/` 后执行 `/knowledge sync` 全量重建索引
 - 确保知识库目录 `.smartshell/knowledge/` 存在且有读取权限
 - 如果知识库初始化失败，程序会继续运行但不会使用知识库功能
 
