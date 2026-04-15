@@ -420,19 +420,86 @@ class SmartShellAgent:
         except Exception:
             return str(self.work_directory)
 
-    def _memory_rows_for_prompt(self, user_input: str) -> List[Dict[str, Any]]:
-        """合并语义检索与同作用域近期记忆（按 last_access，见 memory_manager.list_recent）。
+    @staticmethod
+    def _memory_row_priority_key(r: Dict[str, Any]) -> Tuple[int, int]:
+        """preference + durable 排在前列，便于身份/称呼类条目占满注入预算。"""
+        mt = (r.get("memory_type") or "").lower()
+        tier = (r.get("tier") or "").lower()
+        pref = 0 if mt == "preference" else 1
+        tr = 0 if tier == "durable" else (1 if tier == "episodic" else 2)
+        return (pref, tr)
 
-        短句与部分已存记忆在向量上可能不相似，仅靠 Chroma 会漏检；用「语义 + 近期」并集、按 id 去重，
-        不依赖问句关键词或规则表。
+    @staticmethod
+    def _user_input_emphasizes_memory_or_identity(user_input: str) -> bool:
+        """用户显式要「查记忆」或追问昵称/称呼时，追加向量检索并提高身份类命中。"""
+        s = (user_input or "").strip()
+        if not s:
+            return False
+        needles = (
+            "检索记忆",
+            "根据记忆",
+            "查记忆",
+            "你的记忆",
+            "经验记忆",
+            "不记得",
+            "给你起过",
+            "起的名字",
+            "昵称",
+            "称呼",
+            "我是谁",
+            "你是谁",
+            "我叫什么",
+            "之前给你",
+            "约定过",
+            "还记得吗",
+        )
+        return any(x in s for x in needles)
+
+    def _memory_rows_for_prompt(self, user_input: str) -> List[Dict[str, Any]]:
+        """合并语义检索、可选身份增强检索、与同作用域近期记忆（按 last_access）。
+
+        短句与部分已存记忆在向量上可能不相似，仅靠 Chroma 会漏检；用「语义 + 近期」并集、按 id 去重。
+        当用户显式追问记忆/昵称时，追加固定检索词以减轻「身份条目不相似」导致的漏检。
         """
         q = (user_input or "").strip()[:2000]
         if not q:
             return []
         sk = self._memory_scope_key()
+
+        rows_boost: List[Dict[str, Any]] = []
+        if self._user_input_emphasizes_memory_or_identity(q):
+            for bq in (
+                "用户偏好 昵称 名字 称呼 助手身份 起名 约定",
+                "preference nickname identity assistant name 称呼",
+            ):
+                rows_boost.extend(
+                    self.memory_service.search_memories(bq, top_k=5, scope_key=sk)
+                )
+        seen_b: Set[str] = set()
+        boost_uniq: List[Dict[str, Any]] = []
+        for r in rows_boost:
+            rid = str(r.get("id") or "").strip()
+            if rid and rid not in seen_b:
+                seen_b.add(rid)
+                boost_uniq.append(r)
+        rows_boost = boost_uniq
+
         rows_sem = self.memory_service.search_memories(q, top_k=6, scope_key=sk)
-        seen: Set[str] = {str(r.get("id") or "").strip() for r in rows_sem if r.get("id")}
-        merged: List[Dict[str, Any]] = list(rows_sem)
+        seen: Set[str] = set()
+        merged: List[Dict[str, Any]] = []
+
+        def _add_rows(rs: List[Dict[str, Any]]) -> None:
+            for r in rs:
+                if len(merged) >= 12:
+                    return
+                rid = str(r.get("id") or "").strip()
+                if not rid or rid in seen:
+                    continue
+                merged.append(r)
+                seen.add(rid)
+
+        _add_rows(rows_boost)
+        _add_rows(rows_sem)
 
         def _from_recent_item(item: Dict[str, Any]) -> Dict[str, Any]:
             prev = item.get("preview") or ""
@@ -446,7 +513,7 @@ class SmartShellAgent:
                 "system_note": None,
             }
 
-        recent = self.memory_service.list_recent(limit=14, scope_key=sk)
+        recent = self.memory_service.list_recent(limit=20, scope_key=sk)
         for item in recent:
             if len(merged) >= 12:
                 break
@@ -456,6 +523,7 @@ class SmartShellAgent:
             merged.append(_from_recent_item(item))
             seen.add(rid)
 
+        merged.sort(key=self._memory_row_priority_key)
         return merged[:12]
 
     def _memory_context_for_prompt(self, user_input: str, max_chars: int = 2400) -> str:
