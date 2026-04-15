@@ -746,7 +746,7 @@
     "type": "function",
     "function": {
       "name": "knowledge_search",
-      "description": "使用查询语句搜索知识库。",
+      "description": "在本地知识库中语义检索（仅当用户本轮明确需要）。禁止：用户未明确要求检索知识库、参考知识库/本地文档库信息时，不得调用。必须：用户明确要求「检索知识库」「在知识库里查」「参考知识库中的资料」或清晰等价表述时，必须先调用本工具取得相关片段，再回答或继续其他步骤；禁止在未调用本工具的情况下声称已依据知识库。query 填检索主题或用户关心的要点；可选 limit 限制条数。",
       "parameters": {
         "type": "object",
         "properties": {
@@ -757,28 +757,6 @@
             "type": "integer"
           }
         }
-      }
-    }
-  },
-  {
-    "type": "function",
-    "function": {
-      "name": "knowledge_on",
-      "description": "为后续轮次开启知识检索。",
-      "parameters": {
-        "type": "object",
-        "properties": {}
-      }
-    }
-  },
-  {
-    "type": "function",
-    "function": {
-      "name": "knowledge_off",
-      "description": "为后续轮次关闭知识检索。",
-      "parameters": {
-        "type": "object",
-        "properties": {}
       }
     }
   },

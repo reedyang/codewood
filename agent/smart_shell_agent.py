@@ -218,21 +218,19 @@ class SmartShellAgent:
         except OSError as e:
             print(f"⚠️ 无法创建 AI workspace 目录 {self.ai_workspace_dir}: {e}")
 
-        # 加载配置以确定知识库开关（默认开启）、执行策略（默认 confirmation）
-        self.knowledge_enabled = True
+        # 加载配置（执行策略默认 confirmation）；知识库在依赖可用时始终启用，不再提供开关
         self.execution_policy = "confirmation"
         try:
             cfg_path = self.config_dir / "config.json"
             if cfg_path.exists():
                 with open(cfg_path, "r", encoding="utf-8") as f:
                     cfg_data = json.load(f)
-                self.knowledge_enabled = bool(cfg_data.get("knowledge_enabled", True))
                 pol = str(cfg_data.get("execution_policy", "confirmation")).strip().lower()
                 if pol not in ("unlimited", "moderate", "confirmation"):
                     pol = "confirmation"
                 self.execution_policy = pol
         except Exception as e:
-            print(f"⚠️ 读取配置中的知识库/执行策略失败，使用默认值: {e}")
+            print(f"⚠️ 读取配置中的执行策略失败，使用默认值: {e}")
 
         # Per-target allowlist for y/n confirmations (see confirm_allowlist.json)
         self._allowlist_shell_paths: Dict[str, str] = {}
@@ -244,9 +242,9 @@ class SmartShellAgent:
         self._freedom_script_review_entries: Dict[str, Dict[str, Any]] = {}
         self._load_freedom_script_review_cache()
 
-        # 初始化知识库管理器
+        # 初始化知识库管理器（依赖可用时始终尝试加载）
         self.knowledge_manager = None
-        if KNOWLEDGE_AVAILABLE and self.knowledge_enabled:
+        if KNOWLEDGE_AVAILABLE:
             try:
                 # 使用轻量级的中文向量模型
                 embedding_model = "nomic-embed-text"
@@ -668,53 +666,21 @@ class SmartShellAgent:
                     return {"skill_id": sid, "name": sname or sid, "rest": cleaned}
         return None
 
-    def _save_knowledge_enabled_to_config(self) -> bool:
-        """将知识库开关状态保存到 config.json"""
-        try:
-            cfg_path = self.config_dir / "config.json"
-            cfg_data = {}
-            if cfg_path.exists():
-                try:
-                    with open(cfg_path, "r", encoding="utf-8") as f:
-                        cfg_data = json.load(f) or {}
-                except Exception:
-                    cfg_data = {}
-            cfg_data["knowledge_enabled"] = bool(self.knowledge_enabled)
-            with open(cfg_path, "w", encoding="utf-8") as f:
-                json.dump(cfg_data, f, ensure_ascii=False, indent=2)
+    def _ensure_knowledge_manager(self) -> bool:
+        """懒加载知识库管理器。依赖不可用或初始化失败时返回 False。"""
+        if self.knowledge_manager is not None:
             return True
-        except Exception as e:
-            print(f"⚠️ 保存知识库开关到配置失败: {e}")
-            return False
-
-    def _enable_knowledge(self) -> Dict[str, Any]:
-        """开启知识库功能，持久化并即时生效"""
-        if self.knowledge_enabled and self.knowledge_manager is not None:
-            return {"success": True, "message": "知识库已处于开启状态"}
-        self.knowledge_enabled = True
-        saved = self._save_knowledge_enabled_to_config()
         if not KNOWLEDGE_AVAILABLE:
-            if sys.version_info >= (3, 14):
-                return {"success": False, "error": "知识库依赖 ChromaDB 当前不兼容 Python 3.14，请使用 Python 3.12 或 3.13 以启用知识库"}
-            return {"success": False, "error": "缺少知识库依赖，无法启用（请执行 pip install -r requirements.txt）"}
+            return False
         try:
             embedding_model = "nomic-embed-text"
             self.knowledge_manager = KnowledgeManager(str(self.config_dir), embedding_model)
             self.knowledge_manager.sync_knowledge_base()
-            return {"success": True, "message": f"知识库已开启{'（已保存配置）' if saved else ''}"}
+            return True
         except Exception as e:
+            print(f"⚠️ 知识库初始化失败: {e}")
             self.knowledge_manager = None
-            return {"success": False, "error": f"启用知识库失败: {e}"}
-
-    def _disable_knowledge(self) -> Dict[str, Any]:
-        """关闭知识库功能，持久化并即时生效"""
-        if not self.knowledge_enabled and self.knowledge_manager is None:
-            return {"success": True, "message": "知识库已处于关闭状态"}
-        self.knowledge_enabled = False
-        saved = self._save_knowledge_enabled_to_config()
-        # 释放引用（让底层资源由GC清理）
-        self.knowledge_manager = None
-        return {"success": True, "message": f"知识库已关闭{'（已保存配置）' if saved else ''}"}
+            return False
 
     def _save_execution_policy_to_config(self) -> bool:
         """将执行策略保存到 config.json"""
@@ -801,14 +767,13 @@ class SmartShellAgent:
             print("  注意事项：最安全模式，推荐日常默认使用。")
 
     def _print_knowledge_status_details(self) -> None:
-        enabled = bool(getattr(self, "knowledge_enabled", False))
         manager_ready = getattr(self, "knowledge_manager", None) is not None
         dep_ready = bool(KNOWLEDGE_AVAILABLE)
         print("知识库状态详情：")
-        print(f"  knowledge_enabled: {'on' if enabled else 'off'}")
+        print(f"  feature: 始终启用（依赖可用时加载）")
         print(f"  runtime_ready: {'yes' if manager_ready else 'no'}")
         print(f"  dependency_ready: {'yes' if dep_ready else 'no'}")
-        if enabled and manager_ready:
+        if dep_ready and manager_ready:
             try:
                 stats = self.knowledge_manager.get_knowledge_stats()  # type: ignore[union-attr]
                 if isinstance(stats, dict):
@@ -820,13 +785,14 @@ class SmartShellAgent:
                     print(f"  embedding_model: {emb}")
             except Exception as e:
                 print(f"  stats_error: {e}")
-            print("  注意事项：检索结果可能过时或不完整，关键结论请回到原文件复核。")
-        elif enabled and not manager_ready:
-            print("  当前为“已开启但不可用”状态。可先 `/knowledge off` 再 `/knowledge on` 尝试恢复。")
-            print("  注意事项：依赖异常时不会提供知识库增强检索。")
+            print("  注意事项：模型仅在用户明确要求检索或参考知识库时调用 knowledge_search；结果可能过时，关键结论请复核原文件。")
+        elif dep_ready and not manager_ready:
+            print("  当前依赖可用但运行时未就绪。可检查 Ollama/嵌入模型与 .smartshell/knowledge/ 后重启。")
         else:
-            print("  当前知识库处于关闭状态。可用 `/knowledge on` 开启。")
-            print("  注意事项：关闭后 AI 仅基于当前输入与上下文回答。")
+            if sys.version_info >= (3, 14):
+                print("  当前环境不满足知识库依赖（例如 Python 3.14 下 ChromaDB 限制）。请使用 Python 3.12/3.13 并安装依赖。")
+            else:
+                print("  知识库依赖未安装或加载失败。请安装 requirements 中的知识库相关包。")
 
     def _confirm_allowlist_path(self) -> Path:
         return self.config_dir / "confirm_allowlist.json"
@@ -1329,7 +1295,6 @@ class SmartShellAgent:
             payload,
             context="",
             stream=False,
-            include_knowledge=False,
             freedom_combined_review=True,
         )
         if not isinstance(raw, str):
@@ -1350,7 +1315,7 @@ class SmartShellAgent:
     def _ai_assess_reversible(self, command: Dict[str, Any]) -> Tuple[bool, str]:
         payload = json.dumps(command, ensure_ascii=False)
         raw = self.call_ai(
-            payload, context="", stream=False, include_knowledge=False, minimal_classifier=True
+            payload, context="", stream=False, minimal_classifier=True
         )
         if not isinstance(raw, str):
             return False, "模型返回类型异常"
@@ -1535,7 +1500,6 @@ class SmartShellAgent:
         user_input: str,
         context: str = "",
         stream: bool = False,
-        include_knowledge: bool = True,
         minimal_classifier: bool = False,
         freedom_combined_review: bool = False,
         return_message: bool = False,
@@ -1638,38 +1602,11 @@ class SmartShellAgent:
                 for msg in self.conversation_history[-5:]:
                     messages.append(msg)
 
-                # 从知识库获取相关上下文（可开关）
-                knowledge_context = ""
-                if include_knowledge:
-                    # 若允许查询但管理器为空，尝试懒加载初始化一次（需开关开启且依赖可用）
-                    if self.knowledge_manager is None and getattr(self, 'knowledge_enabled', True) and KNOWLEDGE_AVAILABLE:
-                        try:
-                            embedding_model = "nomic-embed-text"
-                            self.knowledge_manager = KnowledgeManager(str(self.config_dir), embedding_model)
-                            # 尝试同步（若已同步会做快速检查）
-                            self.knowledge_manager.sync_knowledge_base()
-                        except Exception as e:
-                            # 初始化失败则保持为空，并继续不使用知识库
-                            self.knowledge_manager = None
-                            print(f"⚠️ 知识库懒加载初始化失败: {e}")
-                    if self.knowledge_manager:
-                        try:
-                            print("🔎 正在查询知识库...")
-                            knowledge_context = self.knowledge_manager.get_knowledge_context(user_input)
-                            if knowledge_context:
-                                print("📚 从知识库检索到相关信息")
-                            else:
-                                print("ℹ️ 知识库未找到相关信息")
-                        except Exception as e:
-                            print(f"⚠️ 知识库检索失败: {e}")
-
                 current_input = f"当前工作目录: {self.work_directory}\n"
                 if self.operation_results:
                     current_input += f"最近的操作结果: {self.operation_results[-1]}\n"
                 if context:
                     current_input += f"操作上下文: {context}\n"
-                if knowledge_context and knowledge_context != "":
-                    current_input += f"知识库相关信息:\n{knowledge_context}\n"
                 current_input += f"用户输入: {user_input}"
                 messages.append({"role": "user", "content": current_input})
 
@@ -1949,7 +1886,7 @@ class SmartShellAgent:
                     return ai_response
             else:
                 # 对于不支持多模态的提供者，回退到文本模式
-                return f"⚠️ 警告：{provider} 提供者不支持多模态功能，回退到文本模式。\n" + self.call_ai(user_input, context, stream, include_knowledge=False)
+                return f"⚠️ 警告：{provider} 提供者不支持多模态功能，回退到文本模式。\n" + self.call_ai(user_input, context, stream)
                 
         except Exception as e:
             error_msg = f"调用多模态大模型API时出错: {str(e)} (provider: {provider}, model: {model_name})"
@@ -2038,7 +1975,7 @@ big_image.jpg
 现在开始分析："""
             
             # 调用AI进行筛选（不查询知识库）
-            ai_response = self.call_ai(ai_prompt, include_knowledge=False)
+            ai_response = self.call_ai(ai_prompt)
             
             # 解析AI回复，提取符合条件的文件名
             if "无符合条件的文件" in ai_response:
@@ -2417,7 +2354,7 @@ big_image.jpg
             except Exception as e:
                 return {"success": False, "error": f"无法读取文件内容: {str(e)}"}
             prompt = f"请用中文简要总结以下文件内容（200字以内）：\n{content}"
-            summary = self.call_ai(prompt, include_knowledge=False)
+            summary = self.call_ai(prompt)
             return {"success": True, "summary": summary, "file": str(abs_path)}
         except Exception as e:
             return {"success": False, "error": f"总结文件失败: {str(e)}"}
@@ -4532,11 +4469,8 @@ big_image.jpg
 
         elif action == "knowledge_sync":
             """同步知识库"""
-            if not self.knowledge_enabled:
-                return {"success": False, "error": "知识库功能已关闭，可使用 '/knowledge on' 开启"}
-            if not self.knowledge_manager:
-                return {"success": False, "error": "知识库功能不可用"}
-            
+            if not self._ensure_knowledge_manager():
+                return {"success": False, "error": "知识库不可用（依赖未安装或初始化失败）"}
             try:
                 self.knowledge_manager.sync_knowledge_base()
                 return {"success": True, "message": "知识库同步完成"}
@@ -4545,10 +4479,8 @@ big_image.jpg
 
         elif action == "knowledge_stats":
             """获取知识库统计信息"""
-            if not self.knowledge_enabled:
-                return {"success": False, "error": "知识库功能已关闭，可使用 '/knowledge on' 开启"}
-            if not self.knowledge_manager:
-                return {"success": False, "error": "知识库功能不可用"}
+            if not self._ensure_knowledge_manager():
+                return {"success": False, "error": "知识库不可用（依赖未安装或初始化失败）"}
             
             try:
                 stats = self.knowledge_manager.get_knowledge_stats()
@@ -4572,10 +4504,8 @@ big_image.jpg
 
         elif action == "knowledge_search":
             """搜索知识库"""
-            if not self.knowledge_enabled:
-                return {"success": False, "error": "知识库功能已关闭，可使用 '/knowledge on' 开启"}
-            if not self.knowledge_manager:
-                return {"success": False, "error": "知识库功能不可用"}
+            if not self._ensure_knowledge_manager():
+                return {"success": False, "error": "知识库不可用（依赖未安装或初始化失败）"}
             
             query = params.get("query", "")
             top_k = params.get("top_k", 5)
@@ -4599,22 +4529,6 @@ big_image.jpg
                 return {"success": True, "results": results, "query": query}
             except Exception as e:
                 return {"success": False, "error": f"知识库搜索失败: {str(e)}"}
-
-        elif action == "knowledge_enable" or action == "knowledge_on":
-            result = self._enable_knowledge()
-            if result.get("success"):
-                print(f"✅ {result.get('message', '知识库已开启')}")
-            else:
-                print(f"❌ {result.get('error', '开启失败')}")
-            return result
-
-        elif action == "knowledge_disable" or action == "knowledge_off":
-            result = self._disable_knowledge()
-            if result.get("success"):
-                print(f"✅ {result.get('message', '知识库已关闭')}")
-            else:
-                print(f"❌ {result.get('error', '关闭失败')}")
-            return result
 
         elif action == "execution_policy_set":
             result = self._set_execution_policy(arguments.get("policy", ""))
@@ -4868,15 +4782,16 @@ big_image.jpg
         import os
         os_name = os.name
 
-        # 启动时提示知识库状态
-        if not self.knowledge_enabled:
-            print(
-                "知识库当前处于关闭状态。可使用 `/knowledge on` 来开启"
-            )
+        # 启动时提示知识库状态（功能始终开启；仅依赖或初始化失败时提示）
+        if not KNOWLEDGE_AVAILABLE:
+            if sys.version_info >= (3, 14):
+                print(
+                    "知识库依赖在当前 Python 版本下不可用；主程序可继续运行。建议使用 Python 3.12 或 3.13 并安装知识库依赖。"
+                )
+            else:
+                print("知识库依赖未就绪；主程序可继续运行。需要时请安装 requirements 中的知识库相关包。")
         elif not self.knowledge_manager:
-            print(
-                "知识库已开启但当前不可用。请检查依赖或稍后重试。可使用 `/knowledge off` 暂时关闭。"
-            )
+            print("知识库当前不可用（初始化失败）。请检查 Ollama/嵌入模型与目录 .smartshell/knowledge/。")
 
         if self.skills:
             _sk_path = self.config_dir / "skills"
@@ -4949,7 +4864,7 @@ big_image.jpg
                     if not builtin_line:
                         print(
                             "ℹ️ 内置命令需以 / 开头，"
-                            "例如 /exit、/help、/clear screen、/knowledge on；单独输入 / 无效。"
+                            "例如 /exit、/help、/clear screen、/knowledge status；单独输入 / 无效。"
                             "不经过 AI 的本机命令与脚本请以 ! 开头，例如 !ls、!git status。"
                         )
                         continue
@@ -4989,14 +4904,8 @@ big_image.jpg
                         self._last_auto_removed_ephemeral = None
                         print("✅ 已清空 AI 上下文（对话历史与近期操作结果缓存，不影响命令行输入历史）")
                         continue
-                    if bl == 'knowledge on':
-                        self.execute_tool_call("knowledge_on", {})
-                        continue
-                    if bl == 'knowledge off':
-                        self.execute_tool_call("knowledge_off", {})
-                        continue
                     if bl == "knowledge":
-                        print("❌ 用法: /knowledge <status|on|off|sync|stats|search <query>>")
+                        print("❌ 用法: /knowledge <status|sync|stats|search <query>>")
                         continue
                     if bl == "knowledge status":
                         self._print_knowledge_status_details()
@@ -5020,27 +4929,21 @@ big_image.jpg
                         self.execute_tool_call("always_confirm_reset", {})
                         continue
 
-                    if self.knowledge_enabled and self.knowledge_manager:
-                        if bl == 'knowledge sync':
-                            self.execute_tool_call("knowledge_sync", {})
-                            continue
+                    if bl == 'knowledge sync':
+                        self.execute_tool_call("knowledge_sync", {})
+                        continue
 
-                        if bl == 'knowledge stats':
-                            self.execute_tool_call("knowledge_stats", {})
-                            continue
+                    if bl == 'knowledge stats':
+                        self.execute_tool_call("knowledge_stats", {})
+                        continue
 
-                        if bl.startswith('knowledge search '):
-                            query = builtin_line[len('knowledge search ') :]
-                            if query.strip():
-                                self.execute_tool_call("knowledge_search", {"query": query.strip()})
-                            else:
-                                print("❌ 请提供搜索查询内容")
-                            continue
-                    else:
-                        if bl.startswith('knowledge '):
-                            _kh = "`/knowledge on`"
-                            print(f"ℹ️ 知识库已关闭，可使用 {_kh} 开启")
-                            continue
+                    if bl.startswith('knowledge search '):
+                        query = builtin_line[len('knowledge search ') :]
+                        if query.strip():
+                            self.execute_tool_call("knowledge_search", {"query": query.strip()})
+                        else:
+                            print("❌ 请提供搜索查询内容")
+                        continue
                     if bl == 'help':
                         print("\n🌟 Smart Shell 帮助信息")
                         print("=" * 80)
@@ -5066,10 +4969,9 @@ big_image.jpg
 
                         print("\n📚 知识库命令：")
                         print("  6. /knowledge status            - 显示知识库状态详情与注意事项")
-                        print("  7. /knowledge on|/knowledge off - 开关知识库（状态写入 config.json）")
-                        print("  8. /knowledge sync              - 同步文档")
-                        print("  9. /knowledge stats             - 查看统计信息")
-                        print("  10. /knowledge search <query>   - 搜索知识库")
+                        print("  7. /knowledge sync              - 同步索引文档")
+                        print("  8. /knowledge stats             - 查看统计信息")
+                        print("  9. /knowledge search <query>    - 手动搜索知识库")
 
                         print("\n🦅 执行策略命令：")
                         print("  /execution-policy show          - 显示当前策略详情与注意事项")
@@ -5100,17 +5002,18 @@ big_image.jpg
                         print("  7. 查找最近修改的文件")
                         print("  8. 删除所有临时文件")
 
-                        if self.knowledge_manager:
-                            print("  9. 同步知识库")
-                            print("  10. 查看知识库统计")
-                            print("  11. 在知识库中搜索特定内容")
+                        if KNOWLEDGE_AVAILABLE:
+                            print("  9. 说明：自然语言场景下若需 AI 使用知识库，请在话术中明确要求「检索知识库」或「参考知识库」")
+                            print("  10. 同步知识库（亦可用 /knowledge sync）")
+                            print("  11. 查看知识库统计（亦可用 /knowledge stats）")
+                            print("  12. 在知识库中搜索（亦可用 /knowledge search <query>）")
 
                         print("\n💡 提示：")
                         print("  - Tab键可以自动补全文件路径")
                         print("  - 上下方向键可以浏览历史命令")
                         print("  - AI会理解您的自然语言指令并执行相应操作")
-                        if self.knowledge_manager:
-                            print("  - 知识库会自动检索相关信息来辅助AI回答")
+                        if KNOWLEDGE_AVAILABLE:
+                            print("  - 知识库已启用；AI 仅在您明确要求检索或参考知识库时才会调用 knowledge_search，不会自动检索")
                         if self.skills:
                             print(
                                 f"  - 已载入 {len(self.skills)} 个 Agent Skills（内建 {self._builtin_skills_root} + 外部 {self.config_dir / 'skills'}），"
@@ -5222,6 +5125,11 @@ big_image.jpg
                     "【MCP 工具选择补充约束】\n"
                     "- 用户若请求“指定 MCP server 的信息/详情”，首个查询工具必须是 mcp_server_info。\n"
                     "- mcp_status/mcp_status_refresh 仅用于全局 MCP 状态总览，不可替代指定 server 的详情查询。\n\n"
+                    "【知识库 knowledge_search 约束】\n"
+                    "- 禁止：用户未明确要求检索知识库或参考知识库（本地文档库）信息时，不得调用 knowledge_search。\n"
+                    "- 必须：用户明确要求「检索知识库」「在知识库里查」「参考知识库中的资料/内容」或清晰等价表述时，"
+                    "必须先调用 knowledge_search 取得相关片段，再作答或继续其他工具；禁止未检索却声称已依据知识库。\n"
+                    "- 判定依据为用户原话语义，不使用固定关键词表做机械匹配。\n\n"
                     "首轮输出模板示例：\n"
                     "我将帮你获取并显示 playwright MCP 最新状态。\n"
                     "Step 1 [in_progress]: <当前要执行的步骤>\n"
@@ -5244,7 +5152,6 @@ big_image.jpg
                         next_input,
                         context=json.dumps(last_result, ensure_ascii=False) if last_result else "",
                         stream=False,
-                        include_knowledge=is_first_round,
                         return_message=False,
                     )
                     if not isinstance(ai_response, str):

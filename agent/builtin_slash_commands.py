@@ -15,8 +15,6 @@ WINDOWS_SLASH_BUILTIN_COMMANDS: List[str] = [
     "/clear context",
     "/knowledge ",
     "/knowledge status",
-    "/knowledge on",
-    "/knowledge off",
     "/knowledge sync",
     "/knowledge stats",
     "/knowledge search ",
