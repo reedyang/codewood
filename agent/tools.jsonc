@@ -763,6 +763,103 @@
   {
     "type": "function",
     "function": {
+      "name": "memory_search",
+      "description": "在当前工作区作用域内语义检索「经验记忆」（不是知识库）。仅当 system 开头【经验记忆】仍不足以回答、且确需补充检索时调用；若已足够则禁止仅为确认而调用。query 填检索要点；可选 limit。",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string"
+          },
+          "limit": {
+            "type": "integer"
+          }
+        }
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "memory_add",
+      "description": "写入一条经验记忆（非知识库文档）。当用户明确要求「记住某事」「以后按某方式」且属于个人/会话经验时使用。禁止写入密码、token、私钥。若你认为用户观点可能有误，可在 system_note 中写明你的独立判断，同时 content 仍可记录客观可复用的教训。",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "title": {
+            "type": "string"
+          },
+          "content": {
+            "type": "string"
+          },
+          "tier": {
+            "type": "string",
+            "description": "working | episodic | durable"
+          },
+          "memory_type": {
+            "type": "string",
+            "description": "如 lesson / preference / note"
+          },
+          "source": {
+            "type": "string",
+            "description": "如 assistant / user_request / auto"
+          },
+          "user_request": {
+            "type": "string"
+          },
+          "system_note": {
+            "type": "string"
+          }
+        },
+        "required": ["content"]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "memory_list",
+      "description": "列出当前工作区作用域下最近的经验记忆摘要（按最近访问排序）。",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "limit": {
+            "type": "integer"
+          }
+        }
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "memory_stats",
+      "description": "读取经验记忆存储统计（条数、嵌入模型、目录）。",
+      "parameters": {
+        "type": "object",
+        "properties": {}
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "memory_delete",
+      "description": "按 id 删除一条经验记忆。",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "memory_id": {
+            "type": "string"
+          }
+        },
+        "required": ["memory_id"]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
       "name": "freedom_on",
       "description": "开启自由模式确认策略。",
       "parameters": {

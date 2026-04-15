@@ -13,6 +13,8 @@ from datetime import datetime
 # Knowledge base imports: ChromaDB has known issues on Python 3.14 (Pydantic v1 incompatibility).
 # Catching any import/config error so the app can run without knowledge base on unsupported envs.
 try:
+    # 注意：不得在后台线程里对 sys.stdout 做 redirect_stdout：sys.stdout 进程全局，
+    # 会与主线程 run() 的 print 竞态，导致启动提示等输出丢失。
     import chromadb
     from chromadb.config import Settings
     from chromadb.utils.embedding_functions import SentenceTransformerEmbeddingFunction
@@ -37,6 +39,12 @@ except Exception as e:
         msg += " (ChromaDB is not compatible with Python 3.14; use Python 3.12 or 3.13 for knowledge base.)"
     else:
         msg += " (If missing deps, run: pip install -r requirements.txt)"
+        el = str(e).lower()
+        if any(x in el for x in ("huggingface", "transformers", "sentence", "hf_api")):
+            msg += (
+                " | Hugging Face 栈损坏或版本过旧时常见；可尝试: "
+                "pip install -U \"huggingface_hub>=0.26\" \"transformers>=4.41\" sentence-transformers"
+            )
     try:
         print(msg)
     except UnicodeEncodeError:

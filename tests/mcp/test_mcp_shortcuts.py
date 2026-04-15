@@ -81,6 +81,19 @@ class McpShortcutCommandTests(unittest.TestCase):
         for item in expected:
             self.assertIn(item, WINDOWS_SLASH_BUILTIN_COMMANDS)
 
+    def test_completion_contains_memory_commands(self):
+        expected = [
+            "/memory ",
+            "/memory status",
+            "/memory stats",
+            "/memory list",
+            "/memory search ",
+            "/memory remember ",
+            "/memory delete ",
+        ]
+        for item in expected:
+            self.assertIn(item, WINDOWS_SLASH_BUILTIN_COMMANDS)
+
 
 if __name__ == "__main__":
     unittest.main()
