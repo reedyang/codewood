@@ -16,12 +16,11 @@ current_dir = Path(__file__).parent
 agent_dir = current_dir / "agent"
 sys.path.insert(0, str(agent_dir))
 
-from agent.smart_shell_agent import SmartShellAgent
 
 def main():
     """主函数"""
     print("启动 Smart Shell...")
-    
+
     work_directory = None
     config = None
     config_path = None
@@ -49,6 +48,11 @@ def main():
         except Exception as e:
             print(f"⚠️ 配置文件读取失败: {e}")
             config = None
+
+    if config_dir:
+        from agent.app_logging import get_logger, setup_app_logging
+        setup_app_logging(Path(config_dir))
+        get_logger().info("Smart Shell 启动，config_dir=%s", config_dir)
     
     # 解析配置
     normal_config = None
@@ -77,6 +81,9 @@ def main():
         # 默认配置
         print("📋 未找到配置文件")
         return 1
+
+    # 配置就绪后再加载重型 agent 模块，缩短「启动」到「模型信息」之间的等待
+    from agent.smart_shell_agent import SmartShellAgent
 
     # 如果使用双模型配置
     if normal_config and vision_config:
