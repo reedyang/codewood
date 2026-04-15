@@ -1,6 +1,6 @@
 ---
 name: stock-data
-description: 使用新浪财经实时行情 API 获取 A 股快照，并输出可直接注入 stock-daily-analysis 的 quote-json。触发词：stock-data、实时行情、A股实时价格、获取股票快照、行情注入、quote-json。适用于先取数再分析的场景。
+description: 使用新浪财经实时行情 API 获取 A 股快照，并输出可直接注入 stock-daily-analysis 的 JSON（stdout；可与 analyzer --quote-stdin 管道联动）。触发词：stock-data、实时行情、A股实时价格、获取股票快照、行情注入、quote-json。适用于先取数再分析的场景。
 license: MIT
 ---
 
@@ -12,7 +12,7 @@ license: MIT
 
 - 获取单只或多只 A 股实时行情。
 - 输出标准字段：`name/price/change_pct/change_amount/open_price/high/low/volume/amount/pre_close`。
-- 作为上游 skill，为 `stock-daily-analysis/scripts/analyzer.py --quote-json` 提供输入。
+- 作为上游 skill，为 `stock-daily-analysis/scripts/analyzer.py` 提供输入（**推荐**管道：`fetch_realtime_snapshot.py ... --compact | analyzer.py ... --quote-stdin`）。
 
 ## 依赖
 
@@ -31,7 +31,7 @@ python "<skill_root>/scripts/fetch_realtime_snapshot.py" 600519 601318
 python "<skill_root>/scripts/fetch_realtime_snapshot.py" 600519,601318
 ```
 
-输出紧凑 JSON（推荐给下游 `--quote-json`）：
+输出紧凑 JSON（推荐给下游 **`analyzer.py --quote-stdin`** 管道或 `--quote-json`）：
 
 ```bash
 python "<skill_root>/scripts/fetch_realtime_snapshot.py" 600519 --compact
@@ -45,17 +45,13 @@ python "<skill_root>/scripts/fetch_realtime_snapshot.py" 600519 --compact --retr
 
 ## 与 stock-daily-analysis 联动
 
-先获取快照，再注入分析：
+**推荐一条 shell 管道**（不在工作区写中间文件）：
 
 ```bash
-python "<stock_data_skill_root>/scripts/fetch_realtime_snapshot.py" 600519 601318 --compact
+python "<stock_data_skill_root>/scripts/fetch_realtime_snapshot.py" 600519 601318 --compact | python "<stock_skill_root>/scripts/analyzer.py" 600519 601318 --quote-stdin --json
 ```
 
-将输出作为 `--quote-json` 参数传给：
-
-```bash
-python "<stock_skill_root>/scripts/analyzer.py" 600519 601318 --quote-json "<上一步JSON>" --json
-```
+若不能管道，再将上一步 stdout 整段作为 `analyzer.py` 的 **`--quote-json` 参数**（短 JSON 时），**避免**先写入临时文件再 `--quote-file`，除非环境限制必须读路径。
 
 ## 约束
 

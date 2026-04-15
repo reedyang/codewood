@@ -250,25 +250,41 @@ def main() -> int:
         "--quote-file",
         type=str,
         default="",
-        help="Path to injected quote snapshot JSON file",
+        help="Path to injected quote snapshot JSON file (avoid if pipe/stdin is available)",
+    )
+    parser.add_argument(
+        "--quote-stdin",
+        action="store_true",
+        dest="quote_stdin",
+        help="Read quote snapshot JSON from stdin (e.g. piped from stock-data fetch script)",
     )
     args, unknown = parser.parse_known_args()
     if unknown:
         logger.debug("Ignored unknown argv tokens: %s", unknown)
 
-    # Prefer a payload reconstructed from raw argv when available.
-    # It is more robust under shell quoting differences.
-    recovered_quote_json = _extract_quote_json_from_argv(sys.argv[1:])
-    quote_json = (
-        recovered_quote_json
-        if recovered_quote_json is not None
-        else (args.quote_json or None)
-    )
-
     codes = _parse_codes_arg(args.codes) if args.codes else ["600519"]
+
+    quote_file = (args.quote_file or "").strip() or None
+    quote_json: Optional[str] = None
+
+    if args.quote_stdin:
+        quote_json = sys.stdin.read()
+        quote_file = None
+    elif quote_file is None:
+        # Prefer a payload reconstructed from raw argv when available.
+        # It is more robust under shell quoting differences.
+        recovered_quote_json = _extract_quote_json_from_argv(sys.argv[1:])
+        quote_json = (
+            recovered_quote_json
+            if recovered_quote_json is not None
+            else (args.quote_json or None)
+        )
+        if quote_json == "":
+            quote_json = None
+
     quote_by_code = _load_quote_by_code(
         quote_json=quote_json,
-        quote_file=args.quote_file or None,
+        quote_file=quote_file,
         codes=codes,
     )
     results = analyze_stocks(codes, quote_by_code=quote_by_code)

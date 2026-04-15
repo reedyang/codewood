@@ -12,6 +12,7 @@ Upstream reference format: [Anthropic Agent Skills (`anthropics/skills`)](https:
 - **Host-agnostic contracts**: Skills must not encode **product-specific** environment variable prefixes (e.g. a single IDE name). Hosts implement **generic** discovery and bridging.
 - **No host hardcoding of individual skills**: The runtime must not special-case skill **names** or script filenames (e.g. `if skill == "baidu"`). Matching is by **bundle path**, **declared metadata**, or **user intent**—not string literals for one skill in host code.
 - **Separation of concerns**: Skills describe *what* to do; the host provides tools (`shell`, file I/O, MCP, etc.) and injects context.
+- **Multi-skill orchestration**（多 skill 编排）: Prefer **stdin** and **shell pipes** to pass payloads between steps; avoid **avoidable intermediate files** in the workspace when the same data can flow on the command line. Document the preferred pattern in `SKILL.md` so contributors can self-check when adding or reviewing skills.
 
 ---
 
@@ -130,3 +131,4 @@ Other products can implement the same **principles** without copying implementat
 ## Document history
 
 - Introduced to capture host–skill boundaries and portability expectations for Agent Skills in Smart Shell and compatible agents.
+- Added multi-skill orchestration principle: prefer stdin/pipes, avoid avoidable intermediate files.
