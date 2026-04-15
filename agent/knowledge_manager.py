@@ -2,16 +2,19 @@ import os
 import sys
 import json
 import hashlib
-from pathlib import Path
-from typing import List, Dict, Optional, Any
-from datetime import datetime
+import contextlib
 import logging
+from pathlib import Path
+from typing import List, Dict, Optional, Any, Iterator, Tuple
+from datetime import datetime
 
 # Knowledge base imports: ChromaDB has known issues on Python 3.14 (Pydantic v1 incompatibility).
 # Catching any import/config error so the app can run without knowledge base on unsupported envs.
 try:
     import chromadb
     from chromadb.config import Settings
+    from chromadb.utils.embedding_functions import SentenceTransformerEmbeddingFunction
+    import sentence_transformers  # noqa: F401 — required for local embeddings (see requirements.txt)
     try:
         from langchain_text_splitters import RecursiveCharacterTextSplitter
     except ImportError:
@@ -24,25 +27,6 @@ try:
         UnstructuredCSVLoader,
         UnstructuredExcelLoader
     )
-    try:
-        from langchain_ollama import OllamaEmbeddings
-        OLLAMA_EMBEDDINGS_SRC = "langchain_ollama"
-    except ImportError:
-        try:
-            from langchain_community.embeddings import OllamaEmbeddings
-            OLLAMA_EMBEDDINGS_SRC = "langchain_community"
-            import warnings
-            try:
-                from langchain.schema import LangChainDeprecationWarning
-                warnings.filterwarnings("ignore", category=LangChainDeprecationWarning)
-            except Exception:
-                warnings.filterwarnings("ignore", ".*OllamaEmbeddings.*")
-            logging.warning(
-                "OllamaEmbeddings from LangChain is deprecated. "
-                "Install/upgrade the standalone package to avoid this warning: `pip install -U langchain-ollama`."
-            )
-        except ImportError:
-            OLLAMA_EMBEDDINGS_SRC = None
     KNOWLEDGE_AVAILABLE = True
 except Exception as e:
     KNOWLEDGE_AVAILABLE = False
@@ -56,15 +40,87 @@ except Exception as e:
     except UnicodeEncodeError:
         print(msg.encode("ascii", errors="replace").decode("ascii"))
 
+# Local Sentence-Transformers model id (Hugging Face Hub); no Ollama or cloud LLM API required.
+DEFAULT_LOCAL_EMBEDDING_MODEL = "all-MiniLM-L6-v2"
+
+
+@contextlib.contextmanager
+def _suppress_pdfminer_font_warnings() -> Iterator[None]:
+    """屏蔽 pdfminer 对部分 PDF 字体的 FontBBox 警告（不影响解析结果，仅减少控制台刷屏）。"""
+    lg = logging.getLogger("pdfminer")
+    prev = lg.level
+    lg.setLevel(logging.ERROR)
+    try:
+        yield
+    finally:
+        lg.setLevel(prev)
+
+
+@contextlib.contextmanager
+def _quiet_hf_transformers_embedding_init() -> Iterator[None]:
+    """
+    仅在加载 SentenceTransformer 嵌入模型期间：抑制 HF Hub 匿名访问类 UserWarning、
+    transformers 的 tqdm（如 Loading weights）与 LOAD REPORT 等控制台输出；结束后恢复原设置。
+    """
+    import warnings
+
+    tr_logging = None
+    prev_verbosity: Optional[int] = None
+    progress_was_disabled = False
+    try:
+        from transformers.utils import logging as tr_logging
+
+        prev_verbosity = tr_logging.get_verbosity()
+        tr_logging.set_verbosity_error()
+        tr_logging.disable_progress_bar()
+        progress_was_disabled = True
+    except Exception:
+        tr_logging = None
+
+    logger_names = (
+        "huggingface_hub",
+        "huggingface_hub.utils",
+        "transformers",
+        "transformers.utils.loading_report",
+        "sentence_transformers",
+    )
+    saved_levels: List[Tuple[logging.Logger, int]] = []
+    for name in logger_names:
+        lg = logging.getLogger(name)
+        saved_levels.append((lg, lg.level))
+        lg.setLevel(logging.ERROR)
+
+    try:
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore",
+                message=r".*unauthenticated requests to the HF Hub.*",
+                category=UserWarning,
+            )
+            warnings.filterwarnings(
+                "ignore",
+                message=r".*cache-system uses symlinks.*",
+                category=UserWarning,
+            )
+            yield
+    finally:
+        for lg, lvl in saved_levels:
+            lg.setLevel(lvl)
+        if tr_logging is not None and prev_verbosity is not None:
+            tr_logging.set_verbosity(prev_verbosity)
+        if progress_was_disabled and tr_logging is not None:
+            tr_logging.enable_progress_bar()
+
+
 class KnowledgeManager:
     """知识库管理器"""
     
-    def __init__(self, config_dir: str, embedding_model: str = "nomic-embed-text"):
+    def __init__(self, config_dir: str, embedding_model: str = DEFAULT_LOCAL_EMBEDDING_MODEL):
         """
         初始化知识库管理器
         Args:
             config_dir: 配置文件目录
-            embedding_model: 向量化模型名称
+            embedding_model: Sentence-Transformers 模型名（Hugging Face id，本地推理）
         """
         if not KNOWLEDGE_AVAILABLE:
             raise ImportError("知识库功能不可用，请安装相关依赖")
@@ -117,19 +173,12 @@ class KnowledgeManager:
         self.document_status = self._load_document_status()
         
     def _init_chroma_db(self):
-        """初始化Chroma数据库"""
+        """初始化Chroma数据库（本地 Sentence-Transformers 嵌入，经 Chroma 统一索引与查询）"""
         try:
-            # 初始化Ollama嵌入模型（仅在官方独立包可用时实例化）
-            if OLLAMA_EMBEDDINGS_SRC == "langchain_ollama":
-                self.embeddings = OllamaEmbeddings(model=self.embedding_model)
-            else:
-                # 如果没有可用的 langchain_ollama 包，跳过实例化以避免使用被弃用的实现。
-                self.embeddings = None
-                logging.info(
-                    "OllamaEmbeddings (langchain_ollama) not available; "
-                    "falling back to local SentenceTransformer embeddings when needed."
+            with _quiet_hf_transformers_embedding_init():
+                self._embedding_fn = SentenceTransformerEmbeddingFunction(
+                    model_name=self.embedding_model
                 )
-            
             # 初始化Chroma客户端
             self.client = chromadb.PersistentClient(
                 path=str(self.db_dir),
@@ -139,13 +188,14 @@ class KnowledgeManager:
                 )
             )
             
-            # 获取或创建集合
+            # 获取或创建集合（嵌入函数与入库/检索一致）
             self.collection = self.client.get_or_create_collection(
                 name="smart_shell_knowledge",
+                embedding_function=self._embedding_fn,
                 metadata={"hnsw:space": "cosine"}
             )
             
-            print(f"✅ 知识库初始化成功，使用模型: {self.embedding_model}")
+            print(f"✅ 知识库初始化成功")
             
         except Exception as e:
             print(f"❌ 知识库初始化失败: {e}")
@@ -209,9 +259,14 @@ class KnowledgeManager:
                 with open(file_path, 'r', encoding='utf-8', errors='replace') as f:
                     return f.read()
             else:
-                # 使用LangChain加载器
-                loader = loader_class(str(file_path))
-                documents = loader.load()
+                # 使用LangChain加载器（PDF 经 pdfminer，部分文件会触发 FontBBox 无害警告）
+                if extension == ".pdf":
+                    with _suppress_pdfminer_font_warnings():
+                        loader = loader_class(str(file_path))
+                        documents = loader.load()
+                else:
+                    loader = loader_class(str(file_path))
+                    documents = loader.load()
                 return "\n\n".join([doc.page_content for doc in documents])
                 
         except Exception as e:
@@ -253,49 +308,6 @@ class KnowledgeManager:
             
         except Exception as e:
             print(f"  ❌ 添加文档到数据库失败 {file_info['name']}: {e}")
-            # 如果是网络超时，尝试使用本地嵌入
-            if "timeout" in str(e).lower() or "handshake" in str(e).lower():
-                print(f"  💡 网络超时，尝试使用本地嵌入模型...")
-                self._add_document_with_local_embedding(file_info, content)
-    
-    def _add_document_with_local_embedding(self, file_info: Dict[str, Any], content: str):
-        """使用本地嵌入模型添加文档（备用方法）"""
-        try:
-            from sentence_transformers import SentenceTransformer
-            
-            # 使用本地模型
-            model = SentenceTransformer('all-MiniLM-L6-v2')
-            
-            # 分割文本
-            chunks = self.text_splitter.split_text(content)
-            
-            # 生成嵌入向量
-            embeddings = model.encode(chunks)
-            
-            # 为每个chunk生成ID
-            chunk_ids = [f"{file_info['name']}_{i}" for i in range(len(chunks))]
-            
-            # 添加元数据
-            metadatas = [{
-                "source": file_info['name'],
-                "file_path": file_info['path'],
-                "chunk_index": i,
-                "file_size": file_info['size'],
-                "modified_time": file_info['modified_time']
-            } for i in range(len(chunks))]
-            
-            # 添加到Chroma数据库
-            self.collection.add(
-                documents=chunks,
-                embeddings=embeddings.tolist(),
-                metadatas=metadatas,
-                ids=chunk_ids
-            )
-            
-            print(f"  ✅ 使用本地嵌入添加文档: {file_info['name']} ({len(chunks)} 个片段)")
-            
-        except Exception as e:
-            print(f"  ❌ 本地嵌入添加文档失败 {file_info['name']}: {e}")
     
     def _remove_document_from_db(self, file_name: str):
         """从数据库中删除文档"""
@@ -465,7 +477,8 @@ class KnowledgeManager:
                 "total_documents": total_docs,
                 "total_chunks": total_chunks,
                 "file_types": file_types,
-                "supported_extensions": list(self.supported_extensions.keys())
+                "supported_extensions": list(self.supported_extensions.keys()),
+                "embedding_model": self.embedding_model,
             }
         except Exception as e:
             print(f"⚠️ 获取知识库统计信息失败: {e}")
