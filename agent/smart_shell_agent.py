@@ -88,11 +88,9 @@ from .history_manager import HistoryManager
 from .skills_loader import build_skills_routing_prefix, build_skills_system_append, load_skills_merged
 from .mcp_manager import McpManager, McpError
 
-try:
-    from .memory_manager import MEMORY_AVAILABLE, MemoryService
-except ImportError:
-    MEMORY_AVAILABLE = False  # type: ignore[misc, assignment]
-    MemoryService = None  # type: ignore[misc, assignment]
+# memory_manager 在后台线程中导入（见 _schedule_memory_service_background），避免主线程拉取 Chroma/嵌入链。
+MEMORY_AVAILABLE = False  # type: ignore[misc, assignment]
+MemoryService = None  # type: ignore[misc, assignment]
 
 # knowledge_manager 在后台线程中导入（见 _schedule_knowledge_service_background），避免主线程拉取 Chroma/torch 等。
 # KNOWLEDGE_AVAILABLE / KnowledgeService 由该线程赋到模块上；单测可在构造前设置 KNOWLEDGE_AVAILABLE=False 以跳过。
@@ -381,13 +379,24 @@ class SmartShellAgent:
         self._schedule_memory_service_background()
 
     def _schedule_memory_service_background(self) -> None:
-        """后台初始化经验记忆（独立 Chroma 路径，与知识库分离）。"""
-        if not MEMORY_AVAILABLE or MemoryService is None:
-            return
+        """后台初始化经验记忆：在本线程内 import memory_manager（含 chromadb），再构造 MemoryService。"""
+        _mod = sys.modules[__name__]
 
         def _run() -> None:
             try:
-                self.memory_service = MemoryService(str(self.config_dir))
+                from . import memory_manager as _mm
+            except ImportError:
+                _mod.MEMORY_AVAILABLE = False  # type: ignore[misc, assignment]
+                _mod.MemoryService = None  # type: ignore[misc, assignment]
+                return
+            mav = bool(getattr(_mm, "MEMORY_AVAILABLE", False))
+            MS = getattr(_mm, "MemoryService", None)
+            _mod.MEMORY_AVAILABLE = mav  # type: ignore[misc, assignment]
+            _mod.MemoryService = MS  # type: ignore[misc, assignment]
+            if not mav or MS is None:
+                return
+            try:
+                self.memory_service = MS(str(self.config_dir))
             except Exception:
                 try:
                     get_logger().exception("经验记忆 MemoryService 初始化失败")
