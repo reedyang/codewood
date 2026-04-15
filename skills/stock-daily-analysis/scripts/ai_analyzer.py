@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-AI 分析模块 - Smart Shell 对接模式
+AI 分析模块：产出结构化技术面摘要，供上层 Agent / 宿主做自然语言推理。
 """
 
 import logging
@@ -10,14 +10,14 @@ logger = logging.getLogger(__name__)
 
 
 class AIAnalyzer:
-    """AI 分析器 - 由 Smart Shell 托管推理，不再直接调用外部 LLM"""
+    """技术面结构化分析；不直接调用外部 LLM，由宿主注入上下文后使用。"""
 
     def __init__(self):
         pass
 
     def analyze(self, code: str, name: str, technical_data: Dict[str, Any]) -> Dict[str, Any]:
         """
-        基于技术指标生成结构化分析，由 Smart Shell 统一承接后续语言推理。
+        基于技术指标生成结构化分析，供宿主结合行情数据做后续解读。
         """
         del code, name  # Reserved for future cross-symbol context enhancement.
         return self._default_analysis_from_tech(technical_data)

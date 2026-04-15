@@ -29,6 +29,8 @@ USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 )
+# Host-agnostic toggle (optional); same role as other skills' *_SKILL_INSECURE_SSL
+ENV_INSECURE_SSL = "DEEPCRAWL_SKILL_INSECURE_SSL"
 MAX_TEXT_CHARS = 12000
 MAX_LINKS_PER_PAGE = 120
 
@@ -380,7 +382,7 @@ def main() -> None:
         raise SystemExit(2)
 
     verify_ssl = not args.insecure
-    if os.environ.get("SMARTSHELL_DEEPCRAWL_INSECURE_SSL", "").strip().lower() in ("1", "true", "yes"):
+    if os.environ.get(ENV_INSECURE_SSL, "").strip().lower() in ("1", "true", "yes"):
         verify_ssl = False
     if not verify_ssl:
         urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)

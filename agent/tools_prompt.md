@@ -106,6 +106,16 @@ Step 2 [in_progress]: <当前步骤>
 {"tool":"<tool_name>","args":{...}}
 ```
 
+## `shell` 与技能包 `SKILL.md` frontmatter（扩展输出 / 宿主无关约定）
+
+技能可在 **`SKILL.md` 的 YAML frontmatter** 中可选声明：子进程可通过**某个环境变量**接收「扩展模型上下文」的临时文件路径。约定字段 **`model_context_file_env`**（或 **`modelContextFileEnv`**），值为合法环境变量名（由该技能自行命名，例如 `MY_SKILL_EXTENDED_CONTEXT`）。约定写在技能正文同一文件中，无需额外 JSON 侧车文件。**本宿主**在执行 `shell` 时若解析到被调用脚本路径落在某已加载技能的 **`bundle_root`** 下，且该技能的 frontmatter 含有效 `model_context_file_env`，则：
+
+1. 创建临时 UTF-8 文本文件；
+2. 将**该字段所指的环境变量**设为该文件绝对路径，并传入子进程；
+3. 子进程退出码为 **0** 且该文件**非空**时，将其内容追加合并到工具结果的 **`output`**（带固定分隔标记；**stdout** 仍照常捕获）。
+
+未匹配到含有效 `model_context_file_env` 的技能、或字段无效时，不创建临时文件、不注入该变量。其它 Agent 只要解析同一 frontmatter 字段即可实现等价行为。
+
 ## 知识库 `knowledge_search`（语义判定，禁止滥用）
 
 - **禁止调用**：用户未在本轮对话中明确要求检索知识库、或参考知识库/本地文档库中的信息时，不得调用 `knowledge_search`（包括不要为了“更完整”而主动查库）。
