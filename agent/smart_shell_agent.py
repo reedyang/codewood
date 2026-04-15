@@ -7,10 +7,23 @@ import re
 import time
 import threading
 import importlib
+import warnings
 from pathlib import Path
 from typing import List, Dict, Optional, Any, Tuple, Set
 import shutil
 from datetime import datetime
+
+# call_ai 对 OpenAI/OpenWebUI 使用 verify=False 时 urllib3 会对每条请求发出 InsecureRequestWarning；
+# 进程启动时关闭该类告警，避免打断终端输出（企业内网自签证书场景常见）。
+try:
+    import urllib3
+
+    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+    from urllib3.exceptions import InsecureRequestWarning
+
+    warnings.filterwarnings("ignore", category=InsecureRequestWarning)
+except Exception:
+    pass
 
 def _decode_subprocess_output(data: Optional[bytes]) -> str:
     """
@@ -74,6 +87,12 @@ from .app_logging import get_log_file_path, get_logger, setup_app_logging
 from .history_manager import HistoryManager
 from .skills_loader import build_skills_routing_prefix, build_skills_system_append, load_skills_merged
 from .mcp_manager import McpManager, McpError
+
+try:
+    from .memory_manager import MEMORY_AVAILABLE, MemoryService
+except ImportError:
+    MEMORY_AVAILABLE = False  # type: ignore[misc, assignment]
+    MemoryService = None  # type: ignore[misc, assignment]
 
 # knowledge_manager 在后台线程中导入（见 _schedule_knowledge_service_background），避免主线程拉取 Chroma/torch 等。
 # KNOWLEDGE_AVAILABLE / KnowledgeService 由该线程赋到模块上；单测可在构造前设置 KNOWLEDGE_AVAILABLE=False 以跳过。
@@ -357,6 +376,203 @@ class SmartShellAgent:
 
         self._schedule_model_validation_background()
         self._schedule_knowledge_service_background()
+        self.memory_service = None
+        self._last_memory_reflect_at = 0.0
+        self._schedule_memory_service_background()
+
+    def _schedule_memory_service_background(self) -> None:
+        """后台初始化经验记忆（独立 Chroma 路径，与知识库分离）。"""
+        if not MEMORY_AVAILABLE or MemoryService is None:
+            return
+
+        def _run() -> None:
+            try:
+                self.memory_service = MemoryService(str(self.config_dir))
+            except Exception:
+                try:
+                    get_logger().exception("经验记忆 MemoryService 初始化失败")
+                except Exception:
+                    pass
+
+        threading.Thread(target=_run, daemon=True, name="smartshell-memory-init").start()
+
+    def _ensure_memory_service(self) -> bool:
+        if not MEMORY_AVAILABLE or self.memory_service is None:
+            return False
+        svc = self.memory_service
+        if not svc.wait_ready(30.0):
+            return False
+        return svc.is_available()
+
+    def _memory_scope_key(self) -> str:
+        try:
+            return str(self.work_directory.resolve())
+        except Exception:
+            return str(self.work_directory)
+
+    def _memory_rows_for_prompt(self, user_input: str) -> List[Dict[str, Any]]:
+        """合并语义检索与同作用域近期记忆（按 last_access，见 memory_manager.list_recent）。
+
+        短句与部分已存记忆在向量上可能不相似，仅靠 Chroma 会漏检；用「语义 + 近期」并集、按 id 去重，
+        不依赖问句关键词或规则表。
+        """
+        q = (user_input or "").strip()[:2000]
+        if not q:
+            return []
+        sk = self._memory_scope_key()
+        rows_sem = self.memory_service.search_memories(q, top_k=6, scope_key=sk)
+        seen: Set[str] = {str(r.get("id") or "").strip() for r in rows_sem if r.get("id")}
+        merged: List[Dict[str, Any]] = list(rows_sem)
+
+        def _from_recent_item(item: Dict[str, Any]) -> Dict[str, Any]:
+            prev = item.get("preview") or ""
+            return {
+                "id": item.get("id"),
+                "title": item.get("title") or "",
+                "content": (prev if isinstance(prev, str) else str(prev))[:600],
+                "tier": item.get("tier") or "",
+                "memory_type": item.get("memory_type") or "",
+                "source": item.get("source") or "",
+                "system_note": None,
+            }
+
+        recent = self.memory_service.list_recent(limit=14, scope_key=sk)
+        for item in recent:
+            if len(merged) >= 12:
+                break
+            rid = str(item.get("id") or "").strip()
+            if not rid or rid in seen:
+                continue
+            merged.append(_from_recent_item(item))
+            seen.add(rid)
+
+        return merged[:12]
+
+    def _memory_context_for_prompt(self, user_input: str, max_chars: int = 2400) -> str:
+        """检索相关经验记忆，注入系统侧（非知识库）。"""
+        if not self._ensure_memory_service():
+            return ""
+        try:
+            q = (user_input or "").strip()[:2000]
+            if len(q) < 1:
+                return ""
+            rows = self._memory_rows_for_prompt(user_input)
+            if not rows:
+                return ""
+            lines = [
+                "【经验记忆（内化教训与偏好，不是知识库文献；可与知识库并存；关键事实请仍核实）】"
+            ]
+            total = 0
+            for r in rows:
+                block = f"- ({r.get('tier', '')}) {r.get('title', '')}: {r.get('content', '')[:500]}"
+                if r.get("system_note"):
+                    block += f" [内省备注: {r['system_note'][:200]}]"
+                if total + len(block) > max_chars:
+                    break
+                lines.append(block)
+                total += len(block)
+                mid = str(r.get("id") or "").strip()
+                if mid:
+                    try:
+                        self.memory_service.touch_memory(mid)
+                    except Exception:
+                        pass
+            return "\n".join(lines) if len(lines) > 1 else ""
+        except Exception:
+            return ""
+
+    def _schedule_auto_memory_reflect(self) -> None:
+        """任务结束后由后台线程自动反思是否写入记忆（不询问用户）。
+
+        节流：同一时段内连续完成任务时，距上次触发自动反思至少间隔约 45 秒，避免每步工具循环都打 LLM。
+        （不再按「每 N 轮任务」抽样：单轮任务若不顺也应有资格触发反思。）
+        """
+        if not self._ensure_memory_service():
+            return
+        now = time.monotonic()
+        if now - getattr(self, "_last_memory_reflect_at", 0.0) < 45.0:
+            return
+        self._last_memory_reflect_at = now
+
+        def _run() -> None:
+            try:
+                self._run_memory_reflection_body()
+            except Exception:
+                try:
+                    get_logger().exception("自动记忆反思失败")
+                except Exception:
+                    pass
+
+        threading.Thread(target=_run, daemon=True, name="smartshell-memory-reflect").start()
+
+    def _run_memory_reflection_body(self) -> None:
+        if not self._ensure_memory_service():
+            return
+        hist = self.conversation_history[-6:] if self.conversation_history else []
+        op_tail = self.operation_results[-4:] if self.operation_results else []
+        blob = {
+            "recent_chat": hist,
+            "recent_operations": op_tail,
+        }
+        payload = json.dumps(blob, ensure_ascii=False)[:12000]
+        raw = self.call_ai(
+            payload,
+            context="",
+            stream=False,
+            reflection_mode=True,
+            return_message=False,
+        )
+        if not isinstance(raw, str) or not raw.strip():
+            return
+        text = raw.strip()
+        data = None
+        try:
+            data = json.loads(text)
+        except Exception:
+            start = text.find("{")
+            if start >= 0:
+                depth = 0
+                for i in range(start, len(text)):
+                    if text[i] == "{":
+                        depth += 1
+                    elif text[i] == "}":
+                        depth -= 1
+                        if depth == 0:
+                            try:
+                                data = json.loads(text[start : i + 1])
+                            except Exception:
+                                data = None
+                            break
+        if not isinstance(data, dict):
+            return
+        mems = data.get("memories")
+        if not isinstance(mems, list):
+            return
+        sk = self._memory_scope_key()
+        for m in mems[:8]:
+            if not isinstance(m, dict) or not m.get("must_store"):
+                continue
+            title = str(m.get("title") or "经验").strip()[:500]
+            content = str(m.get("content") or "").strip()
+            if not content:
+                continue
+            tier = str(m.get("tier") or "episodic").strip().lower()
+            if tier not in ("working", "episodic", "durable"):
+                tier = "episodic"
+            mtype = str(m.get("memory_type") or "lesson").strip()[:64]
+            sys_note = str(m.get("system_note") or "").strip()[:2000] or None
+            try:
+                self.memory_service.add_memory(
+                    title=title,
+                    content=content,
+                    tier=tier,
+                    memory_type=mtype,
+                    scope_key=sk,
+                    source="auto",
+                    system_note=sys_note,
+                )
+            except Exception:
+                continue
 
     def _schedule_knowledge_service_background(self) -> None:
         """
@@ -885,6 +1101,31 @@ class SmartShellAgent:
                 print("  当前环境不满足知识库依赖（例如 Python 3.14 下 ChromaDB 限制）。请使用 Python 3.12/3.13 并安装依赖。")
             else:
                 print("  知识库依赖未安装或加载失败。请安装 requirements 中的知识库相关包。")
+
+    def _print_memory_status_details(self) -> None:
+        dep = bool(MEMORY_AVAILABLE)
+        ready = bool(self._ensure_memory_service())
+        print("经验记忆状态详情（与知识库分离：内化教训/偏好，非文档库）：")
+        print(f"  dependency_ready: {'yes' if dep else 'no'}")
+        print(f"  runtime_ready: {'yes' if ready else 'no'}")
+        if dep and ready:
+            try:
+                st = self.memory_service.stats()  # type: ignore[union-attr]
+                if isinstance(st, dict):
+                    print(f"  total_memories: {st.get('total_memories', '-')}")
+                    print(f"  embedding_model: {st.get('embedding_model', '-')}")
+                    print(f"  storage_dir: {st.get('storage_dir', '-')}")
+            except Exception as e:
+                print(f"  stats_error: {e}")
+            print(
+                "  说明：每轮自然语言任务正常结束后会尝试后台自动反思（与上次触发间隔约 45 秒以上）；"
+                "模型若认为有可复用教训才会写入（可能为 0 条）。"
+                "也可手动 memory_search / memory_add 或 /memory remember；勿与 knowledge_search 混淆。"
+            )
+        elif dep and not ready:
+            print("  记忆模块正在初始化或失败，请查看 smartshell.log 与 .smartshell/memory/。")
+        else:
+            print("  未安装 chromadb 等依赖时经验记忆不可用；主程序可继续运行。")
 
     def _confirm_allowlist_path(self) -> Path:
         return self.config_dir / "confirm_allowlist.json"
@@ -1594,8 +1835,9 @@ class SmartShellAgent:
         minimal_classifier: bool = False,
         freedom_combined_review: bool = False,
         return_message: bool = False,
+        reflection_mode: bool = False,
     ):
-        """调用大模型 API 获取回复；支持流式输出。"""
+        """调用大模型 API 获取回复；支持流式输出。reflection_mode 用于记忆内省，不注入对话历史与经验块。"""
         try:
             # 确保os未被局部变量遮蔽
             import os
@@ -1667,6 +1909,25 @@ class SmartShellAgent:
                     },
                 ]
                 record_history = False
+            elif reflection_mode:
+                if stream:
+                    return "❌ 错误：记忆内省不支持流式模式。"
+                reflection_system = (
+                    "你是 Smart Shell 的经验记忆内省模块（与「知识库/图书馆」完全无关：知识库存文档，你这里只写内化经验）。\n"
+                    "用户消息是一个 JSON 字符串，含 recent_chat 与 recent_operations。\n"
+                    "只输出一个 JSON 对象，不要使用 markdown 代码围栏：\n"
+                    '{"memories":[{"title":"...","content":"...","tier":"episodic|working|durable",'
+                    '"memory_type":"lesson|preference|note","must_store":true,"system_note":""}]}\n'
+                    "若没有值得固化的经验：{\"memories\":[]}。\n"
+                    "规则：不要询问用户是否保存；你认为值得记则 must_store=true。\n"
+                    "禁止写入：密码、token、私钥、完整证件号；路径用概括描述。\n"
+                    "若用户曾表达的结论你认为不成立，仍可将客观教训写入 content，并在 system_note 写明你的独立判断。\n"
+                )
+                messages = [
+                    {"role": "system", "content": reflection_system},
+                    {"role": "user", "content": user_input},
+                ]
+                record_history = False
             else:
                 self._reload_skills()
                 record_history = True
@@ -1678,22 +1939,43 @@ class SmartShellAgent:
                     + "\n"
                     + self._build_tools_prompt_append()
                 )
+                mem_block = self._memory_context_for_prompt(user_input)
+                # 经验记忆必须放在 system 最前：否则长 tools 提示在后、易被截断，且模型更倾向服从文末通用人设。
+                tail_context = (
+                    f"{self._skills_routing_prefix}{self.system_prompt}\n{self._active_skill_full_prompt}"
+                    f"当前操作系统信息：{os_info}\n当前日期时间：{date_time}\n"
+                    f"当前 smart-shell 根目录（绝对路径）：{self._self_repo_root}\n"
+                    f"当前 config 目录（绝对路径）：{self.config_dir}\n"
+                    f"当前 workspace 目录（绝对路径）：{self.ai_workspace_dir}\n"
+                )
+                if mem_block:
+                    sys_prefix = (
+                        "【经验记忆 — 须主动落实】\n"
+                        "以下为当前工作区已持久化条目。其后每一轮答复前都须先判断是否相关；"
+                        "相关则自然语言输出必须以本段为准，不得以未约定的通用云端/供应商默认人设替代。\n\n"
+                        + mem_block
+                        + "\n\n---\n\n"
+                        + tail_context
+                    )
+                else:
+                    sys_prefix = tail_context
                 messages = [
                     {
                         "role": "system",
-                        "content": (
-                            f"{self._skills_routing_prefix}{self.system_prompt}\n{self._active_skill_full_prompt}"
-                            f"当前操作系统信息：{os_info}\n当前日期时间：{date_time}\n"
-                            f"当前 smart-shell 根目录（绝对路径）：{self._self_repo_root}\n"
-                            f"当前 config 目录（绝对路径）：{self.config_dir}\n"
-                            f"当前 workspace 目录（绝对路径）：{self.ai_workspace_dir}\n"
-                        ),
+                        "content": sys_prefix,
                     }
                 ]
                 for msg in self.conversation_history[-5:]:
                     messages.append(msg)
 
-                current_input = f"当前工作目录: {self.work_directory}\n"
+                current_input = ""
+                # 仅有 system 段首记忆时，模型常忽略；在同条 user 侧再提示一次，贴近「用户输入」以提高遵循率。
+                if mem_block:
+                    current_input += (
+                        "【硬性要求】作答前须核对上一条 system 开头的「经验记忆」："
+                        "与本轮用户问题相关的条目必须在答复中体现，不得用与这些记录无关的通用助手或供应商设定替代。\n\n"
+                    )
+                current_input += f"当前工作目录: {self.work_directory}\n"
                 if self.operation_results:
                     current_input += f"最近的操作结果: {self.operation_results[-1]}\n"
                 if context:
@@ -1726,8 +2008,6 @@ class SmartShellAgent:
 
             if provider == "openai" and openai_conf:
                 import requests
-                import urllib3
-                urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
                 api_key = openai_conf.get("api_key")
                 base_url = openai_conf.get("base_url", "https://api.openai.com/v1")
                 model = model_name
@@ -1785,8 +2065,6 @@ class SmartShellAgent:
                     return message if return_message else ai_response
             elif provider == "openwebui" and openwebui_conf:
                 import requests
-                import urllib3
-                urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
                 api_key = openwebui_conf.get("api_key")
                 base_url = openwebui_conf.get("base_url", "http://localhost:8080/v1")
                 model = model_name
@@ -4627,6 +4905,129 @@ big_image.jpg
             except Exception as e:
                 return {"success": False, "error": f"知识库搜索失败: {str(e)}"}
 
+        elif action == "memory_search":
+            if not self._ensure_memory_service():
+                return {"success": False, "error": "经验记忆不可用（依赖未安装或初始化失败）"}
+            query = str(params.get("query") or "").strip()
+            top_k = int(params.get("top_k", params.get("limit", 6)) or 6)
+            verbose_print = bool(params.get("verbose_print", False))
+            if not query:
+                return {"success": False, "error": "缺少 query"}
+            try:
+                sk = self._memory_scope_key()
+                results = self.memory_service.search_memories(
+                    query, top_k=top_k, scope_key=sk
+                )
+                # 模型调用时不刷屏：完整结果仅在返回 JSON 中供下一轮思考；终端仅可选一行摘要（如 /memory search）。
+                if verbose_print:
+                    n = len(results)
+                    print(f"\n🧠 经验记忆检索：{n} 条命中（查询: {query}）")
+                    if n and n <= 8:
+                        print("   " + " | ".join(str(r.get("title") or "")[:48] for r in results))
+                    elif n > 8:
+                        print(
+                            "   "
+                            + " | ".join(str(r.get("title") or "")[:48] for r in results[:8])
+                            + " …"
+                        )
+                return {"success": True, "results": results, "query": query, "scope": sk}
+            except Exception as e:
+                return {"success": False, "error": f"经验记忆检索失败: {e}"}
+
+        elif action == "memory_add":
+            if not self._ensure_memory_service():
+                return {"success": False, "error": "经验记忆不可用（依赖未安装或初始化失败）"}
+            verbose_print = bool(params.get("verbose_print", False))
+            title = str(params.get("title") or "经验").strip()[:500]
+            content = str(params.get("content") or "").strip()
+            if not content:
+                return {"success": False, "error": "memory_add 需要 content"}
+            tier = str(params.get("tier") or "episodic").strip().lower()
+            if tier not in ("working", "episodic", "durable"):
+                tier = "episodic"
+            mtype = str(params.get("memory_type") or "lesson").strip()[:64] or "lesson"
+            source = str(params.get("source") or "assistant").strip()[:64] or "assistant"
+            user_request = params.get("user_request")
+            ur = str(user_request).strip() if user_request is not None else None
+            sys_note = params.get("system_note")
+            sn = str(sys_note).strip()[:2000] if sys_note is not None else None
+            if sn == "":
+                sn = None
+            try:
+                mid = self.memory_service.add_memory(
+                    title=title,
+                    content=content,
+                    tier=tier,
+                    memory_type=mtype,
+                    scope_key=self._memory_scope_key(),
+                    source=source,
+                    user_request=ur,
+                    system_note=sn,
+                )
+                if verbose_print:
+                    print(f"🧠 已写入经验记忆: {title} (id={mid[:8]}…)")
+                return {"success": True, "memory_id": mid, "title": title}
+            except Exception as e:
+                return {"success": False, "error": f"写入经验记忆失败: {e}"}
+
+        elif action == "memory_list":
+            if not self._ensure_memory_service():
+                return {"success": False, "error": "经验记忆不可用（依赖未安装或初始化失败）"}
+            verbose_print = bool(params.get("verbose_print", False))
+            limit = int(params.get("limit", 20) or 20)
+            try:
+                rows = self.memory_service.list_recent(
+                    limit=limit, scope_key=self._memory_scope_key()
+                )
+                if verbose_print:
+                    if rows:
+                        print(f"\n🧠 最近经验记忆（最多 {limit} 条，当前工作区作用域）:")
+                        for r in rows:
+                            print(
+                                f"  - [{r.get('tier')}] {r.get('title')} "
+                                f"(strength={r.get('strength')}, id={r.get('id')})"
+                            )
+                            if r.get("preview"):
+                                print(f"    {r.get('preview')}…")
+                    else:
+                        print("🧠 当前作用域下暂无经验记忆。")
+                return {"success": True, "items": rows}
+            except Exception as e:
+                return {"success": False, "error": f"列出经验记忆失败: {e}"}
+
+        elif action == "memory_stats":
+            if not self._ensure_memory_service():
+                return {"success": False, "error": "经验记忆不可用（依赖未安装或初始化失败）"}
+            verbose_print = bool(params.get("verbose_print", False))
+            try:
+                st = self.memory_service.stats()
+                if verbose_print:
+                    print("\n🧠 经验记忆统计:")
+                    print(f"  条数: {st.get('total_memories', 0)}")
+                    print(f"  嵌入模型: {st.get('embedding_model', '-')}")
+                    print(f"  存储目录: {st.get('storage_dir', '-')}")
+                return {"success": True, "stats": st}
+            except Exception as e:
+                return {"success": False, "error": f"读取经验记忆统计失败: {e}"}
+
+        elif action == "memory_delete":
+            if not self._ensure_memory_service():
+                return {"success": False, "error": "经验记忆不可用（依赖未安装或初始化失败）"}
+            verbose_print = bool(params.get("verbose_print", False))
+            mid = str(params.get("memory_id") or params.get("id") or "").strip()
+            if not mid:
+                return {"success": False, "error": "缺少 memory_id"}
+            try:
+                ok = self.memory_service.delete_memory(mid)
+                if verbose_print:
+                    if ok:
+                        print(f"🧠 已删除经验记忆: {mid}")
+                    else:
+                        print(f"🧠 未找到或删除失败: {mid}")
+                return {"success": ok, "memory_id": mid}
+            except Exception as e:
+                return {"success": False, "error": f"删除经验记忆失败: {e}"}
+
         elif action == "execution_policy_set":
             result = self._set_execution_policy(arguments.get("policy", ""))
             if result.get("success"):
@@ -4972,7 +5373,7 @@ big_image.jpg
                     if not builtin_line:
                         print(
                             "ℹ️ 内置命令需以 / 开头，"
-                            "例如 /exit、/help、/clear screen、/knowledge status；单独输入 / 无效。"
+                            "例如 /exit、/help、/clear screen、/knowledge status、/memory status；单独输入 / 无效。"
                             "不经过 AI 的本机命令与脚本请以 ! 开头，例如 !ls、!git status。"
                         )
                         continue
@@ -5017,6 +5418,59 @@ big_image.jpg
                         continue
                     if bl == "knowledge status":
                         self._print_knowledge_status_details()
+                        continue
+
+                    if bl == "memory":
+                        print("❌ 用法: /memory <status|stats|list|search <query>|remember <text>|delete <id>>")
+                        continue
+                    if bl == "memory status":
+                        self._print_memory_status_details()
+                        continue
+                    if bl == "memory stats":
+                        self.execute_tool_call("memory_stats", {"verbose_print": True})
+                        continue
+                    if bl == "memory list":
+                        self.execute_tool_call(
+                            "memory_list", {"limit": 20, "verbose_print": True}
+                        )
+                        continue
+                    if bl.startswith("memory search "):
+                        q = builtin_line[len("memory search ") :].strip()
+                        if q:
+                            self.execute_tool_call(
+                                "memory_search", {"query": q, "verbose_print": True}
+                            )
+                        else:
+                            print("❌ 请提供检索内容")
+                        continue
+                    if bl.startswith("memory remember "):
+                        text = builtin_line[len("memory remember ") :].strip()
+                        if not text:
+                            print("❌ 请提供要记住的内容")
+                            continue
+                        title = text[:80] + ("…" if len(text) > 80 else "")
+                        self.execute_tool_call(
+                            "memory_add",
+                            {
+                                "title": title,
+                                "content": text,
+                                "tier": "episodic",
+                                "memory_type": "preference",
+                                "source": "user_request",
+                                "user_request": text,
+                                "verbose_print": True,
+                            },
+                        )
+                        continue
+                    if bl.startswith("memory delete "):
+                        mid = builtin_line[len("memory delete ") :].strip()
+                        if mid:
+                            self.execute_tool_call(
+                                "memory_delete",
+                                {"memory_id": mid, "verbose_print": True},
+                            )
+                        else:
+                            print("❌ 请提供记忆 id")
                         continue
 
                     if bl.startswith("execution-policy "):
@@ -5080,6 +5534,14 @@ big_image.jpg
                         print("  7. /knowledge sync              - 同步索引文档")
                         print("  8. /knowledge stats             - 查看统计信息")
                         print("  9. /knowledge search <query>    - 手动搜索知识库")
+
+                        print("\n🧠 经验记忆命令（与知识库分离）：")
+                        print("  /memory status                  - 经验记忆依赖与存储状态")
+                        print("  /memory stats                   - 条数与模型目录")
+                        print("  /memory list                    - 当前工作区最近记忆摘要")
+                        print("  /memory search <query>          - 语义检索内化经验")
+                        print("  /memory remember <text>         - 手动写入一条经验（用户发起）")
+                        print("  /memory delete <id>             - 按 id 删除一条记忆")
 
                         print("\n🦅 执行策略命令：")
                         print("  /execution-policy show          - 显示当前策略详情与注意事项")
@@ -5229,7 +5691,9 @@ big_image.jpg
                     "2) 在同一条回复结尾输出且仅输出一个工具调用 JSON。\n"
                     "3) 若需要先请求某个 skill 完整提示，也必须先给出上述步骤编排，再在结尾输出 "
                     "{\"tool\":\"request_skill_prompt\",\"args\":{\"skill_id\":\"...\"}}。\n"
-                    "4) 对于需要两步及以上完成的任务，禁止首轮直接只给工具调用 JSON 而不做“事项简述 + 步骤编排”。\n\n"
+                    "4) 对于需要两步及以上完成的任务，禁止首轮直接只给工具调用 JSON 而不做“事项简述 + 步骤编排”。\n"
+                    "5) 若用户问题可被上一条 system 开头的【经验记忆】单独完整回答，"
+                    "首轮应直接给出简短自然语言并以 {\"tool\":\"done\",\"args\":{}} 结束，不要输出 Step 编排或 memory_search。\n\n"
                     "【MCP 工具选择补充约束】\n"
                     "- 用户若请求“指定 MCP server 的信息/详情”，首个查询工具必须是 mcp_server_info。\n"
                     "- mcp_status/mcp_status_refresh 仅用于全局 MCP 状态总览，不可替代指定 server 的详情查询。\n\n"
@@ -5238,6 +5702,12 @@ big_image.jpg
                     "- 必须：用户明确要求「检索知识库」「在知识库里查」「参考知识库中的资料/内容」或清晰等价表述时，"
                     "必须先调用 knowledge_search 取得相关片段，再作答或继续其他工具；禁止未检索却声称已依据知识库。\n"
                     "- 判定依据为用户原话语义，不使用固定关键词表做机械匹配。\n\n"
+                    "【经验记忆 memory_* 与 knowledge_search 区分】\n"
+                    "- knowledge_search：用户明确要求检索/参考「知识库、本地文档库」中的资料时使用。\n"
+                    "- memory_search：仅当 system 开头【经验记忆】未包含作答所需信息、且确实需要额外检索时再调用；"
+                    "若已含足够条目，须直接简洁作答并以 done 结束，禁止为「先检索再答」而调用本工具或展开多步 Step。\n"
+                    "- memory_add：用户明确要求「记住某事」「以后按某偏好」且属于个人经验而非文档时；"
+                    "若你认为用户观点明显有误，仍可按工具说明在内容中记录你的判断（system_note）。\n\n"
                     "首轮输出模板示例：\n"
                     "我将帮你获取并显示 playwright MCP 最新状态。\n"
                     "Step 1 [in_progress]: <当前要执行的步骤>\n"
@@ -5431,6 +5901,7 @@ big_image.jpg
                         + (f"\n{post_result_synthesis_rule}" if post_result_synthesis_rule else "")
                     )
                 in_task_execution = False
+                self._schedule_auto_memory_reflect()
 
             except KeyboardInterrupt:
                 if in_task_execution:
