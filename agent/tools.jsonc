@@ -764,7 +764,7 @@
     "type": "function",
     "function": {
       "name": "memory_search",
-      "description": "在当前工作区作用域内语义检索「经验记忆」（不是知识库）。仅当 system 开头【经验记忆】仍不足以回答、且确需补充检索时调用；若已足够则禁止仅为确认而调用。query 填检索要点；可选 limit。",
+      "description": "在当前工作区作用域内语义检索「经验记忆」（不是知识库）。缺信息以完成任务时，须先于其它内置工具 / skills / MCP 调用本工具（可明确判定与历史记忆无关的单次输入或纯外部事实除外）；若无命中或仍不足，再用其它能力补齐。若本轮 system 中【经验记忆】已完整覆盖所需信息则不必重复检索。自然语言指称实体且缺少稳定标识时，用实体名/别名 + 可能的关键词作 query，禁止未检索就臆造编号。query 填检索要点；可选 limit。",
       "parameters": {
         "type": "object",
         "properties": {
@@ -910,7 +910,7 @@
     "type": "function",
     "function": {
       "name": "ask_more_info",
-      "description": "当缺少关键输入时，向用户请求补充信息并暂停自动续步，待用户输入后继续。",
+      "description": "当缺少关键输入时，向用户请求补充信息并暂停自动续步，待用户输入后继续。须已先按顺序尝试 memory_search 与其它工具/skills/MCP 仍无法可靠获得时再调用。",
       "parameters": {
         "type": "object",
         "properties": {

@@ -54,7 +54,26 @@ Hosts that only have a single `skills/` directory can still follow the same **fo
 
 Invalid frontmatter may cause the host to **skip** the skill; keep YAML valid.
 
-Optional fields are **not** required to contain host-specific keys. Prefer neutral, portable wording (e.g. “the host’s subprocess tool” instead of a single product name).
+Optional fields are **not** required to contain host-specific keys. Prefer neutral, portable wording (e.g. “the host’s shell or subprocess runner” instead of a single product name).
+
+### Host–skill boundary: what `SKILL.md` must not prescribe
+
+Individual skills **cannot see** the host’s full tool surface or other skill bundles. A `SKILL.md` must describe **only** what happens **inside this bundle** (scripts, flags, expected sections in output, retries, safety). The following belong to **host** prompts and runtime—not to any single skill file:
+
+| Stay in the host (system / tool prompts, agent code) | Stay inside the skill (`SKILL.md` + bundle assets) |
+|------------------------------------------------------|---------------------------------------------------|
+| Task lifecycle: e.g. when to emit **done**, **ask_more_info**, **task_changed** | When **this** script’s run is complete for the current query (e.g. required markers in stdout), and “do not re-run the same command for the same query” |
+| Naming or ordering **other skills**, MCP tools, or “load skill” injection | Neutral wording: e.g. “further steps the host may schedule are out of scope here” |
+| Multi-skill pipelines, stdin pipes **between** bundles, cross-skill ids | CLI for **this** bundle only; how the host merges `model_context_file_env` into the subprocess result |
+
+**Rules of thumb**
+
+- Do **not** mention host control tools by name (`done`, `ask_more_info`, etc.).
+- Do **not** reference other **`skill_id`** values or tell the model to call another skill next.
+- Do **not** reference **MCP** or other plugin namespaces as part of this skill’s contract unless the repo defines a **neutral, portable** pattern that applies to all skills equally.
+- Prefer **subprocess result** / **merged `output`** over **tool `output`** when you mean shell stdout or merged file content, so “tool” is not confused with the host’s JSON tool API.
+
+Multi-skill orchestration and “finish the whole user goal” policies live in **host documentation** (e.g. Smart Shell’s `agent/system_prompt.md`, `agent/tools_prompt.md`), not in per-skill `SKILL.md` files.
 
 ---
 
@@ -132,3 +151,4 @@ Other products can implement the same **principles** without copying implementat
 
 - Introduced to capture host–skill boundaries and portability expectations for Agent Skills in Smart Shell and compatible agents.
 - Added multi-skill orchestration principle: prefer stdin/pipes, avoid avoidable intermediate files.
+- Documented **host–skill boundary** for `SKILL.md`: no `done`/other-skill/MCP orchestration inside individual skills; those rules belong in host prompts.
