@@ -182,6 +182,19 @@ def _import_ollama_client():
     return importlib.import_module("ollama")
 
 
+# 经验记忆向量检索：query = 本轮用户输入 + 最近 N 轮 user/assistant（单条截断；总长上限）。
+MEMORY_RETRIEVAL_ROUNDS = 3
+MEMORY_RETRIEVAL_MSG_MAX_CHARS = 400
+MEMORY_RETRIEVAL_QUERY_MAX_CHARS = 2000
+
+# 会话级摘要：cheap 滚动摘录 + 可选周期性 LLM 压缩，并入经验记忆检索 query。
+SESSION_SUMMARY_ROLLING_MAX_CHARS = 600
+SESSION_SUMMARY_MSG_SNIPPET = 120
+SESSION_SUMMARY_LLM_INTERVAL_PAIRS = 6
+SESSION_SUMMARY_LLM_MAX_CHARS = 1200
+SESSION_SUMMARY_LLM_HISTORY_MSGS = 16
+
+
 class SmartShellAgent:
     def __init__(self, model_name: str = "gemma3:4b", work_directory: Optional[str] = None, provider: str = "ollama", openai_conf: Optional[dict] = None, openwebui_conf: Optional[dict] = None, params: Optional[dict] = None, normal_config: Optional[dict] = None, vision_config: Optional[dict] = None, config_dir: Optional[str] = None, builtin_skills_dir: Optional[str] = None):
         """
@@ -202,6 +215,10 @@ class SmartShellAgent:
         # Runtime guard: prevent AI from modifying smart-shell itself.
         self._self_repo_root = Path(__file__).resolve().parent.parent
         self.conversation_history = []
+        # 会话摘要（经验记忆检索 query 前缀）：滚动摘录始终更新；LLM 摘要按轮次节流更新。
+        self._session_summary_llm: str = ""
+        self._session_summary_rolling: str = ""
+        self._last_llm_summary_pair_count: int = 0
         self.operation_results = []
         # Session-local paths created by action "script"; may be auto-removed after shell runs them
         self._ephemeral_script_paths: Set[str] = set()
@@ -249,6 +266,7 @@ class SmartShellAgent:
 
         # 加载配置（执行策略默认 confirmation）；知识库在依赖可用时始终启用，不再提供开关
         self.execution_policy = "confirmation"
+        self.session_summary_llm_enabled: bool = True
         try:
             cfg_path = self.config_dir / "config.json"
             if cfg_path.exists():
@@ -258,8 +276,18 @@ class SmartShellAgent:
                 if pol not in ("unlimited", "moderate", "confirmation"):
                     pol = "confirmation"
                 self.execution_policy = pol
+                _sslm = cfg_data.get("session_summary_llm", True)
+                if isinstance(_sslm, bool):
+                    self.session_summary_llm_enabled = _sslm
+                else:
+                    self.session_summary_llm_enabled = str(_sslm).strip().lower() in (
+                        "1",
+                        "true",
+                        "yes",
+                        "on",
+                    )
         except Exception as e:
-            print(f"⚠️ 读取配置中的执行策略失败，使用默认值: {e}")
+            print(f"⚠️ 读取 config.json 失败（执行策略 / session_summary_llm 等使用默认值）: {e}")
 
         # Per-target allowlist for y/n confirmations (see confirm_allowlist.json)
         self._allowlist_shell_paths: Dict[str, str] = {}
@@ -420,6 +448,141 @@ class SmartShellAgent:
         except Exception:
             return str(self.work_directory)
 
+    def _update_session_summary_rolling(self) -> None:
+        """Cheap 滚动摘录：最近若干条 user/assistant，单条截断，供检索 query 前缀（无 LLM）。"""
+        hist = list(getattr(self, "conversation_history", None) or [])
+        chunks: List[str] = []
+        snip = SESSION_SUMMARY_MSG_SNIPPET
+        for msg in hist[-8:]:
+            role = (msg.get("role") or "").strip().lower()
+            if role not in ("user", "assistant"):
+                continue
+            c = str(msg.get("content") or "").replace("\n", " ").strip()
+            if len(c) > snip:
+                c = c[: max(1, snip - 1)] + "…"
+            tag = "U" if role == "user" else "A"
+            if c:
+                chunks.append(f"{tag}:{c}")
+        s = " | ".join(chunks)
+        maxc = SESSION_SUMMARY_ROLLING_MAX_CHARS
+        if len(s) > maxc:
+            s = s[-maxc:]
+        self._session_summary_rolling = s
+
+    def _session_summary_for_retrieval(self) -> str:
+        """并入经验记忆检索 query 的会话级前缀：优先 LLM 摘要，否则滚动摘录。"""
+        llm = (self._session_summary_llm or "").strip()
+        if llm:
+            cap = min(800, SESSION_SUMMARY_LLM_MAX_CHARS)
+            return f"[会话摘要]\n{llm[:cap]}"
+        roll = (self._session_summary_rolling or "").strip()
+        if roll:
+            return f"[会话摘录]\n{roll}"
+        return ""
+
+    def _maybe_refresh_session_summary_llm(self) -> None:
+        """每 SESSION_SUMMARY_LLM_INTERVAL_PAIRS 个完整 user/assistant 对，调用一次轻量 LLM 压缩摘要。"""
+        if not getattr(self, "session_summary_llm_enabled", True):
+            return
+        pairs = len(self.conversation_history) // 2
+        if pairs < SESSION_SUMMARY_LLM_INTERVAL_PAIRS:
+            return
+        if self._last_llm_summary_pair_count > 0:
+            if pairs - self._last_llm_summary_pair_count < SESSION_SUMMARY_LLM_INTERVAL_PAIRS:
+                return
+        hist = self.conversation_history[-SESSION_SUMMARY_LLM_HISTORY_MSGS:]
+        lines: List[str] = []
+        for msg in hist:
+            role = (msg.get("role") or "").strip().lower()
+            if role not in ("user", "assistant"):
+                continue
+            tag = "用户" if role == "user" else "助手"
+            c = str(msg.get("content") or "")[:500].replace("\n", " ")
+            lines.append(f"{tag}: {c}")
+        blob = "\n".join(lines)
+        if not blob.strip():
+            return
+        try:
+            raw = self.call_ai(
+                "以下是本会话近期消息摘录，请按系统指令输出摘要。\n\n" + blob,
+                context="",
+                stream=False,
+                session_summary_mode=True,
+            )
+        except Exception:
+            return
+        if not isinstance(raw, str):
+            return
+        text = raw.strip()
+        if text.startswith("❌") or text.startswith("调用大模型"):
+            return
+        text = text.replace("```", "").strip()
+        if not text:
+            return
+        self._session_summary_llm = text[:SESSION_SUMMARY_LLM_MAX_CHARS]
+        self._last_llm_summary_pair_count = pairs
+
+    def _build_memory_retrieval_query(self, user_input: str) -> str:
+        """
+        构造经验记忆语义检索用查询串：最近 MEMORY_RETRIEVAL_ROUNDS 轮对话（每轮 user+assistant）
+        经单条截断后，与本轮用户输入拼接；总长不超过 MEMORY_RETRIEVAL_QUERY_MAX_CHARS（超长保留末尾）。
+        """
+        per_msg = MEMORY_RETRIEVAL_MSG_MAX_CHARS
+        max_total = MEMORY_RETRIEVAL_QUERY_MAX_CHARS
+        rounds = MEMORY_RETRIEVAL_ROUNDS
+
+        def _clip(text: str, n: int) -> str:
+            t = (text or "").strip()
+            if not t:
+                return ""
+            if len(t) <= n:
+                return t
+            return t[: max(1, n - 1)] + "…"
+
+        hist = list(getattr(self, "conversation_history", None) or [])
+        want = rounds * 2
+        tail = hist[-want:] if len(hist) >= want else hist[:]
+
+        if tail and (tail[-1].get("role") or "") == "user":
+            tail = tail[:-1]
+        while tail and (tail[0].get("role") or "") != "user":
+            tail = tail[1:]
+        if len(tail) % 2 == 1:
+            tail = tail[1:]
+
+        lines: List[str] = []
+        for msg in tail:
+            role = (msg.get("role") or "").strip().lower()
+            if role not in ("user", "assistant"):
+                continue
+            content = _clip(str(msg.get("content") or ""), per_msg)
+            if not content:
+                continue
+            tag = "用户" if role == "user" else "助手"
+            lines.append(f"[{tag}] {content}")
+
+        cur = _clip((user_input or "").strip(), per_msg)
+        if lines and cur:
+            combined = "\n".join(lines) + "\n\n---\n\n[当前] " + cur
+        elif cur:
+            combined = "[当前] " + cur
+        else:
+            combined = "\n".join(lines)
+
+        combined = combined.strip()
+        pref = self._session_summary_for_retrieval()
+        if pref:
+            if combined:
+                combined = f"{pref}\n\n---\n\n{combined}"
+            else:
+                combined = pref
+        combined = combined.strip()
+        if not combined:
+            return ""
+        if len(combined) <= max_total:
+            return combined
+        return combined[-max_total:]
+
     @staticmethod
     def _memory_row_priority_key(r: Dict[str, Any]) -> Tuple[int, int]:
         """preference + durable 排在前列，便于身份/称呼类条目占满注入预算。"""
@@ -460,14 +623,16 @@ class SmartShellAgent:
 
         短句与部分已存记忆在向量上可能不相似，仅靠 Chroma 会漏检；用「语义 + 近期」并集、按 id 去重。
         当用户显式追问记忆/昵称时，追加固定检索词以减轻「身份条目不相似」导致的漏检。
+        主检索 query 使用「最近若干轮对话摘要 + 本轮输入」，不单用本轮一句（见 _build_memory_retrieval_query）。
         """
-        q = (user_input or "").strip()[:2000]
-        if not q:
+        raw_ui = (user_input or "").strip()
+        q = self._build_memory_retrieval_query(user_input)
+        if not q.strip():
             return []
         sk = self._memory_scope_key()
 
         rows_boost: List[Dict[str, Any]] = []
-        if self._user_input_emphasizes_memory_or_identity(q):
+        if self._user_input_emphasizes_memory_or_identity(raw_ui):
             for bq in (
                 "用户偏好 昵称 名字 称呼 助手身份 起名 约定",
                 "preference nickname identity assistant name 称呼",
@@ -531,8 +696,8 @@ class SmartShellAgent:
         if not self._ensure_memory_service():
             return ""
         try:
-            q = (user_input or "").strip()[:2000]
-            if len(q) < 1:
+            rq = self._build_memory_retrieval_query(user_input)
+            if not rq.strip():
                 return ""
             rows = self._memory_rows_for_prompt(user_input)
             if not rows:
@@ -1079,6 +1244,27 @@ class SmartShellAgent:
             print(f"⚠️ 保存执行策略到配置失败: {e}")
             return False
 
+    def _save_session_summary_llm_to_config(self) -> bool:
+        """将 session_summary_llm 开关写入 config.json（与 execution_policy 等并存）。"""
+        try:
+            cfg_path = self.config_dir / "config.json"
+            cfg_data: Dict[str, Any] = {}
+            if cfg_path.exists():
+                try:
+                    with open(cfg_path, "r", encoding="utf-8") as f:
+                        cfg_data = json.load(f) or {}
+                except Exception:
+                    cfg_data = {}
+            cfg_data["session_summary_llm"] = bool(
+                getattr(self, "session_summary_llm_enabled", True)
+            )
+            with open(cfg_path, "w", encoding="utf-8") as f:
+                json.dump(cfg_data, f, ensure_ascii=False, indent=2)
+            return True
+        except Exception as e:
+            print(f"⚠️ 保存 session_summary_llm 到配置失败: {e}")
+            return False
+
     def _enable_freedom(self) -> Dict[str, Any]:
         """兼容命令：设置 execution_policy=moderate"""
         if self.execution_policy == "moderate":
@@ -1128,7 +1314,7 @@ class SmartShellAgent:
                     f"输入 {_pm} 可切换到 moderate；输入 {_pc} 可切回 confirmation。"
                 )
             )
-            print("  注意事项：高风险操作也会直接执行，仅建议在完全可控环境使用。")
+            print(_ansi_red("  注意事项：高风险操作也会直接执行，仅建议在完全可控环境使用。"))
         elif pol == "moderate":
             print(
                 _ansi_yellow(
@@ -1136,13 +1322,11 @@ class SmartShellAgent:
                     f"输入 {_pc} 可切回 confirmation。"
                 )
             )
-            print("  注意事项：判定结果非 100% 准确，关键操作建议手动复核后再执行。")
         else:
             print(
                 "  需确认的操作将始终询问 y/n。"
                 f"输入 {_pm} 可切换到 moderate；输入 {_pu} 可切换到 unlimited。"
             )
-            print("  注意事项：最安全模式，推荐日常默认使用。")
 
     def _print_knowledge_status_details(self) -> None:
         svc = getattr(self, "knowledge_manager", None)
@@ -1914,8 +2098,11 @@ class SmartShellAgent:
         freedom_combined_review: bool = False,
         return_message: bool = False,
         reflection_mode: bool = False,
+        session_summary_mode: bool = False,
     ):
-        """调用大模型 API 获取回复；支持流式输出。reflection_mode 用于记忆内省，不注入对话历史与经验块。"""
+        """调用大模型 API 获取回复；支持流式输出。
+        reflection_mode 用于记忆内省；session_summary_mode 用于会话摘要压缩，均不注入对话历史与经验块。
+        """
         try:
             # 确保os未被局部变量遮蔽
             import os
@@ -2006,7 +2193,22 @@ class SmartShellAgent:
                     {"role": "user", "content": user_input},
                 ]
                 record_history = False
+            elif session_summary_mode:
+                if stream:
+                    return "❌ 错误：会话摘要不支持流式模式。"
+                sum_system = (
+                    "你是会话压缩模块，输出供「经验记忆向量检索」使用的中文摘要（不是对用户可见的答复）。\n"
+                    "根据下方多轮对话摘录，用 3～10 个短句概括：用户主要目标、已确认事实、称呼/昵称/偏好/约定（若有）。\n"
+                    "只输出正文，不要 markdown、不要标题、不要 JSON、不要复述本说明。"
+                )
+                messages = [
+                    {"role": "system", "content": sum_system},
+                    {"role": "user", "content": user_input},
+                ]
+                record_history = False
             else:
+                self._update_session_summary_rolling()
+                self._maybe_refresh_session_summary_llm()
                 self._reload_skills()
                 record_history = True
                 # Refresh MCP prompt append at call time so newly loaded tool caches
@@ -2099,11 +2301,13 @@ class SmartShellAgent:
                     "Authorization": f"Bearer {api_key}",
                     "Content-Type": "application/json"
                 }
-                payload = {
+                payload: Dict[str, Any] = {
                     "model": model,
                     "messages": messages,
-                    "stream": stream
+                    "stream": stream,
                 }
+                if session_summary_mode:
+                    payload["max_tokens"] = 512
                 resp = requests.post(url, headers=headers, json=payload, verify=False, timeout=120, stream=stream)
                 resp.raise_for_status()
                 if stream:
@@ -2156,12 +2360,14 @@ class SmartShellAgent:
                     "Authorization": f"Bearer {api_key}",
                     "Content-Type": "application/json"
                 }
-                payload = {
+                payload_ow: Dict[str, Any] = {
                     "model": model,
                     "messages": messages,
-                    "stream": stream
+                    "stream": stream,
                 }
-                resp = requests.post(url, headers=headers, json=payload, verify=False, timeout=120, stream=stream)
+                if session_summary_mode:
+                    payload_ow["max_tokens"] = 512
+                resp = requests.post(url, headers=headers, json=payload_ow, verify=False, timeout=120, stream=stream)
                 resp.raise_for_status()
                 if stream:
                     def gen():
@@ -2236,6 +2442,8 @@ class SmartShellAgent:
                         "messages": messages,
                         "stream": False,
                     }
+                    if session_summary_mode:
+                        chat_kwargs["options"] = {"num_predict": 512, "temperature": 0.3}
                     response = ollama.chat(**chat_kwargs)
                     message = response.get("message", {}) or {}
                     ai_response = message.get("content", "") or ""
@@ -5081,18 +5289,29 @@ big_image.jpg
                 results = self.memory_service.search_memories(
                     query, top_k=top_k, scope_key=sk
                 )
-                # 模型调用时不刷屏：完整结果仅在返回 JSON 中供下一轮思考；终端仅可选一行摘要（如 /memory search）。
+                # 模型调用时不刷屏：完整结果在返回 JSON；终端在 verbose_print 时打印可读详情（如 /memory search）。
                 if verbose_print:
                     n = len(results)
                     print(f"\n🧠 经验记忆检索：{n} 条命中（查询: {query}）")
-                    if n and n <= 8:
-                        print("   " + " | ".join(str(r.get("title") or "")[:48] for r in results))
-                    elif n > 8:
-                        print(
-                            "   "
-                            + " | ".join(str(r.get("title") or "")[:48] for r in results[:8])
-                            + " …"
-                        )
+                    _body_cap = 1600
+                    for i, r in enumerate(results, 1):
+                        title = str(r.get("title") or "").strip() or "(无标题)"
+                        mid = str(r.get("id") or "").strip()
+                        sim = r.get("similarity")
+                        tier = str(r.get("tier") or "").strip()
+                        body = str(r.get("content") or "").strip()
+                        if len(body) > _body_cap:
+                            body = body[: _body_cap - 1] + "…"
+                        sn = r.get("system_note")
+                        sim_s = f"{float(sim):.3f}" if sim is not None else "—"
+                        print(f"\n--- {i}. {title}")
+                        print(f"    id: {mid}  |  tier: {tier or '—'}  |  相似度: {sim_s}")
+                        print(f"    内容:\n{body}")
+                        if sn:
+                            _sn = str(sn).strip()
+                            if len(_sn) > 400:
+                                _sn = _sn[:399] + "…"
+                            print(f"    内省备注: {_sn}")
                 return {"success": True, "results": results, "query": query, "scope": sk}
             except Exception as e:
                 return {"success": False, "error": f"经验记忆检索失败: {e}"}
@@ -5466,19 +5685,6 @@ big_image.jpg
 
         self._print_execution_policy_details()
 
-        _acr = "`/always_confirm-reset`"
-        _ns = (
-            len(self._allowlist_shell_paths)
-            + len(self._allowlist_shell_exes)
-        )
-        if _ns:
-            print(
-                f"免确认列表：{len(self._allowlist_shell_paths)} 个 shell 脚本路径+哈希、"
-                f"{len(self._allowlist_shell_exes)} 个 shell 可执行键、"
-                f"配置文件 {self._confirm_allowlist_path()}；"
-                f"输入 {_acr} 可清空。"
-            )
-
         print("输入 '/help' 查看帮助")
         print("=" * 80)
         try:
@@ -5574,6 +5780,9 @@ big_image.jpg
                         self.conversation_history.clear()
                         self.operation_results.clear()
                         self._last_auto_removed_ephemeral = None
+                        self._session_summary_llm = ""
+                        self._session_summary_rolling = ""
+                        self._last_llm_summary_pair_count = 0
                         print("✅ 已清空 AI 上下文（对话历史与近期操作结果缓存，不影响命令行输入历史）")
                         continue
                     if bl == "knowledge":
@@ -5650,6 +5859,49 @@ big_image.jpg
                     if bl == "execution-policy":
                         print("❌ 用法: /execution-policy <show|unlimited|moderate|confirmation>")
                         continue
+
+                    if bl.startswith("session-summary "):
+                        sub = bl[len("session-summary ") :].strip().lower()
+                        if sub in ("on", "enable", "true", "1"):
+                            self.session_summary_llm_enabled = True
+                            ok = self._save_session_summary_llm_to_config()
+                            print(
+                                f"✅ 已开启会话 LLM 摘要（周期性压缩，用于经验记忆检索 query）"
+                                f"{'；已写入 config.json' if ok else '（配置保存失败，仅本次进程生效）'}"
+                            )
+                            continue
+                        if sub in ("off", "disable", "false", "0"):
+                            self.session_summary_llm_enabled = False
+                            ok = self._save_session_summary_llm_to_config()
+                            print(
+                                f"✅ 已关闭会话 LLM 摘要（仍保留滚动摘录 [会话摘录]）"
+                                f"{'；已写入 config.json' if ok else '（配置保存失败，仅本次进程生效）'}"
+                            )
+                            continue
+                        if sub == "show":
+                            on = bool(getattr(self, "session_summary_llm_enabled", True))
+                            cfg_path = self.config_dir / "config.json"
+                            print(
+                                f"会话 LLM 摘要 session_summary_llm：{'开启' if on else '关闭'}\n"
+                                f"  配置项：config.json 中的 \"session_summary_llm\"（布尔）\n"
+                                f"  配置文件：{cfg_path}"
+                            )
+                            continue
+                        print(
+                            "❌ 用法: /session-summary <on|off|show>\n"
+                            "  on/off   - 开关周期性 LLM 会话摘要（关闭后仍用廉价滚动摘录）\n"
+                            "  show     - 查看当前开关与配置文件路径"
+                        )
+                        continue
+                    if bl == "session-summary":
+                        print(
+                            "❌ 用法: /session-summary <on|off|show>\n"
+                            "  /session-summary on     - 开启 LLM 会话摘要\n"
+                            "  /session-summary off    - 关闭（仅滚动摘录）\n"
+                            "  /session-summary show   - 查看状态"
+                        )
+                        continue
+
                     if bl == "always_confirm-reset":
                         self.execute_tool_call("always_confirm_reset", {})
                         continue
@@ -5711,6 +5963,11 @@ big_image.jpg
                         print("  /execution-policy unlimited     - 无需确认，直接执行所有操作")
                         print("  /execution-policy moderate      - AI 判定可逆后自动跳过确认")
                         print("  /execution-policy confirmation  - 始终 y/n 确认后执行")
+
+                        print("\n📝 会话摘要（经验记忆检索）：")
+                        print("  /session-summary on      - 开启周期性 LLM 会话摘要（写入 config.json）")
+                        print("  /session-summary off     - 关闭 LLM 摘要（仍保留滚动摘录）")
+                        print("  /session-summary show    - 查看开关与配置路径")
 
                         print("\n🔔 确认免列表（confirm_allowlist.json）：")
                         print(
