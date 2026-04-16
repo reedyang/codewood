@@ -8,6 +8,7 @@ and formats analysis outputs for terminal usage.
 
 import argparse
 import json
+import locale
 import logging
 import sys
 from typing import Any, Dict, List, Optional
@@ -224,6 +225,33 @@ def _extract_quote_json_from_argv(argv: List[str]) -> Optional[str]:
     return None
 
 
+def _decode_stdin_text(raw: bytes) -> str:
+    """
+    Decode piped stdin bytes.
+
+    Upstream Python scripts usually emit UTF-8. On Windows, ``cmd.exe`` / ``echo``
+    may emit the system ANSI/OEM code page (e.g. GBK for Chinese locales), which
+    breaks ``sys.stdin.read()`` (UTF-8 by default). Read ``sys.stdin.buffer``
+    and try multiple decodings.
+    """
+    if not raw:
+        return ""
+    for enc in ("utf-8-sig", "utf-8"):
+        try:
+            return raw.decode(enc)
+        except UnicodeDecodeError:
+            continue
+    pref = (locale.getpreferredencoding(False) or "").strip()
+    for enc in (pref, "gbk", "gb18030", "cp936"):
+        if not enc:
+            continue
+        try:
+            return raw.decode(enc)
+        except (UnicodeDecodeError, LookupError):
+            continue
+    return raw.decode("utf-8", errors="replace")
+
+
 def main() -> int:
     """CLI entrypoint for direct skill execution."""
     parser = argparse.ArgumentParser(
@@ -268,7 +296,7 @@ def main() -> int:
     quote_json: Optional[str] = None
 
     if args.quote_stdin:
-        quote_json = sys.stdin.read()
+        quote_json = _decode_stdin_text(sys.stdin.buffer.read()).strip()
         quote_file = None
     elif quote_file is None:
         # Prefer a payload reconstructed from raw argv when available.

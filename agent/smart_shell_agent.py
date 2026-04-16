@@ -1150,6 +1150,7 @@ class SmartShellAgent:
                 break
         if target is None:
             return None
+        _br = Path(target.bundle_root)
         lines = [
             "",
             "## Agent Skill（按需加载）",
@@ -1157,6 +1158,9 @@ class SmartShellAgent:
             f"**Description:** {target.description}",
             "",
             f"**Skill bundle root (absolute path on this machine):** `{target.bundle_root}`",
+            f"**SKILL.md path (same bundle):** `{_br / 'SKILL.md'}`",
+            "技能正文中的 `<skill_root>` 即指上文的 **Skill bundle root**。",
+            "",
             target.body,
             "",
         ]
@@ -6113,7 +6117,9 @@ big_image.jpg
                     "{\"tool\":\"request_skill_prompt\",\"args\":{\"skill_id\":\"...\"}}。\n"
                     "4) 对于需要两步及以上完成的任务，禁止首轮直接只给工具调用 JSON 而不做“事项简述 + 步骤编排”。\n"
                     "5) 若用户问题可被上一条 system 开头的【经验记忆】单独完整回答，"
-                    "首轮应直接给出简短自然语言并以 {\"tool\":\"done\",\"args\":{}} 结束，不要输出 Step 编排或 memory_search。\n\n"
+                    "首轮应直接给出简短自然语言并以 {\"tool\":\"done\",\"args\":{}} 结束，不要输出 Step 编排或 memory_search。\n"
+                    "6) 若任务需要把自然语言指称解析为稳定标识符/映射：先阅读【经验记忆】，仍不足则首轮或次轮使用 memory_search，再执行检索、shell 或 request_skill_prompt；禁止在未核对记忆时先猜标识符再搜网。\n"
+                    "7) 若你已输出 Step 1..N 且含「检索/搜索」与后续「分析、再跑脚本、再请求其它 skill」等，禁止在仅完成靠前步骤且仍有 pending 时 {\"tool\":\"done\"}；须继续直至各步完成或显式说明改计划原因。\n\n"
                     "【MCP 工具选择补充约束】\n"
                     "- 用户若请求“指定 MCP server 的信息/详情”，首个查询工具必须是 mcp_server_info。\n"
                     "- mcp_status/mcp_status_refresh 仅用于全局 MCP 状态总览，不可替代指定 server 的详情查询。\n\n"
@@ -6124,8 +6130,8 @@ big_image.jpg
                     "- 判定依据为用户原话语义，不使用固定关键词表做机械匹配。\n\n"
                     "【经验记忆 memory_* 与 knowledge_search 区分】\n"
                     "- knowledge_search：用户明确要求检索/参考「知识库、本地文档库」中的资料时使用。\n"
-                    "- memory_search：仅当 system 开头【经验记忆】未包含作答所需信息、且确实需要额外检索时再调用；"
-                    "若已含足够条目，须直接简洁作答并以 done 结束，禁止为「先检索再答」而调用本工具或展开多步 Step。\n"
+                    "- memory_search：若 system 开头【经验记忆】已含作答所需信息，不要为走流程而调用；"
+                    "但若任务依赖「仅可能存在于记忆中的实体标识/别名映射」而当前看不出可靠值，必须先 memory_search 再调用下游取数或脚本，禁止臆造标识符。\n"
                     "- memory_add：用户明确要求「记住某事」「以后按某偏好」且属于个人经验而非文档时；"
                     "若你认为用户观点明显有误，仍可按工具说明在内容中记录你的判断（system_note）。\n\n"
                     "首轮输出模板示例：\n"

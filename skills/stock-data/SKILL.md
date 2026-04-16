@@ -8,6 +8,12 @@ license: MIT
 
 基于新浪财经实时行情接口（`hq.sinajs.cn`）的内建 skill，用于获取 A 股实时行情，并生成 `stock-daily-analysis` 可直接消费的快照 JSON。
 
+## Bundle 与脚本路径（可移植）
+
+本技能以 **bundle** 形式分发：与本 `SKILL.md` 同级的 `scripts/` 目录下为可执行脚本。占位符 **`<skill_root>`** 表示**该 bundle 的根目录绝对路径**，须由**运行环境在调用前**解析并填入（常见做法是在提示中列出检测到的 `scripts/*.py` 绝对路径）；**不要**凭猜测拼接父目录名。命令形如：
+
+`python "<skill_root>/scripts/fetch_realtime_snapshot.py" ...`
+
 ## 用途
 
 - 获取单只或多只 A 股实时行情。
@@ -45,7 +51,7 @@ python "<skill_root>/scripts/fetch_realtime_snapshot.py" 600519 --compact --retr
 
 ## 与 stock-daily-analysis 联动
 
-**推荐一条 shell 管道**（不在工作区写中间文件）：
+**推荐一条 stdin/stdout 管道**（不在工作区写中间文件）：
 
 ```bash
 python "<stock_data_skill_root>/scripts/fetch_realtime_snapshot.py" 600519 601318 --compact | python "<stock_skill_root>/scripts/analyzer.py" 600519 601318 --quote-stdin --json
@@ -57,4 +63,5 @@ python "<stock_data_skill_root>/scripts/fetch_realtime_snapshot.py" 600519 60131
 
 - 本 skill 只负责行情抓取与标准化，不做交易建议。
 - 不在本 skill 内调用其他 skill 脚本，由上层 AI 进行编排。
+- 若用户只给出公司/标的自然语言称呼而未在句中写出本脚本所需的交易所代码，编排侧应**先**取得可靠代码（例如经会话内已确认的信息或运行环境提供的记忆检索），再调用本脚本；**禁止**臆测代码。
 - 若脚本出现网络错误，建议提高 `--retries` 与 `--retry-delay` 后重试。

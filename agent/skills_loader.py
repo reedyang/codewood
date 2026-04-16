@@ -238,9 +238,12 @@ def build_skills_system_append(skills: List[SkillRecord]) -> str:
         lines.append(f"**Description:** {s.description}")
         lines.append("")
         lines.append(f"**Skill bundle root (absolute path on this machine):** `{s.bundle_root}`")
+        _skill_md = Path(s.bundle_root) / "SKILL.md"
+        lines.append(f"**SKILL.md path (same bundle):** `{_skill_md}`")
         lines.append(
-            "正文中的 `scripts/` 等路径均相对于该目录。`shell` 在用户当前工作目录执行，"
-            "**不会**切换到技能目录；调用正文中的脚本时，请使用 **bundle root + 相对路径** 组成的绝对路径（或对下列已检测脚本逐字使用路径）。"
+            "正文中的 `scripts/` 等路径均相对于 **bundle root**（与 SKILL.md 同级目录下的 `scripts/`）。"
+            "`shell` 在用户当前工作目录执行，**不会**切换到技能目录；调用正文中的脚本时，请使用 **bundle root + 相对路径** 组成的绝对路径（或对下列已检测脚本逐字使用路径）。"
+            "技能正文里的占位符 `<skill_root>` 即指上文的 **Skill bundle root**。"
         )
         bundled = _list_bundled_script_paths(s.bundle_root)
         if bundled:
