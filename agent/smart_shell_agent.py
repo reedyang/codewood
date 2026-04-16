@@ -4049,6 +4049,130 @@ big_image.jpg
         except Exception as e:
             return {"success": False, "error": f"文件比较命令执行异常: {str(e)}"}
 
+    def _grep_read_path_allowed(self, path: Path) -> bool:
+        """Paths that may be read by grep (workspace + AI workspace)."""
+        try:
+            r = path.resolve()
+        except OSError:
+            return False
+        try:
+            wd = self.work_directory.resolve()
+            aw = self.ai_workspace_dir.resolve()
+        except OSError:
+            return False
+        return self._is_path_under(r, wd) or self._is_path_under(r, aw)
+
+    def _grep_output_path_allowed(self, path: Path) -> bool:
+        """Output file may be under workspace, AI workspace, or system temp."""
+        try:
+            r = path.resolve()
+        except OSError:
+            return False
+        try:
+            wd = self.work_directory.resolve()
+            aw = self.ai_workspace_dir.resolve()
+            tmp = Path(__import__("tempfile").gettempdir()).resolve()
+        except OSError:
+            return False
+        return (
+            self._is_path_under(r, wd)
+            or self._is_path_under(r, aw)
+            or self._is_path_under(r, tmp)
+        )
+
+    def action_grep(self, params: Dict[str, Any]) -> dict:
+        """Recursive regex grep over text files; results written to caller-specified file."""
+        from tools.grep_tool import run_grep
+
+        pattern = str(params.get("pattern") or "").strip()
+        out_raw = str(params.get("output_path") or params.get("output_file") or "").strip()
+        root_raw = str(params.get("root") or "").strip()
+        files_raw = params.get("files")
+        extensions = params.get("extensions")
+        ignore_case = bool(params.get("ignore_case", False))
+        multiline = bool(params.get("multiline", False))
+        max_matches = int(params.get("max_matches", 100_000))
+        max_file_bytes = int(params.get("max_file_bytes", 20 * 1024 * 1024))
+        exclude_dir_names = params.get("exclude_dir_names")
+        max_workers = params.get("max_workers")
+
+        if not pattern:
+            return {"success": False, "error": "grep 缺少 pattern（正则表达式）"}
+        if not out_raw:
+            return {"success": False, "error": "grep 缺少 output_path（结果输出文件路径）"}
+
+        out_path = self._resolve_user_path(out_raw)
+        if not self._grep_output_path_allowed(out_path):
+            return {
+                "success": False,
+                "error": "output_path 必须位于当前工作目录、AI 工作区或系统临时目录下",
+            }
+
+        root_path: Optional[Path] = None
+        file_list: Optional[List[Path]] = None
+
+        if isinstance(files_raw, list) and len(files_raw) > 0:
+            file_list = []
+            for fr in files_raw:
+                p = self._resolve_user_path(str(fr).strip())
+                if not self._grep_read_path_allowed(p):
+                    return {"success": False, "error": f"禁止检索该路径（超出允许范围）: {p}"}
+                if p.is_file():
+                    file_list.append(p)
+            if not file_list:
+                return {"success": False, "error": "files 列表中没有有效的现有文件"}
+        elif root_raw:
+            root_path = self._resolve_user_path(root_raw)
+            if not root_path.is_dir():
+                return {"success": False, "error": f"root 不是目录: {root_path}"}
+            if not self._grep_read_path_allowed(root_path):
+                return {"success": False, "error": "禁止在该 root 下检索（超出允许范围）"}
+        else:
+            return {"success": False, "error": "必须提供 root（目录）或 files（文件路径列表）"}
+
+        ext_arg = None
+        if isinstance(extensions, list):
+            ext_arg = [str(x) for x in extensions if str(x).strip()]
+        excl_arg = None
+        if isinstance(exclude_dir_names, list):
+            excl_arg = [str(x) for x in exclude_dir_names if str(x).strip()]
+
+        mw = int(max_workers) if max_workers is not None else None
+
+        try:
+            result = run_grep(
+                root=root_path,
+                files=file_list,
+                output_file=out_path,
+                pattern=pattern,
+                extensions=ext_arg,
+                ignore_case=ignore_case,
+                multiline=multiline,
+                max_matches=max_matches,
+                max_file_bytes=max_file_bytes,
+                exclude_dir_names=excl_arg,
+                max_workers=mw,
+            )
+        except Exception as e:
+            return {"success": False, "error": f"grep 执行失败: {e}"}
+
+        if not result.get("success"):
+            return dict(result)
+
+        print(
+            f"\n📎 grep: {result.get('message', '完成')} → {result.get('output_path', '')}"
+        )
+        return {
+            "success": True,
+            "message": result.get("message", ""),
+            "output_path": result.get("output_path"),
+            "output_file": result.get("output_path"),
+            "match_count": result.get("match_count"),
+            "files_with_matches": result.get("files_with_matches"),
+            "files_scanned": result.get("files_scanned"),
+            "truncated": result.get("truncated", False),
+        }
+
     def _parse_tool_plan_from_response(self, text: str) -> Optional[Tuple[str, Dict[str, Any]]]:
         """Parse model response into tool plan under strict rule: exactly one tool JSON at reply end."""
         if not isinstance(text, str):
@@ -4592,6 +4716,14 @@ big_image.jpg
             else:
                 print("❌ analyze_image命令缺少path参数")
                 return {"success": False, "error": "缺少path参数"}
+
+        elif action == "grep":
+            result = self.action_grep(params if isinstance(params, dict) else {})
+            if result.get("success"):
+                pass
+            else:
+                print(f"❌ grep 失败: {result.get('error', '')}")
+            return result
 
         elif action == "diff":
             file1 = params.get("file1")

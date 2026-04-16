@@ -318,6 +318,51 @@
   {
     "type": "function",
     "function": {
+      "name": "grep",
+      "description": "在指定目录（递归）或指定文件列表中，用 Python re 正则检索文本内容；匹配写入 output_path 指向的 UTF-8 文件。每行格式：行号<TAB>绝对路径<TAB>匹配行（制表符分隔）。默认仅扫描常见文本扩展名；可传 extensions 覆盖。跳过 .git、node_modules 等目录。大目录下使用多线程读文件。",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "pattern": {
+            "type": "string",
+            "description": "正则表达式（Python re 语义）；可用 ignore_case / multiline"
+          },
+          "output_path": {
+            "type": "string",
+            "description": "结果输出文件的绝对或相对路径（须位于工作区、AI 工作区或系统临时目录）"
+          },
+          "root": {
+            "type": "string",
+            "description": "要递归检索的根目录；与 files 二选一"
+          },
+          "files": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "显式要检索的文件路径列表；与 root 二选一"
+          },
+          "extensions": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "限定扩展名，如 [\".py\",\".md\"]；不传则使用内置常见文本类型集合"
+          },
+          "ignore_case": { "type": "boolean" },
+          "multiline": { "type": "boolean" },
+          "max_matches": { "type": "integer" },
+          "max_file_bytes": { "type": "integer", "description": "单文件超过此字节则跳过，默认约 20MB" },
+          "exclude_dir_names": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "额外要跳过的目录名（与内置跳过表合并）"
+          },
+          "max_workers": { "type": "integer", "description": "线程数上限，默认按 CPU 自动" }
+        },
+        "required": ["pattern", "output_path"]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
       "name": "mcp_server_info",
       "description": "查询指定 MCP 服务器的聚合信息（状态、tools/resources/prompts）。",
       "parameters": {

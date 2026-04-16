@@ -118,6 +118,11 @@ Step 2 [in_progress]: <当前步骤>
 
 未匹配到含有效 `model_context_file_env` 的技能、或字段无效时，不创建临时文件、不注入该变量。其它 Agent 只要解析同一 frontmatter 字段即可实现等价行为。
 
+## `grep`（正则检索目录或文件列表）
+
+- 参数：`pattern`（Python `re` 语义）、`output_path`（结果 UTF-8 文件，须在工作区/AI 工作区/系统临时目录）、`root` 与 `files` 二选一；可选 `extensions`、`ignore_case`、`multiline`、`max_matches`、`max_file_bytes`、`exclude_dir_names`、`max_workers`。
+- 输出文件前几行为注释头；每条匹配一行：`行号<TAB>绝对路径<TAB>单行匹配内容`。适合在大代码树中按正则找引用；默认只扫常见文本扩展名并跳过 `.git`、`node_modules` 等目录。
+
 ## 知识库 `knowledge_search`（语义判定，禁止滥用）
 
 - **禁止调用**：用户未在本轮对话中明确要求检索知识库、或参考知识库/本地文档库中的信息时，不得调用 `knowledge_search`（包括不要为了“更完整”而主动查库）。
