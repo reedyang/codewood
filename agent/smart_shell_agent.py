@@ -182,7 +182,8 @@ def _import_ollama_client():
     return importlib.import_module("ollama")
 
 
-# 经验记忆检索：query = 本轮用户输入 + 最近 N 轮 user/assistant（单条截断；总长上限）。
+# 经验记忆主检索 query：仅本轮用户输入（上限见 MEMORY_RETRIEVAL_QUERY_MAX_CHARS）。
+# 以下两项仍用于查询扩展 LLM 的「近期对话摘录」参考块，不用于关键词检索 query。
 MEMORY_RETRIEVAL_ROUNDS = 3
 MEMORY_RETRIEVAL_MSG_MAX_CHARS = 400
 MEMORY_RETRIEVAL_QUERY_MAX_CHARS = 2000
@@ -549,12 +550,9 @@ class SmartShellAgent:
 
     def _build_memory_retrieval_query(self, user_input: str) -> str:
         """
-        构造经验记忆语义检索用查询串：最近 MEMORY_RETRIEVAL_ROUNDS 轮对话（每轮 user+assistant）
-        经单条截断后，与本轮用户输入拼接；总长不超过 MEMORY_RETRIEVAL_QUERY_MAX_CHARS（超长保留末尾）。
+        构造经验记忆关键词检索用查询串：仅使用本轮用户输入（截断至 MEMORY_RETRIEVAL_QUERY_MAX_CHARS）。
+        不并入会话摘要与近期对话，避免无关上下文污染 token 匹配与 fallback 判定。
         """
-        per_msg = MEMORY_RETRIEVAL_MSG_MAX_CHARS
-        max_total = MEMORY_RETRIEVAL_QUERY_MAX_CHARS
-        rounds = MEMORY_RETRIEVAL_ROUNDS
 
         def _clip(text: str, n: int) -> str:
             t = (text or "").strip()
@@ -564,49 +562,7 @@ class SmartShellAgent:
                 return t
             return t[: max(1, n - 1)] + "…"
 
-        hist = list(getattr(self, "conversation_history", None) or [])
-        want = rounds * 2
-        tail = hist[-want:] if len(hist) >= want else hist[:]
-
-        if tail and (tail[-1].get("role") or "") == "user":
-            tail = tail[:-1]
-        while tail and (tail[0].get("role") or "") != "user":
-            tail = tail[1:]
-        if len(tail) % 2 == 1:
-            tail = tail[1:]
-
-        lines: List[str] = []
-        for msg in tail:
-            role = (msg.get("role") or "").strip().lower()
-            if role not in ("user", "assistant"):
-                continue
-            content = _clip(str(msg.get("content") or ""), per_msg)
-            if not content:
-                continue
-            tag = "用户" if role == "user" else "助手"
-            lines.append(f"[{tag}] {content}")
-
-        cur = _clip((user_input or "").strip(), per_msg)
-        if lines and cur:
-            combined = "\n".join(lines) + "\n\n---\n\n[当前] " + cur
-        elif cur:
-            combined = "[当前] " + cur
-        else:
-            combined = "\n".join(lines)
-
-        combined = combined.strip()
-        pref = self._session_summary_for_retrieval()
-        if pref:
-            if combined:
-                combined = f"{pref}\n\n---\n\n{combined}"
-            else:
-                combined = pref
-        combined = combined.strip()
-        if not combined:
-            return ""
-        if len(combined) <= max_total:
-            return combined
-        return combined[-max_total:]
+        return _clip((user_input or "").strip(), MEMORY_RETRIEVAL_QUERY_MAX_CHARS)
 
     @staticmethod
     def _memory_row_sort_key(r: Dict[str, Any]) -> Tuple[int, float, int]:
@@ -788,7 +744,7 @@ class SmartShellAgent:
     def _memory_rows_for_prompt(self, user_input: str) -> List[Dict[str, Any]]:
         """合并主关键词检索、可选身份增强、（弱命中时）LLM 查询扩展二次检索、与同作用域近期记忆。
 
-        主检索 query 使用「最近若干轮对话摘要 + 本轮输入」（见 _build_memory_retrieval_query）。
+        主检索 query 仅使用「本轮用户输入」（见 _build_memory_retrieval_query）。
         扩展检索在主检索无结果或 raw_score 偏低时触发，输出结构化关键词并入第二次 search。
         """
         raw_ui = (user_input or "").strip()
