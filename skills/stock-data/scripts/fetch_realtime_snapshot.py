@@ -12,7 +12,7 @@ import json
 import re
 import sys
 import time
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional, Tuple
 from urllib.error import URLError, HTTPError
 from urllib.request import Request, urlopen
 
@@ -41,47 +41,67 @@ def _to_int(v: Any, default: int = 0) -> int:
         return default
 
 
-def _normalize_a_code(code: str) -> str:
-    c = (code or "").strip()
-    c = c.lower().replace("sh", "").replace("sz", "")
-    if not c:
-        return c
-    if re.fullmatch(r"\d{1,6}", c):
-        return c.zfill(6)
-    return c
+def _infer_sina_symbol_from_digits(code6: str) -> str:
+    """6 位数字代码：按首位推断上交所/深交所（与新浪常见规则一致）。"""
+    if len(code6) != 6 or not code6.isdigit():
+        return ""
+    if code6[0] in ("5", "6", "9"):
+        return f"sh{code6}"
+    return f"sz{code6}"
 
 
-def _parse_codes(raw_codes: List[str]) -> List[str]:
-    out: List[str] = []
+def _parse_one_code_token(part: str) -> Optional[Tuple[str, str]]:
+    """
+    解析单个代码片段，返回 (新浪 list 用 symbol, JSON 输出用的 key)。
+
+    - 若显式写出 sh/sz + 6 位数字（如 sh000001、sz399001），**保留交易所前缀**。
+      这与仅写 6 位数字不同：000001 默认识别为深交所个股（平安银行），
+      而上证指数必须写 sh000001，避免被误判为 sz000001。
+    - 若仅数字，则 zfill 后按首位推断市场，JSON key 为 6 位数字。
+    """
+    raw = (part or "").strip()
+    if not raw:
+        return None
+    low = raw.lower()
+    m = re.fullmatch(r"(sh|sz)(\d{6})", low)
+    if m:
+        sym = f"{m.group(1)}{m.group(2)}"
+        return (sym, sym)
+    digits = re.sub(r"\D", "", raw)
+    if re.fullmatch(r"\d{1,6}", digits):
+        code6 = digits.zfill(6)
+        if len(code6) != 6:
+            return None
+        sina = _infer_sina_symbol_from_digits(code6)
+        if not sina:
+            return None
+        return (sina, code6)
+    return None
+
+
+def _parse_codes(raw_codes: List[str]) -> List[Tuple[str, str]]:
+    """返回 (sina_symbol, json_key) 列表，按首次出现去重（按 json_key）。"""
+    out: List[Tuple[str, str]] = []
+    seen: set[str] = set()
     for item in raw_codes:
         for part in item.split(","):
-            code = _normalize_a_code(part)
-            if code:
-                out.append(code)
-    uniq: List[str] = []
-    seen = set()
-    for c in out:
-        if c not in seen:
-            seen.add(c)
-            uniq.append(c)
-    return uniq
+            p = _parse_one_code_token(part)
+            if not p:
+                continue
+            _, jk = p
+            if jk in seen:
+                continue
+            seen.add(jk)
+            out.append(p)
+    return out
 
 
-def _to_sina_symbol(code: str) -> str:
-    c = _normalize_a_code(code)
-    if not c:
-        return c
-    if c[0] in ("5", "6", "9"):
-        return f"sh{c}"
-    return f"sz{c}"
-
-
-def _fetch_sina_quotes(codes: List[str], timeout: float = 10.0) -> Dict[str, Dict[str, Any]]:
-    if not codes:
+def _fetch_sina_quotes(specs: List[Tuple[str, str]], timeout: float = 10.0) -> Dict[str, Dict[str, Any]]:
+    if not specs:
         return {}
 
-    symbol_to_code: Dict[str, str] = {_to_sina_symbol(c): c for c in codes}
-    symbols = [s for s in symbol_to_code.keys() if s]
+    symbol_to_key: Dict[str, str] = {s: k for s, k in specs}
+    symbols = [s for s in symbol_to_key.keys() if s]
     if not symbols:
         return {}
 
@@ -108,14 +128,14 @@ def _fetch_sina_quotes(codes: List[str], timeout: float = 10.0) -> Dict[str, Dic
         if not m:
             continue
         symbol, payload = m.group(1), m.group(2)
-        code = symbol_to_code.get(symbol)
-        if not code or not payload:
+        json_key = symbol_to_key.get(symbol)
+        if not json_key or not payload:
             continue
         parts = payload.split(",")
         if len(parts) < 10:
             continue
 
-        name = parts[0].strip() or code
+        name = parts[0].strip() or json_key
         open_price = _to_float(parts[1])
         pre_close = _to_float(parts[2])
         price = _to_float(parts[3])
@@ -130,7 +150,7 @@ def _fetch_sina_quotes(codes: List[str], timeout: float = 10.0) -> Dict[str, Dic
         if price <= 0:
             continue
 
-        out[code] = {
+        out[json_key] = {
             "name": name,
             "price": round(price, 4),
             "change_pct": round(change_pct, 4),
@@ -147,10 +167,13 @@ def _fetch_sina_quotes(codes: List[str], timeout: float = 10.0) -> Dict[str, Dic
 
 
 def fetch_snapshots(codes: List[str]) -> Dict[str, Dict[str, Any]]:
-    return _fetch_sina_quotes(codes)
+    specs = _parse_codes(codes) if codes else []
+    return _fetch_sina_quotes(specs)
 
 
-def fetch_snapshots_with_retry(codes: List[str], retries: int, retry_delay: float) -> Dict[str, Dict[str, Any]]:
+def fetch_snapshots_with_retry(
+    codes: List[str], retries: int, retry_delay: float
+) -> Dict[str, Dict[str, Any]]:
     last_err: Exception | None = None
     for attempt in range(1, max(1, retries) + 1):
         try:
@@ -193,14 +216,14 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    codes = _parse_codes(args.codes) if args.codes else []
-    if not codes:
+    raw_codes = list(args.codes) if args.codes else []
+    if not raw_codes:
         print("{}")
         return 0
 
     try:
         snapshots = fetch_snapshots_with_retry(
-            codes=codes,
+            codes=raw_codes,
             retries=max(1, int(args.retries)),
             retry_delay=max(0.1, float(args.retry_delay)),
         )
