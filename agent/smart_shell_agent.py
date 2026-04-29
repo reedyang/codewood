@@ -89,7 +89,7 @@ from .history_manager import HistoryManager
 from .skills_loader import build_skills_routing_prefix, build_skills_system_append, load_skills_merged
 from .mcp_manager import McpManager, McpError
 
-# memory_manager 在后台线程中导入（见 _schedule_memory_service_background），避免主线程拉取 Chroma/嵌入链。
+# memory_manager 在后台线程中导入（见 _schedule_memory_service_background），避免阻塞主线程初始化。
 MEMORY_AVAILABLE = False  # type: ignore[misc, assignment]
 MemoryService = None  # type: ignore[misc, assignment]
 
@@ -408,7 +408,7 @@ class SmartShellAgent:
         self._schedule_memory_service_background()
 
     def _schedule_memory_service_background(self) -> None:
-        """后台初始化经验记忆：在本线程内 import memory_manager（含 chromadb），再构造 MemoryService。"""
+        """后台初始化经验记忆：在本线程内 import memory_manager，再构造 MemoryService（Markdown 后端，无重型依赖）。"""
         _mod = sys.modules[__name__]
 
         def _run() -> None:
@@ -1379,7 +1379,7 @@ class SmartShellAgent:
                 st = self.memory_service.stats()  # type: ignore[union-attr]
                 if isinstance(st, dict):
                     print(f"  total_memories: {st.get('total_memories', '-')}")
-                    print(f"  embedding_model: {st.get('embedding_model', '-')}")
+                    print(f"  storage_backend: {st.get('storage_backend', '-')}")
                     print(f"  storage_dir: {st.get('storage_dir', '-')}")
             except Exception as e:
                 print(f"  stats_error: {e}")
@@ -1391,7 +1391,7 @@ class SmartShellAgent:
         elif dep and not ready:
             print("  记忆模块正在初始化或失败，请查看 smartshell.log 与 .smartshell/memory/。")
         else:
-            print("  未安装 chromadb 等依赖时经验记忆不可用；主程序可继续运行。")
+            print("  经验记忆不可用（初始化失败）；主程序可继续运行。")
 
     def _confirm_allowlist_path(self) -> Path:
         return self.config_dir / "confirm_allowlist.json"
@@ -5414,7 +5414,7 @@ big_image.jpg
 
         elif action == "memory_search":
             if not self._ensure_memory_service():
-                return {"success": False, "error": "经验记忆不可用（依赖未安装或初始化失败）"}
+                return {"success": False, "error": "经验记忆不可用（初始化失败）"}
             query = str(params.get("query") or "").strip()
             top_k = int(params.get("top_k", params.get("limit", 6)) or 6)
             verbose_print = bool(params.get("verbose_print", False))
@@ -5454,7 +5454,7 @@ big_image.jpg
 
         elif action == "memory_add":
             if not self._ensure_memory_service():
-                return {"success": False, "error": "经验记忆不可用（依赖未安装或初始化失败）"}
+                return {"success": False, "error": "经验记忆不可用（初始化失败）"}
             verbose_print = bool(params.get("verbose_print", False))
             title = str(params.get("title") or "经验").strip()[:500]
             content = str(params.get("content") or "").strip()
@@ -5490,7 +5490,7 @@ big_image.jpg
 
         elif action == "memory_list":
             if not self._ensure_memory_service():
-                return {"success": False, "error": "经验记忆不可用（依赖未安装或初始化失败）"}
+                return {"success": False, "error": "经验记忆不可用（初始化失败）"}
             verbose_print = bool(params.get("verbose_print", False))
             limit = int(params.get("limit", 20) or 20)
             try:
@@ -5515,14 +5515,14 @@ big_image.jpg
 
         elif action == "memory_stats":
             if not self._ensure_memory_service():
-                return {"success": False, "error": "经验记忆不可用（依赖未安装或初始化失败）"}
+                return {"success": False, "error": "经验记忆不可用（初始化失败）"}
             verbose_print = bool(params.get("verbose_print", False))
             try:
                 st = self.memory_service.stats()
                 if verbose_print:
                     print("\n🧠 经验记忆统计:")
                     print(f"  条数: {st.get('total_memories', 0)}")
-                    print(f"  嵌入模型: {st.get('embedding_model', '-')}")
+                    print(f"  存储后端: {st.get('storage_backend', '-')}")
                     print(f"  存储目录: {st.get('storage_dir', '-')}")
                 return {"success": True, "stats": st}
             except Exception as e:
@@ -5530,7 +5530,7 @@ big_image.jpg
 
         elif action == "memory_delete":
             if not self._ensure_memory_service():
-                return {"success": False, "error": "经验记忆不可用（依赖未安装或初始化失败）"}
+                return {"success": False, "error": "经验记忆不可用（初始化失败）"}
             verbose_print = bool(params.get("verbose_print", False))
             mid = str(params.get("memory_id") or params.get("id") or "").strip()
             if not mid:
