@@ -208,6 +208,10 @@ def build_skills_routing_prefix(skills: List[SkillRecord]) -> str:
     lines.extend(
         [
             "",
+            "**`tool` 字段与技能（必读）：** 上表中的 **目录名 `skill_id` 不是合法 `tool` 名**（禁止输出如 `{\"tool\":\"weather\"}`）。"
+            "必须先调用内置工具 **`request_skill_prompt`**（`args.skill_id` 填目录名）注入 SKILL 全文，再按正文用 `shell` 等执行。"
+            "除 `tools.jsonc` / 下文 Available tools 所列名称外，**禁止虚构工具名**（例如把「查天气」映射成不存在的 `weather` 工具）。",
+            "",
             "**Bundled files:** 技能正文里的 `scripts/...` 等路径相对于各技能在磁盘上的目录（见下文 **Skill bundle root**）。"
             "`shell` 在**用户工作目录**执行，不会自动进入技能目录；调用随包脚本时必须使用 **绝对路径**（下文已列出本机检测到的 `.py` 时可直接复制）。",
             "",

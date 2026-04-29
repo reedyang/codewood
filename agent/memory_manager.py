@@ -437,10 +437,24 @@ class MemoryManager:
                     mid = str(e.get("id", ""))
                     sys_note = None
                     ep = self._entry_path(str(e.get("_scope_key", "global")), str(e.get("rel_path", "")))
+                    created_ts: Optional[float] = None
                     if ep.is_file():
                         meta, body = _read_md_document(ep)
                         sys_note = meta.get("system_note")
                         body = body.strip()
+                        try:
+                            if meta.get("created_at") is not None:
+                                created_ts = float(meta.get("created_at"))
+                        except (TypeError, ValueError):
+                            created_ts = None
+                    if created_ts is None:
+                        try:
+                            if e.get("created_at") is not None:
+                                created_ts = float(e.get("created_at"))
+                        except (TypeError, ValueError):
+                            created_ts = None
+                    if created_ts is None:
+                        created_ts = 0.0
                     out.append(
                         {
                             "id": mid,
@@ -450,6 +464,8 @@ class MemoryManager:
                             "memory_type": str(e.get("memory_type", "")),
                             "source": str(e.get("source", "")),
                             "similarity": round(float(sim), 4),
+                            "raw_score": round(float(sc), 4),
+                            "created_at": created_ts,
                             "system_note": sys_note,
                         }
                     )

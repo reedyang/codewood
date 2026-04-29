@@ -182,10 +182,24 @@ def _import_ollama_client():
     return importlib.import_module("ollama")
 
 
-# 经验记忆向量检索：query = 本轮用户输入 + 最近 N 轮 user/assistant（单条截断；总长上限）。
+# 经验记忆检索：query = 本轮用户输入 + 最近 N 轮 user/assistant（单条截断；总长上限）。
 MEMORY_RETRIEVAL_ROUNDS = 3
 MEMORY_RETRIEVAL_MSG_MAX_CHARS = 400
 MEMORY_RETRIEVAL_QUERY_MAX_CHARS = 2000
+# 主检索（关键词打分）偏弱时触发 LLM 查询扩展；raw_score 为 memory_manager 未归一化得分
+MEMORY_FALLBACK_MIN_RAW_SCORE = 4.0
+MEMORY_EXPANSION_MAX_KEYWORD_CHARS = 600
+# 与身份/称呼相关的 memory_type，排序时与 preference 同簇，便于新写入的更正与旧 durable 公平竞争
+MEMORY_IDENTITY_CLUSTER_TYPES = frozenset(
+    {
+        "preference",
+        "assistant_name",
+        "nickname",
+        "identity",
+        "user_name",
+        "display_name",
+    }
+)
 
 # 会话级摘要：cheap 滚动摘录 + 可选周期性 LLM 压缩，并入经验记忆检索 query。
 SESSION_SUMMARY_ROLLING_MAX_CHARS = 600
@@ -267,6 +281,7 @@ class SmartShellAgent:
         # 加载配置（执行策略默认 confirmation）；知识库在依赖可用时始终启用，不再提供开关
         self.execution_policy = "confirmation"
         self.session_summary_llm_enabled: bool = True
+        self.memory_fallback_expansion_enabled: bool = True
         try:
             cfg_path = self.config_dir / "config.json"
             if cfg_path.exists():
@@ -281,6 +296,16 @@ class SmartShellAgent:
                     self.session_summary_llm_enabled = _sslm
                 else:
                     self.session_summary_llm_enabled = str(_sslm).strip().lower() in (
+                        "1",
+                        "true",
+                        "yes",
+                        "on",
+                    )
+                _mfe = cfg_data.get("memory_fallback_expansion", True)
+                if isinstance(_mfe, bool):
+                    self.memory_fallback_expansion_enabled = _mfe
+                else:
+                    self.memory_fallback_expansion_enabled = str(_mfe).strip().lower() in (
                         "1",
                         "true",
                         "yes",
@@ -584,13 +609,20 @@ class SmartShellAgent:
         return combined[-max_total:]
 
     @staticmethod
-    def _memory_row_priority_key(r: Dict[str, Any]) -> Tuple[int, int]:
-        """preference + durable 排在前列，便于身份/称呼类条目占满注入预算。"""
+    def _memory_row_sort_key(r: Dict[str, Any]) -> Tuple[int, float, int]:
+        """身份/偏好类优先；同档内以写入时间为主（新事实靠前），tier 仅作末位 tie-break。
+
+        避免「旧的 durable 称呼」永远压过「新写入的 episodic 更正」。
+        """
         mt = (r.get("memory_type") or "").lower()
         tier = (r.get("tier") or "").lower()
-        pref = 0 if mt == "preference" else 1
+        cluster = 0 if mt in MEMORY_IDENTITY_CLUSTER_TYPES else 1
         tr = 0 if tier == "durable" else (1 if tier == "episodic" else 2)
-        return (pref, tr)
+        try:
+            ca = float(r.get("created_at") or 0)
+        except (TypeError, ValueError):
+            ca = 0.0
+        return (cluster, -ca, tr)
 
     @staticmethod
     def _user_input_emphasizes_memory_or_identity(user_input: str) -> bool:
@@ -618,12 +650,146 @@ class SmartShellAgent:
         )
         return any(x in s for x in needles)
 
-    def _memory_rows_for_prompt(self, user_input: str) -> List[Dict[str, Any]]:
-        """合并语义检索、可选身份增强检索、与同作用域近期记忆（按 last_access）。
+    def _memory_dialogue_excerpt_for_expansion(self) -> str:
+        """供查询扩展参考：与主检索相同的最近 N 轮 user/assistant 摘录（不含会话摘要与本轮）。"""
+        per_msg = MEMORY_RETRIEVAL_MSG_MAX_CHARS
+        rounds = MEMORY_RETRIEVAL_ROUNDS
 
-        短句与部分已存记忆在向量上可能不相似，仅靠 Chroma 会漏检；用「语义 + 近期」并集、按 id 去重。
-        当用户显式追问记忆/昵称时，追加固定检索词以减轻「身份条目不相似」导致的漏检。
-        主检索 query 使用「最近若干轮对话摘要 + 本轮输入」，不单用本轮一句（见 _build_memory_retrieval_query）。
+        def _clip(text: str, n: int) -> str:
+            t = (text or "").strip()
+            if not t:
+                return ""
+            if len(t) <= n:
+                return t
+            return t[: max(1, n - 1)] + "…"
+
+        hist = list(getattr(self, "conversation_history", None) or [])
+        want = rounds * 2
+        tail = hist[-want:] if len(hist) >= want else hist[:]
+        if tail and (tail[-1].get("role") or "") == "user":
+            tail = tail[:-1]
+        while tail and (tail[0].get("role") or "") != "user":
+            tail = tail[1:]
+        if len(tail) % 2 == 1:
+            tail = tail[1:]
+        lines: List[str] = []
+        for msg in tail:
+            role = (msg.get("role") or "").strip().lower()
+            if role not in ("user", "assistant"):
+                continue
+            content = _clip(str(msg.get("content") or ""), per_msg)
+            if not content:
+                continue
+            tag = "用户" if role == "user" else "助手"
+            lines.append(f"[{tag}] {content}")
+        return "\n".join(lines).strip()
+
+    def _memory_expansion_reference_block(self) -> str:
+        pref = self._session_summary_for_retrieval()
+        dia = self._memory_dialogue_excerpt_for_expansion()
+        parts: List[str] = []
+        if pref:
+            parts.append(pref)
+        if dia:
+            parts.append("【近期对话摘录】\n" + dia)
+        return "\n\n".join(parts).strip()
+
+    @staticmethod
+    def _parse_memory_expansion_json(text: str) -> Optional[Dict[str, Any]]:
+        """解析查询扩展模型输出；失败返回 None。"""
+        raw = (text or "").strip()
+        if not raw or raw.startswith("❌") or raw.startswith("调用大模型"):
+            return None
+        if raw.startswith("```"):
+            raw = re.sub(r"^```(?:json)?\s*", "", raw, flags=re.IGNORECASE)
+            raw = re.sub(r"\s*```\s*$", "", raw)
+        data = None
+        try:
+            data = json.loads(raw)
+        except Exception:
+            start = raw.find("{")
+            if start >= 0:
+                depth = 0
+                for i in range(start, len(raw)):
+                    if raw[i] == "{":
+                        depth += 1
+                    elif raw[i] == "}":
+                        depth -= 1
+                        if depth == 0:
+                            try:
+                                data = json.loads(raw[start : i + 1])
+                            except Exception:
+                                data = None
+                            break
+        if not isinstance(data, dict):
+            return None
+        keys = ("keywords", "aliases", "entities", "topics", "preferences_hint")
+        out: Dict[str, Any] = {}
+        for k in keys:
+            v = data.get(k)
+            if isinstance(v, list):
+                cleaned = [str(x).strip() for x in v if str(x).strip()][:12]
+                out[k] = cleaned[:10]
+            else:
+                out[k] = []
+        if not any(out.values()):
+            return None
+        return out
+
+    def _memory_expansion_keywords_query_string(self, expansion: Dict[str, Any]) -> str:
+        chunks: List[str] = []
+        for k in ("keywords", "aliases", "entities", "topics", "preferences_hint"):
+            for s in expansion.get(k) or []:
+                s = str(s).strip()[:80]
+                if s:
+                    chunks.append(s)
+        joined = " ".join(chunks).strip()
+        if len(joined) > MEMORY_EXPANSION_MAX_KEYWORD_CHARS:
+            joined = joined[: MEMORY_EXPANSION_MAX_KEYWORD_CHARS]
+        return joined
+
+    def _should_run_memory_query_expansion(
+        self,
+        rows_sem: List[Dict[str, Any]],
+        rows_boost: List[Dict[str, Any]],
+        identity_mode: bool,
+    ) -> bool:
+        if not getattr(self, "memory_fallback_expansion_enabled", True):
+            return False
+        if identity_mode and rows_boost:
+            return False
+        if not rows_sem:
+            return True
+        scores = [float(r.get("raw_score") or 0) for r in rows_sem]
+        if not scores:
+            return True
+        return max(scores) < MEMORY_FALLBACK_MIN_RAW_SCORE
+
+    def _run_memory_expansion_llm(self, user_input: str) -> Optional[Dict[str, Any]]:
+        ref = self._memory_expansion_reference_block()
+        body = (user_input or "").strip()
+        payload = (
+            (ref + "\n\n---\n\n") if ref else ""
+        ) + "【当前用户提问】（仅用于提取检索用词与同义实体，不要直接回答用户）\n" + body
+        try:
+            raw = self.call_ai(
+                payload,
+                context="",
+                stream=False,
+                memory_query_expansion_mode=True,
+            )
+        except Exception:
+            get_logger().exception("经验记忆：查询扩展 LLM 调用异常")
+            return None
+        if not isinstance(raw, str):
+            return None
+        return self._parse_memory_expansion_json(raw)
+
+    def _memory_rows_for_prompt(self, user_input: str) -> List[Dict[str, Any]]:
+        """合并主关键词检索、可选身份增强、（弱命中时）LLM 查询扩展二次检索、与同作用域近期记忆。
+
+        主检索 query 使用「最近若干轮对话摘要 + 本轮输入」（见 _build_memory_retrieval_query）。
+        扩展检索在主检索无结果或 raw_score 偏低时触发，输出结构化关键词并入第二次 search。
         """
         raw_ui = (user_input or "").strip()
         q = self._build_memory_retrieval_query(user_input)
@@ -632,7 +798,8 @@ class SmartShellAgent:
         sk = self._memory_scope_key()
 
         rows_boost: List[Dict[str, Any]] = []
-        if self._user_input_emphasizes_memory_or_identity(raw_ui):
+        identity_mode = self._user_input_emphasizes_memory_or_identity(raw_ui)
+        if identity_mode:
             for bq in (
                 "用户偏好 昵称 名字 称呼 助手身份 起名 约定",
                 "preference nickname identity assistant name 称呼",
@@ -650,6 +817,61 @@ class SmartShellAgent:
         rows_boost = boost_uniq
 
         rows_sem = self.memory_service.search_memories(q, top_k=6, scope_key=sk)
+
+        rows_exp: List[Dict[str, Any]] = []
+        _mem_log = get_logger()
+        if self._should_run_memory_query_expansion(rows_sem, rows_boost, identity_mode):
+            max_raw = max(
+                (float(r.get("raw_score") or 0) for r in rows_sem),
+                default=0.0,
+            )
+            if not rows_sem:
+                _mem_log.info("经验记忆：触发查询扩展 fallback（主检索无命中）")
+            else:
+                _mem_log.info(
+                    "经验记忆：触发查询扩展 fallback（主检索偏弱 max_raw=%.2f < %.2f）",
+                    max_raw,
+                    MEMORY_FALLBACK_MIN_RAW_SCORE,
+                )
+            exp = self._run_memory_expansion_llm(raw_ui)
+            if exp:
+                kw = self._memory_expansion_keywords_query_string(exp)
+                if kw:
+                    q2 = (q.strip() + "\n\n【扩展检索词】\n" + kw).strip()
+                    rows_exp = self.memory_service.search_memories(
+                        q2, top_k=8, scope_key=sk
+                    )
+                    _mem_log.info(
+                        "经验记忆：查询扩展已执行（扩展词约 %d 字，二次检索 %d 条）",
+                        len(kw),
+                        len(rows_exp),
+                    )
+                else:
+                    _mem_log.info("经验记忆：查询扩展未产生可用关键词（各槽位为空）")
+            else:
+                _mem_log.info(
+                    "经验记忆：查询扩展未生效（模型返回不可解析或调用失败）"
+                )
+        else:
+            if not getattr(self, "memory_fallback_expansion_enabled", True):
+                _mem_log.debug(
+                    "经验记忆：未触发查询扩展（config memory_fallback_expansion 关闭）"
+                )
+            elif identity_mode and rows_boost:
+                _mem_log.debug(
+                    "经验记忆：未触发查询扩展（身份增强已有命中 %d 条）",
+                    len(rows_boost),
+                )
+            elif rows_sem:
+                _mr = max(
+                    (float(r.get("raw_score") or 0) for r in rows_sem),
+                    default=0.0,
+                )
+                _mem_log.debug(
+                    "经验记忆：未触发查询扩展（主检索足够 max_raw=%.2f）",
+                    _mr,
+                )
+
         seen: Set[str] = set()
         merged: List[Dict[str, Any]] = []
 
@@ -665,9 +887,15 @@ class SmartShellAgent:
 
         _add_rows(rows_boost)
         _add_rows(rows_sem)
+        _add_rows(rows_exp)
 
         def _from_recent_item(item: Dict[str, Any]) -> Dict[str, Any]:
             prev = item.get("preview") or ""
+            ca = item.get("created_at")
+            try:
+                ca_f = float(ca) if ca is not None else 0.0
+            except (TypeError, ValueError):
+                ca_f = 0.0
             return {
                 "id": item.get("id"),
                 "title": item.get("title") or "",
@@ -676,6 +904,7 @@ class SmartShellAgent:
                 "memory_type": item.get("memory_type") or "",
                 "source": item.get("source") or "",
                 "system_note": None,
+                "created_at": ca_f,
             }
 
         recent = self.memory_service.list_recent(limit=20, scope_key=sk)
@@ -688,7 +917,7 @@ class SmartShellAgent:
             merged.append(_from_recent_item(item))
             seen.add(rid)
 
-        merged.sort(key=self._memory_row_priority_key)
+        merged.sort(key=self._memory_row_sort_key)
         return merged[:12]
 
     def _memory_context_for_prompt(self, user_input: str, max_chars: int = 2400) -> str:
@@ -703,17 +932,26 @@ class SmartShellAgent:
             if not rows:
                 return ""
             lines = [
-                "【经验记忆（内化教训与偏好，不是知识库文献；可与知识库并存；关键事实请仍核实）】"
+                "【经验记忆（内化教训与偏好，不是知识库文献；可与知识库并存；关键事实请仍核实）】",
+                "若同主题（如称呼、显示名）出现多条：答复时的「当前口径」以记录时间最新者为准；较早条目为沿革/曾用信息，用户未问及不必展开，问起可如实说明。",
             ]
-            total = 0
+            total = len("\n".join(lines))
             for r in rows:
                 block = f"- ({r.get('tier', '')}) {r.get('title', '')}: {r.get('content', '')[:500]}"
                 if r.get("system_note"):
                     block += f" [内省备注: {r['system_note'][:200]}]"
-                if total + len(block) > max_chars:
+                ca = r.get("created_at")
+                if ca is not None:
+                    try:
+                        ts = float(ca)
+                        if ts > 0:
+                            block += f" [记录时间: {datetime.fromtimestamp(ts).strftime('%Y-%m-%d %H:%M')}]"
+                    except (TypeError, ValueError, OSError, OverflowError):
+                        pass
+                if total + 1 + len(block) > max_chars:
                     break
                 lines.append(block)
-                total += len(block)
+                total += 1 + len(block)
                 mid = str(r.get("id") or "").strip()
                 if mid:
                     try:
@@ -2103,9 +2341,11 @@ class SmartShellAgent:
         return_message: bool = False,
         reflection_mode: bool = False,
         session_summary_mode: bool = False,
+        memory_query_expansion_mode: bool = False,
     ):
         """调用大模型 API 获取回复；支持流式输出。
-        reflection_mode 用于记忆内省；session_summary_mode 用于会话摘要压缩，均不注入对话历史与经验块。
+        reflection_mode 用于记忆内省；session_summary_mode 用于会话摘要压缩；
+        memory_query_expansion_mode 用于经验记忆检索前的关键词扩展；均不注入对话历史与经验块。
         """
         try:
             # 确保os未被局部变量遮蔽
@@ -2176,6 +2416,25 @@ class SmartShellAgent:
                             f"待判定命令 JSON:\n{user_input}"
                         ),
                     },
+                ]
+                record_history = False
+            elif memory_query_expansion_mode:
+                if stream:
+                    return "❌ 错误：记忆查询扩展不支持流式模式。"
+                expansion_system = (
+                    "你是「经验记忆检索」的查询扩展模块。用户消息含：可选的会话摘要与近期对话参考，"
+                    "以及【当前用户提问】。你的任务仅为从「当前用户提问」中提取与同义指代、实体、主题、偏好相关的"
+                    "短关键词或短语，便于后续子串检索；不要写完整回答、不要复述用户问题成段落。\n"
+                    "只输出一个 JSON 对象，不要使用 markdown 代码围栏。键必须齐全，值为字符串数组"
+                    "（每项不超过 40 字，每数组最多 10 项；无则 []）：\n"
+                    '{"keywords":[],"aliases":[],"entities":[],"topics":[],"preferences_hint":[]}\n'
+                    "keywords：与提问直接相关的检索词；aliases：可能的称呼/别名/缩写；"
+                    "entities：人名、项目、产品等实体；topics：主题词；preferences_hint：偏好或约定相关词。\n"
+                    "不要编造用户未暗示的事实；宁缺毋滥。"
+                )
+                messages = [
+                    {"role": "system", "content": expansion_system},
+                    {"role": "user", "content": user_input},
                 ]
                 record_history = False
             elif reflection_mode:
@@ -2310,8 +2569,10 @@ class SmartShellAgent:
                     "messages": messages,
                     "stream": stream,
                 }
-                if session_summary_mode:
+                if session_summary_mode or memory_query_expansion_mode:
                     payload["max_tokens"] = 512
+                if memory_query_expansion_mode:
+                    payload["temperature"] = 0.2
                 resp = requests.post(url, headers=headers, json=payload, verify=False, timeout=120, stream=stream)
                 resp.raise_for_status()
                 if stream:
@@ -2369,8 +2630,10 @@ class SmartShellAgent:
                     "messages": messages,
                     "stream": stream,
                 }
-                if session_summary_mode:
+                if session_summary_mode or memory_query_expansion_mode:
                     payload_ow["max_tokens"] = 512
+                if memory_query_expansion_mode:
+                    payload_ow["temperature"] = 0.2
                 resp = requests.post(url, headers=headers, json=payload_ow, verify=False, timeout=120, stream=stream)
                 resp.raise_for_status()
                 if stream:
@@ -2448,6 +2711,8 @@ class SmartShellAgent:
                     }
                     if session_summary_mode:
                         chat_kwargs["options"] = {"num_predict": 512, "temperature": 0.3}
+                    elif memory_query_expansion_mode:
+                        chat_kwargs["options"] = {"num_predict": 512, "temperature": 0.2}
                     response = ollama.chat(**chat_kwargs)
                     message = response.get("message", {}) or {}
                     ai_response = message.get("content", "") or ""
@@ -5588,6 +5853,23 @@ big_image.jpg
             if result.get("success"):
                 print(f"✅ {result.get('message', '已恢复确认')}")
             return result
+
+        # Model often emits {"tool":"<skill_id>"} (e.g. weather) — skill folders are not tool names.
+        sid_guess = (action or "").strip()
+        if sid_guess and self.skills:
+            for s in self.skills:
+                if str(getattr(s, "skill_id", "")).strip().lower() == sid_guess.lower():
+                    canon = str(getattr(s, "skill_id", "") or sid_guess)
+                    return {
+                        "success": False,
+                        "error": (
+                            f"「{sid_guess}」是已加载 Agent Skill 的目录名（skill_id），不是内置 tool。"
+                            f' 请先调用：{{"tool":"request_skill_prompt","args":{{"skill_id":"{canon}"}}}}'
+                            " 注入 SKILL 全文后，再按正文使用 shell 或其它允许的工具执行。"
+                        ),
+                        "mistake_skill_as_tool": True,
+                        "skill_id": canon,
+                    }
 
         return {"success": False, "error": "未知的操作类型"}
 
