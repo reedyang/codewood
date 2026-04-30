@@ -4,6 +4,7 @@ import json
 import hashlib
 import contextlib
 import concurrent.futures
+import gc
 import logging
 import threading
 from pathlib import Path
@@ -517,6 +518,75 @@ class KnowledgeManager:
             _kb_log.warning("获取知识库统计信息失败: %s", e)
             return {}
 
+    def close(self) -> None:
+        """Release Chroma resources before the workspace directory is removed or switched."""
+        client = getattr(self, "client", None)
+        self.collection = None
+        self.client = None
+
+        candidates: List[Any] = []
+        if client is not None:
+            candidates.append(client)
+            identifier = getattr(client, "_identifier", None)
+            for attr in ("_system", "_server"):
+                obj = getattr(client, attr, None)
+                if obj is not None:
+                    candidates.append(obj)
+            server = getattr(client, "_server", None)
+            manager = getattr(server, "_manager", None) if server is not None else None
+            if manager is not None:
+                candidates.append(manager)
+                instances = getattr(manager, "_instances", None)
+                if isinstance(instances, dict):
+                    for instance in list(instances.values()):
+                        stop = getattr(instance, "stop", None)
+                        if callable(stop):
+                            try:
+                                stop()
+                            except Exception:
+                                _kb_log.debug("Chroma segment instance stop failed", exc_info=True)
+                    instances.clear()
+                segment_cache = getattr(manager, "segment_cache", None)
+                if isinstance(segment_cache, dict):
+                    for cache in segment_cache.values():
+                        reset = getattr(cache, "reset", None)
+                        if callable(reset):
+                            try:
+                                reset()
+                            except Exception:
+                                _kb_log.debug("Chroma segment cache reset failed", exc_info=True)
+            try:
+                from chromadb.api.shared_system_client import SharedSystemClient
+
+                system_cache = getattr(SharedSystemClient, "_identifier_to_system", None)
+                if isinstance(system_cache, dict):
+                    for key in (identifier, str(self.db_dir)):
+                        if key is None:
+                            continue
+                        system = system_cache.pop(key, None)
+                        if system is not None:
+                            candidates.append(system)
+            except Exception:
+                _kb_log.debug("Chroma shared system cache cleanup failed", exc_info=True)
+
+        seen = set()
+        for obj in candidates:
+            ident = id(obj)
+            if ident in seen:
+                continue
+            seen.add(ident)
+            for method_name in ("close", "stop", "shutdown"):
+                method = getattr(obj, method_name, None)
+                if not callable(method):
+                    continue
+                try:
+                    method()
+                except Exception:
+                    _kb_log.debug("Chroma cleanup method %s failed", method_name, exc_info=True)
+                break
+
+        gc.collect()
+
 
 class KnowledgeService:
     """
@@ -608,5 +678,18 @@ class KnowledgeService:
         return self._executor.submit(_do).result(timeout=120.0)
 
     def shutdown(self, wait: bool = False) -> None:
-        """释放线程池（测试或进程退出前可选调用）。"""
-        self._executor.shutdown(wait=wait)
+        """释放 KnowledgeManager/Chroma 资源和线程池。"""
+        def _do() -> None:
+            km = self._km
+            self._km = None
+            if km is not None:
+                km.close()
+
+        try:
+            future = self._executor.submit(_do)
+            if wait:
+                future.result(timeout=120.0)
+        except Exception:
+            _kb_log.debug("KnowledgeService shutdown cleanup failed", exc_info=True)
+        finally:
+            self._executor.shutdown(wait=wait)

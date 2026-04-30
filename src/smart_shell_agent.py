@@ -4,6 +4,7 @@ import json
 import hashlib
 import secrets
 import re
+import shlex
 import time
 import threading
 import importlib
@@ -217,6 +218,10 @@ _AI_WORKSPACE_TOP_LEVEL_DIR_NAMES_FOLD = frozenset(
     x.casefold() for x in _AI_WORKSPACE_TOP_LEVEL_DIR_NAMES
 )
 
+DEFAULT_WORKSPACE_ID = "default"
+DEFAULT_WORKSPACE_NAME = "Default"
+WORKSPACE_STATE_FILE = "workspaces.json"
+
 
 class SmartShellAgent:
     def __init__(self, model_name: str = "gemma3:4b", work_directory: Optional[str] = None, provider: str = "ollama", openai_conf: Optional[dict] = None, openwebui_conf: Optional[dict] = None, params: Optional[dict] = None, normal_config: Optional[dict] = None, vision_config: Optional[dict] = None, config_dir: Optional[str] = None, builtin_skills_dir: Optional[str] = None):
@@ -234,7 +239,8 @@ class SmartShellAgent:
             config_dir: 配置文件目录（可选）；持久化状态位于该目录下的 workspace/
             builtin_skills_dir: 内建 Agent Skills 根目录；未传则使用项目根目录下的 skills/
         """
-        self.work_directory = Path(work_directory) if work_directory else Path.cwd()
+        startup_work_directory = Path(work_directory) if work_directory else Path.cwd()
+        self.work_directory = startup_work_directory
         # Runtime guard: prevent AI from modifying smart-shell itself.
         self._self_repo_root = Path(__file__).resolve().parent.parent
         self.conversation_history = []
@@ -270,19 +276,17 @@ class SmartShellAgent:
 
             self.config_dir = Path(config_dir)
 
-        # 持久化状态（历史、知识库、记忆、确认列表等）位于配置目录下的 workspace/，与 Cursor 当前工作目录（work_directory）分离。
-        self.ai_workspace_dir = self.config_dir / "workspace"
-        try:
-            self.ai_workspace_dir.mkdir(parents=True, exist_ok=True)
-        except OSError as e:
-            print(f"⚠️ 无法创建 AI workspace 目录 {self.ai_workspace_dir}: {e}")
-
-        # 会话临时脚本等写入 workspace/temp，不直接落在 workspace 根目录。
-        self.ai_workspace_temp_dir = self.ai_workspace_dir / "temp"
-        try:
-            self.ai_workspace_temp_dir.mkdir(parents=True, exist_ok=True)
-        except OSError as e:
-            print(f"⚠️ 无法创建 workspace temp 目录 {self.ai_workspace_temp_dir}: {e}")
+        self.workspace_registry_path = self.config_dir / WORKSPACE_STATE_FILE
+        self._workspaces_state = self._load_workspace_state()
+        active_workspace_id = str(
+            self._workspaces_state.get("active") or DEFAULT_WORKSPACE_ID
+        )
+        workspaces = self._workspaces_state.get("workspaces", {})
+        active_workspace = workspaces.get(active_workspace_id) if isinstance(workspaces, dict) else None
+        if not isinstance(active_workspace, dict):
+            active_workspace = self._default_workspace_entry()
+            self._workspaces_state["active"] = DEFAULT_WORKSPACE_ID
+        self._apply_workspace_entry(active_workspace, startup_work_directory)
 
         self.history_manager = HistoryManager(str(self.ai_workspace_dir))
 
@@ -445,7 +449,672 @@ class SmartShellAgent:
         else:
             print("⚠️ Tab补全功能不可用")
 
+        self._workspace_runtime_generation = 0
         self._schedule_model_validation_background()
+        self._schedule_knowledge_service_background()
+        self.memory_service = None
+        self._last_memory_reflect_at = 0.0
+        self._schedule_memory_service_background()
+
+    def _resolve_path_lenient(self, path: Path) -> Path:
+        try:
+            return Path(path).expanduser().resolve()
+        except Exception:
+            return Path(path).expanduser().absolute()
+
+    def _path_identity_key(self, path: Path) -> str:
+        value = str(self._resolve_path_lenient(path))
+        return value.casefold() if os.name == "nt" else value
+
+    def _workspace_id_for_path(self, path: Path) -> str:
+        digest = hashlib.sha1(self._path_identity_key(path).encode("utf-8")).hexdigest()
+        return f"ws_{digest[:12]}"
+
+    def _default_workspace_entry(self) -> Dict[str, Any]:
+        root = self._resolve_path_lenient(self.config_dir / "workspace")
+        return {
+            "id": DEFAULT_WORKSPACE_ID,
+            "name": DEFAULT_WORKSPACE_NAME,
+            "kind": "default",
+            "root": str(root),
+            "storage": str(root),
+        }
+
+    def _workspace_root_path(self, entry: Dict[str, Any]) -> Path:
+        if str(entry.get("id") or "") == DEFAULT_WORKSPACE_ID or str(entry.get("kind") or "").lower() == "default":
+            return self._resolve_path_lenient(self.config_dir / "workspace")
+        raw = entry.get("root") or entry.get("path") or entry.get("storage") or ""
+        root = self._resolve_path_lenient(Path(str(raw)).expanduser())
+        if root.name.casefold() == ".smartshell":
+            return root.parent
+        return root
+
+    def _workspace_storage_path(self, entry: Dict[str, Any]) -> Path:
+        if str(entry.get("id") or "") == DEFAULT_WORKSPACE_ID or str(entry.get("kind") or "").lower() == "default":
+            return self._resolve_path_lenient(self.config_dir / "workspace")
+        storage = entry.get("storage")
+        if storage:
+            return self._resolve_path_lenient(Path(str(storage)).expanduser())
+        return self._workspace_root_path(entry) / ".smartshell"
+
+    def _workspace_current_dir_path(self, entry: Dict[str, Any]) -> Optional[Path]:
+        raw = entry.get("current_dir")
+        if not raw:
+            return None
+        return self._resolve_path_lenient(Path(str(raw)).expanduser())
+
+    def _load_workspace_state(self) -> Dict[str, Any]:
+        raw_state: Dict[str, Any] = {}
+        if self.workspace_registry_path.exists():
+            try:
+                with open(self.workspace_registry_path, "r", encoding="utf-8") as f:
+                    loaded = json.load(f)
+                if isinstance(loaded, dict):
+                    raw_state = loaded
+            except Exception as e:
+                print(f"⚠️ 读取 workspace registry 失败，使用默认 workspace: {e}")
+
+        raw_workspaces = raw_state.get("workspaces", {})
+        if not isinstance(raw_workspaces, dict):
+            raw_workspaces = {}
+
+        default_entry = self._default_workspace_entry()
+        old_default = raw_workspaces.get(DEFAULT_WORKSPACE_ID)
+        if isinstance(old_default, dict) and old_default.get("current_dir"):
+            default_entry["current_dir"] = str(
+                self._resolve_path_lenient(Path(str(old_default.get("current_dir"))))
+            )
+
+        workspaces: Dict[str, Dict[str, Any]] = {DEFAULT_WORKSPACE_ID: default_entry}
+        for key, raw_entry in raw_workspaces.items():
+            if key == DEFAULT_WORKSPACE_ID or not isinstance(raw_entry, dict):
+                continue
+            root_raw = raw_entry.get("root") or raw_entry.get("path")
+            if not root_raw and raw_entry.get("storage"):
+                storage_path = self._resolve_path_lenient(Path(str(raw_entry.get("storage"))))
+                root_path = storage_path.parent if storage_path.name.casefold() == ".smartshell" else storage_path
+            elif root_raw:
+                root_path = self._resolve_path_lenient(Path(str(root_raw)))
+            else:
+                continue
+
+            workspace_id = str(raw_entry.get("id") or key or self._workspace_id_for_path(root_path)).strip()
+            if not workspace_id or workspace_id == DEFAULT_WORKSPACE_ID:
+                workspace_id = self._workspace_id_for_path(root_path)
+            name = str(raw_entry.get("name") or root_path.name or str(root_path)).strip()
+            entry: Dict[str, Any] = {
+                "id": workspace_id,
+                "name": name,
+                "kind": "custom",
+                "root": str(root_path),
+                "storage": str(root_path / ".smartshell"),
+            }
+            if raw_entry.get("current_dir"):
+                entry["current_dir"] = str(
+                    self._resolve_path_lenient(Path(str(raw_entry.get("current_dir"))))
+                )
+            workspaces[workspace_id] = entry
+
+        active = str(raw_state.get("active") or DEFAULT_WORKSPACE_ID)
+        if active not in workspaces:
+            active = DEFAULT_WORKSPACE_ID
+        return {"version": 1, "active": active, "workspaces": workspaces}
+
+    def _save_workspace_state(self) -> None:
+        try:
+            self.config_dir.mkdir(parents=True, exist_ok=True)
+            tmp_path = self.workspace_registry_path.with_suffix(".json.tmp")
+            with open(tmp_path, "w", encoding="utf-8") as f:
+                json.dump(self._workspaces_state, f, ensure_ascii=False, indent=2)
+                f.write("\n")
+            os.replace(tmp_path, self.workspace_registry_path)
+        except Exception as e:
+            print(f"⚠️ 保存 workspace registry 失败: {e}")
+
+    def _ensure_workspace_dirs(self) -> None:
+        try:
+            self.ai_workspace_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            print(f"⚠️ 无法创建 AI workspace 目录 {self.ai_workspace_dir}: {e}")
+        self.ai_workspace_temp_dir = self.ai_workspace_dir / "temp"
+        try:
+            self.ai_workspace_temp_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            print(f"⚠️ 无法创建 workspace temp 目录 {self.ai_workspace_temp_dir}: {e}")
+
+    def _apply_workspace_entry(self, entry: Dict[str, Any], fallback_dir: Path) -> None:
+        workspace_id = str(entry.get("id") or DEFAULT_WORKSPACE_ID)
+        if workspace_id == DEFAULT_WORKSPACE_ID:
+            entry.update(self._default_workspace_entry())
+        root = self._workspace_root_path(entry)
+        storage = self._workspace_storage_path(entry)
+        self.workspace_id = workspace_id
+        self.workspace_name = str(entry.get("name") or (DEFAULT_WORKSPACE_NAME if workspace_id == DEFAULT_WORKSPACE_ID else root.name)).strip()
+        self.workspace_kind = str(entry.get("kind") or ("default" if workspace_id == DEFAULT_WORKSPACE_ID else "custom")).lower()
+        self.workspace_root = root
+        self.ai_workspace_dir = storage
+        self._ensure_workspace_dirs()
+
+        current_dir = self._workspace_current_dir_path(entry)
+        if current_dir is not None and current_dir.exists() and current_dir.is_dir():
+            self.work_directory = current_dir
+        elif self.workspace_kind != "default" and root.exists() and root.is_dir():
+            self.work_directory = root
+        else:
+            self.work_directory = self._resolve_path_lenient(fallback_dir)
+
+        self._workspaces_state["active"] = self.workspace_id
+        workspaces = self._workspaces_state.setdefault("workspaces", {})
+        if isinstance(workspaces, dict):
+            workspaces[self.workspace_id] = {
+                "id": self.workspace_id,
+                "name": self.workspace_name,
+                "kind": self.workspace_kind,
+                "root": str(self.workspace_root),
+                "storage": str(self.ai_workspace_dir),
+                **({"current_dir": str(self.work_directory)} if entry.get("current_dir") else {}),
+            }
+
+    def _save_current_workspace_position(self) -> None:
+        if not hasattr(self, "_workspaces_state"):
+            return
+        workspaces = self._workspaces_state.setdefault("workspaces", {})
+        if not isinstance(workspaces, dict):
+            return
+        entry = workspaces.get(getattr(self, "workspace_id", DEFAULT_WORKSPACE_ID))
+        if not isinstance(entry, dict):
+            workspace_id = getattr(self, "workspace_id", DEFAULT_WORKSPACE_ID)
+            if workspace_id == DEFAULT_WORKSPACE_ID:
+                entry = self._default_workspace_entry()
+            else:
+                entry = {
+                    "id": workspace_id,
+                    "name": getattr(self, "workspace_name", str(workspace_id)),
+                    "kind": getattr(self, "workspace_kind", "custom"),
+                    "root": str(getattr(self, "workspace_root", self.work_directory)),
+                    "storage": str(getattr(self, "ai_workspace_dir", self.work_directory / ".smartshell")),
+                }
+            workspaces[workspace_id] = entry
+        entry["current_dir"] = str(self._resolve_path_lenient(self.work_directory))
+        self._workspaces_state["active"] = getattr(self, "workspace_id", DEFAULT_WORKSPACE_ID)
+        self._save_workspace_state()
+
+    def _workspace_path_from_arg(self, raw: str) -> Path:
+        text = str(raw or "").strip().strip('"').strip("'")
+        path = Path(text).expanduser()
+        if not path.is_absolute():
+            path = self.work_directory / path
+        return self._resolve_path_lenient(path)
+
+    def _workspace_entry_by_root(self, root: Path, ignore_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        key = self._path_identity_key(root)
+        workspaces = self._workspaces_state.get("workspaces", {})
+        if not isinstance(workspaces, dict):
+            return None
+        for workspace_id, entry in workspaces.items():
+            if ignore_id and workspace_id == ignore_id:
+                continue
+            if isinstance(entry, dict) and self._path_identity_key(self._workspace_root_path(entry)) == key:
+                return entry
+        return None
+
+    def _workspace_name_exists(self, name: str, ignore_id: Optional[str] = None) -> bool:
+        wanted = str(name or "").strip().casefold()
+        workspaces = self._workspaces_state.get("workspaces", {})
+        if not wanted or not isinstance(workspaces, dict):
+            return False
+        for workspace_id, entry in workspaces.items():
+            if ignore_id and workspace_id == ignore_id:
+                continue
+            if isinstance(entry, dict) and str(entry.get("name") or "").strip().casefold() == wanted:
+                return True
+        return False
+
+    def _workspace_entry_by_selector(self, selector: str) -> Optional[Dict[str, Any]]:
+        text = str(selector or "").strip().strip('"').strip("'")
+        if not text:
+            return None
+        workspaces = self._workspaces_state.get("workspaces", {})
+        if not isinstance(workspaces, dict):
+            return None
+        if text in workspaces and isinstance(workspaces[text], dict):
+            return workspaces[text]
+        folded = text.casefold()
+        for entry in workspaces.values():
+            if isinstance(entry, dict) and str(entry.get("name") or "").strip().casefold() == folded:
+                return entry
+        try:
+            root = self._workspace_path_from_arg(text)
+            return self._workspace_entry_by_root(root)
+        except Exception:
+            return None
+
+    def _split_workspace_args(self, text: str) -> Tuple[List[str], Optional[str]]:
+        try:
+            parts = shlex.split(text or "", posix=False)
+        except ValueError as e:
+            return [], f"参数解析失败: {e}"
+        return [p.strip().strip('"').strip("'") for p in parts if p.strip()], None
+
+    def _parse_workspace_command_args(
+        self,
+        text: str,
+        value_flags: Set[str],
+        bool_flags: Set[str],
+    ) -> Tuple[List[str], Dict[str, Any], Optional[str]]:
+        parts, err = self._split_workspace_args(text)
+        if err:
+            return [], {}, err
+        positionals: List[str] = []
+        options: Dict[str, Any] = {}
+        i = 0
+        while i < len(parts):
+            token = parts[i]
+            matched_value_flag = None
+            for flag in value_flags:
+                if token == flag or token.startswith(f"{flag}="):
+                    matched_value_flag = flag
+                    break
+            if matched_value_flag:
+                key = matched_value_flag[2:].replace("-", "_")
+                if token.startswith(f"{matched_value_flag}="):
+                    value = token.split("=", 1)[1].strip()
+                else:
+                    i += 1
+                    if i >= len(parts):
+                        return [], {}, f"{matched_value_flag} 需要一个值"
+                    value = parts[i]
+                options[key] = value
+            elif token in bool_flags:
+                options[token[2:].replace("-", "_")] = True
+            elif token.startswith("--"):
+                return [], {}, f"未知参数: {token}"
+            else:
+                positionals.append(token)
+            i += 1
+        return positionals, options, None
+
+    def _workspace_usage(self) -> str:
+        return (
+            "用法:\n"
+            "  /workspace list\n"
+            "  /workspace current\n"
+            "  /workspace create <path> [--name <name>]\n"
+            "  /workspace switch <name|id|path>\n"
+            "  /workspace update <name|id|path> [--name <name>] [--path <path>]\n"
+            "  /workspace rename <name|id|path> <new name>\n"
+            "  /workspace delete <name|id|path> [--remove-files]\n"
+            "    --remove-files: 删除该自定义 workspace 根目录下的 .smartshell/，"
+            "包括 history、temp、skills、knowledge、knowledge_db 等 Smart Shell 数据；"
+            "不会删除 workspace 根目录或其它项目文件。"
+        )
+
+    def _workspace_subcommand_usage(self, subcommand: str) -> str:
+        usages = {
+            "help": "/workspace help",
+            "current": "/workspace current",
+            "list": "/workspace list",
+            "create": "/workspace create <path> [--name <name>]",
+            "switch": "/workspace switch <name|id|path>",
+            "update": "/workspace update <name|id|path> [--name <name>] [--path <path>]",
+            "rename": "/workspace rename <name|id|path> <new name>",
+            "delete": "/workspace delete <name|id|path> [--remove-files]",
+        }
+        usage = usages.get(str(subcommand or "").strip().lower())
+        if usage:
+            detail = ""
+            if str(subcommand or "").strip().lower() == "delete":
+                detail = (
+                    "\n说明: --remove-files 会删除该自定义 workspace 根目录下的 .smartshell/ "
+                    "及其所有文件和子目录；不会删除 workspace 根目录或其它项目文件。"
+                )
+            return f"用法: {usage}{detail}"
+        return self._workspace_usage()
+
+    def _handle_workspace_builtin_command(self, builtin_line: str) -> bool:
+        raw = (builtin_line or "").strip()
+        if not raw.lower().startswith("workspace"):
+            return False
+        parts, err = self._split_workspace_args(raw)
+        if err:
+            print(f"❌ {err}\n{self._workspace_usage()}")
+            return True
+        if not parts or parts[0].lower() != "workspace":
+            return False
+        if len(parts) == 1:
+            self._print_workspace_help()
+            return True
+
+        sub = parts[1].lower()
+        match = re.match(r"(?is)^workspace\s+\S+(?:\s+(.*))?$", raw)
+        arg_text = (match.group(1) if match else "") or ""
+
+        if sub == "help":
+            if arg_text.strip():
+                print(f"❌ {self._workspace_subcommand_usage('help')}")
+            else:
+                self._print_workspace_help()
+            return True
+        if sub == "current":
+            if arg_text.strip():
+                print(f"❌ {self._workspace_subcommand_usage('current')}")
+            else:
+                self._print_workspace_current()
+            return True
+        if sub == "list":
+            if arg_text.strip():
+                print(f"❌ {self._workspace_subcommand_usage('list')}")
+            else:
+                self._print_workspace_list()
+            return True
+        if sub == "create":
+            print(self._workspace_create_command(arg_text.strip()))
+            return True
+        if sub == "switch":
+            if not arg_text.strip():
+                print(f"❌ {self._workspace_subcommand_usage('switch')}")
+            else:
+                print(self._workspace_switch_command(arg_text.strip()))
+            return True
+        if sub == "update":
+            print(self._workspace_update_command(arg_text.strip()))
+            return True
+        if sub == "rename":
+            print(self._workspace_rename_command(arg_text.strip()))
+            return True
+        if sub == "delete":
+            print(self._workspace_delete_command(arg_text.strip()))
+            return True
+
+        print(f"❌ 无效 workspace 子命令: {parts[1]}\n{self._workspace_usage()}")
+        return True
+
+    def _print_workspace_help(self) -> None:
+        print(self._workspace_usage())
+        print("说明:")
+        print("  - 默认 workspace 固定名为 Default，数据目录仍为 config.json 同级的 workspace/")
+        print("  - 自定义 workspace 的 Smart Shell 数据保存在该目录下的 .smartshell/")
+        print("  - /workspace delete 默认只移除登记；带 --remove-files 时会删除该自定义 workspace 的 .smartshell/ 及其全部内容，不会删除 workspace 根目录或其它项目文件。")
+        print("  - 路径或名称包含空格时请使用引号")
+
+    def _print_workspace_current(self) -> None:
+        print(f"当前 workspace: {self.workspace_name} ({self.workspace_id})")
+        print(f"  root: {self.workspace_root}")
+        print(f"  storage: {self.ai_workspace_dir}")
+        print(f"  current directory: {self.work_directory}")
+
+    def _print_workspace_list(self) -> None:
+        workspaces = self._workspaces_state.get("workspaces", {})
+        if not isinstance(workspaces, dict):
+            print("未找到 workspace 配置")
+            return
+        print("Workspaces:")
+        ordered = sorted(
+            workspaces.values(),
+            key=lambda e: (0 if isinstance(e, dict) and e.get("id") == DEFAULT_WORKSPACE_ID else 1, str(e.get("name") if isinstance(e, dict) else "")),
+        )
+        for entry in ordered:
+            if not isinstance(entry, dict):
+                continue
+            marker = "*" if str(entry.get("id")) == getattr(self, "workspace_id", DEFAULT_WORKSPACE_ID) else " "
+            print(f"{marker} {entry.get('name')} ({entry.get('id')})")
+            print(f"    root: {self._workspace_root_path(entry)}")
+            print(f"    storage: {self._workspace_storage_path(entry)}")
+            if entry.get("current_dir"):
+                print(f"    current: {entry.get('current_dir')}")
+
+    def _workspace_create_command(self, arg_text: str) -> str:
+        positionals, options, err = self._parse_workspace_command_args(arg_text, {"--name"}, set())
+        if err:
+            return f"❌ {err}\n{self._workspace_subcommand_usage('create')}"
+        if len(positionals) != 1:
+            return f"❌ 用法: /workspace create <path> [--name <name>]"
+        root = self._workspace_path_from_arg(positionals[0])
+        name = str(options.get("name") or root.name or str(root)).strip()
+        if not name:
+            return "❌ workspace 名称不能为空"
+        if self._workspace_name_exists(name):
+            return f"❌ workspace 名称已存在: {name}"
+        existing = self._workspace_entry_by_root(root)
+        if existing:
+            return f"❌ 该目录已经是 workspace: {existing.get('name')} ({existing.get('id')})"
+        try:
+            root.mkdir(parents=True, exist_ok=True)
+            storage = root / ".smartshell"
+            storage.mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            return f"❌ 创建 workspace 目录失败: {e}"
+        workspace_id = self._workspace_id_for_path(root)
+        base_id = workspace_id
+        counter = 2
+        workspaces = self._workspaces_state.setdefault("workspaces", {})
+        while workspace_id in workspaces:
+            workspace_id = f"{base_id}_{counter}"
+            counter += 1
+        workspaces[workspace_id] = {
+            "id": workspace_id,
+            "name": name,
+            "kind": "custom",
+            "root": str(root),
+            "storage": str(storage),
+            "current_dir": str(root),
+        }
+        self._save_workspace_state()
+        return f"✅ 已创建 workspace: {name} ({workspace_id})\n  root: {root}\n  storage: {storage}"
+
+    def _workspace_switch_command(self, selector: str) -> str:
+        entry = self._workspace_entry_by_selector(selector)
+        if not entry:
+            return f"❌ 未找到 workspace: {selector}"
+        if str(entry.get("id")) == getattr(self, "workspace_id", DEFAULT_WORKSPACE_ID):
+            return f"ℹ️ 已经在 workspace: {self.workspace_name}"
+        self._save_current_workspace_position()
+        self._apply_workspace_entry(entry, self.work_directory)
+        self._save_current_workspace_position()
+        self._refresh_workspace_runtime()
+        return f"✅ 已切换到 workspace: {self.workspace_name}\n  current directory: {self.work_directory}"
+
+    def _workspace_update_command(self, arg_text: str) -> str:
+        positionals, options, err = self._parse_workspace_command_args(arg_text, {"--name", "--path"}, set())
+        if err:
+            return f"❌ {err}\n{self._workspace_subcommand_usage('update')}"
+        if len(positionals) != 1 or not options:
+            return "❌ 用法: /workspace update <name|id|path> [--name <name>] [--path <path>]"
+        entry = self._workspace_entry_by_selector(positionals[0])
+        if not entry:
+            return f"❌ 未找到 workspace: {positionals[0]}"
+        workspace_id = str(entry.get("id") or "")
+        if workspace_id == DEFAULT_WORKSPACE_ID:
+            return "❌ 默认 workspace 的名称和目录固定，不能修改"
+        active_workspace = workspace_id == getattr(self, "workspace_id", DEFAULT_WORKSPACE_ID)
+        if active_workspace:
+            self._save_current_workspace_position()
+
+        old_root = self._workspace_root_path(entry)
+        old_storage = self._workspace_storage_path(entry)
+        messages: List[str] = []
+        if "name" in options:
+            new_name = str(options.get("name") or "").strip()
+            if not new_name:
+                return "❌ workspace 名称不能为空"
+            if self._workspace_name_exists(new_name, ignore_id=workspace_id):
+                return f"❌ workspace 名称已存在: {new_name}"
+            entry["name"] = new_name
+            messages.append(f"name={new_name}")
+
+        if "path" in options:
+            new_root = self._workspace_path_from_arg(str(options.get("path") or ""))
+            duplicate = self._workspace_entry_by_root(new_root, ignore_id=workspace_id)
+            if duplicate:
+                return f"❌ 目标目录已经是 workspace: {duplicate.get('name')} ({duplicate.get('id')})"
+            new_storage = new_root / ".smartshell"
+            if active_workspace:
+                self._shutdown_mcp_runtime()
+                self._shutdown_workspace_services(wait=True)
+            try:
+                new_root.mkdir(parents=True, exist_ok=True)
+                if old_storage.exists() and self._path_identity_key(old_storage) != self._path_identity_key(new_storage) and not new_storage.exists():
+                    new_storage.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.move(str(old_storage), str(new_storage))
+                    messages.append("storage=moved")
+                else:
+                    new_storage.mkdir(parents=True, exist_ok=True)
+                    if old_storage.exists() and self._path_identity_key(old_storage) != self._path_identity_key(new_storage):
+                        messages.append("storage=kept-existing-new-location")
+            except Exception as e:
+                return f"❌ 修改 workspace 目录失败: {e}"
+            current_dir = self._workspace_current_dir_path(entry)
+            try:
+                rel = current_dir.relative_to(old_root) if current_dir is not None else None
+            except Exception:
+                rel = None
+            if rel is not None:
+                candidate = new_root / rel
+                entry["current_dir"] = str(candidate if candidate.exists() else new_root)
+            else:
+                entry["current_dir"] = str(new_root)
+            entry["root"] = str(new_root)
+            entry["storage"] = str(new_storage)
+            messages.append(f"path={new_root}")
+
+        self._save_workspace_state()
+        if active_workspace:
+            self._apply_workspace_entry(entry, self.work_directory)
+            self._refresh_workspace_runtime()
+        return f"✅ 已修改 workspace: {entry.get('name')} ({workspace_id})\n  " + ", ".join(messages)
+
+    def _workspace_rename_command(self, arg_text: str) -> str:
+        positionals, options, err = self._parse_workspace_command_args(arg_text, set(), set())
+        if err:
+            return f"❌ {err}\n{self._workspace_subcommand_usage('rename')}"
+        if len(positionals) < 2:
+            return "❌ 用法: /workspace rename <name|id|path> <new name>"
+        selector = positionals[0]
+        new_name = " ".join(positionals[1:]).strip()
+        return self._workspace_update_command(f'"{selector}" --name "{new_name}"')
+
+    def _workspace_delete_command(self, arg_text: str) -> str:
+        positionals, options, err = self._parse_workspace_command_args(arg_text, set(), {"--remove-files"})
+        if err:
+            return f"❌ {err}\n{self._workspace_subcommand_usage('delete')}"
+        if len(positionals) != 1:
+            return f"❌ {self._workspace_subcommand_usage('delete')}"
+        entry = self._workspace_entry_by_selector(positionals[0])
+        if not entry:
+            return f"❌ 未找到 workspace: {positionals[0]}"
+        workspace_id = str(entry.get("id") or "")
+        if workspace_id == DEFAULT_WORKSPACE_ID:
+            return "❌ 默认 workspace 不能删除"
+
+        storage = self._workspace_storage_path(entry)
+        remove_files = bool(options.get("remove_files"))
+        if remove_files and storage.exists():
+            confirm = input(f"确认删除 workspace 数据目录 '{storage}'？只会删除 .smartshell，不会删除 workspace 根目录。(y/n): ").strip().lower()
+            if confirm != "y":
+                return "已取消删除 workspace 数据目录"
+
+        active_deleted = workspace_id == getattr(self, "workspace_id", DEFAULT_WORKSPACE_ID)
+        if active_deleted:
+            self._save_current_workspace_position()
+        workspaces = self._workspaces_state.get("workspaces", {})
+        if isinstance(workspaces, dict):
+            workspaces.pop(workspace_id, None)
+        if active_deleted:
+            default_entry = (
+                workspaces.get(DEFAULT_WORKSPACE_ID)
+                if isinstance(workspaces, dict) and isinstance(workspaces.get(DEFAULT_WORKSPACE_ID), dict)
+                else self._default_workspace_entry()
+            )
+            if isinstance(workspaces, dict):
+                workspaces[DEFAULT_WORKSPACE_ID] = default_entry
+            self._apply_workspace_entry(default_entry, self.work_directory)
+            self._save_current_workspace_position()
+            self._refresh_workspace_runtime()
+        else:
+            self._save_workspace_state()
+
+        removed_data = False
+        if remove_files and storage.exists():
+            try:
+                shutil.rmtree(storage)
+                removed_data = True
+            except OSError as e:
+                return f"⚠️ workspace 已从列表删除，但删除数据目录失败: {e}"
+        suffix = f"\n  已删除数据目录: {storage}" if removed_data else ""
+        return f"✅ 已删除 workspace: {entry.get('name')} ({workspace_id}){suffix}"
+
+    def _shutdown_mcp_runtime(self) -> None:
+        manager = getattr(self, "mcp_manager", None)
+        clients = getattr(manager, "_clients", None)
+        if not isinstance(clients, dict):
+            return
+        for client in list(clients.values()):
+            try:
+                client._shutdown_unlocked()
+            except Exception:
+                pass
+        clients.clear()
+
+    def _shutdown_workspace_services(self, wait: bool = True) -> None:
+        self._workspace_runtime_generation = getattr(self, "_workspace_runtime_generation", 0) + 1
+        if wait:
+            knowledge_event = getattr(self, "_knowledge_import_done", None)
+            if knowledge_event is not None:
+                try:
+                    knowledge_event.wait(timeout=120.0)
+                except Exception:
+                    pass
+        for attr in ("knowledge_manager", "memory_service"):
+            svc = getattr(self, attr, None)
+            setattr(self, attr, None)
+            if svc is None:
+                continue
+            shutdown = getattr(svc, "shutdown", None)
+            if not callable(shutdown):
+                continue
+            try:
+                shutdown(wait=wait)
+            except TypeError:
+                try:
+                    shutdown()
+                except Exception:
+                    pass
+            except Exception:
+                pass
+
+    def _refresh_workspace_runtime(self) -> None:
+        self._shutdown_workspace_services(wait=True)
+        self._ensure_workspace_dirs()
+        self.history_manager = HistoryManager(str(self.ai_workspace_dir))
+        if self.input_handler is not None:
+            try:
+                if hasattr(self.input_handler, "update_work_directory"):
+                    self.input_handler.update_work_directory(self.work_directory)
+                if hasattr(self.input_handler, "reset_command_history"):
+                    self.input_handler.reset_command_history(self.history_manager.get_all_history())
+            except Exception:
+                pass
+
+        self._allowlist_shell_paths = {}
+        self._allowlist_shell_exes = set()
+        self._allowlist_script = set()
+        self._confirm_allowlist_salt = ""
+        self._load_confirm_allowlist()
+        self._freedom_script_review_entries = {}
+        self._load_freedom_script_review_cache()
+
+        self._shutdown_mcp_runtime()
+        self.mcp_manager = McpManager(
+            self.config_dir,
+            self.mcp_config,
+            self.ai_workspace_dir,
+            tool_policy_parent=self.ai_workspace_dir,
+        )
+        self.mcp_manager.register_client_method_handler("elicitation/create", self._handle_mcp_elicitation_create)
+        self.mcp_manager.preload_all_async(timeout_s=12.0, force=False)
+        self.system_prompt = self._compose_system_prompt_snapshot(include_tools=False)
+        self._reload_skills()
+        self.knowledge_manager = None
         self._schedule_knowledge_service_background()
         self.memory_service = None
         self._last_memory_reflect_at = 0.0
@@ -454,6 +1123,8 @@ class SmartShellAgent:
     def _schedule_memory_service_background(self) -> None:
         """后台初始化经验记忆：在本线程内 import memory_manager，再构造 MemoryService（Markdown 后端，无重型依赖）。"""
         _mod = sys.modules[__name__]
+        workspace_dir = str(self.ai_workspace_dir)
+        generation = getattr(self, "_workspace_runtime_generation", 0)
 
         def _run() -> None:
             try:
@@ -469,7 +1140,17 @@ class SmartShellAgent:
             if not mav or MS is None:
                 return
             try:
-                self.memory_service = MS(str(self.ai_workspace_dir))
+                svc = MS(workspace_dir)
+                if (
+                    str(self.ai_workspace_dir) == workspace_dir
+                    and getattr(self, "_workspace_runtime_generation", 0) == generation
+                ):
+                    self.memory_service = svc
+                else:
+                    try:
+                        svc.shutdown(wait=False)
+                    except Exception:
+                        pass
             except Exception:
                 try:
                     get_logger().exception("经验记忆 MemoryService 初始化失败")
@@ -1041,6 +1722,8 @@ class SmartShellAgent:
             return
 
         self._knowledge_import_done = threading.Event()
+        workspace_dir = str(self.ai_workspace_dir)
+        generation = getattr(self, "_workspace_runtime_generation", 0)
 
         def _run() -> None:
             try:
@@ -1054,7 +1737,17 @@ class SmartShellAgent:
                 _mod.KNOWLEDGE_AVAILABLE = _KAV
                 if _KAV and _KS is not None:
                     try:
-                        self.knowledge_manager = _KS(str(self.ai_workspace_dir))
+                        svc = _KS(workspace_dir)
+                        if (
+                            str(self.ai_workspace_dir) == workspace_dir
+                            and getattr(self, "_workspace_runtime_generation", 0) == generation
+                        ):
+                            self.knowledge_manager = svc
+                        else:
+                            try:
+                                svc.shutdown(wait=True)
+                            except Exception:
+                                pass
                     except Exception:
                         try:
                             get_logger().exception("知识库 KnowledgeService 构造失败")
@@ -2478,6 +3171,7 @@ class SmartShellAgent:
                     f"当前操作系统信息：{os_info}\n当前日期时间：{date_time}\n"
                     f"当前 smart-shell 根目录（绝对路径）：{self._self_repo_root}\n"
                     f"当前 config 目录（绝对路径）：{self.config_dir}\n"
+                    f"当前 workspace 名称：{self.workspace_name}\n"
                     f"当前 workspace 目录（绝对路径）：{self.ai_workspace_dir}\n"
                 )
                 if mem_block:
@@ -2507,7 +3201,7 @@ class SmartShellAgent:
                         "【硬性要求】作答前须核对上一条 system 开头的「经验记忆」："
                         "与本轮用户问题相关的条目必须在答复中体现，不得用与这些记录无关的通用助手或供应商设定替代。\n\n"
                     )
-                current_input += f"当前工作目录: {self.work_directory}\n"
+                current_input += f"当前 workspace: {self.workspace_name}\n当前工作目录: {self.work_directory}\n"
                 if self.operation_results:
                     current_input += f"最近的操作结果: {self.operation_results[-1]}\n"
                 if context:
@@ -2977,6 +3671,7 @@ big_image.jpg
             # 更新输入处理器的工作目录
             if self.input_handler:
                 self.input_handler.update_work_directory(new_path)
+            self._save_current_workspace_position()
             
             return {
                 "success": True,
@@ -6272,6 +6967,7 @@ big_image.jpg
                         print(f"❌ {mcp_err}")
                         continue
                     if bl in ('exit', 'quit'):
+                        self._save_current_workspace_position()
                         break
                     # clear screen
                     if bl == 'cls' or bl == 'clear screen':
@@ -6359,6 +7055,9 @@ big_image.jpg
                             print("❌ 请提供记忆 id")
                         continue
 
+                    if self._handle_workspace_builtin_command(builtin_line):
+                        continue
+
                     if bl.startswith("execution-policy "):
                         policy = ""
                         policy = bl.split(" ", 1)[1].strip().lower()
@@ -6444,6 +7143,13 @@ big_image.jpg
                         print("  3. /clear history               - 清除命令历史记录")
                         print("  4. /clear context               - 清空 AI 上下文与操作结果缓存")
                         print("  5. /help                        - 显示此帮助信息")
+                        print("\n🗂️ Workspace 命令：")
+                        print("  /workspace current                         - 查看当前 workspace")
+                        print("  /workspace list                            - 列出所有 workspace")
+                        print("  /workspace create <path> [--name <name>]   - 创建自定义 workspace")
+                        print("  /workspace switch <name|id|path>           - 切换 workspace")
+                        print("  /workspace update <selector> [--name <name>] [--path <path>] - 修改 workspace")
+                        print("  /workspace delete <selector> [--remove-files] - 删除 workspace；带开关会删除该 workspace 的 .smartshell/ 数据目录")
                         print("\n🧩 MCP 快捷命令：")
                         print("  /mcp status                                - 查看 MCP 总体状态")
                         print("  /mcp status-refresh                        - 刷新并查看 MCP 状态")
@@ -6855,6 +7561,7 @@ big_image.jpg
                     should_exit = False
 
                 if should_exit:
+                    self._save_current_workspace_position()
                     print("👋 已退出 Smart Shell，再见！")
                     break
                 continue
@@ -7003,7 +7710,7 @@ big_image.jpg
         """
         import platform
         
-        prompt = f"🤖 [{str(self.work_directory)}]: "
+        prompt = f"[{self.workspace_name}] <{str(self.work_directory)}>: "
         
         # 重置历史记录索引
         self.history_manager.reset_index()
