@@ -30,8 +30,10 @@ def setup_app_logging(config_dir: Optional[Path] = None, *, level: int = logging
 
     try:
         config_dir = Path(config_dir)
+        logs_dir = config_dir / "logs"
+        logs_dir.mkdir(parents=True, exist_ok=True)
         config_dir.mkdir(parents=True, exist_ok=True)
-        log_path = config_dir / "smartshell.log"
+        log_path = logs_dir / "smartshell.log"
         fh = logging.FileHandler(log_path, encoding="utf-8")
         fh.setLevel(level)
         fh.setFormatter(

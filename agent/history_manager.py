@@ -9,7 +9,7 @@ class HistoryManager:
         """
         初始化历史记录管理器
         Args:
-            config_dir: 配置文件目录
+            config_dir: 存放 history.json 的目录（通常为 Smart Shell 配置目录下的 workspace/）
             max_entries: 最大记录数
         """
         self.config_dir = Path(config_dir)

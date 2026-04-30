@@ -2149,7 +2149,13 @@ class McpUrlClient:
 
 
 class McpManager:
-    def __init__(self, config_dir: Path, mcp_config: Dict[str, Any], workspace_dir: Optional[Path] = None):
+    def __init__(
+        self,
+        config_dir: Path,
+        mcp_config: Dict[str, Any],
+        workspace_dir: Optional[Path] = None,
+        tool_policy_parent: Optional[Path] = None,
+    ):
         self.config_dir = Path(config_dir)
         self.workspace_dir = Path(workspace_dir) if workspace_dir else self.config_dir / "workspace"
         self.mcp_config = mcp_config or {}
@@ -2165,7 +2171,8 @@ class McpManager:
         self._preload_lock = threading.Lock()
         self._status_lock = threading.Lock()
         self._policy_lock = threading.Lock()
-        self._tool_policy_path = self.config_dir / "mcp_tool_policy.json"
+        _policy_parent = Path(tool_policy_parent) if tool_policy_parent is not None else self.config_dir
+        self._tool_policy_path = _policy_parent / "mcp_tool_policy.json"
         self._disabled_tools_by_server: Dict[str, set[str]] = self._load_disabled_tools_policy()
         self._logger = self._build_logger()
         self._recent_logs: "deque[str]" = deque(maxlen=200)
@@ -2202,7 +2209,7 @@ class McpManager:
                 data["servers"][server] = {
                     "disabled_tools": sorted(names),
                 }
-        self.config_dir.mkdir(parents=True, exist_ok=True)
+        self._tool_policy_path.parent.mkdir(parents=True, exist_ok=True)
         self._tool_policy_path.write_text(
             json.dumps(data, ensure_ascii=False, indent=2),
             encoding="utf-8",
@@ -2311,7 +2318,7 @@ class McpManager:
         return sorted(self._disabled_tools_by_server.get(srv, set()))
 
     def _build_logger(self) -> logging.Logger:
-        logs_dir = self.workspace_dir / "logs"
+        logs_dir = self.config_dir / "logs"
         try:
             logs_dir.mkdir(parents=True, exist_ok=True)
         except Exception:
