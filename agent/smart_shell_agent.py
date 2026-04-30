@@ -209,6 +209,14 @@ SESSION_SUMMARY_LLM_INTERVAL_PAIRS = 6
 SESSION_SUMMARY_LLM_MAX_CHARS = 1200
 SESSION_SUMMARY_LLM_HISTORY_MSGS = 16
 
+# workspace 根下允许的顶层目录名（其它新建路径须落在这些目录之下或更深子路径）
+_AI_WORKSPACE_TOP_LEVEL_DIR_NAMES = frozenset(
+    {"temp", "skills"}
+)
+_AI_WORKSPACE_TOP_LEVEL_DIR_NAMES_FOLD = frozenset(
+    x.casefold() for x in _AI_WORKSPACE_TOP_LEVEL_DIR_NAMES
+)
+
 
 class SmartShellAgent:
     def __init__(self, model_name: str = "gemma3:4b", work_directory: Optional[str] = None, provider: str = "ollama", openai_conf: Optional[dict] = None, openwebui_conf: Optional[dict] = None, params: Optional[dict] = None, normal_config: Optional[dict] = None, vision_config: Optional[dict] = None, config_dir: Optional[str] = None, builtin_skills_dir: Optional[str] = None):
@@ -223,7 +231,7 @@ class SmartShellAgent:
             params: 通用参数（兼容旧格式）
             normal_config: 普通任务模型配置（新格式）
             vision_config: 视觉模型配置（新格式）
-            config_dir: 配置文件目录（可选，用于指定历史记录保存位置）
+            config_dir: 配置文件目录（可选）；持久化状态位于该目录下的 workspace/
             builtin_skills_dir: 内建 Agent Skills 根目录（通常为 main.py 同目录下的 skills/）；未传则使用 agent 包上级目录的 skills/
         """
         self.work_directory = Path(work_directory) if work_directory else Path.cwd()
@@ -244,16 +252,13 @@ class SmartShellAgent:
         # MCP auth-gate: avoid repeated token-prompt shell loops.
         self._mcp_pending_user_input: Dict[str, Dict[str, Any]] = {}
         
-        # 初始化历史记录管理器，使用指定的配置目录或自动查找
         if config_dir:
-            # 使用指定的配置目录
-            self.history_manager = HistoryManager(config_dir)
             self.config_dir = Path(config_dir)
         else:
             # 自动查找配置文件目录
             current_config_dir = Path(".smartshell")
             user_config_dir = Path.home() / ".smartshell"
-            
+
             # 如果用户目录下有配置文件，使用用户目录
             if (user_config_dir / "config.json").exists():
                 config_dir = user_config_dir
@@ -262,22 +267,30 @@ class SmartShellAgent:
             else:
                 # 默认使用用户目录
                 config_dir = user_config_dir
-                
-            self.history_manager = HistoryManager(str(config_dir))
+
             self.config_dir = Path(config_dir)
+
+        # 持久化状态（历史、知识库、记忆、确认列表等）位于配置目录下的 workspace/，与 Cursor 当前工作目录（work_directory）分离。
+        self.ai_workspace_dir = self.config_dir / "workspace"
+        try:
+            self.ai_workspace_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            print(f"⚠️ 无法创建 AI workspace 目录 {self.ai_workspace_dir}: {e}")
+
+        # 会话临时脚本等写入 workspace/temp，不直接落在 workspace 根目录。
+        self.ai_workspace_temp_dir = self.ai_workspace_dir / "temp"
+        try:
+            self.ai_workspace_temp_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            print(f"⚠️ 无法创建 workspace temp 目录 {self.ai_workspace_temp_dir}: {e}")
+
+        self.history_manager = HistoryManager(str(self.ai_workspace_dir))
 
         setup_app_logging(self.config_dir)
 
         # 知识库：不在主线程 import knowledge_manager（否则会同步加载 chromadb、transformers、torch 等，冷启动可达数秒）。
         # 实际加载见 _schedule_knowledge_service_background；单测可在构造前将本模块 KNOWLEDGE_AVAILABLE=False 以跳过。
         self.knowledge_manager = None
-
-        # Ephemeral task scripts from action "script" go here (config side, not user cwd).
-        self.ai_workspace_dir = self.config_dir / "workspace"
-        try:
-            self.ai_workspace_dir.mkdir(parents=True, exist_ok=True)
-        except OSError as e:
-            print(f"⚠️ 无法创建 AI workspace 目录 {self.ai_workspace_dir}: {e}")
 
         # 加载配置（执行策略默认 confirmation）；知识库在依赖可用时始终启用，不再提供开关
         self.execution_policy = "confirmation"
@@ -377,7 +390,12 @@ class SmartShellAgent:
         with open(prompt_path, 'r', encoding='utf-8') as f:
             self._base_system_prompt = f.read()
         self.mcp_config = self._load_mcp_config()
-        self.mcp_manager = McpManager(self.config_dir, self.mcp_config, self.ai_workspace_dir)
+        self.mcp_manager = McpManager(
+            self.config_dir,
+            self.mcp_config,
+            self.ai_workspace_dir,
+            tool_policy_parent=self.ai_workspace_dir,
+        )
         self.mcp_manager.register_client_method_handler("elicitation/create", self._handle_mcp_elicitation_create)
         # Async preload MCP tools cache on startup (non-blocking).
         self.mcp_manager.preload_all_async(timeout_s=12.0, force=False)
@@ -451,7 +469,7 @@ class SmartShellAgent:
             if not mav or MS is None:
                 return
             try:
-                self.memory_service = MS(str(self.config_dir))
+                self.memory_service = MS(str(self.ai_workspace_dir))
             except Exception:
                 try:
                     get_logger().exception("经验记忆 MemoryService 初始化失败")
@@ -1036,7 +1054,7 @@ class SmartShellAgent:
                 _mod.KNOWLEDGE_AVAILABLE = _KAV
                 if _KAV and _KS is not None:
                     try:
-                        self.knowledge_manager = _KS(str(self.config_dir))
+                        self.knowledge_manager = _KS(str(self.ai_workspace_dir))
                     except Exception:
                         try:
                             get_logger().exception("知识库 KnowledgeService 构造失败")
@@ -1575,7 +1593,7 @@ class SmartShellAgent:
             elif svc is not None and svc.is_ready() and not svc.is_available():
                 print("  知识库初始化失败，请查看 smartshell.log。")
             else:
-                print("  当前依赖可用但运行时未就绪。请查看日志、sentence-transformers 与 .smartshell/knowledge/。")
+                print("  当前依赖可用但运行时未就绪。请查看日志、sentence-transformers 与配置目录 workspace/knowledge/。")
         else:
             if sys.version_info >= (3, 14):
                 print("  当前环境不满足知识库依赖（例如 Python 3.14 下 ChromaDB 限制）。请使用 Python 3.12/3.13 并安装依赖。")
@@ -1603,15 +1621,15 @@ class SmartShellAgent:
                 "也可手动 memory_search / memory_add 或 /memory remember；勿与 knowledge_search 混淆。"
             )
         elif dep and not ready:
-            print("  记忆模块正在初始化或失败，请查看 smartshell.log 与 .smartshell/memory/。")
+            print("  记忆模块正在初始化或失败，请查看 smartshell.log 与配置目录 workspace/memory/。")
         else:
             print("  经验记忆不可用（初始化失败）；主程序可继续运行。")
 
     def _confirm_allowlist_path(self) -> Path:
-        return self.config_dir / "confirm_allowlist.json"
+        return self.ai_workspace_dir / "confirm_allowlist.json"
 
     def _freedom_script_review_cache_path(self) -> Path:
-        return self.config_dir / "freedom_script_review_cache.json"
+        return self.ai_workspace_dir / "freedom_script_review_cache.json"
 
     def _load_freedom_script_review_cache(self) -> None:
         self._freedom_script_review_entries = {}
@@ -3007,6 +3025,9 @@ big_image.jpg
                 if not matched_files:
                     return {"success": False, "error": f"未找到匹配的文件: {source}"}
                 dest_path = self._resolve_user_path(destination)
+                rej = self._reject_ai_workspace_root_level_write(dest_path)
+                if rej:
+                    return {"success": False, "error": rej}
                 if self._is_smart_shell_protected_path(dest_path) or any(
                     self._is_smart_shell_protected_path(p) for p in matched_files
                 ):
@@ -3040,6 +3061,9 @@ big_image.jpg
             else:
                 source_path = self._resolve_user_path(source)
                 dest_path = self._resolve_user_path(destination)
+                rej = self._reject_ai_workspace_root_level_write(dest_path)
+                if rej:
+                    return {"success": False, "error": rej}
                 if self._is_smart_shell_protected_path(source_path) or self._is_smart_shell_protected_path(dest_path):
                     return self._blocked_by_self_protection("move")
                 if not source_path.exists():
@@ -3144,6 +3168,9 @@ big_image.jpg
         """创建新文件夹"""
         try:
             dir_path = self._resolve_user_path(dir_name)
+            rej = self._reject_ai_workspace_root_level_write(dir_path)
+            if rej:
+                return {"success": False, "error": rej}
             if self._is_smart_shell_protected_path(dir_path):
                 return self._blocked_by_self_protection("mkdir")
 
@@ -3274,6 +3301,13 @@ big_image.jpg
         """Only the last path segment; prevents traversal out of ai_workspace_dir."""
         return Path(filename or "").name.strip()
 
+    def _workspace_relative_script_triple(self, rel: Path) -> Tuple[Path, Path, Path]:
+        """相对路径在 shell 解析时的三个候选根：当前工作目录、workspace/temp、workspace 根（兼容旧路径）。"""
+        p_wd = (self.work_directory / rel).resolve()
+        p_temp = (self.ai_workspace_temp_dir / rel).resolve()
+        p_ws = (self.ai_workspace_dir / rel).resolve()
+        return p_wd, p_temp, p_ws
+
     def _register_ephemeral_script(self, script_path: Path) -> None:
         key = self._ephemeral_path_key(script_path)
         self._ephemeral_script_paths.add(key)
@@ -3287,7 +3321,7 @@ big_image.jpg
         try:
             p = Path(raw)
             if not p.is_absolute():
-                for base in (self.work_directory, self.ai_workspace_dir):
+                for base in (self.work_directory, self.ai_workspace_temp_dir, self.ai_workspace_dir):
                     try:
                         q = (base / p).resolve()
                         q.relative_to(base.resolve())
@@ -3297,7 +3331,7 @@ big_image.jpg
                         continue
             else:
                 q = p.resolve()
-                for base in (self.work_directory, self.ai_workspace_dir):
+                for base in (self.work_directory, self.ai_workspace_temp_dir, self.ai_workspace_dir):
                     try:
                         q.relative_to(base.resolve())
                         self._ai_created_path_keys.add(self._ephemeral_path_key(q))
@@ -3323,7 +3357,7 @@ big_image.jpg
         try:
             p = Path(path_str.strip())
             if not p.is_absolute():
-                for base in (self.work_directory, self.ai_workspace_dir):
+                for base in (self.work_directory, self.ai_workspace_temp_dir, self.ai_workspace_dir):
                     q = (base / p).resolve()
                     if self._ephemeral_path_key(q) in self._ai_created_path_keys:
                         return True
@@ -3372,10 +3406,11 @@ big_image.jpg
                 tok = tok[2:]
             p = Path(tok)
             if not p.is_absolute():
-                p_wd = (self.work_directory / p).resolve()
+                p_wd, p_temp, p_ws = self._workspace_relative_script_triple(p)
                 if p_wd.is_file():
                     return p_wd
-                p_ws = (self.ai_workspace_dir / p).resolve()
+                if p_temp.is_file():
+                    return p_temp
                 if p_ws.is_file():
                     return p_ws
                 return p_wd
@@ -3390,10 +3425,11 @@ big_image.jpg
                 tok = tok[2:]
             p = Path(tok)
             if not p.is_absolute():
-                p_wd = (self.work_directory / p).resolve()
+                p_wd, p_temp, p_ws = self._workspace_relative_script_triple(p)
                 if p_wd.is_file():
                     return p_wd
-                p_ws = (self.ai_workspace_dir / p).resolve()
+                if p_temp.is_file():
+                    return p_temp
                 if p_ws.is_file():
                     return p_ws
                 return p_wd
@@ -3448,9 +3484,15 @@ big_image.jpg
             tok = tok[2:]
         p = Path(tok)
         if not p.is_absolute():
-            p_wd = (self.work_directory / p).resolve()
-            p_ws = (self.ai_workspace_dir / p).resolve()
-            cand = p_wd if p_wd.is_file() else (p_ws if p_ws.is_file() else p_wd)
+            p_wd, p_temp, p_ws = self._workspace_relative_script_triple(p)
+            if p_wd.is_file():
+                cand = p_wd
+            elif p_temp.is_file():
+                cand = p_temp
+            elif p_ws.is_file():
+                cand = p_ws
+            else:
+                cand = p_wd
         else:
             try:
                 cand = Path(tok).resolve()
@@ -3534,10 +3576,11 @@ big_image.jpg
             token = token[2:]
         p = Path(token)
         if not p.is_absolute():
-            p_wd = (self.work_directory / p).resolve()
+            p_wd, p_temp, p_ws = self._workspace_relative_script_triple(p)
             if p_wd.is_file():
                 return p_wd
-            p_ws = (self.ai_workspace_dir / p).resolve()
+            if p_temp.is_file():
+                return p_temp
             if p_ws.is_file():
                 return p_ws
             return p_wd
@@ -3566,6 +3609,33 @@ big_image.jpg
         if self._is_path_under(path, self.ai_workspace_dir):
             return False
         return self._is_path_under(path, self._self_repo_root) or self._is_path_under(path, self.config_dir)
+
+    def _reject_ai_workspace_root_level_write(self, path: Path) -> Optional[str]:
+        """
+        禁止在 Smart Shell workspace 根目录直接新建路径；须落在白名单顶层目录（如 temp、skills）之下。
+        例如 workspace/a.txt、workspace/myproj（非白名单顶层名）拒绝；workspace/temp/a.txt 允许。
+        """
+        msg = (
+            "禁止在 Smart Shell workspace 根目录直接创建该路径。"
+            "请使用子目录，例如 workspace/temp/…（临时）、workspace/skills/…（技能），"
+            "或落在既有顶层目录（knowledge、memory、knowledge_db、logs）之下。"
+        )
+        try:
+            r = path.resolve()
+            aw = self.ai_workspace_dir.resolve()
+            if not self._is_path_under(r, aw):
+                return None
+            rel = r.relative_to(aw)
+            if len(rel.parts) == 0:
+                return msg
+            if len(rel.parts) == 1:
+                top = rel.parts[0]
+                if top.casefold() in _AI_WORKSPACE_TOP_LEVEL_DIR_NAMES_FOLD:
+                    return None
+                return msg
+            return None
+        except (ValueError, OSError):
+            return None
 
     def _workspace_skills_root(self) -> Path:
         return (self.ai_workspace_dir / "skills").resolve()
@@ -3966,13 +4036,13 @@ big_image.jpg
     def action_create_script(
         self, filename: str, content: str, confirmed: bool = False, overwrite: bool = False
     ) -> dict:
-        """Create a script under config workspace (ai_workspace_dir). Only the basename is used (no subpaths)."""
+        """Create a script under workspace/temp (session artifacts). Only the basename is used (no subpaths)."""
         if not filename or not content:
             return {"success": False, "error": "缺少文件名或内容"}
         safe_name = self._safe_script_basename(filename)
         if not safe_name:
             return {"success": False, "error": "无效的文件名"}
-        script_path = self.ai_workspace_dir / safe_name
+        script_path = self.ai_workspace_temp_dir / safe_name
         if self._is_smart_shell_protected_path(script_path):
             return self._blocked_by_self_protection("script")
         existed_before = script_path.exists()
@@ -4017,7 +4087,7 @@ big_image.jpg
                 "filename": safe_name,
                 "full_path": str(resolved),
                 "message": (
-                    f"成功{verb}脚本文件 '{safe_name}'（位于 config 侧 workspace：{self.ai_workspace_dir}）"
+                    f"成功{verb}脚本文件 '{safe_name}'（位于 workspace/temp：{self.ai_workspace_temp_dir}）"
                 ),
             }
         except Exception as e:
@@ -4033,6 +4103,9 @@ big_image.jpg
         if not filename_s:
             return {"success": False, "error": "无效的文件名"}
         file_path = self._resolve_user_path(filename_s)
+        rej = self._reject_ai_workspace_root_level_write(file_path)
+        if rej:
+            return {"success": False, "error": rej}
         safe_name = file_path.name
         if self._is_smart_shell_protected_path(file_path):
             return self._blocked_by_self_protection("text_file")
@@ -4085,9 +4158,12 @@ big_image.jpg
             abs_path = Path(file_path)
             if not abs_path.is_absolute():
                 p1 = self.work_directory / file_path
+                p_temp = self.ai_workspace_temp_dir / file_path
                 p2 = self.ai_workspace_dir / file_path
                 if p1.is_file():
                     abs_path = p1
+                elif p_temp.is_file():
+                    abs_path = p_temp
                 elif p2.is_file():
                     abs_path = p2
                 else:
@@ -4152,9 +4228,12 @@ big_image.jpg
             abs_path = Path(file_path)
             if not abs_path.is_absolute():
                 p1 = self.work_directory / file_path
+                p_temp = self.ai_workspace_temp_dir / file_path
                 p2 = self.ai_workspace_dir / file_path
                 if p1.is_file():
                     abs_path = p1
+                elif p_temp.is_file():
+                    abs_path = p_temp
                 elif p2.is_file():
                     abs_path = p2
                 else:
@@ -4338,6 +4417,9 @@ big_image.jpg
             return {"success": False, "error": "grep 缺少 output_path（结果输出文件路径）"}
 
         out_path = self._resolve_user_path(out_raw)
+        rej = self._reject_ai_workspace_root_level_write(out_path)
+        if rej:
+            return {"success": False, "error": rej}
         if not self._grep_output_path_allowed(out_path):
             return {
                 "success": False,
@@ -6109,7 +6191,7 @@ big_image.jpg
                 print(
                     "知识库初始化失败；请查看日志"
                     + (f" ({lp})" if lp else "")
-                    + "，并检查 sentence-transformers、网络（首次需下载模型）与 .smartshell/knowledge/。"
+                    + "，并检查 sentence-transformers、网络（首次需下载模型）与配置目录 workspace/knowledge/。"
                 )
 
         if self.skills:
