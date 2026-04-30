@@ -3,7 +3,7 @@
 Smart Shell主启动脚本
 
 用法：
-    python main.py       # 使用配置文件中的模型配置
+    python src/main.py   # 使用配置文件中的模型配置
 """
 
 import sys
@@ -11,10 +11,11 @@ import json
 import os
 from pathlib import Path
 
-# 添加agent目录到Python路径
-current_dir = Path(__file__).parent
-agent_dir = current_dir / "agent"
-sys.path.insert(0, str(agent_dir))
+# Add the project root to Python path so the src package imports consistently
+# whether this file is launched as a script or imported by tests.
+current_dir = Path(__file__).resolve().parent
+project_root = current_dir.parent
+sys.path.insert(0, str(project_root))
 
 
 def main():
@@ -28,11 +29,11 @@ def main():
     # 优先查找用户主目录下的.smartshell/config.json
     user_home = str(Path.home())
     user_config = os.path.join(user_home, ".smartshell/config.json")
-    local_config = os.path.join(current_dir, ".smartshell/config.json")
+    local_config = os.path.join(project_root, ".smartshell/config.json")
     
     config_dir = None  # 配置文件目录，用于历史记录保存
-    # Built-in Agent Skills: <main.py 所在目录>/skills/（与 config 侧 skills 合并时，外部优先）
-    builtin_skills_dir = str(current_dir / "skills")
+    # Built-in Agent Skills live at the project root, outside src/.
+    builtin_skills_dir = str(project_root / "skills")
 
     if os.path.exists(user_config):
         config_path = user_config
@@ -50,7 +51,7 @@ def main():
             config = None
 
     if config_dir:
-        from agent.app_logging import get_logger, setup_app_logging
+        from src.app_logging import get_logger, setup_app_logging
         setup_app_logging(Path(config_dir))
         get_logger().info("Smart Shell 启动，config_dir=%s", config_dir)
     
@@ -83,7 +84,7 @@ def main():
         return 1
 
     # 配置就绪后再加载重型 agent 模块，缩短「启动」到「模型信息」之间的等待
-    from agent.smart_shell_agent import SmartShellAgent
+    from src.smart_shell_agent import SmartShellAgent
 
     # 如果使用双模型配置
     if normal_config and vision_config:

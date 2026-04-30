@@ -3,18 +3,18 @@
 ## 目录结构
 ```
 smart-shell/
-├── main.py                        # 主程序入口
-├── .smartshell                    # 配置目录
-|   ├── config.json                # 配置文件
-|   ├── knowledge/                 # 知识库文档目录
-|   ├── knowledge_db/              # 知识库数据库（自动生成）
-|   └── knowledge_status.json      # 知识库状态记录（自动生成）
-├── agent/                         # AI代理模块
+├── src/
+│   ├── main.py                    # 主程序入口
 │   ├── smart_shell_agent.py       # Smart Shell AI代理
 │   ├── knowledge_manager.py       # 知识库管理器
 │   ├── history_manager.py         # 历史记录管理器
 │   ├── windows_input.py           # Windows输入处理器
 │   └── tab_completer.py           # Unix系统Tab补全
+├── .smartshell                    # 配置目录
+|   ├── config.json                # 配置文件
+|   ├── knowledge/                 # 知识库文档目录
+|   ├── knowledge_db/              # 知识库数据库（自动生成）
+|   └── knowledge_status.json      # 知识库状态记录（自动生成）
 ├── demo/                          # 演示文件
 ├── test_knowledge.py              # 知识库功能测试脚本
 ├── install_knowledge.py           # 知识库依赖安装脚本
@@ -25,8 +25,8 @@ smart-shell/
 
 ### 1. 运行 Smart Shell
 ```bash
-python main.py       # 使用默认AI模型
-python main.py model # 使用指定的AI模型
+python src/main.py       # 使用默认AI模型
+python src/main.py model # 使用指定的AI模型
 ```
 
 ## 新功能特性

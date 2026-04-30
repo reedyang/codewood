@@ -7,8 +7,8 @@ if "ollama" not in sys.modules:
     fake_ollama = types.SimpleNamespace(list=lambda: {"models": []})
     sys.modules["ollama"] = fake_ollama
 
-from agent.smart_shell_agent import SmartShellAgent
-from agent.builtin_slash_commands import WINDOWS_SLASH_BUILTIN_COMMANDS
+from src.smart_shell_agent import SmartShellAgent
+from src.builtin_slash_commands import WINDOWS_SLASH_BUILTIN_COMMANDS
 
 
 class McpShortcutCommandTests(unittest.TestCase):

@@ -107,7 +107,7 @@ class TabCompleter:
     def _get_workspace_path_completions_for_bang(self, bang_part: str) -> List[str]:
         """
         Workspace-relative path after '!', same semantics as smart-shell Windows handler.
-        Example: '!agent/w' -> '!agent/windows_input.py'
+        Example: '!src/w' -> '!src/windows_input.py'
         """
         try:
             if not bang_part.startswith("!"):

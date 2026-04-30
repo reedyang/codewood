@@ -2,7 +2,7 @@
 Load Agent Skills from Anthropic-style folders: ``<skills_root>/<id>/SKILL.md`` (YAML frontmatter + body).
 
 - **Workspace:** ``<workspace_dir>/skills/`` (lowest priority)
-- **Builtin:** typically ``<main.py dir>/skills/``
+- **Builtin:** typically ``<project_root>/skills/``
 - **External:** ``<config_dir>/skills/`` (beside ``config.json``, highest priority)
 
 See: https://github.com/anthropics/skills/blob/main/README.md
@@ -150,7 +150,7 @@ def load_skills_merged(
 
     Priority (low -> high):
     - Workspace: ``<workspace_dir>/skills/`` (workspace-side skills)
-    - Builtin: ``builtin_skills_dir`` (typically ``<main.py dir>/skills/``)
+    - Builtin: ``builtin_skills_dir`` (typically ``<project_root>/skills/``)
     - External: ``<config_dir>/skills/`` (user / config-side skills)
 
     Same ``skill_id`` (folder name): higher-priority source overrides lower-priority source.
@@ -193,7 +193,7 @@ def build_skills_routing_prefix(skills: List[SkillRecord]) -> str:
     lines = [
         "## Agent Skills 索引（系统提示最前，必读）",
         "",
-        "下列技能按优先级由低到高合并加载：`workspace/skills/` → 内建 `skills/`（与 `main.py` 同目录）→ `config.json` 同目录下的外部 `skills/`；**同名技能以后者覆盖前者**。",
+        "下列技能按优先级由低到高合并加载：`workspace/skills/` → 项目根目录内建 `skills/` → `config.json` 同目录下的外部 `skills/`；**同名技能以后者覆盖前者**。",
         "**在输出任何 JSON 操作指令之前**：若当前用户任务与下文中某项「简述」在语义上相符（含同义表述与相关子任务），你必须：",
         "",
         "1. 在本提示靠后的 **「Agent Skills（详细内容）」** 一节中找到对应技能；",

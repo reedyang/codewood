@@ -232,7 +232,7 @@ class SmartShellAgent:
             normal_config: 普通任务模型配置（新格式）
             vision_config: 视觉模型配置（新格式）
             config_dir: 配置文件目录（可选）；持久化状态位于该目录下的 workspace/
-            builtin_skills_dir: 内建 Agent Skills 根目录（通常为 main.py 同目录下的 skills/）；未传则使用 agent 包上级目录的 skills/
+            builtin_skills_dir: 内建 Agent Skills 根目录；未传则使用项目根目录下的 skills/
         """
         self.work_directory = Path(work_directory) if work_directory else Path.cwd()
         # Runtime guard: prevent AI from modifying smart-shell itself.

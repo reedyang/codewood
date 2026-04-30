@@ -1,10 +1,10 @@
-"""Unit tests for agent/tools/grep_tool.py."""
+"""Unit tests for src/tools/grep_tool.py."""
 
 import tempfile
 import unittest
 from pathlib import Path
 
-from agent.tools.grep_tool import run_grep
+from src.tools.grep_tool import run_grep
 
 
 class GrepToolTests(unittest.TestCase):

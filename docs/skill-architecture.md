@@ -73,7 +73,7 @@ Individual skills **cannot see** the host’s full tool surface or other skill b
 - Do **not** reference **MCP** or other plugin namespaces as part of this skill’s contract unless the repo defines a **neutral, portable** pattern that applies to all skills equally.
 - Prefer **subprocess result** / **merged `output`** over **tool `output`** when you mean shell stdout or merged file content, so “tool” is not confused with the host’s JSON tool API.
 
-Multi-skill orchestration and “finish the whole user goal” policies live in **host documentation** (e.g. Smart Shell’s `agent/system_prompt.md`, `agent/tools_prompt.md`), not in per-skill `SKILL.md` files.
+Multi-skill orchestration and “finish the whole user goal” policies live in **host documentation** (e.g. Smart Shell’s `src/system_prompt.md`, `src/tools_prompt.md`), not in per-skill `SKILL.md` files.
 
 ---
 
@@ -139,9 +139,9 @@ Hosts should:
 
 In this repository:
 
-- Loader: `agent/skills_loader.py`
-- Merge / `model_context_file_env` handling for subprocess `shell`: `agent/smart_shell_agent.py` (resolves env name from the matched skill’s `SKILL.md` frontmatter via `agent/skills_loader.py`)
-- Tool-facing description: `agent/tools_prompt.md`
+- Loader: `src/skills_loader.py`
+- Merge / `model_context_file_env` handling for subprocess `shell`: `src/smart_shell_agent.py` (resolves env name from the matched skill’s `SKILL.md` frontmatter via `src/skills_loader.py`)
+- Tool-facing description: `src/tools_prompt.md`
 
 Other products can implement the same **principles** without copying implementation details.
 
