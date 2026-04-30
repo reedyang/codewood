@@ -385,7 +385,7 @@ class SmartShellAgent:
         self._mcp_config_file_sig = self._get_mcp_config_file_sig()
         self._mcp_config_struct_sig = self._calc_mcp_config_sig(self.mcp_config)
         self._mcp_config_last_failed_file_sig: Optional[Tuple[bool, int, int]] = None
-        self.system_prompt = self._base_system_prompt + self._build_mcp_system_append()
+        self.system_prompt = self._compose_system_prompt_snapshot(include_tools=False)
         self.tool_specs = self._load_tools_spec_from_jsonc()
         self.tools_prompt_template = self._load_tools_prompt_template()
 
@@ -1174,7 +1174,7 @@ class SmartShellAgent:
         self.mcp_config = new_cfg
         self._mcp_config_struct_sig = new_struct_sig
         self._mcp_config_file_sig = cur_sig
-        self.system_prompt = self._base_system_prompt + self._build_mcp_system_append()
+        self.system_prompt = self._compose_system_prompt_snapshot(include_tools=False)
         return {
             "success": True,
             "changed": True,
@@ -1302,6 +1302,26 @@ class SmartShellAgent:
         except Exception as e:
             print(f"⚠️ tools.jsonc 加载失败: {e}")
             return []
+
+    def _build_user_preferences_system_append(self) -> str:
+        """持久化用户偏好文件，固定注入 system（在 MCP/tools 之前）。"""
+        try:
+            from . import user_preferences_manager as _upm
+
+            return _upm.build_system_append(Path(self.config_dir))
+        except Exception:
+            return ""
+
+    def _compose_system_prompt_snapshot(self, include_tools: bool) -> str:
+        """组装当前可见 system 快照：base + 用户偏好 + MCP [+ 工具目录]。"""
+        core = (
+            self._base_system_prompt
+            + self._build_user_preferences_system_append()
+            + self._build_mcp_system_append()
+        )
+        if include_tools:
+            return core + "\n" + self._build_tools_prompt_append()
+        return core
 
     def _build_tools_prompt_append(self) -> str:
         """Build tool catalog text injected into system prompt from external md template."""
@@ -2432,12 +2452,7 @@ class SmartShellAgent:
                 record_history = True
                 # Refresh MCP prompt append at call time so newly loaded tool caches
                 # are always reflected in the current LLM context.
-                self.system_prompt = (
-                    self._base_system_prompt
-                    + self._build_mcp_system_append()
-                    + "\n"
-                    + self._build_tools_prompt_append()
-                )
+                self.system_prompt = self._compose_system_prompt_snapshot(include_tools=True)
                 mem_block = self._memory_context_for_prompt(user_input)
                 # 经验记忆必须放在 system 最前：否则长 tools 提示在后、易被截断，且模型更倾向服从文末通用人设。
                 tail_context = (
@@ -5014,7 +5029,7 @@ big_image.jpg
             try:
                 disabled = self.mcp_manager.disable_tools(str(server), names)
                 # refresh prompt snapshot because visible MCP tools changed
-                self.system_prompt = self._base_system_prompt + self._build_mcp_system_append()
+                self.system_prompt = self._compose_system_prompt_snapshot(include_tools=False)
                 return {
                     "success": True,
                     "server": server,
@@ -5044,7 +5059,7 @@ big_image.jpg
             try:
                 disabled = self.mcp_manager.enable_tools(str(server), names)
                 # refresh prompt snapshot because visible MCP tools changed
-                self.system_prompt = self._base_system_prompt + self._build_mcp_system_append()
+                self.system_prompt = self._compose_system_prompt_snapshot(include_tools=False)
                 return {
                     "success": True,
                     "server": server,
@@ -5157,7 +5172,7 @@ big_image.jpg
                     except Exception as e:
                         info["errors"]["prompts"] = str(e)
 
-                self.system_prompt = self._base_system_prompt + self._build_mcp_system_append()
+                self.system_prompt = self._compose_system_prompt_snapshot(include_tools=False)
                 status_all = self.mcp_manager.get_status()
                 info["status"] = status_all.get("servers", {}).get(server, {})
                 info["disabled_tools"] = self.mcp_manager.list_disabled_tools(server).get(server, [])
@@ -5187,7 +5202,7 @@ big_image.jpg
                     use_cache=use_cache,
                 )
                 # Refresh prompt append with latest cache.
-                self.system_prompt = self._base_system_prompt + self._build_mcp_system_append()
+                self.system_prompt = self._compose_system_prompt_snapshot(include_tools=False)
                 status = self.mcp_manager.get_status().get("servers", {}).get(str(server), {})
                 return {
                     "success": True,
@@ -5227,7 +5242,7 @@ big_image.jpg
                     force=force,
                 )
                 # ensure latest prompt append includes refreshed cache snapshot
-                self.system_prompt = self._base_system_prompt + self._build_mcp_system_append()
+                self.system_prompt = self._compose_system_prompt_snapshot(include_tools=False)
                 # apply output-side log limit without triggering any new MCP calls
                 status["recent_logs"] = self.mcp_manager.get_recent_logs(log_limit)
                 return {
@@ -5247,7 +5262,7 @@ big_image.jpg
             try:
                 tools = self.mcp_manager.reconnect_server(str(server), timeout_s=timeout_s)
                 self._mcp_pending_user_input.pop(str(server), None)
-                self.system_prompt = self._base_system_prompt + self._build_mcp_system_append()
+                self.system_prompt = self._compose_system_prompt_snapshot(include_tools=False)
                 status = self.mcp_manager.get_status().get("servers", {}).get(str(server), {})
                 return {
                     "success": True,
@@ -5399,7 +5414,7 @@ big_image.jpg
                     timeout_s=timeout_s,
                     use_cache=use_cache,
                 )
-                self.system_prompt = self._base_system_prompt + self._build_mcp_system_append()
+                self.system_prompt = self._compose_system_prompt_snapshot(include_tools=False)
                 return {
                     "success": True,
                     "server": server,
@@ -5476,7 +5491,7 @@ big_image.jpg
                     timeout_s=timeout_s,
                     use_cache=use_cache,
                 )
-                self.system_prompt = self._base_system_prompt + self._build_mcp_system_append()
+                self.system_prompt = self._compose_system_prompt_snapshot(include_tools=False)
                 return {
                     "success": True,
                     "server": server,
@@ -5766,6 +5781,49 @@ big_image.jpg
                 return {"success": ok, "memory_id": mid}
             except Exception as e:
                 return {"success": False, "error": f"删除经验记忆失败: {e}"}
+
+        elif action == "user_preferences_read":
+            try:
+                from . import user_preferences_manager as _upm
+
+                meta, body = _upm.read_body(Path(self.config_dir))
+                lim = int(params.get("max_chars") or 16000)
+                truncated = len(body) > lim
+                text = body if not truncated else body[:lim] + "…"
+                return {
+                    "success": True,
+                    "meta": meta,
+                    "body": text,
+                    "truncated": truncated,
+                    "path": str(Path(self.config_dir) / _upm.DEFAULT_FILENAME),
+                }
+            except Exception as e:
+                return {"success": False, "error": str(e)}
+
+        elif action == "user_preferences_patch":
+            try:
+                from . import user_preferences_manager as _upm
+
+                op = str(params.get("operation") or "upsert_section").strip().lower()
+                if op == "replace_body":
+                    out = _upm.replace_body(
+                        Path(self.config_dir),
+                        str(params.get("markdown_body") or ""),
+                    )
+                elif op == "upsert_section":
+                    sh = str(params.get("section_heading") or "").strip()
+                    if not sh:
+                        return {
+                            "success": False,
+                            "error": "user_preferences_patch upsert_section 需要 section_heading",
+                        }
+                    sb = str(params.get("section_body") or "")
+                    out = _upm.upsert_section(Path(self.config_dir), sh, sb)
+                else:
+                    return {"success": False, "error": f"未知 operation: {op}"}
+                return out
+            except Exception as e:
+                return {"success": False, "error": str(e)}
 
         elif action == "execution_policy_set":
             result = self._set_execution_policy(arguments.get("policy", ""))

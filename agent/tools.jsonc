@@ -827,7 +827,7 @@
     "type": "function",
     "function": {
       "name": "memory_add",
-      "description": "写入一条经验记忆（非知识库文档）。当用户明确要求「记住某事」「以后按某方式」且属于个人/会话经验时使用。禁止写入密码、token、私钥。若你认为用户观点可能有误，可在 system_note 中写明你的独立判断，同时 content 仍可记录客观可复用的教训。",
+      "description": "写入一条经验记忆（非知识库文档）。用于情境化教训、一次性约定、项目习惯等可检索条目。若用户强调「永远/长期/一直记住」且内容是稳定默认（称呼、助手显示名、长期交互规则），应改用 user_preferences_patch，勿仅用本工具代替。禁止写入密码、token、私钥。若你认为用户观点可能有误，可在 system_note 中写明你的独立判断。",
       "parameters": {
         "type": "object",
         "properties": {
@@ -899,6 +899,51 @@
           }
         },
         "required": ["memory_id"]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "user_preferences_read",
+      "description": "读取持久化用户偏好文件全文（config 目录下 user_preferences.md），用于修改前查看当前内容。非经验记忆库；该文件内容会固定注入 system。可选 max_chars 截断返回。",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "max_chars": {
+            "type": "integer",
+            "description": "可选，正文最大字符数，默认 16000"
+          }
+        }
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "user_preferences_patch",
+      "description": "写入/更新持久化用户偏好文件（Markdown + YAML 头）。每轮对话会自动注入 system。用户说「永远记住」「以后一直」「别忘」且指稳定口径（尤其助手/用户称呼、默认语气与规则）时必须使用本工具（通常 upsert_section），而非仅 memory_add。operation=replace_body 替换正文；operation=upsert_section 按二级标题插入或替换小节。禁止写入密钥/token。",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "operation": {
+            "type": "string",
+            "description": "replace_body | upsert_section"
+          },
+          "markdown_body": {
+            "type": "string",
+            "description": "replace_body 时必填：完整 Markdown 正文（不含 YAML 头）"
+          },
+          "section_heading": {
+            "type": "string",
+            "description": "upsert_section 时必填：小节标题（不要写 ##）"
+          },
+          "section_body": {
+            "type": "string",
+            "description": "upsert_section 时：小节正文 Markdown"
+          }
+        },
+        "required": ["operation"]
       }
     }
   },
