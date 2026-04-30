@@ -332,13 +332,19 @@ class McpServerClient:
                 )
             except Exception:
                 pass
+        popen_kwargs: Dict[str, Any] = {
+            "stdin": subprocess.PIPE,
+            "stdout": subprocess.PIPE,
+            "stderr": subprocess.PIPE,
+            "env": self._build_env(),
+            "text": False,
+        }
+        if platform.system().lower().startswith("win") and hasattr(subprocess, "CREATE_NO_WINDOW"):
+            popen_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+
         self.process = subprocess.Popen(
             spawn_argv,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            env=self._build_env(),
-            text=False,
+            **popen_kwargs,
         )
         self.process_started_ts = time.time()
         self.initialized = False
