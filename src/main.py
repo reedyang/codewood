@@ -18,8 +18,21 @@ project_root = current_dir.parent
 sys.path.insert(0, str(project_root))
 
 
+def _set_windows_console_title():
+    """Set a Unicode console title on Windows without relying on batch encoding."""
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+
+        ctypes.windll.kernel32.SetConsoleTitleW(f"{chr(0x1F916)} Smart Shell")
+    except Exception:
+        pass
+
+
 def main():
     """主函数"""
+    _set_windows_console_title()
     print("启动 Smart Shell...")
 
     work_directory = None

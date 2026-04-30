@@ -1,17 +1,18 @@
 @echo off
 setlocal
+title Smart Shell
 
 set "SCRIPT_DIR=%~dp0"
 set "ENTRY=%SCRIPT_DIR%src\main.py"
 
 where python >nul 2>nul
-if %ERRORLEVEL%==0 (
+if not errorlevel 1 (
     python "%ENTRY%" %*
     exit /b %ERRORLEVEL%
 )
 
 where py >nul 2>nul
-if %ERRORLEVEL%==0 (
+if not errorlevel 1 (
     py "%ENTRY%" %*
     exit /b %ERRORLEVEL%
 )
