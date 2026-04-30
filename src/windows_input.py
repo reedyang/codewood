@@ -85,7 +85,7 @@ class FileCompleter(Completer):
         text = document.text_before_cursor
 
         # Token-based path completion from the last whitespace boundary.
-        # This enables completion while typing commands like: "open agent/win"
+        # This enables completion while typing commands like: "open src/win"
         # where only the trailing token should be replaced.
         token_start, token = self._extract_last_token(text)
 
@@ -393,7 +393,7 @@ class FileCompleter(Completer):
     def _get_workspace_path_completions_for_bang(self, bang_part: str) -> List[str]:
         """
         Build workspace-relative path completions for leading '!...'.
-        Example: '!agent/win' -> '!agent\\windows_input.py'
+        Example: '!src/win' -> '!src\\windows_input.py'
         On Windows, '!d:\\' lists D:\\ root (not the workspace when it is on D:).
         """
         try:

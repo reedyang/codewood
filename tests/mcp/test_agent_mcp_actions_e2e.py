@@ -17,7 +17,7 @@ if "ollama" not in sys.modules:
     fake_ollama = types.SimpleNamespace(list=lambda: {"models": []})
     sys.modules["ollama"] = fake_ollama
 
-import agent.smart_shell_agent as smart_shell_agent_module
+import src.smart_shell_agent as smart_shell_agent_module
 
 # Agent 已不再读取 config 中的 knowledge_enabled；测试中关闭知识库初始化
 smart_shell_agent_module.KNOWLEDGE_AVAILABLE = False
@@ -89,7 +89,7 @@ class AgentMcpActionsE2ETests(unittest.TestCase):
             except Exception:
                 pass
         try:
-            from agent.app_logging import shutdown_app_logging_handlers
+            from src.app_logging import shutdown_app_logging_handlers
 
             shutdown_app_logging_handlers()
         except Exception:
