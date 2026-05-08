@@ -868,7 +868,7 @@ class SmartShellAgent:
         if err:
             return f"❌ {err}\n{self._workspace_subcommand_usage('create')}"
         if len(positionals) != 1:
-            return f"❌ 用法: /workspace create <path> [--name <name>]"
+            return f"用法: /workspace create <path> [--name <name>]"
         root = self._workspace_path_from_arg(positionals[0])
         name = str(options.get("name") or root.name or str(root)).strip()
         if not name:
@@ -919,7 +919,7 @@ class SmartShellAgent:
         if err:
             return f"❌ {err}\n{self._workspace_subcommand_usage('update')}"
         if len(positionals) != 1 or not options:
-            return "❌ 用法: /workspace update <name|id|path> [--name <name>] [--path <path>]"
+            return "用法: /workspace update <name|id|path> [--name <name>] [--path <path>]"
         entry = self._workspace_entry_by_selector(positionals[0])
         if not entry:
             return f"❌ 未找到 workspace: {positionals[0]}"
@@ -988,7 +988,7 @@ class SmartShellAgent:
         if err:
             return f"❌ {err}\n{self._workspace_subcommand_usage('rename')}"
         if len(positionals) < 2:
-            return "❌ 用法: /workspace rename <name|id|path> <new name>"
+            return "用法: /workspace rename <name|id|path> <new name>"
         selector = positionals[0]
         new_name = " ".join(positionals[1:]).strip()
         return self._workspace_update_command(f'"{selector}" --name "{new_name}"')
@@ -6974,7 +6974,7 @@ big_image.jpg
                         os.system('cls' if os_name == 'nt' else 'clear')
                         continue
                     if bl == "clear":
-                        print("❌ 用法: /clear <screen|history|context>")
+                        print("用法: /clear <screen|history|context>")
                         continue
                     if bl == 'clear history':
                         self.history_manager.clear_history()
@@ -6996,14 +6996,14 @@ big_image.jpg
                         print("✅ 已清空 AI 上下文（对话历史与近期操作结果缓存，不影响命令行输入历史）")
                         continue
                     if bl == "knowledge":
-                        print("❌ 用法: /knowledge <status|sync|stats|search <query>>")
+                        print("用法: /knowledge <status|sync|stats|search <query>>")
                         continue
                     if bl == "knowledge status":
                         self._print_knowledge_status_details()
                         continue
 
                     if bl == "memory":
-                        print("❌ 用法: /memory <status|stats|list|search <query>|remember <text>|delete <id>>")
+                        print("用法: /memory <status|stats|list|search <query>|remember <text>|delete <id>>")
                         continue
                     if bl == "memory status":
                         self._print_memory_status_details()
@@ -7065,12 +7065,12 @@ big_image.jpg
                             self._print_execution_policy_details()
                             continue
                         if not policy:
-                            print("❌ 用法: /execution-policy <show|unlimited|moderate|confirmation>")
+                            print("用法: /execution-policy <show|unlimited|moderate|confirmation>")
                         else:
                             self.execute_tool_call("execution_policy_set", {"policy": policy})
                         continue
                     if bl == "execution-policy":
-                        print("❌ 用法: /execution-policy <show|unlimited|moderate|confirmation>")
+                        print("用法: /execution-policy <show|unlimited|moderate|confirmation>")
                         continue
 
                     if bl.startswith("session-summary "):
@@ -7101,14 +7101,14 @@ big_image.jpg
                             )
                             continue
                         print(
-                            "❌ 用法: /session-summary <on|off|show>\n"
+                            "用法: /session-summary <on|off|show>\n"
                             "  on/off   - 开关周期性 LLM 会话摘要（关闭后仍用廉价滚动摘录）\n"
                             "  show     - 查看当前开关与配置文件路径"
                         )
                         continue
                     if bl == "session-summary":
                         print(
-                            "❌ 用法: /session-summary <on|off|show>\n"
+                            "用法: /session-summary <on|off|show>\n"
                             "  /session-summary on     - 开启 LLM 会话摘要\n"
                             "  /session-summary off    - 关闭（仅滚动摘录）\n"
                             "  /session-summary show   - 查看状态"
