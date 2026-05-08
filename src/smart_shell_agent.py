@@ -7605,13 +7605,27 @@ big_image.jpg
                         q = str(result.get("question") or "").strip() or "请提供补充信息："
                         print("🙋 需要你补充信息后才能继续。")
                         print(f"❓ {q}")
-                        try:
-                            supplement_text = self._get_user_input_with_history().strip()
-                        except KeyboardInterrupt:
-                            print("\n⏸️ 已取消补充信息输入，本轮任务暂停。")
+                        supplement_text = ""
+                        while True:
+                            try:
+                                supplement_text = self._get_user_input_with_history().strip()
+                            except KeyboardInterrupt:
+                                print("\n⏸️ 已取消补充信息输入，本轮任务暂停。")
+                                supplement_text = ""
+                                break
+                            if not supplement_text:
+                                print("⚠️ 未收到补充信息，本轮任务暂停。")
+                                break
+                            # During supplement wait-state, execute prefixed commands immediately.
+                            # Keep original task pending until a non-prefixed message arrives.
+                            if supplement_text.startswith("/") or supplement_text.startswith("!"):
+                                handled = self._handle_prefixed_command_inline(
+                                    supplement_text, system_cmd_re=system_cmd_re, os_name=os_name
+                                )
+                                if handled:
+                                    continue
                             break
                         if not supplement_text:
-                            print("⚠️ 未收到补充信息，本轮任务暂停。")
                             break
                         next_input = (
                             f"【用户原始需求】\n{original_user_task}\n\n"
@@ -7968,6 +7982,120 @@ big_image.jpg
                 ),
             }
         return None
+
+    def _handle_prefixed_command_inline(self, stripped_in: str, system_cmd_re: Any, os_name: str) -> bool:
+        """
+        Execute `/...` and `!...` immediately in wait-states (e.g. ask_more_info supplement).
+        Returns True when consumed so caller should keep waiting for real supplement text.
+        """
+        s = str(stripped_in or "").strip()
+        if not s:
+            return False
+        if s.startswith("/"):
+            builtin_line = s[1:].lstrip()
+            if not builtin_line:
+                print("ℹ️ 单独输入 / 无效。")
+                return True
+            bl = builtin_line.lower()
+            mcp_tool, mcp_args, mcp_err = self._parse_mcp_shortcut_command(builtin_line)
+            if mcp_tool:
+                mcp_res = self.execute_tool_call(mcp_tool, mcp_args)
+                self._print_mcp_shortcut_result(mcp_tool, mcp_args, mcp_res if isinstance(mcp_res, dict) else {})
+                return True
+            if bl == "mcp" or bl.startswith("mcp "):
+                print(f"❌ {mcp_err}")
+                return True
+            if bl in ("exit", "quit"):
+                self._save_current_workspace_position()
+                print("👋 已退出 Smart Shell，再见！")
+                raise SystemExit(0)
+            if bl in ("cls", "clear screen"):
+                os.system("cls" if os_name == "nt" else "clear")
+                return True
+            if bl == "clear":
+                print("用法: /clear <screen|history|context>")
+                return True
+            if bl == "clear history":
+                self.history_manager.clear_history()
+                if self.input_handler is not None and hasattr(self.input_handler, "reset_command_history"):
+                    self.input_handler.reset_command_history(self.history_manager.get_all_history())
+                print("✅ 历史记录已清除")
+                return True
+            if bl == "clear context":
+                self.conversation_history.clear()
+                self.operation_results.clear()
+                self._last_auto_removed_ephemeral = None
+                self._session_summary_llm = ""
+                self._session_summary_rolling = ""
+                self._last_llm_summary_pair_count = 0
+                print("✅ 已清空 AI 上下文（对话历史与近期操作结果缓存，不影响命令行输入历史）")
+                return True
+            if self._handle_workspace_builtin_command(builtin_line):
+                return True
+            if bl.startswith("execution-policy "):
+                policy = bl.split(" ", 1)[1].strip().lower()
+                if policy == "show":
+                    self._print_execution_policy_details()
+                elif policy:
+                    self.execute_tool_call("execution_policy_set", {"policy": policy})
+                else:
+                    print("用法: /execution-policy <show|unlimited|moderate|confirmation>")
+                return True
+            if bl == "execution-policy":
+                print("用法: /execution-policy <show|unlimited|moderate|confirmation>")
+                return True
+            if bl == "always_confirm-reset":
+                self.execute_tool_call("always_confirm_reset", {})
+                return True
+            if bl == "knowledge status":
+                self._print_knowledge_status_details()
+                return True
+            if bl == "memory status":
+                self._print_memory_status_details()
+                return True
+            if bl == "help":
+                print("ℹ️ /help 可用；当前仍在等待补充信息，输入非命令文本将恢复原任务。")
+                return True
+            print("❌ 未识别的内置命令。请使用 /help 查看列表。")
+            return True
+
+        if s.startswith("!"):
+            ui = s[1:].lstrip()
+            if not ui:
+                print("ℹ️ 单独输入 ! 无效。")
+                return True
+            if self._is_executable_file(ui):
+                self._execute_file_directly(ui)
+                return True
+            user_input_cmd = ui
+            if system_cmd_re.match(ui):
+                if user_input_cmd.lower().startswith("ls") and os_name == "nt":
+                    user_input_cmd = "dir " + user_input_cmd[2:].strip()
+                elif user_input_cmd.lower().startswith("list") and os_name == "nt":
+                    user_input_cmd = "dir " + user_input_cmd[4:].strip()
+                elif user_input_cmd.lower().startswith("dir") and os_name != "nt":
+                    user_input_cmd = "ls " + user_input_cmd[3:].strip()
+                if user_input_cmd.lower().startswith("cd "):
+                    path = user_input_cmd[3:].strip()
+                    result = self.action_change_directory(path)
+                    if not result["success"]:
+                        print(f"❌ {result['error']}")
+                    return True
+            try:
+                process = subprocess.Popen(
+                    user_input_cmd if system_cmd_re.match(ui) else ui,
+                    shell=True,
+                    stdin=sys.stdin,
+                    stdout=sys.stdout,
+                    stderr=sys.stderr,
+                    cwd=str(self.work_directory),
+                )
+                process.wait()
+            except Exception as e:
+                print(f"❌ 命令执行异常: {e}")
+            return True
+
+        return False
     
     def _get_user_input_with_history(self) -> str:
         """
