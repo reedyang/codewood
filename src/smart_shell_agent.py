@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import List, Dict, Optional, Any, Tuple, Set
 import shutil
 import tempfile
+import subprocess
 from datetime import datetime
 
 # call_ai 对 OpenAI/OpenWebUI 使用 verify=False 时 urllib3 会对每条请求发出 InsecureRequestWarning；
@@ -2064,7 +2065,12 @@ class SmartShellAgent:
             return "## Tool Catalog (prompt-injected)"
 
     def _build_single_skill_prompt(self, skill_id: str) -> Optional[str]:
-        """Build full prompt appendix for one selected skill."""
+        """Build full prompt appendix for one selected skill.
+
+        Resolution order:
+        1) Local loaded Agent Skills (`self.skills`)
+        2) MCP prompts fallback (prefer csp-ai-agent `prompts/get`)
+        """
         sid = (skill_id or "").strip().lower()
         if not sid:
             return None
@@ -2074,6 +2080,84 @@ class SmartShellAgent:
                 target = s
                 break
         if target is None:
+            # Fallback: treat `skill/...` as MCP prompt id (e.g. csp-ai-agent resources).
+            sid_raw = (skill_id or "").strip()
+            if not sid_raw:
+                return None
+            mcp = getattr(self, "mcp_manager", None)
+            if mcp is None:
+                return None
+            server_candidates: List[str] = []
+            cfg_servers = {}
+            try:
+                cfg_servers = (mcp.mcp_config or {}).get("mcpServers", {}) if isinstance(mcp.mcp_config, dict) else {}
+            except Exception:
+                cfg_servers = {}
+            if isinstance(cfg_servers, dict):
+                for name in cfg_servers.keys():
+                    n = str(name).strip()
+                    if not n:
+                        continue
+                    if n == "csp-ai-agent":
+                        server_candidates.insert(0, n)
+                    else:
+                        server_candidates.append(n)
+            else:
+                server_candidates = ["csp-ai-agent"]
+            if "csp-ai-agent" not in [s.lower() for s in server_candidates]:
+                server_candidates.insert(0, "csp-ai-agent")
+
+            for server in server_candidates:
+                srv = str(server).strip()
+                if not srv:
+                    continue
+                try:
+                    # Ensure prompt cache is refreshed at least once for this server.
+                    mcp.list_prompts(srv, timeout_s=12.0, use_cache=False)
+                    prompt_obj = mcp.get_prompt(srv, sid_raw, {}, timeout_s=25.0)
+                    desc = str(prompt_obj.get("description", "") or "").strip() if isinstance(prompt_obj, dict) else ""
+                    messages = prompt_obj.get("messages", []) if isinstance(prompt_obj, dict) else []
+                    rendered_parts: List[str] = []
+                    if isinstance(messages, list):
+                        for msg in messages:
+                            if not isinstance(msg, dict):
+                                continue
+                            role = str(msg.get("role", "") or "").strip() or "user"
+                            content = msg.get("content")
+                            text = ""
+                            if isinstance(content, dict):
+                                text = str(content.get("text", "") or "").strip()
+                            elif isinstance(content, list):
+                                chunks: List[str] = []
+                                for c in content:
+                                    if isinstance(c, dict):
+                                        t = str(c.get("text", "") or "").strip()
+                                        if t:
+                                            chunks.append(t)
+                                text = "\n\n".join(chunks).strip()
+                            elif isinstance(content, str):
+                                text = content.strip()
+                            if not text:
+                                continue
+                            rendered_parts.append(f"#### MCP Prompt Message ({role})\n{text}")
+                    if not rendered_parts and desc:
+                        rendered_parts.append(desc)
+                    if not rendered_parts:
+                        continue
+                    lines = [
+                        "",
+                        "## Agent Skill（按需加载）",
+                        f"### MCP Skill Prompt: `{sid_raw}` · server `{srv}`",
+                        f"**Description:** {desc or '(no description)'}",
+                        "",
+                        "以下正文来自 MCP `prompts/get` 返回，请严格按其步骤执行：",
+                        "",
+                        "\n\n".join(rendered_parts),
+                        "",
+                    ]
+                    return "\n".join(lines)
+                except Exception:
+                    continue
             return None
         _br = Path(target.bundle_root)
         lines = [
@@ -3507,7 +3591,10 @@ class SmartShellAgent:
 
     def action_list_directory(self, path: Optional[str] = None, file_filter: Optional[str] = None) -> Dict[str, Any]:
         """列出目录内容"""
-        target_path = Path(path) if path else self.work_directory
+        # Keep list-path semantics consistent with prompt cwd (`self.work_directory`).
+        # Relative paths like "." must be resolved against current work_directory,
+        # not process cwd.
+        target_path = self._resolve_user_path(str(path)) if path else self.work_directory
         
         if not target_path.exists():
             return {"success": False, "error": f"目录 '{target_path}' 不存在"}
@@ -5605,6 +5692,9 @@ big_image.jpg
                         ),
                     }
                 shell_force = bool(params.get("force", False))
+                clone_guard = self._guard_git_clone_precheck(str(shell_cmd), shell_force)
+                if isinstance(clone_guard, dict):
+                    return clone_guard
                 if not shell_force:
                     # Guardrail: avoid accidental duplicate execution loops in multi-step tasks.
                     for item in reversed(self.operation_results[-6:]):
@@ -7701,6 +7791,151 @@ big_image.jpg
                 return True
                 
         return False
+
+    def _parse_git_clone_command(self, command: str) -> Optional[Tuple[str, Optional[str]]]:
+        s = str(command or "").strip()
+        if not s:
+            return None
+        try:
+            parts = shlex.split(s, posix=os.name != "nt")
+        except ValueError:
+            parts = s.split()
+        if len(parts) < 3:
+            return None
+        if parts[0].lower() != "git" or parts[1].lower() != "clone":
+            return None
+        repo_url = ""
+        target_dir: Optional[str] = None
+        positional: List[str] = []
+        i = 2
+        while i < len(parts):
+            tok = str(parts[i])
+            if tok.startswith("-"):
+                # Skip option value when present for common two-token options.
+                if tok in ("-b", "--branch", "-o", "--origin", "--depth", "-c", "--config") and i + 1 < len(parts):
+                    i += 2
+                    continue
+                i += 1
+                continue
+            positional.append(tok)
+            i += 1
+        if positional:
+            repo_url = positional[0]
+        if len(positional) >= 2:
+            target_dir = positional[1]
+        repo_url = str(repo_url or "").strip()
+        if not repo_url:
+            return None
+        return repo_url, (str(target_dir).strip() if target_dir else None)
+
+    @staticmethod
+    def _repo_name_from_url(repo_url: str) -> str:
+        raw = str(repo_url or "").strip().rstrip("/")
+        if not raw:
+            return ""
+        if raw.endswith(".git"):
+            raw = raw[:-4]
+        return raw.split("/")[-1].strip().lower()
+
+    def _detect_git_remote_origin(self, path: Path) -> str:
+        try:
+            proc = subprocess.run(
+                ["git", "-C", str(path), "config", "--get", "remote.origin.url"],
+                capture_output=True,
+                text=True,
+                timeout=2.5,
+            )
+            if proc.returncode == 0:
+                return (proc.stdout or "").strip()
+        except Exception:
+            pass
+        return ""
+
+    def _is_git_repo_dir(self, path: Path) -> bool:
+        p = Path(path)
+        if not p.exists() or not p.is_dir():
+            return False
+        if (p / ".git").exists():
+            return True
+        try:
+            proc = subprocess.run(
+                ["git", "-C", str(p), "rev-parse", "--is-inside-work-tree"],
+                capture_output=True,
+                text=True,
+                timeout=2.5,
+            )
+            return proc.returncode == 0 and "true" in (proc.stdout or "").strip().lower()
+        except Exception:
+            return False
+
+    def _guard_git_clone_precheck(self, shell_cmd: str, shell_force: bool) -> Optional[Dict[str, Any]]:
+        parsed = self._parse_git_clone_command(shell_cmd)
+        if not parsed:
+            return None
+        repo_url, _target = parsed
+        repo_name = self._repo_name_from_url(repo_url)
+        wd = self.work_directory.resolve()
+
+        wd_is_repo = self._is_git_repo_dir(wd)
+        wd_remote = self._detect_git_remote_origin(wd) if wd_is_repo else ""
+        wd_name_match = bool(repo_name and wd.name.strip().lower() == repo_name)
+        wd_remote_match = bool(wd_remote and wd_remote.strip().lower() == repo_url.strip().lower())
+        if wd_is_repo and (wd_name_match or wd_remote_match):
+            return None
+
+        first_level_dirs: List[Path] = []
+        try:
+            first_level_dirs = sorted([p for p in wd.iterdir() if p.is_dir()], key=lambda x: x.name.lower())
+        except Exception:
+            first_level_dirs = []
+
+        candidates: List[str] = []
+        for d in first_level_dirs:
+            if not self._is_git_repo_dir(d):
+                continue
+            d_remote = self._detect_git_remote_origin(d)
+            d_name_match = bool(repo_name and d.name.strip().lower() == repo_name)
+            d_remote_match = bool(d_remote and d_remote.strip().lower() == repo_url.strip().lower())
+            if d_name_match or d_remote_match:
+                mark = "remote-match" if d_remote_match else "name-match"
+                candidates.append(f"{d.name} ({mark})")
+
+        # Hard stop: matching repo candidate already exists under current dir.
+        if candidates and not shell_force:
+            return {
+                "success": False,
+                "retryable": False,
+                "blocked_by_guard": True,
+                "needs_user_input": True,
+                "input_type": "supplement",
+                "question": (
+                    "检测到当前目录一级子目录里已有疑似目标 repo。"
+                    "请先确认并切换到现有 repo，再继续任务。"
+                ),
+                "error": (
+                    f"已阻止直接 clone `{repo_url}`。当前目录 `{wd}` 的一级子目录匹配到: "
+                    + ", ".join(candidates)
+                    + "。请优先复用现有 repo；仅在你确认不存在可用副本时，才用 force=true 再次执行 clone。"
+                ),
+            }
+
+        # If current directory is not target repo, require explicit confirmation to clone.
+        if (not wd_is_repo or not (wd_name_match or wd_remote_match)) and not shell_force:
+            top_dirs_preview = ", ".join(p.name for p in first_level_dirs[:30]) if first_level_dirs else "(none)"
+            return {
+                "success": False,
+                "retryable": False,
+                "blocked_by_guard": True,
+                "needs_user_input": True,
+                "input_type": "supplement",
+                "question": "请先确认当前目录一级子目录中是否已有目标 repo；确认后再决定是否 clone。",
+                "error": (
+                    f"已阻止未确认的 git clone（repo={repo_url}）。"
+                    f"当前目录 `{wd}` 不是目标 repo；已检查一级子目录: {top_dirs_preview}。"
+                    "如需继续 clone，请在明确确认后使用 force=true 重新执行。"
+                ),
+            }
+        return None
     
     def _get_user_input_with_history(self) -> str:
         """
