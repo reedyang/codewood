@@ -55,6 +55,30 @@ class SkillRecord:
 
 
 def _split_frontmatter(text: str) -> Tuple[Optional[dict], str]:
+    def _fallback_parse_meta(raw_meta: str) -> dict:
+        """
+        Lenient parser for common SKILL frontmatter seen in Cursor/Codex exports.
+        Supports simple `key: value` pairs and appends list lines under description.
+        """
+        out: Dict[str, str] = {}
+        last_key = ""
+        for raw_line in str(raw_meta or "").splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if ":" in line:
+                k, v = line.split(":", 1)
+                key = str(k).strip()
+                val = str(v).strip().strip('"').strip("'")
+                if key:
+                    out[key] = val
+                    last_key = key
+                continue
+            if line.startswith("- ") and last_key == "description":
+                prev = out.get("description", "")
+                out["description"] = (prev + ("\n" if prev else "") + line).strip()
+        return out
+
     text = text.lstrip("\ufeff")
     if not text.startswith("---"):
         return None, text
@@ -66,10 +90,15 @@ def _split_frontmatter(text: str) -> Tuple[Optional[dict], str]:
     try:
         meta = yaml.safe_load(raw_meta) or {}
         if not isinstance(meta, dict):
-            return None, text
+            meta = _fallback_parse_meta(raw_meta)
+            if not meta:
+                return None, text
         return meta, body
     except yaml.YAMLError:
-        return None, text
+        meta = _fallback_parse_meta(raw_meta)
+        if not meta:
+            return None, text
+        return meta, body
 
 
 def _scan_skills_root(skills_root: Path) -> List[SkillRecord]:
@@ -95,9 +124,6 @@ def _scan_skills_root(skills_root: Path) -> List[SkillRecord]:
         bundle_path = child.resolve()
         if meta is None:
             # No valid frontmatter: use whole file as body, id from folder name
-            if raw.lstrip("\ufeff").startswith("---"):
-                print(f"⚠️ 跳过技能（frontmatter 无效）: {skill_md}")
-                continue
             out.append(
                 SkillRecord(
                     name=child.name,
