@@ -909,6 +909,8 @@ class McpUrlClient:
     token_store_path: Optional[str] = None
     oauth_token: Dict[str, Any] = field(default_factory=dict)
     _manual_rejected_token_fps: set = field(default_factory=set)
+    _legacy_sse_stream: Any = None
+    _legacy_sse_message_url: str = ""
 
     def _debug_enabled(self) -> bool:
         env_flag = str(os.environ.get("SMART_SHELL_MCP_HANDSHAKE_DEBUG", "")).strip().lower()
@@ -1460,6 +1462,117 @@ class McpUrlClient:
         wa = str(www_authenticate or "").lower()
         return "insufficient_scope" in wa
 
+    def _is_legacy_sse_transport(self) -> bool:
+        transport = str(self.config.get("transport", "") or "").strip().lower()
+        if transport == "sse":
+            return True
+        url = str(self.config.get("url", "") or "").strip().lower()
+        return url.endswith("/sse")
+
+    def _post_jsonrpc_response_to_url(
+        self,
+        target_url: str,
+        req_id: Any,
+        *,
+        result: Optional[Dict[str, Any]] = None,
+        error: Optional[Dict[str, Any]] = None,
+        timeout_s: float = 8.0,
+    ) -> None:
+        payload: Dict[str, Any] = {"jsonrpc": "2.0", "id": req_id}
+        if error is not None:
+            payload["error"] = error
+        else:
+            payload["result"] = result if isinstance(result, dict) else {}
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        headers = self._base_headers()
+        request = urllib.request.Request(url=target_url, data=body, headers=headers, method="POST")
+        with urllib.request.urlopen(request, timeout=max(0.5, float(timeout_s))) as resp:
+            try:
+                sid = resp.headers.get("mcp-session-id")
+            except Exception:
+                sid = None
+            if sid:
+                self.session_id = sid
+            try:
+                _ = resp.read()
+            except Exception:
+                pass
+
+    def _reset_legacy_sse_connection(self) -> None:
+        stream = self._legacy_sse_stream
+        self._legacy_sse_stream = None
+        self._legacy_sse_message_url = ""
+        if stream is not None:
+            try:
+                stream.close()
+            except Exception:
+                pass
+
+    def _reset_session_state(self) -> None:
+        self.initialized = False
+        self.session_id = None
+        if self._is_legacy_sse_transport():
+            self._reset_legacy_sse_connection()
+
+    def _legacy_sse_read_event(self, timeout_s: float) -> Tuple[str, str]:
+        stream = self._legacy_sse_stream
+        if stream is None:
+            raise McpError("SSE stream 未建立")
+        event_name = ""
+        data_lines: List[str] = []
+        deadline = time.time() + max(0.5, float(timeout_s))
+        while True:
+            if time.time() >= deadline:
+                raise McpError("SSE 读取超时")
+            line_b = stream.readline()
+            if not line_b:
+                raise McpError("SSE stream 已断开")
+            line = line_b.decode("utf-8", errors="replace").rstrip("\r\n")
+            if line == "":
+                return event_name, "\n".join(data_lines).strip()
+            if line.startswith("event:"):
+                event_name = line[6:].strip().lower()
+                continue
+            if line.startswith("data:"):
+                data_lines.append(line[5:].strip())
+
+    def _ensure_legacy_sse_connection(self, timeout_s: float) -> str:
+        if self._legacy_sse_stream is not None and self._legacy_sse_message_url:
+            return self._legacy_sse_message_url
+        self._reset_legacy_sse_connection()
+        url = str(self.config.get("url", "")).strip()
+        if not url:
+            raise McpError("URL MCP server 缺少 url 配置")
+        sse_headers = self._base_headers()
+        sse_headers.pop("Content-Type", None)
+        sse_headers["Accept"] = "text/event-stream"
+        sse_req = urllib.request.Request(url=url, headers=sse_headers, method="GET")
+        resp = urllib.request.urlopen(sse_req, timeout=max(0.5, float(timeout_s)))
+        self._legacy_sse_stream = resp
+        try:
+            while True:
+                event_name, payload_text = self._legacy_sse_read_event(timeout_s=max(1.0, timeout_s))
+                if event_name != "endpoint":
+                    continue
+                endpoint = str(payload_text or "").strip()
+                if not endpoint:
+                    continue
+                try:
+                    parsed = urllib.parse.urlsplit(endpoint)
+                    if not parsed.scheme:
+                        endpoint = urllib.parse.urljoin(url, endpoint)
+                except Exception:
+                    endpoint = urllib.parse.urljoin(url, endpoint)
+                self._legacy_sse_message_url = endpoint
+                self._debug_log(
+                    "legacy_sse_connected "
+                    + json.dumps({"sse_url": url, "message_url": endpoint}, ensure_ascii=False)
+                )
+                return endpoint
+        except Exception:
+            self._reset_legacy_sse_connection()
+            raise
+
     def _post_jsonrpc(
         self,
         method: str,
@@ -1502,6 +1615,7 @@ class McpUrlClient:
         raw = ""
         data: Any = None
         stream_chunks: List[str] = []
+        response_target_url = url
 
         def _consume_jsonrpc_obj(obj: Any) -> Optional[Dict[str, Any]]:
             nonlocal stream_chunks
@@ -1528,16 +1642,23 @@ class McpUrlClient:
                     try:
                         if callable(self.peer_request_handler):
                             result = self.peer_request_handler(m, p if isinstance(p, dict) else {})
-                            self._post_jsonrpc_response(incoming_id, result=result, timeout_s=min(10.0, timeout_s))
+                            self._post_jsonrpc_response_to_url(
+                                response_target_url,
+                                incoming_id,
+                                result=result,
+                                timeout_s=min(10.0, timeout_s),
+                            )
                         else:
-                            self._post_jsonrpc_response(
+                            self._post_jsonrpc_response_to_url(
+                                response_target_url,
                                 incoming_id,
                                 error={"code": -32601, "message": f"Client method not supported: {m}"},
                                 timeout_s=min(10.0, timeout_s),
                             )
                     except Exception as e:
                         try:
-                            self._post_jsonrpc_response(
+                            self._post_jsonrpc_response_to_url(
+                                response_target_url,
                                 incoming_id,
                                 error={"code": -32000, "message": str(e)},
                                 timeout_s=min(10.0, timeout_s),
@@ -1550,79 +1671,148 @@ class McpUrlClient:
             return None
 
         try:
-            with urllib.request.urlopen(request, timeout=max(0.5, float(timeout_s))) as resp:
-                status_code = getattr(resp, "status", None)
-                sid = None
+            if self._is_legacy_sse_transport():
+                response_target_url = self._ensure_legacy_sse_connection(timeout_s=timeout_s)
+                post_request = urllib.request.Request(
+                    url=response_target_url,
+                    data=body,
+                    headers=headers,
+                    method="POST",
+                )
                 try:
-                    sid = resp.headers.get("mcp-session-id")
-                except Exception:
-                    sid = None
-                if sid:
-                    self.session_id = sid
-                try:
-                    content_type = str(resp.headers.get("content-type", "") or "")
-                except Exception:
-                    content_type = ""
-                if "text/event-stream" in content_type.lower():
-                    data_lines: List[str] = []
-                    terminal_obj: Optional[Dict[str, Any]] = None
-                    raw_preview_parts: List[str] = []
+                    with urllib.request.urlopen(post_request, timeout=max(0.5, float(timeout_s))) as post_resp:
+                        try:
+                            sid = post_resp.headers.get("mcp-session-id")
+                        except Exception:
+                            sid = None
+                        if sid:
+                            self.session_id = sid
+                        try:
+                            post_ct = str(post_resp.headers.get("content-type", "") or "")
+                        except Exception:
+                            post_ct = ""
+                        if "application/json" in post_ct.lower():
+                            post_raw = post_resp.read().decode("utf-8", errors="replace").strip()
+                            if post_raw:
+                                raw = post_raw[:2000]
+                                try:
+                                    parsed = json.loads(post_raw)
+                                    hit = _consume_jsonrpc_obj(parsed)
+                                    if hit is not None:
+                                        data = hit
+                                except Exception:
+                                    pass
+                except urllib.error.HTTPError as e:
+                    detail = ""
+                    try:
+                        detail = e.read().decode("utf-8", errors="replace")
+                    except Exception:
+                        detail = ""
+                    if int(getattr(e, "code", 0) or 0) == 404 and "session" in detail.lower():
+                        self._reset_legacy_sse_connection()
+                        raise McpError(f"URL MCP HTTP错误: {e.code} {e.reason}；{detail}")
+                    raise
 
-                    def _flush_event() -> None:
-                        nonlocal data_lines, terminal_obj
-                        if not data_lines:
-                            return
-                        payload_text = "\n".join(data_lines).strip()
-                        data_lines = []
+                if data is None:
+                    raw_preview_parts: List[str] = []
+                    deadline = time.time() + max(0.5, float(timeout_s))
+                    while time.time() < deadline:
+                        event_name, payload_text = self._legacy_sse_read_event(
+                            timeout_s=max(0.5, deadline - time.time())
+                        )
                         if not payload_text:
-                            return
+                            continue
                         if len(raw_preview_parts) < 20:
                             raw_preview_parts.append(payload_text[:200])
+                        if event_name == "endpoint":
+                            # server may rotate endpoint; update it.
+                            self._legacy_sse_message_url = payload_text
+                            response_target_url = payload_text
+                            continue
                         try:
                             parsed = json.loads(payload_text)
                         except Exception:
-                            return
+                            continue
                         hit = _consume_jsonrpc_obj(parsed)
                         if hit is not None:
-                            terminal_obj = hit
-
-                    while True:
-                        line_b = resp.readline()
-                        if not line_b:
+                            data = hit
                             break
-                        line = line_b.decode("utf-8", errors="replace").rstrip("\r\n")
-                        if line == "":
-                            _flush_event()
-                            if terminal_obj is not None:
-                                break
-                            continue
-                        if line.startswith("data:"):
-                            data_lines.append(line[5:].strip())
-                    _flush_event()
-
                     if raw_preview_parts:
                         raw = "\n".join(raw_preview_parts)
+            else:
+                with urllib.request.urlopen(request, timeout=max(0.5, float(timeout_s))) as resp:
+                    status_code = getattr(resp, "status", None)
+                    sid = None
+                    try:
+                        sid = resp.headers.get("mcp-session-id")
+                    except Exception:
+                        sid = None
+                    if sid:
+                        self.session_id = sid
+                    try:
+                        content_type = str(resp.headers.get("content-type", "") or "")
+                    except Exception:
+                        content_type = ""
+                    if "text/event-stream" in content_type.lower():
+                        data_lines: List[str] = []
+                        terminal_obj: Optional[Dict[str, Any]] = None
+                        raw_preview_parts: List[str] = []
+
+                        def _flush_event() -> None:
+                            nonlocal data_lines, terminal_obj
+                            if not data_lines:
+                                return
+                            payload_text = "\n".join(data_lines).strip()
+                            data_lines = []
+                            if not payload_text:
+                                return
+                            if len(raw_preview_parts) < 20:
+                                raw_preview_parts.append(payload_text[:200])
+                            try:
+                                parsed = json.loads(payload_text)
+                            except Exception:
+                                return
+                            hit = _consume_jsonrpc_obj(parsed)
+                            if hit is not None:
+                                terminal_obj = hit
+
+                        while True:
+                            line_b = resp.readline()
+                            if not line_b:
+                                break
+                            line = line_b.decode("utf-8", errors="replace").rstrip("\r\n")
+                            if line == "":
+                                _flush_event()
+                                if terminal_obj is not None:
+                                    break
+                                continue
+                            if line.startswith("data:"):
+                                data_lines.append(line[5:].strip())
+                        _flush_event()
+
+                        if raw_preview_parts:
+                            raw = "\n".join(raw_preview_parts)
+                        else:
+                            raw = ""
+                        data = terminal_obj
                     else:
-                        raw = ""
-                    data = terminal_obj
-                else:
-                    raw = resp.read().decode("utf-8", errors="replace").strip()
-                try:
-                    resp_headers = dict(resp.headers.items())
-                except Exception:
-                    resp_headers = {}
-                self._debug_log(
-                    "rx "
-                    + json.dumps(
-                        {
-                            "status": status_code,
-                            "content_type": content_type,
-                            "headers": self._redact_obj(resp_headers),
-                            "raw": self._redact_text(raw),
-                        },
-                        ensure_ascii=False,
+                        raw = resp.read().decode("utf-8", errors="replace").strip()
+                    try:
+                        resp_headers = dict(resp.headers.items())
+                    except Exception:
+                        resp_headers = {}
+                    self._debug_log(
+                        "rx "
+                        + json.dumps(
+                            {
+                                "status": status_code,
+                                "content_type": content_type,
+                                "headers": self._redact_obj(resp_headers),
+                                "raw": self._redact_text(raw),
+                            },
+                            ensure_ascii=False,
+                        )
                     )
-                )
         except urllib.error.HTTPError as e:
             detail = ""
             headers_map: Dict[str, str] = {}
@@ -1681,6 +1871,8 @@ class McpUrlClient:
             )
             raise McpError(f"URL MCP HTTP错误: {e.code} {e.reason}" + (f"；{detail}" if detail else ""))
         except Exception as e:
+            if self._is_legacy_sse_transport() and self._is_session_lost_error(e):
+                self._reset_legacy_sse_connection()
             self._debug_log(f"transport_error {repr(e)}")
             raise McpError(f"URL MCP请求失败: {e}")
 
@@ -1748,6 +1940,11 @@ class McpUrlClient:
         url = str(self.config.get("url", "")).strip()
         if not url:
             raise McpError("URL MCP server 缺少 url 配置")
+        if self._is_legacy_sse_transport():
+            target_url = self._legacy_sse_message_url.strip() or self._ensure_legacy_sse_connection(timeout_s=timeout_s)
+            return self._post_jsonrpc_response_to_url(
+                target_url, req_id, result=result, error=error, timeout_s=timeout_s
+            )
         payload: Dict[str, Any] = {"jsonrpc": "2.0", "id": req_id}
         if error is not None:
             payload["error"] = error
@@ -1812,6 +2009,89 @@ class McpUrlClient:
         allow_partial_failure: bool = False,
         allow_oauth_retry: bool = True,
     ) -> List[Dict[str, Any]]:
+        if self._is_legacy_sse_transport():
+            if not calls:
+                return []
+            req_payloads: List[Dict[str, Any]] = []
+            id_to_idx: Dict[str, int] = {}
+            for idx, (method, params) in enumerate(calls):
+                req_id = self.next_id
+                self.next_id += 1
+                payload: Dict[str, Any] = {"jsonrpc": "2.0", "id": req_id, "method": str(method)}
+                if params is not None:
+                    payload["params"] = params
+                req_payloads.append(payload)
+                id_to_idx[str(req_id)] = idx
+            target_url = self._ensure_legacy_sse_connection(timeout_s=timeout_s)
+            body = json.dumps(req_payloads, ensure_ascii=False).encode("utf-8")
+            headers = self._base_headers()
+            request = urllib.request.Request(url=target_url, data=body, headers=headers, method="POST")
+            try:
+                with urllib.request.urlopen(request, timeout=max(0.5, float(timeout_s))) as resp:
+                    try:
+                        sid = resp.headers.get("mcp-session-id")
+                    except Exception:
+                        sid = None
+                    if sid:
+                        self.session_id = sid
+                    try:
+                        post_ct = str(resp.headers.get("content-type", "") or "")
+                    except Exception:
+                        post_ct = ""
+                    if "application/json" in post_ct.lower():
+                        post_raw = resp.read().decode("utf-8", errors="replace").strip()
+                        if post_raw:
+                            try:
+                                parsed = json.loads(post_raw)
+                                parsed_items = parsed if isinstance(parsed, list) else [parsed]
+                                direct_results: List[Optional[Dict[str, Any]]] = [None] * len(calls)
+                                for it in parsed_items:
+                                    if not isinstance(it, dict):
+                                        continue
+                                    msg_id = str(it.get("id"))
+                                    if msg_id not in id_to_idx:
+                                        continue
+                                    if "error" in it:
+                                        if allow_partial_failure:
+                                            direct_results[id_to_idx[msg_id]] = {"ok": False, "error": it.get("error")}
+                                            continue
+                                        raise McpError(str(it.get("error")))
+                                    idx = id_to_idx[msg_id]
+                                    r = it.get("result", {})
+                                    if not isinstance(r, dict):
+                                        r = {"value": r}
+                                    direct_results[idx] = {"ok": True, "result": r} if allow_partial_failure else r
+                                if all(x is not None for x in direct_results):
+                                    return [x if isinstance(x, dict) else {} for x in direct_results]
+                            except Exception:
+                                pass
+            except urllib.error.HTTPError as e:
+                detail = ""
+                try:
+                    detail = e.read().decode("utf-8", errors="replace")
+                except Exception:
+                    detail = ""
+                if int(getattr(e, "code", 0) or 0) == 404 and "session" in detail.lower():
+                    self._reset_legacy_sse_connection()
+                # Legacy SSE servers may reject array POST; fallback to sequential.
+                if int(getattr(e, "code", 0) or 0) not in (400, 404, 405):
+                    raise McpError(f"URL MCP HTTP错误: {e.code} {e.reason}" + (f"；{detail}" if detail else ""))
+            except Exception:
+                # fallback to sequential mode below
+                pass
+
+            # Fallback: sequential calls (server may not support JSON-RPC array on message endpoint).
+            results: List[Dict[str, Any]] = []
+            for method, params in calls:
+                try:
+                    item = self._post_jsonrpc(str(method), params if isinstance(params, dict) else {}, timeout_s=timeout_s)
+                    results.append({"ok": True, "result": item} if allow_partial_failure else item)
+                except Exception as e:
+                    if allow_partial_failure:
+                        results.append({"ok": False, "error": str(e)})
+                    else:
+                        raise
+            return results
         url = str(self.config.get("url", "")).strip()
         if not url:
             raise McpError("URL MCP server 缺少 url 配置")
@@ -1968,8 +2248,7 @@ class McpUrlClient:
                 if not self._is_session_lost_error(e):
                     raise
                 self._debug_log("session_lost on tools/list, reinitialize and retry once")
-                self.session_id = None
-                self.initialized = False
+                self._reset_session_state()
                 self.initialize(timeout_s=timeout_s)
                 result = self._post_jsonrpc("tools/list", {}, timeout_s=timeout_s)
             tools = result.get("tools", [])
@@ -1991,8 +2270,7 @@ class McpUrlClient:
                 self._debug_log(
                     f"session_lost on tools/call name={tool_name}, reinitialize and retry once"
                 )
-                self.session_id = None
-                self.initialized = False
+                self._reset_session_state()
                 self.initialize(timeout_s=timeout_s)
                 return self._post_jsonrpc(
                     "tools/call",
@@ -2026,8 +2304,7 @@ class McpUrlClient:
                 if not self._is_session_lost_error(e):
                     raise
                 self._debug_log("session_lost on tools/call batch, reinitialize and retry once")
-                self.session_id = None
-                self.initialized = False
+                self._reset_session_state()
                 self.initialize(timeout_s=timeout_s)
                 return self._post_jsonrpc_batch(
                     reqs, timeout_s=timeout_s, allow_partial_failure=allow_partial_failure
@@ -2042,8 +2319,7 @@ class McpUrlClient:
                 if not self._is_session_lost_error(e):
                     raise
                 self._debug_log("session_lost on resources/list, reinitialize and retry once")
-                self.session_id = None
-                self.initialized = False
+                self._reset_session_state()
                 self.initialize(timeout_s=timeout_s)
                 result = self._post_jsonrpc("resources/list", {}, timeout_s=timeout_s)
             resources = result.get("resources", [])
@@ -2059,8 +2335,7 @@ class McpUrlClient:
                 if not self._is_session_lost_error(e):
                     raise
                 self._debug_log("session_lost on resources/read, reinitialize and retry once")
-                self.session_id = None
-                self.initialized = False
+                self._reset_session_state()
                 self.initialize(timeout_s=timeout_s)
                 return self._post_jsonrpc("resources/read", params, timeout_s=timeout_s)
 
@@ -2073,8 +2348,7 @@ class McpUrlClient:
                 if not self._is_session_lost_error(e):
                     raise
                 self._debug_log("session_lost on resources/templates/list, reinitialize and retry once")
-                self.session_id = None
-                self.initialized = False
+                self._reset_session_state()
                 self.initialize(timeout_s=timeout_s)
                 result = self._post_jsonrpc("resources/templates/list", {}, timeout_s=timeout_s)
             templates = result.get("resourceTemplates")
@@ -2091,8 +2365,7 @@ class McpUrlClient:
                 if not self._is_session_lost_error(e):
                     raise
                 self._debug_log("session_lost on prompts/list, reinitialize and retry once")
-                self.session_id = None
-                self.initialized = False
+                self._reset_session_state()
                 self.initialize(timeout_s=timeout_s)
                 result = self._post_jsonrpc("prompts/list", {}, timeout_s=timeout_s)
             prompts = result.get("prompts", [])
@@ -2108,8 +2381,7 @@ class McpUrlClient:
                 if not self._is_session_lost_error(e):
                     raise
                 self._debug_log("session_lost on prompts/get, reinitialize and retry once")
-                self.session_id = None
-                self.initialized = False
+                self._reset_session_state()
                 self.initialize(timeout_s=timeout_s)
                 return self._post_jsonrpc("prompts/get", params, timeout_s=timeout_s)
 
@@ -2123,8 +2395,7 @@ class McpUrlClient:
                 if not self._is_session_lost_error(e):
                     raise
                 self._debug_log("session_lost on sampling/createMessage, reinitialize and retry once")
-                self.session_id = None
-                self.initialized = False
+                self._reset_session_state()
                 self.initialize(timeout_s=timeout_s)
                 return self._post_jsonrpc("sampling/createMessage", payload, timeout_s=timeout_s)
 
@@ -2138,8 +2409,7 @@ class McpUrlClient:
                 if not self._is_session_lost_error(e):
                     raise
                 self._debug_log("session_lost on completion/complete, reinitialize and retry once")
-                self.session_id = None
-                self.initialized = False
+                self._reset_session_state()
                 self.initialize(timeout_s=timeout_s)
                 return self._post_jsonrpc("completion/complete", payload, timeout_s=timeout_s)
 
@@ -2150,8 +2420,7 @@ class McpUrlClient:
         URL transport has no child process to terminate; reset session state only.
         """
         with self.lock:
-            self.initialized = False
-            self.session_id = None
+            self._reset_session_state()
 
 
 class McpManager:
@@ -3123,12 +3392,17 @@ class McpManager:
                 )
                 self._log("INFO", f"preload skip server={server} reason=skip_preload")
                 return
-            if not force and server in self._tools_cache:
+            if not force and server in self._tools_cache and server in self._prompts_cache:
                 self._set_status(server, "success", is_cached=True)
                 self._log("INFO", f"preload hit_cache server={server}")
                 return
             try:
                 self.list_tools(str(server), timeout_s=timeout_s, use_cache=False)
+                try:
+                    self.list_prompts(str(server), timeout_s=timeout_s, use_cache=False)
+                except Exception as e:
+                    # prompts are optional per MCP server; tools preload should still be considered usable.
+                    self._log("INFO", f"preload prompts skipped for {server}: {e}")
             except Exception as e:
                 self._log("WARNING", f"preload failed for {server}: {e}")
             return
@@ -3196,6 +3470,21 @@ class McpManager:
                             failure_type="",
                             suggestion="",
                         )
+            # Expose per-section cache counts for `/mcp status` rendering.
+            resources_cached = self._resources_cache.get(name, {})
+            templates_cached = self._resource_templates_cache.get(name, {})
+            prompts_cached = self._prompts_cache.get(name, {})
+            resources_list = resources_cached.get("resources", []) if isinstance(resources_cached, dict) else []
+            templates_list = (
+                templates_cached.get("resource_templates", [])
+                if isinstance(templates_cached, dict)
+                else []
+            )
+            prompts_list = prompts_cached.get("prompts", []) if isinstance(prompts_cached, dict) else []
+            v["tools_count"] = int(v.get("tool_count", 0) or 0)
+            v["resources_count"] = len(resources_list) if isinstance(resources_list, list) else 0
+            v["resource_templates_count"] = len(templates_list) if isinstance(templates_list, list) else 0
+            v["prompts_count"] = len(prompts_list) if isinstance(prompts_list, list) else 0
             if v.get("state") == "loading":
                 since = float(v.get("loading_since_ts", 0.0) or 0.0)
                 elapsed = (now - since) if since > 0 else 0.0
@@ -3229,6 +3518,21 @@ class McpManager:
             active_snapshot = {k: int(v) for k, v in self._active_ops.items()}
             for name, v in items.items():
                 v["active_ops"] = int(active_snapshot.get(name, 0))
+                # Expose per-section cache counts for `/mcp status` rendering.
+                resources_cached = self._resources_cache.get(name, {})
+                templates_cached = self._resource_templates_cache.get(name, {})
+                prompts_cached = self._prompts_cache.get(name, {})
+                resources_list = resources_cached.get("resources", []) if isinstance(resources_cached, dict) else []
+                templates_list = (
+                    templates_cached.get("resource_templates", [])
+                    if isinstance(templates_cached, dict)
+                    else []
+                )
+                prompts_list = prompts_cached.get("prompts", []) if isinstance(prompts_cached, dict) else []
+                v["tools_count"] = int(v.get("tool_count", 0) or 0)
+                v["resources_count"] = len(resources_list) if isinstance(resources_list, list) else 0
+                v["resource_templates_count"] = len(templates_list) if isinstance(templates_list, list) else 0
+                v["prompts_count"] = len(prompts_list) if isinstance(prompts_list, list) else 0
         loaded = sum(1 for v in items.values() if v.get("state") in ("success", "failed", "skipped"))
         success = sum(1 for v in items.values() if v.get("state") == "success")
         failed = sum(1 for v in items.values() if v.get("state") == "failed")
