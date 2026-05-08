@@ -426,6 +426,7 @@ class SmartShellAgent:
         self._skills_system_append = build_skills_system_append(self.skills)
         self._active_skill_full_prompt: str = ""
         self._active_skill_id: Optional[str] = None
+        self._active_skill_source: Optional[str] = None  # local | mcp
 
         # 初始化输入处理器，确保属性存在
         self.input_handler = None
@@ -4464,6 +4465,15 @@ big_image.jpg
                 return True
         return False
 
+    def _is_local_skill_id(self, skill_id: str) -> bool:
+        sid = (skill_id or "").strip().lower()
+        if not sid:
+            return False
+        for s in self.skills or []:
+            if str(getattr(s, "skill_id", "")).strip().lower() == sid:
+                return True
+        return False
+
     def _reload_skills_if_workspace_skill_changed(self, paths: List[Path]) -> None:
         try:
             if any(self._is_workspace_skill_path(p) for p in paths):
@@ -6180,6 +6190,24 @@ big_image.jpg
                 return {"success": False, "error": "缺少tool参数"}
             if not isinstance(arguments, dict):
                 return {"success": False, "error": "arguments 必须为 object"}
+            active_sid = str(getattr(self, "_active_skill_id", "") or "").strip().lower()
+            active_src = str(getattr(self, "_active_skill_source", "") or "").strip().lower()
+            tool_s = str(tool_name).strip().lower()
+            if (
+                active_sid
+                and active_src == "local"
+                and str(server).strip().lower() == "csp-ai-agent"
+                and (tool_s == active_sid or tool_s == f"skill/{active_sid}")
+            ):
+                return {
+                    "success": False,
+                    "retryable": False,
+                    "blocked_by_guard": True,
+                    "error": (
+                        f"当前已加载本地 skill `{active_sid}`，禁止将同名 skill 当作 csp-ai-agent MCP tool 直接调用。"
+                        "请按本地 skill 正文继续执行（例如 mcp_call_tool 调 gitlab_get_merge_request + shell checkout + 本地评审步骤）。"
+                    ),
+                }
             try:
                 st = self.mcp_manager.get_status().get("servers", {}).get(str(server), {})
                 state_raw = str(st.get("state", "pending") or "pending").lower()
@@ -7403,6 +7431,7 @@ big_image.jpg
                 in_task_execution = True
                 self._active_skill_full_prompt = ""
                 self._active_skill_id = None
+                self._active_skill_source = None
                 forced_skill_prefix = ""
                 if forced_skill:
                     forced_skill_prefix = (
@@ -7415,6 +7444,7 @@ big_image.jpg
                         print(f"🧩 启用 Skill 完整提示: {forced_skill.get('name')} ({sid})")
                         self._active_skill_full_prompt = full_prompt
                         self._active_skill_id = sid
+                        self._active_skill_source = "local" if self._is_local_skill_id(sid) else "mcp"
                 first_round_contract = (
                     "\n\n【首轮回复硬性要求（必须遵守）】\n"
                     "1) 对于需要两步及以上完成的任务，先简要说明“将要完成哪些事情”，紧随其后再输出任务编排：Step 1..N，并为每步标注状态（pending/in_progress/completed/failed）。\n"
@@ -7524,6 +7554,7 @@ big_image.jpg
                             print(f"🧩 即将启用 Skill 完整提示: {sid}")
                         self._active_skill_full_prompt = full_prompt
                         self._active_skill_id = sid
+                        self._active_skill_source = "local" if self._is_local_skill_id(sid) else "mcp"
                         next_input = (
                             f"【用户原始需求】\n{original_user_task}\n\n"
                             f"已注入 skill_id=`{sid}` 的完整提示。请继续输出下一条工具调用 JSON。"
@@ -7640,6 +7671,7 @@ big_image.jpg
                     in_task_execution = False
                     self._active_skill_full_prompt = ""
                     self._active_skill_id = None
+                    self._active_skill_source = None
                     self._last_auto_removed_ephemeral = None
                     print("\n⏹️ 已取消当前任务")
                     continue
