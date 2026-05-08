@@ -21,9 +21,54 @@ try:
     from prompt_toolkit.history import InMemoryHistory
     from prompt_toolkit.formatted_text import FormattedText
     from prompt_toolkit.styles import Style
+    try:
+        from prompt_toolkit.cursor_shapes import CursorShape
+        from prompt_toolkit.cursor_shapes import SimpleCursorShapeConfig
+    except Exception:
+        CursorShape = None  # type: ignore[assignment]
+        SimpleCursorShapeConfig = None  # type: ignore[assignment]
     PROMPT_TOOLKIT_AVAILABLE = True
 except ImportError:
     PROMPT_TOOLKIT_AVAILABLE = False
+
+
+def _attach_blink_after_render_hook(session) -> None:
+    """
+    Register an `after_render` handler on the prompt_toolkit Application so the
+    cursor-blink DEC mode is re-asserted after every redraw. prompt_toolkit's
+    renderer toggles cursor visibility on each repaint and on Windows Terminal
+    that can leave the caret in a non-blinking state once the user starts typing.
+
+    `Application.after_render` is an `Event` object — handlers must be added via
+    `+=`/`add_handler` rather than reassignment, otherwise `Event.fire()` breaks.
+    """
+    if session is None:
+        return
+    app = getattr(session, "app", None)
+    if app is None:
+        return
+
+    def _on_after_render(_app) -> None:
+        try:
+            output = getattr(_app, "output", None)
+            if output is not None and hasattr(output, "write_raw") and hasattr(output, "flush"):
+                output.write_raw("\x1b[?12h\x1b[?25h")
+                output.flush()
+                return
+        except Exception:
+            pass
+        try:
+            sys.stdout.write("\x1b[?12h\x1b[?25h")
+            sys.stdout.flush()
+        except Exception:
+            pass
+
+    try:
+        evt = getattr(app, "after_render", None)
+        if evt is not None and hasattr(evt, "add_handler"):
+            evt.add_handler(_on_after_render)
+    except Exception:
+        pass
 
 
 class FileCompleter(Completer):
@@ -633,6 +678,16 @@ class WindowsInputHandler:
         """
         self.work_directory = work_directory
         self.history = []
+        self._pt_cursor_shape = None
+        if (
+            PROMPT_TOOLKIT_AVAILABLE
+            and CursorShape is not None
+            and SimpleCursorShapeConfig is not None
+        ):
+            try:
+                self._pt_cursor_shape = SimpleCursorShapeConfig(CursorShape.BLINKING_BEAM)
+            except Exception:
+                self._pt_cursor_shape = None
         
         if PROMPT_TOOLKIT_AVAILABLE:
             # 使用prompt_toolkit，并将历史记录注入到会话中
@@ -645,7 +700,7 @@ class WindowsInputHandler:
                         self._pt_history.append_string(entry)
                     except Exception:
                         pass
-            self.session = PromptSession(
+            session_kwargs = dict(
                 completer=self.completer,
                 history=self._pt_history,
                 key_bindings=self._key_bindings,
@@ -654,6 +709,10 @@ class WindowsInputHandler:
                 complete_in_thread=True,
                 complete_while_typing=True,
             )
+            if self._pt_cursor_shape is not None:
+                session_kwargs["cursor"] = self._pt_cursor_shape
+            self.session = PromptSession(**session_kwargs)
+            _attach_blink_after_render_hook(self.session)
         else:
             # 回退到标准input
             self.session = None
@@ -737,7 +796,7 @@ class WindowsInputHandler:
                 self._pt_history.append_string(entry)
             except Exception:
                 pass
-        self.session = PromptSession(
+        session_kwargs = dict(
             completer=self.completer,
             history=self._pt_history,
             key_bindings=self._key_bindings,
@@ -746,6 +805,11 @@ class WindowsInputHandler:
             complete_in_thread=True,
             complete_while_typing=True,
         )
+        if getattr(self, "_pt_cursor_shape", None) is not None:
+            session_kwargs["cursor"] = self._pt_cursor_shape
+        self.session = PromptSession(**session_kwargs)
+        _attach_blink_after_render_hook(self.session)
+
 
 def create_windows_input_handler(
     work_directory: Path,
