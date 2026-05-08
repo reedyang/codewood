@@ -7727,9 +7727,14 @@ big_image.jpg
         # 在Windows系统上，优先使用prompt_toolkit以获得更好的中文输入支持
         if platform.system() == "Windows":
             try:
-                # 尝试使用prompt_toolkit
                 from prompt_toolkit import PromptSession
                 from prompt_toolkit.history import InMemoryHistory
+                try:
+                    from prompt_toolkit.cursor_shapes import CursorShape
+                    from prompt_toolkit.cursor_shapes import SimpleCursorShapeConfig
+                except Exception:
+                    CursorShape = None  # type: ignore[assignment]
+                    SimpleCursorShapeConfig = None  # type: ignore[assignment]
                 
                 # 创建历史记录
                 history = InMemoryHistory()
@@ -7737,7 +7742,37 @@ big_image.jpg
                     history.append_string(entry)
                 
                 # 创建会话
-                session = PromptSession(history=history)
+                session_kwargs = {"history": history}
+                if CursorShape is not None and SimpleCursorShapeConfig is not None:
+                    try:
+                        session_kwargs["cursor"] = SimpleCursorShapeConfig(CursorShape.BLINKING_BEAM)
+                    except Exception:
+                        pass
+                session = PromptSession(**session_kwargs)
+                # Re-assert cursor blink after every redraw (Windows Terminal compat).
+                # NOTE: Application.after_render is an Event — must add via add_handler.
+                try:
+                    _app = getattr(session, "app", None)
+                    if _app is not None:
+                        def _on_after_render(_a) -> None:
+                            try:
+                                _o = getattr(_a, "output", None)
+                                if _o is not None and hasattr(_o, "write_raw") and hasattr(_o, "flush"):
+                                    _o.write_raw("\x1b[?12h\x1b[?25h")
+                                    _o.flush()
+                                    return
+                            except Exception:
+                                pass
+                            try:
+                                sys.stdout.write("\x1b[?12h\x1b[?25h")
+                                sys.stdout.flush()
+                            except Exception:
+                                pass
+                        _evt = getattr(_app, "after_render", None)
+                        if _evt is not None and hasattr(_evt, "add_handler"):
+                            _evt.add_handler(_on_after_render)
+                except Exception:
+                    pass
                 
                 # 获取用户输入
                 user_input = session.prompt(prompt).strip()
