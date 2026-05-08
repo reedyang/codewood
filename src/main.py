@@ -25,7 +25,7 @@ def _set_windows_console_title():
     try:
         import ctypes
 
-        ctypes.windll.kernel32.SetConsoleTitleW(f"{chr(0x1F916)} Smart Shell")
+        ctypes.windll.kernel32.SetConsoleTitleW(f"Smart Shell")
     except Exception:
         pass
 
