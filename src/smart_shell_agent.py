@@ -2025,10 +2025,60 @@ class SmartShellAgent:
         except Exception:
             return ""
 
+    def _build_agents_md_system_append(self) -> str:
+        """Inject AGENTS.md content from config/workspace-related locations."""
+        candidates: List[Tuple[str, Path]] = []
+        try:
+            candidates.append(("config", Path(self.config_dir) / "AGENTS.md"))
+        except Exception:
+            pass
+        try:
+            candidates.append(("workspace", Path(self.ai_workspace_dir) / "AGENTS.md"))
+        except Exception:
+            pass
+        try:
+            candidates.append(("workspace/.smartshell", Path(self.ai_workspace_dir) / ".smartshell" / "AGENTS.md"))
+        except Exception:
+            pass
+
+        sections: List[str] = []
+        seen_keys: set = set()
+        for scope, file_path in candidates:
+            try:
+                resolved = file_path.expanduser().resolve()
+            except Exception:
+                resolved = file_path
+            key = str(resolved).casefold() if os.name == "nt" else str(resolved)
+            if key in seen_keys:
+                continue
+            seen_keys.add(key)
+            if not resolved.is_file():
+                continue
+            try:
+                content = resolved.read_text(encoding="utf-8", errors="replace").strip()
+            except Exception:
+                continue
+            if not content:
+                continue
+            sections.append(
+                "\n".join(
+                    [
+                        f"### {scope} AGENTS.md",
+                        f"Source: `{resolved}`",
+                        content,
+                    ]
+                )
+            )
+
+        if not sections:
+            return ""
+        return "\n\n## User Custom Prompts (AGENTS.md)\n\n" + "\n\n".join(sections) + "\n"
+
     def _compose_system_prompt_snapshot(self, include_tools: bool) -> str:
         """组装当前可见 system 快照：base + 用户偏好 + MCP [+ 工具目录]。"""
         core = (
             self._base_system_prompt
+            + self._build_agents_md_system_append()
             + self._build_user_preferences_system_append()
             + self._build_mcp_system_append()
         )
