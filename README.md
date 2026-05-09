@@ -13,7 +13,7 @@
 - 📝 **历史记录**: 支持命令历史记录和导航
 - 📚 **知识库**: 自动索引文档，提供智能检索和上下文增强
 - 🔄 **跨平台**: 支持Windows、Linux、macOS
-- 🎯 **双模型支持**: 可配置不同模型用于普通任务和图像处理
+- 🎯 **统一模型配置**: 使用单一 `model` 配置，同时支持文本与多模态调用
 - 📎 **Agent Skills**: 在 `config.json` 所在目录的 `skills/` 下按 [Anthropic Agent Skills](https://github.com/anthropics/skills/blob/main/README.md) 放置 `SKILL.md`，启动时加载并注入系统提示（架构原则见 **[docs/skill-architecture.md](docs/skill-architecture.md)**，便于在其他 AI 编程工具中复用）
 
 ## 🚀 快速开始
@@ -158,40 +158,33 @@ smart-shell/
 |   ├── mcp.json                   # MCP servers 配置（可选）
 |   ├── knowledge/                 # 知识库文档目录
 |   ├── skills/                    # 外部 Agent Skills（可选；优先级高于内建 skills/）
-|   ├── workspace/                 # `script` 动作写入的临时/任务脚本（config 侧，非用户 cwd）
+|   ├── workspace/                 # 运行时工作区目录（config 侧，非用户 cwd）
 |   └── knowledge_db/              # 知识库数据库（自动生成）
 ├── demo/                          # 演示文件
 └── README.md                      # 项目说明
 ```
 
 ## 🔧 配置
-- 必须配置normal_model
-- 可选配置vision_model以支持图片解析
+- 必须配置 `model`
+- 不再支持 `normal_model` / `vision_model` 旧格式
 
-创建 `.smartshell/config.json` 配置文件，支持为不同任务配置不同的AI模型：
+创建 `.smartshell/config.json` 配置文件：
 
 ```json
 {
-  "normal_model": {
-    "provider": "openwebui",
+  "model": {
+    "provider": "openai",
     "params": {
       "api_key": "your_api_key",
-      "base_url": "https://your-api-url.com/api",
-      "model": "Qwen3-235B-A22B"
-    }
-  },
-  "vision_model": {
-    "provider": "ollama",
-    "params": {
-      "model": "qwen2.5vl:7b"
+      "base_url": "https://your-api-url.com/api/v1",
+      "model": "gpt-4o-mini"
     }
   }
 }
 ```
 
 **配置说明**:
-- `normal_model`: 用于普通任务的模型（如文件操作、目录浏览等）
-- `vision_model`: 用于图像处理的视觉模型（需要支持视觉功能）
+- `model`: 统一模型配置，用于普通任务与图片分析（需模型本身支持多模态）
 - `provider`: 支持 `ollama`、`openai`、`openwebui`
 - `params`: 包含API密钥、基础URL和模型名称
 
