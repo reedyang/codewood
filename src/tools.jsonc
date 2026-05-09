@@ -315,8 +315,8 @@
   {
     "type": "function",
     "function": {
-      "name": "analyze_image",
-      "description": "分析图片文件并返回视觉理解结果。",
+      "name": "read_image",
+      "description": "读取图片文件并返回 AI 对图片内容的理解结果。",
       "parameters": {
         "type": "object",
         "properties": {

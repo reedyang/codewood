@@ -225,7 +225,7 @@ WORKSPACE_STATE_FILE = "workspaces.json"
 
 
 class SmartShellAgent:
-    def __init__(self, model_name: str = "gemma3:4b", work_directory: Optional[str] = None, provider: str = "ollama", openai_conf: Optional[dict] = None, openwebui_conf: Optional[dict] = None, params: Optional[dict] = None, normal_config: Optional[dict] = None, vision_config: Optional[dict] = None, config_dir: Optional[str] = None, builtin_skills_dir: Optional[str] = None):
+    def __init__(self, model_name: str = "gemma3:4b", work_directory: Optional[str] = None, provider: str = "ollama", openai_conf: Optional[dict] = None, openwebui_conf: Optional[dict] = None, params: Optional[dict] = None, model_config: Optional[dict] = None, config_dir: Optional[str] = None, builtin_skills_dir: Optional[str] = None):
         """
         初始化Smart Shell
         Args:
@@ -234,9 +234,8 @@ class SmartShellAgent:
             provider: 模型服务提供方（兼容旧格式）
             openai_conf: openai参数（兼容旧格式）
             openwebui_conf: openwebui参数（兼容旧格式）
-            params: 通用参数（兼容旧格式）
-            normal_config: 普通任务模型配置（新格式）
-            vision_config: 视觉模型配置（新格式）
+            params: 通用参数（兼容调用）
+            model_config: 模型配置（provider + params）
             config_dir: 配置文件目录（可选）；持久化状态位于该目录下的 workspace/
             builtin_skills_dir: 内建 Agent Skills 根目录；未传则使用项目根目录下的 skills/
         """
@@ -343,50 +342,17 @@ class SmartShellAgent:
         self._freedom_script_review_entries: Dict[str, Dict[str, Any]] = {}
         self._load_freedom_script_review_cache()
 
-        # 继续初始化其余组件（双模型配置、系统提示词、输入处理器）
-        if normal_config and vision_config:
-            self.dual_model_mode = True
-            self.normal_config = normal_config
-            self.vision_config = vision_config
-            # 设置普通任务模型
-            self.normal_provider = normal_config.get("provider", "ollama")
-            self.normal_params = normal_config.get("params", {})
-            self.normal_model_name = self.normal_params.get("model", "gemma3:4b")
-            # 设置视觉模型（未写 provider 时与普通模型一致，避免默认成 ollama 导致误加载 ollama 包）
-            _vp = vision_config.get("provider")
-            if _vp is None or (isinstance(_vp, str) and not str(_vp).strip()):
-                self.vision_provider = self.normal_provider
-            else:
-                self.vision_provider = str(_vp).strip()
-            self.vision_params = vision_config.get("params", {})
-            self.vision_model_name = self.vision_params.get("model", "qwen2.5vl:7b")
-            # 兼容旧接口
-            self.model_name = self.normal_model_name
-            self.provider = self.normal_provider
-            self.params = self.normal_params
-            self.openai_conf = self.normal_params if self.normal_provider == "openai" else None
-            self.openwebui_conf = self.normal_params if self.normal_provider == "openwebui" else None
+        # 单模型配置（model_config 优先）
+        if model_config and isinstance(model_config, dict):
+            self.provider = str(model_config.get("provider", provider) or provider).strip()
+            self.params = model_config.get("params", {}) or {}
+            self.model_name = str(self.params.get("model", model_name) or model_name).strip()
         else:
-            # 兼容旧格式
-            self.dual_model_mode = False
             self.model_name = model_name
             self.provider = provider
-            self.openai_conf = openai_conf
-            self.openwebui_conf = openwebui_conf
-            self.params = params
-            # 兼容params统一配置
-            if self.provider == 'openai' and self.openai_conf is None and params is not None:
-                self.openai_conf = params
-            if self.provider == 'openwebui' and self.openwebui_conf is None and params is not None:
-                self.openwebui_conf = params
-
-        # 双模型且仅视觉为 ollama 时：启动阶段不校验视觉模型，首次多模态调用前再加载 ollama 包
-        self._defer_vision_ollama_validation = (
-            bool(getattr(self, "dual_model_mode", False))
-            and getattr(self, "normal_provider", "") != "ollama"
-            and getattr(self, "vision_provider", "") == "ollama"
-        )
-        self._vision_ollama_validated_once = False
+            self.params = params or {}
+        self.openai_conf = self.params if self.provider == "openai" else openai_conf
+        self.openwebui_conf = self.params if self.provider == "openwebui" else openwebui_conf
 
         # 模型可用性校验（ollama.list）可能阻塞网络；见 _schedule_model_validation_background，在后台执行
 
@@ -1772,20 +1738,13 @@ class SmartShellAgent:
         Ollama 模型列表探测可能阻塞；在后台线程执行，缩短 main 打印模型信息后到出现提示符的等待。
         非 ollama provider 不启动线程。
         """
-        ollama_needed = False
-        if getattr(self, "dual_model_mode", False):
-            ollama_needed = (getattr(self, "normal_provider", "") == "ollama") or (
-                getattr(self, "vision_provider", "") == "ollama"
-            )
-        else:
-            ollama_needed = getattr(self, "provider", "") == "ollama"
+        ollama_needed = getattr(self, "provider", "") == "ollama"
         if not ollama_needed:
             return
 
         def _run() -> None:
             try:
-                defer_vis = getattr(self, "_defer_vision_ollama_validation", False)
-                self._validate_model(include_vision=not defer_vis)
+                self._validate_model()
             except Exception:
                 pass
 
@@ -3312,14 +3271,9 @@ class SmartShellAgent:
             print(f"🦅 判定为不可逆或不确定，仍需手动确认 — {reason}")
         return reversible
 
-    def _validate_model(self, *, include_vision: bool = True) -> None:
-        """验证模型是否可用（仅 ollama 模式）。include_vision=False 时跳过视觉模型（推迟到首次多模态）。"""
-        if self.dual_model_mode:
-            self._validate_single_model(self.normal_provider, self.normal_model_name, "普通任务模型")
-            if include_vision:
-                self._validate_single_model(self.vision_provider, self.vision_model_name, "视觉模型")
-        else:
-            self._validate_single_model(self.provider, self.model_name, "模型")
+    def _validate_model(self) -> None:
+        """验证模型是否可用（仅 ollama 模式）。"""
+        self._validate_single_model(self.provider, self.model_name, "模型")
 
     def _validate_single_model(self, provider: str, model_name: str, model_type: str):
         """验证单个模型是否可用"""
@@ -3341,12 +3295,68 @@ class SmartShellAgent:
                 print(f"📋 可用模型: {available_models}")
                 if available_models:
                     print(f"💡 建议使用: {available_models[0]}")
-                print(f"💡 请检查 llm-filemgr.json 中的 {model_type.lower().replace('模型', '_model')} 配置")
+                print("💡 请检查 config.json 中的 model 配置")
         except ImportError:
             print(f"❌ 错误: 未安装 ollama 包，无法验证 {model_type}。请运行: pip install ollama")
         except Exception as e:
             print(f"⚠️ 验证{model_type}时出错: {e}")
             print(f"💡 请确保 Ollama 服务正在运行")
+
+    def _build_regular_task_messages(self, user_input: str, context: str = "") -> Tuple[List[Dict[str, Any]], bool]:
+        """构建常规任务上下文消息（与 call_ai 主流程保持一致）。"""
+        import os
+
+        os_info = os.uname() if hasattr(os, 'uname') else os.name
+        date_time = datetime.now().strftime("%Y-%m-%d %A %H:%M:%S")
+
+        self._update_session_summary_rolling()
+        self._maybe_refresh_session_summary_llm()
+        self._reload_skills()
+
+        # Refresh MCP prompt append at call time so newly loaded tool caches
+        # are always reflected in the current LLM context.
+        self.system_prompt = self._compose_system_prompt_snapshot(include_tools=True)
+        mem_block = self._memory_context_for_prompt(user_input)
+        # 经验记忆必须放在 system 最前：否则长 tools 提示在后、易被截断，且模型更倾向服从文末通用人设。
+        tail_context = (
+            f"{self._skills_routing_prefix}{self.system_prompt}\n{self._active_skill_full_prompt}"
+            f"当前操作系统信息：{os_info}\n当前日期时间：{date_time}\n"
+            f"当前 smart-shell 根目录（绝对路径）：{self._self_repo_root}\n"
+            f"当前 config 目录（绝对路径）：{self.config_dir}\n"
+            f"当前 workspace 名称：{self.workspace_name}\n"
+            f"当前 workspace 目录（绝对路径）：{self.ai_workspace_dir}\n"
+        )
+        if mem_block:
+            sys_prefix = (
+                "【经验记忆 — 须主动落实】\n"
+                "以下为当前工作区已持久化条目。其后每一轮答复前都须先判断是否相关；"
+                "相关则自然语言输出必须以本段为准，不得以未约定的通用云端/供应商默认人设替代。\n\n"
+                + mem_block
+                + "\n\n---\n\n"
+                + tail_context
+            )
+        else:
+            sys_prefix = tail_context
+        messages: List[Dict[str, Any]] = [{"role": "system", "content": sys_prefix}]
+        for msg in self.conversation_history[-5:]:
+            messages.append(msg)
+
+        current_input = ""
+        # 仅有 system 段首记忆时，模型常忽略；在同条 user 侧再提示一次，贴近「用户输入」以提高遵循率。
+        if mem_block:
+            current_input += (
+                "【硬性要求】作答前须核对上一条 system 开头的「经验记忆」："
+                "与本轮用户问题相关的条目必须在答复中体现，不得用与这些记录无关的通用助手或供应商设定替代。\n\n"
+            )
+        current_input += f"当前 workspace: {self.workspace_name}\n当前工作目录: {self.work_directory}\n"
+        if self.operation_results:
+            current_input += f"最近的操作结果: {self.operation_results[-1]}\n"
+        if context:
+            current_input += f"操作上下文: {context}\n"
+        current_input += f"用户输入: {user_input}"
+        messages.append({"role": "user", "content": current_input})
+
+        return messages, True
 
     def call_ai(
         self,
@@ -3487,80 +3497,14 @@ class SmartShellAgent:
                 ]
                 record_history = False
             else:
-                self._update_session_summary_rolling()
-                self._maybe_refresh_session_summary_llm()
-                self._reload_skills()
-                record_history = True
-                # Refresh MCP prompt append at call time so newly loaded tool caches
-                # are always reflected in the current LLM context.
-                self.system_prompt = self._compose_system_prompt_snapshot(include_tools=True)
-                mem_block = self._memory_context_for_prompt(user_input)
-                # 经验记忆必须放在 system 最前：否则长 tools 提示在后、易被截断，且模型更倾向服从文末通用人设。
-                tail_context = (
-                    f"{self._skills_routing_prefix}{self.system_prompt}\n{self._active_skill_full_prompt}"
-                    f"当前操作系统信息：{os_info}\n当前日期时间：{date_time}\n"
-                    f"当前 smart-shell 根目录（绝对路径）：{self._self_repo_root}\n"
-                    f"当前 config 目录（绝对路径）：{self.config_dir}\n"
-                    f"当前 workspace 名称：{self.workspace_name}\n"
-                    f"当前 workspace 目录（绝对路径）：{self.ai_workspace_dir}\n"
-                )
-                if mem_block:
-                    sys_prefix = (
-                        "【经验记忆 — 须主动落实】\n"
-                        "以下为当前工作区已持久化条目。其后每一轮答复前都须先判断是否相关；"
-                        "相关则自然语言输出必须以本段为准，不得以未约定的通用云端/供应商默认人设替代。\n\n"
-                        + mem_block
-                        + "\n\n---\n\n"
-                        + tail_context
-                    )
-                else:
-                    sys_prefix = tail_context
-                messages = [
-                    {
-                        "role": "system",
-                        "content": sys_prefix,
-                    }
-                ]
-                for msg in self.conversation_history[-5:]:
-                    messages.append(msg)
+                messages, record_history = self._build_regular_task_messages(user_input, context)
 
-                current_input = ""
-                # 仅有 system 段首记忆时，模型常忽略；在同条 user 侧再提示一次，贴近「用户输入」以提高遵循率。
-                if mem_block:
-                    current_input += (
-                        "【硬性要求】作答前须核对上一条 system 开头的「经验记忆」："
-                        "与本轮用户问题相关的条目必须在答复中体现，不得用与这些记录无关的通用助手或供应商设定替代。\n\n"
-                    )
-                current_input += f"当前 workspace: {self.workspace_name}\n当前工作目录: {self.work_directory}\n"
-                if self.operation_results:
-                    current_input += f"最近的操作结果: {self.operation_results[-1]}\n"
-                if context:
-                    current_input += f"操作上下文: {context}\n"
-                current_input += f"用户输入: {user_input}"
-                messages.append({"role": "user", "content": current_input})
-
-            # 根据模式选择模型配置
-            if self.dual_model_mode:
-                # 双模型模式：使用普通任务模型
-                provider = self.normal_provider
-                model_name = self.normal_model_name
-                params = self.normal_params
-                openai_conf = params if provider == "openai" else None
-                openwebui_conf = params if provider == "openwebui" else None
-                
-                # 检查普通任务模型配置
-                if not provider or not model_name:
-                    return "❌ 错误：普通任务模型未正确配置。请检查 llm-filemgr.json 中的 normal_model 配置。"
-            else:
-                # 单模型模式：使用原有配置
-                provider = self.provider
-                model_name = self.model_name
-                openai_conf = self.openai_conf
-                openwebui_conf = self.openwebui_conf
-                
-                # 检查单模型配置
-                if not provider or not model_name:
-                    return "❌ 错误：模型未正确配置。请检查 llm-filemgr.json 配置文件。"
+            provider = self.provider
+            model_name = self.model_name
+            openai_conf = self.openai_conf
+            openwebui_conf = self.openwebui_conf
+            if not provider or not model_name:
+                return "❌ 错误：模型未正确配置。请检查 config.json 中的 model 配置。"
 
             if provider == "openai" and openai_conf:
                 import requests
@@ -3570,7 +3514,7 @@ class SmartShellAgent:
                 
                 # 检查OpenAI配置
                 if not api_key:
-                    return "❌ 错误：OpenAI API密钥未配置。请在 llm-filemgr.json 中设置 api_key。"
+                    return "❌ 错误：OpenAI API密钥未配置。请在 config.json 的 model.params 中设置 api_key。"
                 
                 url = base_url.rstrip("/") + "/chat/completions"
                 headers = {
@@ -3631,7 +3575,7 @@ class SmartShellAgent:
                 
                 # 检查OpenWebUI配置
                 if not api_key:
-                    return "❌ 错误：OpenWebUI API密钥未配置。请在 llm-filemgr.json 中设置 api_key。"
+                    return "❌ 错误：OpenWebUI API密钥未配置。请在 config.json 的 model.params 中设置 api_key。"
                 
                 url = base_url.rstrip("/") + "/chat/completions"
                 headers = {
@@ -3738,67 +3682,45 @@ class SmartShellAgent:
             return error_msg
 
     def call_ai_multimodal(self, user_input: str, image_path: str, context: str = "", stream: bool = False):
-        """调用支持多模态的大模型API进行图片分析，支持流式输出"""
+        """调用支持多模态的大模型API，复用常规任务上下文，仅在末尾 user 消息附加图片载荷。"""
         try:
-            import os
             import base64
-            os_info = os.uname() if hasattr(os, 'uname') else os.name
-            
-            # 读取并编码图片
+
             with open(image_path, 'rb') as image_file:
                 image_data = base64.b64encode(image_file.read()).decode('utf-8')
-            
-            # 构建多模态消息 - 使用简化的系统提示，避免生成JSON命令
-            system_prompt = """你是一个图片分析助手。请直接分析用户提供的图片，描述图片中的内容、物体、场景、文字等信息。不要生成任何JSON命令或代码，只提供自然语言的分析结果。"""
-            
-            messages = [{"role": "system", "content": system_prompt}]
-            
-            # 添加包含图片的消息 - 使用正确的Ollama格式
-            messages.append({
-                "role": "user", 
-                "content": user_input,
-                "images": [image_data]
-            })
 
-            # 根据模式选择模型配置
-            if self.dual_model_mode:
-                # 双模型模式：使用视觉模型
-                provider = self.vision_provider
-                model_name = self.vision_model_name
-                params = self.vision_params
-                openai_conf = params if provider == "openai" else None
-                openwebui_conf = params if provider == "openwebui" else None
-                
-                # 检查视觉模型配置
-                if not provider or not model_name:
-                    return "❌ 错误：视觉模型未正确配置。请检查 llm-filemgr.json 中的 vision_model 配置。"
-            else:
-                # 单模型模式：使用原有配置
-                provider = self.provider
-                model_name = self.model_name
-                openai_conf = self.openai_conf
-                openwebui_conf = self.openwebui_conf
-                
-                # 检查单模型配置
-                if not provider or not model_name:
-                    return "❌ 错误：模型未正确配置。请检查 llm-filemgr.json 配置文件。"
+            messages, record_history = self._build_regular_task_messages(user_input, context)
+            user_idx = None
+            for idx in range(len(messages) - 1, -1, -1):
+                if messages[idx].get("role") == "user":
+                    user_idx = idx
+                    break
+            if user_idx is None:
+                return "❌ 错误：多模态消息构建失败，缺少用户消息。"
+            user_text = str(messages[user_idx].get("content", "") or "")
+
+            provider = self.provider
+            model_name = self.model_name
+            openai_conf = self.openai_conf
+            openwebui_conf = self.openwebui_conf
+            if not provider or not model_name:
+                return "❌ 错误：模型未正确配置。请检查 config.json 中的 model 配置。"
 
             if provider == "ollama":
-                if (
-                    getattr(self, "_defer_vision_ollama_validation", False)
-                    and not getattr(self, "_vision_ollama_validated_once", False)
-                ):
-                    self._validate_single_model(self.vision_provider, self.vision_model_name, "视觉模型")
-                    self._vision_ollama_validated_once = True
                 try:
                     ollama = _import_ollama_client()
                 except ImportError:
                     return "❌ 错误：未安装 ollama 包。请运行：pip install ollama"
-                
+                ollama_messages = [dict(m) for m in messages]
+                ollama_messages[user_idx] = {
+                    **ollama_messages[user_idx],
+                    "content": user_text,
+                    "images": [image_data],
+                }
                 if stream:
                     response = ollama.chat(
                         model=model_name,
-                        messages=messages,
+                        messages=ollama_messages,
                         stream=True
                     )
                     def gen():
@@ -3814,22 +3736,129 @@ class SmartShellAgent:
                                 if delta:  # 再次检查是否为空
                                     buffer += delta
                                     yield delta
-                        self.conversation_history.append({"role": "user", "content": user_input})
-                        self.conversation_history.append({"role": "assistant", "content": buffer})
+                        if record_history:
+                            self.conversation_history.append({"role": "user", "content": user_input})
+                            self.conversation_history.append({"role": "assistant", "content": buffer})
                     return gen()
                 else:
                     response = ollama.chat(
                         model=model_name,
-                        messages=messages,
+                        messages=ollama_messages,
                         stream=False
                     )
-                    ai_response = response['message']['content']
+                    ai_response = (response.get("message", {}) or {}).get("content", "") or ""
+                    if record_history:
+                        self.conversation_history.append({"role": "user", "content": user_input})
+                        self.conversation_history.append({"role": "assistant", "content": ai_response})
+                    return ai_response
+            elif provider == "openai" and openai_conf:
+                import requests
+
+                api_key = openai_conf.get("api_key")
+                base_url = openai_conf.get("base_url", "https://api.openai.com/v1")
+                if not api_key:
+                    return "❌ 错误：OpenAI API密钥未配置。请在 config.json 的 model.params 中设置 api_key。"
+                openai_messages = [dict(m) for m in messages]
+                openai_messages[user_idx] = {
+                    **openai_messages[user_idx],
+                    "content": [
+                        {"type": "text", "text": user_text},
+                        {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{image_data}"}},
+                    ],
+                }
+                url = base_url.rstrip("/") + "/chat/completions"
+                headers = {
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                }
+                payload: Dict[str, Any] = {
+                    "model": model_name,
+                    "messages": openai_messages,
+                    "stream": stream,
+                }
+                resp = requests.post(url, headers=headers, json=payload, verify=False, timeout=120, stream=stream)
+                resp.raise_for_status()
+                if stream:
+                    def gen():
+                        buffer = ""
+                        for line in resp.iter_lines():
+                            if not line or not line.startswith(b"data: "):
+                                continue
+                            data = line[6:]
+                            if data.strip() == b"[DONE]":
+                                break
+                            try:
+                                delta = json.loads(data.decode("utf-8", errors="replace"))["choices"][0]["delta"].get("content", "")
+                                if delta:
+                                    buffer += delta
+                                    yield delta
+                            except Exception:
+                                continue
+                        if record_history:
+                            self.conversation_history.append({"role": "user", "content": user_input})
+                            self.conversation_history.append({"role": "assistant", "content": buffer})
+                    return gen()
+                data = resp.json()
+                ai_response = (data.get("choices", [{}])[0].get("message", {}) or {}).get("content", "") or ""
+                if record_history:
                     self.conversation_history.append({"role": "user", "content": user_input})
                     self.conversation_history.append({"role": "assistant", "content": ai_response})
-                    return ai_response
+                return ai_response
+            elif provider == "openwebui" and openwebui_conf:
+                import requests
+
+                api_key = openwebui_conf.get("api_key")
+                base_url = openwebui_conf.get("base_url", "http://localhost:8080/v1")
+                if not api_key:
+                    return "❌ 错误：OpenWebUI API密钥未配置。请在 config.json 的 model.params 中设置 api_key。"
+                openwebui_messages = [dict(m) for m in messages]
+                openwebui_messages[user_idx] = {
+                    **openwebui_messages[user_idx],
+                    "content": [
+                        {"type": "text", "text": user_text},
+                        {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{image_data}"}},
+                    ],
+                }
+                url = base_url.rstrip("/") + "/chat/completions"
+                headers = {
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                }
+                payload_ow: Dict[str, Any] = {
+                    "model": model_name,
+                    "messages": openwebui_messages,
+                    "stream": stream,
+                }
+                resp = requests.post(url, headers=headers, json=payload_ow, verify=False, timeout=120, stream=stream)
+                resp.raise_for_status()
+                if stream:
+                    def gen():
+                        buffer = ""
+                        for line in resp.iter_lines(decode_unicode=True):
+                            if not line or not line.startswith("data: "):
+                                continue
+                            data = line[6:]
+                            if data.strip() == "[DONE]":
+                                break
+                            try:
+                                delta = json.loads(data)["choices"][0]["delta"].get("content", "")
+                                if delta:
+                                    buffer += delta
+                                    yield delta
+                            except Exception:
+                                continue
+                        if record_history:
+                            self.conversation_history.append({"role": "user", "content": user_input})
+                            self.conversation_history.append({"role": "assistant", "content": buffer})
+                    return gen()
+                data = resp.json()
+                ai_response = (data.get("choices", [{}])[0].get("message", {}) or {}).get("content", "") or ""
+                if record_history:
+                    self.conversation_history.append({"role": "user", "content": user_input})
+                    self.conversation_history.append({"role": "assistant", "content": ai_response})
+                return ai_response
             else:
-                # 对于不支持多模态的提供者，回退到文本模式
-                return f"⚠️ 警告：{provider} 提供者不支持多模态功能，回退到文本模式。\n" + self.call_ai(user_input, context, stream)
+                return f"❌ 错误：不支持的模型提供者 '{provider}'。支持的提供者：ollama, openai, openwebui"
                 
         except Exception as e:
             error_msg = f"调用多模态大模型API时出错: {str(e)} (provider: {provider}, model: {model_name})"
@@ -5524,8 +5553,8 @@ big_image.jpg
         except Exception as e:
             return {"success": False, "error": f"apply_patch 执行失败: {str(e)}"}
 
-    def action_analyze_image(self, file_path: str, prompt: str = "") -> dict:
-        """分析图片内容，支持多种图片格式"""
+    def action_read_image(self, file_path: str, prompt: str = "") -> dict:
+        """读取图片内容，支持多种图片格式"""
         try:
             abs_path = Path(file_path)
             if not abs_path.is_absolute():
@@ -5550,18 +5579,24 @@ big_image.jpg
             if abs_path.suffix.lower() not in image_exts:
                 return {"success": False, "error": f"不支持的文件格式: {abs_path.suffix}"}
             
-            # 构建分析提示
+            image_task_context = f"图片文件路径: {str(abs_path)}"
             if prompt:
-                analysis_prompt = f"请分析这张图片：{prompt}\n\n图片路径：{str(abs_path)}"
+                image_user_prompt = prompt
             else:
-                analysis_prompt = f"请详细描述这张图片的内容，包括：\n1. 图片中的主要物体和场景\n2. 颜色和构图\n3. 文字内容（如果有）\n4. 图片的整体风格和特点\n\n图片路径：{str(abs_path)}"
-            
-            # 调用AI进行图片分析
-            analysis = self.call_ai_multimodal(analysis_prompt, str(abs_path))
+                image_user_prompt = (
+                    "请先读取这张图片内容，再继续完成当前任务。"
+                )
+
+            # 调用AI读取图片内容
+            analysis = self.call_ai_multimodal(
+                image_user_prompt,
+                str(abs_path),
+                context=image_task_context,
+            )
             
             return {"success": True, "analysis": analysis, "file": str(abs_path)}
         except Exception as e:
-            return {"success": False, "error": f"图片分析失败: {str(e)}"}
+            return {"success": False, "error": f"图片读取失败: {str(e)}"}
 
     def action_diff(self, file1: str, file2: str, options: Optional[str] = None) -> dict:
         """跨平台文件比较：Windows上优先使用diff.exe，否则使用fc命令；其他平台使用diff命令"""
@@ -5989,6 +6024,7 @@ big_image.jpg
     ) -> List[str]:
         """Build compact side-by-side change preview with = / - / + markers."""
         import difflib
+        import unicodedata
 
         raw_rows: List[Tuple[str, Optional[int], str, Optional[int], str]] = []
         matcher = difflib.SequenceMatcher(a=old_lines, b=new_lines)
@@ -6022,6 +6058,19 @@ big_image.jpg
         def _norm(s: str) -> str:
             return str(s).expandtabs(4)
 
+        def _display_width(s: str) -> int:
+            width = 0
+            for ch in s:
+                # Skip combining marks in width counting.
+                if unicodedata.combining(ch):
+                    continue
+                width += 2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1
+            return width
+
+        def _pad_to_width(s: str, target: int) -> str:
+            pad = max(0, target - _display_width(s))
+            return s + (" " * pad)
+
         max_old_no = 0
         max_new_no = 0
         for _m, old_no, _ot, new_no, _nt in raw_rows:
@@ -6036,7 +6085,7 @@ big_image.jpg
         for mark, old_no, old_text, _new_no, _new_text in raw_rows:
             old_no_s = (" " * old_no_w) if old_no is None else f"{old_no:>{old_no_w}}"
             left_text = _norm(old_text)
-            left_col_width = max(left_col_width, len(f"{mark} {old_no_s}| {left_text}"))
+            left_col_width = max(left_col_width, _display_width(f"{mark} {old_no_s}| {left_text}"))
 
         rows: List[str] = []
         for mark, old_no, old_text, new_no, new_text in raw_rows:
@@ -6044,7 +6093,7 @@ big_image.jpg
             new_no_s = (" " * new_no_w) if new_no is None else f"{new_no:>{new_no_w}}"
             left = f"{mark} {old_no_s}| {_norm(old_text)}"
             right = f"{new_no_s}| {_norm(new_text)}"
-            rows.append(f"{left.ljust(left_col_width)} || {right}")
+            rows.append(f"{_pad_to_width(left, left_col_width)} || {right}")
         return rows
 
     def execute_tool_call(self, tool_name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
@@ -6465,13 +6514,13 @@ big_image.jpg
             print("❌ apply_patch命令缺少 path/patch 参数")
             return {"success": False, "error": "缺少 path/patch 参数"}
 
-        elif action == "analyze_image":
+        elif action == "read_image":
             file_path = params.get("path")
             prompt = params.get("prompt", "")
             if file_path:
-                result = self.action_analyze_image(file_path, prompt)
+                result = self.action_read_image(file_path, prompt)
                 if result["success"]:
-                    print(f"\n🖼️ 图片分析结果 ({result['file']}):")
+                    print(f"\n🖼️ 图片读取结果 ({result['file']}):")
                     print("=" * 60)
                     print(result["analysis"])
                     print("=" * 60)
@@ -6479,7 +6528,7 @@ big_image.jpg
                     print(f"❌ {result['error']}")
                 return result
             else:
-                print("❌ analyze_image命令缺少path参数")
+                print("❌ read_image命令缺少path参数")
                 return {"success": False, "error": "缺少path参数"}
 
         elif action == "grep":

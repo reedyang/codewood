@@ -68,54 +68,25 @@ def main():
         setup_app_logging(Path(config_dir))
         get_logger().info("Smart Shell 启动，config_dir=%s", config_dir)
     
-    # 解析配置
-    normal_config = None
-    vision_config = None
-    
-    if config:
-        # 检查是否为新的双模型配置格式
-        if "normal_model" in config:
-            normal_config = config.get("normal_model", {})
-            provider = normal_config.get('provider', 'unknown')
-            params = normal_config.get('params', {})
-            model_name = params.get('model', 'unknown')
-            print(f"普通任务模型: {normal_config.get('provider', 'unknown')} - {normal_config.get('params', {}).get('model', 'unknown')}")
-
-        if "vision_model" in config:
-            vision_config = config.get("vision_model", {})
-            print(f"视觉模型: {vision_config.get('provider', 'unknown')} - {vision_config.get('params', {}).get('model', 'unknown')}")
-        else:
-            print("未配置视觉模型, 不支持视觉任务")
-
-        if not normal_config:
-            print("未配置普通任务模型")
-            return 1
-        
-    else:
+    if not config:
         # 默认配置
         print("📋 未找到配置文件")
         return 1
+    model_config = config.get("model")
+    if not isinstance(model_config, dict):
+        print("❌ 配置错误：缺少 model 配置（不再支持 normal_model/vision_model 旧格式）")
+        return 1
+    provider = str(model_config.get("provider", "")).strip()
+    params = model_config.get("params", {}) if isinstance(model_config.get("params", {}), dict) else {}
+    model_name = str(params.get("model", "")).strip()
+    if not provider or not model_name:
+        print("❌ 配置错误：model.provider 或 model.params.model 缺失")
+        return 1
+    print(f"模型: {provider} - {model_name}")
 
     # 配置就绪后再加载重型 agent 模块，缩短「启动」到「模型信息」之间的等待
     from src.smart_shell_agent import SmartShellAgent
 
-    # 如果使用双模型配置
-    if normal_config and vision_config:
-        try:
-            agent = SmartShellAgent(
-                work_directory=work_directory,
-                normal_config=normal_config,
-                vision_config=vision_config,
-                config_dir=config_dir,
-                builtin_skills_dir=builtin_skills_dir,
-            )
-            agent.run()
-            return 0
-        except Exception as e:
-            print(f"❌ 双模型配置运行错误: {str(e)}")
-            return 1
-    
-    # 启动 Agent
     if provider == "openai" and params:
         try:
             agent = SmartShellAgent(
@@ -123,6 +94,7 @@ def main():
                 work_directory=work_directory,
                 provider="openai",
                 params=params,
+                model_config=model_config,
                 config_dir=config_dir,
                 builtin_skills_dir=builtin_skills_dir,
             )
@@ -138,6 +110,7 @@ def main():
                 work_directory=work_directory,
                 provider="openwebui",
                 params=params,
+                model_config=model_config,
                 config_dir=config_dir,
                 builtin_skills_dir=builtin_skills_dir,
             )
@@ -154,6 +127,7 @@ def main():
                 work_directory=work_directory,
                 provider="ollama",
                 params=params,
+                model_config=model_config,
                 config_dir=config_dir,
                 builtin_skills_dir=builtin_skills_dir,
             )
