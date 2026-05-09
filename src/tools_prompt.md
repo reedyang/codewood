@@ -28,6 +28,12 @@
 `task_changed` 用法：`{"tool":"task_changed","args":{"new_task":"<新的任务陈述>","reason":"<可选>"}}`。
 选择工具时不要输出 Markdown 代码块，也不要附加额外解释。
 
+文本文件修改规则（强制）：
+
+- 修改**已存在的文本文件**时，必须使用 `edit_text` 或 `apply_patch`，禁止使用 `text_file` 或 `shell` 直接重写文件内容。
+- 当需要对**同一个文本文件**在一次任务中修改多段代码/多个片段时，必须先创建临时 unified patch 文件（建议放在 `workspace/temp/`），再调用 `apply_patch` 应用该 patch。
+- `edit_text` 适用于单段、局部、按行的增删改；`apply_patch` 适用于多段修改或需保持上下文校验的修改。
+
 当用户询问 MCP 状态（`mcp_status` / `mcp_status_refresh`）时，助手的自然语言输出必须使用以下固定 Markdown 模板：
 
 **MCP 服务加载状态（当前工作目录：`<cwd>`）**

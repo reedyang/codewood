@@ -5159,6 +5159,14 @@ big_image.jpg
                     "若需覆盖，请在 JSON 的 params 中设置 \"overwrite\": true。"
                 ),
             }
+        if existed_before and overwrite:
+            return {
+                "success": False,
+                "error": (
+                    f"检测到目标文件 '{safe_name}' 已存在。为避免覆盖丢失，请不要使用 text_file 覆盖现有文本文件。"
+                    "请改用 edit_text（单段按行修改）或 apply_patch（多段修改）。"
+                ),
+            }
         try:
             file_path.parent.mkdir(parents=True, exist_ok=True)
         except Exception as e:
@@ -5193,8 +5201,14 @@ big_image.jpg
         except Exception as e:
             return {"success": False, "error": f"创建文本文件失败: {str(e)}"}
 
-    def action_read_file(self, file_path: str, max_lines: Optional[int] = None) -> dict:
-        """读取文本文件内容，支持自动编码检测，适合预览文本文件。"""
+    def action_read_file(
+        self,
+        file_path: str,
+        max_lines: Optional[int] = None,
+        start_line: Optional[int] = None,
+        line_count: Optional[int] = None,
+    ) -> dict:
+        """读取文本文件内容（带行号），支持按行读取片段。"""
         try:
             abs_path = Path(file_path)
             if not abs_path.is_absolute():
@@ -5220,32 +5234,39 @@ big_image.jpg
             # 自动尝试多种编码
             encodings = ['utf-8', 'gbk', 'gb2312', 'utf-16', 'latin1']
             content = None
-            effective_max = int(max_lines) if max_lines is not None else 100
-            if effective_max <= 0:
-                effective_max = 100
-            used_max = effective_max
-            read_plan = [effective_max]
-            # Auto-expand only when caller does not explicitly provide max_lines.
-            if max_lines is None:
+            effective_start = int(start_line) if start_line is not None else 1
+            if effective_start <= 0:
+                effective_start = 1
+            requested_count = line_count if line_count is not None else max_lines
+            effective_count = int(requested_count) if requested_count is not None else 100
+            if effective_count <= 0:
+                effective_count = 100
+            used_count = effective_count
+            read_plan = [effective_count]
+            # Auto-expand only when caller does not explicitly provide line_count/max_lines.
+            if requested_count is None:
                 for candidate in (300, 800):
                     if candidate > read_plan[-1]:
                         read_plan.append(candidate)
             for enc in encodings:
                 try:
-                    for plan_max in read_plan:
+                    for plan_count in read_plan:
                         with open(abs_path, 'r', encoding=enc, errors='replace') as f:
                             lines = []
                             truncated = False
-                            for i, line in enumerate(f):
-                                if i >= plan_max:
+                            end_line = effective_start + plan_count - 1
+                            for i, line in enumerate(f, start=1):
+                                if i < effective_start:
+                                    continue
+                                if i > end_line:
                                     truncated = True
                                     lines.append('... (内容过长已截断)')
                                     break
-                                lines.append(line.rstrip('\n'))
+                                lines.append(f"{i}|{line.rstrip('\r\n')}")
                             content = '\n'.join(lines)
-                            used_max = plan_max
+                            used_count = plan_count
                         # Keep expanding only when it is still truncated and auto mode is enabled.
-                        if max_lines is None and truncated and plan_max < 800:
+                        if requested_count is None and truncated and plan_count < 800:
                             continue
                         break
                     break
@@ -5257,11 +5278,265 @@ big_image.jpg
                 "success": True,
                 "file": str(abs_path),
                 "content": content,
-                "max_lines_used": used_max,
-                "auto_expand_max_lines": max_lines is None,
+                "start_line_used": effective_start,
+                "line_count_used": used_count,
+                "auto_expand_line_count": requested_count is None,
             }
         except Exception as e:
             return {"success": False, "error": f"读取文件失败: {str(e)}"}
+
+    def action_edit_text_file(
+        self,
+        file_path: str,
+        start_line: int,
+        line_span: int,
+        operation: str,
+        content: Optional[str] = None,
+        confirmed: bool = False,
+    ) -> dict:
+        """按起始行与跨度对文本文件进行插入/删除/替换。"""
+        try:
+            operation_s = str(operation or "").strip().lower()
+            if operation_s not in ("insert", "delete", "replace"):
+                return {"success": False, "error": "operation 仅支持 insert/delete/replace"}
+            if operation_s in ("insert", "replace") and content is None:
+                return {"success": False, "error": f"{operation_s} 操作需要 content 参数"}
+            abs_path = self._resolve_user_path(str(file_path))
+            if not abs_path.exists():
+                return {"success": False, "error": f"文件 '{file_path}' 不存在"}
+            if not abs_path.is_file():
+                return {"success": False, "error": f"'{file_path}' 不是一个文件"}
+            if self._is_smart_shell_protected_path(abs_path):
+                return self._blocked_by_self_protection("edit_text")
+            rej = self._reject_ai_workspace_root_level_write(abs_path)
+            if rej:
+                return {"success": False, "error": rej}
+
+            if not confirmed and not self._is_path_under(abs_path, self.ai_workspace_dir):
+                ok = self._prompt_confirm_yes_no_maybe_always(
+                    f"⚠️ 确认修改文本文件: {abs_path} ?",
+                    offer_always=False,
+                    kind="text_file",
+                )
+                if not ok:
+                    return {"success": False, "error": "用户取消了操作"}
+
+            encodings = ['utf-8', 'gbk', 'gb2312', 'utf-16', 'latin1']
+            source = None
+            used_encoding = None
+            for enc in encodings:
+                try:
+                    with open(abs_path, 'r', encoding=enc, errors='replace') as f:
+                        source = f.read()
+                    used_encoding = enc
+                    break
+                except Exception:
+                    continue
+            if source is None:
+                return {"success": False, "error": "无法读取文本文件，可能编码不受支持"}
+
+            newline = '\r\n' if '\r\n' in source else '\n'
+            had_trailing_newline = source.endswith('\n') or source.endswith('\r')
+            old_lines = source.splitlines()
+            total = len(old_lines)
+
+            s = int(start_line)
+            if s <= 0:
+                return {"success": False, "error": "start_line 必须 >= 1"}
+            span = int(line_span)
+            if span < 0:
+                return {"success": False, "error": "line_span 必须 >= 0"}
+
+            new_lines = list(old_lines)
+            inserted_lines = [] if content is None else str(content).splitlines()
+            if operation_s == "insert":
+                if s > total + 1:
+                    return {"success": False, "error": f"insert 起始行超出范围，最大允许 {total + 1}"}
+                idx = s - 1
+                new_lines[idx:idx] = inserted_lines
+            elif operation_s == "delete":
+                if s > total:
+                    return {"success": False, "error": f"delete 起始行超出范围，当前总行数 {total}"}
+                if span == 0:
+                    span = 1
+                end = min(total, s - 1 + span)
+                del new_lines[s - 1:end]
+            else:  # replace
+                if s > total:
+                    return {"success": False, "error": f"replace 起始行超出范围，当前总行数 {total}"}
+                if span == 0:
+                    span = 1
+                end = min(total, s - 1 + span)
+                new_lines[s - 1:end] = inserted_lines
+
+            new_text = newline.join(new_lines)
+            if had_trailing_newline and len(new_lines) > 0:
+                new_text += newline
+
+            with open(abs_path, 'w', encoding=used_encoding or 'utf-8', errors='replace') as f:
+                f.write(new_text)
+
+            resolved = abs_path.resolve()
+            self._ai_created_path_keys.add(self._ephemeral_path_key(resolved))
+            self._reload_skills_if_workspace_skill_changed([resolved])
+            return {
+                "success": True,
+                "file": str(resolved),
+                "operation": operation_s,
+                "start_line": s,
+                "line_span": span,
+                "original_line_count": total,
+                "updated_line_count": len(new_lines),
+                "message": f"已对文件 '{resolved.name}' 执行 {operation_s} 操作",
+            }
+        except Exception as e:
+            return {"success": False, "error": f"edit_text 执行失败: {str(e)}"}
+
+    def action_apply_unified_patch(
+        self, file_path: str, patch: str, confirmed: bool = False
+    ) -> dict:
+        """对指定文本文件应用 unified patch。"""
+        try:
+            abs_path = self._resolve_user_path(str(file_path))
+            if not abs_path.exists():
+                return {"success": False, "error": f"文件 '{file_path}' 不存在"}
+            if not abs_path.is_file():
+                return {"success": False, "error": f"'{file_path}' 不是一个文件"}
+            if self._is_smart_shell_protected_path(abs_path):
+                return self._blocked_by_self_protection("apply_patch")
+            rej = self._reject_ai_workspace_root_level_write(abs_path)
+            if rej:
+                return {"success": False, "error": rej}
+            if not confirmed and not self._is_path_under(abs_path, self.ai_workspace_dir):
+                ok = self._prompt_confirm_yes_no_maybe_always(
+                    f"⚠️ 确认对文本文件应用 patch: {abs_path} ?",
+                    offer_always=False,
+                    kind="text_file",
+                )
+                if not ok:
+                    return {"success": False, "error": "用户取消了操作"}
+
+            encodings = ['utf-8', 'gbk', 'gb2312', 'utf-16', 'latin1']
+            source = None
+            used_encoding = None
+            for enc in encodings:
+                try:
+                    with open(abs_path, 'r', encoding=enc, errors='replace') as f:
+                        source = f.read()
+                    used_encoding = enc
+                    break
+                except Exception:
+                    continue
+            if source is None:
+                return {"success": False, "error": "无法读取文本文件，可能编码不受支持"}
+
+            newline = '\r\n' if '\r\n' in source else '\n'
+            had_trailing_newline = source.endswith('\n') or source.endswith('\r')
+            old_lines = source.splitlines()
+
+            patch_lines = str(patch or "").splitlines()
+            if not patch_lines:
+                return {"success": False, "error": "patch 不能为空"}
+
+            hunks: List[Dict[str, Any]] = []
+            i = 0
+            while i < len(patch_lines):
+                line = patch_lines[i]
+                if not line.startswith("@@"):
+                    i += 1
+                    continue
+                # Accept both standard unified hunk headers and relaxed "@@" form.
+                if line.strip() == "@@":
+                    old_start = None
+                else:
+                    m = re.match(
+                        r"^@@(?:\s*-(\d+)(?:,(\d+))?\s+\+(\d+)(?:,(\d+))?)?\s*@@",
+                        line,
+                    )
+                    if not m:
+                        return {"success": False, "error": f"非法 hunk 头: {line}"}
+                    old_start = int(m.group(1)) if m.group(1) else None
+                hunk_lines: List[str] = []
+                i += 1
+                while i < len(patch_lines) and not patch_lines[i].startswith("@@"):
+                    hunk_lines.append(patch_lines[i])
+                    i += 1
+                hunks.append({"old_start": old_start, "lines": hunk_lines})
+
+            if not hunks:
+                return {"success": False, "error": "未发现可应用的 hunk（需要 @@ ... @@ 段）"}
+
+            result_lines: List[str] = []
+            src_idx = 0
+            for hunk in hunks:
+                old_start = hunk["old_start"]
+                target_idx = src_idx if old_start is None else int(old_start) - 1
+                if target_idx < src_idx or target_idx > len(old_lines):
+                    return {"success": False, "error": f"hunk 起始行越界: {old_start}"}
+                # For relaxed "@@" hunks, try to anchor to the first context/deletion line.
+                if old_start is None:
+                    anchor = None
+                    for hl in hunk["lines"]:
+                        if hl and hl[0] in (" ", "-"):
+                            anchor = hl[1:]
+                            break
+                    if anchor is not None:
+                        found_idx = None
+                        for probe in range(src_idx, len(old_lines)):
+                            if old_lines[probe] == anchor:
+                                found_idx = probe
+                                break
+                        if found_idx is None:
+                            return {"success": False, "error": "patch 锚点未命中，无法定位 hunk"}
+                        target_idx = found_idx
+                result_lines.extend(old_lines[src_idx:target_idx])
+                cur = target_idx
+                for hl in hunk["lines"]:
+                    if hl.startswith("\\ No newline at end of file"):
+                        continue
+                    if not hl:
+                        return {"success": False, "error": "hunk 行格式无效（缺少前缀）"}
+                    prefix = hl[0]
+                    text = hl[1:]
+                    if prefix == ' ':
+                        if cur >= len(old_lines) or old_lines[cur] != text:
+                            return {
+                                "success": False,
+                                "error": f"patch 上下文不匹配（行 {cur + 1}）",
+                            }
+                        result_lines.append(old_lines[cur])
+                        cur += 1
+                    elif prefix == '-':
+                        if cur >= len(old_lines) or old_lines[cur] != text:
+                            return {
+                                "success": False,
+                                "error": f"patch 删除行不匹配（行 {cur + 1}）",
+                            }
+                        cur += 1
+                    elif prefix == '+':
+                        result_lines.append(text)
+                    else:
+                        return {"success": False, "error": f"不支持的 hunk 行前缀: {prefix}"}
+                src_idx = cur
+            result_lines.extend(old_lines[src_idx:])
+
+            new_text = newline.join(result_lines)
+            if had_trailing_newline and len(result_lines) > 0:
+                new_text += newline
+            with open(abs_path, 'w', encoding=used_encoding or 'utf-8', errors='replace') as f:
+                f.write(new_text)
+
+            resolved = abs_path.resolve()
+            self._ai_created_path_keys.add(self._ephemeral_path_key(resolved))
+            self._reload_skills_if_workspace_skill_changed([resolved])
+            return {
+                "success": True,
+                "file": str(resolved),
+                "hunk_count": len(hunks),
+                "message": f"已成功应用 patch 到 '{resolved.name}'",
+            }
+        except Exception as e:
+            return {"success": False, "error": f"apply_patch 执行失败: {str(e)}"}
 
     def action_analyze_image(self, file_path: str, prompt: str = "") -> dict:
         """分析图片内容，支持多种图片格式"""
@@ -6051,8 +6326,10 @@ big_image.jpg
         elif action == "read":
             file_path = params.get("path")
             max_lines = params.get("max_lines") if "max_lines" in params else None
+            start_line = params.get("start_line") if "start_line" in params else None
+            line_count = params.get("line_count") if "line_count" in params else None
             if file_path:
-                result = self.action_read_file(file_path, max_lines)
+                result = self.action_read_file(file_path, max_lines, start_line, line_count)
                 if result["success"]:
                     print(f"\n📄 文件 {result['file']} 内容预览：")
                 else:
@@ -6061,7 +6338,60 @@ big_image.jpg
             else:
                 print("❌ read命令缺少path参数")
                 return {"success": False, "error": "缺少path参数"}
-        
+
+        elif action == "edit_text":
+            file_path = params.get("path")
+            start_line = params.get("start_line")
+            line_span = params.get("line_span", 0)
+            operation = params.get("operation")
+            content = params.get("content")
+            if file_path and start_line is not None and operation:
+                edit_cmd = {
+                    "action": "edit_text",
+                    "params": {
+                        "path": file_path,
+                        "start_line": start_line,
+                        "line_span": line_span,
+                        "operation": operation,
+                    },
+                }
+                confirmed = self._freedom_auto_confirm(edit_cmd)
+                result = self.action_edit_text_file(
+                    file_path=file_path,
+                    start_line=start_line,
+                    line_span=line_span,
+                    operation=operation,
+                    content=content,
+                    confirmed=confirmed,
+                )
+                if result["success"]:
+                    print(f"✅ {result['message']}")
+                else:
+                    print(f"❌ {result['error']}")
+                return result
+            print("❌ edit_text命令缺少 path/start_line/operation 参数")
+            return {"success": False, "error": "缺少 path/start_line/operation 参数"}
+
+        elif action == "apply_patch":
+            file_path = params.get("path")
+            patch = params.get("patch")
+            if file_path and patch is not None:
+                patch_cmd = {
+                    "action": "apply_patch",
+                    "params": {"path": file_path},
+                }
+                confirmed = self._freedom_auto_confirm(patch_cmd)
+                result = self.action_apply_unified_patch(
+                    file_path=file_path, patch=str(patch), confirmed=confirmed
+                )
+                if result["success"]:
+                    print(f"✅ {result['message']}")
+                else:
+                    print(f"❌ {result['error']}")
+                return result
+            print("❌ apply_patch命令缺少 path/patch 参数")
+            return {"success": False, "error": "缺少 path/patch 参数"}
+
         elif action == "analyze_image":
             file_path = params.get("path")
             prompt = params.get("prompt", "")
