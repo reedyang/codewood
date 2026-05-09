@@ -3182,7 +3182,7 @@ class SmartShellAgent:
         return self._parse_reversibility_response(raw)
 
     def _freedom_auto_confirm(self, command: Dict[str, Any]) -> bool:
-        """Return True to skip interactive confirmation (move/delete/shell/script/text_file/git write)."""
+        """Return True to skip interactive confirmation (move/delete/shell/text_file/git write)."""
         policy = str(getattr(self, "execution_policy", "confirmation")).lower()
         if policy == "confirmation":
             return False
@@ -3192,10 +3192,6 @@ class SmartShellAgent:
         params = command.get("args")
         if not isinstance(params, dict):
             params = command.get("params") or {}
-
-        if action == "script":
-            print("🦅 自由模式：创建/覆盖脚本为会话内操作，跳过确认。")
-            return True
 
         if action == "delete":
             p = params.get("path") or params.get("file_name") or params.get("name")
@@ -5073,66 +5069,6 @@ big_image.jpg
 
         except Exception as e:
             return {"success": False, "error": f"系统命令执行异常: {str(e)}"}
-        
-    def action_create_script(
-        self, filename: str, content: str, confirmed: bool = False, overwrite: bool = False
-    ) -> dict:
-        """Create a script under workspace/temp (session artifacts). Only the basename is used (no subpaths)."""
-        if not filename or not content:
-            return {"success": False, "error": "缺少文件名或内容"}
-        safe_name = self._safe_script_basename(filename)
-        if not safe_name:
-            return {"success": False, "error": "无效的文件名"}
-        script_path = self.ai_workspace_temp_dir / safe_name
-        if self._is_smart_shell_protected_path(script_path):
-            return self._blocked_by_self_protection("script")
-        existed_before = script_path.exists()
-        if existed_before and not overwrite:
-            return {
-                "success": False,
-                "error": (
-                    f"文件 '{safe_name}' 已存在。"
-                    "若需覆盖，请在 JSON 的 params 中设置 \"overwrite\": true。"
-                ),
-            }
-        print(f"请求创建脚本文件: {safe_name} → {script_path}")
-        print(f"内容:\n{content}")
-        # Reload allowlist so manual edits to confirm_allowlist.json
-        # also take effect under execution_policy=confirmation.
-        self._load_confirm_allowlist()
-        if not confirmed and not self._script_basename_in_allowlist(safe_name):
-            ok = self._prompt_confirm_yes_no_maybe_always(
-                f"⚠️ 确认创建脚本文件: {safe_name} ?",
-                offer_always=False,
-                kind="script",
-                script_basename=safe_name,
-            )
-            if not ok:
-                return {"success": False, "error": "用户取消了操作"}
-
-        try:
-            with open(script_path, 'w', encoding='utf-8', errors='replace') as f:
-                f.write(content)
-            # 可选：为 .sh/.bat/.ps1/.py 等脚本加可执行权限（仅Linux/Mac）
-            import stat
-            if script_path.suffix in ['.sh', '.py', '.pl', '.rb'] and hasattr(os, 'chmod'):
-                try:
-                    os.chmod(script_path, os.stat(script_path).st_mode | stat.S_IXUSR)
-                except Exception:
-                    pass
-            resolved = script_path.resolve()
-            self._register_ephemeral_script(resolved)
-            verb = "覆盖写入" if overwrite and existed_before else "创建"
-            return {
-                "success": True,
-                "filename": safe_name,
-                "full_path": str(resolved),
-                "message": (
-                    f"成功{verb}脚本文件 '{safe_name}'（位于 workspace/temp：{self.ai_workspace_temp_dir}）"
-                ),
-            }
-        except Exception as e:
-            return {"success": False, "error": f"创建脚本文件失败: {str(e)}"}
 
     def action_create_text_file(
         self, filename: str, content: str, confirmed: bool = False, overwrite: bool = False
@@ -5955,6 +5891,48 @@ big_image.jpg
                 return (tool_name.strip(), args)
         return None
 
+    def _strip_tool_json_blocks_for_display(self, text: str) -> str:
+        """Hide tool-call JSON blocks from AI natural-language display."""
+        if not isinstance(text, str) or not text:
+            return ""
+
+        def _replace_fence(match: re.Match) -> str:
+            body = (match.group(1) or "").strip()
+            if body.startswith("`") and body.endswith("`") and len(body) >= 2:
+                body = body[1:-1].strip()
+            try:
+                obj = json.loads(body)
+            except Exception:
+                return match.group(0)
+            if isinstance(obj, dict) and isinstance(
+                (obj.get("tool") or obj.get("action")), str
+            ):
+                return ""
+            return match.group(0)
+
+        out = re.sub(
+            r"```(?:json)?\s*(.*?)\s*```",
+            _replace_fence,
+            text,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        return out.strip()
+
+    def _tool_call_summary(self, tool_name: str, args: Dict[str, Any]) -> str:
+        """Generate one-line tool execution summary."""
+        a = args if isinstance(args, dict) else {}
+        for k in ("path", "filename", "file", "source", "target", "command", "query"):
+            v = a.get(k)
+            if isinstance(v, str) and v.strip():
+                vv = v.strip().replace("\n", " ")
+                if len(vv) > 80:
+                    vv = vv[:80] + "..."
+                return f"{tool_name} ({k}={vv})"
+        if a:
+            keys = ",".join(sorted([str(k) for k in a.keys()])[:5])
+            return f"{tool_name} (args: {keys})"
+        return tool_name
+
     def execute_tool_call(self, tool_name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
         """执行工具命令，支持批量命令和 cls 命令。"""
         action = (tool_name or "").strip()
@@ -6283,26 +6261,6 @@ big_image.jpg
             else:
                 print("❌ shell命令缺少command参数")
                 return {"success": False, "error": "缺少command参数"}
-
-        elif action == "script":
-            filename = params.get("filename")
-            content = params.get("content")
-            overwrite = bool(params.get("overwrite", False))
-            if filename and content:
-                assess_content = content if len(content) <= 6000 else content[:6000] + "\n/* ... truncated for reversibility check ... */"
-                script_cmd = {"tool": "script", "args": {"filename": filename, "content": assess_content}}
-                confirmed = self._freedom_auto_confirm(script_cmd)
-                result = self.action_create_script(
-                    filename, content, confirmed=confirmed, overwrite=overwrite
-                )
-                if result["success"]:
-                    print(f"✅ {result['message']}")
-                else:
-                    print(f"❌ {result['error']}")
-                return result
-            else:
-                print("❌ script命令缺少filename或content参数")
-                return {"success": False, "error": "缺少filename或content参数"}
 
         elif action == "text_file":
             filename = params.get("filename")
@@ -7920,7 +7878,7 @@ big_image.jpg
                         )
                         print(
                             "  仅在 **shell** 确认提示中可输入 a：记入当前命令解析出的脚本路径或可执行键；"
-                            "script/text_file 落盘仅 y/n。"
+                            "text_file 落盘仅 y/n。"
                         )
 
                         print("\n📌 系统命令（不经 AI，本机直接执行）：")
@@ -8124,12 +8082,31 @@ big_image.jpg
                         print(f"❌ AI返回异常: {ai_response}")
                         break
                     if ai_response:
-                        sys.stdout.write(ai_response)
+                        display_response = self._strip_tool_json_blocks_for_display(ai_response)
+                        if display_response:
+                            sys.stdout.write(display_response)
+                            if not display_response.endswith("\n"):
+                                sys.stdout.write("\n")
+                            sys.stdout.flush()
+
+                    fallback_plan = self._parse_tool_plan_from_response(ai_response)
+                    if fallback_plan:
+                        tool_name, args = fallback_plan
+                        print(f"🔧 执行工具: {self._tool_call_summary(tool_name, args)}")
+                        if tool_name == "text_file":
+                            content = ""
+                            if isinstance(args, dict):
+                                content = str(args.get("content") or "")
+                            print("📄 text_file 内容:")
+                            print(content)
+                    else:
+                        tool_name, args = "", {}
+
+                    if ai_response and not fallback_plan:
+                        # Keep output spacing consistent when only narrative is shown.
                         if not ai_response.endswith("\n"):
                             sys.stdout.write("\n")
                         sys.stdout.flush()
-
-                    fallback_plan = self._parse_tool_plan_from_response(ai_response)
                     if not fallback_plan:
                         misplaced_plan = self._find_tool_plan_anywhere(ai_response)
                         no_tool_rounds += 1
@@ -8158,8 +8135,6 @@ big_image.jpg
                             )
                         is_first_round = False
                         continue
-
-                    tool_name, args = fallback_plan
 
                     if not tool_name:
                         print("❌ 工具计划缺少名称，结束本轮。")
@@ -8284,7 +8259,7 @@ big_image.jpg
                             "详情报告输出完成后，请基于【用户原始需求】自行判断："
                             "若原始需求仅为查询/展示该指定 MCP 信息，则下一步必须直接输出 done；"
                             "若原始需求还包含其他未完成目标，则继续输出与原始需求相关的下一条工具调用。"
-                            "查询/展示类需求默认只需自然语言回复，禁止创建 text_file/script 或执行 shell 落盘；"
+                            "查询/展示类需求默认只需自然语言回复，禁止创建 text_file 或执行 shell 落盘；"
                             "仅当用户明确要求“导出/保存/写入文件”时，才允许创建文件。"
                             "禁止为凑步骤而调用 mcp_status/mcp_status_refresh 或 shell 等无关工具。"
                         )
