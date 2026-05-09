@@ -827,7 +827,7 @@
     "type": "function",
     "function": {
       "name": "memory_add",
-      "description": "写入一条经验记忆（非知识库文档）。用于情境化教训、一次性约定、项目习惯等可检索条目。若用户强调「永远/长期/一直记住」且内容是稳定默认（称呼、助手显示名、长期交互规则），应改用 user_preferences_patch，勿仅用本工具代替。禁止写入密码、token、私钥。若你认为用户观点可能有误，可在 system_note 中写明你的独立判断。",
+      "description": "写入一条经验记忆（非知识库文档）。仅用于事实性的简短条目（约定、偏好结论、纠正结果）。若用户强调「永远/长期/一直记住」且内容是稳定默认（称呼、助手显示名、长期交互规则），应改用 user_preferences_patch，勿仅用本工具代替。禁止保存代码片段、脚本/命令原始输出、日志原文或总结后的大段文本；代码/输出信息应通过 read/grep/summarize/shell 实时读取。禁止写入密码、token、私钥。若你认为用户观点可能有误，可在 system_note 中写明你的独立判断。",
       "parameters": {
         "type": "object",
         "properties": {
