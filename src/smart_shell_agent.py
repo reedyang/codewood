@@ -5492,6 +5492,9 @@ big_image.jpg
                 result_lines.extend(old_lines[src_idx:target_idx])
                 cur = target_idx
                 for hl in hunk["lines"]:
+                    if hl.startswith("*** "):
+                        # tolerate wrapped patch blocks like "*** Begin Patch" / "*** End Patch"
+                        continue
                     if hl.startswith("\\ No newline at end of file"):
                         continue
                     if not hl:
@@ -8947,15 +8950,31 @@ big_image.jpg
         import subprocess
         import os
         import sys
+        import shlex
+        import shutil
         
         try:
-            # 在Windows下，如果是Python文件，需要特殊处理
-            if user_input.endswith('.py') or user_input.split()[0].endswith('.py'):
-                # Python文件
-                cmd = ['python', user_input]
+            raw = str(user_input or "").strip()
+            if not raw:
+                print("❌ 执行文件失败: 空命令")
+                return False
+
+            try:
+                parts = shlex.split(raw, posix=os.name != "nt")
+            except ValueError:
+                parts = raw.split()
+            if not parts:
+                print("❌ 执行文件失败: 空命令")
+                return False
+
+            first = parts[0].strip().strip('"').strip("'")
+            # Bare .py invocation (e.g. "!hello.py arg") should route through python.
+            if first.lower().endswith(".py"):
+                py_exe = shutil.which("python") or "python"
+                cmd = subprocess.list2cmdline([py_exe] + parts)
             else:
-                # 其他可执行文件
-                cmd = user_input
+                # Keep original command line as-is so "!python xxx.py" works correctly.
+                cmd = raw
             
             # 使用Popen启动进程，让进程继承当前终端，支持交互
             process = subprocess.Popen(

@@ -172,6 +172,33 @@ class TextEditAndPatchToolTests(unittest.TestCase):
         self.assertIn("请改用 edit_text", str(result.get("error", "")))
         self.assertEqual(target.read_text(encoding="utf-8"), "old\n")
 
+    def test_apply_patch_supports_wrapped_begin_end_markers(self):
+        target = self.root / "sample.txt"
+        target.write_text("begin\nmiddle\nend\n", encoding="utf-8")
+        patch = (
+            "*** Begin Patch\n"
+            "--- a/sample.txt\n"
+            "+++ b/sample.txt\n"
+            "@@ -1,3 +1,4 @@\n"
+            " begin\n"
+            "+inserted\n"
+            " middle\n"
+            " end\n"
+            "*** End Patch"
+        )
+
+        result = self.agent.action_apply_unified_patch(
+            file_path=str(target),
+            patch=patch,
+            confirmed=True,
+        )
+
+        self.assertTrue(result.get("success"), result)
+        self.assertEqual(
+            target.read_text(encoding="utf-8"),
+            "begin\ninserted\nmiddle\nend\n",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
