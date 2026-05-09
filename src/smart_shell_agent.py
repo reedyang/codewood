@@ -2072,7 +2072,13 @@ class SmartShellAgent:
 
         if not sections:
             return ""
-        return "\n\n## User Custom Prompts (AGENTS.md)\n\n" + "\n\n".join(sections) + "\n"
+        header = (
+            "\n\n## User Custom Prompts (AGENTS.md)\n\n"
+            "优先级说明：本节用于注入用户自定义提示；当用户在当前请求中**显式指定 skill**"
+            "（例如 `/skill-id` 或已触发 `request_skill_prompt`）且与本节冲突时，"
+            "以显式指定的 skill 正文为准。\n\n"
+        )
+        return header + "\n\n".join(sections) + "\n"
 
     def _compose_system_prompt_snapshot(self, include_tools: bool) -> str:
         """组装当前可见 system 快照：base + 用户偏好 + MCP [+ 工具目录]。"""
@@ -2201,6 +2207,9 @@ class SmartShellAgent:
                         f"### MCP Skill Prompt: `{sid_raw}` · server `{srv}`",
                         f"**Description:** {desc or '(no description)'}",
                         "",
+                        "【优先级】当前请求已显式指定该 skill：若与 AGENTS.md 或通用系统说明冲突，"
+                        "按本 skill 正文执行（安全/越权/破坏性硬限制除外）。",
+                        "",
                         "以下正文来自 MCP `prompts/get` 返回，请严格按其步骤执行：",
                         "",
                         "\n\n".join(rendered_parts),
@@ -2216,6 +2225,9 @@ class SmartShellAgent:
             "## Agent Skill（按需加载）",
             f"### Skill: `{target.name}` · 目录 `{target.skill_id}`",
             f"**Description:** {target.description}",
+            "",
+            "【优先级】当前请求已显式指定该 skill：若与 AGENTS.md 或通用系统说明冲突，"
+            "按本 skill 正文执行（安全/越权/破坏性硬限制除外）。",
             "",
             f"**Skill bundle root (absolute path on this machine):** `{target.bundle_root}`",
             f"**SKILL.md path (same bundle):** `{_br / 'SKILL.md'}`",
@@ -2245,10 +2257,10 @@ class SmartShellAgent:
         except Exception:
             pass
 
-    def _extract_forced_skill_reference(self, user_text: str) -> Optional[Dict[str, str]]:
+    def _extract_forced_skill_reference(self, user_text: str) -> Optional[Dict[str, Any]]:
         """
-        Find '/skill-id' token anywhere in user text and match loaded skills by skill_id or name.
-        Returns {"skill_id","name","rest"} when matched, where rest is the cleaned task text.
+        Find one or more '/skill-id' tokens and match loaded skills by skill_id or name.
+        Returns {"skills":[{"skill_id","name"}...], "rest"} when matched.
         """
         raw = (user_text or "").strip()
         if not raw:
@@ -2257,18 +2269,36 @@ class SmartShellAgent:
         matches = list(re.finditer(r"(?<!\S)/([^\s/]+)", raw))
         if not matches:
             return None
-        for m in reversed(matches):
-            token_l = (m.group(1) or "").strip().lower()
-            if not token_l:
+        skill_by_token: Dict[str, Dict[str, str]] = {}
+        for s in self.skills or []:
+            sid = str(getattr(s, "skill_id", "")).strip()
+            sname = str(getattr(s, "name", "")).strip()
+            if not sid:
                 continue
-            for s in self.skills or []:
-                sid = str(getattr(s, "skill_id", "")).strip()
-                sname = str(getattr(s, "name", "")).strip()
-                if token_l == sid.lower() or token_l == sname.lower():
-                    cleaned = (raw[: m.start()] + " " + raw[m.end() :]).strip()
-                    cleaned = re.sub(r"\s{2,}", " ", cleaned)
-                    return {"skill_id": sid, "name": sname or sid, "rest": cleaned}
-        return None
+            skill_by_token[sid.lower()] = {"skill_id": sid, "name": sname or sid}
+            if sname:
+                skill_by_token[sname.lower()] = {"skill_id": sid, "name": sname or sid}
+
+        selected: List[Dict[str, str]] = []
+        selected_ids: Set[str] = set()
+        pieces: List[str] = []
+        cursor = 0
+        for m in matches:
+            token_l = (m.group(1) or "").strip().lower()
+            matched = skill_by_token.get(token_l)
+            if matched:
+                sid_l = str(matched.get("skill_id", "")).strip().lower()
+                if sid_l and sid_l not in selected_ids:
+                    selected_ids.add(sid_l)
+                    selected.append(matched)
+                pieces.append(raw[cursor:m.start()])
+                cursor = m.end()
+        if not selected:
+            return None
+        pieces.append(raw[cursor:])
+        cleaned = "".join(pieces).strip()
+        cleaned = re.sub(r"\s{2,}", " ", cleaned)
+        return {"skills": selected, "rest": cleaned}
 
     def _ensure_knowledge_manager(self) -> bool:
         """等待知识库服务就绪。依赖不可用或初始化失败时返回 False。"""
@@ -7098,12 +7128,19 @@ big_image.jpg
                 if not stripped_in:
                     continue
 
-                forced_skill: Optional[Dict[str, str]] = self._extract_forced_skill_reference(stripped_in)
+                forced_skill: Optional[Dict[str, Any]] = self._extract_forced_skill_reference(stripped_in)
+                forced_skills: List[Dict[str, str]] = (
+                    list(forced_skill.get("skills", [])) if forced_skill else []
+                )
                 if forced_skill and not forced_skill.get("rest"):
+                    skill_text = ", ".join(
+                        [f"{s.get('name')} ({s.get('skill_id')})" for s in forced_skills]
+                    )
+                    hint_skill = forced_skills[0].get("skill_id") if forced_skills else "skill-id"
                     print(
-                        f"🧩 已指定强制技能: {forced_skill.get('name')} ({forced_skill.get('skill_id')})。"
+                        f"🧩 已指定强制技能: {skill_text}。"
                         "请在同一行提供任务内容，例如："
-                        f"你好 /{forced_skill.get('skill_id')}"
+                        f"审查代码 /{hint_skill} <MR链接>"
                     )
                     continue
                 if forced_skill and forced_skill.get("rest"):
@@ -7114,7 +7151,7 @@ big_image.jpg
 
                 # Built-in slash commands use "/" prefix; direct shell uses "!" prefix.
                 builtin_line: Optional[str] = None
-                if stripped_in.startswith("/") and forced_skill is None:
+                if stripped_in.startswith("/") and not forced_skills:
                     builtin_line = stripped_in[1:].lstrip()
                     if not builtin_line:
                         print(
@@ -7483,18 +7520,30 @@ big_image.jpg
                 self._active_skill_id = None
                 self._active_skill_source = None
                 forced_skill_prefix = ""
-                if forced_skill:
-                    forced_skill_prefix = (
-                        f"【强制技能】本轮必须使用 skill `{forced_skill.get('name')}` "
-                        f"(skill_id=`{forced_skill.get('skill_id')}`)，并按该技能 SKILL.md 执行。\n\n"
-                    )
-                    sid = str(forced_skill.get("skill_id") or "").strip()
-                    full_prompt = self._build_single_skill_prompt(sid)
-                    if full_prompt:
-                        print(f"🧩 启用 Skill 完整提示: {forced_skill.get('name')} ({sid})")
-                        self._active_skill_full_prompt = full_prompt
-                        self._active_skill_id = sid
-                        self._active_skill_source = "local" if self._is_local_skill_id(sid) else "mcp"
+                if forced_skills:
+                    skill_items = []
+                    full_prompts: List[str] = []
+                    for s in forced_skills:
+                        sid = str(s.get("skill_id") or "").strip()
+                        sname = str(s.get("name") or sid).strip()
+                        if not sid:
+                            continue
+                        skill_items.append(f"`{sname}`(skill_id=`{sid}`)")
+                        full_prompt = self._build_single_skill_prompt(sid)
+                        if full_prompt:
+                            print(f"🧩 启用 Skill 完整提示: {sname} ({sid})")
+                            full_prompts.append(full_prompt)
+                            if not self._active_skill_id:
+                                self._active_skill_id = sid
+                                self._active_skill_source = "local" if self._is_local_skill_id(sid) else "mcp"
+                    if skill_items:
+                        forced_skill_prefix = (
+                            f"【强制技能】本轮必须优先使用以下 skills（按用户输入顺序）：{', '.join(skill_items)}，"
+                            "并按各自 SKILL.md 执行。若与 AGENTS.md 或通用系统说明冲突，"
+                            "以这些 skills 正文为准（安全/越权/破坏性硬限制除外）。\n\n"
+                        )
+                    if full_prompts:
+                        self._active_skill_full_prompt = "\n".join(full_prompts)
                 first_round_contract = (
                     "\n\n【首轮回复硬性要求（必须遵守）】\n"
                     "1) 对于需要两步及以上完成的任务，先简要说明“将要完成哪些事情”，紧随其后再输出任务编排：Step 1..N，并为每步标注状态（pending/in_progress/completed/failed）。\n"

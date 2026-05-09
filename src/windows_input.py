@@ -87,21 +87,33 @@ class FileCompleter(Completer):
         - or last token after whitespace is '/...'
         Returns (index_of_slash, fragment_from_slash_to_cursor), or (-1, '').
         """
+        # Prefer the trailing '/...' fragment near cursor so cases like
+        # "/winzr-mr-code-reviewer /" complete the second slash token.
+        # Accept '/skill' after whitespace OR after common CJK/punctuation boundaries,
+        # so inputs like "请用/winzr-cpp-expert" can still trigger skill completion.
+        m = re.search(r"/[^\s/]*$", text)
+        if m:
+            frag = m.group(0) or ""
+            if frag.startswith("/"):
+                slash_idx = m.start()
+                if slash_idx > 0:
+                    prev = text[slash_idx - 1]
+                    is_boundary = (
+                        prev.isspace()
+                        or bool(re.match(r"[,.;:!?，。；：！？、()\[\]{}\"'`~\-]", prev))
+                        or ord(prev) > 127
+                    )
+                    if is_boundary:
+                        return slash_idx, frag
+                else:
+                    return slash_idx, frag
+
         # Full-line slash built-in command (e.g. "/mcp ", "/knowledge search q")
         stripped = text.lstrip()
         if stripped.startswith("/"):
             slash_idx = len(text) - len(stripped)
             return slash_idx, text[slash_idx:]
-
-        # Fallback token-style slash completion for non built-in contexts.
-        m = re.search(r"(^|\s)(/[^\s]*)$", text)
-        if not m:
-            return -1, ""
-        frag = m.group(2) or ""
-        if not frag.startswith("/"):
-            return -1, ""
-        slash_idx = len(text) - len(frag)
-        return slash_idx, frag
+        return -1, ""
 
     @staticmethod
     def _bang_fragment_for_completion(text: str) -> Tuple[int, str]:
