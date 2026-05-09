@@ -260,7 +260,7 @@
     "type": "function",
     "function": {
       "name": "read",
-      "description": "读取文本文件内容，可选限制最大行数。",
+      "description": "读取文本文件内容，返回内容包含每行行号；支持按起始行与行数读取片段。",
       "parameters": {
         "type": "object",
         "properties": {
@@ -269,8 +269,68 @@
           },
           "max_lines": {
             "type": "integer"
+          },
+          "start_line": {
+            "type": "integer",
+            "description": "可选。起始行号（从 1 开始）。"
+          },
+          "line_count": {
+            "type": "integer",
+            "description": "可选。读取的行数。若提供则优先于 max_lines。"
           }
         }
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "edit_text",
+      "description": "按起始行和跨度对现有文本文件执行插入、删除或替换。",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "start_line": {
+            "type": "integer",
+            "description": "起始行号（从 1 开始）。"
+          },
+          "line_span": {
+            "type": "integer",
+            "description": "影响行数。delete/replace 默认 1；insert 可为 0。"
+          },
+          "operation": {
+            "type": "string",
+            "enum": ["insert", "delete", "replace"]
+          },
+          "content": {
+            "type": "string",
+            "description": "insert/replace 时要写入的文本内容（可多行）。"
+          }
+        },
+        "required": ["path", "start_line", "operation"]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "apply_patch",
+      "description": "对指定文本文件应用 unified patch（包含 @@ hunk 语法）。",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "patch": {
+            "type": "string",
+            "description": "unified patch 文本（至少包含一个 @@ ... @@ hunk）。"
+          }
+        },
+        "required": ["path", "patch"]
       }
     }
   },
