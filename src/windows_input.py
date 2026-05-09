@@ -74,9 +74,15 @@ def _attach_blink_after_render_hook(session) -> None:
 class FileCompleter(Completer):
     """文件补全器"""
     
-    def __init__(self, work_directory: Path, slash_skill_commands: Optional[List[str]] = None):
+    def __init__(
+        self,
+        work_directory: Path,
+        slash_skill_commands: Optional[List[str]] = None,
+        slash_mcp_commands: Optional[List[str]] = None,
+    ):
         self.work_directory = work_directory
         self.slash_skill_commands = slash_skill_commands or []
+        self.slash_mcp_commands = slash_mcp_commands or []
 
     @staticmethod
     def _slash_fragment_for_completion(text: str) -> Tuple[int, str]:
@@ -87,22 +93,17 @@ class FileCompleter(Completer):
         - or last token after whitespace is '/...'
         Returns (index_of_slash, fragment_from_slash_to_cursor), or (-1, '').
         """
-        # Prefer the trailing '/...' fragment near cursor so cases like
-        # "/winzr-mr-code-reviewer /" complete the second slash token.
-        # Accept '/skill' after whitespace OR after common CJK/punctuation boundaries,
-        # so inputs like "请用/winzr-cpp-expert" can still trigger skill completion.
-        m = re.search(r"/[^\s/]*$", text)
+        # Prefer the trailing slash token near cursor.
+        # Token may include nested slashes, e.g. "/windbg/" or "/windbg/list_xxx".
+        # Strict boundary: if there is a previous character, it must be whitespace.
+        m = re.search(r"/[^\s]*$", text)
         if m:
             frag = m.group(0) or ""
             if frag.startswith("/"):
                 slash_idx = m.start()
                 if slash_idx > 0:
                     prev = text[slash_idx - 1]
-                    is_boundary = (
-                        prev.isspace()
-                        or bool(re.match(r"[,.;:!?，。；：！？、()\[\]{}\"'`~\-]", prev))
-                        or ord(prev) > 127
-                    )
+                    is_boundary = prev.isspace()
                     if is_boundary:
                         return slash_idx, frag
                 else:
@@ -170,7 +171,8 @@ class FileCompleter(Completer):
             idx, slash_part = self._slash_fragment_for_completion(text)
             if idx >= 0 and slash_part:
                 builtin_matches = windows_slash_builtin_completions(
-                    slash_part, dynamic_commands=self.slash_skill_commands
+                    slash_part,
+                    dynamic_commands=(self.slash_skill_commands + self.slash_mcp_commands),
                 )
                 if builtin_matches:
                     spos = -len(slash_part)
@@ -681,6 +683,7 @@ class WindowsInputHandler:
         work_directory: Path,
         initial_history: Optional[List[str]] = None,
         slash_skill_commands: Optional[List[str]] = None,
+        slash_mcp_commands: Optional[List[str]] = None,
     ):
         """
         初始化输入处理器
@@ -703,7 +706,7 @@ class WindowsInputHandler:
         
         if PROMPT_TOOLKIT_AVAILABLE:
             # 使用prompt_toolkit，并将历史记录注入到会话中
-            self.completer = FileCompleter(work_directory, slash_skill_commands)
+            self.completer = FileCompleter(work_directory, slash_skill_commands, slash_mcp_commands)
             self._key_bindings = self._create_key_bindings()
             self._pt_history = InMemoryHistory()
             if initial_history:
@@ -793,6 +796,10 @@ class WindowsInputHandler:
         if hasattr(self, "completer"):
             self.completer.slash_skill_commands = slash_skill_commands or []
 
+    def set_slash_mcp_commands(self, slash_mcp_commands: Optional[List[str]] = None) -> None:
+        if hasattr(self, "completer"):
+            self.completer.slash_mcp_commands = slash_mcp_commands or []
+
     def reset_command_history(self, entries: Optional[List[str]] = None) -> None:
         """
         Rebuild prompt_toolkit InMemoryHistory from entries (e.g. after HistoryManager.clear_history()).
@@ -827,6 +834,7 @@ def create_windows_input_handler(
     work_directory: Path,
     initial_history: Optional[List[str]] = None,
     slash_skill_commands: Optional[List[str]] = None,
+    slash_mcp_commands: Optional[List[str]] = None,
 ) -> WindowsInputHandler:
     """创建Windows输入处理器"""
-    return WindowsInputHandler(work_directory, initial_history, slash_skill_commands)
+    return WindowsInputHandler(work_directory, initial_history, slash_skill_commands, slash_mcp_commands)
