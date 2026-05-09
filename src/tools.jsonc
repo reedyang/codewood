@@ -215,28 +215,6 @@
   {
     "type": "function",
     "function": {
-      "name": "script",
-      "description": "在工作区创建临时任务脚本，供后续 shell 执行。",
-      "parameters": {
-        "type": "object",
-        "properties": {
-          "filename": {
-            "type": "string"
-          },
-          "content": {
-            "type": "string"
-          },
-          "overwrite": {
-            "type": "boolean"
-          }
-        },
-        "required": ["filename", "content"]
-      }
-    }
-  },
-  {
-    "type": "function",
-    "function": {
       "name": "text_file",
       "description": "在目标路径创建可长期保留的文本/代码文件。",
       "parameters": {
