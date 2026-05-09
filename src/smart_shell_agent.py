@@ -441,6 +441,7 @@ class SmartShellAgent:
                         self.work_directory,
                         initial_history,
                         self._get_slash_skill_commands(),
+                        self._get_slash_mcp_commands(),
                     )
                 elif INPUT_HANDLER_TYPE == "readline":
                     self.input_handler = create_tab_completer(self.work_directory)
@@ -2254,8 +2255,89 @@ class SmartShellAgent:
         try:
             if self.input_handler is not None and hasattr(self.input_handler, "set_slash_skill_commands"):
                 self.input_handler.set_slash_skill_commands(self._get_slash_skill_commands())
+            if self.input_handler is not None and hasattr(self.input_handler, "set_slash_mcp_commands"):
+                self.input_handler.set_slash_mcp_commands(self._get_slash_mcp_commands())
         except Exception:
             pass
+
+    def _get_slash_mcp_commands(self) -> List[str]:
+        """
+        Build slash-style MCP completion candidates.
+        - /<server>/
+        - /<server>/<tool-or-prompt>
+        Only include loaded servers (exclude skipped/unloaded).
+        """
+        out: List[str] = []
+        seen: Set[str] = set()
+
+        def _add(cmd: str) -> None:
+            c = str(cmd or "").strip()
+            if not c.startswith("/"):
+                return
+            key = c.lower()
+            if key in seen:
+                return
+            seen.add(key)
+            out.append(c)
+
+        servers = {}
+        try:
+            servers = (self.mcp_manager.mcp_config or {}).get("mcpServers", {})
+        except Exception:
+            servers = {}
+        if not isinstance(servers, dict):
+            servers = {}
+
+        tools_cache = getattr(self.mcp_manager, "_tools_cache", {}) or {}
+        prompts_cache = getattr(self.mcp_manager, "_prompts_cache", {}) or {}
+        clients = getattr(self.mcp_manager, "_clients", {}) or {}
+        status_map = getattr(self.mcp_manager, "_status", {}) or {}
+
+        for server in servers.keys():
+            srv = str(server or "").strip()
+            if not srv:
+                continue
+
+            st = {}
+            try:
+                st = status_map.get(srv, {}) if isinstance(status_map, dict) else {}
+            except Exception:
+                st = {}
+            state = str((st or {}).get("state", "")).strip().lower()
+            has_client = bool(isinstance(clients, dict) and srv in clients)
+            has_cache = bool(
+                (isinstance(tools_cache, dict) and srv in tools_cache)
+                or (isinstance(prompts_cache, dict) and srv in prompts_cache)
+            )
+            is_loaded = has_client or has_cache or state in ("success", "loading")
+            if not is_loaded:
+                continue
+
+            _add(f"/{srv}/")
+
+            tool_items = []
+            try:
+                tool_items = tools_cache.get(srv, {}).get("tools", []) if isinstance(tools_cache, dict) else []
+            except Exception:
+                tool_items = []
+            if isinstance(tool_items, list):
+                for t in tool_items:
+                    name = str((t or {}).get("name", "")).strip() if isinstance(t, dict) else ""
+                    if name:
+                        _add(f"/{srv}/{name}")
+
+            prompt_items = []
+            try:
+                prompt_items = prompts_cache.get(srv, {}).get("prompts", []) if isinstance(prompts_cache, dict) else []
+            except Exception:
+                prompt_items = []
+            if isinstance(prompt_items, list):
+                for p in prompt_items:
+                    name = str((p or {}).get("name", "")).strip() if isinstance(p, dict) else ""
+                    if name:
+                        _add(f"/{srv}/{name}")
+
+        return sorted(out, key=str.lower)
 
     def _extract_forced_skill_reference(self, user_text: str) -> Optional[Dict[str, Any]]:
         """
@@ -2299,6 +2381,93 @@ class SmartShellAgent:
         cleaned = "".join(pieces).strip()
         cleaned = re.sub(r"\s{2,}", " ", cleaned)
         return {"skills": selected, "rest": cleaned}
+
+    def _extract_forced_mcp_reference(self, user_text: str) -> Optional[Dict[str, Any]]:
+        """
+        Find one or more '/<server>/<tool_or_prompt>' tokens.
+        Returns {"entries":[{server,name,kind}], "rest"} when matched.
+        """
+        raw = (user_text or "").strip()
+        if not raw:
+            return None
+        matches = list(re.finditer(r"(?<!\S)/([^\s/]+)/([^\s]+)", raw))
+        if not matches:
+            return None
+
+        servers = {}
+        try:
+            servers = (self.mcp_manager.mcp_config or {}).get("mcpServers", {})
+        except Exception:
+            servers = {}
+        if not isinstance(servers, dict):
+            servers = {}
+        server_names = {str(s).strip().lower(): str(s).strip() for s in servers.keys() if str(s).strip()}
+        if not server_names:
+            return None
+
+        entries: List[Dict[str, str]] = []
+        seen: Set[str] = set()
+        pieces: List[str] = []
+        cursor = 0
+        for m in matches:
+            server_l = (m.group(1) or "").strip().lower()
+            target = str(m.group(2) or "").strip()
+            if not server_l or not target:
+                continue
+            srv = server_names.get(server_l)
+            if not srv:
+                continue
+            kind = ""
+            try:
+                tools, _ = self.mcp_manager.list_tools(srv, timeout_s=8.0, use_cache=False)
+                if any(str((t or {}).get("name", "")).strip() == target for t in (tools or []) if isinstance(t, dict)):
+                    kind = "tool"
+            except Exception:
+                pass
+            if not kind:
+                try:
+                    prompts, _ = self.mcp_manager.list_prompts(srv, timeout_s=8.0, use_cache=False)
+                    if any(str((p or {}).get("name", "")).strip() == target for p in (prompts or []) if isinstance(p, dict)):
+                        kind = "prompt"
+                except Exception:
+                    pass
+            if not kind:
+                continue
+            key = f"{srv.lower()}/{target.lower()}/{kind}"
+            if key not in seen:
+                seen.add(key)
+                entries.append({"server": srv, "name": target, "kind": kind})
+            pieces.append(raw[cursor:m.start()])
+            cursor = m.end()
+
+        if not entries:
+            return None
+        pieces.append(raw[cursor:])
+        cleaned = "".join(pieces).strip()
+        cleaned = re.sub(r"\s{2,}", " ", cleaned)
+        return {"entries": entries, "rest": cleaned}
+
+    def _build_forced_mcp_prefix(self, entries: List[Dict[str, str]]) -> str:
+        if not entries:
+            return ""
+        lines: List[str] = [
+            "【强制 MCP 引用】本轮任务必须优先参考并使用以下已指定 MCP 目标（按用户输入顺序）：",
+        ]
+        for e in entries:
+            srv = str(e.get("server", "")).strip()
+            name = str(e.get("name", "")).strip()
+            kind = str(e.get("kind", "")).strip() or "unknown"
+            lines.append(f"- `{srv}/{name}` ({kind})")
+            if kind == "prompt":
+                try:
+                    pobj = self.mcp_manager.get_prompt(srv, name, {}, timeout_s=20.0)
+                    desc = str((pobj or {}).get("description", "")).strip() if isinstance(pobj, dict) else ""
+                    if desc:
+                        lines.append(f"  prompt.description: {desc}")
+                except Exception:
+                    pass
+        lines.append("若与 AGENTS.md 或通用规则冲突，以这些显式指定 MCP 目标为准（安全/越权硬限制除外）。")
+        return "\n".join(lines) + "\n\n"
 
     def _ensure_knowledge_manager(self) -> bool:
         """等待知识库服务就绪。依赖不可用或初始化失败时返回 False。"""
@@ -7117,6 +7286,7 @@ big_image.jpg
         while True:
             in_task_execution = False
             try:
+                self._refresh_input_handler_skill_completions()
                 # 获取用户输入，支持历史记录
                 user_input = self._get_user_input_with_history()
                 
@@ -7128,11 +7298,27 @@ big_image.jpg
                 if not stripped_in:
                     continue
 
+                forced_mcp = self._extract_forced_mcp_reference(stripped_in)
+                forced_mcp_entries: List[Dict[str, str]] = (
+                    list(forced_mcp.get("entries", [])) if forced_mcp else []
+                )
+                if forced_mcp and forced_mcp.get("rest") is not None:
+                    user_input = str(forced_mcp.get("rest") or "")
+                    stripped_in = user_input.strip()
+                if forced_mcp_entries and not stripped_in:
+                    refs = ", ".join([f"{e.get('server')}/{e.get('name')}" for e in forced_mcp_entries])
+                    print(
+                        f"🧩 已指定 MCP 目标: {refs}。"
+                        "请在同一行补充任务内容，例如："
+                        f"使用 {refs} 审查这次改动"
+                    )
+                    continue
+
                 forced_skill: Optional[Dict[str, Any]] = self._extract_forced_skill_reference(stripped_in)
                 forced_skills: List[Dict[str, str]] = (
                     list(forced_skill.get("skills", [])) if forced_skill else []
                 )
-                if forced_skill and not forced_skill.get("rest"):
+                if (forced_skill and not forced_skill.get("rest")) and not forced_mcp_entries:
                     skill_text = ", ".join(
                         [f"{s.get('name')} ({s.get('skill_id')})" for s in forced_skills]
                     )
@@ -7151,7 +7337,7 @@ big_image.jpg
 
                 # Built-in slash commands use "/" prefix; direct shell uses "!" prefix.
                 builtin_line: Optional[str] = None
-                if stripped_in.startswith("/") and not forced_skills:
+                if stripped_in.startswith("/") and not forced_skills and not forced_mcp_entries:
                     builtin_line = stripped_in[1:].lstrip()
                     if not builtin_line:
                         print(
@@ -7520,6 +7706,14 @@ big_image.jpg
                 self._active_skill_id = None
                 self._active_skill_source = None
                 forced_skill_prefix = ""
+                forced_mcp_prefix = ""
+                if forced_mcp_entries:
+                    for e in forced_mcp_entries:
+                        srv = str(e.get("server", "")).strip()
+                        name = str(e.get("name", "")).strip()
+                        kind = str(e.get("kind", "")).strip() or "unknown"
+                        print(f"🧩 启用 MCP 引用: {srv}/{name} ({kind})")
+                    forced_mcp_prefix = self._build_forced_mcp_prefix(forced_mcp_entries)
                 if forced_skills:
                     skill_items = []
                     full_prompts: List[str] = []
@@ -7531,7 +7725,7 @@ big_image.jpg
                         skill_items.append(f"`{sname}`(skill_id=`{sid}`)")
                         full_prompt = self._build_single_skill_prompt(sid)
                         if full_prompt:
-                            print(f"🧩 启用 Skill 完整提示: {sname} ({sid})")
+                            print(f"🧩 启用 Skill: {sname} ({sid})")
                             full_prompts.append(full_prompt)
                             if not self._active_skill_id:
                                 self._active_skill_id = sid
@@ -7577,7 +7771,7 @@ big_image.jpg
                     "{\"tool\":\"<tool_name>\",\"args\":{...}}\n"
                     "```"
                 )
-                next_input = f"{forced_skill_prefix}{user_input}{first_round_contract}"
+                next_input = f"{forced_mcp_prefix}{forced_skill_prefix}{user_input}{first_round_contract}"
                 is_first_round = True
                 last_announced_skill_key: Optional[str] = None
                 max_tool_rounds = 20
@@ -7650,7 +7844,7 @@ big_image.jpg
                             )
                             continue
                         if self._active_skill_id != sid:
-                            print(f"🧩 即将启用 Skill 完整提示: {sid}")
+                            print(f"🧩 即将启用 Skill: {sid}")
                         self._active_skill_full_prompt = full_prompt
                         self._active_skill_id = sid
                         self._active_skill_source = "local" if self._is_local_skill_id(sid) else "mcp"
