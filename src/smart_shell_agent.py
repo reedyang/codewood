@@ -5248,14 +5248,7 @@ big_image.jpg
             if rej:
                 return {"success": False, "error": rej}
 
-            if not confirmed and not self._is_path_under(abs_path, self.ai_workspace_dir):
-                ok = self._prompt_confirm_yes_no_maybe_always(
-                    f"⚠️ 确认修改文本文件: {abs_path} ?",
-                    offer_always=False,
-                    kind="text_file",
-                )
-                if not ok:
-                    return {"success": False, "error": "用户取消了操作"}
+            need_confirm = (not confirmed) and (not self._is_path_under(abs_path, self.ai_workspace_dir))
 
             encodings = ['utf-8', 'gbk', 'gb2312', 'utf-16', 'latin1']
             source = None
@@ -5309,6 +5302,36 @@ big_image.jpg
             if had_trailing_newline and len(new_lines) > 0:
                 new_text += newline
 
+            ctx_from = max(1, s - 1)
+            ctx_to_old = min(total, s + max(span, 1))
+            old_fragment = old_lines[ctx_from - 1 : ctx_to_old]
+            if operation_s == "insert":
+                affected_new = len(inserted_lines)
+            elif operation_s == "delete":
+                affected_new = 0
+            else:
+                affected_new = len(inserted_lines)
+            ctx_to_new = min(len(new_lines), s + max(affected_new, 1))
+            new_fragment = new_lines[ctx_from - 1 : ctx_to_new]
+            preview_lines = self._format_side_by_side_change_preview(
+                old_fragment,
+                new_fragment,
+                old_start_line=ctx_from,
+                new_start_line=ctx_from,
+            )
+            if preview_lines:
+                print("变更预览（旧 || 新）：")
+                print("   标记: '=' 未改动, '-' 删除, '+' 新增")
+                for ln in preview_lines:
+                    print(ln)
+            if need_confirm:
+                ok = self._prompt_confirm_yes_no_maybe_always(
+                    f"⚠️ 确认修改文本文件: {abs_path} ?",
+                    offer_always=False,
+                    kind="text_file",
+                )
+                if not ok:
+                    return {"success": False, "error": "用户取消了操作"}
             with open(abs_path, 'w', encoding=used_encoding or 'utf-8', errors='replace') as f:
                 f.write(new_text)
 
@@ -5323,6 +5346,7 @@ big_image.jpg
                 "line_span": span,
                 "original_line_count": total,
                 "updated_line_count": len(new_lines),
+                "change_preview": preview_lines,
                 "message": f"已对文件 '{resolved.name}' 执行 {operation_s} 操作",
             }
         except Exception as e:
@@ -5343,14 +5367,7 @@ big_image.jpg
             rej = self._reject_ai_workspace_root_level_write(abs_path)
             if rej:
                 return {"success": False, "error": rej}
-            if not confirmed and not self._is_path_under(abs_path, self.ai_workspace_dir):
-                ok = self._prompt_confirm_yes_no_maybe_always(
-                    f"⚠️ 确认对文本文件应用 patch: {abs_path} ?",
-                    offer_always=False,
-                    kind="text_file",
-                )
-                if not ok:
-                    return {"success": False, "error": "用户取消了操作"}
+            need_confirm = (not confirmed) and (not self._is_path_under(abs_path, self.ai_workspace_dir))
 
             encodings = ['utf-8', 'gbk', 'gb2312', 'utf-16', 'latin1']
             source = None
@@ -5404,6 +5421,7 @@ big_image.jpg
 
             result_lines: List[str] = []
             src_idx = 0
+            preview_lines: List[str] = []
             for hunk in hunks:
                 old_start = hunk["old_start"]
                 target_idx = src_idx if old_start is None else int(old_start) - 1
@@ -5427,6 +5445,8 @@ big_image.jpg
                         target_idx = found_idx
                 result_lines.extend(old_lines[src_idx:target_idx])
                 cur = target_idx
+                hunk_old_fragment: List[str] = []
+                hunk_new_fragment: List[str] = []
                 for hl in hunk["lines"]:
                     if hl.startswith("*** "):
                         # tolerate wrapped patch blocks like "*** Begin Patch" / "*** End Patch"
@@ -5444,6 +5464,8 @@ big_image.jpg
                                 "error": f"patch 上下文不匹配（行 {cur + 1}）",
                             }
                         result_lines.append(old_lines[cur])
+                        hunk_old_fragment.append(old_lines[cur])
+                        hunk_new_fragment.append(old_lines[cur])
                         cur += 1
                     elif prefix == '-':
                         if cur >= len(old_lines) or old_lines[cur] != text:
@@ -5451,17 +5473,41 @@ big_image.jpg
                                 "success": False,
                                 "error": f"patch 删除行不匹配（行 {cur + 1}）",
                             }
+                        hunk_old_fragment.append(old_lines[cur])
                         cur += 1
                     elif prefix == '+':
                         result_lines.append(text)
+                        hunk_new_fragment.append(text)
                     else:
                         return {"success": False, "error": f"不支持的 hunk 行前缀: {prefix}"}
                 src_idx = cur
+                if hunk_old_fragment or hunk_new_fragment:
+                    preview_lines.extend(
+                        self._format_side_by_side_change_preview(
+                            hunk_old_fragment,
+                            hunk_new_fragment,
+                            old_start_line=max(1, target_idx + 1),
+                            new_start_line=max(1, target_idx + 1),
+                        )
+                    )
             result_lines.extend(old_lines[src_idx:])
 
             new_text = newline.join(result_lines)
             if had_trailing_newline and len(result_lines) > 0:
                 new_text += newline
+            if preview_lines:
+                print("变更预览（旧 || 新）：")
+                print("   标记: '=' 未改动, '-' 删除, '+' 新增")
+                for ln in preview_lines:
+                    print(ln)
+            if need_confirm:
+                ok = self._prompt_confirm_yes_no_maybe_always(
+                    f"⚠️ 确认对文本文件应用 patch: {abs_path} ?",
+                    offer_always=False,
+                    kind="text_file",
+                )
+                if not ok:
+                    return {"success": False, "error": "用户取消了操作"}
             with open(abs_path, 'w', encoding=used_encoding or 'utf-8', errors='replace') as f:
                 f.write(new_text)
 
@@ -5472,6 +5518,7 @@ big_image.jpg
                 "success": True,
                 "file": str(resolved),
                 "hunk_count": len(hunks),
+                "change_preview": preview_lines,
                 "message": f"已成功应用 patch 到 '{resolved.name}'",
             }
         except Exception as e:
@@ -5933,6 +5980,73 @@ big_image.jpg
             return f"{tool_name} (args: {keys})"
         return tool_name
 
+    def _format_side_by_side_change_preview(
+        self,
+        old_lines: List[str],
+        new_lines: List[str],
+        old_start_line: int = 1,
+        new_start_line: int = 1,
+    ) -> List[str]:
+        """Build compact side-by-side change preview with = / - / + markers."""
+        import difflib
+
+        raw_rows: List[Tuple[str, Optional[int], str, Optional[int], str]] = []
+        matcher = difflib.SequenceMatcher(a=old_lines, b=new_lines)
+        for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+            if tag == "equal":
+                for oi, nj in zip(range(i1, i2), range(j1, j2)):
+                    raw_rows.append(
+                        ("=", old_start_line + oi, old_lines[oi], new_start_line + nj, new_lines[nj])
+                    )
+            elif tag == "delete":
+                for oi in range(i1, i2):
+                    raw_rows.append(
+                        ("-", old_start_line + oi, old_lines[oi], None, "")
+                    )
+            elif tag == "insert":
+                for nj in range(j1, j2):
+                    raw_rows.append(
+                        ("+", None, "", new_start_line + nj, new_lines[nj])
+                    )
+            else:  # replace
+                for oi in range(i1, i2):
+                    raw_rows.append(
+                        ("-", old_start_line + oi, old_lines[oi], None, "")
+                    )
+                for nj in range(j1, j2):
+                    raw_rows.append(
+                        ("+", None, "", new_start_line + nj, new_lines[nj])
+                    )
+
+        # Expand tabs so vertical separators remain aligned in terminal output.
+        def _norm(s: str) -> str:
+            return str(s).expandtabs(4)
+
+        max_old_no = 0
+        max_new_no = 0
+        for _m, old_no, _ot, new_no, _nt in raw_rows:
+            if old_no is not None:
+                max_old_no = max(max_old_no, old_no)
+            if new_no is not None:
+                max_new_no = max(max_new_no, new_no)
+        old_no_w = max(4, len(str(max_old_no or 0)))
+        new_no_w = max(4, len(str(max_new_no or 0)))
+
+        left_col_width = 0
+        for mark, old_no, old_text, _new_no, _new_text in raw_rows:
+            old_no_s = (" " * old_no_w) if old_no is None else f"{old_no:>{old_no_w}}"
+            left_text = _norm(old_text)
+            left_col_width = max(left_col_width, len(f"{mark} {old_no_s}| {left_text}"))
+
+        rows: List[str] = []
+        for mark, old_no, old_text, new_no, new_text in raw_rows:
+            old_no_s = (" " * old_no_w) if old_no is None else f"{old_no:>{old_no_w}}"
+            new_no_s = (" " * new_no_w) if new_no is None else f"{new_no:>{new_no_w}}"
+            left = f"{mark} {old_no_s}| {_norm(old_text)}"
+            right = f"{new_no_s}| {_norm(new_text)}"
+            rows.append(f"{left.ljust(left_col_width)} || {right}")
+        return rows
+
     def execute_tool_call(self, tool_name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
         """执行工具命令，支持批量命令和 cls 命令。"""
         action = (tool_name or "").strip()
@@ -6291,9 +6405,7 @@ big_image.jpg
             line_count = params.get("line_count") if "line_count" in params else None
             if file_path:
                 result = self.action_read_file(file_path, max_lines, start_line, line_count)
-                if result["success"]:
-                    print(f"\n📄 文件 {result['file']} 内容预览：")
-                else:
+                if not result["success"]:
                     print(f"❌ {result['error']}")
                 return result
             else:
@@ -8092,7 +8204,8 @@ big_image.jpg
                     fallback_plan = self._parse_tool_plan_from_response(ai_response)
                     if fallback_plan:
                         tool_name, args = fallback_plan
-                        print(f"🔧 执行工具: {self._tool_call_summary(tool_name, args)}")
+                        if tool_name != "done":
+                            print(f"🔧 执行工具: {self._tool_call_summary(tool_name, args)}")
                         if tool_name == "text_file":
                             content = ""
                             if isinstance(args, dict):

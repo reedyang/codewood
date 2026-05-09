@@ -79,6 +79,9 @@ class TextEditAndPatchToolTests(unittest.TestCase):
 
         self.assertTrue(result.get("success"), result)
         self.assertEqual(target.read_text(encoding="utf-8"), "k1\nR2\nR3\nk3\n")
+        preview = result.get("change_preview") or []
+        self.assertTrue(any(str(x).startswith("- ") for x in preview))
+        self.assertTrue(any(str(x).startswith("+ ") for x in preview))
 
     def test_edit_text_delete_with_line_span_zero_defaults_to_one_line(self):
         target = self.root / "sample.txt"
@@ -127,6 +130,16 @@ class TextEditAndPatchToolTests(unittest.TestCase):
 
         self.assertTrue(result.get("success"), result)
         self.assertEqual(target.read_text(encoding="utf-8"), "A\nBX\nC\n")
+        preview = result.get("change_preview") or []
+        self.assertTrue(any(str(x).startswith("= ") for x in preview))
+        self.assertTrue(any(str(x).startswith("- ") for x in preview))
+        self.assertTrue(any(str(x).startswith("+ ") for x in preview))
+        first_pipes = [str(x).find("|") for x in preview if "|" in str(x)]
+        self.assertTrue(len(first_pipes) > 0)
+        self.assertTrue(all(p == first_pipes[0] for p in first_pipes))
+        pipes = [str(x).find("||") for x in preview if "||" in str(x)]
+        self.assertTrue(len(pipes) > 0)
+        self.assertTrue(all(p == pipes[0] for p in pipes))
 
     def test_apply_patch_failure_when_context_mismatch(self):
         target = self.root / "sample.txt"
