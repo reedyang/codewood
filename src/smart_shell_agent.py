@@ -1259,6 +1259,34 @@ class SmartShellAgent:
             else:
                 print(content)
 
+    def _rewrite_previous_prompt_as_user(self, user_text: str) -> None:
+        """
+        Best-effort: rewrite the just-submitted prompt line as a gray '你:' line.
+        """
+        txt = str(user_text or "")
+        if not txt:
+            return
+        if not hasattr(sys.stdout, "isatty") or not sys.stdout.isatty():
+            return
+        try:
+            sys.stdout.write("\x1b[1A\r\x1b[2K")
+            sys.stdout.write(f"{_ansi_gray('你:')} {txt}\n")
+            sys.stdout.flush()
+        except Exception:
+            pass
+
+    def _clear_last_thinking_line(self) -> None:
+        """
+        Best-effort clear of the previously printed '🤖 AI正在思考...' line.
+        """
+        if not hasattr(sys.stdout, "isatty") or not sys.stdout.isatty():
+            return
+        try:
+            sys.stdout.write("\x1b[1A\r\x1b[2K")
+            sys.stdout.flush()
+        except Exception:
+            pass
+
     def _append_chat_message(self, role: str, content: str) -> None:
         r = str(role or "").strip().lower()
         if r not in ("user", "assistant"):
@@ -8057,6 +8085,7 @@ big_image.jpg
 
         print("输入 '/help' 查看帮助")
         print("=" * 80)
+        self._print_chat_history()
         try:
             sys.stdout.flush()
         except Exception:
@@ -8504,6 +8533,9 @@ big_image.jpg
                         print(f"❌ 命令执行异常: {e}")
                     continue
 
+                # Natural-language turn: rewrite prompt line as chat-style user line.
+                self._rewrite_previous_prompt_as_user(user_input.strip())
+
                 last_result = None
                 self._last_auto_removed_ephemeral = None
                 original_user_task = user_input.strip()
@@ -8599,12 +8631,13 @@ big_image.jpg
                     if not isinstance(ai_response, str):
                         print(f"❌ AI返回异常: {ai_response}")
                         break
+                    self._clear_last_thinking_line()
                     if not user_message_recorded:
                         user_message_recorded = True
                     if ai_response:
                         display_response = self._strip_tool_json_blocks_for_display(ai_response)
                         if display_response:
-                            sys.stdout.write(display_response)
+                            sys.stdout.write(f"{_ansi_gray('助手:')} {display_response}")
                             if not display_response.endswith("\n"):
                                 sys.stdout.write("\n")
                             sys.stdout.flush()
