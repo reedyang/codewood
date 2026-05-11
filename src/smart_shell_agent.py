@@ -176,6 +176,14 @@ def _ansi_yellow(text: str) -> str:
     return f"\033[33m{text}\033[0m"
 
 
+def _ansi_gray(text: str) -> str:
+    if not _stdout_color_enabled():
+        return text
+    if sys.platform == "win32":
+        _enable_windows_console_vt()
+    return f"\033[90m{text}\033[0m"
+
+
 def _import_ollama_client():
     """
     惰性加载 ollama Python 包；仅在调用方已确认使用 ollama provider 时使用。
@@ -210,6 +218,7 @@ SESSION_SUMMARY_MSG_SNIPPET = 120
 SESSION_SUMMARY_LLM_INTERVAL_PAIRS = 6
 SESSION_SUMMARY_LLM_MAX_CHARS = 1200
 SESSION_SUMMARY_LLM_HISTORY_MSGS = 16
+CHAT_RECENT_MESSAGES = 10
 
 # workspace 根下允许的顶层目录名（其它新建路径须落在这些目录之下或更深子路径）
 _AI_WORKSPACE_TOP_LEVEL_DIR_NAMES = frozenset(
@@ -222,6 +231,7 @@ _AI_WORKSPACE_TOP_LEVEL_DIR_NAMES_FOLD = frozenset(
 DEFAULT_WORKSPACE_ID = "default"
 DEFAULT_WORKSPACE_NAME = "Default"
 WORKSPACE_STATE_FILE = "workspaces.json"
+CHAT_STATE_FILE = "chats.json"
 
 
 class SmartShellAgent:
@@ -244,6 +254,10 @@ class SmartShellAgent:
         # Runtime guard: prevent AI from modifying smart-shell itself.
         self._self_repo_root = Path(__file__).resolve().parent.parent
         self.conversation_history = []
+        self._chat_state: Dict[str, Any] = {}
+        self.active_chat_id: str = ""
+        self.active_chat_name: str = "New Chat"
+        self._chat_state_lock = threading.RLock()
         # 会话摘要（经验记忆检索 query 前缀）：滚动摘录始终更新；LLM 摘要按轮次节流更新。
         self._session_summary_llm: str = ""
         self._session_summary_rolling: str = ""
@@ -289,6 +303,7 @@ class SmartShellAgent:
         self._apply_workspace_entry(active_workspace, startup_work_directory)
 
         self.history_manager = HistoryManager(str(self.ai_workspace_dir))
+        self._load_chat_state()
 
         setup_app_logging(self.config_dir)
 
@@ -585,6 +600,7 @@ class SmartShellAgent:
             }
 
     def _save_current_workspace_position(self) -> None:
+        self._sync_active_chat_messages()
         if not hasattr(self, "_workspaces_state"):
             return
         workspaces = self._workspaces_state.setdefault("workspaces", {})
@@ -1012,6 +1028,440 @@ class SmartShellAgent:
         suffix = f"\n  已删除数据目录: {storage}" if removed_data else ""
         return f"✅ 已删除 workspace: {entry.get('name')} ({workspace_id}){suffix}"
 
+    def _chat_state_path(self) -> Path:
+        return self.ai_workspace_dir / CHAT_STATE_FILE
+
+    def _new_chat_entry(self, chat_id: str, name: str = "New Chat") -> Dict[str, Any]:
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        return {
+            "id": chat_id,
+            "name": name,
+            "name_source": "default",
+            "created_at": now,
+            "updated_at": now,
+            "messages": [],
+        }
+
+    def _sanitize_persisted_chat_message(self, role: str, content: str) -> Optional[str]:
+        r = str(role or "").strip().lower()
+        c = str(content or "")
+        if r != "user":
+            return c
+        marker = "\n\n【首轮回复硬性要求（必须遵守）】"
+        if marker in c:
+            c = c.split(marker, 1)[0]
+        if c.startswith("【用户原始需求】\n"):
+            return None
+        c = c.strip()
+        if not c:
+            return None
+        return c
+
+    def _compact_redundant_user_turns(self, messages: List[Dict[str, str]]) -> List[Dict[str, str]]:
+        """
+        Collapse repeated identical user turns caused by multi-round internal tool orchestration.
+        Heuristic: if same user content reappears and all assistant messages in-between look like
+        tool-planning/tool-json messages, keep only the first user turn.
+        """
+        compact: List[Dict[str, str]] = []
+        last_user_content: Optional[str] = None
+        assistant_since_last_user: List[str] = []
+        for m in messages:
+            role = str(m.get("role") or "").strip().lower()
+            content = str(m.get("content") or "")
+            if role == "assistant":
+                assistant_since_last_user.append(content)
+                compact.append(m)
+                continue
+            if role != "user":
+                compact.append(m)
+                continue
+            same_user = last_user_content is not None and content == last_user_content
+            if same_user and assistant_since_last_user:
+                looks_internal = True
+                for a in assistant_since_last_user:
+                    s = str(a or "")
+                    if ("```json" not in s) and ('{"tool"' not in s) and ("Step " not in s):
+                        looks_internal = False
+                        break
+                if looks_internal:
+                    assistant_since_last_user = []
+                    continue
+            compact.append(m)
+            last_user_content = content
+            assistant_since_last_user = []
+        return compact
+
+    def _default_chat_state(self) -> Dict[str, Any]:
+        default_chat = self._new_chat_entry("chat-1")
+        return {"version": 1, "active": "chat-1", "chats": [default_chat]}
+
+    def _save_chat_state(self) -> None:
+        try:
+            p = self._chat_state_path()
+            p.parent.mkdir(parents=True, exist_ok=True)
+            with open(p, "w", encoding="utf-8") as f:
+                json.dump(self._chat_state, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            print(f"⚠️ 保存 chat 状态失败: {e}")
+
+    def _chat_entries(self) -> List[Dict[str, Any]]:
+        chats = self._chat_state.get("chats", [])
+        if not isinstance(chats, list):
+            chats = []
+            self._chat_state["chats"] = chats
+        return chats
+
+    def _find_chat_by_id(self, chat_id: str) -> Optional[Dict[str, Any]]:
+        for c in self._chat_entries():
+            if not isinstance(c, dict):
+                continue
+            if str(c.get("id") or "") == chat_id:
+                return c
+        return None
+
+    def _resolve_chat_selector(self, selector: str) -> Optional[Dict[str, Any]]:
+        text = str(selector or "").strip()
+        if not text:
+            return None
+        chats = self._chat_entries()
+        if text.isdigit():
+            idx = int(text)
+            if 1 <= idx <= len(chats):
+                return chats[idx - 1]
+        low = text.casefold()
+        for c in chats:
+            if not isinstance(c, dict):
+                continue
+            cid = str(c.get("id") or "")
+            name = str(c.get("name") or "")
+            if text == cid or low == name.casefold():
+                return c
+        return None
+
+    def _next_chat_id(self) -> str:
+        existing = {str(c.get("id") or "") for c in self._chat_entries() if isinstance(c, dict)}
+        i = 1
+        while True:
+            cid = f"chat-{i}"
+            if cid not in existing:
+                return cid
+            i += 1
+
+    def _load_chat_state(self) -> None:
+        raw: Dict[str, Any] = {}
+        p = self._chat_state_path()
+        if p.exists():
+            try:
+                with open(p, "r", encoding="utf-8") as f:
+                    loaded = json.load(f)
+                if isinstance(loaded, dict):
+                    raw = loaded
+            except Exception as e:
+                print(f"⚠️ 读取 chat 状态失败，使用默认会话: {e}")
+        chats_raw = raw.get("chats", [])
+        chats: List[Dict[str, Any]] = []
+        if isinstance(chats_raw, list):
+            for c in chats_raw:
+                if not isinstance(c, dict):
+                    continue
+                cid = str(c.get("id") or "").strip()
+                if not cid:
+                    cid = self._next_chat_id()
+                name = str(c.get("name") or "New Chat").strip() or "New Chat"
+                source = str(c.get("name_source") or "default").strip().lower()
+                if source not in ("default", "auto", "manual"):
+                    source = "default"
+                messages = c.get("messages", [])
+                if not isinstance(messages, list):
+                    messages = []
+                msgs = []
+                for m in messages:
+                    if not isinstance(m, dict):
+                        continue
+                    role = str(m.get("role") or "").strip().lower()
+                    content = str(m.get("content") or "")
+                    if role in ("user", "assistant"):
+                        clean = self._sanitize_persisted_chat_message(role, content)
+                        if clean is None:
+                            continue
+                        msgs.append({"role": role, "content": clean})
+                chats.append(
+                    {
+                        "id": cid,
+                        "name": name,
+                        "name_source": source,
+                        "created_at": str(c.get("created_at") or ""),
+                        "updated_at": str(c.get("updated_at") or ""),
+                        "messages": self._compact_redundant_user_turns(msgs),
+                    }
+                )
+        if not chats:
+            self._chat_state = self._default_chat_state()
+            chats = self._chat_entries()
+        active = str(raw.get("active") or self._chat_state.get("active") or "").strip()
+        if not active or not any(str(c.get("id")) == active for c in chats):
+            active = str(chats[0].get("id") or "chat-1")
+        self._chat_state = {"version": 1, "active": active, "chats": chats}
+        self._save_chat_state()
+        self._activate_chat(active, announce=False, clear_screen=False, print_history=False)
+
+    def _sync_active_chat_messages(self) -> None:
+        with self._chat_state_lock:
+            chat = self._find_chat_by_id(self.active_chat_id)
+            if not chat:
+                return
+            chat["messages"] = list(self.conversation_history)
+            chat["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            self._save_chat_state()
+
+    def _activate_chat(
+        self,
+        chat_id: str,
+        announce: bool = True,
+        clear_screen: bool = False,
+        print_history: bool = False,
+    ) -> str:
+        with self._chat_state_lock:
+            chat = self._find_chat_by_id(chat_id)
+            if not chat:
+                return f"❌ 未找到 chat: {chat_id}"
+            self._chat_state["active"] = chat_id
+            self.active_chat_id = chat_id
+            self.active_chat_name = str(chat.get("name") or "New Chat")
+            self.conversation_history = list(chat.get("messages") or [])
+            self.operation_results = []
+            self._session_summary_llm = ""
+            self._session_summary_rolling = ""
+            self._last_llm_summary_pair_count = 0
+            self._save_chat_state()
+        if clear_screen:
+            os.system("cls" if os.name == "nt" else "clear")
+        if print_history:
+            self._print_chat_history()
+        if announce:
+            return f"✅ 已切换到 Chat: [{self.active_chat_name}] ({self.active_chat_id})"
+        return ""
+
+    def _print_chat_history(self) -> None:
+        title = f"===== Chat: [{self.active_chat_name}] ====="
+        print(f"{_ansi_gray(title)}\n")
+        if not self.conversation_history:
+            print("(当前 Chat 暂无历史消息)")
+            return
+        for msg in self.conversation_history:
+            role = str(msg.get("role") or "").strip().lower()
+            content = str(msg.get("content") or "")
+            if role == "user":
+                print(f"{_ansi_gray('你:')} {content}")
+            elif role == "assistant":
+                print(f"{_ansi_gray('助手:')} {content}")
+            else:
+                print(content)
+
+    def _append_chat_message(self, role: str, content: str) -> None:
+        r = str(role or "").strip().lower()
+        if r not in ("user", "assistant"):
+            return
+        self.conversation_history.append({"role": r, "content": str(content or "")})
+        self._sync_active_chat_messages()
+        if r == "user":
+            self._maybe_schedule_auto_chat_name()
+
+    def _maybe_schedule_auto_chat_name(self) -> None:
+        with self._chat_state_lock:
+            chat = self._find_chat_by_id(self.active_chat_id)
+            if not chat:
+                return
+            if str(chat.get("name_source") or "") == "manual":
+                return
+            chat_id = str(chat.get("id") or "")
+            msgs = list(chat.get("messages") or [])
+            first_user = ""
+            for m in msgs:
+                if str(m.get("role") or "").strip().lower() == "user":
+                    first_user = str(m.get("content") or "").strip()
+                    break
+            if not first_user:
+                return
+            if str(chat.get("name_source") or "") == "auto":
+                return
+
+        def _fallback_title(text: str) -> str:
+            t = re.sub(r"\s+", " ", str(text or "").strip())
+            t = t.strip(" \"'`[](){}")
+            if len(t) > 18:
+                t = t[:18]
+            if len(t) < 2:
+                return "新会话"
+            return t
+
+        try:
+            prompt = (
+                "你是聊天标题生成器。仅输出标题文本，不要解释。\n"
+                "任务：根据用户第一条消息生成一个简短标题。\n"
+                "要求：4-18个字符；不要标点结尾；不要出现“Chat/会话/标题/第一条消息”等词。\n"
+                "如果消息非常短，可提炼为简短意图词。\n\n"
+                f"<user_first_message>\n{first_user}\n</user_first_message>"
+            )
+            title = self.call_ai(prompt, context="", stream=False, session_summary_mode=True)
+            t = title if isinstance(title, str) else ""
+            t = t.strip().replace("\n", " ")
+            t = re.sub(r"\s+", " ", t).strip(" \"'`[](){}")
+            if any(bad in t for bad in ("第一条消息", "标题", "会话", "Chat", "chat")):
+                t = ""
+            if len(t) > 18:
+                t = t[:18]
+            if len(t) < 2:
+                t = _fallback_title(first_user)
+            with self._chat_state_lock:
+                chat = self._find_chat_by_id(chat_id)
+                if not chat:
+                    return
+                if str(chat.get("name_source") or "") == "manual":
+                    return
+                chat["name"] = t
+                chat["name_source"] = "auto"
+                chat["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                if chat_id == self.active_chat_id:
+                    self.active_chat_name = t
+                self._save_chat_state()
+        except Exception:
+            with self._chat_state_lock:
+                chat = self._find_chat_by_id(chat_id)
+                if not chat:
+                    return
+                if str(chat.get("name_source") or "") == "manual":
+                    return
+                t = _fallback_title(first_user)
+                chat["name"] = t
+                chat["name_source"] = "auto"
+                chat["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                if chat_id == self.active_chat_id:
+                    self.active_chat_name = t
+                self._save_chat_state()
+
+    def _chat_usage(self) -> str:
+        return (
+            "用法:\n"
+            "  /chat list\n"
+            "  /chat current\n"
+            "  /chat new [name]\n"
+            "  /chat switch <index|id|name>\n"
+            "  /chat rename <index|id|name> <new name>\n"
+            "  /chat delete <index|id|name>\n"
+            "  /chat delete all\n"
+        )
+
+    def _print_chat_list(self) -> None:
+        chats = self._chat_entries()
+        if not chats:
+            print("当前 workspace 下没有 chat")
+            return
+        print(f"Chats (workspace={self.workspace_name}):")
+        for i, c in enumerate(chats, start=1):
+            marker = "*" if str(c.get("id") or "") == self.active_chat_id else " "
+            name = str(c.get("name") or "New Chat")
+            cnt = len(c.get("messages") or [])
+            print(f"{marker} [{i}] {name} ({c.get('id')}) - {cnt} msgs")
+
+    def _handle_chat_builtin_command(self, builtin_line: str) -> bool:
+        raw = str(builtin_line or "").strip()
+        if not raw.lower().startswith("chat"):
+            return False
+        parts = shlex.split(raw)
+        if len(parts) == 1 or parts[1].lower() in ("help", "-h", "--help"):
+            print(self._chat_usage())
+            return True
+        sub = parts[1].lower()
+        if sub == "list":
+            self._print_chat_list()
+            return True
+        if sub == "current":
+            print(f"当前 Chat: [{self.active_chat_name}] ({self.active_chat_id})")
+            return True
+        if sub == "new":
+            name = " ".join(parts[2:]).strip() if len(parts) > 2 else "New Chat"
+            with self._chat_state_lock:
+                cid = self._next_chat_id()
+                self._chat_entries().append(self._new_chat_entry(cid, name=name))
+                self._save_chat_state()
+            self._activate_chat(cid, announce=False, clear_screen=True, print_history=True)
+            print(f"✅ 已创建并切换到 Chat: [{self.active_chat_name}] ({self.active_chat_id})")
+            return True
+        if sub == "switch":
+            if len(parts) < 3:
+                print("❌ 用法: /chat switch <index|id|name>")
+                return True
+            selector = " ".join(parts[2:]).strip()
+            with self._chat_state_lock:
+                target = self._resolve_chat_selector(selector)
+                if not target:
+                    print(f"❌ 未找到 chat: {selector}")
+                    return True
+                cid = str(target.get("id") or "")
+            print(self._activate_chat(cid, announce=True, clear_screen=True, print_history=True))
+            return True
+        if sub == "rename":
+            if len(parts) < 4:
+                print("❌ 用法: /chat rename <index|id|name> <new name>")
+                return True
+            selector = parts[2]
+            new_name = " ".join(parts[3:]).strip()
+            if not new_name:
+                print("❌ Chat 名称不能为空")
+                return True
+            with self._chat_state_lock:
+                target = self._resolve_chat_selector(selector)
+                if not target:
+                    print(f"❌ 未找到 chat: {selector}")
+                    return True
+                target["name"] = new_name
+                target["name_source"] = "manual"
+                target["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                if str(target.get("id") or "") == self.active_chat_id:
+                    self.active_chat_name = new_name
+                self._save_chat_state()
+            print(f"✅ 已重命名 Chat: {new_name}")
+            return True
+        if sub == "delete":
+            if len(parts) < 3:
+                print("❌ 用法: /chat delete <index|id|name>")
+                return True
+            selector = " ".join(parts[2:]).strip()
+            if selector.lower() == "all":
+                with self._chat_state_lock:
+                    cid = self._next_chat_id()
+                    self._chat_state["chats"] = [self._new_chat_entry(cid, name="New Chat")]
+                    self._chat_state["active"] = cid
+                    self._save_chat_state()
+                self._activate_chat(cid, announce=False, clear_screen=True, print_history=True)
+                print("✅ 已删除所有 Chat，并自动创建新的 Chat: [New Chat]")
+                return True
+            with self._chat_state_lock:
+                target = self._resolve_chat_selector(selector)
+                if not target:
+                    print(f"❌ 未找到 chat: {selector}")
+                    return True
+                chats = self._chat_entries()
+                if len(chats) <= 1:
+                    print("❌ 至少保留一个 chat，不能删除最后一个")
+                    return True
+                tid = str(target.get("id") or "")
+                chats[:] = [c for c in chats if str(c.get("id") or "") != tid]
+                next_id = self.active_chat_id
+                if tid == self.active_chat_id:
+                    next_id = str(chats[0].get("id") or "")
+                self._chat_state["chats"] = chats
+                self._save_chat_state()
+            print(f"✅ 已删除 Chat: {target.get('name')} ({target.get('id')})")
+            if tid == self.active_chat_id and next_id:
+                self._activate_chat(next_id, announce=False, clear_screen=True, print_history=True)
+                print(f"✅ 已切换到 Chat: [{self.active_chat_name}] ({self.active_chat_id})")
+            return True
+        print(f"❌ 未识别的 chat 子命令: {sub}\n{self._chat_usage()}")
+        return True
+
     def _shutdown_mcp_runtime(self) -> None:
         manager = getattr(self, "mcp_manager", None)
         clients = getattr(manager, "_clients", None)
@@ -1055,6 +1505,7 @@ class SmartShellAgent:
         self._shutdown_workspace_services(wait=True)
         self._ensure_workspace_dirs()
         self.history_manager = HistoryManager(str(self.ai_workspace_dir))
+        self._load_chat_state()
         if self.input_handler is not None:
             try:
                 if hasattr(self.input_handler, "update_work_directory"):
@@ -3338,7 +3789,7 @@ class SmartShellAgent:
         else:
             sys_prefix = tail_context
         messages: List[Dict[str, Any]] = [{"role": "system", "content": sys_prefix}]
-        for msg in self.conversation_history[-5:]:
+        for msg in self.conversation_history[-CHAT_RECENT_MESSAGES:]:
             messages.append(msg)
 
         current_input = ""
@@ -3348,7 +3799,11 @@ class SmartShellAgent:
                 "【硬性要求】作答前须核对上一条 system 开头的「经验记忆」："
                 "与本轮用户问题相关的条目必须在答复中体现，不得用与这些记录无关的通用助手或供应商设定替代。\n\n"
             )
-        current_input += f"当前 workspace: {self.workspace_name}\n当前工作目录: {self.work_directory}\n"
+        current_input += (
+            f"当前 workspace: {self.workspace_name}\n"
+            f"当前 chat: {self.active_chat_name}\n"
+            f"当前工作目录: {self.work_directory}\n"
+        )
         if self.operation_results:
             current_input += f"最近的操作结果: {self.operation_results[-1]}\n"
         if context:
@@ -3370,6 +3825,8 @@ class SmartShellAgent:
         session_summary_mode: bool = False,
         memory_query_expansion_mode: bool = False,
         image_path: Optional[str] = None,
+        history_user_input: Optional[str] = None,
+        history_skip_user: bool = False,
     ):
         """调用大模型 API 获取回复；支持流式输出。
         reflection_mode 用于记忆内省；session_summary_mode 用于会话摘要压缩；
@@ -3592,16 +4049,20 @@ class SmartShellAgent:
                             except Exception:
                                 continue
                         if record_history:
-                            self.conversation_history.append({"role": "user", "content": user_input})
-                            self.conversation_history.append({"role": "assistant", "content": buffer})
+                            if not history_skip_user:
+                                _u = history_user_input if history_user_input is not None else user_input
+                                self._append_chat_message("user", _u)
+                            self._append_chat_message("assistant", buffer)
                     return gen()
                 else:
                     data = resp.json()
                     message = data["choices"][0]["message"]
                     ai_response = message.get("content", "") or ""
                     if record_history:
-                        self.conversation_history.append({"role": "user", "content": user_input})
-                        self.conversation_history.append({"role": "assistant", "content": ai_response})
+                        if not history_skip_user:
+                            _u = history_user_input if history_user_input is not None else user_input
+                            self._append_chat_message("user", _u)
+                        self._append_chat_message("assistant", ai_response)
                     return message if return_message else ai_response
             elif provider == "openwebui" and openwebui_conf:
                 import requests
@@ -3662,16 +4123,20 @@ class SmartShellAgent:
                             except Exception:
                                 continue
                         if record_history:
-                            self.conversation_history.append({"role": "user", "content": user_input})
-                            self.conversation_history.append({"role": "assistant", "content": buffer})
+                            if not history_skip_user:
+                                _u = history_user_input if history_user_input is not None else user_input
+                                self._append_chat_message("user", _u)
+                            self._append_chat_message("assistant", buffer)
                     return gen()
                 else:
                     data = resp.json()
                     message = data["choices"][0]["message"]
                     ai_response = message.get("content", "") or ""
                     if record_history:
-                        self.conversation_history.append({"role": "user", "content": user_input})
-                        self.conversation_history.append({"role": "assistant", "content": ai_response})
+                        if not history_skip_user:
+                            _u = history_user_input if history_user_input is not None else user_input
+                            self._append_chat_message("user", _u)
+                        self._append_chat_message("assistant", ai_response)
                     return message if return_message else ai_response
             else:
                 # 检查是否为Ollama提供者
@@ -3713,8 +4178,10 @@ class SmartShellAgent:
                                     buffer += delta
                                     yield delta
                         if record_history:
-                            self.conversation_history.append({"role": "user", "content": user_input})
-                            self.conversation_history.append({"role": "assistant", "content": buffer})
+                            if not history_skip_user:
+                                _u = history_user_input if history_user_input is not None else user_input
+                                self._append_chat_message("user", _u)
+                            self._append_chat_message("assistant", buffer)
                     return gen()
                 else:
                     chat_kwargs: Dict[str, Any] = {
@@ -3730,8 +4197,10 @@ class SmartShellAgent:
                     message = response.get("message", {}) or {}
                     ai_response = message.get("content", "") or ""
                     if record_history:
-                        self.conversation_history.append({"role": "user", "content": user_input})
-                        self.conversation_history.append({"role": "assistant", "content": ai_response})
+                        if not history_skip_user:
+                            _u = history_user_input if history_user_input is not None else user_input
+                            self._append_chat_message("user", _u)
+                        self._append_chat_message("assistant", ai_response)
                     return message if return_message else ai_response
         except Exception as e:
             error_msg = f"调用大模型API时出错: {str(e)} (provider: {provider}, model: {model_name})"
@@ -7704,6 +8173,7 @@ big_image.jpg
                         continue
                     if bl == "clear context":
                         self.conversation_history.clear()
+                        self._sync_active_chat_messages()
                         self.operation_results.clear()
                         self._last_auto_removed_ephemeral = None
                         self._session_summary_llm = ""
@@ -7769,6 +8239,9 @@ big_image.jpg
                             )
                         else:
                             print("❌ 请提供记忆 id")
+                        continue
+
+                    if self._handle_chat_builtin_command(builtin_line):
                         continue
 
                     if self._handle_workspace_builtin_command(builtin_line):
@@ -7859,6 +8332,14 @@ big_image.jpg
                         print("  3. /clear history               - 清除命令历史记录")
                         print("  4. /clear context               - 清空 AI 上下文与操作结果缓存")
                         print("  5. /help                        - 显示此帮助信息")
+                        print("\n💬 Chat 命令：")
+                        print("  /chat list                                - 列出当前 workspace 下所有 chat（带索引）")
+                        print("  /chat current                             - 查看当前 chat")
+                        print("  /chat new [name]                          - 新建 chat（可选名称）")
+                        print("  /chat switch <index|id|name>              - 切换 chat（会清屏并加载完整历史）")
+                        print("  /chat rename <selector> <new name>        - 重命名 chat")
+                        print("  /chat delete <index|id|name>              - 删除 chat")
+                        print("  /chat delete all                          - 删除所有 chat，并重建 New Chat")
                         print("\n🗂️ Workspace 命令：")
                         print("  /workspace current                         - 查看当前 workspace")
                         print("  /workspace list                            - 列出所有 workspace")
@@ -8103,6 +8584,7 @@ big_image.jpg
                 max_no_tool_rounds = 3
                 no_tool_rounds = 0
                 tool_round = 0
+                user_message_recorded = False
                 while tool_round < max_tool_rounds:
                     tool_round += 1
                     print("🤖 AI正在思考...")
@@ -8111,10 +8593,14 @@ big_image.jpg
                         context=json.dumps(last_result, ensure_ascii=False) if last_result else "",
                         stream=False,
                         return_message=False,
+                        history_user_input=original_user_task if not user_message_recorded else None,
+                        history_skip_user=user_message_recorded,
                     )
                     if not isinstance(ai_response, str):
                         print(f"❌ AI返回异常: {ai_response}")
                         break
+                    if not user_message_recorded:
+                        user_message_recorded = True
                     if ai_response:
                         display_response = self._strip_tool_json_blocks_for_display(ai_response)
                         if display_response:
@@ -8659,6 +9145,7 @@ big_image.jpg
                 return True
             if bl == "clear context":
                 self.conversation_history.clear()
+                self._sync_active_chat_messages()
                 self.operation_results.clear()
                 self._last_auto_removed_ephemeral = None
                 self._session_summary_llm = ""
@@ -8666,6 +9153,9 @@ big_image.jpg
                 self._last_llm_summary_pair_count = 0
                 print("✅ 已清空 AI 上下文（对话历史与近期操作结果缓存，不影响命令行输入历史）")
                 return True
+            if self._handle_chat_builtin_command(builtin_line):
+                return True
+
             if self._handle_workspace_builtin_command(builtin_line):
                 return True
             if bl.startswith("execution-policy "):
@@ -8741,7 +9231,8 @@ big_image.jpg
         """
         import platform
         
-        prompt = f"[{self.workspace_name}]{str(self.work_directory)}>"
+        workspace_prompt_line = f"[Workspace: {self.workspace_name}][{self.active_chat_name}]"
+        prompt = f"{workspace_prompt_line}\n{str(self.work_directory)}>"
         
         # 重置历史记录索引
         self.history_manager.reset_index()
@@ -8760,6 +9251,7 @@ big_image.jpg
             try:
                 from prompt_toolkit import PromptSession
                 from prompt_toolkit.history import InMemoryHistory
+                from prompt_toolkit.formatted_text import FormattedText
                 try:
                     from prompt_toolkit.cursor_shapes import CursorShape
                     from prompt_toolkit.cursor_shapes import SimpleCursorShapeConfig
@@ -8806,7 +9298,14 @@ big_image.jpg
                     pass
                 
                 # 获取用户输入
-                user_input = session.prompt(prompt).strip()
+                prompt_obj = FormattedText(
+                    [
+                        ("fg:ansibrightblack", workspace_prompt_line),
+                        ("", "\n"),
+                        ("", f"{str(self.work_directory)}>"),
+                    ]
+                )
+                user_input = session.prompt(prompt_obj).strip()
                 
                 # 保存到历史记录
                 if user_input:
