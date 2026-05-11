@@ -3369,10 +3369,12 @@ class SmartShellAgent:
         reflection_mode: bool = False,
         session_summary_mode: bool = False,
         memory_query_expansion_mode: bool = False,
+        image_path: Optional[str] = None,
     ):
         """调用大模型 API 获取回复；支持流式输出。
         reflection_mode 用于记忆内省；session_summary_mode 用于会话摘要压缩；
         memory_query_expansion_mode 用于经验记忆检索前的关键词扩展；均不注入对话历史与经验块。
+        image_path 为可选图片输入；当提供时，仅在最后一条 user 消息附加图片数据。
         """
         try:
             # 确保os未被局部变量遮蔽
@@ -3506,6 +3508,30 @@ class SmartShellAgent:
             if not provider or not model_name:
                 return "❌ 错误：模型未正确配置。请检查 config.json 中的 model 配置。"
 
+            image_data = None
+            image_user_idx = None
+            image_user_text = ""
+            if image_path is not None:
+                # 仅常规任务支持图片输入；分类/摘要/内省等内部模式不接收图片。
+                if (
+                    freedom_combined_review
+                    or minimal_classifier
+                    or reflection_mode
+                    or session_summary_mode
+                    or memory_query_expansion_mode
+                ):
+                    return "❌ 错误：当前内部模式不支持图片输入。"
+                import base64
+                with open(str(image_path), "rb") as image_file:
+                    image_data = base64.b64encode(image_file.read()).decode("utf-8")
+                for idx in range(len(messages) - 1, -1, -1):
+                    if messages[idx].get("role") == "user":
+                        image_user_idx = idx
+                        break
+                if image_user_idx is None:
+                    return "❌ 错误：多模态消息构建失败，缺少用户消息。"
+                image_user_text = str(messages[image_user_idx].get("content", "") or "")
+
             if provider == "openai" and openai_conf:
                 import requests
                 api_key = openai_conf.get("api_key")
@@ -3526,6 +3552,16 @@ class SmartShellAgent:
                     "messages": messages,
                     "stream": stream,
                 }
+                if image_data is not None and image_user_idx is not None:
+                    openai_messages = [dict(m) for m in messages]
+                    openai_messages[image_user_idx] = {
+                        **openai_messages[image_user_idx],
+                        "content": [
+                            {"type": "text", "text": image_user_text},
+                            {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{image_data}"}},
+                        ],
+                    }
+                    payload["messages"] = openai_messages
                 if session_summary_mode or memory_query_expansion_mode:
                     payload["max_tokens"] = 512
                 if memory_query_expansion_mode:
@@ -3587,6 +3623,16 @@ class SmartShellAgent:
                     "messages": messages,
                     "stream": stream,
                 }
+                if image_data is not None and image_user_idx is not None:
+                    openwebui_messages = [dict(m) for m in messages]
+                    openwebui_messages[image_user_idx] = {
+                        **openwebui_messages[image_user_idx],
+                        "content": [
+                            {"type": "text", "text": image_user_text},
+                            {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{image_data}"}},
+                        ],
+                    }
+                    payload_ow["messages"] = openwebui_messages
                 if session_summary_mode or memory_query_expansion_mode:
                     payload_ow["max_tokens"] = 512
                 if memory_query_expansion_mode:
@@ -3636,11 +3682,21 @@ class SmartShellAgent:
                     ollama = _import_ollama_client()
                 except ImportError:
                     return "❌ 错误：未安装 ollama 包。请运行：pip install ollama"
+
+                if image_data is not None and image_user_idx is not None:
+                    ollama_messages = [dict(m) for m in messages]
+                    ollama_messages[image_user_idx] = {
+                        **ollama_messages[image_user_idx],
+                        "content": image_user_text,
+                        "images": [image_data],
+                    }
+                else:
+                    ollama_messages = messages
                 
                 if stream:
                     response = ollama.chat(
                         model=model_name,
-                        messages=messages,
+                        messages=ollama_messages,
                         stream=True
                     )
                     def gen():
@@ -3663,7 +3719,7 @@ class SmartShellAgent:
                 else:
                     chat_kwargs: Dict[str, Any] = {
                         "model": model_name,
-                        "messages": messages,
+                        "messages": ollama_messages,
                         "stream": False,
                     }
                     if session_summary_mode:
@@ -3679,189 +3735,6 @@ class SmartShellAgent:
                     return message if return_message else ai_response
         except Exception as e:
             error_msg = f"调用大模型API时出错: {str(e)} (provider: {provider}, model: {model_name})"
-            return error_msg
-
-    def call_ai_multimodal(self, user_input: str, image_path: str, context: str = "", stream: bool = False):
-        """调用支持多模态的大模型API，复用常规任务上下文，仅在末尾 user 消息附加图片载荷。"""
-        try:
-            import base64
-
-            with open(image_path, 'rb') as image_file:
-                image_data = base64.b64encode(image_file.read()).decode('utf-8')
-
-            messages, record_history = self._build_regular_task_messages(user_input, context)
-            user_idx = None
-            for idx in range(len(messages) - 1, -1, -1):
-                if messages[idx].get("role") == "user":
-                    user_idx = idx
-                    break
-            if user_idx is None:
-                return "❌ 错误：多模态消息构建失败，缺少用户消息。"
-            user_text = str(messages[user_idx].get("content", "") or "")
-
-            provider = self.provider
-            model_name = self.model_name
-            openai_conf = self.openai_conf
-            openwebui_conf = self.openwebui_conf
-            if not provider or not model_name:
-                return "❌ 错误：模型未正确配置。请检查 config.json 中的 model 配置。"
-
-            if provider == "ollama":
-                try:
-                    ollama = _import_ollama_client()
-                except ImportError:
-                    return "❌ 错误：未安装 ollama 包。请运行：pip install ollama"
-                ollama_messages = [dict(m) for m in messages]
-                ollama_messages[user_idx] = {
-                    **ollama_messages[user_idx],
-                    "content": user_text,
-                    "images": [image_data],
-                }
-                if stream:
-                    response = ollama.chat(
-                        model=model_name,
-                        messages=ollama_messages,
-                        stream=True
-                    )
-                    def gen():
-                        buffer = ""
-                        first_chunk = True
-                        for chunk in response:
-                            delta = chunk.get("message", {}).get("content", "")
-                            if delta:
-                                # 如果是第一个chunk，去除开头的空白字符
-                                if first_chunk:
-                                    delta = delta.lstrip()
-                                    first_chunk = False
-                                if delta:  # 再次检查是否为空
-                                    buffer += delta
-                                    yield delta
-                        if record_history:
-                            self.conversation_history.append({"role": "user", "content": user_input})
-                            self.conversation_history.append({"role": "assistant", "content": buffer})
-                    return gen()
-                else:
-                    response = ollama.chat(
-                        model=model_name,
-                        messages=ollama_messages,
-                        stream=False
-                    )
-                    ai_response = (response.get("message", {}) or {}).get("content", "") or ""
-                    if record_history:
-                        self.conversation_history.append({"role": "user", "content": user_input})
-                        self.conversation_history.append({"role": "assistant", "content": ai_response})
-                    return ai_response
-            elif provider == "openai" and openai_conf:
-                import requests
-
-                api_key = openai_conf.get("api_key")
-                base_url = openai_conf.get("base_url", "https://api.openai.com/v1")
-                if not api_key:
-                    return "❌ 错误：OpenAI API密钥未配置。请在 config.json 的 model.params 中设置 api_key。"
-                openai_messages = [dict(m) for m in messages]
-                openai_messages[user_idx] = {
-                    **openai_messages[user_idx],
-                    "content": [
-                        {"type": "text", "text": user_text},
-                        {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{image_data}"}},
-                    ],
-                }
-                url = base_url.rstrip("/") + "/chat/completions"
-                headers = {
-                    "Authorization": f"Bearer {api_key}",
-                    "Content-Type": "application/json",
-                }
-                payload: Dict[str, Any] = {
-                    "model": model_name,
-                    "messages": openai_messages,
-                    "stream": stream,
-                }
-                resp = requests.post(url, headers=headers, json=payload, verify=False, timeout=120, stream=stream)
-                resp.raise_for_status()
-                if stream:
-                    def gen():
-                        buffer = ""
-                        for line in resp.iter_lines():
-                            if not line or not line.startswith(b"data: "):
-                                continue
-                            data = line[6:]
-                            if data.strip() == b"[DONE]":
-                                break
-                            try:
-                                delta = json.loads(data.decode("utf-8", errors="replace"))["choices"][0]["delta"].get("content", "")
-                                if delta:
-                                    buffer += delta
-                                    yield delta
-                            except Exception:
-                                continue
-                        if record_history:
-                            self.conversation_history.append({"role": "user", "content": user_input})
-                            self.conversation_history.append({"role": "assistant", "content": buffer})
-                    return gen()
-                data = resp.json()
-                ai_response = (data.get("choices", [{}])[0].get("message", {}) or {}).get("content", "") or ""
-                if record_history:
-                    self.conversation_history.append({"role": "user", "content": user_input})
-                    self.conversation_history.append({"role": "assistant", "content": ai_response})
-                return ai_response
-            elif provider == "openwebui" and openwebui_conf:
-                import requests
-
-                api_key = openwebui_conf.get("api_key")
-                base_url = openwebui_conf.get("base_url", "http://localhost:8080/v1")
-                if not api_key:
-                    return "❌ 错误：OpenWebUI API密钥未配置。请在 config.json 的 model.params 中设置 api_key。"
-                openwebui_messages = [dict(m) for m in messages]
-                openwebui_messages[user_idx] = {
-                    **openwebui_messages[user_idx],
-                    "content": [
-                        {"type": "text", "text": user_text},
-                        {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{image_data}"}},
-                    ],
-                }
-                url = base_url.rstrip("/") + "/chat/completions"
-                headers = {
-                    "Authorization": f"Bearer {api_key}",
-                    "Content-Type": "application/json",
-                }
-                payload_ow: Dict[str, Any] = {
-                    "model": model_name,
-                    "messages": openwebui_messages,
-                    "stream": stream,
-                }
-                resp = requests.post(url, headers=headers, json=payload_ow, verify=False, timeout=120, stream=stream)
-                resp.raise_for_status()
-                if stream:
-                    def gen():
-                        buffer = ""
-                        for line in resp.iter_lines(decode_unicode=True):
-                            if not line or not line.startswith("data: "):
-                                continue
-                            data = line[6:]
-                            if data.strip() == "[DONE]":
-                                break
-                            try:
-                                delta = json.loads(data)["choices"][0]["delta"].get("content", "")
-                                if delta:
-                                    buffer += delta
-                                    yield delta
-                            except Exception:
-                                continue
-                        if record_history:
-                            self.conversation_history.append({"role": "user", "content": user_input})
-                            self.conversation_history.append({"role": "assistant", "content": buffer})
-                    return gen()
-                data = resp.json()
-                ai_response = (data.get("choices", [{}])[0].get("message", {}) or {}).get("content", "") or ""
-                if record_history:
-                    self.conversation_history.append({"role": "user", "content": user_input})
-                    self.conversation_history.append({"role": "assistant", "content": ai_response})
-                return ai_response
-            else:
-                return f"❌ 错误：不支持的模型提供者 '{provider}'。支持的提供者：ollama, openai, openwebui"
-                
-        except Exception as e:
-            error_msg = f"调用多模态大模型API时出错: {str(e)} (provider: {provider}, model: {model_name})"
             return error_msg
 
     def action_list_directory(self, path: Optional[str] = None, file_filter: Optional[str] = None) -> Dict[str, Any]:
@@ -5588,10 +5461,10 @@ big_image.jpg
                 )
 
             # 调用AI读取图片内容
-            analysis = self.call_ai_multimodal(
+            analysis = self.call_ai(
                 image_user_prompt,
-                str(abs_path),
                 context=image_task_context,
+                image_path=str(abs_path),
             )
             
             return {"success": True, "analysis": analysis, "file": str(abs_path)}
