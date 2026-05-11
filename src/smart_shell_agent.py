@@ -1414,7 +1414,7 @@ class SmartShellAgent:
                 cid = self._next_chat_id()
                 self._chat_entries().append(self._new_chat_entry(cid, name=name))
                 self._save_chat_state()
-            self._activate_chat(cid, announce=False, clear_screen=True, print_history=True)
+            self._activate_chat(cid, announce=False, clear_screen=False, print_history=True)
             print(f"✅ 已创建并切换到 Chat: [{self.active_chat_name}] ({self.active_chat_id})")
             return True
         if sub == "switch":
@@ -1428,7 +1428,7 @@ class SmartShellAgent:
                     print(f"❌ 未找到 chat: {selector}")
                     return True
                 cid = str(target.get("id") or "")
-            print(self._activate_chat(cid, announce=True, clear_screen=True, print_history=True))
+            print(self._activate_chat(cid, announce=True, clear_screen=False, print_history=True))
             return True
         if sub == "rename":
             if len(parts) < 4:
@@ -1463,7 +1463,7 @@ class SmartShellAgent:
                     self._chat_state["chats"] = [self._new_chat_entry(cid, name="New Chat")]
                     self._chat_state["active"] = cid
                     self._save_chat_state()
-                self._activate_chat(cid, announce=False, clear_screen=True, print_history=True)
+                self._activate_chat(cid, announce=False, clear_screen=False, print_history=True)
                 print("✅ 已删除所有 Chat，并自动创建新的 Chat: [New Chat]")
                 return True
             with self._chat_state_lock:
@@ -1484,7 +1484,7 @@ class SmartShellAgent:
                 self._save_chat_state()
             print(f"✅ 已删除 Chat: {target.get('name')} ({target.get('id')})")
             if tid == self.active_chat_id and next_id:
-                self._activate_chat(next_id, announce=False, clear_screen=True, print_history=True)
+                self._activate_chat(next_id, announce=False, clear_screen=False, print_history=True)
                 print(f"✅ 已切换到 Chat: [{self.active_chat_name}] ({self.active_chat_id})")
             return True
         print(f"❌ 未识别的 chat 子命令: {sub}\n{self._chat_usage()}")
