@@ -743,7 +743,18 @@ class WindowsInputHandler:
         try:
             if self.session:
                 # 使用prompt_toolkit
-                user_input = self.session.prompt(prompt).strip()
+                if "\n" in prompt:
+                    first, rest = prompt.split("\n", 1)
+                    prompt_obj = FormattedText(
+                        [
+                            ("fg:ansibrightblack", first),
+                            ("", "\n"),
+                            ("", rest),
+                        ]
+                    )
+                    user_input = self.session.prompt(prompt_obj).strip()
+                else:
+                    user_input = self.session.prompt(prompt).strip()
             else:
                 # 回退到标准input
                 user_input = input(prompt).strip()
