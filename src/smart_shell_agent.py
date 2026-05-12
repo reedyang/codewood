@@ -1255,13 +1255,20 @@ class SmartShellAgent:
             if role == "user":
                 print(f"{_ansi_gray('你:')} {content}")
             elif role == "assistant":
-                print(f"{_ansi_gray('助手:')} {content}")
+                display_response = self._strip_tool_json_blocks_for_display(content)
+                if display_response:
+                    print(f"{_ansi_gray('助手:')} {display_response}")
+                tool_plan = self._find_tool_plan_anywhere(content)
+                if tool_plan:
+                    tool_name, args = tool_plan
+                    if tool_name != "done":
+                        print(f"{_ansi_gray('🔧 执行工具:')} {self._tool_call_summary(tool_name, args)}")
             else:
                 print(content)
 
     def _rewrite_previous_prompt_as_user(self, user_text: str) -> None:
         """
-        Best-effort: rewrite the just-submitted prompt line as a gray '你:' line.
+        Best-effort: clear workspace+prompt lines, then rewrite as gray '你:' line.
         """
         txt = str(user_text or "")
         if not txt:
@@ -1269,6 +1276,12 @@ class SmartShellAgent:
         if not hasattr(sys.stdout, "isatty") or not sys.stdout.isatty():
             return
         try:
+            # Current cursor is on line after Enter:
+            #   [Workspace: ...]
+            #   <cwd>...
+            #   <cursor here>
+            # Move up twice and clear both prompt lines.
+            sys.stdout.write("\x1b[1A\r\x1b[2K")
             sys.stdout.write("\x1b[1A\r\x1b[2K")
             sys.stdout.write(f"{_ansi_gray('你:')} {txt}\n")
             sys.stdout.flush()
@@ -8646,7 +8659,7 @@ big_image.jpg
                     if fallback_plan:
                         tool_name, args = fallback_plan
                         if tool_name != "done":
-                            print(f"🔧 执行工具: {self._tool_call_summary(tool_name, args)}")
+                            print(f"{_ansi_gray('🔧 执行工具:')} {self._tool_call_summary(tool_name, args)}")
                         if tool_name == "text_file":
                             content = ""
                             if isinstance(args, dict):
@@ -9264,7 +9277,7 @@ big_image.jpg
         """
         import platform
         
-        workspace_prompt_line = f"[Workspace: {self.workspace_name}][{self.active_chat_name}]"
+        workspace_prompt_line = f"[Workspace: {self.workspace_name}][Chat: {self.active_chat_name}]"
         prompt = f"{workspace_prompt_line}\n{str(self.work_directory)}>"
         
         # 重置历史记录索引
