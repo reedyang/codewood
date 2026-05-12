@@ -2550,8 +2550,9 @@ class SmartShellAgent:
         lines: List[str] = [self.tools_prompt_template.strip(), "", "Available tools:"]
         lines.insert(
             1,
-            "如需调用某个技能的完整正文，先输出：{\"tool\":\"request_skill_prompt\",\"args\":{\"skill_id\":\"<skill_id>\"}}，"
-            "收到后系统会注入该技能完整提示，再继续后续步骤。",
+            "当且仅当当前会话尚未注入目标 skill 正文时，先输出："
+            "{\"tool\":\"request_skill_prompt\",\"args\":{\"skill_id\":\"<skill_id>\"}}；"
+            "若该 skill 已注入（例如通过 `/skill-id` 显式启用），禁止重复调用 request_skill_prompt，直接继续业务步骤。",
         )
         for t in (self.tool_specs or []):
             fn = (t or {}).get("function", {})
@@ -3817,6 +3818,7 @@ class SmartShellAgent:
             f"当前 smart-shell 根目录（绝对路径）：{self._self_repo_root}\n"
             f"当前 config 目录（绝对路径）：{self.config_dir}\n"
             f"当前 workspace 名称：{self.workspace_name}\n"
+            f"当前 chat 名称（弱提示，仅会话标签，不代表本轮任务目标）：{self.active_chat_name}\n"
             f"当前 workspace 目录（绝对路径）：{self.ai_workspace_dir}\n"
         )
         if mem_block:
@@ -3843,7 +3845,6 @@ class SmartShellAgent:
             )
         current_input += (
             f"当前 workspace: {self.workspace_name}\n"
-            f"当前 chat: {self.active_chat_name}\n"
             f"当前工作目录: {self.work_directory}\n"
         )
         if self.operation_results:
@@ -5131,6 +5132,44 @@ big_image.jpg
             if str(getattr(s, "skill_id", "")).strip().lower() == sid:
                 return True
         return False
+
+    def _canonical_skill_id(self, skill_id_or_name: str) -> str:
+        """Resolve skill id/name to canonical skill_id (lowercased)."""
+        key = str(skill_id_or_name or "").strip().lower()
+        if not key:
+            return ""
+        for s in self.skills or []:
+            sid = str(getattr(s, "skill_id", "")).strip()
+            sname = str(getattr(s, "name", "")).strip()
+            if not sid:
+                continue
+            if key == sid.lower() or (sname and key == sname.lower()):
+                return sid.lower()
+        return key
+
+    def _result_indicates_user_cancelled(self, result: Dict[str, Any]) -> bool:
+        """Best-effort detect user-cancelled operations across tools."""
+        if not isinstance(result, dict):
+            return False
+        for k in ("cancelled", "cancelled_by_user", "user_cancelled"):
+            if bool(result.get(k, False)):
+                return True
+        text_parts = [
+            str(result.get("error") or ""),
+            str(result.get("message") or ""),
+            str(result.get("output") or ""),
+            str(result.get("stderr") or ""),
+        ]
+        text = "\n".join(text_parts).lower()
+        needles = [
+            "用户取消",
+            "取消了操作",
+            "已由用户取消",
+            "aborted by user",
+            "installation aborted",
+            "confirm installation yes(y)/no(n): n",
+        ]
+        return any(n.lower() in text for n in needles)
 
     def _reload_skills_if_workspace_skill_changed(self, paths: List[Path]) -> None:
         try:
@@ -8163,6 +8202,16 @@ big_image.jpg
                 forced_skills: List[Dict[str, str]] = (
                     list(forced_skill.get("skills", [])) if forced_skill else []
                 )
+                # When slash references are present, route the remaining natural-language
+                # part as the task text to avoid the model treating "/skill-id" itself as work.
+                task_user_input = stripped_in
+                try:
+                    if forced_mcp and str(forced_mcp.get("rest") or "").strip():
+                        task_user_input = str(forced_mcp.get("rest") or "").strip()
+                    if forced_skill and str(forced_skill.get("rest") or "").strip():
+                        task_user_input = str(forced_skill.get("rest") or "").strip()
+                except Exception:
+                    task_user_input = stripped_in
 
                 # Built-in slash commands use "/" prefix; direct shell uses "!" prefix.
                 builtin_line: Optional[str] = None
@@ -8544,7 +8593,7 @@ big_image.jpg
 
                 last_result = None
                 self._last_auto_removed_ephemeral = None
-                original_user_task = user_input.strip()
+                original_user_task = task_user_input
                 in_task_execution = True
                 self._active_skill_full_prompt = ""
                 self._active_skill_id = None
@@ -8558,6 +8607,7 @@ big_image.jpg
                         kind = str(e.get("kind", "")).strip() or "unknown"
                         print(f"🧩 启用 MCP 引用: {srv}/{name} ({kind})")
                     forced_mcp_prefix = self._build_forced_mcp_prefix(forced_mcp_entries)
+                preloaded_skill_ids: Set[str] = set()
                 if forced_skills:
                     skill_items = []
                     full_prompts: List[str] = []
@@ -8571,6 +8621,7 @@ big_image.jpg
                         if full_prompt:
                             print(f"🧩 启用 Skill: {sname} ({sid})")
                             full_prompts.append(full_prompt)
+                            preloaded_skill_ids.add(self._canonical_skill_id(sid))
                             if not self._active_skill_id:
                                 self._active_skill_id = sid
                                 self._active_skill_source = "local" if self._is_local_skill_id(sid) else "mcp"
@@ -8586,7 +8637,9 @@ big_image.jpg
                     "\n\n【首轮回复硬性要求（必须遵守）】\n"
                     "1) 对于需要两步及以上完成的任务，先简要说明“将要完成哪些事情”，紧随其后再输出任务编排：Step 1..N，并为每步标注状态（pending/in_progress/completed/failed）。\n"
                     "2) 在同一条回复结尾输出且仅输出一个工具调用 JSON。\n"
-                    "3) 若需要先请求某个 skill 完整提示，也必须先给出上述步骤编排，再在结尾输出 "
+                    "3) 仅当当前会话尚未注入目标 skill 正文时，才可请求 skill 完整提示；"
+                    "若该 skill 已注入（例如用户通过 `/skill-id` 显式启用），禁止再调用 request_skill_prompt，直接进入业务工具调用。"
+                    "如确需请求，也必须先给出上述步骤编排，再在结尾输出 "
                     "{\"tool\":\"request_skill_prompt\",\"args\":{\"skill_id\":\"...\"}}。\n"
                     "4) 对于需要两步及以上完成的任务，禁止首轮直接只给工具调用 JSON 而不做“事项简述 + 步骤编排”。\n"
                     "5) 若用户问题可被上一条 system 开头的【经验记忆】单独完整回答，"
@@ -8615,7 +8668,7 @@ big_image.jpg
                     "{\"tool\":\"<tool_name>\",\"args\":{...}}\n"
                     "```"
                 )
-                next_input = f"{forced_mcp_prefix}{forced_skill_prefix}{user_input}{first_round_contract}"
+                next_input = f"{forced_mcp_prefix}{forced_skill_prefix}{original_user_task}{first_round_contract}"
                 is_first_round = True
                 last_announced_skill_key: Optional[str] = None
                 max_tool_rounds = 20
@@ -8702,6 +8755,24 @@ big_image.jpg
 
                     if tool_name == "request_skill_prompt":
                         sid = str(args.get("skill_id") or "").strip()
+                        canon_sid = self._canonical_skill_id(sid)
+                        active_sid = self._canonical_skill_id(self._active_skill_id or "")
+                        if canon_sid and canon_sid in preloaded_skill_ids:
+                            next_input = (
+                                f"【用户原始需求】\n{original_user_task}\n\n"
+                                f"skill_id=`{sid}` 已由本轮显式 `/skill` 引用预注入。"
+                                "禁止再次调用 request_skill_prompt。请直接输出下一条业务工具调用 JSON。"
+                            )
+                            no_tool_rounds = 0
+                            continue
+                        if active_sid and canon_sid and active_sid == canon_sid and str(self._active_skill_full_prompt or "").strip():
+                            next_input = (
+                                f"【用户原始需求】\n{original_user_task}\n\n"
+                                f"skill_id=`{sid}` 的完整提示已在当前会话中注入。"
+                                "禁止重复调用 request_skill_prompt。请直接输出下一条业务工具调用 JSON。"
+                            )
+                            no_tool_rounds = 0
+                            continue
                         full_prompt = self._build_single_skill_prompt(sid)
                         if not full_prompt:
                             no_tool_rounds += 1
@@ -8711,11 +8782,11 @@ big_image.jpg
                                 "请基于已加载技能索引重试，输出有效的 request_skill_prompt，或直接继续输出业务工具调用 JSON。"
                             )
                             continue
-                        if self._active_skill_id != sid:
+                        if active_sid != canon_sid:
                             print(f"🧩 即将启用 Skill: {sid}")
                         self._active_skill_full_prompt = full_prompt
-                        self._active_skill_id = sid
-                        self._active_skill_source = "local" if self._is_local_skill_id(sid) else "mcp"
+                        self._active_skill_id = canon_sid or sid
+                        self._active_skill_source = "local" if self._is_local_skill_id(canon_sid or sid) else "mcp"
                         next_input = (
                             f"【用户原始需求】\n{original_user_task}\n\n"
                             f"已注入 skill_id=`{sid}` 的完整提示。请继续输出下一条工具调用 JSON。"
@@ -8740,6 +8811,10 @@ big_image.jpg
                     })
                     last_result = result
                     is_first_round = False
+
+                    if self._result_indicates_user_cancelled(result):
+                        print("⏹️ 检测到用户取消，已结束当前任务，不再自动续步。")
+                        break
 
                     if result.get("finished"):
                         print("✅ AI已声明所有操作完成。")

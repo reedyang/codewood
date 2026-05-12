@@ -44,18 +44,13 @@ the `<text>` part MUST be treated as the initial search query immediately.
 Required behavior:
 
 1. Do not ask for another keyword if `<text>` is non-empty.
-2. Run search once:
-
-```text
-python "<BUNDLE_ROOT>/scripts/clawhub_installer.py" search --query "<text>"
-```
-
-3. Run installer interactively:
+2. Run installer interactively once (single command):
 
 ```text
 python "<BUNDLE_ROOT>/scripts/clawhub_installer.py" install --query "<text>" --config-dir "<config dir>" --confirm "YES"
 ```
 
+3. Do NOT run `search --query` before install in slash route; install already contains interactive candidate selection and will print the list once.
 4. For slash route `/clawhub-skill-installer <text>`, MUST NOT use `--detail-url` default selection.
 5. `--detail-url` is allowed only when user explicitly provides that URL in current message.
 6. Do not perform non-installer actions until install finishes or user cancels.
