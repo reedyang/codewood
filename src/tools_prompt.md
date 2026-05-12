@@ -1,7 +1,7 @@
 ## 工具目录（通过提示词注入）
 
 你必须仅输出一个 JSON 对象来选择工具：`{"tool":"name","args":{...}}`。
-其中 **`name` 只能**来自本文件末尾 **Available tools** 列表（对应 `src/tools.jsonc`）或通过 `mcp_call_tool` 调用的 MCP 工具名。**禁止**虚构名称（如 `weather`、`get_forecast`），也**禁止**把 Agent Skills 的目录名 `skill_id` 当作 `tool`：若任务命中技能且当前会话尚未注入该 skill 的完整正文，先用 **`request_skill_prompt`** 加载该 `skill_id`；若已注入（例如用户通过 `/skill-id` 显式启用），禁止重复调用 `request_skill_prompt`，直接按 SKILL 执行 `shell` 等业务工具。
+其中 **`name` 只能**来自本文件末尾 **Available tools** 列表（对应 `src/tools.jsonc`）或通过 `mcp_call_tool` 调用的 MCP 工具名。**禁止**虚构名称（如 `weather`、`get_forecast`），也**禁止**把 Agent Skills 的目录名 `skill_id` 当作 `tool`：若任务命中技能且当前会话尚未注入该 skill 的正文，先用 **`request_skill_prompt`** 加载该 `skill_id`；若已注入（例如用户通过 `/skill-id` 显式启用），默认不要重复调用 `request_skill_prompt`，直接按 SKILL 执行 `shell` 等业务工具。仅当系统提示明确为「分段注入」且确需后续内容时，才可按需调用 `{"tool":"request_skill_prompt","args":{"skill_id":"...","section":n}}` 或 `{"tool":"request_skill_prompt","args":{"skill_id":"...","full":true}}`。
 每一轮回复都必须包含且仅包含一个工具调用 JSON；如果有自然语言内容，必须把该 JSON 放在回复结尾。
 首轮回复是硬约束：对于需要两步及以上完成的任务，首轮必须先简要说明将要完成的目标事项，再给出 Step 1..N 的步骤编排和状态，最后给本轮唯一工具调用 JSON。
 多步任务必须先输出“将要完成哪些目标”的简要说明，再输出任务编排（Step 1..N + 状态），再给本轮唯一工具调用 JSON。
