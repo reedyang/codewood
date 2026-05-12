@@ -896,7 +896,10 @@ class SmartShellAgent:
             return f"ℹ️ 已经在 workspace: {self.workspace_name}"
         self._save_current_workspace_position()
         self._apply_workspace_entry(entry, self.work_directory)
-        self._save_current_workspace_position()
+        # Do NOT save chat state here: _apply_workspace_entry already points
+        # ai_workspace_dir to target workspace, while conversation/chat state is
+        # still from previous workspace before _refresh_workspace_runtime().
+        # Saving now would copy old chats into the new workspace.
         self._refresh_workspace_runtime()
         return f"✅ 已切换到 workspace: {self.workspace_name}\n  current directory: {self.work_directory}"
 
