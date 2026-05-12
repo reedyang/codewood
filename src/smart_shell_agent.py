@@ -258,6 +258,7 @@ class SmartShellAgent:
         self.active_chat_id: str = ""
         self.active_chat_name: str = "New Chat"
         self._chat_state_lock = threading.RLock()
+        self._queued_user_input: Optional[str] = None
         # 会话摘要（经验记忆检索 query 前缀）：滚动摘录始终更新；LLM 摘要按轮次节流更新。
         self._session_summary_llm: str = ""
         self._session_summary_rolling: str = ""
@@ -1240,7 +1241,7 @@ class SmartShellAgent:
         if print_history:
             self._print_chat_history()
         if announce:
-            return f"✅ 已切换到 Chat: [{self.active_chat_name}] ({self.active_chat_id})"
+            return f"✅ 已切换到 Chat: [{self.active_chat_name}]"
         return ""
 
     def _print_chat_history(self) -> None:
@@ -1404,7 +1405,7 @@ class SmartShellAgent:
             marker = "*" if str(c.get("id") or "") == self.active_chat_id else " "
             name = str(c.get("name") or "New Chat")
             cnt = len(c.get("messages") or [])
-            print(f"{marker} [{i}] {name} ({c.get('id')}) - {cnt} msgs")
+            print(f"{marker} [{i}] {name} - {cnt} msgs")
 
     def _handle_chat_builtin_command(self, builtin_line: str) -> bool:
         raw = str(builtin_line or "").strip()
@@ -1498,7 +1499,7 @@ class SmartShellAgent:
             print(f"✅ 已删除 Chat: {target.get('name')} ({target.get('id')})")
             if tid == self.active_chat_id and next_id:
                 self._activate_chat(next_id, announce=False, clear_screen=False, print_history=True)
-                print(f"✅ 已切换到 Chat: [{self.active_chat_name}] ({self.active_chat_id})")
+                print(f"✅ 已切换到 Chat: [{self.active_chat_name}]")
             return True
         print(f"❌ 未识别的 chat 子命令: {sub}\n{self._chat_usage()}")
         return True
@@ -8123,8 +8124,13 @@ big_image.jpg
             in_task_execution = False
             try:
                 self._refresh_input_handler_skill_completions()
-                # 获取用户输入，支持历史记录
-                user_input = self._get_user_input_with_history()
+                # 获取用户输入（含等待态回注输入），统一走主循环处理路径
+                if getattr(self, "_queued_user_input", None) is not None:
+                    user_input = str(self._queued_user_input or "")
+                    self._queued_user_input = None
+                else:
+                    user_input = self._get_user_input_with_history()
+                raw_user_input = str(user_input or "")
                 
                 # 保存到历史记录（非空输入）
                 if user_input.strip():
@@ -8547,7 +8553,7 @@ big_image.jpg
                     continue
 
                 # Natural-language turn: rewrite prompt line as chat-style user line.
-                self._rewrite_previous_prompt_as_user(user_input.strip())
+                self._rewrite_previous_prompt_as_user(raw_user_input.strip())
 
                 last_result = None
                 self._last_auto_removed_ephemeral = None
@@ -8774,6 +8780,7 @@ big_image.jpg
                         print("🙋 需要你补充信息后才能继续。")
                         print(f"❓ {q}")
                         supplement_text = ""
+                        handoff_to_main_loop = False
                         while True:
                             try:
                                 supplement_text = self._get_user_input_with_history().strip()
@@ -8784,14 +8791,14 @@ big_image.jpg
                             if not supplement_text:
                                 print("⚠️ 未收到补充信息，本轮任务暂停。")
                                 break
-                            # During supplement wait-state, execute prefixed commands immediately.
-                            # Keep original task pending until a non-prefixed message arrives.
                             if supplement_text.startswith("/") or supplement_text.startswith("!"):
-                                handled = self._handle_prefixed_command_inline(
-                                    supplement_text, system_cmd_re=system_cmd_re, os_name=os_name
-                                )
-                                if handled:
-                                    continue
+                                # Route prefixed input back to the main loop so it shares
+                                # the exact same parsing/execution path as a normal turn.
+                                self._queued_user_input = supplement_text
+                                handoff_to_main_loop = True
+                                break
+                            break
+                        if handoff_to_main_loop:
                             break
                         if not supplement_text:
                             break
@@ -9160,6 +9167,13 @@ big_image.jpg
         if not s:
             return False
         if s.startswith("/"):
+            # In wait-state, '/skill-id ...' or '/server/tool ...' should be routed by
+            # the main loop task parser, not treated as builtin slash command.
+            try:
+                if self._extract_forced_skill_reference(s) or self._extract_forced_mcp_reference(s):
+                    return False
+            except Exception:
+                pass
             builtin_line = s[1:].lstrip()
             if not builtin_line:
                 print("ℹ️ 单独输入 / 无效。")
