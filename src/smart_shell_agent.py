@@ -88,7 +88,11 @@ def _safe_console_write(text: str, stream: Any = None, append_newline: bool = Tr
 # 导入历史记录管理器
 from .app_logging import get_log_file_path, get_logger, setup_app_logging
 from .history_manager import HistoryManager
-from .skills_loader import build_skills_routing_prefix, load_skills_merged
+from .skills_loader import (
+    build_skills_routing_prefix,
+    calc_skills_dirs_fingerprint,
+    load_skills_merged,
+)
 from .mcp_manager import McpManager, McpError
 
 # memory_manager 在后台线程中导入（见 _schedule_memory_service_background），避免阻塞主线程初始化。
@@ -400,6 +404,11 @@ class SmartShellAgent:
             else Path(__file__).resolve().parent.parent / "skills"
         )
         self.skills = load_skills_merged(
+            self.config_dir,
+            self._builtin_skills_root,
+            self.ai_workspace_dir,
+        )
+        self._skills_dirs_fingerprint = calc_skills_dirs_fingerprint(
             self.config_dir,
             self._builtin_skills_root,
             self.ai_workspace_dir,
@@ -2249,14 +2258,22 @@ class SmartShellAgent:
             daemon=True,
         ).start()
 
-    def _reload_skills(self) -> None:
-        """Reload skills and derived prompt snippets to support hot updates."""
+    def _reload_skills(self, force: bool = False) -> None:
+        """Reload skills only when skill dirs fingerprint changed (or forced)."""
         try:
+            latest_fp = calc_skills_dirs_fingerprint(
+                self.config_dir,
+                self._builtin_skills_root,
+                self.ai_workspace_dir,
+            )
+            if not force and latest_fp == getattr(self, "_skills_dirs_fingerprint", ""):
+                return
             self.skills = load_skills_merged(
                 self.config_dir,
                 self._builtin_skills_root,
                 self.ai_workspace_dir,
             )
+            self._skills_dirs_fingerprint = latest_fp
             self._skills_routing_prefix = build_skills_routing_prefix(self.skills)
             self._refresh_input_handler_skill_completions()
         except Exception as e:

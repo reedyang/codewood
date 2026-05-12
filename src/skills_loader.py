@@ -11,6 +11,8 @@ See: https://github.com/anthropics/skills/blob/main/README.md
 from __future__ import annotations
 
 import re
+import hashlib
+import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -197,6 +199,54 @@ def load_skills_merged(
     for s in workspace:
         by_id[s.skill_id] = s
     return sorted(by_id.values(), key=lambda x: x.skill_id.lower())
+
+
+def _skills_root_fingerprint_part(skills_root: Path) -> Dict[str, object]:
+    root = Path(skills_root).expanduser().resolve()
+    if not root.is_dir():
+        return {"exists": False, "root": str(root), "skills": []}
+    skills: List[Dict[str, object]] = []
+    for child in sorted(root.iterdir(), key=lambda p: p.name.lower()):
+        if not child.is_dir():
+            continue
+        skill_md = child / "SKILL.md"
+        if not skill_md.is_file():
+            continue
+        try:
+            st = skill_md.stat()
+            mtime_ns = int(getattr(st, "st_mtime_ns", int(st.st_mtime * 1e9)))
+            size = int(st.st_size)
+        except OSError:
+            mtime_ns = -1
+            size = -1
+        skills.append(
+            {
+                "id": child.name,
+                "skill_md_mtime_ns": mtime_ns,
+                "skill_md_size": size,
+            }
+        )
+    return {"exists": True, "root": str(root), "skills": skills}
+
+
+def calc_skills_dirs_fingerprint(
+    config_dir: Path,
+    builtin_skills_dir: Optional[Path] = None,
+    workspace_dir: Optional[Path] = None,
+) -> str:
+    """
+    Build a deterministic fingerprint for all skill roots so caller can skip
+    expensive reload when nothing changed.
+    """
+    payload: Dict[str, object] = {
+        "external": _skills_root_fingerprint_part(Path(config_dir).expanduser().resolve() / "skills"),
+        "builtin": _skills_root_fingerprint_part(builtin_skills_dir) if builtin_skills_dir is not None else None,
+        "workspace": _skills_root_fingerprint_part(Path(workspace_dir).expanduser().resolve() / "skills")
+        if workspace_dir is not None
+        else None,
+    }
+    raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha1(raw.encode("utf-8")).hexdigest()
 
 
 def _list_bundled_script_paths(bundle_root: str, max_files: int = 20) -> List[str]:
