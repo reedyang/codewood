@@ -175,9 +175,9 @@ def load_skills_merged(
     Merge workspace, builtin and external Agent Skills.
 
     Priority (low -> high):
-    - Workspace: ``<workspace_dir>/skills/`` (workspace-side skills)
     - Builtin: ``builtin_skills_dir`` (typically ``<project_root>/skills/``)
     - External: ``<config_dir>/skills/`` (user / config-side skills)
+    - Workspace: ``<workspace_dir>/skills/`` (workspace-side skills)
 
     Same ``skill_id`` (folder name): higher-priority source overrides lower-priority source.
     """
@@ -190,11 +190,11 @@ def load_skills_merged(
         builtin = _scan_skills_root(builtin_skills_dir)
 
     by_id: Dict[str, SkillRecord] = {}
-    for s in workspace:
-        by_id[s.skill_id] = s
     for s in builtin:
         by_id[s.skill_id] = s
     for s in external:
+        by_id[s.skill_id] = s
+    for s in workspace:
         by_id[s.skill_id] = s
     return sorted(by_id.values(), key=lambda x: x.skill_id.lower())
 

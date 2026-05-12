@@ -2583,7 +2583,7 @@ class SmartShellAgent:
 
         Resolution order:
         1) Local loaded Agent Skills (`self.skills`)
-        2) MCP prompts fallback (prefer csp-ai-agent `prompts/get`)
+        2) MCP prompts fallback
         """
         sid = (skill_id or "").strip().lower()
         if not sid:
@@ -2594,7 +2594,7 @@ class SmartShellAgent:
                 target = s
                 break
         if target is None:
-            # Fallback: treat `skill/...` as MCP prompt id (e.g. csp-ai-agent resources).
+            # Fallback: treat `skill/...` as MCP prompt id.
             sid_raw = (skill_id or "").strip()
             if not sid_raw:
                 return None
@@ -2612,14 +2612,7 @@ class SmartShellAgent:
                     n = str(name).strip()
                     if not n:
                         continue
-                    if n == "csp-ai-agent":
-                        server_candidates.insert(0, n)
-                    else:
-                        server_candidates.append(n)
-            else:
-                server_candidates = ["csp-ai-agent"]
-            if "csp-ai-agent" not in [s.lower() for s in server_candidates]:
-                server_candidates.insert(0, "csp-ai-agent")
+                    server_candidates.append(n)
 
             for server in server_candidates:
                 srv = str(server).strip()
@@ -7331,24 +7324,6 @@ big_image.jpg
                 return {"success": False, "error": "缺少tool参数"}
             if not isinstance(arguments, dict):
                 return {"success": False, "error": "arguments 必须为 object"}
-            active_sid = str(getattr(self, "_active_skill_id", "") or "").strip().lower()
-            active_src = str(getattr(self, "_active_skill_source", "") or "").strip().lower()
-            tool_s = str(tool_name).strip().lower()
-            if (
-                active_sid
-                and active_src == "local"
-                and str(server).strip().lower() == "csp-ai-agent"
-                and (tool_s == active_sid or tool_s == f"skill/{active_sid}")
-            ):
-                return {
-                    "success": False,
-                    "retryable": False,
-                    "blocked_by_guard": True,
-                    "error": (
-                        f"当前已加载本地 skill `{active_sid}`，禁止将同名 skill 当作 csp-ai-agent MCP tool 直接调用。"
-                        "请按本地 skill 正文继续执行（例如 mcp_call_tool 调 gitlab_get_merge_request + shell checkout + 本地评审步骤）。"
-                    ),
-                }
             try:
                 st = self.mcp_manager.get_status().get("servers", {}).get(str(server), {})
                 state_raw = str(st.get("state", "pending") or "pending").lower()
