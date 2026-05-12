@@ -6387,7 +6387,21 @@ big_image.jpg
     def _tool_call_summary(self, tool_name: str, args: Dict[str, Any]) -> str:
         """Generate one-line tool execution summary."""
         a = args if isinstance(args, dict) else {}
-        for k in ("path", "filename", "file", "source", "target", "command", "query"):
+        for k in (
+            "skill_id",
+            "mcp",
+            "resource_id",
+            "server",
+            "tool",
+            "url",
+            "path",
+            "filename",
+            "file",
+            "source",
+            "target",
+            "command",
+            "query",
+        ):
             v = a.get(k)
             if isinstance(v, str) and v.strip():
                 vv = v.strip().replace("\n", " ")
