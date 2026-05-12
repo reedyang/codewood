@@ -83,11 +83,12 @@ def _make_session(verify_ssl: bool) -> requests.Session:
 
 
 def _fetch_text(url: str, timeout_sec: int = 20, verify_ssl: bool = True) -> str:
+    request_timeout = (min(timeout_sec, 4), timeout_sec)
     if not verify_ssl:
         urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
     session = _make_session(verify_ssl=verify_ssl)
     try:
-        resp = session.get(url, timeout=timeout_sec, verify=verify_ssl)
+        resp = session.get(url, timeout=request_timeout, verify=verify_ssl)
         resp.raise_for_status()
         return resp.text
     except requests.exceptions.SSLError as exc:
@@ -101,11 +102,12 @@ def _fetch_text(url: str, timeout_sec: int = 20, verify_ssl: bool = True) -> str
 
 
 def _fetch_bytes(url: str, timeout_sec: int = 30, verify_ssl: bool = True) -> bytes:
+    request_timeout = (min(timeout_sec, 4), timeout_sec)
     if not verify_ssl:
         urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
     session = _make_session(verify_ssl=verify_ssl)
     try:
-        resp = session.get(url, timeout=timeout_sec, verify=verify_ssl)
+        resp = session.get(url, timeout=request_timeout, verify=verify_ssl)
         resp.raise_for_status()
         return resp.content
     except requests.RequestException as exc:
