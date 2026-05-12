@@ -8144,38 +8144,11 @@ big_image.jpg
                 forced_mcp_entries: List[Dict[str, str]] = (
                     list(forced_mcp.get("entries", [])) if forced_mcp else []
                 )
-                if forced_mcp and forced_mcp.get("rest") is not None:
-                    user_input = str(forced_mcp.get("rest") or "")
-                    stripped_in = user_input.strip()
-                if forced_mcp_entries and not stripped_in:
-                    refs = ", ".join([f"{e.get('server')}/{e.get('name')}" for e in forced_mcp_entries])
-                    print(
-                        f"🧩 已指定 MCP 目标: {refs}。"
-                        "请在同一行补充任务内容，例如："
-                        f"使用 {refs} 审查这次改动"
-                    )
-                    continue
 
                 forced_skill: Optional[Dict[str, Any]] = self._extract_forced_skill_reference(stripped_in)
                 forced_skills: List[Dict[str, str]] = (
                     list(forced_skill.get("skills", [])) if forced_skill else []
                 )
-                if (forced_skill and not forced_skill.get("rest")) and not forced_mcp_entries:
-                    skill_text = ", ".join(
-                        [f"{s.get('name')} ({s.get('skill_id')})" for s in forced_skills]
-                    )
-                    hint_skill = forced_skills[0].get("skill_id") if forced_skills else "skill-id"
-                    print(
-                        f"🧩 已指定强制技能: {skill_text}。"
-                        "请在同一行提供任务内容，例如："
-                        f"审查代码 /{hint_skill} <MR链接>"
-                    )
-                    continue
-                if forced_skill and forced_skill.get("rest"):
-                    user_input = forced_skill["rest"]
-                    stripped_in = user_input.strip()
-                    if not stripped_in:
-                        continue
 
                 # Built-in slash commands use "/" prefix; direct shell uses "!" prefix.
                 builtin_line: Optional[str] = None

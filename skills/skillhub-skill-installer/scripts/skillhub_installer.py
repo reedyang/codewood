@@ -10,6 +10,7 @@ import re
 import ssl
 import shutil
 import sys
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from html import unescape
@@ -36,6 +37,9 @@ UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 )
+
+COMPANION_FETCH_TIMEOUT_SEC = 4
+COMPANION_FETCH_BUDGET_SEC = 8
 
 
 @dataclass
@@ -71,10 +75,11 @@ def _prompt_inline(prompt: str) -> str:
 
 
 def _fetch(url: str, timeout_sec: int = 20, verify_ssl: bool = True) -> str:
+    request_timeout = (min(timeout_sec, 4), timeout_sec)
     if not verify_ssl:
         urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
         try:
-            r = requests.get(url, timeout=timeout_sec, headers={"User-Agent": UA}, verify=False)
+            r = requests.get(url, timeout=request_timeout, headers={"User-Agent": UA}, verify=False)
             r.raise_for_status()
             return r.text
         except requests.RequestException as exc:
@@ -87,7 +92,7 @@ def _fetch(url: str, timeout_sec: int = 20, verify_ssl: bool = True) -> str:
     session.mount("https://", adapter)
     session.mount("http://", adapter)
     try:
-        r = session.get(url, timeout=timeout_sec, headers={"User-Agent": UA})
+        r = session.get(url, timeout=request_timeout, headers={"User-Agent": UA})
         r.raise_for_status()
         return r.text
     except requests.exceptions.SSLError as exc:
@@ -505,7 +510,14 @@ def _extract_companion_files(detail_html: str) -> List[Tuple[str, str]]:
     return out
 
 
-def _fetch_github_companion_files(github_url: str) -> List[Tuple[str, str]]:
+def _fetch_github_companion_files(
+    github_url: str,
+    timeout_sec: int = COMPANION_FETCH_TIMEOUT_SEC,
+    deadline_ts: Optional[float] = None,
+) -> List[Tuple[str, str]]:
+    def _deadline_reached() -> bool:
+        return deadline_ts is not None and time.monotonic() >= deadline_ts
+
     repo_owner, repo_name, skill_owner, skill_id = _parse_github_skill_ref(github_url)
     if not repo_owner or not repo_name:
         return []
@@ -516,7 +528,11 @@ def _fetch_github_companion_files(github_url: str) -> List[Tuple[str, str]]:
         out_root: List[Tuple[str, str]] = []
         seen_root: set[str] = set()
         try:
-            raw = _fetch(f"https://api.github.com/repos/{repo_owner}/{repo_name}/contents", timeout_sec=8, verify_ssl=True)
+            raw = _fetch(
+                f"https://api.github.com/repos/{repo_owner}/{repo_name}/contents",
+                timeout_sec=timeout_sec,
+                verify_ssl=True,
+            )
             items = json.loads(raw)
         except Exception:
             items = []
@@ -536,8 +552,10 @@ def _fetch_github_companion_files(github_url: str) -> List[Tuple[str, str]]:
                 download_url = str(item.get("download_url") or "").strip()
                 if not download_url:
                     continue
+                if _deadline_reached():
+                    return out_root
                 try:
-                    txt = _fetch(download_url, timeout_sec=8, verify_ssl=True)
+                    txt = _fetch(download_url, timeout_sec=timeout_sec, verify_ssl=True)
                 except RuntimeError:
                     continue
                 if "\x00" in txt:
@@ -548,7 +566,11 @@ def _fetch_github_companion_files(github_url: str) -> List[Tuple[str, str]]:
         # Fallback: parse GitHub HTML when API is rate-limited.
         if not out_root:
             try:
-                html = _fetch(f"https://github.com/{repo_owner}/{repo_name}", timeout_sec=8, verify_ssl=True)
+                html = _fetch(
+                    f"https://github.com/{repo_owner}/{repo_name}",
+                    timeout_sec=timeout_sec,
+                    verify_ssl=True,
+                )
             except RuntimeError:
                 html = ""
             for m in re.finditer(
@@ -567,8 +589,10 @@ def _fetch_github_companion_files(github_url: str) -> List[Tuple[str, str]]:
                 if rel in seen_root:
                     continue
                 raw_url = f"https://raw.githubusercontent.com/{repo_owner}/{repo_name}/{branch}/{rel}"
+                if _deadline_reached():
+                    return out_root
                 try:
-                    txt = _fetch(raw_url, timeout_sec=8, verify_ssl=True)
+                    txt = _fetch(raw_url, timeout_sec=timeout_sec, verify_ssl=True)
                 except RuntimeError:
                     continue
                 if "\x00" in txt:
@@ -584,10 +608,12 @@ def _fetch_github_companion_files(github_url: str) -> List[Tuple[str, str]]:
 
     out: List[Tuple[str, str]] = []
     seen: set[str] = set()
+    if _deadline_reached():
+        return out
     try:
         tree_raw = _fetch(
             f"https://api.github.com/repos/{repo_owner}/{repo_name}/git/trees/main?recursive=1",
-            timeout_sec=8,
+            timeout_sec=timeout_sec,
             verify_ssl=True,
         )
         tree_payload = json.loads(tree_raw)
@@ -618,8 +644,10 @@ def _fetch_github_companion_files(github_url: str) -> List[Tuple[str, str]]:
             if not _looks_like_companion_filename(rel):
                 continue
             download_url = f"https://raw.githubusercontent.com/{repo_owner}/{repo_name}/main/{path}"
+            if _deadline_reached():
+                return out
             try:
-                txt = _fetch(download_url, timeout_sec=8, verify_ssl=True)
+                txt = _fetch(download_url, timeout_sec=timeout_sec, verify_ssl=True)
             except RuntimeError:
                 continue
             if "\x00" in txt:
@@ -892,8 +920,13 @@ def cmd_install(args: argparse.Namespace) -> int:
     (target_dir / "SKILL.md").write_text(skill_md, encoding="utf-8")
     # Merge companion files from GitHub and SkillHub detail page.
     merged_companion: dict[str, str] = {}
+    companion_deadline = time.monotonic() + COMPANION_FETCH_BUDGET_SEC
     try:
-        primary_companion = _fetch_github_companion_files(github_url)
+        primary_companion = _fetch_github_companion_files(
+            github_url,
+            timeout_sec=COMPANION_FETCH_TIMEOUT_SEC,
+            deadline_ts=companion_deadline,
+        )
     except Exception:
         primary_companion = []
     for rel, content in primary_companion:
@@ -903,10 +936,16 @@ def cmd_install(args: argparse.Namespace) -> int:
     # Merge additional companion files from extra GitHub repo links on detail page.
     alt_links_1 = _extract_github_repo_links(detail_html)[:3]
     for alt_repo in alt_links_1:
+        if time.monotonic() >= companion_deadline:
+            break
         if github_url and alt_repo.rstrip("/") in github_url.rstrip("/"):
             continue
         try:
-            alt_files = _fetch_github_companion_files(alt_repo)
+            alt_files = _fetch_github_companion_files(
+                alt_repo,
+                timeout_sec=COMPANION_FETCH_TIMEOUT_SEC,
+                deadline_ts=companion_deadline,
+            )
         except Exception:
             alt_files = []
         for rel, content in alt_files:
@@ -916,10 +955,16 @@ def cmd_install(args: argparse.Namespace) -> int:
     blob = "\n".join(merged_companion.values())
     alt_links_2 = _extract_github_repo_links_from_text(blob)[:3]
     for alt_repo in alt_links_2:
+        if time.monotonic() >= companion_deadline:
+            break
         if github_url and alt_repo.rstrip("/") in github_url.rstrip("/"):
             continue
         try:
-            alt_files = _fetch_github_companion_files(alt_repo)
+            alt_files = _fetch_github_companion_files(
+                alt_repo,
+                timeout_sec=COMPANION_FETCH_TIMEOUT_SEC,
+                deadline_ts=companion_deadline,
+            )
         except Exception:
             alt_files = []
         for rel, content in alt_files:
