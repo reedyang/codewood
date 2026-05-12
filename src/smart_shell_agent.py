@@ -88,7 +88,7 @@ def _safe_console_write(text: str, stream: Any = None, append_newline: bool = Tr
 # 导入历史记录管理器
 from .app_logging import get_log_file_path, get_logger, setup_app_logging
 from .history_manager import HistoryManager
-from .skills_loader import build_skills_routing_prefix, build_skills_system_append, load_skills_merged
+from .skills_loader import build_skills_routing_prefix, load_skills_merged
 from .mcp_manager import McpManager, McpError
 
 # memory_manager 在后台线程中导入（见 _schedule_memory_service_background），避免阻塞主线程初始化。
@@ -405,7 +405,6 @@ class SmartShellAgent:
             self.ai_workspace_dir,
         )
         self._skills_routing_prefix = build_skills_routing_prefix(self.skills)
-        self._skills_system_append = build_skills_system_append(self.skills)
         self._active_skill_full_prompt: str = ""
         self._active_skill_id: Optional[str] = None
         self._active_skill_source: Optional[str] = None  # local | mcp
@@ -2259,7 +2258,6 @@ class SmartShellAgent:
                 self.ai_workspace_dir,
             )
             self._skills_routing_prefix = build_skills_routing_prefix(self.skills)
-            self._skills_system_append = build_skills_system_append(self.skills)
             self._refresh_input_handler_skill_completions()
         except Exception as e:
             print(f"⚠️ Skill 热更新失败，继续使用当前已加载版本: {e}")
@@ -8597,7 +8595,7 @@ big_image.jpg
                         skill_items.append(f"`{sname}`(skill_id=`{sid}`)")
                         full_prompt = self._build_single_skill_prompt(sid)
                         if full_prompt:
-                            print(f"🧩 启用 Skill: {sname} ({sid})")
+                            print(f"🧩 启用 Skill: {sname}")
                             full_prompts.append(full_prompt)
                             preloaded_skill_ids.add(self._canonical_skill_id(sid))
                             if not self._active_skill_id:
