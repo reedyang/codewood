@@ -147,6 +147,37 @@ Other products can implement the same **principles** without copying implementat
 
 ---
 
+## 11. Minimal implementation sketch: Skill Context Pack
+
+To improve large-repo navigation without changing existing skill execution flow, Smart Shell can prepend a compact "Skill Context Pack" when injecting skill prompts.
+
+**Scope (minimal, backward-compatible):**
+
+- Keep existing `request_skill_prompt` behavior and full skill body injection unchanged.
+- Add a compact structured summary before the full body to improve first-step planning.
+- Do not add new tools or change task loop semantics.
+
+**Local skill pack (bundle-based):**
+
+- `skill_id`, `bundle_root`, `SKILL.md` absolute path
+- discovered bundled scripts (`scripts/*.py`, bounded count)
+- discovered references (`references/*.md`, bounded count)
+- first few markdown headings from `SKILL.md` body
+
+**MCP prompt skill pack:**
+
+- source server, prompt id
+- rendered message count / char count
+- concise execution hint
+
+**Current Smart Shell implementation note:**
+
+- Context Pack is prepended in `src/smart_shell_agent.py` (`_build_single_skill_prompt`) for both local and MCP skill paths.
+- For long `SKILL.md`, Smart Shell injects `Context Pack + first N sections` first, then allows on-demand expansion via `request_skill_prompt` arguments (`section` or `full=true`).
+- Skill merge priority in runtime is: `builtin -> config_dir -> workspace` (higher layer overrides lower layer by `skill_id`).
+
+---
+
 ## Document history
 
 - Introduced to capture host–skill boundaries and portability expectations for Agent Skills in Smart Shell and compatible agents.

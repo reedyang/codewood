@@ -92,6 +92,7 @@ from .skills_loader import (
     build_skills_routing_prefix,
     calc_skills_dirs_fingerprint,
     load_skills_merged,
+    _list_bundled_script_paths,
 )
 from .mcp_manager import McpManager, McpError
 
@@ -223,6 +224,9 @@ SESSION_SUMMARY_LLM_INTERVAL_PAIRS = 6
 SESSION_SUMMARY_LLM_MAX_CHARS = 1200
 SESSION_SUMMARY_LLM_HISTORY_MSGS = 16
 CHAT_RECENT_MESSAGES = 10
+SKILL_PROMPT_LONG_BODY_THRESHOLD = 7000
+SKILL_PROMPT_INITIAL_SECTIONS = 3
+SKILL_PROMPT_MAX_SECTION_CHARS = 2600
 
 # workspace 根下允许的顶层目录名（其它新建路径须落在这些目录之下或更深子路径）
 _AI_WORKSPACE_TOP_LEVEL_DIR_NAMES = frozenset(
@@ -417,6 +421,9 @@ class SmartShellAgent:
         self._active_skill_full_prompt: str = ""
         self._active_skill_id: Optional[str] = None
         self._active_skill_source: Optional[str] = None  # local | mcp
+        self._active_skill_section: int = 0
+        self._active_skill_total_sections: int = 0
+        self._active_skill_chunked: bool = False
 
         # 初始化输入处理器，确保属性存在
         self.input_handler = None
@@ -2570,7 +2577,12 @@ class SmartShellAgent:
             1,
             "当且仅当当前会话尚未注入目标 skill 正文时，先输出："
             "{\"tool\":\"request_skill_prompt\",\"args\":{\"skill_id\":\"<skill_id>\"}}；"
-            "若该 skill 已注入（例如通过 `/skill-id` 显式启用），禁止重复调用 request_skill_prompt，直接继续业务步骤。",
+            "若该 skill 已注入（例如通过 `/skill-id` 显式启用），默认禁止重复调用 request_skill_prompt，直接继续业务步骤；"
+            "但当技能正文为分段注入时，可按需调用 "
+            "{\"tool\":\"request_skill_prompt\",\"args\":{\"skill_id\":\"<skill_id>\",\"section\":<n>}} "
+            "加载第 n 段，或用 "
+            "{\"tool\":\"request_skill_prompt\",\"args\":{\"skill_id\":\"<skill_id>\",\"full\":true}} "
+            "加载完整正文。",
         )
         for t in (self.tool_specs or []):
             fn = (t or {}).get("function", {})
@@ -2593,7 +2605,160 @@ class SmartShellAgent:
             print(f"⚠️ tools_prompt.md 加载失败: {e}")
             return "## Tool Catalog (prompt-injected)"
 
-    def _build_single_skill_prompt(self, skill_id: str) -> Optional[str]:
+    def _build_local_skill_context_pack(self, target: Any) -> str:
+        """
+        Build a compact, structured context pack for one local skill bundle.
+        This keeps the model focused on high-signal files before reading long body text.
+        """
+        try:
+            bundle_root = Path(str(getattr(target, "bundle_root", "") or "")).resolve()
+        except Exception:
+            bundle_root = Path(str(getattr(target, "bundle_root", "") or ""))
+        skill_md = bundle_root / "SKILL.md"
+        scripts = _list_bundled_script_paths(str(bundle_root), max_files=12)
+        refs: List[str] = []
+        try:
+            refs_dir = bundle_root / "references"
+            if refs_dir.is_dir():
+                refs = [str(p.resolve()) for p in sorted(refs_dir.glob("*.md"), key=lambda p: p.name.lower())[:8]]
+        except Exception:
+            refs = []
+
+        body = str(getattr(target, "body", "") or "")
+        headings: List[str] = []
+        for line in body.splitlines():
+            s = str(line).strip()
+            if s.startswith("#"):
+                headings.append(s)
+                if len(headings) >= 10:
+                    break
+
+        lines: List[str] = [
+            "#### Skill Context Pack (compact)",
+            f"- skill_id: `{getattr(target, 'skill_id', '')}`",
+            f"- bundle_root: `{bundle_root}`",
+            f"- skill_md: `{skill_md}`",
+            f"- scripts_count: {len(scripts)}",
+            f"- references_count: {len(refs)}",
+        ]
+        if scripts:
+            lines.append("- scripts (absolute paths):")
+            for p in scripts:
+                lines.append(f"  - `{p}`")
+        if refs:
+            lines.append("- references (absolute paths):")
+            for p in refs:
+                lines.append(f"  - `{p}`")
+        if headings:
+            lines.append("- key headings:")
+            for h in headings:
+                lines.append(f"  - {h}")
+        lines.append("- usage_hint: 优先基于上述路径做定点读取/执行，避免无界搜索。")
+        return "\n".join(lines)
+
+    def _build_mcp_skill_context_pack(self, server: str, skill_id: str, rendered_parts: List[str]) -> str:
+        """
+        Build a compact context pack for MCP prompt-backed skills.
+        """
+        char_count = sum(len(str(p or "")) for p in (rendered_parts or []))
+        lines = [
+            "#### Skill Context Pack (compact)",
+            f"- source: `mcp`",
+            f"- server: `{server}`",
+            f"- skill_id: `{skill_id}`",
+            f"- prompt_messages: {len(rendered_parts or [])}",
+            f"- rendered_chars: {char_count}",
+            "- usage_hint: 先按消息顺序执行首个可落地步骤，再根据结果迭代。",
+        ]
+        return "\n".join(lines)
+
+    def _split_skill_body_sections(self, text: str) -> List[str]:
+        """
+        Split long SKILL body into semantic sections using markdown headings first.
+        Falls back to character windows when headings are not enough.
+        """
+        body = str(text or "").strip()
+        if not body:
+            return []
+        lines = body.splitlines()
+        blocks: List[str] = []
+        cur: List[str] = []
+        for ln in lines:
+            s = str(ln).lstrip()
+            if s.startswith("#") and cur:
+                blocks.append("\n".join(cur).strip())
+                cur = [ln]
+            else:
+                cur.append(ln)
+        if cur:
+            blocks.append("\n".join(cur).strip())
+        blocks = [b for b in blocks if b.strip()]
+        if len(blocks) <= 1:
+            chunks: List[str] = []
+            start = 0
+            while start < len(body):
+                end = min(len(body), start + SKILL_PROMPT_MAX_SECTION_CHARS)
+                chunks.append(body[start:end].strip())
+                start = end
+            return [c for c in chunks if c]
+
+        merged: List[str] = []
+        acc = ""
+        for b in blocks:
+            if not acc:
+                acc = b
+                continue
+            if len(acc) + 2 + len(b) <= SKILL_PROMPT_MAX_SECTION_CHARS:
+                acc = f"{acc}\n\n{b}"
+            else:
+                merged.append(acc.strip())
+                acc = b
+        if acc.strip():
+            merged.append(acc.strip())
+        return [m for m in merged if m]
+
+    def _render_skill_section_payload(
+        self,
+        sections: List[str],
+        requested_section: Optional[int],
+        full: bool,
+    ) -> Tuple[str, Dict[str, Any]]:
+        total = len(sections)
+        if total <= 0:
+            return "", {"chunked": False, "section": 0, "total": 0, "full": True}
+        if full or total <= SKILL_PROMPT_INITIAL_SECTIONS:
+            payload = "\n\n".join(sections)
+            return payload, {"chunked": False, "section": 1, "total": total, "full": True}
+
+        idx = int(requested_section or 1)
+        idx = 1 if idx < 1 else idx
+        idx = total if idx > total else idx
+        payload = sections[idx - 1]
+        hint_lines = [
+            "",
+            f"[Skill 分段注入] 当前仅注入第 {idx}/{total} 段，以控制 prompt 体积。",
+        ]
+        if idx < total:
+            hint_lines.append(
+                "如需下一段，请调用 "
+                f'{{"tool":"request_skill_prompt","args":{{"skill_id":"...","section":{idx + 1}}}}}。'
+            )
+        hint_lines.append(
+            '如需完整正文，可调用 {"tool":"request_skill_prompt","args":{"skill_id":"...","full":true}}。'
+        )
+        return payload + "\n" + "\n".join(hint_lines), {
+            "chunked": True,
+            "section": idx,
+            "total": total,
+            "full": False,
+        }
+
+    def _build_single_skill_prompt(
+        self,
+        skill_id: str,
+        requested_section: Optional[int] = None,
+        full: bool = False,
+    ) -> Tuple[Optional[str], Dict[str, Any]]:
         """Build full prompt appendix for one selected skill.
 
         Resolution order:
@@ -2602,7 +2767,7 @@ class SmartShellAgent:
         """
         sid = (skill_id or "").strip().lower()
         if not sid:
-            return None
+            return None, {"chunked": False, "section": 0, "total": 0, "full": True}
         target = None
         for s in self.skills or []:
             if str(getattr(s, "skill_id", "")).strip().lower() == sid:
@@ -2612,10 +2777,10 @@ class SmartShellAgent:
             # Fallback: treat `skill/...` as MCP prompt id.
             sid_raw = (skill_id or "").strip()
             if not sid_raw:
-                return None
+                return None, {"chunked": False, "section": 0, "total": 0, "full": True}
             mcp = getattr(self, "mcp_manager", None)
             if mcp is None:
-                return None
+                return None, {"chunked": False, "section": 0, "total": 0, "full": True}
             server_candidates: List[str] = []
             cfg_servers = {}
             try:
@@ -2666,30 +2831,49 @@ class SmartShellAgent:
                         rendered_parts.append(desc)
                     if not rendered_parts:
                         continue
+                    payload_text, meta = self._render_skill_section_payload(
+                        sections=rendered_parts,
+                        requested_section=requested_section,
+                        full=full,
+                    )
                     lines = [
                         "",
                         "## Agent Skill（按需加载）",
                         f"### MCP Skill Prompt: `{sid_raw}` · server `{srv}`",
                         f"**Description:** {desc or '(no description)'}",
                         "",
+                        self._build_mcp_skill_context_pack(srv, sid_raw, rendered_parts),
+                        "",
                         "【优先级】当前请求已显式指定该 skill：若与 AGENTS.md 或通用系统说明冲突，"
                         "按本 skill 正文执行（安全/越权/破坏性硬限制除外）。",
                         "",
                         "以下正文来自 MCP `prompts/get` 返回，请严格按其步骤执行：",
                         "",
-                        "\n\n".join(rendered_parts),
+                        payload_text,
                         "",
                     ]
-                    return "\n".join(lines)
+                    return "\n".join(lines), meta
                 except Exception:
                     continue
-            return None
+            return None, {"chunked": False, "section": 0, "total": 0, "full": True}
         _br = Path(target.bundle_root)
+        body = str(getattr(target, "body", "") or "")
+        if full or len(body) < SKILL_PROMPT_LONG_BODY_THRESHOLD:
+            sections = [body]
+        else:
+            sections = self._split_skill_body_sections(body)
+        payload_text, meta = self._render_skill_section_payload(
+            sections=sections,
+            requested_section=requested_section,
+            full=full,
+        )
         lines = [
             "",
             "## Agent Skill（按需加载）",
             f"### Skill: `{target.name}` · 目录 `{target.skill_id}`",
             f"**Description:** {target.description}",
+            "",
+            self._build_local_skill_context_pack(target),
             "",
             "【优先级】当前请求已显式指定该 skill：若与 AGENTS.md 或通用系统说明冲突，"
             "按本 skill 正文执行（安全/越权/破坏性硬限制除外）。",
@@ -2698,10 +2882,10 @@ class SmartShellAgent:
             f"**SKILL.md path (same bundle):** `{_br / 'SKILL.md'}`",
             "技能正文中的 `<skill_root>` 即指上文的 **Skill bundle root**。",
             "",
-            target.body,
+            payload_text,
             "",
         ]
-        return "\n".join(lines)
+        return "\n".join(lines), meta
 
     def _get_slash_skill_commands(self) -> List[str]:
         cmds: List[str] = []
@@ -8591,6 +8775,9 @@ big_image.jpg
                 self._active_skill_full_prompt = ""
                 self._active_skill_id = None
                 self._active_skill_source = None
+                self._active_skill_section = 0
+                self._active_skill_total_sections = 0
+                self._active_skill_chunked = False
                 forced_skill_prefix = ""
                 forced_mcp_prefix = ""
                 if forced_mcp_entries:
@@ -8610,7 +8797,7 @@ big_image.jpg
                         if not sid:
                             continue
                         skill_items.append(f"`{sname}`(skill_id=`{sid}`)")
-                        full_prompt = self._build_single_skill_prompt(sid)
+                        full_prompt, meta = self._build_single_skill_prompt(sid)
                         if full_prompt:
                             print(f"🧩 启用 Skill: {sname}")
                             full_prompts.append(full_prompt)
@@ -8618,6 +8805,9 @@ big_image.jpg
                             if not self._active_skill_id:
                                 self._active_skill_id = sid
                                 self._active_skill_source = "local" if self._is_local_skill_id(sid) else "mcp"
+                                self._active_skill_section = int(meta.get("section") or 0)
+                                self._active_skill_total_sections = int(meta.get("total") or 0)
+                                self._active_skill_chunked = bool(meta.get("chunked", False))
                     if skill_items:
                         forced_skill_prefix = (
                             f"【强制技能】本轮必须优先使用以下 skills（按用户输入顺序）：{', '.join(skill_items)}，"
@@ -8630,8 +8820,9 @@ big_image.jpg
                     "\n\n【首轮回复硬性要求（必须遵守）】\n"
                     "1) 对于需要两步及以上完成的任务，先简要说明“将要完成哪些事情”，紧随其后再输出任务编排：Step 1..N，并为每步标注状态（pending/in_progress/completed/failed）。\n"
                     "2) 在同一条回复结尾输出且仅输出一个工具调用 JSON。\n"
-                    "3) 仅当当前会话尚未注入目标 skill 正文时，才可请求 skill 完整提示；"
-                    "若该 skill 已注入（例如用户通过 `/skill-id` 显式启用），禁止再调用 request_skill_prompt，直接进入业务工具调用。"
+                    "3) 仅当当前会话尚未注入目标 skill 正文时，优先请求 skill 提示；"
+                    "若该 skill 已注入（例如用户通过 `/skill-id` 显式启用），通常不应重复调用 request_skill_prompt。"
+                    "但若系统提示明确为「分段注入」且你确需后续段，可调用带 section/full 参数的 request_skill_prompt。"
                     "如确需请求，也必须先给出上述步骤编排，再在结尾输出 "
                     "{\"tool\":\"request_skill_prompt\",\"args\":{\"skill_id\":\"...\"}}。\n"
                     "4) 对于需要两步及以上完成的任务，禁止首轮直接只给工具调用 JSON 而不做“事项简述 + 步骤编排”。\n"
@@ -8750,7 +8941,16 @@ big_image.jpg
                         sid = str(args.get("skill_id") or "").strip()
                         canon_sid = self._canonical_skill_id(sid)
                         active_sid = self._canonical_skill_id(self._active_skill_id or "")
-                        if canon_sid and canon_sid in preloaded_skill_ids:
+                        requested_section_raw = args.get("section")
+                        requested_section: Optional[int] = None
+                        try:
+                            if requested_section_raw is not None:
+                                requested_section = int(requested_section_raw)
+                        except Exception:
+                            requested_section = None
+                        force_full = bool(args.get("full", False))
+                        request_is_expansion = force_full or (requested_section is not None and requested_section > 1)
+                        if canon_sid and canon_sid in preloaded_skill_ids and not request_is_expansion:
                             next_input = (
                                 f"【用户原始需求】\n{original_user_task}\n\n"
                                 f"skill_id=`{sid}` 已由本轮显式 `/skill` 引用预注入。"
@@ -8758,7 +8958,14 @@ big_image.jpg
                             )
                             no_tool_rounds = 0
                             continue
-                        if active_sid and canon_sid and active_sid == canon_sid and str(self._active_skill_full_prompt or "").strip():
+                        if (
+                            active_sid
+                            and canon_sid
+                            and active_sid == canon_sid
+                            and str(self._active_skill_full_prompt or "").strip()
+                            and not self._active_skill_chunked
+                            and not request_is_expansion
+                        ):
                             next_input = (
                                 f"【用户原始需求】\n{original_user_task}\n\n"
                                 f"skill_id=`{sid}` 的完整提示已在当前会话中注入。"
@@ -8766,7 +8973,22 @@ big_image.jpg
                             )
                             no_tool_rounds = 0
                             continue
-                        full_prompt = self._build_single_skill_prompt(sid)
+                        if (
+                            active_sid
+                            and canon_sid
+                            and active_sid == canon_sid
+                            and self._active_skill_chunked
+                            and requested_section is None
+                            and not force_full
+                            and self._active_skill_section > 0
+                            and self._active_skill_section < self._active_skill_total_sections
+                        ):
+                            requested_section = self._active_skill_section + 1
+                        full_prompt, meta = self._build_single_skill_prompt(
+                            sid,
+                            requested_section=requested_section,
+                            full=force_full,
+                        )
                         if not full_prompt:
                             no_tool_rounds += 1
                             next_input = (
@@ -8780,9 +9002,14 @@ big_image.jpg
                         self._active_skill_full_prompt = full_prompt
                         self._active_skill_id = canon_sid or sid
                         self._active_skill_source = "local" if self._is_local_skill_id(canon_sid or sid) else "mcp"
+                        self._active_skill_section = int(meta.get("section") or 0)
+                        self._active_skill_total_sections = int(meta.get("total") or 0)
+                        self._active_skill_chunked = bool(meta.get("chunked", False))
                         next_input = (
                             f"【用户原始需求】\n{original_user_task}\n\n"
-                            f"已注入 skill_id=`{sid}` 的完整提示。请继续输出下一条工具调用 JSON。"
+                            f"已注入 skill_id=`{sid}` 的 skill 提示。"
+                            f"当前段进度：{self._active_skill_section}/{self._active_skill_total_sections if self._active_skill_total_sections else 1}。"
+                            "请继续输出下一条工具调用 JSON。"
                         )
                         no_tool_rounds = 0
                         continue
@@ -8916,6 +9143,9 @@ big_image.jpg
                     self._active_skill_full_prompt = ""
                     self._active_skill_id = None
                     self._active_skill_source = None
+                    self._active_skill_section = 0
+                    self._active_skill_total_sections = 0
+                    self._active_skill_chunked = False
                     self._last_auto_removed_ephemeral = None
                     print("\n⏹️ 已取消当前任务")
                     continue

@@ -1022,12 +1022,19 @@
     "type": "function",
     "function": {
       "name": "request_skill_prompt",
-      "description": "请求注入指定 skill 的完整提示（虚拟控制工具，不直接执行业务操作）。",
+      "description": "请求注入指定 skill 的提示（虚拟控制工具，不直接执行业务操作）。支持长技能正文分段注入：可传 section 加载指定段，或 full=true 加载完整正文。",
       "parameters": {
         "type": "object",
         "properties": {
           "skill_id": {
             "type": "string"
+          },
+          "section": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "full": {
+            "type": "boolean"
           }
         },
         "required": ["skill_id"]
