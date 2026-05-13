@@ -2,6 +2,7 @@ import sys
 import tempfile
 import types
 import unittest
+import re
 from pathlib import Path
 
 
@@ -13,6 +14,12 @@ from src.smart_shell_agent import SmartShellAgent
 
 
 class TextEditAndPatchToolTests(unittest.TestCase):
+    _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+    @classmethod
+    def _strip_ansi(cls, text: str) -> str:
+        return cls._ANSI_RE.sub("", text or "")
+
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
@@ -80,8 +87,9 @@ class TextEditAndPatchToolTests(unittest.TestCase):
         self.assertTrue(result.get("success"), result)
         self.assertEqual(target.read_text(encoding="utf-8"), "k1\nR2\nR3\nk3\n")
         preview = result.get("change_preview") or []
-        self.assertTrue(any(str(x).startswith("- ") for x in preview))
-        self.assertTrue(any(str(x).startswith("+ ") for x in preview))
+        plain_preview = [self._strip_ansi(str(x)) for x in preview]
+        self.assertTrue(any(x.startswith("- ") for x in plain_preview))
+        self.assertTrue(any("││ + " in x for x in plain_preview))
 
     def test_edit_text_delete_with_line_span_zero_defaults_to_one_line(self):
         target = self.root / "sample.txt"
@@ -131,13 +139,16 @@ class TextEditAndPatchToolTests(unittest.TestCase):
         self.assertTrue(result.get("success"), result)
         self.assertEqual(target.read_text(encoding="utf-8"), "A\nBX\nC\n")
         preview = result.get("change_preview") or []
-        self.assertTrue(any(str(x).startswith("= ") for x in preview))
-        self.assertTrue(any(str(x).startswith("- ") for x in preview))
-        self.assertTrue(any(str(x).startswith("+ ") for x in preview))
-        first_pipes = [str(x).find("|") for x in preview if "|" in str(x)]
+        plain_preview = [self._strip_ansi(str(x)) for x in preview]
+        self.assertTrue(any(x.startswith("= ") for x in plain_preview))
+        self.assertTrue(any(x.startswith("- ") for x in plain_preview))
+        self.assertTrue(any("││ + " in x for x in plain_preview))
+        self.assertTrue(any("\x1b[41m" in str(x) for x in preview))
+        self.assertTrue(any("\x1b[42m" in str(x) for x in preview))
+        first_pipes = [x.find("│") for x in plain_preview if "│" in x]
         self.assertTrue(len(first_pipes) > 0)
         self.assertTrue(all(p == first_pipes[0] for p in first_pipes))
-        pipes = [str(x).find("||") for x in preview if "||" in str(x)]
+        pipes = [x.find("││") for x in plain_preview if "││" in x]
         self.assertTrue(len(pipes) > 0)
         self.assertTrue(all(p == pipes[0] for p in pipes))
 
@@ -211,6 +222,30 @@ class TextEditAndPatchToolTests(unittest.TestCase):
             target.read_text(encoding="utf-8"),
             "begin\ninserted\nmiddle\nend\n",
         )
+
+    def test_change_preview_wraps_long_lines_and_keeps_middle_separator_aligned(self):
+        long_old = "A" * 220
+        long_new = "B" * 220
+        preview = self.agent._format_side_by_side_change_preview([long_old], [long_new], 1, 1)
+        plain_preview = [self._strip_ansi(str(x)) for x in preview]
+
+        self.assertGreater(len(plain_preview), 1)
+        sep_positions = [x.find("││") for x in plain_preview if "││" in x]
+        self.assertTrue(len(sep_positions) > 1)
+        self.assertTrue(all(p == sep_positions[0] for p in sep_positions))
+        self.assertTrue(any("│ A" in x for x in plain_preview[1:]))
+        self.assertTrue(any("│ B" in x for x in plain_preview[1:]))
+
+    def test_replace_rows_are_top_aligned_with_minus_left_plus_right(self):
+        preview = self.agent._format_side_by_side_change_preview(
+            ["old-1", "old-2"],
+            ["new-1", "new-2"],
+            10,
+            20,
+        )
+        plain_preview = [self._strip_ansi(str(x)) for x in preview]
+        paired_rows = [x for x in plain_preview if x.startswith("- ") and "││ + " in x]
+        self.assertEqual(len(paired_rows), 2)
 
 
 if __name__ == "__main__":
