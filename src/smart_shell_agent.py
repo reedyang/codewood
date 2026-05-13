@@ -189,6 +189,13 @@ def _ansi_gray(text: str) -> str:
         _enable_windows_console_vt()
     return f"\033[90m{text}\033[0m"
 
+def _ansi_blue(text: str) -> str:
+    if not _stdout_color_enabled():
+        return text
+    if sys.platform == "win32":
+        _enable_windows_console_vt()
+    return f"\033[34m{text}\033[0m"
+
 
 def _import_ollama_client():
     """
@@ -1342,7 +1349,7 @@ class SmartShellAgent:
                 if tool_plan:
                     tool_name, args = tool_plan
                     if tool_name != "done":
-                        print(f"{_ansi_gray('🔧 执行工具:')} {self._tool_call_summary(tool_name, args)}")
+                        print(f"{_ansi_gray('🔧 执行工具:')} {_ansi_blue(self._tool_call_summary(tool_name, args))}")
             else:
                 print(content)
 
@@ -9098,7 +9105,7 @@ big_image.jpg
                         "max_files": 8,
                         "refresh": True,
                     }
-                    print(f"{_ansi_gray('🔧 执行工具:')} {self._tool_call_summary('project_context_search', ev_args)}")
+                    print(f"{_ansi_gray('🔧 执行工具:')} {_ansi_blue(self._tool_call_summary('project_context_search', ev_args))}")
                     ev_res = self.execute_tool_call("project_context_search", ev_args)
                     self.operation_results.append(
                         {
@@ -9153,7 +9160,7 @@ big_image.jpg
                     if fallback_plan:
                         tool_name, args = fallback_plan
                         if tool_name != "done":
-                            print(f"{_ansi_gray('🔧 执行工具:')} {self._tool_call_summary(tool_name, args)}")
+                            print(f"{_ansi_gray('🔧 执行工具:')} {_ansi_blue(self._tool_call_summary(tool_name, args))}")
                         if tool_name == "text_file":
                             content = ""
                             if isinstance(args, dict):
