@@ -2163,10 +2163,27 @@ class SmartShellAgent:
             + self._build_agents_md_system_append()
             + self._build_user_preferences_system_append()
             + self._build_mcp_system_append()
+            + self._build_runtime_cache_prompt_append()
         )
         if include_tools:
             return core + "\n" + self._build_tools_prompt_append()
         return core
+
+    def _build_runtime_cache_prompt_append(self) -> str:
+        """Provide generic runtime cache-dir hints for all skills/scripts."""
+        ws_root = Path(getattr(self, "workspace_root", self.work_directory))
+        ws_id = str(getattr(self, "workspace_id", "") or "").strip().lower()
+        if ws_id == DEFAULT_WORKSPACE_ID:
+            cache_root = (ws_root / ".cache").resolve()
+        else:
+            cache_root = (ws_root / ".smartshell" / ".cache").resolve()
+        return (
+            "\n\n## Runtime Cache Directory Hint\n"
+            "- 通用缓存根目录（workspace 级）: "
+            f"`{cache_root}`\n"
+            "- 若某个脚本支持 `--cache-dir` 参数或其它传递 cache 路径的的参数，则传入此目录。"
+            "- 若脚本未声明或不支持 cache 参数，不要强行传参。"
+        )
 
     def _build_tools_prompt_append(self) -> str:
         """Build tool catalog text injected into system prompt from external md template."""
@@ -2255,6 +2272,16 @@ class SmartShellAgent:
                 lines.append(f"  - {h}")
         lines.append("- usage_hint: 优先基于上述路径做定点读取/执行，避免无界搜索。")
         return "\n".join(lines)
+
+    def _default_skill_cache_dir(self, skill_id: str) -> Path:
+        sid = str(skill_id or "").strip().lower() or "skill"
+        ws_root = Path(getattr(self, "workspace_root", self.work_directory))
+        ws_id = str(getattr(self, "workspace_id", "") or "").strip().lower()
+        if ws_id == DEFAULT_WORKSPACE_ID:
+            base = ws_root / ".cache"
+        else:
+            base = ws_root / ".smartshell" / ".cache"
+        return (base / sid).resolve()
 
     def _build_mcp_skill_context_pack(self, server: str, skill_id: str, rendered_parts: List[str]) -> str:
         """
@@ -4141,8 +4168,8 @@ class SmartShellAgent:
             v = a.get(k)
             if isinstance(v, str) and v.strip():
                 vv = v.strip().replace("\n", " ")
-                if len(vv) > 80:
-                    vv = vv[:80] + "..."
+                if len(vv) > 120:
+                    vv = vv[:120] + "..."
                 return f"{tool_name} ({k}={vv})"
         if a:
             keys = ",".join(sorted([str(k) for k in a.keys()])[:5])

@@ -48,8 +48,6 @@ MERGE_OUTPUT_ENV_VAR = "BAIDU_SKILL_MERGE_OUTPUT"
 ENV_VERBOSE = "BAIDU_SKILL_VERBOSE"
 ENV_INSECURE_SSL = "BAIDU_SKILL_INSECURE_SSL"
 CACHE_DIR_NAME = ".cache"
-ENV_SKILL_CACHE_DIR = "SMART_SHELL_SKILL_CACHE_DIR"
-ENV_WORKSPACE_DIR = "SMART_SHELL_WORKSPACE_DIR"
 CACHE_MAX_ENTRIES = 20
 CACHE_TTL_SEC = 30 * 60
 MAX_BODY_CHARS = 12000
@@ -68,18 +66,11 @@ def _skill_root() -> Path:
     return Path(__file__).resolve().parent.parent
 
 
-def _cache_dir() -> Path:
-    cache_env = os.environ.get(ENV_SKILL_CACHE_DIR, "").strip()
-    if cache_env:
-        d = Path(cache_env)
-    else:
-        ws = os.environ.get(ENV_WORKSPACE_DIR, "").strip()
-        if ws:
-            d = Path(ws) / "skill_cache" / "baidu"
-        else:
-            d = _skill_root() / CACHE_DIR_NAME
-    d.mkdir(parents=True, exist_ok=True)
-    return d
+def _cache_dir(cache_dir: Optional[Path]) -> Optional[Path]:
+    if cache_dir is None:
+        return None
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    return cache_dir
 
 
 def _emit_report(report: str) -> None:
@@ -102,8 +93,11 @@ def _env_verbose() -> bool:
     return _env_truthy(ENV_VERBOSE)
 
 
-def _cache_path() -> Path:
-    return _cache_dir() / "serp_cache.json"
+def _cache_path(cache_dir: Optional[Path]) -> Optional[Path]:
+    d = _cache_dir(cache_dir)
+    if d is None:
+        return None
+    return d / "serp_cache.json"
 
 
 def _cache_key(query: str, max_pages: int) -> str:
@@ -112,9 +106,9 @@ def _cache_key(query: str, max_pages: int) -> str:
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
-def _load_cache() -> List[Dict[str, Any]]:
-    p = _cache_path()
-    if not p.is_file():
+def _load_cache(cache_dir: Optional[Path]) -> List[Dict[str, Any]]:
+    p = _cache_path(cache_dir)
+    if p is None or not p.is_file():
         return []
     try:
         data = json.loads(p.read_text(encoding="utf-8"))
@@ -123,9 +117,12 @@ def _load_cache() -> List[Dict[str, Any]]:
         return []
 
 
-def _save_cache(entries: List[Dict[str, Any]]) -> None:
+def _save_cache(entries: List[Dict[str, Any]], cache_dir: Optional[Path]) -> None:
+    p = _cache_path(cache_dir)
+    if p is None:
+        return
     try:
-        _cache_path().write_text(
+        p.write_text(
             json.dumps(entries, ensure_ascii=False, indent=0),
             encoding="utf-8",
         )
@@ -133,9 +130,9 @@ def _save_cache(entries: List[Dict[str, Any]]) -> None:
         pass
 
 
-def _cache_get(key: str) -> Optional[Dict[str, Any]]:
+def _cache_get(key: str, cache_dir: Optional[Path]) -> Optional[Dict[str, Any]]:
     now = time.time()
-    entries = _load_cache()
+    entries = _load_cache(cache_dir)
     for e in entries:
         if e.get("key") != key:
             continue
@@ -146,14 +143,14 @@ def _cache_get(key: str) -> Optional[Dict[str, Any]]:
     return None
 
 
-def _cache_set(key: str, payload: Dict[str, Any]) -> None:
+def _cache_set(key: str, payload: Dict[str, Any], cache_dir: Optional[Path]) -> None:
     now = time.time()
-    entries = [e for e in _load_cache() if e.get("key") != key]
+    entries = [e for e in _load_cache(cache_dir) if e.get("key") != key]
     entries.append({"key": key, "ts": now, "payload": payload})
     # keep newest 20
     entries.sort(key=lambda x: float(x.get("ts", 0)), reverse=True)
     entries = entries[:CACHE_MAX_ENTRIES]
-    _save_cache(entries)
+    _save_cache(entries, cache_dir)
 
 
 def _http_headers() -> Dict[str, str]:
@@ -505,7 +502,11 @@ def _build_answer(sentences: List[str], query: str, serp_items: List[Dict[str, s
 
 
 def run_search(
-    query: str, max_pages: int, use_cache: bool, verify_ssl: bool = True
+    query: str,
+    max_pages: int,
+    use_cache: bool,
+    verify_ssl: bool = True,
+    cache_dir: Optional[Path] = None,
 ) -> str:
     lines: List[str] = []
 
@@ -518,7 +519,7 @@ def run_search(
     cache_key = _cache_key(query, max_pages)
     from_cache = False
     if use_cache:
-        hit = _cache_get(cache_key)
+        hit = _cache_get(cache_key, cache_dir)
         if hit and isinstance(hit, dict) and hit.get("serp_html"):
             serp_html = hit["serp_html"]
             from_cache = True
@@ -528,6 +529,7 @@ def run_search(
             _cache_set(
                 cache_key,
                 {"serp_html": serp_html, "query": query, "max_pages": max_pages},
+                cache_dir,
             )
     else:
         serp_url = f"https://www.baidu.com/s?wd={quote(query)}"
@@ -685,9 +687,9 @@ def main() -> None:
         help="Max content pages to fetch after SERP (1–10). Default: 3",
     )
     parser.add_argument(
-        "--no-cache",
-        action="store_true",
-        help="Skip read/write of local .cache",
+        "--cache-dir",
+        required=True,
+        help="Cache root directory path (required). Cache is stored under its baidu subdirectory.",
     )
     parser.add_argument(
         "--insecure",
@@ -705,8 +707,14 @@ def main() -> None:
     if not verify_ssl:
         urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
+    cache_dir = Path(args.cache_dir).resolve()
+    use_cache = True
     out = run_search(
-        args.query, args.max_pages, use_cache=not args.no_cache, verify_ssl=verify_ssl
+        args.query,
+        args.max_pages,
+        use_cache=use_cache,
+        verify_ssl=verify_ssl,
+        cache_dir=cache_dir,
     )
     _emit_report(out)
 
