@@ -22,7 +22,7 @@ python "<BUNDLE_ROOT>/scripts/baidu_search.py" "<query>" [--max-pages N] [--no-c
 ```
 
 - **`--max-pages`**: Integer **1–10**. How many result pages to fetch **after** parsing the SERP (default **3**). The implementation may stop earlier if accumulated text is already enough to answer (**early exit**).
-- **`--no-cache`**: Skip the local cache under `<bundle root>/.cache/` (otherwise up to **20** entries, **~30 minutes** TTL).
+- **`--no-cache`**: Skip the local cache under host-injected workspace cache dir (default `workspace/skill_cache/<skill_id>/`; fallback to `<bundle root>/.cache/`) (otherwise up to **20** entries, **~30 minutes** TTL).
 - **`--insecure`**: Disable TLS certificate verification if a corporate proxy or local CA causes `SSL: CERTIFICATE_VERIFY_FAILED`. Alternatively set env **`BAIDU_SKILL_INSECURE_SSL=1`** (same effect). Use only when necessary.
 
 ## Orchestration (mandatory)
@@ -73,7 +73,7 @@ The merged **`output`** may be long (full sections in the model context). For th
 
 ## Cache
 
-- Directory: `<bundle root for baidu>/.cache/` (e.g. `skills/baidu/.cache/` in the repo).
+- Directory: Prefer host-injected `SMART_SHELL_SKILL_CACHE_DIR` (typically `<workspace>/skill_cache/baidu/`); fallback to `<bundle root for baidu>/.cache/`.
 - Roughly **20** entries, **~30** minutes expiry; implementation may use one JSON file. Safe to delete `.cache` if disk or stale data is a concern.
 
 ## Host integration notes

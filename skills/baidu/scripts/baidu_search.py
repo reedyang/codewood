@@ -48,6 +48,8 @@ MERGE_OUTPUT_ENV_VAR = "BAIDU_SKILL_MERGE_OUTPUT"
 ENV_VERBOSE = "BAIDU_SKILL_VERBOSE"
 ENV_INSECURE_SSL = "BAIDU_SKILL_INSECURE_SSL"
 CACHE_DIR_NAME = ".cache"
+ENV_SKILL_CACHE_DIR = "SMART_SHELL_SKILL_CACHE_DIR"
+ENV_WORKSPACE_DIR = "SMART_SHELL_WORKSPACE_DIR"
 CACHE_MAX_ENTRIES = 20
 CACHE_TTL_SEC = 30 * 60
 MAX_BODY_CHARS = 12000
@@ -67,7 +69,15 @@ def _skill_root() -> Path:
 
 
 def _cache_dir() -> Path:
-    d = _skill_root() / CACHE_DIR_NAME
+    cache_env = os.environ.get(ENV_SKILL_CACHE_DIR, "").strip()
+    if cache_env:
+        d = Path(cache_env)
+    else:
+        ws = os.environ.get(ENV_WORKSPACE_DIR, "").strip()
+        if ws:
+            d = Path(ws) / "skill_cache" / "baidu"
+        else:
+            d = _skill_root() / CACHE_DIR_NAME
     d.mkdir(parents=True, exist_ok=True)
     return d
 

@@ -153,10 +153,12 @@ def action_change_directory(agent: Any, path: str) -> Dict[str, Any]:
 
 def action_rename_file(agent: Any, old_name: str, new_name: str) -> Dict[str, Any]:
     try:
+        policy = agent._get_path_policy()
         old_path = agent.work_directory / old_name
         new_path = agent.work_directory / new_name
-        if agent._is_smart_shell_protected_path(old_path) or agent._is_smart_shell_protected_path(new_path):
-            return agent._blocked_by_self_protection("rename")
+        decision = policy.can_modify_path([old_path, new_path], "rename")
+        if not decision.get("allowed", False):
+            return {"success": False, "error": decision.get("error", "")}
         if not old_path.exists():
             return {"success": False, "error": f"文件 '{old_name}' 不存在"}
         if new_path.exists():
@@ -175,19 +177,19 @@ def action_rename_file(agent: Any, old_name: str, new_name: str) -> Dict[str, An
 
 def action_move_file(agent: Any, source: str, destination: str, confirmed: bool = False) -> Dict[str, Any]:
     try:
+        policy = agent._get_path_policy()
         if "*" in source or "?" in source:
             pattern = str(agent._resolve_user_path(source))
             matched_files = [Path(p) for p in glob.glob(pattern) if Path(p).is_file()]
             if not matched_files:
                 return {"success": False, "error": f"未找到匹配的文件: {source}"}
             dest_path = agent._resolve_user_path(destination)
-            rej = agent._reject_ai_workspace_root_level_write(dest_path)
-            if rej:
-                return {"success": False, "error": rej}
-            if agent._is_smart_shell_protected_path(dest_path) or any(
-                agent._is_smart_shell_protected_path(p) for p in matched_files
-            ):
-                return agent._blocked_by_self_protection("move")
+            decision = policy.can_write_path(dest_path, "move")
+            if not decision.get("allowed", False):
+                return {"success": False, "error": decision.get("error", "")}
+            decision = policy.can_modify_path(matched_files, "move")
+            if not decision.get("allowed", False):
+                return {"success": False, "error": decision.get("error", "")}
             dest_path.mkdir(parents=True, exist_ok=True)
             if not confirmed:
                 confirmation = input(f"您确定要批量移动 {len(matched_files)} 个文件到 '{dest_path}' 吗？(y/n): ")
@@ -210,11 +212,12 @@ def action_move_file(agent: Any, source: str, destination: str, confirmed: bool 
 
         source_path = agent._resolve_user_path(source)
         dest_path = agent._resolve_user_path(destination)
-        rej = agent._reject_ai_workspace_root_level_write(dest_path)
-        if rej:
-            return {"success": False, "error": rej}
-        if agent._is_smart_shell_protected_path(source_path) or agent._is_smart_shell_protected_path(dest_path):
-            return agent._blocked_by_self_protection("move")
+        decision = policy.can_write_path(dest_path, "move")
+        if not decision.get("allowed", False):
+            return {"success": False, "error": decision.get("error", "")}
+        decision = policy.can_modify_path(source_path, "move")
+        if not decision.get("allowed", False):
+            return {"success": False, "error": decision.get("error", "")}
         if not source_path.exists():
             return {"success": False, "error": f"源文件 '{source}' 不存在"}
         if not confirmed:
@@ -234,11 +237,13 @@ def action_move_file(agent: Any, source: str, destination: str, confirmed: bool 
 
 
 def action_delete_file(agent: Any, file_name: str, confirmed: bool = False) -> Dict[str, Any]:
+    policy = agent._get_path_policy()
     if "*" in file_name or "?" in file_name:
         pattern = str((agent.work_directory / file_name).resolve())
         matched_files = [Path(p) for p in glob.glob(pattern)]
-        if any(agent._is_smart_shell_protected_path(p) for p in matched_files):
-            return agent._blocked_by_self_protection("delete")
+        decision = policy.can_modify_path(matched_files, "delete")
+        if not decision.get("allowed", False):
+            return {"success": False, "error": decision.get("error", "")}
         if not matched_files:
             return {"success": False, "error": f"未找到匹配的文件: {file_name}"}
         if not confirmed:
@@ -270,8 +275,9 @@ def action_delete_file(agent: Any, file_name: str, confirmed: bool = False) -> D
             return {"success": False, "warning": f"用户拒绝删除 '{file_name}'，请跳过这个文件/目录", "confirmation_needed": False}
     try:
         file_path = agent.work_directory / file_name
-        if agent._is_smart_shell_protected_path(file_path):
-            return agent._blocked_by_self_protection("delete")
+        decision = policy.can_modify_path(file_path, "delete")
+        if not decision.get("allowed", False):
+            return {"success": False, "error": decision.get("error", "")}
         if not file_path.exists():
             return {"success": False, "error": f"文件 '{file_name}' 不存在"}
         if file_path.is_dir():
@@ -287,12 +293,11 @@ def action_delete_file(agent: Any, file_name: str, confirmed: bool = False) -> D
 
 def action_create_directory(agent: Any, dir_name: str) -> Dict[str, Any]:
     try:
+        policy = agent._get_path_policy()
         dir_path = agent._resolve_user_path(dir_name)
-        rej = agent._reject_ai_workspace_root_level_write(dir_path)
-        if rej:
-            return {"success": False, "error": rej}
-        if agent._is_smart_shell_protected_path(dir_path):
-            return agent._blocked_by_self_protection("mkdir")
+        decision = policy.can_write_path(dir_path, "mkdir")
+        if not decision.get("allowed", False):
+            return {"success": False, "error": decision.get("error", "")}
         if dir_path.parent.resolve() == agent._workspace_skills_root():
             skill_id = dir_path.name
             if agent._skill_id_exists(skill_id):
@@ -393,12 +398,11 @@ def action_create_text_file(agent: Any, filename: str, content: str, confirmed: 
     if not filename_s:
         return {"success": False, "error": "无效的文件名"}
     file_path = agent._resolve_user_path(filename_s)
-    rej = agent._reject_ai_workspace_root_level_write(file_path)
-    if rej:
-        return {"success": False, "error": rej}
+    policy = agent._get_path_policy()
+    decision = policy.can_write_path(file_path, "text_file")
+    if not decision.get("allowed", False):
+        return {"success": False, "error": decision.get("error", "")}
     safe_name = file_path.name
-    if agent._is_smart_shell_protected_path(file_path):
-        return agent._blocked_by_self_protection("text_file")
     existed_before = file_path.exists()
     if existed_before and not overwrite:
         return {
@@ -520,6 +524,7 @@ def action_edit_text_file(
     confirmed: bool = False,
 ) -> Dict[str, Any]:
     try:
+        policy = agent._get_path_policy()
         operation_s = str(operation or "").strip().lower()
         if operation_s not in ("insert", "delete", "replace"):
             return {"success": False, "error": "operation 仅支持 insert/delete/replace"}
@@ -530,11 +535,9 @@ def action_edit_text_file(
             return {"success": False, "error": f"文件 '{file_path}' 不存在"}
         if not abs_path.is_file():
             return {"success": False, "error": f"'{file_path}' 不是一个文件"}
-        if agent._is_smart_shell_protected_path(abs_path):
-            return agent._blocked_by_self_protection("edit_text")
-        rej = agent._reject_ai_workspace_root_level_write(abs_path)
-        if rej:
-            return {"success": False, "error": rej}
+        decision = policy.can_write_path(abs_path, "edit_text")
+        if not decision.get("allowed", False):
+            return {"success": False, "error": decision.get("error", "")}
         need_confirm = (not confirmed) and (not agent._is_path_under(abs_path, agent.ai_workspace_dir))
 
         encodings = ["utf-8", "gbk", "gb2312", "utf-16", "latin1"]
@@ -633,16 +636,15 @@ def action_edit_text_file(
 
 def action_apply_unified_patch(agent: Any, file_path: str, patch: str, confirmed: bool = False) -> Dict[str, Any]:
     try:
+        policy = agent._get_path_policy()
         abs_path = agent._resolve_user_path(str(file_path))
         if not abs_path.exists():
             return {"success": False, "error": f"文件 '{file_path}' 不存在"}
         if not abs_path.is_file():
             return {"success": False, "error": f"'{file_path}' 不是一个文件"}
-        if agent._is_smart_shell_protected_path(abs_path):
-            return agent._blocked_by_self_protection("apply_patch")
-        rej = agent._reject_ai_workspace_root_level_write(abs_path)
-        if rej:
-            return {"success": False, "error": rej}
+        decision = policy.can_write_path(abs_path, "apply_patch")
+        if not decision.get("allowed", False):
+            return {"success": False, "error": decision.get("error", "")}
         need_confirm = (not confirmed) and (not agent._is_path_under(abs_path, agent.ai_workspace_dir))
 
         encodings = ["utf-8", "gbk", "gb2312", "utf-16", "latin1"]
