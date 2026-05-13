@@ -3402,7 +3402,7 @@ class SmartShellAgent:
             print("  经验记忆不可用（初始化失败）；主程序可继续运行。")
 
     def _confirm_allowlist_path(self) -> Path:
-        return self.ai_workspace_dir / "confirm_allowlist.json"
+        return command_security.confirm_allowlist_path(self)
 
     def _freedom_script_review_cache_path(self) -> Path:
         return self.ai_workspace_dir / "freedom_script_review_cache.json"
@@ -3538,25 +3538,7 @@ class SmartShellAgent:
 
     def _reset_always_confirm_skip(self) -> Dict[str, Any]:
         """Clear allowlist and restore y/n prompts."""
-        self._allowlist_shell_paths.clear()
-        self._allowlist_shell_exes.clear()
-        self._allowlist_script.clear()
-        self._confirm_allowlist_salt = ""
-        removed = False
-        try:
-            p = self._confirm_allowlist_path()
-            if p.is_file():
-                p.unlink()
-                removed = True
-        except OSError as e:
-            print(f"⚠️ 删除 confirm_allowlist.json 失败: {e}")
-        return {
-            "success": True,
-            "message": (
-                "已清空免确认列表，恢复每次询问"
-                f"{'（已删除 confirm_allowlist.json）' if removed else ''}"
-            ),
-        }
+        return command_security.reset_always_confirm_skip(self)
 
     def _prompt_confirm_yes_no_maybe_always(
         self,

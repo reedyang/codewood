@@ -7,6 +7,10 @@ from pathlib import Path
 from typing import Any, Optional
 
 
+def confirm_allowlist_path(agent: Any) -> Path:
+    return agent.ai_workspace_dir / "confirm_allowlist.json"
+
+
 def normalize_path_allowlist_key(p: Path) -> str:
     try:
         r = p.resolve()
@@ -74,7 +78,7 @@ def load_confirm_allowlist(agent: Any) -> None:
     agent._allowlist_shell_exes = set()
     agent._allowlist_script = set()
     agent._confirm_allowlist_salt = ""
-    p = agent._confirm_allowlist_path()
+    p = confirm_allowlist_path(agent)
     if not p.is_file():
         agent._confirm_allowlist_salt = secrets.token_hex(16)
         return
@@ -111,7 +115,7 @@ def load_confirm_allowlist(agent: Any) -> None:
 
 def save_confirm_allowlist(agent: Any) -> bool:
     try:
-        p = agent._confirm_allowlist_path()
+        p = confirm_allowlist_path(agent)
         if not agent._confirm_allowlist_salt:
             agent._confirm_allowlist_salt = secrets.token_hex(16)
         payload = {
@@ -183,3 +187,25 @@ def add_script_basename_allowlist(agent: Any, safe_name: str) -> None:
         return
     agent._allowlist_script.add(safe_name)
     save_confirm_allowlist(agent)
+
+
+def reset_always_confirm_skip(agent: Any) -> dict:
+    agent._allowlist_shell_paths.clear()
+    agent._allowlist_shell_exes.clear()
+    agent._allowlist_script.clear()
+    agent._confirm_allowlist_salt = ""
+    removed = False
+    try:
+        p = confirm_allowlist_path(agent)
+        if p.is_file():
+            p.unlink()
+            removed = True
+    except OSError as e:
+        print(f"⚠️ 删除 confirm_allowlist.json 失败: {e}")
+    return {
+        "success": True,
+        "message": (
+            "已清空免确认列表，恢复每次询问"
+            f"{'（已删除 confirm_allowlist.json）' if removed else ''}"
+        ),
+    }
