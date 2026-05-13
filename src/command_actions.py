@@ -1,4 +1,6 @@
 import os
+import re
+import shlex
 import sys
 import tempfile
 from pathlib import Path
@@ -63,12 +65,12 @@ def action_shell_command(
     """Run a shell command; capture stdout/stderr for AI context while echoing to the terminal."""
     if not command.strip():
         return {"success": False, "error": "命令不能为空"}
-    command = agent._ensure_absolute_script_for_shell_cwd(command.strip())
-    command = agent._tune_7z_output_for_piped_terminal(command)
+    command = ensure_absolute_script_for_shell_cwd(agent, command.strip())
+    command = tune_7z_output_for_piped_terminal(command)
     if agent._is_path_under(agent.work_directory, agent._self_repo_root):
         if not (
-            agent._is_dependency_install_command(command)
-            or agent._is_ai_workspace_script_command(command)
+                is_dependency_install_command(command)
+                or is_ai_workspace_script_command(agent, command)
         ):
             return {
                 "success": False,
@@ -96,7 +98,7 @@ def action_shell_command(
         run_env.setdefault("PYTHONUTF8", "1")
         run_env.setdefault("PYTHONIOENCODING", "utf-8")
         run_env.setdefault("PYTHONUNBUFFERED", "1")
-        merge_env_name = agent._resolve_model_context_file_env(command)
+        merge_env_name = resolve_model_context_file_env(agent, command)
         if merge_env_name:
             try:
                 fd, merge_p = tempfile.mkstemp(prefix="modelctx_", suffix=".txt")
@@ -216,7 +218,7 @@ def action_shell_command(
                 if err:
                     _safe_console_write(err, sys.stderr)
 
-            out = agent._append_shell_merge_output_path(out, return_code, merge_path)
+            out = append_shell_merge_output_path(out, return_code, merge_path)
             base_out: Dict[str, Any] = {
                 "output": out,
                 "stderr": err,
@@ -231,10 +233,10 @@ def action_shell_command(
                     pass
 
         if return_code == 0:
-            agent._register_outputs_from_shell_command(command)
+            register_outputs_from_shell_command(agent, command)
             if agent._is_workspace_skill_path(agent.work_directory):
                 agent._reload_skills_if_workspace_skill_changed([agent.work_directory])
-            removed = agent._try_remove_ephemeral_script_after_shell(command)
+            removed = try_remove_ephemeral_script_after_shell(agent, command)
             if removed:
                 agent._last_auto_removed_ephemeral = removed
                 return {
@@ -296,7 +298,7 @@ def action_grep(agent: Any, params: Dict[str, Any]) -> dict:
     rej = agent._reject_ai_workspace_root_level_write(out_path)
     if rej:
         return {"success": False, "error": rej}
-    if not agent._grep_output_path_allowed(out_path):
+    if not grep_output_path_allowed(agent, out_path):
         return {
             "success": False,
             "error": "output_path 必须位于当前工作目录、AI 工作区或系统临时目录下",
@@ -309,7 +311,7 @@ def action_grep(agent: Any, params: Dict[str, Any]) -> dict:
         file_list = []
         for fr in files_raw:
             p = agent._resolve_user_path(str(fr).strip())
-            if not agent._grep_read_path_allowed(p):
+            if not grep_read_path_allowed(agent, p):
                 return {"success": False, "error": f"禁止检索该路径（超出允许范围）: {p}"}
             if p.is_file():
                 file_list.append(p)
@@ -319,7 +321,7 @@ def action_grep(agent: Any, params: Dict[str, Any]) -> dict:
         root_path = agent._resolve_user_path(root_raw)
         if not root_path.is_dir():
             return {"success": False, "error": f"root 不是目录: {root_path}"}
-        if not agent._grep_read_path_allowed(root_path):
+        if not grep_read_path_allowed(agent, root_path):
             return {"success": False, "error": "禁止在该 root 下检索（超出允许范围）"}
     else:
         return {"success": False, "error": "必须提供 root（目录）或 files（文件路径列表）"}
@@ -405,3 +407,338 @@ def action_project_context_search(agent: Any, params: Dict[str, Any]) -> dict:
         auto_refresh=(True if refresh is None else bool(refresh)) or force_rebuild,
     )
     return result
+
+
+def register_outputs_from_shell_command(agent: Any, command: str) -> None:
+    for pat in (
+        r"to_excel\s*\(\s*['\"]([^'\"]+)['\"]",
+        r"to_csv\s*\(\s*['\"]([^'\"]+)['\"]",
+        r"ExcelWriter\s*\(\s*['\"]([^'\"]+)['\"]",
+    ):
+        for m in re.finditer(pat, command, re.I):
+            agent._try_register_ai_output_literal(m.group(1))
+
+
+def parse_shell_invoked_script_path(agent: Any, command: str) -> Optional[Path]:
+    s = command.strip()
+    if not s:
+        return None
+    if s.lower().startswith("call "):
+        s = s[5:].strip()
+    try:
+        parts = shlex.split(s, posix=os.name != "nt")
+    except ValueError:
+        parts = s.split()
+    if not parts:
+        return None
+    base0 = parts[0].replace("\\", "/").split("/")[-1].lower().rstrip(".exe")
+    if len(parts) >= 3 and base0 == "cmd" and parts[1].lower() in ("/c", "/k"):
+        return parse_shell_invoked_script_path(agent, " ".join(parts[2:]))
+    exe = base0
+    if exe in ("python", "pythonw", "py") and len(parts) >= 2:
+        i = 1
+        while i < len(parts):
+            t = parts[i].strip('"').strip("'")
+            if t in ("-c", "-m"):
+                return None
+            if t.startswith("-") and len(t) > 1:
+                i += 1
+                continue
+            break
+        if i >= len(parts):
+            return None
+        tok = parts[i].strip('"').strip("'")
+        if tok.startswith(".\\") or tok.startswith("./"):
+            tok = tok[2:]
+        p = Path(tok)
+        if not p.is_absolute():
+            p_wd, p_temp, p_ws = agent._workspace_relative_script_triple(p)
+            if p_wd.is_file():
+                return p_wd
+            if p_temp.is_file():
+                return p_temp
+            if p_ws.is_file():
+                return p_ws
+            return p_wd
+        try:
+            return p.resolve()
+        except OSError:
+            return p
+    tok = parts[0].strip('"').strip("'")
+    low = tok.lower()
+    if low.endswith((".py", ".ps1", ".bat", ".cmd")):
+        if tok.startswith(".\\") or tok.startswith("./"):
+            tok = tok[2:]
+        p = Path(tok)
+        if not p.is_absolute():
+            p_wd, p_temp, p_ws = agent._workspace_relative_script_triple(p)
+            if p_wd.is_file():
+                return p_wd
+            if p_temp.is_file():
+                return p_temp
+            if p_ws.is_file():
+                return p_ws
+            return p_wd
+        try:
+            return p.resolve()
+        except OSError:
+            return p
+    return None
+
+
+def rewrite_shell_command_script_arg_to_abs(agent: Any, command: str, resolved: Path) -> str:
+    import subprocess
+
+    s = command.strip()
+    call_prefix = ""
+    if s.lower().startswith("call "):
+        call_prefix = "call "
+        s = s[5:].strip()
+    try:
+        parts = shlex.split(s, posix=os.name != "nt")
+    except ValueError:
+        return command
+    if not parts:
+        return command
+    base0 = parts[0].replace("\\", "/").split("/")[-1].lower().rstrip(".exe")
+    if len(parts) >= 3 and base0 == "cmd" and parts[1].lower() in ("/c", "/k"):
+        inner = " ".join(parts[2:])
+        inner_re = rewrite_shell_command_script_arg_to_abs(agent, inner, resolved)
+        if inner_re == inner:
+            return command
+        if os.name == "nt":
+            return call_prefix + subprocess.list2cmdline([parts[0], parts[1], inner_re])
+        return f"{call_prefix}{parts[0]} {parts[1]} {inner_re}"
+
+    exe = base0
+    if exe not in ("python", "pythonw", "py"):
+        return command
+    i = 1
+    while i < len(parts):
+        t = parts[i].strip('"').strip("'")
+        if t in ("-m", "-c"):
+            return command
+        if t.startswith("-") and len(t) > 1:
+            i += 1
+            continue
+        break
+    if i >= len(parts):
+        return command
+    tok = parts[i].strip('"').strip("'")
+    if tok.startswith(".\\") or tok.startswith("./"):
+        tok = tok[2:]
+    p = Path(tok)
+    if not p.is_absolute():
+        p_wd, p_temp, p_ws = agent._workspace_relative_script_triple(p)
+        if p_wd.is_file():
+            cand = p_wd
+        elif p_temp.is_file():
+            cand = p_temp
+        elif p_ws.is_file():
+            cand = p_ws
+        else:
+            cand = p_wd
+    else:
+        try:
+            cand = Path(tok).resolve()
+        except OSError:
+            return command
+    if agent._ephemeral_path_key(cand) != agent._ephemeral_path_key(resolved):
+        return command
+    parts[i] = str(resolved.resolve())
+    if os.name == "nt":
+        return call_prefix + subprocess.list2cmdline(parts)
+    return call_prefix + shlex.join(parts)
+
+
+def ensure_absolute_script_for_shell_cwd(agent: Any, command: str) -> str:
+    invoked = parse_shell_invoked_script_path(agent, command)
+    if invoked is None or not invoked.is_file():
+        return command
+    try:
+        invoked.resolve().relative_to(agent.ai_workspace_dir.resolve())
+    except ValueError:
+        return command
+    new_cmd = rewrite_shell_command_script_arg_to_abs(agent, command, invoked.resolve())
+    if new_cmd != command:
+        print("ℹ️ shell cwd 为工作目录，已将 workspace 内脚本展开为绝对路径执行。")
+    return new_cmd
+
+
+def tune_7z_output_for_piped_terminal(command: str) -> str:
+    if not command.strip():
+        return command
+    if not re.search(r'(^|[\\/\s"])7z(?:\.exe)?(?=\s|"|$)', command, re.IGNORECASE):
+        return command
+    tuned = command
+    appended: List[str] = []
+    lower = command.lower()
+    if " -bsp" not in lower:
+        tuned += " -bsp1"
+        appended.append("-bsp1")
+    if " -bb" not in lower:
+        tuned += " -bb1"
+        appended.append("-bb1")
+    if " -bso" not in lower:
+        tuned += " -bso1"
+        appended.append("-bso1")
+    if " -bse" not in lower:
+        tuned += " -bse2"
+        appended.append("-bse2")
+    if appended:
+        print(f"ℹ️ 已为 7z 命令启用兼容输出参数: {' '.join(appended)}")
+    return tuned
+
+
+def parse_shell_invoked_executable(agent: Any, command: str) -> Optional[Path]:
+    s = command.strip()
+    if not s:
+        return None
+    if s.lower().startswith("call "):
+        s = s[5:].strip()
+    try:
+        parts = shlex.split(s, posix=os.name != "nt")
+    except ValueError:
+        parts = s.split()
+    if not parts:
+        return None
+    base0 = parts[0].replace("\\", "/").split("/")[-1].lower().rstrip(".exe")
+    token = parts[2] if len(parts) >= 3 and base0 == "cmd" and parts[1].lower() in ("/c", "/k") else parts[0]
+    token = token.strip('"').strip("'")
+    if token.startswith(".\\") or token.startswith("./"):
+        token = token[2:]
+    p = Path(token)
+    if not p.is_absolute():
+        p_wd, p_temp, p_ws = agent._workspace_relative_script_triple(p)
+        if p_wd.is_file():
+            return p_wd
+        if p_temp.is_file():
+            return p_temp
+        if p_ws.is_file():
+            return p_ws
+        return p_wd
+    try:
+        return p.resolve()
+    except OSError:
+        return p
+
+
+def is_dependency_install_command(command: str) -> bool:
+    s = (command or "").strip().lower()
+    if not s:
+        return False
+    install_patterns = [
+        r"^(python(\d+(\.\d+)*)?\s+-m\s+pip)\s+install\b",
+        r"^(pip(\d+(\.\d+)*)?)\s+install\b",
+        r"^uv\s+pip\s+install\b",
+        r"^poetry\s+add\b",
+        r"^pipenv\s+install\b",
+        r"^conda\s+install\b",
+        r"^mamba\s+install\b",
+        r"^npm\s+install\b",
+        r"^pnpm\s+add\b",
+        r"^yarn\s+add\b",
+        r"^bun\s+add\b",
+    ]
+    return any(re.match(pat, s) for pat in install_patterns)
+
+
+def is_ai_workspace_script_command(agent: Any, command: str) -> bool:
+    invoked = parse_shell_invoked_script_path(agent, command or "")
+    if invoked is None:
+        return False
+    return agent._is_path_under(invoked, agent.ai_workspace_dir)
+
+
+def try_remove_ephemeral_script_after_shell(agent: Any, command: str) -> Optional[str]:
+    invoked = parse_shell_invoked_script_path(agent, command)
+    if invoked is None:
+        return None
+    key = agent._ephemeral_path_key(invoked)
+    if key not in agent._ephemeral_script_paths:
+        return None
+    try:
+        if invoked.is_file():
+            name = invoked.name
+            invoked.unlink()
+            agent._ephemeral_script_paths.discard(key)
+            agent._ai_created_path_keys.discard(key)
+            print(f"🗑️ 已自动删除本会话创建的临时脚本: {name}")
+            return name
+    except OSError as e:
+        print(f"⚠️ 自动删除临时脚本失败 ({invoked}): {e}")
+    return None
+
+
+def resolve_model_context_file_env(agent: Any, command: str) -> Optional[str]:
+    invoked = parse_shell_invoked_script_path(agent, command or "")
+    if invoked is None:
+        return None
+    try:
+        ip = invoked.resolve()
+    except OSError:
+        ip = Path(invoked)
+    best_len = -1
+    best_env: Optional[str] = None
+    for s in agent.skills or []:
+        env = getattr(s, "model_context_file_env", None)
+        if not env:
+            continue
+        try:
+            root = Path(s.bundle_root).resolve()
+            ip.relative_to(root)
+        except (ValueError, OSError):
+            continue
+        ln = len(str(root))
+        if ln > best_len:
+            best_len = ln
+            best_env = env
+    return best_env
+
+
+def append_shell_merge_output_path(stdout_text: str, return_code: int, merge_path: Optional[str]) -> str:
+    if return_code != 0 or not merge_path:
+        return stdout_text
+    path = Path(merge_path)
+    if not path.is_file():
+        return stdout_text
+    marker = "【附加输出（shell merge file）】"
+    if marker in (stdout_text or ""):
+        return stdout_text
+    try:
+        extra = path.read_text(encoding="utf-8")
+    except OSError:
+        return stdout_text
+    if not extra.strip():
+        return stdout_text
+    head = (stdout_text or "").strip()
+    if not head:
+        return marker + "\n" + extra
+    return head + "\n\n---\n" + marker + "\n" + extra
+
+
+def grep_read_path_allowed(agent: Any, path: Path) -> bool:
+    try:
+        r = path.resolve()
+    except OSError:
+        return False
+    try:
+        wd = agent.work_directory.resolve()
+        aw = agent.ai_workspace_dir.resolve()
+    except OSError:
+        return False
+    return agent._is_path_under(r, wd) or agent._is_path_under(r, aw)
+
+
+def grep_output_path_allowed(agent: Any, path: Path) -> bool:
+    try:
+        r = path.resolve()
+    except OSError:
+        return False
+    try:
+        wd = agent.work_directory.resolve()
+        aw = agent.ai_workspace_dir.resolve()
+        tmp = Path(__import__("tempfile").gettempdir()).resolve()
+    except OSError:
+        return False
+    return agent._is_path_under(r, wd) or agent._is_path_under(r, aw) or agent._is_path_under(r, tmp)

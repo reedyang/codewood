@@ -4353,13 +4353,7 @@ class SmartShellAgent:
 
     def _register_outputs_from_shell_command(self, command: str) -> None:
         """Heuristic: pandas/openpyxl output paths in -c one-liners → session AI outputs."""
-        for pat in (
-            r"to_excel\s*\(\s*['\"]([^'\"]+)['\"]",
-            r"to_csv\s*\(\s*['\"]([^'\"]+)['\"]",
-            r"ExcelWriter\s*\(\s*['\"]([^'\"]+)['\"]",
-        ):
-            for m in re.finditer(pat, command, re.I):
-                self._try_register_ai_output_literal(m.group(1))
+        return command_actions.register_outputs_from_shell_command(self, command)
 
     def _is_ai_created_path(self, path_str: str) -> bool:
         if not path_str or not str(path_str).strip():
@@ -4378,226 +4372,23 @@ class SmartShellAgent:
             return False
 
     def _parse_shell_invoked_script_path(self, command: str) -> Optional[Path]:
-        """
-        Path to the script/data file invoked by shell (e.g. second arg of `python x.py`).
-        Returns None for `python -c ...` (no script file).
-        """
-        import shlex
-
-        s = command.strip()
-        if not s:
-            return None
-        if s.lower().startswith("call "):
-            s = s[5:].strip()
-        try:
-            parts = shlex.split(s, posix=os.name != "nt")
-        except ValueError:
-            parts = s.split()
-        if not parts:
-            return None
-        base0 = parts[0].replace("\\", "/").split("/")[-1].lower().rstrip(".exe")
-        if len(parts) >= 3 and base0 == "cmd" and parts[1].lower() in ("/c", "/k"):
-            return self._parse_shell_invoked_script_path(" ".join(parts[2:]))
-        exe = base0
-        if exe in ("python", "pythonw", "py") and len(parts) >= 2:
-            i = 1
-            while i < len(parts):
-                t = parts[i].strip('"').strip("'")
-                if t in ("-c", "-m"):
-                    return None
-                if t.startswith("-") and len(t) > 1:
-                    i += 1
-                    continue
-                break
-            if i >= len(parts):
-                return None
-            tok = parts[i].strip('"').strip("'")
-            if tok.startswith(".\\") or tok.startswith("./"):
-                tok = tok[2:]
-            p = Path(tok)
-            if not p.is_absolute():
-                p_wd, p_temp, p_ws = self._workspace_relative_script_triple(p)
-                if p_wd.is_file():
-                    return p_wd
-                if p_temp.is_file():
-                    return p_temp
-                if p_ws.is_file():
-                    return p_ws
-                return p_wd
-            try:
-                return p.resolve()
-            except OSError:
-                return p
-        tok = parts[0].strip('"').strip("'")
-        low = tok.lower()
-        if low.endswith((".py", ".ps1", ".bat", ".cmd")):
-            if tok.startswith(".\\") or tok.startswith("./"):
-                tok = tok[2:]
-            p = Path(tok)
-            if not p.is_absolute():
-                p_wd, p_temp, p_ws = self._workspace_relative_script_triple(p)
-                if p_wd.is_file():
-                    return p_wd
-                if p_temp.is_file():
-                    return p_temp
-                if p_ws.is_file():
-                    return p_ws
-                return p_wd
-            try:
-                return p.resolve()
-            except OSError:
-                return p
-        return None
+        return command_actions.parse_shell_invoked_script_path(self, command)
 
     def _rewrite_shell_command_script_arg_to_abs(self, command: str, resolved: Path) -> str:
         """Replace the script token with resolved absolute path (for python/py/... invocations)."""
-        import shlex
-        import subprocess
-
-        s = command.strip()
-        call_prefix = ""
-        if s.lower().startswith("call "):
-            call_prefix = "call "
-            s = s[5:].strip()
-        try:
-            parts = shlex.split(s, posix=os.name != "nt")
-        except ValueError:
-            return command
-        if not parts:
-            return command
-        base0 = parts[0].replace("\\", "/").split("/")[-1].lower().rstrip(".exe")
-        if len(parts) >= 3 and base0 == "cmd" and parts[1].lower() in ("/c", "/k"):
-            inner = " ".join(parts[2:])
-            inner_re = self._rewrite_shell_command_script_arg_to_abs(inner, resolved)
-            if inner_re == inner:
-                return command
-            if os.name == "nt":
-                return call_prefix + subprocess.list2cmdline([parts[0], parts[1], inner_re])
-            return f"{call_prefix}{parts[0]} {parts[1]} {inner_re}"
-
-        exe = base0
-        if exe not in ("python", "pythonw", "py"):
-            return command
-        i = 1
-        while i < len(parts):
-            t = parts[i].strip('"').strip("'")
-            if t in ("-m", "-c"):
-                return command
-            if t.startswith("-") and len(t) > 1:
-                i += 1
-                continue
-            break
-        if i >= len(parts):
-            return command
-        tok = parts[i].strip('"').strip("'")
-        if tok.startswith(".\\") or tok.startswith("./"):
-            tok = tok[2:]
-        p = Path(tok)
-        if not p.is_absolute():
-            p_wd, p_temp, p_ws = self._workspace_relative_script_triple(p)
-            if p_wd.is_file():
-                cand = p_wd
-            elif p_temp.is_file():
-                cand = p_temp
-            elif p_ws.is_file():
-                cand = p_ws
-            else:
-                cand = p_wd
-        else:
-            try:
-                cand = Path(tok).resolve()
-            except OSError:
-                return command
-        if self._ephemeral_path_key(cand) != self._ephemeral_path_key(resolved):
-            return command
-        parts[i] = str(resolved.resolve())
-        if os.name == "nt":
-            return call_prefix + subprocess.list2cmdline(parts)
-        return call_prefix + shlex.join(parts)
+        return command_actions.rewrite_shell_command_script_arg_to_abs(self, command, resolved)
 
     def _ensure_absolute_script_for_shell_cwd(self, command: str) -> str:
-        """If the invoked script file lives only under ai_workspace_dir, expand it to an absolute path.
-        Shell runs with cwd=work_directory; bare ``python foo.py`` would miss workspace-only files."""
-        invoked = self._parse_shell_invoked_script_path(command)
-        if invoked is None or not invoked.is_file():
-            return command
-        try:
-            invoked.resolve().relative_to(self.ai_workspace_dir.resolve())
-        except ValueError:
-            return command
-        new_cmd = self._rewrite_shell_command_script_arg_to_abs(command, invoked.resolve())
-        if new_cmd != command:
-            print(
-                f"ℹ️ shell cwd 为工作目录，已将 workspace 内脚本展开为绝对路径执行。"
-            )
-        return new_cmd
+        """If the invoked script file lives only under ai_workspace_dir, expand it to an absolute path."""
+        return command_actions.ensure_absolute_script_for_shell_cwd(self, command)
 
     def _tune_7z_output_for_piped_terminal(self, command: str) -> str:
-        """
-        Improve 7z visibility under piped/non-tty execution by adding stable output switches.
-        Keep defaults unchanged for non-7z commands.
-        """
-        if not command.strip():
-            return command
-        # Best-effort detection for common 7z invocations.
-        if not re.search(r'(^|[\\/\s"])7z(?:\.exe)?(?=\s|"|$)', command, re.IGNORECASE):
-            return command
-
-        tuned = command
-        appended: List[str] = []
-        lower = command.lower()
-        if " -bsp" not in lower:
-            tuned += " -bsp1"
-            appended.append("-bsp1")
-        if " -bb" not in lower:
-            tuned += " -bb1"
-            appended.append("-bb1")
-        if " -bso" not in lower:
-            tuned += " -bso1"
-            appended.append("-bso1")
-        if " -bse" not in lower:
-            tuned += " -bse2"
-            appended.append("-bse2")
-        if appended:
-            print(f"ℹ️ 已为 7z 命令启用兼容输出参数: {' '.join(appended)}")
-        return tuned
+        """Improve 7z visibility under piped/non-tty execution by adding stable output switches."""
+        return command_actions.tune_7z_output_for_piped_terminal(command)
 
     def _parse_shell_invoked_executable(self, command: str) -> Optional[Path]:
         """Best-effort: path to the primary script/exe the user asked to run (first token)."""
-        import shlex
-        s = command.strip()
-        if not s:
-            return None
-        if s.lower().startswith("call "):
-            s = s[5:].strip()
-        try:
-            parts = shlex.split(s, posix=os.name != "nt")
-        except ValueError:
-            parts = s.split()
-        if not parts:
-            return None
-        base0 = parts[0].replace("\\", "/").split("/")[-1].lower().rstrip(".exe")
-        if len(parts) >= 3 and base0 == "cmd" and parts[1].lower() in ("/c", "/k"):
-            token = parts[2]
-        else:
-            token = parts[0]
-        token = token.strip('"').strip("'")
-        if token.startswith(".\\") or token.startswith("./"):
-            token = token[2:]
-        p = Path(token)
-        if not p.is_absolute():
-            p_wd, p_temp, p_ws = self._workspace_relative_script_triple(p)
-            if p_wd.is_file():
-                return p_wd
-            if p_temp.is_file():
-                return p_temp
-            if p_ws.is_file():
-                return p_ws
-            return p_wd
-        try:
-            return p.resolve()
-        except OSError:
-            return p
+        return command_actions.parse_shell_invoked_executable(self, command)
 
     def _is_path_under(self, child: Path, root: Path) -> bool:
         try:
@@ -4748,29 +4539,10 @@ class SmartShellAgent:
             print(f"⚠️ 自动重载 skills 失败: {e}")
 
     def _is_dependency_install_command(self, command: str) -> bool:
-        s = (command or "").strip().lower()
-        if not s:
-            return False
-        install_patterns = [
-            r"^(python(\d+(\.\d+)*)?\s+-m\s+pip)\s+install\b",
-            r"^(pip(\d+(\.\d+)*)?)\s+install\b",
-            r"^uv\s+pip\s+install\b",
-            r"^poetry\s+add\b",
-            r"^pipenv\s+install\b",
-            r"^conda\s+install\b",
-            r"^mamba\s+install\b",
-            r"^npm\s+install\b",
-            r"^pnpm\s+add\b",
-            r"^yarn\s+add\b",
-            r"^bun\s+add\b",
-        ]
-        return any(re.match(pat, s) for pat in install_patterns)
+        return command_actions.is_dependency_install_command(command)
 
     def _is_ai_workspace_script_command(self, command: str) -> bool:
-        invoked = self._parse_shell_invoked_script_path(command or "")
-        if invoked is None:
-            return False
-        return self._is_path_under(invoked, self.ai_workspace_dir)
+        return command_actions.is_ai_workspace_script_command(self, command)
 
     def _blocked_by_self_protection(self, action: str) -> Dict[str, Any]:
         return {
@@ -4783,54 +4555,11 @@ class SmartShellAgent:
 
     def _try_remove_ephemeral_script_after_shell(self, command: str) -> Optional[str]:
         """Returns basename if an ephemeral script was removed, else None."""
-        invoked = self._parse_shell_invoked_script_path(command)
-        if invoked is None:
-            return None
-        key = self._ephemeral_path_key(invoked)
-        if key not in self._ephemeral_script_paths:
-            return None
-        try:
-            if invoked.is_file():
-                name = invoked.name
-                invoked.unlink()
-                self._ephemeral_script_paths.discard(key)
-                self._ai_created_path_keys.discard(key)
-                print(f"🗑️ 已自动删除本会话创建的临时脚本: {name}")
-                return name
-        except OSError as e:
-            print(f"⚠️ 自动删除临时脚本失败 ({invoked}): {e}")
-        return None
+        return command_actions.try_remove_ephemeral_script_after_shell(self, command)
 
     def _resolve_model_context_file_env(self, command: str) -> Optional[str]:
-        """
-        If the invoked script lives under a skill bundle whose ``SKILL.md`` YAML
-        frontmatter supplies ``model_context_file_env`` (or ``modelContextFileEnv``),
-        return that env name so the host can set it to a temp file path. Longest
-        ``bundle_root`` wins when multiple skills match.
-        """
-        invoked = self._parse_shell_invoked_script_path(command or "")
-        if invoked is None:
-            return None
-        try:
-            ip = invoked.resolve()
-        except OSError:
-            ip = Path(invoked)
-        best_len = -1
-        best_env: Optional[str] = None
-        for s in self.skills or []:
-            env = getattr(s, "model_context_file_env", None)
-            if not env:
-                continue
-            try:
-                root = Path(s.bundle_root).resolve()
-                ip.relative_to(root)
-            except (ValueError, OSError):
-                continue
-            ln = len(str(root))
-            if ln > best_len:
-                best_len = ln
-                best_env = env
-        return best_env
+        """Resolve skill-provided merge env var for shell command."""
+        return command_actions.resolve_model_context_file_env(self, command)
 
     def _append_shell_merge_output_path(
         self,
@@ -4838,29 +4567,7 @@ class SmartShellAgent:
         return_code: int,
         merge_path: Optional[str],
     ) -> str:
-        """
-        After exit 0, if the child wrote UTF-8 text to the temp file path that was
-        exposed via the skill-defined env var, append it to captured stdout for
-        tool ``output``.
-        """
-        if return_code != 0 or not merge_path:
-            return stdout_text
-        path = Path(merge_path)
-        if not path.is_file():
-            return stdout_text
-        marker = "【附加输出（shell merge file）】"
-        if marker in (stdout_text or ""):
-            return stdout_text
-        try:
-            extra = path.read_text(encoding="utf-8")
-        except OSError:
-            return stdout_text
-        if not extra.strip():
-            return stdout_text
-        head = (stdout_text or "").strip()
-        if not head:
-            return marker + "\n" + extra
-        return head + "\n\n---\n" + marker + "\n" + extra
+        return command_actions.append_shell_merge_output_path(stdout_text, return_code, merge_path)
 
     def action_shell_command(
         self,
@@ -4940,34 +4647,11 @@ class SmartShellAgent:
 
     def _grep_read_path_allowed(self, path: Path) -> bool:
         """Paths that may be read by grep (workspace + AI workspace)."""
-        try:
-            r = path.resolve()
-        except OSError:
-            return False
-        try:
-            wd = self.work_directory.resolve()
-            aw = self.ai_workspace_dir.resolve()
-        except OSError:
-            return False
-        return self._is_path_under(r, wd) or self._is_path_under(r, aw)
+        return command_actions.grep_read_path_allowed(self, path)
 
     def _grep_output_path_allowed(self, path: Path) -> bool:
         """Output file may be under workspace, AI workspace, or system temp."""
-        try:
-            r = path.resolve()
-        except OSError:
-            return False
-        try:
-            wd = self.work_directory.resolve()
-            aw = self.ai_workspace_dir.resolve()
-            tmp = Path(__import__("tempfile").gettempdir()).resolve()
-        except OSError:
-            return False
-        return (
-            self._is_path_under(r, wd)
-            or self._is_path_under(r, aw)
-            or self._is_path_under(r, tmp)
-        )
+        return command_actions.grep_output_path_allowed(self, path)
 
     def action_grep(self, params: Dict[str, Any]) -> dict:
         """Recursive regex grep over text files; results written to caller-specified file."""
