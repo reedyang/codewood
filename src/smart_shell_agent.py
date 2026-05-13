@@ -96,8 +96,8 @@ from .skills_loader import (
 from .mcp_manager import McpManager, McpError
 from .tools.project_context_index import ProjectContextIndex
 from .change_preview_formatter import ChangePreviewFormatter
-from .ai_special_mode_prompts import build_special_mode_messages
-from .ai_provider_clients import AICallContext, ProviderCallContext, prepare_image_input, call_ai_with_provider
+from .ai_provider_clients import AICallContext
+from .ai_orchestrator import AIOrchestrator, AgentAIContext
 from . import filesystem_actions
 from . import command_actions
 from . import command_security
@@ -422,6 +422,18 @@ class SmartShellAgent:
             self.params = params or {}
         self.openai_conf = self.params if self.provider == "openai" else openai_conf
         self.openwebui_conf = self.params if self.provider == "openwebui" else openwebui_conf
+        self.ai_orchestrator = AIOrchestrator(
+            AgentAIContext(
+                provider=self.provider,
+                model_name=self.model_name,
+                openai_conf=self.openai_conf,
+                openwebui_conf=self.openwebui_conf,
+                work_directory=str(self.work_directory),
+                history_writer=self._append_chat_message,
+                regular_message_builder=self._build_regular_task_messages,
+                ollama_importer=_import_ollama_client,
+            )
+        )
 
         # 模型可用性校验（ollama.list）可能阻塞网络；见 _schedule_model_validation_background，在后台执行
 
@@ -4032,80 +4044,12 @@ class SmartShellAgent:
             history_user_input=history_user_input,
             history_skip_user=history_skip_user,
         )
-        provider = self.provider
-        model_name = self.model_name
-        try:
-            special_messages, special_record_history, special_error = build_special_mode_messages(
-                user_input=call_ctx.user_input,
-                stream=call_ctx.stream,
-                minimal_classifier=call_ctx.minimal_classifier,
-                freedom_combined_review=call_ctx.freedom_combined_review,
-                reflection_mode=call_ctx.reflection_mode,
-                session_summary_mode=call_ctx.session_summary_mode,
-                memory_query_expansion_mode=call_ctx.memory_query_expansion_mode,
-                work_directory=str(self.work_directory),
-            )
-            if special_error:
-                return special_error
-            if special_messages is not None:
-                messages = special_messages
-                record_history = special_record_history
-            else:
-                messages, record_history = self._build_regular_task_messages(call_ctx.user_input, call_ctx.context)
-
-            if not provider or not model_name:
-                return "❌ 错误：模型未正确配置。请检查 config.json 中的 model 配置。"
-
-            internal_mode = any(
-                (
-                    call_ctx.freedom_combined_review,
-                    call_ctx.minimal_classifier,
-                    call_ctx.reflection_mode,
-                    call_ctx.session_summary_mode,
-                    call_ctx.memory_query_expansion_mode,
-                )
-            )
-            image_data, image_user_idx, image_user_text, image_error = prepare_image_input(
-                image_path=call_ctx.image_path,
-                messages=messages,
-                internal_mode=internal_mode,
-            )
-            if image_error:
-                return image_error
-
-            def _append_history(ai_response: str) -> None:
-                if not record_history:
-                    return
-                if not call_ctx.history_skip_user:
-                    _u = (
-                        call_ctx.history_user_input
-                        if call_ctx.history_user_input is not None
-                        else call_ctx.user_input
-                    )
-                    self._append_chat_message("user", _u)
-                self._append_chat_message("assistant", ai_response)
-
-            provider_ctx = ProviderCallContext(
-                provider=provider,
-                model_name=model_name,
-                openai_conf=self.openai_conf,
-                openwebui_conf=self.openwebui_conf,
-                messages=messages,
-                stream=call_ctx.stream,
-                return_message=call_ctx.return_message,
-                image_data=image_data,
-                image_user_idx=image_user_idx,
-                image_user_text=image_user_text,
-                session_summary_mode=call_ctx.session_summary_mode,
-                memory_query_expansion_mode=call_ctx.memory_query_expansion_mode,
-            )
-            return call_ai_with_provider(
-                context=provider_ctx,
-                append_history=_append_history,
-                ollama_importer=_import_ollama_client,
-            )
-        except Exception as e:
-            return f"调用大模型API时出错: {str(e)} (provider: {provider}, model: {model_name})"
+        self.ai_orchestrator.context.provider = self.provider
+        self.ai_orchestrator.context.model_name = self.model_name
+        self.ai_orchestrator.context.openai_conf = self.openai_conf
+        self.ai_orchestrator.context.openwebui_conf = self.openwebui_conf
+        self.ai_orchestrator.context.work_directory = str(self.work_directory)
+        return self.ai_orchestrator.call(call_ctx=call_ctx)
 
     def action_list_directory(self, path: Optional[str] = None, file_filter: Optional[str] = None) -> Dict[str, Any]:
         """列出目录内容"""
