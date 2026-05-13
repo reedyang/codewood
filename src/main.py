@@ -74,7 +74,7 @@ def main():
         return 1
     model_config = config.get("model")
     if not isinstance(model_config, dict):
-        print("❌ 配置错误：缺少 model 配置（不再支持 normal_model/vision_model 旧格式）")
+        print("❌ 配置错误：缺少 model 配置")
         return 1
     provider = str(model_config.get("provider", "")).strip()
     params = model_config.get("params", {}) if isinstance(model_config.get("params", {}), dict) else {}
