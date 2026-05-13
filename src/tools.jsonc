@@ -401,6 +401,39 @@
   {
     "type": "function",
     "function": {
+      "name": "project_context_search",
+      "description": "面向大项目的轻量代码上下文检索：按 query 返回候选文件、相关符号与匹配原因。支持增量索引刷新、强制重建与状态查看。",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "description": "检索意图，例如“where auth token validated”或“RoomSettingsPanel timer crash”"
+          },
+          "max_files": {
+            "type": "integer",
+            "description": "最多返回候选文件数（默认 12，最大 50）"
+          },
+          "refresh": {
+            "type": "boolean",
+            "description": "是否在检索前做一次增量刷新（默认 true）"
+          },
+          "force_rebuild": {
+            "type": "boolean",
+            "description": "是否强制全量重建索引后再检索（慢）"
+          },
+          "status_only": {
+            "type": "boolean",
+            "description": "仅返回索引状态，不执行检索"
+          }
+        },
+        "required": ["query"]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
       "name": "mcp_server_info",
       "description": "查询指定 MCP 服务器的聚合信息（状态、tools/resources/prompts）。",
       "parameters": {

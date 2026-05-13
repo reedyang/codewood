@@ -19,6 +19,8 @@ WINDOWS_SLASH_BUILTIN_COMMANDS: List[str] = [
     "/knowledge stats",
     "/knowledge search ",
     "/memory ",
+    "/memory enable",
+    "/memory disable",
     "/memory status",
     "/memory stats",
     "/memory list",
