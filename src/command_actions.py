@@ -67,18 +67,13 @@ def action_shell_command(
         return {"success": False, "error": "命令不能为空"}
     command = ensure_absolute_script_for_shell_cwd(agent, command.strip())
     command = tune_7z_output_for_piped_terminal(command)
-    if agent._is_path_under(agent.work_directory, agent._self_repo_root):
-        if not (
-                is_dependency_install_command(command)
-                or is_ai_workspace_script_command(agent, command)
-        ):
-            return {
-                "success": False,
-                "error": (
-                    "已拦截 shell 命令：当前位于 smart-shell 目录内，仅允许依赖安装命令"
-                    "或执行 ai_workspace_dir 下的 AI 临时脚本。"
-                ),
-            }
+    policy = agent._get_path_policy()
+    decision = policy.can_run_shell_in_workdir(
+        is_dependency_install=is_dependency_install_command(command),
+        is_ai_workspace_script=is_ai_workspace_script_command(agent, command),
+    )
+    if not decision.get("allowed", False):
+        return {"success": False, "error": decision.get("error", "")}
     agent._load_confirm_allowlist()
     if not confirmed and not agent._shell_command_in_allowlist(command):
         ok = agent._prompt_confirm_yes_no_maybe_always(
@@ -98,6 +93,20 @@ def action_shell_command(
         run_env.setdefault("PYTHONUTF8", "1")
         run_env.setdefault("PYTHONIOENCODING", "utf-8")
         run_env.setdefault("PYTHONUNBUFFERED", "1")
+        run_env.setdefault("SMART_SHELL_WORKSPACE_DIR", str(agent.ai_workspace_dir.resolve()))
+        run_env.setdefault("SMART_SHELL_WORKDIR", str(agent.work_directory.resolve()))
+        skill_ctx = resolve_invoked_skill_context(agent, command)
+        if skill_ctx:
+            sid = str(skill_ctx.get("skill_id") or "").strip()
+            bundle_root = str(skill_ctx.get("bundle_root") or "").strip()
+            if sid:
+                run_env.setdefault("SMART_SHELL_SKILL_ID", sid)
+                run_env.setdefault(
+                    "SMART_SHELL_SKILL_CACHE_DIR",
+                    str((agent.ai_workspace_dir / "skill_cache" / sid).resolve()),
+                )
+            if bundle_root:
+                run_env.setdefault("SMART_SHELL_SKILL_BUNDLE_ROOT", bundle_root)
         merge_env_name = resolve_model_context_file_env(agent, command)
         if merge_env_name:
             try:
@@ -295,14 +304,10 @@ def action_grep(agent: Any, params: Dict[str, Any]) -> dict:
         return {"success": False, "error": "grep 缺少 output_path（结果输出文件路径）"}
 
     out_path = agent._resolve_user_path(out_raw)
-    rej = agent._reject_ai_workspace_root_level_write(out_path)
-    if rej:
-        return {"success": False, "error": rej}
-    if not grep_output_path_allowed(agent, out_path):
-        return {
-            "success": False,
-            "error": "output_path 必须位于当前工作目录、AI 工作区或系统临时目录下",
-        }
+    policy = agent._get_path_policy()
+    decision = policy.can_write_grep_output(out_path)
+    if not decision.get("allowed", False):
+        return {"success": False, "error": decision.get("error", "")}
 
     root_path: Optional[Path] = None
     file_list: Optional[List[Path]] = None
@@ -311,7 +316,7 @@ def action_grep(agent: Any, params: Dict[str, Any]) -> dict:
         file_list = []
         for fr in files_raw:
             p = agent._resolve_user_path(str(fr).strip())
-            if not grep_read_path_allowed(agent, p):
+            if not policy.can_read_for_grep(p):
                 return {"success": False, "error": f"禁止检索该路径（超出允许范围）: {p}"}
             if p.is_file():
                 file_list.append(p)
@@ -321,7 +326,7 @@ def action_grep(agent: Any, params: Dict[str, Any]) -> dict:
         root_path = agent._resolve_user_path(root_raw)
         if not root_path.is_dir():
             return {"success": False, "error": f"root 不是目录: {root_path}"}
-        if not grep_read_path_allowed(agent, root_path):
+        if not policy.can_read_for_grep(root_path):
             return {"success": False, "error": "禁止在该 root 下检索（超出允许范围）"}
     else:
         return {"success": False, "error": "必须提供 root（目录）或 files（文件路径列表）"}
@@ -696,6 +701,32 @@ def resolve_model_context_file_env(agent: Any, command: str) -> Optional[str]:
     return best_env
 
 
+def resolve_invoked_skill_context(agent: Any, command: str) -> Optional[Dict[str, str]]:
+    invoked = parse_shell_invoked_script_path(agent, command or "")
+    if invoked is None:
+        return None
+    try:
+        ip = invoked.resolve()
+    except OSError:
+        ip = Path(invoked)
+    best_len = -1
+    best: Optional[Dict[str, str]] = None
+    for s in agent.skills or []:
+        sid = str(getattr(s, "skill_id", "") or "").strip()
+        if not sid:
+            continue
+        try:
+            root = Path(getattr(s, "bundle_root", "")).resolve()
+            ip.relative_to(root)
+        except (ValueError, OSError):
+            continue
+        ln = len(str(root))
+        if ln > best_len:
+            best_len = ln
+            best = {"skill_id": sid, "bundle_root": str(root)}
+    return best
+
+
 def append_shell_merge_output_path(stdout_text: str, return_code: int, merge_path: Optional[str]) -> str:
     if return_code != 0 or not merge_path:
         return stdout_text
@@ -718,27 +749,8 @@ def append_shell_merge_output_path(stdout_text: str, return_code: int, merge_pat
 
 
 def grep_read_path_allowed(agent: Any, path: Path) -> bool:
-    try:
-        r = path.resolve()
-    except OSError:
-        return False
-    try:
-        wd = agent.work_directory.resolve()
-        aw = agent.ai_workspace_dir.resolve()
-    except OSError:
-        return False
-    return agent._is_path_under(r, wd) or agent._is_path_under(r, aw)
+    return agent._get_path_policy().can_read_for_grep(path)
 
 
 def grep_output_path_allowed(agent: Any, path: Path) -> bool:
-    try:
-        r = path.resolve()
-    except OSError:
-        return False
-    try:
-        wd = agent.work_directory.resolve()
-        aw = agent.ai_workspace_dir.resolve()
-        tmp = Path(__import__("tempfile").gettempdir()).resolve()
-    except OSError:
-        return False
-    return agent._is_path_under(r, wd) or agent._is_path_under(r, aw) or agent._is_path_under(r, tmp)
+    return bool(agent._get_path_policy().can_write_grep_output(path).get("allowed", False))

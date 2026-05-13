@@ -99,6 +99,7 @@ from .change_preview_formatter import ChangePreviewFormatter
 from .ai_provider_clients import AICallContext
 from .ai_orchestrator import AIOrchestrator, AgentAIContext
 from .session_memory_service import SessionMemoryService
+from .policy.path_policy import PathPolicy
 from . import filesystem_actions
 from . import command_actions
 from . import command_security
@@ -241,14 +242,6 @@ CHAT_RECENT_MESSAGES = 10
 SKILL_PROMPT_LONG_BODY_THRESHOLD = 7000
 SKILL_PROMPT_INITIAL_SECTIONS = 3
 SKILL_PROMPT_MAX_SECTION_CHARS = 2600
-
-# workspace 根下允许的顶层目录名（其它新建路径须落在这些目录之下或更深子路径）
-_AI_WORKSPACE_TOP_LEVEL_DIR_NAMES = frozenset(
-    {"temp", "skills"}
-)
-_AI_WORKSPACE_TOP_LEVEL_DIR_NAMES_FOLD = frozenset(
-    x.casefold() for x in _AI_WORKSPACE_TOP_LEVEL_DIR_NAMES
-)
 
 DEFAULT_WORKSPACE_ID = "default"
 DEFAULT_WORKSPACE_NAME = "Default"
@@ -423,6 +416,7 @@ class SmartShellAgent:
             self.params = params or {}
         self.openai_conf = self.params if self.provider == "openai" else openai_conf
         self.openwebui_conf = self.params if self.provider == "openwebui" else openwebui_conf
+        self.path_policy = PathPolicy(self)
         self.session_memory_service = SessionMemoryService(self)
         self.ai_orchestrator = AIOrchestrator(
             AgentAIContext(
@@ -3644,88 +3638,30 @@ class SmartShellAgent:
         """Best-effort: path to the primary script/exe the user asked to run (first token)."""
         return command_actions.parse_shell_invoked_executable(self, command)
 
+    def _get_path_policy(self) -> PathPolicy:
+        pol = getattr(self, "path_policy", None)
+        if pol is None:
+            pol = PathPolicy(self)
+            self.path_policy = pol
+        return pol
+
     def _is_path_under(self, child: Path, root: Path) -> bool:
-        try:
-            child.resolve().relative_to(root.resolve())
-            return True
-        except Exception:
-            return False
+        return self._get_path_policy().is_path_under(child, root)
 
     def _is_smart_shell_protected_path(self, path: Path) -> bool:
-        """
-        Protected targets include:
-        1) smart-shell repository root (code/skills/.smartshell in repo)
-        2) active config directory (~/.smartshell or local .smartshell)
-        """
-        # Allow AI to create/modify workspace skills under repository skills/ subtree.
-        if self._is_workspace_skill_path(path):
-            return False
-        # Always allow AI temporary workspace operations.
-        if self._is_path_under(path, self.ai_workspace_dir):
-            return False
-        return self._is_path_under(path, self._self_repo_root) or self._is_path_under(path, self.config_dir)
+        return self._get_path_policy().is_smart_shell_protected_path(path)
 
     def _reject_ai_workspace_root_level_write(self, path: Path) -> Optional[str]:
-        """
-        禁止在 Smart Shell workspace 根目录直接新建路径；须落在白名单顶层目录（如 temp、skills）之下。
-        例如 workspace/a.txt、workspace/myproj（非白名单顶层名）拒绝；workspace/temp/a.txt 允许。
-        """
-        msg = (
-            "禁止在 Smart Shell workspace 根目录直接创建该路径。"
-            "请使用子目录，例如 workspace/temp/…（临时）、workspace/skills/…（技能），"
-            "或落在既有顶层目录（knowledge、memory、knowledge_db、logs）之下。"
-        )
-        try:
-            r = path.resolve()
-            aw = self.ai_workspace_dir.resolve()
-            if not self._is_path_under(r, aw):
-                return None
-            rel = r.relative_to(aw)
-            if len(rel.parts) == 0:
-                return msg
-            if len(rel.parts) == 1:
-                top = rel.parts[0]
-                if top.casefold() in _AI_WORKSPACE_TOP_LEVEL_DIR_NAMES_FOLD:
-                    return None
-                return msg
-            return None
-        except (ValueError, OSError):
-            return None
+        return self._get_path_policy().reject_ai_workspace_root_level_write(path)
 
     def _workspace_skills_root(self) -> Path:
-        return (self.ai_workspace_dir / "skills").resolve()
+        return self._get_path_policy().workspace_skills_root()
 
     def _resolve_user_path(self, raw_path: str) -> Path:
-        """
-        Resolve user-provided path with special handling:
-        - relative paths starting with `workspace/` are anchored to ai workspace root.
-        - relative paths starting with `workspace/skills/` or `skills/` are anchored to workspace skills root.
-        """
-        p_raw = (raw_path or "").strip()
-        if not p_raw:
-            return self.work_directory
-        norm = p_raw.replace("\\", "/").lstrip("./")
-        if norm == "workspace":
-            return self.ai_workspace_dir.resolve()
-        if norm.startswith("workspace/skills/"):
-            rest = norm[len("workspace/skills/") :]
-            return (self._workspace_skills_root() / Path(rest)).resolve()
-        if norm.startswith("workspace/"):
-            rest = norm[len("workspace/") :]
-            return (self.ai_workspace_dir / Path(rest)).resolve()
-        if norm.startswith("skills/"):
-            rest = norm[len("skills/") :]
-            return (self._workspace_skills_root() / Path(rest)).resolve()
-        p = Path(p_raw)
-        if p.is_absolute():
-            return p.resolve()
-        return (self.work_directory / p).resolve()
+        return self._get_path_policy().resolve_user_path(raw_path)
 
     def _is_workspace_skill_path(self, path: Path) -> bool:
-        try:
-            return self._is_path_under(path.resolve(), self._workspace_skills_root())
-        except Exception:
-            return False
+        return self._get_path_policy().is_workspace_skill_path(path)
 
     def _skill_id_exists(self, skill_id: str) -> bool:
         sid = (skill_id or "").strip().lower()
@@ -3799,13 +3735,7 @@ class SmartShellAgent:
         return command_actions.is_ai_workspace_script_command(self, command)
 
     def _blocked_by_self_protection(self, action: str) -> Dict[str, Any]:
-        return {
-            "success": False,
-            "error": (
-                f"已拦截操作 '{action}'：运行时保护已启用，"
-                "AI 不可修改 smart-shell 自身（代码/配置）；`workspace/skills` 子目录除外。"
-            ),
-        }
+        return self._get_path_policy().blocked_by_self_protection(action)
 
     def _try_remove_ephemeral_script_after_shell(self, command: str) -> Optional[str]:
         """Returns basename if an ephemeral script was removed, else None."""
