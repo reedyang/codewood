@@ -96,6 +96,7 @@ from .skills_loader import (
 )
 from .mcp_manager import McpManager, McpError
 from .tools.project_context_index import ProjectContextIndex
+from .change_preview_formatter import ChangePreviewFormatter
 
 # memory_manager 在后台线程中导入（见 _schedule_memory_service_background），避免阻塞主线程初始化。
 MEMORY_AVAILABLE = False  # type: ignore[misc, assignment]
@@ -6885,125 +6886,12 @@ big_image.jpg
         new_start_line: int = 1,
     ) -> List[str]:
         """Build compact side-by-side change preview with = / - / + markers."""
-        import difflib
-        import unicodedata
-
-        raw_rows: List[Tuple[str, Optional[int], str, str, Optional[int], str]] = []
-        matcher = difflib.SequenceMatcher(a=old_lines, b=new_lines)
-        for tag, i1, i2, j1, j2 in matcher.get_opcodes():
-            if tag == "equal":
-                for oi, nj in zip(range(i1, i2), range(j1, j2)):
-                    raw_rows.append(
-                        ("=", old_start_line + oi, old_lines[oi], "=", new_start_line + nj, new_lines[nj])
-                    )
-            elif tag == "delete":
-                for oi in range(i1, i2):
-                    raw_rows.append(
-                        ("-", old_start_line + oi, old_lines[oi], " ", None, "")
-                    )
-            elif tag == "insert":
-                for nj in range(j1, j2):
-                    raw_rows.append(
-                        (" ", None, "", "+", new_start_line + nj, new_lines[nj])
-                    )
-            else:  # replace
-                old_count = i2 - i1
-                new_count = j2 - j1
-                row_count = max(old_count, new_count)
-                for idx in range(row_count):
-                    has_old = idx < old_count
-                    has_new = idx < new_count
-                    left_mark = "-" if has_old else " "
-                    right_mark = "+" if has_new else " "
-                    old_no = (old_start_line + i1 + idx) if has_old else None
-                    new_no = (new_start_line + j1 + idx) if has_new else None
-                    old_text = old_lines[i1 + idx] if has_old else ""
-                    new_text = new_lines[j1 + idx] if has_new else ""
-                    raw_rows.append((left_mark, old_no, old_text, right_mark, new_no, new_text))
-
-        # Expand tabs so vertical separators remain aligned in terminal output.
-        def _norm(s: str) -> str:
-            return str(s).expandtabs(4)
-
-        def _display_width(s: str) -> int:
-            width = 0
-            for ch in s:
-                # Skip combining marks in width counting.
-                if unicodedata.combining(ch):
-                    continue
-                width += 2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1
-            return width
-
-        def _pad_to_width(s: str, target: int) -> str:
-            pad = max(0, target - _display_width(s))
-            return s + (" " * pad)
-
-        def _slice_by_display_width(s: str, max_width: int) -> List[str]:
-            if max_width <= 0:
-                return [s]
-            if not s:
-                return [""]
-            chunks: List[str] = []
-            current: List[str] = []
-            current_w = 0
-            for ch in s:
-                ch_w = 0 if unicodedata.combining(ch) else (2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1)
-                if current and current_w + ch_w > max_width:
-                    chunks.append("".join(current))
-                    current = [ch]
-                    current_w = ch_w
-                    continue
-                current.append(ch)
-                current_w += ch_w
-            if current:
-                chunks.append("".join(current))
-            return chunks or [""]
-
-        max_old_no = 0
-        max_new_no = 0
-        for _lm, old_no, _ot, _rm, new_no, _nt in raw_rows:
-            if old_no is not None:
-                max_old_no = max(max_old_no, old_no)
-            if new_no is not None:
-                max_new_no = max(max_new_no, new_no)
-        old_no_w = max(4, len(str(max_old_no or 0)))
-        new_no_w = max(4, len(str(max_new_no or 0)))
-
-        preview_text_max_width = 72
-        wrapped_rows: List[Tuple[str, str, str]] = []
-        left_col_width = 0
-
-        for left_mark, old_no, old_text, right_mark, new_no, new_text in raw_rows:
-            old_no_s = (" " * old_no_w) if old_no is None else f"{old_no:>{old_no_w}}"
-            new_no_s = (" " * new_no_w) if new_no is None else f"{new_no:>{new_no_w}}"
-            left_prefix = f"{left_mark} {old_no_s}│ "
-            right_prefix = f"{right_mark} {new_no_s}│ "
-            left_cont_prefix = f"{' ' * (2 + old_no_w)}│ "
-            right_cont_prefix = f"{' ' * (2 + new_no_w)}│ "
-            left_chunks = _slice_by_display_width(_norm(old_text), preview_text_max_width)
-            right_chunks = _slice_by_display_width(_norm(new_text), preview_text_max_width)
-            row_count = max(len(left_chunks), len(right_chunks))
-            for idx in range(row_count):
-                left_chunk = left_chunks[idx] if idx < len(left_chunks) else ""
-                right_chunk = right_chunks[idx] if idx < len(right_chunks) else ""
-                left_segment = f"{left_prefix if idx == 0 else left_cont_prefix}{left_chunk}"
-                right_segment = f"{right_prefix if idx == 0 else right_cont_prefix}{right_chunk}"
-                left_col_width = max(left_col_width, _display_width(left_segment))
-                wrapped_rows.append((f"{left_mark}{right_mark}", left_segment, right_segment))
-
-        ANSI_RESET = "\x1b[0m"
-        ANSI_BG_RED = "\x1b[41m"
-        ANSI_BG_GREEN = "\x1b[42m"
-        rows: List[str] = []
-        for mark_pair, left_segment, right_segment in wrapped_rows:
-            left_rendered = _pad_to_width(left_segment, left_col_width)
-            right_rendered = right_segment
-            if "-" in mark_pair:
-                left_rendered = f"{ANSI_BG_RED}{left_rendered}{ANSI_RESET}"
-            if "+" in mark_pair:
-                right_rendered = f"{ANSI_BG_GREEN}{right_rendered}{ANSI_RESET}"
-            rows.append(f"{left_rendered} ││ {right_rendered}")
-        return rows
+        return ChangePreviewFormatter.format_side_by_side(
+            old_lines=old_lines,
+            new_lines=new_lines,
+            old_start_line=old_start_line,
+            new_start_line=new_start_line,
+        )
 
     def execute_tool_call(self, tool_name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
         """执行工具命令，支持批量命令和 cls 命令。"""
