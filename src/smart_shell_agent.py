@@ -6826,11 +6826,27 @@ big_image.jpg
         """
         if not isinstance(text, str) or not text:
             return ""
-        s = text.replace("\r\n", "\n").strip()
-        if not s:
+        s = text.replace("\r\n", "\n").replace("\r", "\n")
+        if not s.strip():
             return ""
-        s = re.sub(r"\n[ \t]*\n(?:[ \t]*\n)+", "\n\n", s)
-        return s
+        lines = s.split("\n")
+        out: List[str] = []
+        prev_blank = False
+        for ln in lines:
+            blank = (ln.strip() == "")
+            if blank:
+                if prev_blank:
+                    continue
+                out.append("")
+                prev_blank = True
+            else:
+                out.append(ln.rstrip())
+                prev_blank = False
+        while out and out[0] == "":
+            out.pop(0)
+        while out and out[-1] == "":
+            out.pop()
+        return "\n".join(out)
 
     def _tool_call_summary(self, tool_name: str, args: Dict[str, Any]) -> str:
         """Generate one-line tool execution summary."""
