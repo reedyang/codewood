@@ -95,6 +95,7 @@ from .skills_loader import (
     _list_bundled_script_paths,
 )
 from .mcp_manager import McpManager, McpError
+from .tools.project_context_index import ProjectContextIndex
 
 # memory_manager 在后台线程中导入（见 _schedule_memory_service_background），避免阻塞主线程初始化。
 MEMORY_AVAILABLE = False  # type: ignore[misc, assignment]
@@ -322,8 +323,11 @@ class SmartShellAgent:
 
         # 加载配置（执行策略默认 confirmation）；知识库在依赖可用时始终启用，不再提供开关
         self.execution_policy = "confirmation"
+        self.memory_enabled: bool = True
         self.session_summary_llm_enabled: bool = True
         self.memory_fallback_expansion_enabled: bool = True
+        self.project_context_first_round_evidence_enabled: bool = True
+        self.max_tool_rounds: int = 20
         try:
             cfg_path = self.config_dir / "config.json"
             if cfg_path.exists():
@@ -353,6 +357,35 @@ class SmartShellAgent:
                         "yes",
                         "on",
                     )
+                _me = cfg_data.get("memory_enabled", True)
+                if isinstance(_me, bool):
+                    self.memory_enabled = _me
+                else:
+                    self.memory_enabled = str(_me).strip().lower() in (
+                        "1",
+                        "true",
+                        "yes",
+                        "on",
+                    )
+                _pcfr = cfg_data.get("project_context_first_round_evidence", True)
+                if isinstance(_pcfr, bool):
+                    self.project_context_first_round_evidence_enabled = _pcfr
+                else:
+                    self.project_context_first_round_evidence_enabled = str(_pcfr).strip().lower() in (
+                        "1",
+                        "true",
+                        "yes",
+                        "on",
+                    )
+                _mtr = cfg_data.get("max_tool_rounds", 20)
+                try:
+                    self.max_tool_rounds = int(_mtr)
+                except Exception:
+                    self.max_tool_rounds = 20
+                if self.max_tool_rounds < 1:
+                    self.max_tool_rounds = 1
+                if self.max_tool_rounds > 200:
+                    self.max_tool_rounds = 200
         except Exception as e:
             print(f"⚠️ 读取 config.json 失败（执行策略 / session_summary_llm 等使用默认值）: {e}")
 
@@ -450,6 +483,10 @@ class SmartShellAgent:
             print("⚠️ Tab补全功能不可用")
 
         self._workspace_runtime_generation = 0
+        self._project_context_index = ProjectContextIndex(
+            workspace_root=self.work_directory,
+            storage_dir=(self.ai_workspace_dir / "knowledge_db"),
+        )
         self._schedule_model_validation_background()
         self._schedule_knowledge_service_background()
         self.memory_service = None
@@ -461,6 +498,28 @@ class SmartShellAgent:
             return Path(path).expanduser().resolve()
         except Exception:
             return Path(path).expanduser().absolute()
+
+    def _is_default_workspace(self) -> bool:
+        return (
+            str(getattr(self, "workspace_id", "")).strip() == DEFAULT_WORKSPACE_ID
+            or str(getattr(self, "workspace_kind", "")).strip().lower() == "default"
+        )
+
+    def _project_context_feature_enabled(self) -> bool:
+        # Hard policy: default workspace is tool-calling only, no project-management aids.
+        if self._is_default_workspace():
+            return False
+        return bool(getattr(self, "project_context_first_round_evidence_enabled", True))
+
+    def _project_context_tool_allowed(self) -> bool:
+        # Tool visibility/execution follows the same hard policy.
+        return not self._is_default_workspace()
+
+    def _bind_project_index_workspace(self) -> None:
+        try:
+            self._project_context_index.bind_workspace(self.work_directory)
+        except Exception:
+            pass
 
     def _path_identity_key(self, path: Path) -> str:
         value = str(self._resolve_path_lenient(path))
@@ -1274,7 +1333,9 @@ class SmartShellAgent:
             if role == "user":
                 print(f"{_ansi_gray('你:')} {content}")
             elif role == "assistant":
-                display_response = self._strip_tool_json_blocks_for_display(content)
+                display_response = self._normalize_display_text(
+                    self._strip_tool_json_blocks_for_display(content)
+                )
                 if display_response:
                     print(f"{_ansi_gray('助手:')} {display_response}")
                 tool_plan = self._find_tool_plan_anywhere(content)
@@ -1640,6 +1701,8 @@ class SmartShellAgent:
         threading.Thread(target=_run, daemon=True, name="smartshell-memory-init").start()
 
     def _ensure_memory_service(self) -> bool:
+        if not bool(getattr(self, "memory_enabled", True)):
+            return False
         if not MEMORY_AVAILABLE or self.memory_service is None:
             return False
         svc = self.memory_service
@@ -2589,6 +2652,8 @@ class SmartShellAgent:
             name = str(fn.get("name") or "").strip()
             if not name:
                 continue
+            if name == "project_context_search" and not self._project_context_tool_allowed():
+                continue
             desc = str(fn.get("description") or "").strip()
             params = fn.get("parameters") if isinstance(fn.get("parameters"), dict) else {}
             props = params.get("properties") if isinstance(params.get("properties"), dict) else {}
@@ -3176,6 +3241,25 @@ class SmartShellAgent:
             print(f"⚠️ 保存 session_summary_llm 到配置失败: {e}")
             return False
 
+    def _save_memory_enabled_to_config(self) -> bool:
+        """将 memory_enabled 开关写入 config.json。"""
+        try:
+            cfg_path = self.config_dir / "config.json"
+            cfg_data: Dict[str, Any] = {}
+            if cfg_path.exists():
+                try:
+                    with open(cfg_path, "r", encoding="utf-8") as f:
+                        cfg_data = json.load(f) or {}
+                except Exception:
+                    cfg_data = {}
+            cfg_data["memory_enabled"] = bool(getattr(self, "memory_enabled", True))
+            with open(cfg_path, "w", encoding="utf-8") as f:
+                json.dump(cfg_data, f, ensure_ascii=False, indent=2)
+            return True
+        except Exception as e:
+            print(f"⚠️ 保存 memory_enabled 到配置失败: {e}")
+            return False
+
     def _enable_freedom(self) -> Dict[str, Any]:
         """兼容命令：设置 execution_policy=moderate"""
         if self.execution_policy == "moderate":
@@ -3276,11 +3360,16 @@ class SmartShellAgent:
                 print("  知识库依赖未安装或加载失败。请安装 requirements 中的知识库相关包。")
 
     def _print_memory_status_details(self) -> None:
+        enabled = bool(getattr(self, "memory_enabled", True))
         dep = bool(MEMORY_AVAILABLE)
         ready = bool(self._ensure_memory_service())
         print("经验记忆状态详情（与知识库分离：内化教训/偏好，非文档库）：")
+        print(f"  feature_enabled: {'yes' if enabled else 'no'}")
         print(f"  dependency_ready: {'yes' if dep else 'no'}")
         print(f"  runtime_ready: {'yes' if ready else 'no'}")
+        if not enabled:
+            print("  经验记忆功能已关闭。可使用 /memory enable 重新开启。")
+            return
         if dep and ready:
             try:
                 st = self.memory_service.stats()  # type: ignore[union-attr]
@@ -5793,19 +5882,7 @@ big_image.jpg
     ) -> dict:
         """读取文本文件内容（带行号），支持按行读取片段。"""
         try:
-            abs_path = Path(file_path)
-            if not abs_path.is_absolute():
-                p1 = self.work_directory / file_path
-                p_temp = self.ai_workspace_temp_dir / file_path
-                p2 = self.ai_workspace_dir / file_path
-                if p1.is_file():
-                    abs_path = p1
-                elif p_temp.is_file():
-                    abs_path = p_temp
-                elif p2.is_file():
-                    abs_path = p2
-                else:
-                    abs_path = p1
+            abs_path = self._resolve_user_path(str(file_path))
             if not abs_path.exists():
                 return {"success": False, "error": f"文件 '{file_path}' 不存在"}
             if not abs_path.is_file():
@@ -6446,6 +6523,122 @@ big_image.jpg
             "truncated": result.get("truncated", False),
         }
 
+    def action_project_context_search(self, params: Dict[str, Any]) -> dict:
+        """
+        M1 project context retrieval:
+        - keep a lightweight incremental index
+        - return ranked candidate files/symbols for the query
+        """
+        if not self._project_context_tool_allowed():
+            return {
+                "success": False,
+                "error": "Default workspace 不支持 project_context_search。请切换到非 Default workspace 后再使用。",
+            }
+
+        query = str(params.get("query") or "").strip()
+        max_files = params.get("max_files", 12)
+        refresh = params.get("refresh", None)
+        status_only = bool(params.get("status_only", False))
+        force_rebuild = bool(params.get("force_rebuild", False))
+
+        try:
+            max_files_i = int(max_files)
+        except Exception:
+            max_files_i = 12
+        if max_files_i <= 0:
+            max_files_i = 12
+        if max_files_i > 50:
+            max_files_i = 50
+
+        self._bind_project_index_workspace()
+        if status_only:
+            st = self._project_context_index.status()
+            st["message"] = "project context index 状态"
+            return st
+        if not query:
+            return {"success": False, "error": "project_context_search 缺少 query 参数"}
+
+        if force_rebuild:
+            idx_res = self._project_context_index.refresh_index(force=True)
+            if not idx_res.get("success", False):
+                return idx_res
+
+        result = self._project_context_index.search(
+            query=query,
+            max_files=max_files_i,
+            auto_refresh=(True if refresh is None else bool(refresh)) or force_rebuild,
+        )
+        return result
+
+    def _build_first_round_evidence_block(self, user_task: str) -> str:
+        """
+        Build one-shot evidence block for the first task round.
+        Disabled in default workspace by hard policy.
+        """
+        if not self._project_context_feature_enabled():
+            return ""
+        q = str(user_task or "").strip()
+        if not q:
+            return ""
+        try:
+            res = self.action_project_context_search(
+                {"query": q, "max_files": 8, "refresh": True}
+            )
+        except Exception:
+            return ""
+        if not isinstance(res, dict) or not res.get("success", False):
+            return ""
+        cands = res.get("candidates") if isinstance(res.get("candidates"), list) else []
+        if not cands:
+            return ""
+        lines: List[str] = [
+            "【首轮 Evidence Block（自动注入）】",
+            "以下候选文件来自 project_context_search，请优先基于这些证据展开 read/grep/shell，避免盲目全局扫描：",
+        ]
+        for i, c in enumerate(cands[:8], start=1):
+            if not isinstance(c, dict):
+                continue
+            p = str(c.get("path") or "").strip()
+            score = c.get("score")
+            reasons = c.get("reasons") if isinstance(c.get("reasons"), list) else []
+            syms = c.get("symbols") if isinstance(c.get("symbols"), list) else []
+            if not p:
+                continue
+            lines.append(
+                f"{i}. `{p}` (score={score}; reasons={', '.join(str(x) for x in reasons[:3]) or '-'})"
+            )
+            if syms:
+                lines.append(f"   symbols: {', '.join(str(x) for x in syms[:4])}")
+        lines.append("")
+        return "\n".join(lines)
+
+    def _render_evidence_block_from_project_context_result(self, res: Dict[str, Any]) -> str:
+        if not isinstance(res, dict) or not res.get("success", False):
+            return ""
+        cands = res.get("candidates") if isinstance(res.get("candidates"), list) else []
+        if not cands:
+            return ""
+        lines: List[str] = [
+            "【首轮 Evidence Block（自动注入）】",
+            "以下候选文件来自 project_context_search，请优先基于这些证据展开 read/grep/shell，避免盲目全局扫描：",
+        ]
+        for i, c in enumerate(cands[:8], start=1):
+            if not isinstance(c, dict):
+                continue
+            p = str(c.get("path") or "").strip()
+            score = c.get("score")
+            reasons = c.get("reasons") if isinstance(c.get("reasons"), list) else []
+            syms = c.get("symbols") if isinstance(c.get("symbols"), list) else []
+            if not p:
+                continue
+            lines.append(
+                f"{i}. `{p}` (score={score}; reasons={', '.join(str(x) for x in reasons[:3]) or '-'})"
+            )
+            if syms:
+                lines.append(f"   symbols: {', '.join(str(x) for x in syms[:4])}")
+        lines.append("")
+        return "\n".join(lines)
+
     def _parse_tool_plan_from_response(self, text: str) -> Optional[Tuple[str, Dict[str, Any]]]:
         """Parse model response into tool plan under strict rule: exactly one tool JSON at reply end."""
         if not isinstance(text, str):
@@ -6617,6 +6810,20 @@ big_image.jpg
             flags=re.IGNORECASE | re.DOTALL,
         )
         return out.strip()
+
+    def _normalize_display_text(self, text: str) -> str:
+        """
+        Normalize assistant display text:
+        - trim edges
+        - collapse excessive blank lines to at most one empty line
+        """
+        if not isinstance(text, str) or not text:
+            return ""
+        s = text.replace("\r\n", "\n").strip()
+        if not s:
+            return ""
+        s = re.sub(r"\n[ \t]*\n(?:[ \t]*\n)+", "\n\n", s)
+        return s
 
     def _tool_call_summary(self, tool_name: str, args: Dict[str, Any]) -> str:
         """Generate one-line tool execution summary."""
@@ -6834,6 +7041,8 @@ big_image.jpg
         elif action == "cd":
             path = params.get("path", "")
             result = self.action_change_directory(path)
+            if result.get("success"):
+                self._bind_project_index_workspace()
 
             if not result["success"]:
                 print(f"❌ {result['error']}")
@@ -7169,6 +7378,18 @@ big_image.jpg
                 pass
             else:
                 print(f"❌ grep 失败: {result.get('error', '')}")
+            return result
+
+        elif action == "project_context_search":
+            result = self.action_project_context_search(params if isinstance(params, dict) else {})
+            if result.get("success"):
+                cand = result.get("candidates") if isinstance(result.get("candidates"), list) else []
+                print(
+                    f"🧭 project context: query=`{result.get('query', '')}` "
+                    f"matches={result.get('total_matches', 0)} top={len(cand)}"
+                )
+            else:
+                print(f"❌ project_context_search 失败: {result.get('error', '')}")
             return result
 
         elif action == "diff":
@@ -8450,7 +8671,23 @@ big_image.jpg
                         continue
 
                     if bl == "memory":
-                        print("用法: /memory <status|stats|list|search <query>|remember <text>|delete <id>>")
+                        print("用法: /memory <enable|disable|status|stats|list|search <query>|remember <text>|delete <id>>")
+                        continue
+                    if bl == "memory enable":
+                        self.memory_enabled = True
+                        ok = self._save_memory_enabled_to_config()
+                        print(
+                            "✅ 经验记忆功能已开启"
+                            + ("；已写入 config.json" if ok else "（配置保存失败，仅本次进程生效）")
+                        )
+                        continue
+                    if bl == "memory disable":
+                        self.memory_enabled = False
+                        ok = self._save_memory_enabled_to_config()
+                        print(
+                            "✅ 经验记忆功能已关闭"
+                            + ("；已写入 config.json" if ok else "（配置保存失败，仅本次进程生效）")
+                        )
                         continue
                     if bl == "memory status":
                         self._print_memory_status_details()
@@ -8630,6 +8867,8 @@ big_image.jpg
 
                         print("\n🧠 经验记忆命令（与知识库分离）：")
                         print("  /memory status                  - 经验记忆依赖与存储状态")
+                        print("  /memory enable                  - 开启经验记忆功能（写入 config.json）")
+                        print("  /memory disable                 - 关闭经验记忆功能（写入 config.json）")
                         print("  /memory stats                   - 条数与模型目录")
                         print("  /memory list                    - 当前工作区最近记忆摘要")
                         print("  /memory search <query>          - 语义检索内化经验")
@@ -8852,10 +9091,33 @@ big_image.jpg
                     "{\"tool\":\"<tool_name>\",\"args\":{...}}\n"
                     "```"
                 )
-                next_input = f"{forced_mcp_prefix}{forced_skill_prefix}{original_user_task}{first_round_contract}"
+                first_round_evidence = ""
+                if self._project_context_feature_enabled():
+                    ev_args = {
+                        "query": original_user_task,
+                        "max_files": 8,
+                        "refresh": True,
+                    }
+                    print(f"{_ansi_gray('🔧 执行工具:')} {self._tool_call_summary('project_context_search', ev_args)}")
+                    ev_res = self.execute_tool_call("project_context_search", ev_args)
+                    self.operation_results.append(
+                        {
+                            "command": {"action": "project_context_search", "params": ev_args},
+                            "result": ev_res,
+                            "timestamp": datetime.now().isoformat(),
+                        }
+                    )
+                    first_round_evidence = self._render_evidence_block_from_project_context_result(ev_res)
+                    if first_round_evidence:
+                        print("🧭 首轮 Evidence Block 已注入。")
+                next_input = (
+                    f"{forced_mcp_prefix}{forced_skill_prefix}{original_user_task}"
+                    f"{first_round_contract}"
+                    f"{(chr(10) + chr(10) + first_round_evidence) if first_round_evidence else ''}"
+                )
                 is_first_round = True
                 last_announced_skill_key: Optional[str] = None
-                max_tool_rounds = 20
+                max_tool_rounds = int(getattr(self, "max_tool_rounds", 20) or 20)
                 max_no_tool_rounds = 3
                 no_tool_rounds = 0
                 tool_round = 0
@@ -8878,7 +9140,9 @@ big_image.jpg
                     if not user_message_recorded:
                         user_message_recorded = True
                     if ai_response:
-                        display_response = self._strip_tool_json_blocks_for_display(ai_response)
+                        display_response = self._normalize_display_text(
+                            self._strip_tool_json_blocks_for_display(ai_response)
+                        )
                         if display_response:
                             sys.stdout.write(f"{_ansi_gray('助手:')} {display_response}")
                             if not display_response.endswith("\n"):
@@ -9015,6 +9279,18 @@ big_image.jpg
                         continue
 
                     pseudo_command = {"tool": tool_name, "args": args}
+                    if self._is_repeated_tool_call_pattern(tool_name, args):
+                        next_input = (
+                            f"【用户原始需求】\n{original_user_task}\n\n"
+                            "检测到你在重复调用相同的 read/grep（参数几乎相同）。\n"
+                            "请停止重复检索，改为：\n"
+                            "1) 基于现有结果先给出阶段性结论；\n"
+                            "2) 若证据不足，仅补充一次更有针对性的工具调用；\n"
+                            "3) 若已足够，直接输出 done。\n"
+                            "下一条请输出一个新的 JSON 工具计划。"
+                        )
+                        no_tool_rounds = 0
+                        continue
                     selected_skill = self._infer_selected_skill(pseudo_command, ai_response)
                     if selected_skill:
                         skill_key = f"{selected_skill.get('skill_id')}::{selected_skill.get('name')}"
@@ -9127,12 +9403,17 @@ big_image.jpg
                     next_input = (
                         f"【用户原始需求】\n{original_user_task}\n\n"
                         f"{step_progress}\n\n"
-                        f"【上一条工具执行结果】\n{json.dumps(self.operation_results[-1], ensure_ascii=False)}\n\n"
+                        f"【上一条工具执行结果（压缩）】\n{self._compact_result_for_next_input(result)}\n\n"
                         "请继续输出下一条 JSON 工具计划：{\"tool\":\"工具名\",\"args\":{...}}；"
                         "任务全部完成时输出 {\"tool\":\"done\",\"args\":{}}。"
                         "若上一条结果已满足原始需求，下一条必须直接输出 done。"
                         + (f"\n{post_status_rule}" if post_status_rule else "")
                         + (f"\n{post_result_synthesis_rule}" if post_result_synthesis_rule else "")
+                    )
+                if tool_round >= max_tool_rounds:
+                    print(
+                        "⏹️ 已达到本轮自动执行上限（20 步），任务已暂停。"
+                        "请继续提问以续跑，或缩小目标范围后重试。"
                     )
                 in_task_execution = False
                 self._schedule_auto_memory_reflect()
@@ -9183,6 +9464,54 @@ big_image.jpg
                 f"- Step {i}: [{status}] tool={action}, detail={detail or '-'}"
             )
         return "\n".join(lines)
+
+    def _compact_result_for_next_input(self, result: Dict[str, Any], max_chars: int = 3000) -> str:
+        """
+        Keep next-round context focused by compressing large tool payloads.
+        Especially important for read/grep outputs in long investigative tasks.
+        """
+        if not isinstance(result, dict):
+            return ""
+        compact = dict(result)
+        for k in ("content", "output", "stderr", "analysis"):
+            if k in compact and isinstance(compact.get(k), str):
+                v = str(compact.get(k) or "")
+                if len(v) > 800:
+                    compact[k] = v[:800] + " ...[truncated]"
+        s = json.dumps(compact, ensure_ascii=False)
+        if len(s) > max_chars:
+            s = s[:max_chars] + " ...[truncated]"
+        return s
+
+    def _is_repeated_tool_call_pattern(
+        self,
+        tool_name: str,
+        args: Dict[str, Any],
+        lookback: int = 6,
+    ) -> bool:
+        """
+        Detect repeated read/grep loops with near-identical arguments.
+        """
+        if tool_name not in ("read", "grep"):
+            return False
+        target = json.dumps({"tool": tool_name, "args": args or {}}, ensure_ascii=False, sort_keys=True)
+        hits = 0
+        for item in reversed(self.operation_results[-lookback:]):
+            cmd = item.get("command") if isinstance(item, dict) else {}
+            if not isinstance(cmd, dict):
+                continue
+            t = str(cmd.get("tool") or cmd.get("action") or "").strip()
+            if t != tool_name:
+                continue
+            a = cmd.get("args")
+            if not isinstance(a, dict):
+                a = cmd.get("params") if isinstance(cmd.get("params"), dict) else {}
+            cur = json.dumps({"tool": t, "args": a or {}}, ensure_ascii=False, sort_keys=True)
+            if cur == target:
+                hits += 1
+            if hits >= 2:
+                return True
+        return False
 
     def _build_post_result_synthesis_rule(
         self, tool_name: str, args: Dict[str, Any], result: Dict[str, Any]
@@ -9523,6 +9852,22 @@ big_image.jpg
                 return True
             if bl == "memory status":
                 self._print_memory_status_details()
+                return True
+            if bl == "memory enable":
+                self.memory_enabled = True
+                ok = self._save_memory_enabled_to_config()
+                print(
+                    "✅ 经验记忆功能已开启"
+                    + ("；已写入 config.json" if ok else "（配置保存失败，仅本次进程生效）")
+                )
+                return True
+            if bl == "memory disable":
+                self.memory_enabled = False
+                ok = self._save_memory_enabled_to_config()
+                print(
+                    "✅ 经验记忆功能已关闭"
+                    + ("；已写入 config.json" if ok else "（配置保存失败，仅本次进程生效）")
+                )
                 return True
             if bl == "help":
                 print("ℹ️ /help 可用；当前仍在等待补充信息，输入非命令文本将恢复原任务。")
