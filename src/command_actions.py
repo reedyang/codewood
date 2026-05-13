@@ -93,20 +93,6 @@ def action_shell_command(
         run_env.setdefault("PYTHONUTF8", "1")
         run_env.setdefault("PYTHONIOENCODING", "utf-8")
         run_env.setdefault("PYTHONUNBUFFERED", "1")
-        run_env.setdefault("SMART_SHELL_WORKSPACE_DIR", str(agent.ai_workspace_dir.resolve()))
-        run_env.setdefault("SMART_SHELL_WORKDIR", str(agent.work_directory.resolve()))
-        skill_ctx = resolve_invoked_skill_context(agent, command)
-        if skill_ctx:
-            sid = str(skill_ctx.get("skill_id") or "").strip()
-            bundle_root = str(skill_ctx.get("bundle_root") or "").strip()
-            if sid:
-                run_env.setdefault("SMART_SHELL_SKILL_ID", sid)
-                run_env.setdefault(
-                    "SMART_SHELL_SKILL_CACHE_DIR",
-                    str((agent.ai_workspace_dir / "skill_cache" / sid).resolve()),
-                )
-            if bundle_root:
-                run_env.setdefault("SMART_SHELL_SKILL_BUNDLE_ROOT", bundle_root)
         merge_env_name = resolve_model_context_file_env(agent, command)
         if merge_env_name:
             try:
@@ -699,32 +685,6 @@ def resolve_model_context_file_env(agent: Any, command: str) -> Optional[str]:
             best_len = ln
             best_env = env
     return best_env
-
-
-def resolve_invoked_skill_context(agent: Any, command: str) -> Optional[Dict[str, str]]:
-    invoked = parse_shell_invoked_script_path(agent, command or "")
-    if invoked is None:
-        return None
-    try:
-        ip = invoked.resolve()
-    except OSError:
-        ip = Path(invoked)
-    best_len = -1
-    best: Optional[Dict[str, str]] = None
-    for s in agent.skills or []:
-        sid = str(getattr(s, "skill_id", "") or "").strip()
-        if not sid:
-            continue
-        try:
-            root = Path(getattr(s, "bundle_root", "")).resolve()
-            ip.relative_to(root)
-        except (ValueError, OSError):
-            continue
-        ln = len(str(root))
-        if ln > best_len:
-            best_len = ln
-            best = {"skill_id": sid, "bundle_root": str(root)}
-    return best
 
 
 def append_shell_merge_output_path(stdout_text: str, return_code: int, merge_path: Optional[str]) -> str:

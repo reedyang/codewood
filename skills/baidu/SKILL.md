@@ -18,11 +18,11 @@ model_context_file_env: BAIDU_SKILL_MERGE_OUTPUT
 Run with the **absolute path** listed under **Detected bundled `scripts/*.py`** in the system prompt (bundle root + `scripts/baidu_search.py`).
 
 ```text
-python "<BUNDLE_ROOT>/scripts/baidu_search.py" "<query>" [--max-pages N] [--no-cache] [--insecure]
+python "<BUNDLE_ROOT>/scripts/baidu_search.py" "<query>" --cache-dir "<CACHE_DIR>" [--max-pages N] [--insecure]
 ```
 
 - **`--max-pages`**: Integer **1–10**. How many result pages to fetch **after** parsing the SERP (default **3**). The implementation may stop earlier if accumulated text is already enough to answer (**early exit**).
-- **`--no-cache`**: Skip the local cache under host-injected workspace cache dir (default `workspace/skill_cache/<skill_id>/`; fallback to `<bundle root>/.cache/`) (otherwise up to **20** entries, **~30 minutes** TTL).
+- **`--cache-dir`**: **Required** cache root directory. The script writes cache under its `baidu` subdirectory (for example `<CACHE_DIR>/baidu/serp_cache.json`).
 - **`--insecure`**: Disable TLS certificate verification if a corporate proxy or local CA causes `SSL: CERTIFICATE_VERIFY_FAILED`. Alternatively set env **`BAIDU_SKILL_INSECURE_SSL=1`** (same effect). Use only when necessary.
 
 ## Orchestration (mandatory)
@@ -37,17 +37,13 @@ python "<BUNDLE_ROOT>/scripts/baidu_search.py" "<query>" [--max-pages N] [--no-c
 
 The merged `output` always includes **【当前本机时间】** (ISO-like local timestamp). Use it when judging whether cited material is still plausible “today”.
 
-### When to prefer `--no-cache`
-
-If the user cares about **fresh** public facts (news, weather, rates, policy), add **`--no-cache`** so SERP is not served from the skill’s short-TTL local cache.
-
 ### Query signals the script treats as “strong recency” (see `baidu_search.py`)
 
 The implementation turns on **stricter recent-evidence handling** when the query matches patterns such as: **最近、近期、最新、今日、本月、一个月、近一个月、行情、走势、预测** (regex over the query string).
 
 ### Additional “fresh market / macro figure” intent (model-side)
 
-Even if the script’s regex does not fire, treat the question as **time- and source-sensitive** and still apply the rules below when the user asks about things like: **近30 天、近期、行情、走势、市值、预测**，or names **A股 / 美股 / 港股 / 标普 / 恒生** (and similar). Prefer **`--no-cache`** and read **【时效性检查】** carefully.
+Even if the script’s regex does not fire, treat the question as **time- and source-sensitive** and still apply the rules below when the user asks about things like: **近30 天、近期、行情、走势、市值、预测**，or names **A股 / 美股 / 港股 / 标普 / 恒生** (and similar). Read **【时效性检查】** carefully.
 
 ### If **【回答】** states insufficient recent evidence
 
@@ -73,7 +69,8 @@ The merged **`output`** may be long (full sections in the model context). For th
 
 ## Cache
 
-- Directory: Prefer host-injected `SMART_SHELL_SKILL_CACHE_DIR` (typically `<workspace>/skill_cache/baidu/`); fallback to `<bundle root for baidu>/.cache/`.
+- Directory: pass cache root via `--cache-dir` from host-side orchestration; script stores data in `<cache-dir>/baidu`.
+- `--cache-dir` is mandatory for this skill invocation.
 - Roughly **20** entries, **~30** minutes expiry; implementation may use one JSON file. Safe to delete `.cache` if disk or stale data is a concern.
 
 ## Host integration notes
