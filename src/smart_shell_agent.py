@@ -98,6 +98,7 @@ from .tools.project_context_index import ProjectContextIndex
 from .change_preview_formatter import ChangePreviewFormatter
 from .ai_provider_clients import AICallContext
 from .ai_orchestrator import AIOrchestrator, AgentAIContext
+from .session_memory_service import SessionMemoryService
 from . import filesystem_actions
 from . import command_actions
 from . import command_security
@@ -422,6 +423,7 @@ class SmartShellAgent:
             self.params = params or {}
         self.openai_conf = self.params if self.provider == "openai" else openai_conf
         self.openwebui_conf = self.params if self.provider == "openwebui" else openwebui_conf
+        self.session_memory_service = SessionMemoryService(self)
         self.ai_orchestrator = AIOrchestrator(
             AgentAIContext(
                 provider=self.provider,
@@ -1405,13 +1407,7 @@ class SmartShellAgent:
             pass
 
     def _append_chat_message(self, role: str, content: str) -> None:
-        r = str(role or "").strip().lower()
-        if r not in ("user", "assistant"):
-            return
-        self.conversation_history.append({"role": r, "content": str(content or "")})
-        self._sync_active_chat_messages()
-        if r == "user":
-            self._maybe_schedule_auto_chat_name()
+        return self.session_memory_service.append_chat_message(role, content)
 
     def _maybe_schedule_auto_chat_name(self) -> None:
         with self._chat_state_lock:
@@ -1741,234 +1737,37 @@ class SmartShellAgent:
             return str(self.work_directory)
 
     def _update_session_summary_rolling(self) -> None:
-        """Cheap 滚动摘录：最近若干条 user/assistant，单条截断，供检索 query 前缀（无 LLM）。"""
-        hist = list(getattr(self, "conversation_history", None) or [])
-        chunks: List[str] = []
-        snip = SESSION_SUMMARY_MSG_SNIPPET
-        for msg in hist[-8:]:
-            role = (msg.get("role") or "").strip().lower()
-            if role not in ("user", "assistant"):
-                continue
-            c = str(msg.get("content") or "").replace("\n", " ").strip()
-            if len(c) > snip:
-                c = c[: max(1, snip - 1)] + "…"
-            tag = "U" if role == "user" else "A"
-            if c:
-                chunks.append(f"{tag}:{c}")
-        s = " | ".join(chunks)
-        maxc = SESSION_SUMMARY_ROLLING_MAX_CHARS
-        if len(s) > maxc:
-            s = s[-maxc:]
-        self._session_summary_rolling = s
+        return self.session_memory_service.update_session_summary_rolling()
 
     def _session_summary_for_retrieval(self) -> str:
-        """并入经验记忆检索 query 的会话级前缀：优先 LLM 摘要，否则滚动摘录。"""
-        llm = (self._session_summary_llm or "").strip()
-        if llm:
-            cap = min(800, SESSION_SUMMARY_LLM_MAX_CHARS)
-            return f"[会话摘要]\n{llm[:cap]}"
-        roll = (self._session_summary_rolling or "").strip()
-        if roll:
-            return f"[会话摘录]\n{roll}"
-        return ""
+        return self.session_memory_service.session_summary_for_retrieval()
 
     def _maybe_refresh_session_summary_llm(self) -> None:
-        """每 SESSION_SUMMARY_LLM_INTERVAL_PAIRS 个完整 user/assistant 对，调用一次轻量 LLM 压缩摘要。"""
-        if not getattr(self, "session_summary_llm_enabled", True):
-            return
-        pairs = len(self.conversation_history) // 2
-        if pairs < SESSION_SUMMARY_LLM_INTERVAL_PAIRS:
-            return
-        if self._last_llm_summary_pair_count > 0:
-            if pairs - self._last_llm_summary_pair_count < SESSION_SUMMARY_LLM_INTERVAL_PAIRS:
-                return
-        hist = self.conversation_history[-SESSION_SUMMARY_LLM_HISTORY_MSGS:]
-        lines: List[str] = []
-        for msg in hist:
-            role = (msg.get("role") or "").strip().lower()
-            if role not in ("user", "assistant"):
-                continue
-            tag = "用户" if role == "user" else "助手"
-            c = str(msg.get("content") or "")[:500].replace("\n", " ")
-            lines.append(f"{tag}: {c}")
-        blob = "\n".join(lines)
-        if not blob.strip():
-            return
-        try:
-            raw = self.call_ai(
-                "以下是本会话近期消息摘录，请按系统指令输出摘要。\n\n" + blob,
-                context="",
-                stream=False,
-                session_summary_mode=True,
-            )
-        except Exception:
-            return
-        if not isinstance(raw, str):
-            return
-        text = raw.strip()
-        if text.startswith("❌") or text.startswith("调用大模型"):
-            return
-        text = text.replace("```", "").strip()
-        if not text:
-            return
-        self._session_summary_llm = text[:SESSION_SUMMARY_LLM_MAX_CHARS]
-        self._last_llm_summary_pair_count = pairs
+        return self.session_memory_service.maybe_refresh_session_summary_llm()
 
     def _build_memory_retrieval_query(self, user_input: str) -> str:
-        """
-        构造经验记忆关键词检索用查询串：仅使用本轮用户输入（截断至 MEMORY_RETRIEVAL_QUERY_MAX_CHARS）。
-        不并入会话摘要与近期对话，避免无关上下文污染 token 匹配与 fallback 判定。
-        """
-
-        def _clip(text: str, n: int) -> str:
-            t = (text or "").strip()
-            if not t:
-                return ""
-            if len(t) <= n:
-                return t
-            return t[: max(1, n - 1)] + "…"
-
-        return _clip((user_input or "").strip(), MEMORY_RETRIEVAL_QUERY_MAX_CHARS)
+        return self.session_memory_service.build_memory_retrieval_query(user_input)
 
     @staticmethod
     def _memory_row_sort_key(r: Dict[str, Any]) -> Tuple[int, float, int]:
-        """身份/偏好类优先；同档内以写入时间为主（新事实靠前），tier 仅作末位 tie-break。
-
-        避免「旧的 durable 称呼」永远压过「新写入的 episodic 更正」。
-        """
-        mt = (r.get("memory_type") or "").lower()
-        tier = (r.get("tier") or "").lower()
-        cluster = 0 if mt in MEMORY_IDENTITY_CLUSTER_TYPES else 1
-        tr = 0 if tier == "durable" else (1 if tier == "episodic" else 2)
-        try:
-            ca = float(r.get("created_at") or 0)
-        except (TypeError, ValueError):
-            ca = 0.0
-        return (cluster, -ca, tr)
+        return SessionMemoryService.memory_row_sort_key(r)
 
     @staticmethod
     def _user_input_emphasizes_memory_or_identity(user_input: str) -> bool:
-        """用户显式要「查记忆」或追问昵称/称呼时，追加向量检索并提高身份类命中。"""
-        s = (user_input or "").strip()
-        if not s:
-            return False
-        needles = (
-            "检索记忆",
-            "根据记忆",
-            "查记忆",
-            "你的记忆",
-            "经验记忆",
-            "不记得",
-            "给你起过",
-            "起的名字",
-            "昵称",
-            "称呼",
-            "我是谁",
-            "你是谁",
-            "我叫什么",
-            "之前给你",
-            "约定过",
-            "还记得吗",
-        )
-        return any(x in s for x in needles)
+        return SessionMemoryService.user_input_emphasizes_memory_or_identity(user_input)
 
     def _memory_dialogue_excerpt_for_expansion(self) -> str:
-        """供查询扩展参考：与主检索相同的最近 N 轮 user/assistant 摘录（不含会话摘要与本轮）。"""
-        per_msg = MEMORY_RETRIEVAL_MSG_MAX_CHARS
-        rounds = MEMORY_RETRIEVAL_ROUNDS
-
-        def _clip(text: str, n: int) -> str:
-            t = (text or "").strip()
-            if not t:
-                return ""
-            if len(t) <= n:
-                return t
-            return t[: max(1, n - 1)] + "…"
-
-        hist = list(getattr(self, "conversation_history", None) or [])
-        want = rounds * 2
-        tail = hist[-want:] if len(hist) >= want else hist[:]
-        if tail and (tail[-1].get("role") or "") == "user":
-            tail = tail[:-1]
-        while tail and (tail[0].get("role") or "") != "user":
-            tail = tail[1:]
-        if len(tail) % 2 == 1:
-            tail = tail[1:]
-        lines: List[str] = []
-        for msg in tail:
-            role = (msg.get("role") or "").strip().lower()
-            if role not in ("user", "assistant"):
-                continue
-            content = _clip(str(msg.get("content") or ""), per_msg)
-            if not content:
-                continue
-            tag = "用户" if role == "user" else "助手"
-            lines.append(f"[{tag}] {content}")
-        return "\n".join(lines).strip()
+        return self.session_memory_service.memory_dialogue_excerpt_for_expansion()
 
     def _memory_expansion_reference_block(self) -> str:
-        pref = self._session_summary_for_retrieval()
-        dia = self._memory_dialogue_excerpt_for_expansion()
-        parts: List[str] = []
-        if pref:
-            parts.append(pref)
-        if dia:
-            parts.append("【近期对话摘录】\n" + dia)
-        return "\n\n".join(parts).strip()
+        return self.session_memory_service.memory_expansion_reference_block()
 
     @staticmethod
     def _parse_memory_expansion_json(text: str) -> Optional[Dict[str, Any]]:
-        """解析查询扩展模型输出；失败返回 None。"""
-        raw = (text or "").strip()
-        if not raw or raw.startswith("❌") or raw.startswith("调用大模型"):
-            return None
-        if raw.startswith("```"):
-            raw = re.sub(r"^```(?:json)?\s*", "", raw, flags=re.IGNORECASE)
-            raw = re.sub(r"\s*```\s*$", "", raw)
-        data = None
-        try:
-            data = json.loads(raw)
-        except Exception:
-            start = raw.find("{")
-            if start >= 0:
-                depth = 0
-                for i in range(start, len(raw)):
-                    if raw[i] == "{":
-                        depth += 1
-                    elif raw[i] == "}":
-                        depth -= 1
-                        if depth == 0:
-                            try:
-                                data = json.loads(raw[start : i + 1])
-                            except Exception:
-                                data = None
-                            break
-        if not isinstance(data, dict):
-            return None
-        keys = ("keywords", "aliases", "entities", "topics", "preferences_hint")
-        out: Dict[str, Any] = {}
-        for k in keys:
-            v = data.get(k)
-            if isinstance(v, list):
-                cleaned = [str(x).strip() for x in v if str(x).strip()][:12]
-                out[k] = cleaned[:10]
-            else:
-                out[k] = []
-        if not any(out.values()):
-            return None
-        return out
+        return SessionMemoryService.parse_memory_expansion_json(text)
 
     def _memory_expansion_keywords_query_string(self, expansion: Dict[str, Any]) -> str:
-        chunks: List[str] = []
-        for k in ("keywords", "aliases", "entities", "topics", "preferences_hint"):
-            for s in expansion.get(k) or []:
-                s = str(s).strip()[:80]
-                if s:
-                    chunks.append(s)
-        joined = " ".join(chunks).strip()
-        if len(joined) > MEMORY_EXPANSION_MAX_KEYWORD_CHARS:
-            joined = joined[: MEMORY_EXPANSION_MAX_KEYWORD_CHARS]
-        return joined
+        return self.session_memory_service.memory_expansion_keywords_query_string(expansion)
 
     def _should_run_memory_query_expansion(
         self,
@@ -1976,306 +1775,24 @@ class SmartShellAgent:
         rows_boost: List[Dict[str, Any]],
         identity_mode: bool,
     ) -> bool:
-        if not getattr(self, "memory_fallback_expansion_enabled", True):
-            return False
-        if identity_mode and rows_boost:
-            return False
-        if not rows_sem:
-            return True
-        scores = [float(r.get("raw_score") or 0) for r in rows_sem]
-        if not scores:
-            return True
-        return max(scores) < MEMORY_FALLBACK_MIN_RAW_SCORE
+        return self.session_memory_service.should_run_memory_query_expansion(
+            rows_sem, rows_boost, identity_mode
+        )
 
     def _run_memory_expansion_llm(self, user_input: str) -> Optional[Dict[str, Any]]:
-        ref = self._memory_expansion_reference_block()
-        body = (user_input or "").strip()
-        payload = (
-            (ref + "\n\n---\n\n") if ref else ""
-        ) + "【当前用户提问】（仅用于提取检索用词与同义实体，不要直接回答用户）\n" + body
-        try:
-            raw = self.call_ai(
-                payload,
-                context="",
-                stream=False,
-                memory_query_expansion_mode=True,
-            )
-        except Exception:
-            get_logger().exception("经验记忆：查询扩展 LLM 调用异常")
-            return None
-        if not isinstance(raw, str):
-            return None
-        return self._parse_memory_expansion_json(raw)
+        return self.session_memory_service.run_memory_expansion_llm(user_input)
 
     def _memory_rows_for_prompt(self, user_input: str) -> List[Dict[str, Any]]:
-        """合并主关键词检索、可选身份增强、（弱命中时）LLM 查询扩展二次检索、与同作用域近期记忆。
-
-        主检索 query 仅使用「本轮用户输入」（见 _build_memory_retrieval_query）。
-        扩展检索在主检索无结果或 raw_score 偏低时触发，输出结构化关键词并入第二次 search。
-        """
-        raw_ui = (user_input or "").strip()
-        q = self._build_memory_retrieval_query(user_input)
-        if not q.strip():
-            return []
-        sk = self._memory_scope_key()
-
-        rows_boost: List[Dict[str, Any]] = []
-        identity_mode = self._user_input_emphasizes_memory_or_identity(raw_ui)
-        if identity_mode:
-            for bq in (
-                "用户偏好 昵称 名字 称呼 助手身份 起名 约定",
-                "preference nickname identity assistant name 称呼",
-            ):
-                rows_boost.extend(
-                    self.memory_service.search_memories(bq, top_k=5, scope_key=sk)
-                )
-        seen_b: Set[str] = set()
-        boost_uniq: List[Dict[str, Any]] = []
-        for r in rows_boost:
-            rid = str(r.get("id") or "").strip()
-            if rid and rid not in seen_b:
-                seen_b.add(rid)
-                boost_uniq.append(r)
-        rows_boost = boost_uniq
-
-        rows_sem = self.memory_service.search_memories(q, top_k=6, scope_key=sk)
-
-        rows_exp: List[Dict[str, Any]] = []
-        _mem_log = get_logger()
-        if self._should_run_memory_query_expansion(rows_sem, rows_boost, identity_mode):
-            max_raw = max(
-                (float(r.get("raw_score") or 0) for r in rows_sem),
-                default=0.0,
-            )
-            if not rows_sem:
-                _mem_log.info("经验记忆：触发查询扩展 fallback（主检索无命中）")
-            else:
-                _mem_log.info(
-                    "经验记忆：触发查询扩展 fallback（主检索偏弱 max_raw=%.2f < %.2f）",
-                    max_raw,
-                    MEMORY_FALLBACK_MIN_RAW_SCORE,
-                )
-            exp = self._run_memory_expansion_llm(raw_ui)
-            if exp:
-                kw = self._memory_expansion_keywords_query_string(exp)
-                if kw:
-                    q2 = (q.strip() + "\n\n【扩展检索词】\n" + kw).strip()
-                    rows_exp = self.memory_service.search_memories(
-                        q2, top_k=8, scope_key=sk
-                    )
-                    _mem_log.info(
-                        "经验记忆：查询扩展已执行（扩展词约 %d 字，二次检索 %d 条）",
-                        len(kw),
-                        len(rows_exp),
-                    )
-                else:
-                    _mem_log.info("经验记忆：查询扩展未产生可用关键词（各槽位为空）")
-            else:
-                _mem_log.info(
-                    "经验记忆：查询扩展未生效（模型返回不可解析或调用失败）"
-                )
-        else:
-            if not getattr(self, "memory_fallback_expansion_enabled", True):
-                _mem_log.debug(
-                    "经验记忆：未触发查询扩展（config memory_fallback_expansion 关闭）"
-                )
-            elif identity_mode and rows_boost:
-                _mem_log.debug(
-                    "经验记忆：未触发查询扩展（身份增强已有命中 %d 条）",
-                    len(rows_boost),
-                )
-            elif rows_sem:
-                _mr = max(
-                    (float(r.get("raw_score") or 0) for r in rows_sem),
-                    default=0.0,
-                )
-                _mem_log.debug(
-                    "经验记忆：未触发查询扩展（主检索足够 max_raw=%.2f）",
-                    _mr,
-                )
-
-        seen: Set[str] = set()
-        merged: List[Dict[str, Any]] = []
-
-        def _add_rows(rs: List[Dict[str, Any]]) -> None:
-            for r in rs:
-                if len(merged) >= 12:
-                    return
-                rid = str(r.get("id") or "").strip()
-                if not rid or rid in seen:
-                    continue
-                merged.append(r)
-                seen.add(rid)
-
-        _add_rows(rows_boost)
-        _add_rows(rows_sem)
-        _add_rows(rows_exp)
-
-        def _from_recent_item(item: Dict[str, Any]) -> Dict[str, Any]:
-            prev = item.get("preview") or ""
-            ca = item.get("created_at")
-            try:
-                ca_f = float(ca) if ca is not None else 0.0
-            except (TypeError, ValueError):
-                ca_f = 0.0
-            return {
-                "id": item.get("id"),
-                "title": item.get("title") or "",
-                "content": (prev if isinstance(prev, str) else str(prev))[:600],
-                "tier": item.get("tier") or "",
-                "memory_type": item.get("memory_type") or "",
-                "source": item.get("source") or "",
-                "system_note": None,
-                "created_at": ca_f,
-            }
-
-        recent = self.memory_service.list_recent(limit=20, scope_key=sk)
-        for item in recent:
-            if len(merged) >= 12:
-                break
-            rid = str(item.get("id") or "").strip()
-            if not rid or rid in seen:
-                continue
-            merged.append(_from_recent_item(item))
-            seen.add(rid)
-
-        merged.sort(key=self._memory_row_sort_key)
-        return merged[:12]
+        return self.session_memory_service.memory_rows_for_prompt(user_input)
 
     def _memory_context_for_prompt(self, user_input: str, max_chars: int = 2400) -> str:
-        """检索相关经验记忆，注入系统侧（非知识库）。"""
-        if not self._ensure_memory_service():
-            return ""
-        try:
-            rq = self._build_memory_retrieval_query(user_input)
-            if not rq.strip():
-                return ""
-            rows = self._memory_rows_for_prompt(user_input)
-            if not rows:
-                return ""
-            lines = [
-                "【经验记忆（内化教训与偏好，不是知识库文献；可与知识库并存；关键事实请仍核实）】",
-                "若同主题（如称呼、显示名）出现多条：答复时的「当前口径」以记录时间最新者为准；较早条目为沿革/曾用信息，用户未问及不必展开，问起可如实说明。",
-            ]
-            total = len("\n".join(lines))
-            for r in rows:
-                block = f"- ({r.get('tier', '')}) {r.get('title', '')}: {r.get('content', '')[:500]}"
-                if r.get("system_note"):
-                    block += f" [内省备注: {r['system_note'][:200]}]"
-                ca = r.get("created_at")
-                if ca is not None:
-                    try:
-                        ts = float(ca)
-                        if ts > 0:
-                            block += f" [记录时间: {datetime.fromtimestamp(ts).strftime('%Y-%m-%d %H:%M')}]"
-                    except (TypeError, ValueError, OSError, OverflowError):
-                        pass
-                if total + 1 + len(block) > max_chars:
-                    break
-                lines.append(block)
-                total += 1 + len(block)
-                mid = str(r.get("id") or "").strip()
-                if mid:
-                    try:
-                        self.memory_service.touch_memory(mid)
-                    except Exception:
-                        pass
-            return "\n".join(lines) if len(lines) > 1 else ""
-        except Exception:
-            return ""
+        return self.session_memory_service.memory_context_for_prompt(user_input, max_chars)
 
     def _schedule_auto_memory_reflect(self) -> None:
-        """任务结束后由后台线程自动反思是否写入记忆（不询问用户）。
-
-        节流：同一时段内连续完成任务时，距上次触发自动反思至少间隔约 45 秒，避免每步工具循环都打 LLM。
-        （不再按「每 N 轮任务」抽样：单轮任务若不顺也应有资格触发反思。）
-        """
-        if not self._ensure_memory_service():
-            return
-        now = time.monotonic()
-        if now - getattr(self, "_last_memory_reflect_at", 0.0) < 45.0:
-            return
-        self._last_memory_reflect_at = now
-
-        def _run() -> None:
-            try:
-                self._run_memory_reflection_body()
-            except Exception:
-                try:
-                    get_logger().exception("自动记忆反思失败")
-                except Exception:
-                    pass
-
-        threading.Thread(target=_run, daemon=True, name="smartshell-memory-reflect").start()
+        return self.session_memory_service.schedule_auto_memory_reflect()
 
     def _run_memory_reflection_body(self) -> None:
-        if not self._ensure_memory_service():
-            return
-        hist = self.conversation_history[-6:] if self.conversation_history else []
-        op_tail = self.operation_results[-4:] if self.operation_results else []
-        blob = {
-            "recent_chat": hist,
-            "recent_operations": op_tail,
-        }
-        payload = json.dumps(blob, ensure_ascii=False)[:12000]
-        raw = self.call_ai(
-            payload,
-            context="",
-            stream=False,
-            reflection_mode=True,
-            return_message=False,
-        )
-        if not isinstance(raw, str) or not raw.strip():
-            return
-        text = raw.strip()
-        data = None
-        try:
-            data = json.loads(text)
-        except Exception:
-            start = text.find("{")
-            if start >= 0:
-                depth = 0
-                for i in range(start, len(text)):
-                    if text[i] == "{":
-                        depth += 1
-                    elif text[i] == "}":
-                        depth -= 1
-                        if depth == 0:
-                            try:
-                                data = json.loads(text[start : i + 1])
-                            except Exception:
-                                data = None
-                            break
-        if not isinstance(data, dict):
-            return
-        mems = data.get("memories")
-        if not isinstance(mems, list):
-            return
-        sk = self._memory_scope_key()
-        for m in mems[:8]:
-            if not isinstance(m, dict) or not m.get("must_store"):
-                continue
-            title = str(m.get("title") or "经验").strip()[:500]
-            content = str(m.get("content") or "").strip()
-            if not content:
-                continue
-            tier = str(m.get("tier") or "episodic").strip().lower()
-            if tier not in ("working", "episodic", "durable"):
-                tier = "episodic"
-            mtype = str(m.get("memory_type") or "lesson").strip()[:64]
-            sys_note = str(m.get("system_note") or "").strip()[:2000] or None
-            try:
-                self.memory_service.add_memory(
-                    title=title,
-                    content=content,
-                    tier=tier,
-                    memory_type=mtype,
-                    scope_key=sk,
-                    source="auto",
-                    system_note=sys_note,
-                )
-            except Exception:
-                continue
+        return self.session_memory_service.run_memory_reflection_body()
 
     def _schedule_knowledge_service_background(self) -> None:
         """
@@ -3955,64 +3472,7 @@ class SmartShellAgent:
             print(f"💡 请确保 Ollama 服务正在运行")
 
     def _build_regular_task_messages(self, user_input: str, context: str = "") -> Tuple[List[Dict[str, Any]], bool]:
-        """构建常规任务上下文消息（与 call_ai 主流程保持一致）。"""
-        import os
-
-        os_info = os.uname() if hasattr(os, 'uname') else os.name
-        date_time = datetime.now().strftime("%Y-%m-%d %A %H:%M:%S")
-
-        self._update_session_summary_rolling()
-        self._maybe_refresh_session_summary_llm()
-        self._reload_skills()
-
-        # Refresh MCP prompt append at call time so newly loaded tool caches
-        # are always reflected in the current LLM context.
-        self.system_prompt = self._compose_system_prompt_snapshot(include_tools=True)
-        mem_block = self._memory_context_for_prompt(user_input)
-        # 经验记忆必须放在 system 最前：否则长 tools 提示在后、易被截断，且模型更倾向服从文末通用人设。
-        tail_context = (
-            f"{self._skills_routing_prefix}{self.system_prompt}\n{self._active_skill_full_prompt}"
-            f"当前操作系统信息：{os_info}\n当前日期时间：{date_time}\n"
-            f"当前 smart-shell 根目录（绝对路径）：{self._self_repo_root}\n"
-            f"当前 config 目录（绝对路径）：{self.config_dir}\n"
-            f"当前 workspace 名称：{self.workspace_name}\n"
-            f"当前 chat 名称（弱提示，仅会话标签，不代表本轮任务目标）：{self.active_chat_name}\n"
-            f"当前 workspace 目录（绝对路径）：{self.ai_workspace_dir}\n"
-        )
-        if mem_block:
-            sys_prefix = (
-                "【经验记忆 — 须主动落实】\n"
-                "以下为当前工作区已持久化条目。其后每一轮答复前都须先判断是否相关；"
-                "相关则自然语言输出必须以本段为准，不得以未约定的通用云端/供应商默认人设替代。\n\n"
-                + mem_block
-                + "\n\n---\n\n"
-                + tail_context
-            )
-        else:
-            sys_prefix = tail_context
-        messages: List[Dict[str, Any]] = [{"role": "system", "content": sys_prefix}]
-        for msg in self.conversation_history[-CHAT_RECENT_MESSAGES:]:
-            messages.append(msg)
-
-        current_input = ""
-        # 仅有 system 段首记忆时，模型常忽略；在同条 user 侧再提示一次，贴近「用户输入」以提高遵循率。
-        if mem_block:
-            current_input += (
-                "【硬性要求】作答前须核对上一条 system 开头的「经验记忆」："
-                "与本轮用户问题相关的条目必须在答复中体现，不得用与这些记录无关的通用助手或供应商设定替代。\n\n"
-            )
-        current_input += (
-            f"当前 workspace: {self.workspace_name}\n"
-            f"当前工作目录: {self.work_directory}\n"
-        )
-        if self.operation_results:
-            current_input += f"最近的操作结果: {self.operation_results[-1]}\n"
-        if context:
-            current_input += f"操作上下文: {context}\n"
-        current_input += f"用户输入: {user_input}"
-        messages.append({"role": "user", "content": current_input})
-
-        return messages, True
+        return self.session_memory_service.build_regular_task_messages(user_input, context)
 
     def call_ai(
         self,
