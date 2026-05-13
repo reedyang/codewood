@@ -2,7 +2,6 @@ import os
 import sys
 import json
 import hashlib
-import secrets
 import re
 import shlex
 import time
@@ -101,6 +100,7 @@ from .ai_special_mode_prompts import build_special_mode_messages
 from .ai_provider_clients import AICallContext, ProviderCallContext, prepare_image_input, call_ai_with_provider
 from . import filesystem_actions
 from . import command_actions
+from . import command_security
 
 # memory_manager 在后台线程中导入（见 _schedule_memory_service_background），避免阻塞主线程初始化。
 MEMORY_AVAILABLE = False  # type: ignore[misc, assignment]
@@ -3487,186 +3487,54 @@ class SmartShellAgent:
         self._save_freedom_script_review_cache()
 
     def _normalize_path_allowlist_key(self, p: Path) -> str:
-        try:
-            r = p.resolve()
-        except OSError:
-            r = p
-        s = str(r)
-        return s.lower() if os.name == "nt" else s
+        return command_security.normalize_path_allowlist_key(p)
 
     def _shell_script_allowlist_key(self, command: str) -> Optional[str]:
         """Resolved script file path key; ignores arguments. None if no script file (e.g. python -c)."""
-        invoked = self._parse_shell_invoked_script_path(command)
-        if invoked is None:
-            return None
-        return self._normalize_path_allowlist_key(invoked)
+        return command_security.shell_script_allowlist_key(self, command)
 
     def _salted_sha256(self, text: str, salt: str) -> str:
-        return hashlib.sha256(f"{salt}\n{text}".encode("utf-8")).hexdigest()
+        return command_security.salted_sha256(text, salt)
 
     def _shell_script_hash(self, script_path: Path) -> Optional[str]:
         """
         Compute salted hash for an allowlisted script file.
         Returns None if file cannot be read or salt is unavailable.
         """
-        salt = getattr(self, "_confirm_allowlist_salt", "") or ""
-        if not salt:
-            return None
-        try:
-            body = script_path.read_text(encoding="utf-8", errors="replace")
-        except OSError as e:
-            print(f"⚠️ 无法读取脚本以计算免确认哈希: {e}")
-            return None
-        return self._salted_sha256(body, salt)
+        return command_security.shell_script_hash(self, script_path)
 
     def _shell_executable_allowlist_key(self, command: str) -> str:
         """
         Stable key for invocations without a script path: same executable / bare name
         regardless of trailing arguments (e.g. git, dir, or full path to an .exe).
         """
-        import shlex
-
-        s = command.strip()
-        if not s:
-            return ""
-        if s.lower().startswith("call "):
-            s = s[5:].strip()
-        try:
-            parts = shlex.split(s, posix=os.name != "nt")
-        except ValueError:
-            parts = s.split()
-        if not parts:
-            return ""
-        base0 = parts[0].replace("\\", "/").split("/")[-1].lower().rstrip(".exe")
-        if len(parts) >= 3 and base0 == "cmd" and parts[1].lower() in ("/c", "/k"):
-            return self._shell_executable_allowlist_key(" ".join(parts[2:]))
-        tok = parts[0].strip('"').strip("'")
-        if tok.startswith(".\\") or tok.startswith("./"):
-            tok = tok[2:]
-        p = Path(tok)
-        if p.is_absolute() or (os.name == "nt" and len(tok) >= 2 and tok[1] == ":"):
-            try:
-                r = p.resolve()
-                if r.is_file():
-                    return self._normalize_path_allowlist_key(r)
-            except OSError:
-                pass
-            return str(p).lower() if os.name == "nt" else str(p)
-        return Path(tok).name.lower() if os.name == "nt" else Path(tok).name
+        return command_security.shell_executable_allowlist_key(self, command)
 
     def _load_confirm_allowlist(self) -> None:
         """Load shell targets that skip confirm with path+salted-hash verification."""
-        self._allowlist_shell_paths = {}
-        self._allowlist_shell_exes = set()
-        self._allowlist_script = set()
-        self._confirm_allowlist_salt = ""
-        p = self._confirm_allowlist_path()
-        if not p.is_file():
-            self._confirm_allowlist_salt = secrets.token_hex(16)
-            return
-        try:
-            data = json.loads(p.read_text(encoding="utf-8"))
-            if not isinstance(data, dict):
-                self._confirm_allowlist_salt = secrets.token_hex(16)
-                return
-            salt = data.get("salt")
-            self._confirm_allowlist_salt = (
-                salt.strip() if isinstance(salt, str) and salt.strip() else secrets.token_hex(16)
-            )
-            for x in data.get("shell_scripts") or []:
-                if not isinstance(x, dict):
-                    continue
-                path_v = x.get("path")
-                hash_v = x.get("hash")
-                if not isinstance(path_v, str) or not path_v.strip():
-                    continue
-                if not isinstance(hash_v, str) or not hash_v.strip():
-                    continue
-                t = path_v.strip()
-                if os.name == "nt":
-                    t = t.lower()
-                self._allowlist_shell_paths[t] = hash_v.strip().lower()
-            for x in data.get("shell_exe_tokens") or []:
-                if isinstance(x, str) and x.strip():
-                    t = x.strip()
-                    self._allowlist_shell_exes.add(t.lower() if os.name == "nt" else t)
-        except Exception as e:
-            print(f"⚠️ 读取 confirm_allowlist.json 失败: {e}")
-            self._confirm_allowlist_salt = secrets.token_hex(16)
+        return command_security.load_confirm_allowlist(self)
 
     def _save_confirm_allowlist(self) -> bool:
-        try:
-            p = self._confirm_allowlist_path()
-            if not self._confirm_allowlist_salt:
-                self._confirm_allowlist_salt = secrets.token_hex(16)
-            payload = {
-                "version": 3,
-                "salt": self._confirm_allowlist_salt,
-                "shell_scripts": [
-                    {"path": k, "hash": v}
-                    for k, v in sorted(self._allowlist_shell_paths.items(), key=lambda x: x[0])
-                ],
-                "shell_exe_tokens": sorted(self._allowlist_shell_exes),
-            }
-            p.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-            return True
-        except Exception as e:
-            print(f"⚠️ 写入 confirm_allowlist.json 失败: {e}")
-            return False
+        return command_security.save_confirm_allowlist(self)
 
     def _shell_command_in_allowlist(self, command: str) -> bool:
-        sk = self._shell_script_allowlist_key(command)
-        if sk is not None:
-            expected = self._allowlist_shell_paths.get(sk)
-            if not expected:
-                return False
-            sp = self._parse_shell_invoked_script_path(command)
-            if sp is None:
-                return False
-            actual = self._shell_script_hash(sp)
-            return bool(actual) and actual == expected
-        ek = self._shell_executable_allowlist_key(command)
-        return bool(ek) and ek in self._allowlist_shell_exes
+        return command_security.shell_command_in_allowlist(self, command)
 
     def _shell_confirm_should_offer_always(self, command: str) -> bool:
         """
         Do not offer 'a' when shell runs a session-ephemeral AI script (created via script action
         this session, tracked in _ephemeral_script_paths).
         """
-        invoked = self._parse_shell_invoked_script_path(command)
-        if invoked is None:
-            return True
-        try:
-            k = self._ephemeral_path_key(invoked)
-        except OSError:
-            return True
-        return k not in self._ephemeral_script_paths
+        return command_security.shell_confirm_should_offer_always(self, command)
 
     def _script_basename_in_allowlist(self, safe_name: str) -> bool:
-        return bool(safe_name) and safe_name in self._allowlist_script
+        return command_security.script_basename_in_allowlist(self, safe_name)
 
     def _add_shell_command_allowlist(self, command: str) -> None:
-        sk = self._shell_script_allowlist_key(command)
-        if sk is not None:
-            sp = self._parse_shell_invoked_script_path(command)
-            if sp is None:
-                return
-            h = self._shell_script_hash(sp)
-            if not h:
-                print("⚠️ 无法记录该脚本到免确认列表：哈希计算失败。")
-                return
-            self._allowlist_shell_paths[sk] = h
-        else:
-            ek = self._shell_executable_allowlist_key(command)
-            if ek:
-                self._allowlist_shell_exes.add(ek)
-        self._save_confirm_allowlist()
+        return command_security.add_shell_command_allowlist(self, command)
 
     def _add_script_basename_allowlist(self, safe_name: str) -> None:
-        if not safe_name:
-            return
-        self._allowlist_script.add(safe_name)
-        self._save_confirm_allowlist()
+        return command_security.add_script_basename_allowlist(self, safe_name)
 
     def _reset_always_confirm_skip(self) -> Dict[str, Any]:
         """Clear allowlist and restore y/n prompts."""
