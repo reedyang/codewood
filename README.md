@@ -166,7 +166,6 @@ smart-shell/
 
 ## 🔧 配置
 - 必须配置 `model`
-- 不再支持 `normal_model` / `vision_model` 旧格式
 
 创建 `.smartshell/config.json` 配置文件：
 
