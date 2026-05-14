@@ -171,6 +171,37 @@ class FileCompleter(Completer):
         bang_idx = len(text) - len(frag)
         return bang_idx, frag
 
+    @staticmethod
+    def _dynamic_completion_display(
+        slash_part: str,
+        candidate: str,
+        delayed_dynamic_groups: List[Tuple[str, List[str]]],
+    ) -> str:
+        """
+        For delayed dynamic slash completions, display only the incremental part
+        (e.g. "/workspace switch code-review" -> "code-review" when user already
+        typed "/workspace switch ").
+        """
+        sp = str(slash_part or "")
+        c = str(candidate or "")
+        if not sp or not c:
+            return c
+        sp_l = sp.lower()
+        c_l = c.lower()
+        for trigger_prefix, _ in delayed_dynamic_groups or []:
+            trig = str(trigger_prefix or "")
+            if not trig:
+                continue
+            trig_l = trig.lower()
+            if not sp_l.startswith(trig_l):
+                continue
+            if not c_l.startswith(trig_l):
+                continue
+            rest = c[len(trig):]
+            # If no visible incremental part, keep full display text.
+            return rest if rest else c
+        return c
+
     def get_completions(self, document, complete_event):
         """获取补全选项"""
         text = document.text_before_cursor
@@ -210,36 +241,62 @@ class FileCompleter(Completer):
                         mcp_scoped_groups = provider() or []
                     except Exception:
                         mcp_scoped_groups = self.slash_mcp_scoped_groups or []
+                delayed_groups = [
+                    ("/mcp server-info ", self.slash_mcp_server_info_commands),
+                    ("/mcp reconnect ", self.slash_mcp_reconnect_commands),
+                    ("/mcp list-tools ", self.slash_mcp_list_tools_commands),
+                    ("/mcp list-resources ", self.slash_mcp_list_resources_commands),
+                    (
+                        "/mcp list-resource-templates ",
+                        self.slash_mcp_list_resource_templates_commands,
+                    ),
+                    ("/mcp list-prompts ", self.slash_mcp_list_prompts_commands),
+                    ("/mcp disable-tools ", self.slash_mcp_disable_tools_commands),
+                    ("/mcp enable-tools ", self.slash_mcp_enable_tools_commands),
+                    ("/workspace switch ", self.slash_workspace_switch_commands),
+                    ("/workspace delete ", self.slash_workspace_delete_commands),
+                ]
                 builtin_matches = windows_slash_builtin_completions(
                     slash_part,
                     dynamic_commands=(
                         self.slash_skill_commands
                         + self.slash_mcp_commands
                     ),
-                    delayed_dynamic_groups=[
-                        ("/mcp server-info ", self.slash_mcp_server_info_commands),
-                        ("/mcp reconnect ", self.slash_mcp_reconnect_commands),
-                        ("/mcp list-tools ", self.slash_mcp_list_tools_commands),
-                        ("/mcp list-resources ", self.slash_mcp_list_resources_commands),
-                        (
-                            "/mcp list-resource-templates ",
-                            self.slash_mcp_list_resource_templates_commands,
-                        ),
-                        ("/mcp list-prompts ", self.slash_mcp_list_prompts_commands),
-                        ("/mcp disable-tools ", self.slash_mcp_disable_tools_commands),
-                        ("/mcp enable-tools ", self.slash_mcp_enable_tools_commands),
-                        ("/workspace switch ", self.slash_workspace_switch_commands),
-                        ("/workspace delete ", self.slash_workspace_delete_commands),
-                    ] + mcp_scoped_groups,
+                    delayed_dynamic_groups=delayed_groups + mcp_scoped_groups,
                 )
                 if builtin_matches:
+                    # When delayed dynamic completion is active, hide the trigger
+                    # command itself from menu (e.g. "/workspace switch ").
+                    active_trigger_norms = {
+                        str(trigger or "").rstrip().lower()
+                        for trigger, _ in (delayed_groups + mcp_scoped_groups)
+                        if str(trigger or "").strip()
+                        and slash_part.lower().startswith(str(trigger or "").lower())
+                    }
+                    if active_trigger_norms:
+                        builtin_matches = [
+                            mc
+                            for mc in builtin_matches
+                            if str(mc or "").rstrip().lower() not in active_trigger_norms
+                        ]
+                    if not builtin_matches:
+                        return
+
                     spos = -len(slash_part)
                     seen = set()
+                    all_delayed_groups = delayed_groups + mcp_scoped_groups
                     for mc in builtin_matches:
                         if mc in seen:
                             continue
                         seen.add(mc)
-                        yield Completion(mc, start_position=spos)
+                        display_text = self._dynamic_completion_display(
+                            slash_part, mc, all_delayed_groups
+                        )
+                        yield Completion(
+                            mc,
+                            start_position=spos,
+                            display=display_text,
+                        )
                     return
 
         # Generic token-based file/path completion (from last whitespace boundary)
