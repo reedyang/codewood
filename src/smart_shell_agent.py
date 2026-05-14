@@ -100,6 +100,8 @@ from .ai_provider_clients import AICallContext
 from .ai_orchestrator import AIOrchestrator, AgentAIContext
 from .session_memory_service import SessionMemoryService
 from .policy.path_policy import PathPolicy
+from .tool_dispatcher import ToolDispatcher
+from .builtin_command_router import dispatch_builtin_command
 from . import filesystem_actions
 from . import command_actions
 from . import command_security
@@ -512,6 +514,7 @@ class SmartShellAgent:
         self.memory_service = None
         self._last_memory_reflect_at = 0.0
         self._schedule_memory_service_background()
+        self.tool_dispatcher = ToolDispatcher(self, self._execute_tool_call_legacy)
 
     def _resolve_path_lenient(self, path: Path) -> Path:
         try:
@@ -4192,6 +4195,12 @@ class SmartShellAgent:
         )
 
     def execute_tool_call(self, tool_name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
+        dispatcher = getattr(self, "tool_dispatcher", None)
+        if dispatcher is not None:
+            return dispatcher.dispatch_or_fallback(tool_name, arguments)
+        return self._execute_tool_call_legacy(tool_name, arguments)
+
+    def _execute_tool_call_legacy(self, tool_name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
         """执行工具命令，支持批量命令和 cls 命令。"""
         action = (tool_name or "").strip()
         params = arguments if isinstance(arguments, dict) else {}
@@ -5775,6 +5784,49 @@ class SmartShellAgent:
                 print(f"Message: {msg}")
         print("==========================\n")
 
+    def _print_main_help(self) -> None:
+        print("\nSmart Shell Help")
+        print("=" * 80)
+        print("\nBuilt-in commands:")
+        print("  /exit, /quit")
+        print("  /cls, /clear screen")
+        print("  /clear history")
+        print("  /clear context")
+        print("  /help")
+        print("\nChat commands:")
+        print("  /chat list | current | new [name] | switch <selector> | rename <selector> <new> | delete <selector> | delete all")
+        print("\nWorkspace commands:")
+        print("  /workspace current | list | create <path> [--name <name>] | switch <selector>")
+        print("  /workspace update <selector> [--name <name>] [--path <path>]")
+        print("  /workspace delete <selector> [--remove-files]")
+        print("\nMCP commands:")
+        print("  /mcp status | status-refresh | reload-config")
+        print("  /mcp reconnect <server> | server-info <server>")
+        print("  /mcp list-tools <server> | list-resources <server>")
+        print("  /mcp list-resource-templates <server> | list-prompts <server>")
+        print("  /mcp list-disabled-tools [server]")
+        print("  /mcp disable-tools <server> <tool1,tool2>")
+        print("  /mcp enable-tools <server> <tool1,tool2>")
+        print("\nKnowledge and memory:")
+        print("  /knowledge status | sync | stats | search <query>")
+        print("  /memory status | enable | disable | stats | list | search <query> | remember <text> | delete <id>")
+        print("  /session-summary on|off|show")
+        print("  /execution-policy show|unlimited|moderate|confirmation")
+        print("  /always_confirm-reset")
+        print("\nDirect shell (bypass AI):")
+        print("  Use ! prefix, e.g. !ls, !dir, !git status, !python script.py")
+        if self.skills:
+            print(
+                f"\nLoaded Agent Skills: {len(self.skills)} "
+                f"(builtin: {self._builtin_skills_root}, external: {self.config_dir / 'skills'})"
+            )
+            print("  Use /<skill-id> <task> to force a skill in current turn.")
+            skill_cmds = self._get_slash_skill_commands()
+            if skill_cmds:
+                print("  Skill shortcuts:")
+                print("    " + ", ".join(skill_cmds))
+        print("=" * 80)
+
     def run(self):
         """运行 AI Agent 主循环，使用 OpenAI tools 进行多轮自动执行，调用 done 结束。"""
         import sys
@@ -5880,6 +5932,18 @@ class SmartShellAgent:
                         continue
 
                 if builtin_line is not None:
+                    handled, should_exit = dispatch_builtin_command(
+                        self,
+                        builtin_line,
+                        os_name=os_name,
+                        wait_for_supplement=False,
+                        consume_unknown=False,
+                    )
+                    if handled:
+                        if should_exit:
+                            break
+                        continue
+
                     bl = builtin_line.lower()
                     mcp_tool, mcp_args, mcp_err = self._parse_mcp_shortcut_command(builtin_line)
                     if mcp_tool:
@@ -6078,116 +6142,9 @@ class SmartShellAgent:
                             print("❌ 请提供搜索查询内容")
                         continue
                     if bl == 'help':
-                        print("\n🌟 Smart Shell 帮助信息")
-                        print("=" * 80)
-                        print("\n📌 内置命令：")
-                        print("  1. /exit, /quit                 - 退出程序")
-                        print("  2. /cls, /clear screen          - 清空屏幕")
-                        print("  3. /clear history               - 清除命令历史记录")
-                        print("  4. /clear context               - 清空 AI 上下文与操作结果缓存")
-                        print("  5. /help                        - 显示此帮助信息")
-                        print("\n💬 Chat 命令：")
-                        print("  /chat list                                - 列出当前 workspace 下所有 chat（带索引）")
-                        print("  /chat current                             - 查看当前 chat")
-                        print("  /chat new [name]                          - 新建 chat（可选名称）")
-                        print("  /chat switch <index|id|name>              - 切换 chat（会清屏并加载完整历史）")
-                        print("  /chat rename <selector> <new name>        - 重命名 chat")
-                        print("  /chat delete <index|id|name>              - 删除 chat")
-                        print("  /chat delete all                          - 删除所有 chat，并重建 New Chat")
-                        print("\n🗂️ Workspace 命令：")
-                        print("  /workspace current                         - 查看当前 workspace")
-                        print("  /workspace list                            - 列出所有 workspace")
-                        print("  /workspace create <path> [--name <name>]   - 创建自定义 workspace")
-                        print("  /workspace switch <name|id|path>           - 切换 workspace")
-                        print("  /workspace update <selector> [--name <name>] [--path <path>] - 修改 workspace")
-                        print("  /workspace delete <selector> [--remove-files] - 删除 workspace；带开关会删除该 workspace 的 .smartshell/ 数据目录")
-                        print("\n🧩 MCP 快捷命令：")
-                        print("  /mcp status                                - 查看 MCP 总体状态")
-                        print("  /mcp status-refresh                        - 刷新并查看 MCP 状态")
-                        print("  /mcp reload-config                         - 重新加载 MCP 配置")
-                        print("  /mcp reconnect <server>                    - 重连指定 MCP server")
-                        print("  /mcp server-info <server>                  - 查看 server 连接与能力信息")
-                        print("  /mcp list-tools <server>                   - 列出 server 可用工具")
-                        print("  /mcp list-resources <server>               - 列出 server 资源")
-                        print("  /mcp list-resource-templates <server>      - 列出 server 资源模板")
-                        print("  /mcp list-prompts <server>                 - 列出 server prompts")
-                        print("  /mcp list-disabled-tools [server]          - 查看已禁用工具（可选限定 server）")
-                        print("  /mcp disable-tools <server> <tool1,tool2>  - 禁用工具（逗号分隔）")
-                        print("  /mcp enable-tools <server> <tool1,tool2>   - 启用工具（逗号分隔）")
 
-                        print("\n📚 知识库命令：")
-                        print("  6. /knowledge status            - 显示知识库状态详情与注意事项")
-                        print("  7. /knowledge sync              - 同步索引文档")
-                        print("  8. /knowledge stats             - 查看统计信息")
-                        print("  9. /knowledge search <query>    - 手动搜索知识库")
+                        self._print_main_help()
 
-                        print("\n🧠 经验记忆命令（与知识库分离）：")
-                        print("  /memory status                  - 经验记忆依赖与存储状态")
-                        print("  /memory enable                  - 开启经验记忆功能（写入 config.json）")
-                        print("  /memory disable                 - 关闭经验记忆功能（写入 config.json）")
-                        print("  /memory stats                   - 条数与模型目录")
-                        print("  /memory list                    - 当前工作区最近记忆摘要")
-                        print("  /memory search <query>          - 语义检索内化经验")
-                        print("  /memory remember <text>         - 手动写入一条经验（用户发起）")
-                        print("  /memory delete <id>             - 按 id 删除一条记忆")
-
-                        print("\n🦅 执行策略命令：")
-                        print("  /execution-policy show          - 显示当前策略详情与注意事项")
-                        print("  /execution-policy unlimited     - 无需确认，直接执行所有操作")
-                        print("  /execution-policy moderate      - AI 判定可逆后自动跳过确认")
-                        print("  /execution-policy confirmation  - 始终 y/n 确认后执行")
-
-                        print("\n📝 会话摘要（经验记忆检索）：")
-                        print("  /session-summary on      - 开启周期性 LLM 会话摘要（写入 config.json）")
-                        print("  /session-summary off     - 关闭 LLM 摘要（仍保留滚动摘录）")
-                        print("  /session-summary show    - 查看开关与配置路径")
-
-                        print("\n🔔 确认免列表（confirm_allowlist.json）：")
-                        print(
-                            "  /always_confirm-reset  - 清空免确认列表（shell 脚本路径+加盐哈希、"
-                            "可执行键），恢复每次 y/n 询问"
-                        )
-                        print(
-                            "  仅在 **shell** 确认提示中可输入 a：记入当前命令解析出的脚本路径或可执行键；"
-                            "text_file 落盘仅 y/n。"
-                        )
-
-                        print("\n📌 系统命令（不经 AI，本机直接执行）：")
-                        print("  所有平台都必须以 ! 开头，例如 !ls、!dir、!cd ..、!cat a.txt、!git status")
-                        print("\n📌 自然语言命令：")
-                        print("您可以使用自然语言描述您的需求，例如：")
-                        print("  1. 创建一个名为test的文件夹")
-                        print("  2. 将文件a.txt重命名为b.txt")
-                        print("  3. 分析这张图片的内容")
-                        print("  4. 总结这个文本文件")
-                        print("  5. 将视频转换为mp4格式")
-                        print("  6. 比较两个文件的差异")
-                        print("  7. 查找最近修改的文件")
-                        print("  8. 删除所有临时文件")
-
-                        if KNOWLEDGE_AVAILABLE:
-                            print("  9. 说明：自然语言场景下若需 AI 使用知识库，请在话术中明确要求「检索知识库」或「参考知识库」")
-                            print("  10. 同步知识库（亦可用 /knowledge sync）")
-                            print("  11. 查看知识库统计（亦可用 /knowledge stats）")
-                            print("  12. 在知识库中搜索（亦可用 /knowledge search <query>）")
-
-                        print("\n💡 提示：")
-                        print("  - Tab键可以自动补全文件路径")
-                        print("  - 上下方向键可以浏览历史命令")
-                        print("  - AI会理解您的自然语言指令并执行相应操作")
-                        if KNOWLEDGE_AVAILABLE:
-                            print("  - 知识库已启用；AI 仅在您明确要求检索或参考知识库时才会调用 knowledge_search，不会自动检索")
-                        if self.skills:
-                            print(
-                                f"  - 已载入 {len(self.skills)} 个 Agent Skills（内建 {self._builtin_skills_root} + 外部 {self.config_dir / 'skills'}），"
-                                "任务匹配时模型会优先遵循对应 SKILL.md"
-                            )
-                            print("  - 可用 `/skill-id 你的任务` 指定本轮强制使用某个 skill")
-                            skill_cmds = self._get_slash_skill_commands()
-                            if skill_cmds:
-                                print("  - 已加载技能快捷前缀（输入 / 可自动提示）：")
-                                print("    " + ", ".join(skill_cmds))
-                        print("=" * 80)
                         continue
 
                     print(
@@ -7048,6 +7005,17 @@ class SmartShellAgent:
             if not builtin_line:
                 print("ℹ️ 单独输入 / 无效。")
                 return True
+            handled, should_exit = dispatch_builtin_command(
+                self,
+                builtin_line,
+                os_name=os_name,
+                wait_for_supplement=True,
+                consume_unknown=False,
+            )
+            if handled:
+                if should_exit:
+                    raise SystemExit(0)
+                return True
             bl = builtin_line.lower()
             mcp_tool, mcp_args, mcp_err = self._parse_mcp_shortcut_command(builtin_line)
             if mcp_tool:
@@ -7316,7 +7284,14 @@ class SmartShellAgent:
         auto_accept_elicitation = str(
             os.environ.get("SMART_SHELL_AUTO_ACCEPT_ELICITATION", "")
         ).strip().lower() in ("1", "true", "yes", "on")
-        if auto_accept_elicitation or (not sys.stdin.isatty()):
+        stdin_is_tty = False
+        try:
+            stdin_obj = getattr(sys, "stdin", None)
+            stdin_is_tty = bool(stdin_obj is not None and stdin_obj.isatty())
+        except Exception:
+            # Some test runners replace stdin with objects that may not support isatty().
+            stdin_is_tty = False
+        if auto_accept_elicitation or (not stdin_is_tty):
             if mode == "url":
                 return {"action": "accept"}
             requested = p.get("requestedSchema", {})

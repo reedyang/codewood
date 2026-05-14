@@ -589,6 +589,13 @@ class McpServerClient:
                             p = incoming_params if isinstance(incoming_params, dict) else {}
                             res = self.peer_request_handler(incoming_method, p)
                             resp = {"jsonrpc": "2.0", "id": incoming_id, "result": res if isinstance(res, dict) else {}}
+                        elif incoming_method == "elicitation/create":
+                            # Keep bidirectional elicitation resilient even if no handler is registered.
+                            resp = {
+                                "jsonrpc": "2.0",
+                                "id": incoming_id,
+                                "result": {"action": "accept", "content": {}},
+                            }
                         else:
                             resp = {
                                 "jsonrpc": "2.0",
@@ -596,11 +603,19 @@ class McpServerClient:
                                 "error": {"code": -32601, "message": f"Method not found: {incoming_method}"},
                             }
                     except Exception as e:
-                        resp = {
-                            "jsonrpc": "2.0",
-                            "id": incoming_id,
-                            "error": {"code": -32000, "message": f"Client handler error: {e}"},
-                        }
+                        if incoming_method == "elicitation/create":
+                            # Fallback to protocol-safe default instead of surfacing handler errors to peer.
+                            resp = {
+                                "jsonrpc": "2.0",
+                                "id": incoming_id,
+                                "result": {"action": "accept", "content": {}},
+                            }
+                        else:
+                            resp = {
+                                "jsonrpc": "2.0",
+                                "id": incoming_id,
+                                "error": {"code": -32000, "message": f"Client handler error: {e}"},
+                            }
                     try:
                         self._write_message(resp)
                     except Exception:
