@@ -101,6 +101,63 @@ def dispatch_mcp_tool(agent: Any, action: str, params: Dict[str, Any]) -> Option
         all_servers = agent.mcp_manager.mcp_config.get("mcpServers", {})
         if not isinstance(all_servers, dict) or server not in all_servers:
             return {"success": False, "error": f"unconfigured MCP server: {server}"}
+        server_conf = all_servers.get(server, {})
+        skip_preload = bool(
+            isinstance(server_conf, dict) and server_conf.get("skip_preload", False)
+        )
+        clients_map = getattr(agent.mcp_manager, "_clients", {}) or {}
+        is_connected = bool(isinstance(clients_map, dict) and server in clients_map)
+
+        # Respect explicit skip_preload policy: when server is configured as skipped
+        # and currently disconnected, do not auto-connect on server-info.
+        if skip_preload and not is_connected:
+            status_all = agent.mcp_manager.get_status()
+            status_entry = (
+                status_all.get("servers", {}).get(server, {})
+                if isinstance(status_all.get("servers", {}), dict)
+                else {}
+            )
+            status_out: Dict[str, Any] = (
+                dict(status_entry) if isinstance(status_entry, dict) else {}
+            )
+            if not status_out:
+                status_out = {
+                    "state": "skipped",
+                    "last_error": "skip_preload=true",
+                    "suggestion": "server configured with skip_preload=true; connection is intentionally skipped.",
+                }
+            else:
+                status_out["state"] = status_out.get("state") or "skipped"
+                status_out["last_error"] = status_out.get("last_error") or "skip_preload=true"
+                status_out["suggestion"] = (
+                    status_out.get("suggestion")
+                    or "server configured with skip_preload=true; connection is intentionally skipped."
+                )
+            info = {
+                "server": server,
+                "refresh": bool(params.get("refresh", False)),
+                "use_cache": not bool(params.get("refresh", False)),
+                "skipped_by_config": True,
+                "sections": {},
+                "errors": {},
+                "status": status_out,
+                "disabled_tools": agent.mcp_manager.list_disabled_tools(server).get(
+                    server, []
+                ),
+                "status_summary": {
+                    "all_loaded": bool(status_all.get("all_loaded", False)),
+                    "loading_count": int(status_all.get("loading_count", 0) or 0),
+                },
+            }
+            return {
+                "success": True,
+                "server": server,
+                "info": info,
+                "message": (
+                    f"MCP server info skipped (server={server}): "
+                    "configured skip_preload=true and not connected"
+                ),
+            }
 
         refresh = bool(params.get("refresh", False))
         timeout_s = float(params.get("timeout_s", 8.0))
