@@ -494,6 +494,7 @@ class SmartShellAgent:
                         initial_history,
                         self._get_slash_skill_commands(),
                         self._get_slash_mcp_commands(),
+                        self._get_slash_workspace_switch_commands(),
                     )
                 elif INPUT_HANDLER_TYPE == "readline":
                     self.input_handler = create_tab_completer(self.work_directory)
@@ -983,6 +984,7 @@ class SmartShellAgent:
             "current_dir": str(root),
         }
         self._save_workspace_state()
+        self._refresh_input_handler_skill_completions()
         return f"✅ 已创建 workspace: {name} ({workspace_id})\n  root: {root}\n  storage: {storage}"
 
     def _workspace_switch_command(self, selector: str) -> str:
@@ -1064,6 +1066,7 @@ class SmartShellAgent:
             messages.append(f"path={new_root}")
 
         self._save_workspace_state()
+        self._refresh_input_handler_skill_completions()
         if active_workspace:
             self._apply_workspace_entry(entry, self.work_directory)
             self._refresh_workspace_runtime()
@@ -1118,6 +1121,7 @@ class SmartShellAgent:
             self._refresh_workspace_runtime()
         else:
             self._save_workspace_state()
+        self._refresh_input_handler_skill_completions()
 
         removed_data = False
         if remove_files and storage.exists():
@@ -2529,12 +2533,38 @@ class SmartShellAgent:
                     cmds.append(c)
         return sorted(cmds, key=str.lower)
 
+    def _get_slash_workspace_switch_commands(self) -> List[str]:
+        cmds: List[str] = []
+        seen: Set[str] = set()
+        workspaces = self._workspaces_state.get("workspaces", {})
+        if not isinstance(workspaces, dict):
+            return cmds
+        for entry in workspaces.values():
+            if not isinstance(entry, dict):
+                continue
+            name = str(entry.get("name") or "").strip()
+            if not name:
+                continue
+            cmd = f"/workspace switch {name}"
+            key = cmd.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            cmds.append(cmd)
+        return sorted(cmds, key=str.lower)
+
     def _refresh_input_handler_skill_completions(self) -> None:
         try:
             if self.input_handler is not None and hasattr(self.input_handler, "set_slash_skill_commands"):
                 self.input_handler.set_slash_skill_commands(self._get_slash_skill_commands())
             if self.input_handler is not None and hasattr(self.input_handler, "set_slash_mcp_commands"):
                 self.input_handler.set_slash_mcp_commands(self._get_slash_mcp_commands())
+            if self.input_handler is not None and hasattr(
+                self.input_handler, "set_slash_workspace_switch_commands"
+            ):
+                self.input_handler.set_slash_workspace_switch_commands(
+                    self._get_slash_workspace_switch_commands()
+                )
         except Exception:
             pass
 
