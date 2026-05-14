@@ -8,7 +8,7 @@ if "ollama" not in sys.modules:
     sys.modules["ollama"] = fake_ollama
 
 from src.smart_shell_agent import SmartShellAgent
-from src.builtin_slash_commands import WINDOWS_SLASH_BUILTIN_COMMANDS
+from src.completion.builtin_slash_commands import WINDOWS_SLASH_BUILTIN_COMMANDS
 
 
 class McpShortcutCommandTests(unittest.TestCase):

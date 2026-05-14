@@ -107,7 +107,7 @@ from .tool_handlers.mcp_handlers import dispatch_mcp_tool
 from .tool_handlers.memory_handlers import dispatch_memory_tool
 from .tool_handlers.agent_state_handlers import dispatch_agent_state_tool
 from .builtin_command_router import dispatch_builtin_command
-from .slash_dynamic_completions import (
+from .completion.slash_dynamic_completions import (
     build_mcp_scoped_commands,
     build_mcp_scoped_groups,
     build_mcp_server_commands,
@@ -133,7 +133,7 @@ import platform
 
 if platform.system() == "Windows":
     try:
-        from .windows_input import create_windows_input_handler
+        from .completion.windows_input import create_windows_input_handler
         TAB_COMPLETION_AVAILABLE = True
         INPUT_HANDLER_TYPE = "windows"
     except ImportError:
@@ -141,7 +141,7 @@ if platform.system() == "Windows":
         INPUT_HANDLER_TYPE = "none"
 else:
     try:
-        from .tab_completer import create_tab_completer
+        from .completion.tab_completer import create_tab_completer
         TAB_COMPLETION_AVAILABLE = True
         INPUT_HANDLER_TYPE = "readline"
     except ImportError:
