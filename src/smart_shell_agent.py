@@ -107,6 +107,14 @@ from .tool_handlers.mcp_handlers import dispatch_mcp_tool
 from .tool_handlers.memory_handlers import dispatch_memory_tool
 from .tool_handlers.agent_state_handlers import dispatch_agent_state_tool
 from .builtin_command_router import dispatch_builtin_command
+from .slash_dynamic_completions import (
+    build_mcp_scoped_commands,
+    build_mcp_scoped_groups,
+    build_mcp_server_commands,
+    build_mcp_server_target_commands,
+    build_slash_dynamic_rules,
+    build_workspace_action_commands,
+)
 from . import filesystem_actions
 from . import command_actions
 from . import command_security
@@ -2539,44 +2547,10 @@ class SmartShellAgent:
         return sorted(cmds, key=str.lower)
 
     def _get_slash_workspace_switch_commands(self) -> List[str]:
-        cmds: List[str] = []
-        seen: Set[str] = set()
-        workspaces = self._workspaces_state.get("workspaces", {})
-        if not isinstance(workspaces, dict):
-            return cmds
-        for entry in workspaces.values():
-            if not isinstance(entry, dict):
-                continue
-            name = str(entry.get("name") or "").strip()
-            if not name:
-                continue
-            cmd = f"/workspace switch {name}"
-            key = cmd.lower()
-            if key in seen:
-                continue
-            seen.add(key)
-            cmds.append(cmd)
-        return sorted(cmds, key=str.lower)
+        return build_workspace_action_commands(self._workspaces_state, "switch")
 
     def _get_slash_workspace_delete_commands(self) -> List[str]:
-        cmds: List[str] = []
-        seen: Set[str] = set()
-        workspaces = self._workspaces_state.get("workspaces", {})
-        if not isinstance(workspaces, dict):
-            return cmds
-        for entry in workspaces.values():
-            if not isinstance(entry, dict):
-                continue
-            name = str(entry.get("name") or "").strip()
-            if not name:
-                continue
-            cmd = f"/workspace delete {name}"
-            key = cmd.lower()
-            if key in seen:
-                continue
-            seen.add(key)
-            cmds.append(cmd)
-        return sorted(cmds, key=str.lower)
+        return build_workspace_action_commands(self._workspaces_state, "delete")
 
     def _refresh_input_handler_skill_completions(self) -> None:
         try:
@@ -2596,110 +2570,10 @@ class SmartShellAgent:
             pass
 
     def _get_slash_mcp_commands(self) -> List[str]:
-        """
-        Build slash-style MCP completion candidates.
-        - /<server>/
-        - /<server>/<tool-or-prompt>
-        Only include loaded servers (exclude skipped/unloaded).
-        """
-        out: List[str] = []
-        seen: Set[str] = set()
-
-        def _add(cmd: str) -> None:
-            c = str(cmd or "").strip()
-            if not c.startswith("/"):
-                return
-            key = c.lower()
-            if key in seen:
-                return
-            seen.add(key)
-            out.append(c)
-
-        servers = {}
-        try:
-            servers = (self.mcp_manager.mcp_config or {}).get("mcpServers", {})
-        except Exception:
-            servers = {}
-        if not isinstance(servers, dict):
-            servers = {}
-
-        tools_cache = getattr(self.mcp_manager, "_tools_cache", {}) or {}
-        prompts_cache = getattr(self.mcp_manager, "_prompts_cache", {}) or {}
-        clients = getattr(self.mcp_manager, "_clients", {}) or {}
-        status_map = getattr(self.mcp_manager, "_status", {}) or {}
-
-        for server in servers.keys():
-            srv = str(server or "").strip()
-            if not srv:
-                continue
-
-            st = {}
-            try:
-                st = status_map.get(srv, {}) if isinstance(status_map, dict) else {}
-            except Exception:
-                st = {}
-            state = str((st or {}).get("state", "")).strip().lower()
-            has_client = bool(isinstance(clients, dict) and srv in clients)
-            has_cache = bool(
-                (isinstance(tools_cache, dict) and srv in tools_cache)
-                or (isinstance(prompts_cache, dict) and srv in prompts_cache)
-            )
-            is_loaded = has_client or has_cache or state in ("success", "loading")
-            if not is_loaded:
-                continue
-
-            _add(f"/{srv}/")
-
-            tool_items = []
-            try:
-                tool_items = tools_cache.get(srv, {}).get("tools", []) if isinstance(tools_cache, dict) else []
-            except Exception:
-                tool_items = []
-            if isinstance(tool_items, list):
-                for t in tool_items:
-                    name = str((t or {}).get("name", "")).strip() if isinstance(t, dict) else ""
-                    if name:
-                        _add(f"/{srv}/{name}")
-
-            prompt_items = []
-            try:
-                prompt_items = prompts_cache.get(srv, {}).get("prompts", []) if isinstance(prompts_cache, dict) else []
-            except Exception:
-                prompt_items = []
-            if isinstance(prompt_items, list):
-                for p in prompt_items:
-                    name = str((p or {}).get("name", "")).strip() if isinstance(p, dict) else ""
-                    if name:
-                        _add(f"/{srv}/{name}")
-
-        return sorted(out, key=str.lower)
+        return build_mcp_scoped_commands(self.mcp_manager)
 
     def _get_slash_mcp_server_commands(self) -> List[str]:
-        """
-        MCP server-only slash commands:
-        - /<server>/
-        """
-        out: List[str] = []
-        seen: Set[str] = set()
-        servers = {}
-        try:
-            servers = (self.mcp_manager.mcp_config or {}).get("mcpServers", {})
-        except Exception:
-            servers = {}
-        if not isinstance(servers, dict):
-            servers = {}
-
-        for server in servers.keys():
-            srv = str(server or "").strip()
-            if not srv:
-                continue
-            cmd = f"/{srv}/"
-            key = cmd.lower()
-            if key in seen:
-                continue
-            seen.add(key)
-            out.append(cmd)
-        return sorted(out, key=str.lower)
+        return build_mcp_server_commands(self.mcp_manager.mcp_config)
 
     def _get_slash_mcp_server_info_commands(self) -> List[str]:
         """
@@ -2738,116 +2612,23 @@ class SmartShellAgent:
         )
 
     def _get_slash_dynamic_rules(self) -> List[Dict[str, Any]]:
-        """
-        Unified declarative delayed dynamic completion rules for slash commands.
-        Workspace and MCP rules share the same structure.
-        """
-        return [
-            {
-                "trigger": "/mcp server-info ",
-                "candidates": self._get_slash_mcp_server_info_commands(),
-            },
-            {
-                "trigger": "/mcp reconnect ",
-                "candidates": self._get_slash_mcp_reconnect_commands(),
-            },
-            {
-                "trigger": "/mcp list-tools ",
-                "candidates": self._get_slash_mcp_list_tools_commands(),
-            },
-            {
-                "trigger": "/mcp list-resources ",
-                "candidates": self._get_slash_mcp_list_resources_commands(),
-            },
-            {
-                "trigger": "/mcp list-resource-templates ",
-                "candidates": self._get_slash_mcp_list_resource_templates_commands(),
-            },
-            {
-                "trigger": "/mcp list-prompts ",
-                "candidates": self._get_slash_mcp_list_prompts_commands(),
-            },
-            {
-                "trigger": "/mcp disable-tools ",
-                "candidates": self._get_slash_mcp_disable_tools_commands(),
-            },
-            {
-                "trigger": "/mcp enable-tools ",
-                "candidates": self._get_slash_mcp_enable_tools_commands(),
-            },
-            {
-                "trigger": "/workspace switch ",
-                "candidates": self._get_slash_workspace_switch_commands(),
-            },
-            {
-                "trigger": "/workspace delete ",
-                "candidates": self._get_slash_workspace_delete_commands(),
-            },
-            {
-                "groups_provider": self._get_slash_mcp_scoped_groups,
-            },
-        ]
+        return build_slash_dynamic_rules(
+            workspaces_state=self._workspaces_state,
+            mcp_config=self.mcp_manager.mcp_config,
+            mcp_scoped_groups_provider=self._get_slash_mcp_scoped_groups,
+        )
 
     def _get_slash_mcp_server_target_commands(
         self, subcommand: str, with_trailing_space: bool = False
     ) -> List[str]:
-        out: List[str] = []
-        seen: Set[str] = set()
-        servers = {}
-        try:
-            servers = (self.mcp_manager.mcp_config or {}).get("mcpServers", {})
-        except Exception:
-            servers = {}
-        if not isinstance(servers, dict):
-            servers = {}
-
-        for server in servers.keys():
-            srv = str(server or "").strip()
-            if not srv:
-                continue
-            cmd = f"/mcp {subcommand} {srv}"
-            if with_trailing_space:
-                cmd = cmd + " "
-            key = cmd.lower()
-            if key in seen:
-                continue
-            seen.add(key)
-            out.append(cmd)
-        return sorted(out, key=str.lower)
+        return build_mcp_server_target_commands(
+            self.mcp_manager.mcp_config,
+            subcommand=subcommand,
+            with_trailing_space=with_trailing_space,
+        )
 
     def _get_slash_mcp_scoped_groups(self) -> List[Tuple[str, List[str]]]:
-        """
-        Build delayed MCP completion groups:
-        - trigger: /<server>/
-        - candidates: /<server>/<tool-or-prompt>
-        """
-        buckets: Dict[str, List[str]] = {}
-        seen_by_trigger: Dict[str, Set[str]] = {}
-        for cmd in self._get_slash_mcp_commands():
-            if not isinstance(cmd, str):
-                continue
-            m = re.match(r"^/([^/]+)/([^/].*)$", cmd)
-            if not m:
-                continue
-            srv = str(m.group(1) or "").strip()
-            name = str(m.group(2) or "").strip()
-            if not srv or not name:
-                continue
-            trigger = f"/{srv}/"
-            if trigger not in buckets:
-                buckets[trigger] = []
-                seen_by_trigger[trigger] = set()
-            key = cmd.lower()
-            if key in seen_by_trigger[trigger]:
-                continue
-            seen_by_trigger[trigger].add(key)
-            buckets[trigger].append(cmd)
-
-        groups: List[Tuple[str, List[str]]] = []
-        for trigger, candidates in buckets.items():
-            if candidates:
-                groups.append((trigger, sorted(candidates, key=str.lower)))
-        return sorted(groups, key=lambda x: x[0].lower())
+        return build_mcp_scoped_groups(self.mcp_manager)
 
     def _extract_forced_skill_reference(self, user_text: str) -> Optional[Dict[str, Any]]:
         """
