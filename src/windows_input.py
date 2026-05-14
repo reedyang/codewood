@@ -8,7 +8,7 @@ import os
 import re
 import sys
 from pathlib import Path
-from typing import Callable, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 _WIN_DRIVE_BANG = re.compile(r"^([A-Za-z]:)(/.*)?$")
 
@@ -84,38 +84,73 @@ class FileCompleter(Completer):
         work_directory: Path,
         slash_skill_commands: Optional[List[str]] = None,
         slash_mcp_commands: Optional[List[str]] = None,
-        slash_mcp_server_info_commands: Optional[List[str]] = None,
-        slash_mcp_reconnect_commands: Optional[List[str]] = None,
-        slash_mcp_list_tools_commands: Optional[List[str]] = None,
-        slash_mcp_list_resources_commands: Optional[List[str]] = None,
-        slash_mcp_list_resource_templates_commands: Optional[List[str]] = None,
-        slash_mcp_list_prompts_commands: Optional[List[str]] = None,
-        slash_mcp_disable_tools_commands: Optional[List[str]] = None,
-        slash_mcp_enable_tools_commands: Optional[List[str]] = None,
-        slash_workspace_switch_commands: Optional[List[str]] = None,
-        slash_workspace_delete_commands: Optional[List[str]] = None,
-        slash_mcp_scoped_groups: Optional[List[Tuple[str, List[str]]]] = None,
-        slash_mcp_scoped_groups_provider: Optional[
-            Callable[[], List[Tuple[str, List[str]]]]
-        ] = None,
+        slash_dynamic_rules: Optional[List[Dict[str, Any]]] = None,
     ):
         self.work_directory = work_directory
         self.slash_skill_commands = slash_skill_commands or []
         self.slash_mcp_commands = slash_mcp_commands or []
-        self.slash_mcp_server_info_commands = slash_mcp_server_info_commands or []
-        self.slash_mcp_reconnect_commands = slash_mcp_reconnect_commands or []
-        self.slash_mcp_list_tools_commands = slash_mcp_list_tools_commands or []
-        self.slash_mcp_list_resources_commands = slash_mcp_list_resources_commands or []
-        self.slash_mcp_list_resource_templates_commands = (
-            slash_mcp_list_resource_templates_commands or []
-        )
-        self.slash_mcp_list_prompts_commands = slash_mcp_list_prompts_commands or []
-        self.slash_mcp_disable_tools_commands = slash_mcp_disable_tools_commands or []
-        self.slash_mcp_enable_tools_commands = slash_mcp_enable_tools_commands or []
-        self.slash_workspace_switch_commands = slash_workspace_switch_commands or []
-        self.slash_workspace_delete_commands = slash_workspace_delete_commands or []
-        self.slash_mcp_scoped_groups = slash_mcp_scoped_groups or []
-        self.slash_mcp_scoped_groups_provider = slash_mcp_scoped_groups_provider
+        self.slash_dynamic_rules = slash_dynamic_rules or []
+
+    def _resolve_dynamic_groups(self) -> List[Tuple[str, List[str]]]:
+        """
+        Unified delayed-dynamic completion groups.
+        Declarative source: `slash_dynamic_rules`.
+        """
+        out: List[Tuple[str, List[str]]] = []
+
+        def _to_groups(raw: Any) -> None:
+            if not isinstance(raw, list):
+                return
+            for item in raw:
+                if not (isinstance(item, tuple) and len(item) == 2):
+                    continue
+                trigger, cands = item
+                trig = str(trigger or "")
+                if not trig:
+                    continue
+                if not isinstance(cands, list):
+                    continue
+                normalized = [str(x) for x in cands if isinstance(x, str)]
+                out.append((trig, normalized))
+
+        rules = self.slash_dynamic_rules or []
+        if isinstance(rules, list) and rules:
+            for rule in rules:
+                if not isinstance(rule, dict):
+                    continue
+
+                groups_provider = rule.get("groups_provider")
+                if callable(groups_provider):
+                    try:
+                        _to_groups(groups_provider() or [])
+                    except Exception:
+                        pass
+                    continue
+
+                groups_raw = rule.get("groups")
+                if isinstance(groups_raw, list):
+                    _to_groups(groups_raw)
+                    continue
+
+                trigger = str(rule.get("trigger") or "")
+                if not trigger:
+                    continue
+                candidates: List[str] = []
+                cands_provider = rule.get("candidates_provider")
+                if callable(cands_provider):
+                    try:
+                        raw = cands_provider() or []
+                        if isinstance(raw, list):
+                            candidates = [str(x) for x in raw if isinstance(x, str)]
+                    except Exception:
+                        candidates = []
+                else:
+                    raw = rule.get("candidates", [])
+                    if isinstance(raw, list):
+                        candidates = [str(x) for x in raw if isinstance(x, str)]
+                out.append((trigger, candidates))
+            return out
+        return []
 
     @staticmethod
     def _slash_fragment_for_completion(text: str) -> Tuple[int, str]:
@@ -234,42 +269,21 @@ class FileCompleter(Completer):
         if os.name == "nt":
             idx, slash_part = self._slash_fragment_for_completion(text)
             if idx >= 0 and slash_part:
-                mcp_scoped_groups = self.slash_mcp_scoped_groups or []
-                provider = getattr(self, "slash_mcp_scoped_groups_provider", None)
-                if callable(provider):
-                    try:
-                        mcp_scoped_groups = provider() or []
-                    except Exception:
-                        mcp_scoped_groups = self.slash_mcp_scoped_groups or []
-                delayed_groups = [
-                    ("/mcp server-info ", self.slash_mcp_server_info_commands),
-                    ("/mcp reconnect ", self.slash_mcp_reconnect_commands),
-                    ("/mcp list-tools ", self.slash_mcp_list_tools_commands),
-                    ("/mcp list-resources ", self.slash_mcp_list_resources_commands),
-                    (
-                        "/mcp list-resource-templates ",
-                        self.slash_mcp_list_resource_templates_commands,
-                    ),
-                    ("/mcp list-prompts ", self.slash_mcp_list_prompts_commands),
-                    ("/mcp disable-tools ", self.slash_mcp_disable_tools_commands),
-                    ("/mcp enable-tools ", self.slash_mcp_enable_tools_commands),
-                    ("/workspace switch ", self.slash_workspace_switch_commands),
-                    ("/workspace delete ", self.slash_workspace_delete_commands),
-                ]
+                delayed_groups = self._resolve_dynamic_groups()
                 builtin_matches = windows_slash_builtin_completions(
                     slash_part,
                     dynamic_commands=(
                         self.slash_skill_commands
                         + self.slash_mcp_commands
                     ),
-                    delayed_dynamic_groups=delayed_groups + mcp_scoped_groups,
+                    delayed_dynamic_groups=delayed_groups,
                 )
                 if builtin_matches:
                     # When delayed dynamic completion is active, hide the trigger
                     # command itself from menu (e.g. "/workspace switch ").
                     active_trigger_norms = {
                         str(trigger or "").rstrip().lower()
-                        for trigger, _ in (delayed_groups + mcp_scoped_groups)
+                        for trigger, _ in delayed_groups
                         if str(trigger or "").strip()
                         and slash_part.lower().startswith(str(trigger or "").lower())
                     }
@@ -284,7 +298,7 @@ class FileCompleter(Completer):
 
                     spos = -len(slash_part)
                     seen = set()
-                    all_delayed_groups = delayed_groups + mcp_scoped_groups
+                    all_delayed_groups = delayed_groups
                     for mc in builtin_matches:
                         if mc in seen:
                             continue
@@ -799,20 +813,7 @@ class WindowsInputHandler:
         initial_history: Optional[List[str]] = None,
         slash_skill_commands: Optional[List[str]] = None,
         slash_mcp_commands: Optional[List[str]] = None,
-        slash_mcp_server_info_commands: Optional[List[str]] = None,
-        slash_mcp_reconnect_commands: Optional[List[str]] = None,
-        slash_mcp_list_tools_commands: Optional[List[str]] = None,
-        slash_mcp_list_resources_commands: Optional[List[str]] = None,
-        slash_mcp_list_resource_templates_commands: Optional[List[str]] = None,
-        slash_mcp_list_prompts_commands: Optional[List[str]] = None,
-        slash_mcp_disable_tools_commands: Optional[List[str]] = None,
-        slash_mcp_enable_tools_commands: Optional[List[str]] = None,
-        slash_workspace_switch_commands: Optional[List[str]] = None,
-        slash_workspace_delete_commands: Optional[List[str]] = None,
-        slash_mcp_scoped_groups: Optional[List[Tuple[str, List[str]]]] = None,
-        slash_mcp_scoped_groups_provider: Optional[
-            Callable[[], List[Tuple[str, List[str]]]]
-        ] = None,
+        slash_dynamic_rules: Optional[List[Dict[str, Any]]] = None,
     ):
         """
         初始化输入处理器
@@ -839,18 +840,7 @@ class WindowsInputHandler:
                 work_directory,
                 slash_skill_commands,
                 slash_mcp_commands,
-                slash_mcp_server_info_commands,
-                slash_mcp_reconnect_commands,
-                slash_mcp_list_tools_commands,
-                slash_mcp_list_resources_commands,
-                slash_mcp_list_resource_templates_commands,
-                slash_mcp_list_prompts_commands,
-                slash_mcp_disable_tools_commands,
-                slash_mcp_enable_tools_commands,
-                slash_workspace_switch_commands,
-                slash_workspace_delete_commands,
-                slash_mcp_scoped_groups,
-                slash_mcp_scoped_groups_provider,
+                slash_dynamic_rules,
             )
             self._key_bindings = self._create_key_bindings()
             self._pt_history = InMemoryHistory()
@@ -960,41 +950,27 @@ class WindowsInputHandler:
                         return False
                     sl = slash_part.lower()
 
-                    static_triggers = [
-                        "/mcp server-info ",
-                        "/mcp reconnect ",
-                        "/mcp list-tools ",
-                        "/mcp list-resources ",
-                        "/mcp list-resource-templates ",
-                        "/mcp list-prompts ",
-                        "/mcp disable-tools ",
-                        "/mcp enable-tools ",
-                        "/workspace switch ",
-                        "/workspace delete ",
+                    delayed_groups = []
+                    try:
+                        delayed_groups = self.completer._resolve_dynamic_groups()
+                    except Exception:
+                        delayed_groups = []
+                    triggers = [
+                        str(trig or "")
+                        for trig, _ in delayed_groups
+                        if str(trig or "").strip()
                     ]
-                    for trig in static_triggers:
-                        if sl == trig:
+                    for trig in triggers:
+                        if sl == trig.lower():
                             return True
                     # If a completion inserted the command without trailing space,
                     # add one so delayed dynamic candidates can be shown immediately.
-                    for trig in static_triggers:
-                        if sl == trig.rstrip():
+                    for trig in triggers:
+                        if sl == trig.rstrip().lower():
                             try:
                                 buf.insert_text(" ")
                             except Exception:
                                 return False
-                            return True
-
-                    # Dynamic scoped MCP groups (e.g. "/<server>/")
-                    scoped_groups = getattr(self.completer, "slash_mcp_scoped_groups", []) or []
-                    provider = getattr(self.completer, "slash_mcp_scoped_groups_provider", None)
-                    if callable(provider):
-                        try:
-                            scoped_groups = provider() or []
-                        except Exception:
-                            scoped_groups = getattr(self.completer, "slash_mcp_scoped_groups", []) or []
-                    for trig, _ in scoped_groups:
-                        if sl == str(trig or "").lower():
                             return True
 
                     return False
@@ -1122,102 +1098,11 @@ class WindowsInputHandler:
         if hasattr(self, "completer"):
             self.completer.slash_mcp_commands = slash_mcp_commands or []
 
-    def set_slash_mcp_server_info_commands(
-        self, slash_mcp_server_info_commands: Optional[List[str]] = None
+    def set_slash_dynamic_rules(
+        self, slash_dynamic_rules: Optional[List[Dict[str, Any]]] = None
     ) -> None:
         if hasattr(self, "completer"):
-            self.completer.slash_mcp_server_info_commands = (
-                slash_mcp_server_info_commands or []
-            )
-
-    def set_slash_mcp_reconnect_commands(
-        self, slash_mcp_reconnect_commands: Optional[List[str]] = None
-    ) -> None:
-        if hasattr(self, "completer"):
-            self.completer.slash_mcp_reconnect_commands = (
-                slash_mcp_reconnect_commands or []
-            )
-
-    def set_slash_mcp_list_tools_commands(
-        self, slash_mcp_list_tools_commands: Optional[List[str]] = None
-    ) -> None:
-        if hasattr(self, "completer"):
-            self.completer.slash_mcp_list_tools_commands = (
-                slash_mcp_list_tools_commands or []
-            )
-
-    def set_slash_mcp_list_resources_commands(
-        self, slash_mcp_list_resources_commands: Optional[List[str]] = None
-    ) -> None:
-        if hasattr(self, "completer"):
-            self.completer.slash_mcp_list_resources_commands = (
-                slash_mcp_list_resources_commands or []
-            )
-
-    def set_slash_mcp_list_resource_templates_commands(
-        self, slash_mcp_list_resource_templates_commands: Optional[List[str]] = None
-    ) -> None:
-        if hasattr(self, "completer"):
-            self.completer.slash_mcp_list_resource_templates_commands = (
-                slash_mcp_list_resource_templates_commands or []
-            )
-
-    def set_slash_mcp_list_prompts_commands(
-        self, slash_mcp_list_prompts_commands: Optional[List[str]] = None
-    ) -> None:
-        if hasattr(self, "completer"):
-            self.completer.slash_mcp_list_prompts_commands = (
-                slash_mcp_list_prompts_commands or []
-            )
-
-    def set_slash_mcp_disable_tools_commands(
-        self, slash_mcp_disable_tools_commands: Optional[List[str]] = None
-    ) -> None:
-        if hasattr(self, "completer"):
-            self.completer.slash_mcp_disable_tools_commands = (
-                slash_mcp_disable_tools_commands or []
-            )
-
-    def set_slash_mcp_enable_tools_commands(
-        self, slash_mcp_enable_tools_commands: Optional[List[str]] = None
-    ) -> None:
-        if hasattr(self, "completer"):
-            self.completer.slash_mcp_enable_tools_commands = (
-                slash_mcp_enable_tools_commands or []
-            )
-
-    def set_slash_mcp_scoped_groups(
-        self, slash_mcp_scoped_groups: Optional[List[Tuple[str, List[str]]]] = None
-    ) -> None:
-        if hasattr(self, "completer"):
-            self.completer.slash_mcp_scoped_groups = slash_mcp_scoped_groups or []
-
-    def set_slash_mcp_scoped_groups_provider(
-        self,
-        slash_mcp_scoped_groups_provider: Optional[
-            Callable[[], List[Tuple[str, List[str]]]]
-        ] = None,
-    ) -> None:
-        if hasattr(self, "completer"):
-            self.completer.slash_mcp_scoped_groups_provider = (
-                slash_mcp_scoped_groups_provider
-            )
-
-    def set_slash_workspace_switch_commands(
-        self, slash_workspace_switch_commands: Optional[List[str]] = None
-    ) -> None:
-        if hasattr(self, "completer"):
-            self.completer.slash_workspace_switch_commands = (
-                slash_workspace_switch_commands or []
-            )
-
-    def set_slash_workspace_delete_commands(
-        self, slash_workspace_delete_commands: Optional[List[str]] = None
-    ) -> None:
-        if hasattr(self, "completer"):
-            self.completer.slash_workspace_delete_commands = (
-                slash_workspace_delete_commands or []
-            )
+            self.completer.slash_dynamic_rules = slash_dynamic_rules or []
 
     def reset_command_history(self, entries: Optional[List[str]] = None) -> None:
         """
@@ -1254,20 +1139,7 @@ def create_windows_input_handler(
     initial_history: Optional[List[str]] = None,
     slash_skill_commands: Optional[List[str]] = None,
     slash_mcp_commands: Optional[List[str]] = None,
-    slash_mcp_server_info_commands: Optional[List[str]] = None,
-    slash_mcp_reconnect_commands: Optional[List[str]] = None,
-    slash_mcp_list_tools_commands: Optional[List[str]] = None,
-    slash_mcp_list_resources_commands: Optional[List[str]] = None,
-    slash_mcp_list_resource_templates_commands: Optional[List[str]] = None,
-    slash_mcp_list_prompts_commands: Optional[List[str]] = None,
-    slash_mcp_disable_tools_commands: Optional[List[str]] = None,
-    slash_mcp_enable_tools_commands: Optional[List[str]] = None,
-    slash_workspace_switch_commands: Optional[List[str]] = None,
-    slash_workspace_delete_commands: Optional[List[str]] = None,
-    slash_mcp_scoped_groups: Optional[List[Tuple[str, List[str]]]] = None,
-    slash_mcp_scoped_groups_provider: Optional[
-        Callable[[], List[Tuple[str, List[str]]]]
-    ] = None,
+    slash_dynamic_rules: Optional[List[Dict[str, Any]]] = None,
 ) -> WindowsInputHandler:
     """创建Windows输入处理器"""
     return WindowsInputHandler(
@@ -1275,16 +1147,5 @@ def create_windows_input_handler(
         initial_history,
         slash_skill_commands,
         slash_mcp_commands,
-        slash_mcp_server_info_commands,
-        slash_mcp_reconnect_commands,
-        slash_mcp_list_tools_commands,
-        slash_mcp_list_resources_commands,
-        slash_mcp_list_resource_templates_commands,
-        slash_mcp_list_prompts_commands,
-        slash_mcp_disable_tools_commands,
-        slash_mcp_enable_tools_commands,
-        slash_workspace_switch_commands,
-        slash_workspace_delete_commands,
-        slash_mcp_scoped_groups,
-        slash_mcp_scoped_groups_provider,
+        slash_dynamic_rules,
     )
