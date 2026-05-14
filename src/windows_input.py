@@ -84,6 +84,8 @@ class FileCompleter(Completer):
         work_directory: Path,
         slash_skill_commands: Optional[List[str]] = None,
         slash_mcp_commands: Optional[List[str]] = None,
+        slash_mcp_server_info_commands: Optional[List[str]] = None,
+        slash_mcp_reconnect_commands: Optional[List[str]] = None,
         slash_workspace_switch_commands: Optional[List[str]] = None,
         slash_mcp_scoped_groups: Optional[List[Tuple[str, List[str]]]] = None,
         slash_mcp_scoped_groups_provider: Optional[
@@ -93,6 +95,8 @@ class FileCompleter(Completer):
         self.work_directory = work_directory
         self.slash_skill_commands = slash_skill_commands or []
         self.slash_mcp_commands = slash_mcp_commands or []
+        self.slash_mcp_server_info_commands = slash_mcp_server_info_commands or []
+        self.slash_mcp_reconnect_commands = slash_mcp_reconnect_commands or []
         self.slash_workspace_switch_commands = slash_workspace_switch_commands or []
         self.slash_mcp_scoped_groups = slash_mcp_scoped_groups or []
         self.slash_mcp_scoped_groups_provider = slash_mcp_scoped_groups_provider
@@ -197,6 +201,8 @@ class FileCompleter(Completer):
                         + self.slash_mcp_commands
                     ),
                     delayed_dynamic_groups=[
+                        ("/mcp server-info ", self.slash_mcp_server_info_commands),
+                        ("/mcp reconnect ", self.slash_mcp_reconnect_commands),
                         ("/workspace switch ", self.slash_workspace_switch_commands)
                     ] + mcp_scoped_groups,
                 )
@@ -710,6 +716,8 @@ class WindowsInputHandler:
         initial_history: Optional[List[str]] = None,
         slash_skill_commands: Optional[List[str]] = None,
         slash_mcp_commands: Optional[List[str]] = None,
+        slash_mcp_server_info_commands: Optional[List[str]] = None,
+        slash_mcp_reconnect_commands: Optional[List[str]] = None,
         slash_workspace_switch_commands: Optional[List[str]] = None,
         slash_mcp_scoped_groups: Optional[List[Tuple[str, List[str]]]] = None,
         slash_mcp_scoped_groups_provider: Optional[
@@ -741,6 +749,8 @@ class WindowsInputHandler:
                 work_directory,
                 slash_skill_commands,
                 slash_mcp_commands,
+                slash_mcp_server_info_commands,
+                slash_mcp_reconnect_commands,
                 slash_workspace_switch_commands,
                 slash_mcp_scoped_groups,
                 slash_mcp_scoped_groups_provider,
@@ -915,6 +925,22 @@ class WindowsInputHandler:
         if hasattr(self, "completer"):
             self.completer.slash_mcp_commands = slash_mcp_commands or []
 
+    def set_slash_mcp_server_info_commands(
+        self, slash_mcp_server_info_commands: Optional[List[str]] = None
+    ) -> None:
+        if hasattr(self, "completer"):
+            self.completer.slash_mcp_server_info_commands = (
+                slash_mcp_server_info_commands or []
+            )
+
+    def set_slash_mcp_reconnect_commands(
+        self, slash_mcp_reconnect_commands: Optional[List[str]] = None
+    ) -> None:
+        if hasattr(self, "completer"):
+            self.completer.slash_mcp_reconnect_commands = (
+                slash_mcp_reconnect_commands or []
+            )
+
     def set_slash_mcp_scoped_groups(
         self, slash_mcp_scoped_groups: Optional[List[Tuple[str, List[str]]]] = None
     ) -> None:
@@ -975,6 +1001,8 @@ def create_windows_input_handler(
     initial_history: Optional[List[str]] = None,
     slash_skill_commands: Optional[List[str]] = None,
     slash_mcp_commands: Optional[List[str]] = None,
+    slash_mcp_server_info_commands: Optional[List[str]] = None,
+    slash_mcp_reconnect_commands: Optional[List[str]] = None,
     slash_workspace_switch_commands: Optional[List[str]] = None,
     slash_mcp_scoped_groups: Optional[List[Tuple[str, List[str]]]] = None,
     slash_mcp_scoped_groups_provider: Optional[
@@ -987,6 +1015,8 @@ def create_windows_input_handler(
         initial_history,
         slash_skill_commands,
         slash_mcp_commands,
+        slash_mcp_server_info_commands,
+        slash_mcp_reconnect_commands,
         slash_workspace_switch_commands,
         slash_mcp_scoped_groups,
         slash_mcp_scoped_groups_provider,

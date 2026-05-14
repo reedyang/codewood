@@ -499,6 +499,8 @@ class SmartShellAgent:
                         initial_history,
                         self._get_slash_skill_commands(),
                         self._get_slash_mcp_server_commands(),
+                        self._get_slash_mcp_server_info_commands(),
+                        self._get_slash_mcp_reconnect_commands(),
                         self._get_slash_workspace_switch_commands(),
                         self._get_slash_mcp_scoped_groups(),
                         self._get_slash_mcp_scoped_groups,
@@ -2569,6 +2571,18 @@ class SmartShellAgent:
                     self._get_slash_mcp_server_commands()
                 )
             if self.input_handler is not None and hasattr(
+                self.input_handler, "set_slash_mcp_server_info_commands"
+            ):
+                self.input_handler.set_slash_mcp_server_info_commands(
+                    self._get_slash_mcp_server_info_commands()
+                )
+            if self.input_handler is not None and hasattr(
+                self.input_handler, "set_slash_mcp_reconnect_commands"
+            ):
+                self.input_handler.set_slash_mcp_reconnect_commands(
+                    self._get_slash_mcp_reconnect_commands()
+                )
+            if self.input_handler is not None and hasattr(
                 self.input_handler, "set_slash_mcp_scoped_groups"
             ):
                 self.input_handler.set_slash_mcp_scoped_groups(
@@ -2688,6 +2702,60 @@ class SmartShellAgent:
             if not srv:
                 continue
             cmd = f"/{srv}/"
+            key = cmd.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(cmd)
+        return sorted(out, key=str.lower)
+
+    def _get_slash_mcp_server_info_commands(self) -> List[str]:
+        """
+        Dynamic completions for:
+        - /mcp server-info <server>
+        """
+        out: List[str] = []
+        seen: Set[str] = set()
+        servers = {}
+        try:
+            servers = (self.mcp_manager.mcp_config or {}).get("mcpServers", {})
+        except Exception:
+            servers = {}
+        if not isinstance(servers, dict):
+            servers = {}
+
+        for server in servers.keys():
+            srv = str(server or "").strip()
+            if not srv:
+                continue
+            cmd = f"/mcp server-info {srv}"
+            key = cmd.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(cmd)
+        return sorted(out, key=str.lower)
+
+    def _get_slash_mcp_reconnect_commands(self) -> List[str]:
+        """
+        Dynamic completions for:
+        - /mcp reconnect <server>
+        """
+        out: List[str] = []
+        seen: Set[str] = set()
+        servers = {}
+        try:
+            servers = (self.mcp_manager.mcp_config or {}).get("mcpServers", {})
+        except Exception:
+            servers = {}
+        if not isinstance(servers, dict):
+            servers = {}
+
+        for server in servers.keys():
+            srv = str(server or "").strip()
+            if not srv:
+                continue
+            cmd = f"/mcp reconnect {srv}"
             key = cmd.lower()
             if key in seen:
                 continue
