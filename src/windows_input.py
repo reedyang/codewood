@@ -895,17 +895,52 @@ class WindowsInputHandler:
                     buf.start_completion(select_first=False)
                     return
 
-                def _is_exact_mcp_server_root(text_before_cursor: str) -> bool:
+                def _prepare_delayed_trigger(text_before_cursor: str) -> bool:
                     _, slash_part = FileCompleter._slash_fragment_for_completion(
                         text_before_cursor
                     )
-                    if not slash_part or not slash_part.endswith("/"):
+                    if not slash_part:
                         return False
-                    mcp_server_cmds = {
-                        str(c or "").strip().lower()
-                        for c in getattr(self.completer, "slash_mcp_commands", []) or []
-                    }
-                    return slash_part.lower() in mcp_server_cmds
+                    sl = slash_part.lower()
+
+                    static_triggers = [
+                        "/mcp server-info ",
+                        "/mcp reconnect ",
+                        "/mcp list-tools ",
+                        "/mcp list-resources ",
+                        "/mcp list-resource-templates ",
+                        "/mcp list-prompts ",
+                        "/mcp disable-tools ",
+                        "/mcp enable-tools ",
+                        "/workspace switch ",
+                        "/workspace delete ",
+                    ]
+                    for trig in static_triggers:
+                        if sl == trig:
+                            return True
+                    # If a completion inserted the command without trailing space,
+                    # add one so delayed dynamic candidates can be shown immediately.
+                    for trig in static_triggers:
+                        if sl == trig.rstrip():
+                            try:
+                                buf.insert_text(" ")
+                            except Exception:
+                                return False
+                            return True
+
+                    # Dynamic scoped MCP groups (e.g. "/<server>/")
+                    scoped_groups = getattr(self.completer, "slash_mcp_scoped_groups", []) or []
+                    provider = getattr(self.completer, "slash_mcp_scoped_groups_provider", None)
+                    if callable(provider):
+                        try:
+                            scoped_groups = provider() or []
+                        except Exception:
+                            scoped_groups = getattr(self.completer, "slash_mcp_scoped_groups", []) or []
+                    for trig, _ in scoped_groups:
+                        if sl == str(trig or "").lower():
+                            return True
+
+                    return False
 
                 # Always compute candidates from current document first; if there is
                 # exactly one candidate, force-apply it even when a completion menu
@@ -919,7 +954,12 @@ class WindowsInputHandler:
                         buf.apply_completion(candidates[0])
                     except Exception:
                         buf.start_completion(select_first=False)
-                    if _is_exact_mcp_server_root(buf.document.text_before_cursor):
+                    if _prepare_delayed_trigger(buf.document.text_before_cursor):
+                        try:
+                            if hasattr(buf, "cancel_completion"):
+                                buf.cancel_completion()
+                        except Exception:
+                            pass
                         buf.start_completion(select_first=False)
                     return
 
@@ -937,12 +977,72 @@ class WindowsInputHandler:
                             buf.insert_text(common_suffix)
                         except Exception:
                             pass
+                        if _prepare_delayed_trigger(buf.document.text_before_cursor):
+                            try:
+                                if hasattr(buf, "cancel_completion"):
+                                    buf.cancel_completion()
+                            except Exception:
+                                pass
                         buf.start_completion(select_first=False)
+                        return
+
+                    # Slash command mode: when there are multiple candidates but
+                    # no common suffix, Tab should still commit the first
+                    # candidate (historical behavior users expect), instead of
+                    # only moving menu selection.
+                    _, slash_part = FileCompleter._slash_fragment_for_completion(
+                        buf.document.text_before_cursor
+                    )
+                    if slash_part:
+                        try:
+                            buf.apply_completion(candidates[0])
+                        except Exception:
+                            pass
+                        if _prepare_delayed_trigger(buf.document.text_before_cursor):
+                            try:
+                                if hasattr(buf, "cancel_completion"):
+                                    buf.cancel_completion()
+                            except Exception:
+                                pass
+                            buf.start_completion(select_first=False)
                         return
 
                 # Multiple/no candidates without common suffix: usual menu behavior.
                 if buf.complete_state:
+                    before_text = buf.document.text_before_cursor
                     buf.complete_next()
+                    # Some prompt_toolkit states only move selection without
+                    # inserting text immediately. Force-apply current completion
+                    # so delayed trigger detection can work in the same Tab press.
+                    try:
+                        after_text = buf.document.text_before_cursor
+                        if after_text == before_text:
+                            # Preferred: apply the currently selected completion
+                            # from completion state when available.
+                            if (
+                                getattr(buf, "complete_state", None) is not None
+                                and getattr(
+                                    buf.complete_state, "current_completion", None
+                                )
+                                is not None
+                            ):
+                                buf.apply_completion(buf.complete_state.current_completion)
+                            # Fallback: if still unchanged, apply first candidate
+                            # from the completion snapshot we computed for this Tab.
+                            if (
+                                buf.document.text_before_cursor == before_text
+                                and len(candidates) > 0
+                            ):
+                                buf.apply_completion(candidates[0])
+                    except Exception:
+                        pass
+                    if _prepare_delayed_trigger(buf.document.text_before_cursor):
+                        try:
+                            if hasattr(buf, "cancel_completion"):
+                                buf.cancel_completion()
+                        except Exception:
+                            pass
+                        buf.start_completion(select_first=False)
                 else:
                     buf.start_completion(select_first=False)
             except Exception:
