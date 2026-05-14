@@ -86,6 +86,12 @@ class FileCompleter(Completer):
         slash_mcp_commands: Optional[List[str]] = None,
         slash_mcp_server_info_commands: Optional[List[str]] = None,
         slash_mcp_reconnect_commands: Optional[List[str]] = None,
+        slash_mcp_list_tools_commands: Optional[List[str]] = None,
+        slash_mcp_list_resources_commands: Optional[List[str]] = None,
+        slash_mcp_list_resource_templates_commands: Optional[List[str]] = None,
+        slash_mcp_list_prompts_commands: Optional[List[str]] = None,
+        slash_mcp_disable_tools_commands: Optional[List[str]] = None,
+        slash_mcp_enable_tools_commands: Optional[List[str]] = None,
         slash_workspace_switch_commands: Optional[List[str]] = None,
         slash_workspace_delete_commands: Optional[List[str]] = None,
         slash_mcp_scoped_groups: Optional[List[Tuple[str, List[str]]]] = None,
@@ -98,6 +104,14 @@ class FileCompleter(Completer):
         self.slash_mcp_commands = slash_mcp_commands or []
         self.slash_mcp_server_info_commands = slash_mcp_server_info_commands or []
         self.slash_mcp_reconnect_commands = slash_mcp_reconnect_commands or []
+        self.slash_mcp_list_tools_commands = slash_mcp_list_tools_commands or []
+        self.slash_mcp_list_resources_commands = slash_mcp_list_resources_commands or []
+        self.slash_mcp_list_resource_templates_commands = (
+            slash_mcp_list_resource_templates_commands or []
+        )
+        self.slash_mcp_list_prompts_commands = slash_mcp_list_prompts_commands or []
+        self.slash_mcp_disable_tools_commands = slash_mcp_disable_tools_commands or []
+        self.slash_mcp_enable_tools_commands = slash_mcp_enable_tools_commands or []
         self.slash_workspace_switch_commands = slash_workspace_switch_commands or []
         self.slash_workspace_delete_commands = slash_workspace_delete_commands or []
         self.slash_mcp_scoped_groups = slash_mcp_scoped_groups or []
@@ -205,6 +219,15 @@ class FileCompleter(Completer):
                     delayed_dynamic_groups=[
                         ("/mcp server-info ", self.slash_mcp_server_info_commands),
                         ("/mcp reconnect ", self.slash_mcp_reconnect_commands),
+                        ("/mcp list-tools ", self.slash_mcp_list_tools_commands),
+                        ("/mcp list-resources ", self.slash_mcp_list_resources_commands),
+                        (
+                            "/mcp list-resource-templates ",
+                            self.slash_mcp_list_resource_templates_commands,
+                        ),
+                        ("/mcp list-prompts ", self.slash_mcp_list_prompts_commands),
+                        ("/mcp disable-tools ", self.slash_mcp_disable_tools_commands),
+                        ("/mcp enable-tools ", self.slash_mcp_enable_tools_commands),
                         ("/workspace switch ", self.slash_workspace_switch_commands),
                         ("/workspace delete ", self.slash_workspace_delete_commands),
                     ] + mcp_scoped_groups,
@@ -721,6 +744,12 @@ class WindowsInputHandler:
         slash_mcp_commands: Optional[List[str]] = None,
         slash_mcp_server_info_commands: Optional[List[str]] = None,
         slash_mcp_reconnect_commands: Optional[List[str]] = None,
+        slash_mcp_list_tools_commands: Optional[List[str]] = None,
+        slash_mcp_list_resources_commands: Optional[List[str]] = None,
+        slash_mcp_list_resource_templates_commands: Optional[List[str]] = None,
+        slash_mcp_list_prompts_commands: Optional[List[str]] = None,
+        slash_mcp_disable_tools_commands: Optional[List[str]] = None,
+        slash_mcp_enable_tools_commands: Optional[List[str]] = None,
         slash_workspace_switch_commands: Optional[List[str]] = None,
         slash_workspace_delete_commands: Optional[List[str]] = None,
         slash_mcp_scoped_groups: Optional[List[Tuple[str, List[str]]]] = None,
@@ -755,6 +784,12 @@ class WindowsInputHandler:
                 slash_mcp_commands,
                 slash_mcp_server_info_commands,
                 slash_mcp_reconnect_commands,
+                slash_mcp_list_tools_commands,
+                slash_mcp_list_resources_commands,
+                slash_mcp_list_resource_templates_commands,
+                slash_mcp_list_prompts_commands,
+                slash_mcp_disable_tools_commands,
+                slash_mcp_enable_tools_commands,
                 slash_workspace_switch_commands,
                 slash_workspace_delete_commands,
                 slash_mcp_scoped_groups,
@@ -946,6 +981,54 @@ class WindowsInputHandler:
                 slash_mcp_reconnect_commands or []
             )
 
+    def set_slash_mcp_list_tools_commands(
+        self, slash_mcp_list_tools_commands: Optional[List[str]] = None
+    ) -> None:
+        if hasattr(self, "completer"):
+            self.completer.slash_mcp_list_tools_commands = (
+                slash_mcp_list_tools_commands or []
+            )
+
+    def set_slash_mcp_list_resources_commands(
+        self, slash_mcp_list_resources_commands: Optional[List[str]] = None
+    ) -> None:
+        if hasattr(self, "completer"):
+            self.completer.slash_mcp_list_resources_commands = (
+                slash_mcp_list_resources_commands or []
+            )
+
+    def set_slash_mcp_list_resource_templates_commands(
+        self, slash_mcp_list_resource_templates_commands: Optional[List[str]] = None
+    ) -> None:
+        if hasattr(self, "completer"):
+            self.completer.slash_mcp_list_resource_templates_commands = (
+                slash_mcp_list_resource_templates_commands or []
+            )
+
+    def set_slash_mcp_list_prompts_commands(
+        self, slash_mcp_list_prompts_commands: Optional[List[str]] = None
+    ) -> None:
+        if hasattr(self, "completer"):
+            self.completer.slash_mcp_list_prompts_commands = (
+                slash_mcp_list_prompts_commands or []
+            )
+
+    def set_slash_mcp_disable_tools_commands(
+        self, slash_mcp_disable_tools_commands: Optional[List[str]] = None
+    ) -> None:
+        if hasattr(self, "completer"):
+            self.completer.slash_mcp_disable_tools_commands = (
+                slash_mcp_disable_tools_commands or []
+            )
+
+    def set_slash_mcp_enable_tools_commands(
+        self, slash_mcp_enable_tools_commands: Optional[List[str]] = None
+    ) -> None:
+        if hasattr(self, "completer"):
+            self.completer.slash_mcp_enable_tools_commands = (
+                slash_mcp_enable_tools_commands or []
+            )
+
     def set_slash_mcp_scoped_groups(
         self, slash_mcp_scoped_groups: Optional[List[Tuple[str, List[str]]]] = None
     ) -> None:
@@ -1016,6 +1099,12 @@ def create_windows_input_handler(
     slash_mcp_commands: Optional[List[str]] = None,
     slash_mcp_server_info_commands: Optional[List[str]] = None,
     slash_mcp_reconnect_commands: Optional[List[str]] = None,
+    slash_mcp_list_tools_commands: Optional[List[str]] = None,
+    slash_mcp_list_resources_commands: Optional[List[str]] = None,
+    slash_mcp_list_resource_templates_commands: Optional[List[str]] = None,
+    slash_mcp_list_prompts_commands: Optional[List[str]] = None,
+    slash_mcp_disable_tools_commands: Optional[List[str]] = None,
+    slash_mcp_enable_tools_commands: Optional[List[str]] = None,
     slash_workspace_switch_commands: Optional[List[str]] = None,
     slash_workspace_delete_commands: Optional[List[str]] = None,
     slash_mcp_scoped_groups: Optional[List[Tuple[str, List[str]]]] = None,
@@ -1031,6 +1120,12 @@ def create_windows_input_handler(
         slash_mcp_commands,
         slash_mcp_server_info_commands,
         slash_mcp_reconnect_commands,
+        slash_mcp_list_tools_commands,
+        slash_mcp_list_resources_commands,
+        slash_mcp_list_resource_templates_commands,
+        slash_mcp_list_prompts_commands,
+        slash_mcp_disable_tools_commands,
+        slash_mcp_enable_tools_commands,
         slash_workspace_switch_commands,
         slash_workspace_delete_commands,
         slash_mcp_scoped_groups,
