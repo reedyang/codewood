@@ -495,22 +495,11 @@ class SmartShellAgent:
                     except Exception:
                         initial_history = []
                     self.input_handler = create_windows_input_handler(
-                        self.work_directory,
-                        initial_history,
-                        self._get_slash_skill_commands(),
-                        self._get_slash_mcp_server_commands(),
-                        self._get_slash_mcp_server_info_commands(),
-                        self._get_slash_mcp_reconnect_commands(),
-                        self._get_slash_mcp_list_tools_commands(),
-                        self._get_slash_mcp_list_resources_commands(),
-                        self._get_slash_mcp_list_resource_templates_commands(),
-                        self._get_slash_mcp_list_prompts_commands(),
-                        self._get_slash_mcp_disable_tools_commands(),
-                        self._get_slash_mcp_enable_tools_commands(),
-                        self._get_slash_workspace_switch_commands(),
-                        self._get_slash_workspace_delete_commands(),
-                        self._get_slash_mcp_scoped_groups(),
-                        self._get_slash_mcp_scoped_groups,
+                        work_directory=self.work_directory,
+                        initial_history=initial_history,
+                        slash_skill_commands=self._get_slash_skill_commands(),
+                        slash_mcp_commands=self._get_slash_mcp_server_commands(),
+                        slash_dynamic_rules=self._get_slash_dynamic_rules(),
                     )
                 elif INPUT_HANDLER_TYPE == "readline":
                     self.input_handler = create_tab_completer(self.work_directory)
@@ -2598,76 +2587,10 @@ class SmartShellAgent:
                     self._get_slash_mcp_server_commands()
                 )
             if self.input_handler is not None and hasattr(
-                self.input_handler, "set_slash_mcp_server_info_commands"
+                self.input_handler, "set_slash_dynamic_rules"
             ):
-                self.input_handler.set_slash_mcp_server_info_commands(
-                    self._get_slash_mcp_server_info_commands()
-                )
-            if self.input_handler is not None and hasattr(
-                self.input_handler, "set_slash_mcp_reconnect_commands"
-            ):
-                self.input_handler.set_slash_mcp_reconnect_commands(
-                    self._get_slash_mcp_reconnect_commands()
-                )
-            if self.input_handler is not None and hasattr(
-                self.input_handler, "set_slash_mcp_list_tools_commands"
-            ):
-                self.input_handler.set_slash_mcp_list_tools_commands(
-                    self._get_slash_mcp_list_tools_commands()
-                )
-            if self.input_handler is not None and hasattr(
-                self.input_handler, "set_slash_mcp_list_resources_commands"
-            ):
-                self.input_handler.set_slash_mcp_list_resources_commands(
-                    self._get_slash_mcp_list_resources_commands()
-                )
-            if self.input_handler is not None and hasattr(
-                self.input_handler, "set_slash_mcp_list_resource_templates_commands"
-            ):
-                self.input_handler.set_slash_mcp_list_resource_templates_commands(
-                    self._get_slash_mcp_list_resource_templates_commands()
-                )
-            if self.input_handler is not None and hasattr(
-                self.input_handler, "set_slash_mcp_list_prompts_commands"
-            ):
-                self.input_handler.set_slash_mcp_list_prompts_commands(
-                    self._get_slash_mcp_list_prompts_commands()
-                )
-            if self.input_handler is not None and hasattr(
-                self.input_handler, "set_slash_mcp_disable_tools_commands"
-            ):
-                self.input_handler.set_slash_mcp_disable_tools_commands(
-                    self._get_slash_mcp_disable_tools_commands()
-                )
-            if self.input_handler is not None and hasattr(
-                self.input_handler, "set_slash_mcp_enable_tools_commands"
-            ):
-                self.input_handler.set_slash_mcp_enable_tools_commands(
-                    self._get_slash_mcp_enable_tools_commands()
-                )
-            if self.input_handler is not None and hasattr(
-                self.input_handler, "set_slash_mcp_scoped_groups"
-            ):
-                self.input_handler.set_slash_mcp_scoped_groups(
-                    self._get_slash_mcp_scoped_groups()
-                )
-            if self.input_handler is not None and hasattr(
-                self.input_handler, "set_slash_mcp_scoped_groups_provider"
-            ):
-                self.input_handler.set_slash_mcp_scoped_groups_provider(
-                    self._get_slash_mcp_scoped_groups
-                )
-            if self.input_handler is not None and hasattr(
-                self.input_handler, "set_slash_workspace_switch_commands"
-            ):
-                self.input_handler.set_slash_workspace_switch_commands(
-                    self._get_slash_workspace_switch_commands()
-                )
-            if self.input_handler is not None and hasattr(
-                self.input_handler, "set_slash_workspace_delete_commands"
-            ):
-                self.input_handler.set_slash_workspace_delete_commands(
-                    self._get_slash_workspace_delete_commands()
+                self.input_handler.set_slash_dynamic_rules(
+                    self._get_slash_dynamic_rules()
                 )
         except Exception:
             pass
@@ -2813,6 +2736,57 @@ class SmartShellAgent:
         return self._get_slash_mcp_server_target_commands(
             "enable-tools", with_trailing_space=True
         )
+
+    def _get_slash_dynamic_rules(self) -> List[Dict[str, Any]]:
+        """
+        Unified declarative delayed dynamic completion rules for slash commands.
+        Workspace and MCP rules share the same structure.
+        """
+        return [
+            {
+                "trigger": "/mcp server-info ",
+                "candidates": self._get_slash_mcp_server_info_commands(),
+            },
+            {
+                "trigger": "/mcp reconnect ",
+                "candidates": self._get_slash_mcp_reconnect_commands(),
+            },
+            {
+                "trigger": "/mcp list-tools ",
+                "candidates": self._get_slash_mcp_list_tools_commands(),
+            },
+            {
+                "trigger": "/mcp list-resources ",
+                "candidates": self._get_slash_mcp_list_resources_commands(),
+            },
+            {
+                "trigger": "/mcp list-resource-templates ",
+                "candidates": self._get_slash_mcp_list_resource_templates_commands(),
+            },
+            {
+                "trigger": "/mcp list-prompts ",
+                "candidates": self._get_slash_mcp_list_prompts_commands(),
+            },
+            {
+                "trigger": "/mcp disable-tools ",
+                "candidates": self._get_slash_mcp_disable_tools_commands(),
+            },
+            {
+                "trigger": "/mcp enable-tools ",
+                "candidates": self._get_slash_mcp_enable_tools_commands(),
+            },
+            {
+                "trigger": "/workspace switch ",
+                "candidates": self._get_slash_workspace_switch_commands(),
+            },
+            {
+                "trigger": "/workspace delete ",
+                "candidates": self._get_slash_workspace_delete_commands(),
+            },
+            {
+                "groups_provider": self._get_slash_mcp_scoped_groups,
+            },
+        ]
 
     def _get_slash_mcp_server_target_commands(
         self, subcommand: str, with_trailing_space: bool = False
