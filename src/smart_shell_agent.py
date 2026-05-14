@@ -498,8 +498,10 @@ class SmartShellAgent:
                         self.work_directory,
                         initial_history,
                         self._get_slash_skill_commands(),
-                        self._get_slash_mcp_commands(),
+                        self._get_slash_mcp_server_commands(),
                         self._get_slash_workspace_switch_commands(),
+                        self._get_slash_mcp_scoped_groups(),
+                        self._get_slash_mcp_scoped_groups,
                     )
                 elif INPUT_HANDLER_TYPE == "readline":
                     self.input_handler = create_tab_completer(self.work_directory)
@@ -2563,7 +2565,21 @@ class SmartShellAgent:
             if self.input_handler is not None and hasattr(self.input_handler, "set_slash_skill_commands"):
                 self.input_handler.set_slash_skill_commands(self._get_slash_skill_commands())
             if self.input_handler is not None and hasattr(self.input_handler, "set_slash_mcp_commands"):
-                self.input_handler.set_slash_mcp_commands(self._get_slash_mcp_commands())
+                self.input_handler.set_slash_mcp_commands(
+                    self._get_slash_mcp_server_commands()
+                )
+            if self.input_handler is not None and hasattr(
+                self.input_handler, "set_slash_mcp_scoped_groups"
+            ):
+                self.input_handler.set_slash_mcp_scoped_groups(
+                    self._get_slash_mcp_scoped_groups()
+                )
+            if self.input_handler is not None and hasattr(
+                self.input_handler, "set_slash_mcp_scoped_groups_provider"
+            ):
+                self.input_handler.set_slash_mcp_scoped_groups_provider(
+                    self._get_slash_mcp_scoped_groups
+                )
             if self.input_handler is not None and hasattr(
                 self.input_handler, "set_slash_workspace_switch_commands"
             ):
@@ -2651,6 +2667,67 @@ class SmartShellAgent:
                         _add(f"/{srv}/{name}")
 
         return sorted(out, key=str.lower)
+
+    def _get_slash_mcp_server_commands(self) -> List[str]:
+        """
+        MCP server-only slash commands:
+        - /<server>/
+        """
+        out: List[str] = []
+        seen: Set[str] = set()
+        servers = {}
+        try:
+            servers = (self.mcp_manager.mcp_config or {}).get("mcpServers", {})
+        except Exception:
+            servers = {}
+        if not isinstance(servers, dict):
+            servers = {}
+
+        for server in servers.keys():
+            srv = str(server or "").strip()
+            if not srv:
+                continue
+            cmd = f"/{srv}/"
+            key = cmd.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(cmd)
+        return sorted(out, key=str.lower)
+
+    def _get_slash_mcp_scoped_groups(self) -> List[Tuple[str, List[str]]]:
+        """
+        Build delayed MCP completion groups:
+        - trigger: /<server>/
+        - candidates: /<server>/<tool-or-prompt>
+        """
+        buckets: Dict[str, List[str]] = {}
+        seen_by_trigger: Dict[str, Set[str]] = {}
+        for cmd in self._get_slash_mcp_commands():
+            if not isinstance(cmd, str):
+                continue
+            m = re.match(r"^/([^/]+)/([^/].*)$", cmd)
+            if not m:
+                continue
+            srv = str(m.group(1) or "").strip()
+            name = str(m.group(2) or "").strip()
+            if not srv or not name:
+                continue
+            trigger = f"/{srv}/"
+            if trigger not in buckets:
+                buckets[trigger] = []
+                seen_by_trigger[trigger] = set()
+            key = cmd.lower()
+            if key in seen_by_trigger[trigger]:
+                continue
+            seen_by_trigger[trigger].add(key)
+            buckets[trigger].append(cmd)
+
+        groups: List[Tuple[str, List[str]]] = []
+        for trigger, candidates in buckets.items():
+            if candidates:
+                groups.append((trigger, sorted(candidates, key=str.lower)))
+        return sorted(groups, key=lambda x: x[0].lower())
 
     def _extract_forced_skill_reference(self, user_text: str) -> Optional[Dict[str, Any]]:
         """

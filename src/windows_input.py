@@ -8,7 +8,7 @@ import os
 import re
 import sys
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Callable, List, Optional, Tuple
 
 _WIN_DRIVE_BANG = re.compile(r"^([A-Za-z]:)(/.*)?$")
 
@@ -16,7 +16,12 @@ from .builtin_slash_commands import windows_slash_builtin_completions
 
 try:
     from prompt_toolkit import PromptSession
-    from prompt_toolkit.completion import Completer, Completion
+    from prompt_toolkit.completion import (
+        Completer,
+        Completion,
+        CompleteEvent,
+        get_common_complete_suffix,
+    )
     from prompt_toolkit.key_binding import KeyBindings
     from prompt_toolkit.history import InMemoryHistory
     from prompt_toolkit.formatted_text import FormattedText
@@ -80,11 +85,17 @@ class FileCompleter(Completer):
         slash_skill_commands: Optional[List[str]] = None,
         slash_mcp_commands: Optional[List[str]] = None,
         slash_workspace_switch_commands: Optional[List[str]] = None,
+        slash_mcp_scoped_groups: Optional[List[Tuple[str, List[str]]]] = None,
+        slash_mcp_scoped_groups_provider: Optional[
+            Callable[[], List[Tuple[str, List[str]]]]
+        ] = None,
     ):
         self.work_directory = work_directory
         self.slash_skill_commands = slash_skill_commands or []
         self.slash_mcp_commands = slash_mcp_commands or []
         self.slash_workspace_switch_commands = slash_workspace_switch_commands or []
+        self.slash_mcp_scoped_groups = slash_mcp_scoped_groups or []
+        self.slash_mcp_scoped_groups_provider = slash_mcp_scoped_groups_provider
 
     @staticmethod
     def _slash_fragment_for_completion(text: str) -> Tuple[int, str]:
@@ -172,6 +183,13 @@ class FileCompleter(Completer):
         if os.name == "nt":
             idx, slash_part = self._slash_fragment_for_completion(text)
             if idx >= 0 and slash_part:
+                mcp_scoped_groups = self.slash_mcp_scoped_groups or []
+                provider = getattr(self, "slash_mcp_scoped_groups_provider", None)
+                if callable(provider):
+                    try:
+                        mcp_scoped_groups = provider() or []
+                    except Exception:
+                        mcp_scoped_groups = self.slash_mcp_scoped_groups or []
                 builtin_matches = windows_slash_builtin_completions(
                     slash_part,
                     dynamic_commands=(
@@ -180,7 +198,7 @@ class FileCompleter(Completer):
                     ),
                     delayed_dynamic_groups=[
                         ("/workspace switch ", self.slash_workspace_switch_commands)
-                    ],
+                    ] + mcp_scoped_groups,
                 )
                 if builtin_matches:
                     spos = -len(slash_part)
@@ -693,6 +711,10 @@ class WindowsInputHandler:
         slash_skill_commands: Optional[List[str]] = None,
         slash_mcp_commands: Optional[List[str]] = None,
         slash_workspace_switch_commands: Optional[List[str]] = None,
+        slash_mcp_scoped_groups: Optional[List[Tuple[str, List[str]]]] = None,
+        slash_mcp_scoped_groups_provider: Optional[
+            Callable[[], List[Tuple[str, List[str]]]]
+        ] = None,
     ):
         """
         初始化输入处理器
@@ -720,6 +742,8 @@ class WindowsInputHandler:
                 slash_skill_commands,
                 slash_mcp_commands,
                 slash_workspace_switch_commands,
+                slash_mcp_scoped_groups,
+                slash_mcp_scoped_groups_provider,
             )
             self._key_bindings = self._create_key_bindings()
             self._pt_history = InMemoryHistory()
@@ -809,6 +833,72 @@ class WindowsInputHandler:
             # Recompute completions immediately after deletion.
             buf.start_completion(select_first=False)
 
+        @kb.add("tab")
+        def _on_tab(event):
+            """
+            Trigger completion and, for '/<mcp-server>/' roots, immediately
+            trigger a second completion so tools/prompts show without extra typing.
+            """
+            buf = event.current_buffer
+            try:
+                if not hasattr(self, "completer"):
+                    buf.start_completion(select_first=False)
+                    return
+
+                def _is_exact_mcp_server_root(text_before_cursor: str) -> bool:
+                    _, slash_part = FileCompleter._slash_fragment_for_completion(
+                        text_before_cursor
+                    )
+                    if not slash_part or not slash_part.endswith("/"):
+                        return False
+                    mcp_server_cmds = {
+                        str(c or "").strip().lower()
+                        for c in getattr(self.completer, "slash_mcp_commands", []) or []
+                    }
+                    return slash_part.lower() in mcp_server_cmds
+
+                # Always compute candidates from current document first; if there is
+                # exactly one candidate, force-apply it even when a completion menu
+                # was previously open.
+                complete_event = CompleteEvent(completion_requested=True)
+                candidates = list(
+                    self.completer.get_completions(buf.document, complete_event)
+                )
+                if len(candidates) == 1:
+                    try:
+                        buf.apply_completion(candidates[0])
+                    except Exception:
+                        buf.start_completion(select_first=False)
+                    if _is_exact_mcp_server_root(buf.document.text_before_cursor):
+                        buf.start_completion(select_first=False)
+                    return
+
+                # Multiple candidates: insert common suffix first (e.g. 'ski' -> 'skill/').
+                if len(candidates) > 1:
+                    common_suffix = ""
+                    try:
+                        common_suffix = get_common_complete_suffix(
+                            buf.document, candidates
+                        )
+                    except Exception:
+                        common_suffix = ""
+                    if common_suffix:
+                        try:
+                            buf.insert_text(common_suffix)
+                        except Exception:
+                            pass
+                        buf.start_completion(select_first=False)
+                        return
+
+                # Multiple/no candidates without common suffix: usual menu behavior.
+                if buf.complete_state:
+                    buf.complete_next()
+                else:
+                    buf.start_completion(select_first=False)
+            except Exception:
+                buf.start_completion(select_first=False)
+                return
+
         return kb
     
     def update_work_directory(self, new_directory: Path):
@@ -824,6 +914,23 @@ class WindowsInputHandler:
     def set_slash_mcp_commands(self, slash_mcp_commands: Optional[List[str]] = None) -> None:
         if hasattr(self, "completer"):
             self.completer.slash_mcp_commands = slash_mcp_commands or []
+
+    def set_slash_mcp_scoped_groups(
+        self, slash_mcp_scoped_groups: Optional[List[Tuple[str, List[str]]]] = None
+    ) -> None:
+        if hasattr(self, "completer"):
+            self.completer.slash_mcp_scoped_groups = slash_mcp_scoped_groups or []
+
+    def set_slash_mcp_scoped_groups_provider(
+        self,
+        slash_mcp_scoped_groups_provider: Optional[
+            Callable[[], List[Tuple[str, List[str]]]]
+        ] = None,
+    ) -> None:
+        if hasattr(self, "completer"):
+            self.completer.slash_mcp_scoped_groups_provider = (
+                slash_mcp_scoped_groups_provider
+            )
 
     def set_slash_workspace_switch_commands(
         self, slash_workspace_switch_commands: Optional[List[str]] = None
@@ -869,6 +976,10 @@ def create_windows_input_handler(
     slash_skill_commands: Optional[List[str]] = None,
     slash_mcp_commands: Optional[List[str]] = None,
     slash_workspace_switch_commands: Optional[List[str]] = None,
+    slash_mcp_scoped_groups: Optional[List[Tuple[str, List[str]]]] = None,
+    slash_mcp_scoped_groups_provider: Optional[
+        Callable[[], List[Tuple[str, List[str]]]]
+    ] = None,
 ) -> WindowsInputHandler:
     """创建Windows输入处理器"""
     return WindowsInputHandler(
@@ -877,4 +988,6 @@ def create_windows_input_handler(
         slash_skill_commands,
         slash_mcp_commands,
         slash_workspace_switch_commands,
+        slash_mcp_scoped_groups,
+        slash_mcp_scoped_groups_provider,
     )
