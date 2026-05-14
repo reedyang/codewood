@@ -502,6 +502,7 @@ class SmartShellAgent:
                         self._get_slash_mcp_server_info_commands(),
                         self._get_slash_mcp_reconnect_commands(),
                         self._get_slash_workspace_switch_commands(),
+                        self._get_slash_workspace_delete_commands(),
                         self._get_slash_mcp_scoped_groups(),
                         self._get_slash_mcp_scoped_groups,
                     )
@@ -2562,6 +2563,26 @@ class SmartShellAgent:
             cmds.append(cmd)
         return sorted(cmds, key=str.lower)
 
+    def _get_slash_workspace_delete_commands(self) -> List[str]:
+        cmds: List[str] = []
+        seen: Set[str] = set()
+        workspaces = self._workspaces_state.get("workspaces", {})
+        if not isinstance(workspaces, dict):
+            return cmds
+        for entry in workspaces.values():
+            if not isinstance(entry, dict):
+                continue
+            name = str(entry.get("name") or "").strip()
+            if not name:
+                continue
+            cmd = f"/workspace delete {name}"
+            key = cmd.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            cmds.append(cmd)
+        return sorted(cmds, key=str.lower)
+
     def _refresh_input_handler_skill_completions(self) -> None:
         try:
             if self.input_handler is not None and hasattr(self.input_handler, "set_slash_skill_commands"):
@@ -2599,6 +2620,12 @@ class SmartShellAgent:
             ):
                 self.input_handler.set_slash_workspace_switch_commands(
                     self._get_slash_workspace_switch_commands()
+                )
+            if self.input_handler is not None and hasattr(
+                self.input_handler, "set_slash_workspace_delete_commands"
+            ):
+                self.input_handler.set_slash_workspace_delete_commands(
+                    self._get_slash_workspace_delete_commands()
                 )
         except Exception:
             pass
