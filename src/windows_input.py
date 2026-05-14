@@ -79,10 +79,12 @@ class FileCompleter(Completer):
         work_directory: Path,
         slash_skill_commands: Optional[List[str]] = None,
         slash_mcp_commands: Optional[List[str]] = None,
+        slash_workspace_switch_commands: Optional[List[str]] = None,
     ):
         self.work_directory = work_directory
         self.slash_skill_commands = slash_skill_commands or []
         self.slash_mcp_commands = slash_mcp_commands or []
+        self.slash_workspace_switch_commands = slash_workspace_switch_commands or []
 
     @staticmethod
     def _slash_fragment_for_completion(text: str) -> Tuple[int, str]:
@@ -172,7 +174,13 @@ class FileCompleter(Completer):
             if idx >= 0 and slash_part:
                 builtin_matches = windows_slash_builtin_completions(
                     slash_part,
-                    dynamic_commands=(self.slash_skill_commands + self.slash_mcp_commands),
+                    dynamic_commands=(
+                        self.slash_skill_commands
+                        + self.slash_mcp_commands
+                    ),
+                    delayed_dynamic_groups=[
+                        ("/workspace switch ", self.slash_workspace_switch_commands)
+                    ],
                 )
                 if builtin_matches:
                     spos = -len(slash_part)
@@ -684,6 +692,7 @@ class WindowsInputHandler:
         initial_history: Optional[List[str]] = None,
         slash_skill_commands: Optional[List[str]] = None,
         slash_mcp_commands: Optional[List[str]] = None,
+        slash_workspace_switch_commands: Optional[List[str]] = None,
     ):
         """
         初始化输入处理器
@@ -706,7 +715,12 @@ class WindowsInputHandler:
         
         if PROMPT_TOOLKIT_AVAILABLE:
             # 使用prompt_toolkit，并将历史记录注入到会话中
-            self.completer = FileCompleter(work_directory, slash_skill_commands, slash_mcp_commands)
+            self.completer = FileCompleter(
+                work_directory,
+                slash_skill_commands,
+                slash_mcp_commands,
+                slash_workspace_switch_commands,
+            )
             self._key_bindings = self._create_key_bindings()
             self._pt_history = InMemoryHistory()
             if initial_history:
@@ -811,6 +825,14 @@ class WindowsInputHandler:
         if hasattr(self, "completer"):
             self.completer.slash_mcp_commands = slash_mcp_commands or []
 
+    def set_slash_workspace_switch_commands(
+        self, slash_workspace_switch_commands: Optional[List[str]] = None
+    ) -> None:
+        if hasattr(self, "completer"):
+            self.completer.slash_workspace_switch_commands = (
+                slash_workspace_switch_commands or []
+            )
+
     def reset_command_history(self, entries: Optional[List[str]] = None) -> None:
         """
         Rebuild prompt_toolkit InMemoryHistory from entries (e.g. after HistoryManager.clear_history()).
@@ -846,6 +868,13 @@ def create_windows_input_handler(
     initial_history: Optional[List[str]] = None,
     slash_skill_commands: Optional[List[str]] = None,
     slash_mcp_commands: Optional[List[str]] = None,
+    slash_workspace_switch_commands: Optional[List[str]] = None,
 ) -> WindowsInputHandler:
     """创建Windows输入处理器"""
-    return WindowsInputHandler(work_directory, initial_history, slash_skill_commands, slash_mcp_commands)
+    return WindowsInputHandler(
+        work_directory,
+        initial_history,
+        slash_skill_commands,
+        slash_mcp_commands,
+        slash_workspace_switch_commands,
+    )

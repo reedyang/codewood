@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 WINDOWS_SLASH_BUILTIN_COMMANDS: List[str] = [
     "/exit",
@@ -82,7 +82,9 @@ WINDOWS_SLASH_BUILTIN_COMMANDS = _deduped_builtin
 
 
 def windows_slash_builtin_completions(
-    prefix_from_slash: str, dynamic_commands: Optional[List[str]] = None
+    prefix_from_slash: str,
+    dynamic_commands: Optional[List[str]] = None,
+    delayed_dynamic_groups: Optional[List[Tuple[str, List[str]]]] = None,
 ) -> List[str]:
     """
     prefix_from_slash: text from the first '/' through the cursor (e.g. '/', '/he', '/knowledge ').
@@ -96,6 +98,17 @@ def windows_slash_builtin_completions(
     all_commands = list(WINDOWS_SLASH_BUILTIN_COMMANDS)
     if dynamic_commands:
         all_commands.extend(dynamic_commands)
+    if delayed_dynamic_groups:
+        for trigger_prefix, candidates in delayed_dynamic_groups:
+            trigger = str(trigger_prefix or "").lower()
+            if not trigger:
+                continue
+            # Delayed dynamic completions are shown only after the trigger prefix
+            # is fully typed (e.g. "/workspace switch " with trailing space).
+            if not pl.startswith(trigger):
+                continue
+            if candidates:
+                all_commands.extend(candidates)
 
     for c in all_commands:
         if c.lower().startswith(pl):
