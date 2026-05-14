@@ -6,6 +6,7 @@ from .tool_handlers.core_handlers import dispatch_core_tool
 from .tool_handlers.file_shell_handlers import dispatch_file_shell_tool
 from .tool_handlers.mcp_handlers import dispatch_mcp_tool
 from .tool_handlers.memory_handlers import dispatch_memory_tool
+from .tool_handlers.agent_state_handlers import dispatch_agent_state_tool
 
 
 class ToolDispatcher:
@@ -34,6 +35,10 @@ class ToolDispatcher:
         memory = dispatch_memory_tool(self._agent, action, args)
         if memory is not None:
             return memory
+
+        agent_state = dispatch_agent_state_tool(self._agent, action, args)
+        if agent_state is not None:
+            return agent_state
 
         return None
 
