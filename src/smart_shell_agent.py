@@ -501,6 +501,12 @@ class SmartShellAgent:
                         self._get_slash_mcp_server_commands(),
                         self._get_slash_mcp_server_info_commands(),
                         self._get_slash_mcp_reconnect_commands(),
+                        self._get_slash_mcp_list_tools_commands(),
+                        self._get_slash_mcp_list_resources_commands(),
+                        self._get_slash_mcp_list_resource_templates_commands(),
+                        self._get_slash_mcp_list_prompts_commands(),
+                        self._get_slash_mcp_disable_tools_commands(),
+                        self._get_slash_mcp_enable_tools_commands(),
                         self._get_slash_workspace_switch_commands(),
                         self._get_slash_workspace_delete_commands(),
                         self._get_slash_mcp_scoped_groups(),
@@ -2604,6 +2610,42 @@ class SmartShellAgent:
                     self._get_slash_mcp_reconnect_commands()
                 )
             if self.input_handler is not None and hasattr(
+                self.input_handler, "set_slash_mcp_list_tools_commands"
+            ):
+                self.input_handler.set_slash_mcp_list_tools_commands(
+                    self._get_slash_mcp_list_tools_commands()
+                )
+            if self.input_handler is not None and hasattr(
+                self.input_handler, "set_slash_mcp_list_resources_commands"
+            ):
+                self.input_handler.set_slash_mcp_list_resources_commands(
+                    self._get_slash_mcp_list_resources_commands()
+                )
+            if self.input_handler is not None and hasattr(
+                self.input_handler, "set_slash_mcp_list_resource_templates_commands"
+            ):
+                self.input_handler.set_slash_mcp_list_resource_templates_commands(
+                    self._get_slash_mcp_list_resource_templates_commands()
+                )
+            if self.input_handler is not None and hasattr(
+                self.input_handler, "set_slash_mcp_list_prompts_commands"
+            ):
+                self.input_handler.set_slash_mcp_list_prompts_commands(
+                    self._get_slash_mcp_list_prompts_commands()
+                )
+            if self.input_handler is not None and hasattr(
+                self.input_handler, "set_slash_mcp_disable_tools_commands"
+            ):
+                self.input_handler.set_slash_mcp_disable_tools_commands(
+                    self._get_slash_mcp_disable_tools_commands()
+                )
+            if self.input_handler is not None and hasattr(
+                self.input_handler, "set_slash_mcp_enable_tools_commands"
+            ):
+                self.input_handler.set_slash_mcp_enable_tools_commands(
+                    self._get_slash_mcp_enable_tools_commands()
+                )
+            if self.input_handler is not None and hasattr(
                 self.input_handler, "set_slash_mcp_scoped_groups"
             ):
                 self.input_handler.set_slash_mcp_scoped_groups(
@@ -2741,33 +2783,40 @@ class SmartShellAgent:
         Dynamic completions for:
         - /mcp server-info <server>
         """
-        out: List[str] = []
-        seen: Set[str] = set()
-        servers = {}
-        try:
-            servers = (self.mcp_manager.mcp_config or {}).get("mcpServers", {})
-        except Exception:
-            servers = {}
-        if not isinstance(servers, dict):
-            servers = {}
-
-        for server in servers.keys():
-            srv = str(server or "").strip()
-            if not srv:
-                continue
-            cmd = f"/mcp server-info {srv}"
-            key = cmd.lower()
-            if key in seen:
-                continue
-            seen.add(key)
-            out.append(cmd)
-        return sorted(out, key=str.lower)
+        return self._get_slash_mcp_server_target_commands("server-info")
 
     def _get_slash_mcp_reconnect_commands(self) -> List[str]:
         """
         Dynamic completions for:
         - /mcp reconnect <server>
         """
+        return self._get_slash_mcp_server_target_commands("reconnect")
+
+    def _get_slash_mcp_list_tools_commands(self) -> List[str]:
+        return self._get_slash_mcp_server_target_commands("list-tools")
+
+    def _get_slash_mcp_list_resources_commands(self) -> List[str]:
+        return self._get_slash_mcp_server_target_commands("list-resources")
+
+    def _get_slash_mcp_list_resource_templates_commands(self) -> List[str]:
+        return self._get_slash_mcp_server_target_commands("list-resource-templates")
+
+    def _get_slash_mcp_list_prompts_commands(self) -> List[str]:
+        return self._get_slash_mcp_server_target_commands("list-prompts")
+
+    def _get_slash_mcp_disable_tools_commands(self) -> List[str]:
+        return self._get_slash_mcp_server_target_commands(
+            "disable-tools", with_trailing_space=True
+        )
+
+    def _get_slash_mcp_enable_tools_commands(self) -> List[str]:
+        return self._get_slash_mcp_server_target_commands(
+            "enable-tools", with_trailing_space=True
+        )
+
+    def _get_slash_mcp_server_target_commands(
+        self, subcommand: str, with_trailing_space: bool = False
+    ) -> List[str]:
         out: List[str] = []
         seen: Set[str] = set()
         servers = {}
@@ -2782,7 +2831,9 @@ class SmartShellAgent:
             srv = str(server or "").strip()
             if not srv:
                 continue
-            cmd = f"/mcp reconnect {srv}"
+            cmd = f"/mcp {subcommand} {srv}"
+            if with_trailing_space:
+                cmd = cmd + " "
             key = cmd.lower()
             if key in seen:
                 continue
