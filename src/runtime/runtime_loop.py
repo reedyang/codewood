@@ -519,7 +519,6 @@ def run_agent_loop(agent: Any):
                     "max_files": 8,
                     "refresh": True,
                 }
-                print(f"{_ansi_gray('🔧 执行工具:')} {_ansi_blue(self._tool_call_summary('project_context_search', ev_args))}")
                 ev_res = self.execute_tool_call("project_context_search", ev_args)
                 self.operation_results.append(
                     {
