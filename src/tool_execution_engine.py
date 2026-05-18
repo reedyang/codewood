@@ -4,6 +4,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Dict
 
+from .git_guard import guard_git_clone_precheck
 from .tool_handlers.agent_state_handlers import dispatch_agent_state_tool
 from .tool_handlers.core_handlers import dispatch_core_tool
 from .tool_handlers.file_shell_handlers import dispatch_file_shell_tool
@@ -298,7 +299,7 @@ def execute_tool_call_legacy(agent: Any, tool_name: str, arguments: Dict[str, An
                     ),
                 }
             shell_force = bool(params.get("force", False))
-            clone_guard = self._guard_git_clone_precheck(str(shell_cmd), shell_force)
+            clone_guard = guard_git_clone_precheck(self.work_directory, str(shell_cmd), shell_force)
             if isinstance(clone_guard, dict):
                 return clone_guard
             if not shell_force:

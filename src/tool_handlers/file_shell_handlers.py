@@ -3,6 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+from ..git_guard import guard_git_clone_precheck
+
 
 def dispatch_file_shell_tool(agent: Any, action: str, params: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     if action == "list":
@@ -126,7 +128,7 @@ def dispatch_file_shell_tool(agent: Any, action: str, params: Dict[str, Any]) ->
             }
 
         shell_force = bool(params.get("force", False))
-        clone_guard = agent._guard_git_clone_precheck(str(shell_cmd), shell_force)
+        clone_guard = guard_git_clone_precheck(agent.work_directory, str(shell_cmd), shell_force)
         if isinstance(clone_guard, dict):
             return clone_guard
 
