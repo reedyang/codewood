@@ -96,6 +96,7 @@ from .tools.project_context_index import ProjectContextIndex
 from .change_preview_formatter import ChangePreviewFormatter
 from .ai_provider_clients import AICallContext
 from .ai_orchestrator import AIOrchestrator, AgentAIContext
+from .config_env import resolve_string_values_in_data
 from .session_memory_service import SessionMemoryService
 from .policy.path_policy import PathPolicy
 from .tool_dispatcher import ToolDispatcher
@@ -371,7 +372,7 @@ class SmartShellAgent:
             cfg_path = self.config_dir / "config.json"
             if cfg_path.exists():
                 with open(cfg_path, "r", encoding="utf-8") as f:
-                    cfg_data = json.load(f)
+                    cfg_data = resolve_string_values_in_data(json.load(f))
                 pol = str(cfg_data.get("execution_policy", "confirmation")).strip().lower()
                 if pol not in ("unlimited", "moderate", "confirmation"):
                     pol = "confirmation"

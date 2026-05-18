@@ -19,7 +19,6 @@ if "ollama" not in sys.modules:
 
 import src.smart_shell_agent as smart_shell_agent_module
 
-# Agent 已不再读取 config 中的 knowledge_enabled；测试中关闭知识库初始化
 smart_shell_agent_module.KNOWLEDGE_AVAILABLE = False
 
 
@@ -98,7 +97,7 @@ class AgentMcpCompletionActionsE2ETests(unittest.TestCase):
 
     def _write_config(self, payload: dict) -> None:
         (self.config_dir / "config.json").write_text(
-            json.dumps({"knowledge_enabled": False, "execution_policy": "confirmation"}, ensure_ascii=False),
+            json.dumps({"execution_policy": "confirmation"}, ensure_ascii=False),
             encoding="utf-8",
         )
         (self.config_dir / "mcp.json").write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")

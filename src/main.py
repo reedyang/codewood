@@ -16,6 +16,7 @@ from pathlib import Path
 current_dir = Path(__file__).resolve().parent
 project_root = current_dir.parent
 sys.path.insert(0, str(project_root))
+from src.config_env import resolve_string_values_in_data
 
 
 def _set_windows_console_title():
@@ -59,6 +60,7 @@ def main():
         try:
             with open(config_path, "r", encoding="utf-8") as f:
                 config = json.load(f)
+            config = resolve_string_values_in_data(config)
         except Exception as e:
             print(f"⚠️ 配置文件读取失败: {e}")
             config = None
@@ -78,6 +80,8 @@ def main():
         return 1
     provider = str(model_config.get("provider", "")).strip()
     params = model_config.get("params", {}) if isinstance(model_config.get("params", {}), dict) else {}
+    model_config = dict(model_config)
+    model_config["params"] = params
     model_name = str(params.get("model", "")).strip()
     if not provider or not model_name:
         print("❌ 配置错误：model.provider 或 model.params.model 缺失")
