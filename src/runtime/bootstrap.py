@@ -4,18 +4,18 @@ from pathlib import Path
 from typing import Any, Optional
 
 from ..ai.ai_orchestrator import AIOrchestrator, AgentAIContext
-from ..app_logging import setup_app_logging
-from ..config_env import resolve_string_values_in_data
-from ..history_manager import HistoryManager
-from ..mcp_manager import McpManager
+from ..core.logging.app_logging import setup_app_logging
+from ..core.config.config_env import resolve_string_values_in_data
+from ..core.state.history_manager import HistoryManager
+from ..integrations.mcp import McpManager
 from ..policy.path_policy import PathPolicy
 from ..services.session_memory_service import SessionMemoryService
-from ..skills_loader import (
+from ..core.config.skills_loader import (
     build_skills_routing_prefix,
     calc_skills_dirs_fingerprint,
     load_skills_merged,
 )
-from ..tool_dispatcher import ToolDispatcher
+from ..tooling.dispatcher import ToolDispatcher
 from ..tools.project_context_index import ProjectContextIndex
 
 
@@ -188,7 +188,7 @@ def setup_model_ai_stack(
 
 
 def setup_prompt_and_mcp(agent: Any) -> None:
-    prompt_path = Path(__file__).resolve().parent.parent / "system_prompt.md"
+    prompt_path = Path(__file__).resolve().parent.parent / "prompts" / "system_prompt.md"
     with open(prompt_path, "r", encoding="utf-8") as f:
         agent._base_system_prompt = f.read()
 

@@ -88,7 +88,7 @@ class AgentMcpCompletionActionsE2ETests(unittest.TestCase):
             except Exception:
                 pass
         try:
-            from src.app_logging import shutdown_app_logging_handlers
+            from src.core.logging.app_logging import shutdown_app_logging_handlers
 
             shutdown_app_logging_handlers()
         except Exception:

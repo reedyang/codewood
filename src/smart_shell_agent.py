@@ -25,19 +25,19 @@ except Exception:
     pass
 
 # 导入历史记录管理器
-from .app_logging import get_logger
-from .history_manager import HistoryManager
-from .skills_loader import (
+from .core.logging.app_logging import get_logger
+from .core.state.history_manager import HistoryManager
+from .core.config.skills_loader import (
     build_skills_routing_prefix,
     calc_skills_dirs_fingerprint,
     load_skills_merged,
 )
-from .mcp_manager import McpManager, McpError
-from .change_preview_formatter import ChangePreviewFormatter
+from .integrations.mcp import McpManager, McpError
+from .core.change_preview_formatter import ChangePreviewFormatter
 from .ai.ai_provider_clients import AICallContext
 from .services.session_memory_service import SessionMemoryService
 from .policy.path_policy import PathPolicy
-from .console_utils import _ansi_blue, _ansi_gray, _ansi_red, _ansi_yellow
+from .core.console_utils import _ansi_blue, _ansi_gray, _ansi_red, _ansi_yellow
 from .controllers.builtin_command_router import dispatch_builtin_command
 from .controllers.workspace_command_controller import (
     handle_workspace_builtin_command,
@@ -613,7 +613,7 @@ class SmartShellAgent:
 
         def _run() -> None:
             try:
-                from . import memory_manager as _mm
+                from .core.state import memory_manager as _mm
             except ImportError:
                 _mod.MEMORY_AVAILABLE = False  # type: ignore[misc, assignment]
                 _mod.MemoryService = None  # type: ignore[misc, assignment]
@@ -736,7 +736,7 @@ class SmartShellAgent:
         def _run() -> None:
             try:
                 try:
-                    from .knowledge_manager import KnowledgeService as _KS, KNOWLEDGE_AVAILABLE as _KAV
+                    from .core.state.knowledge_manager import KnowledgeService as _KS, KNOWLEDGE_AVAILABLE as _KAV
                 except ImportError:
                     _mod.KnowledgeService = None  # type: ignore
                     _mod.KNOWLEDGE_AVAILABLE = False
@@ -2306,7 +2306,7 @@ class SmartShellAgent:
         return self._execute_tool_call_legacy(tool_name, arguments)
 
     def _execute_tool_call_legacy(self, tool_name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
-        from .tool_execution_engine import execute_tool_call_legacy
+        from .tooling.execution_engine import execute_tool_call_legacy
         return execute_tool_call_legacy(self, tool_name, arguments)
 
     def _parse_mcp_shortcut_command(self, builtin_line: str) -> Tuple[Optional[str], Dict[str, Any], Optional[str]]:

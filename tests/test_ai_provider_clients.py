@@ -1,7 +1,7 @@
 import os
 import unittest
 
-from src.config_env import resolve_env_placeholder, resolve_string_values_in_data
+from src.core.config.config_env import resolve_env_placeholder, resolve_string_values_in_data
 
 
 class ResolveEnvPlaceholderTests(unittest.TestCase):

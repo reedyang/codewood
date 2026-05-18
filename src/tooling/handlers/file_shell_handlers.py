@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from ..git_guard import guard_git_clone_precheck
+from ...core.security.git_guard import guard_git_clone_precheck
 
 
 def dispatch_file_shell_tool(agent: Any, action: str, params: Dict[str, Any]) -> Optional[Dict[str, Any]]:

@@ -7,7 +7,7 @@ from typing import Any, Dict, Optional
 def dispatch_agent_state_tool(agent: Any, action: str, params: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     if action == "user_preferences_read":
         try:
-            from .. import user_preferences_manager as _upm
+            from ...core.state import user_preferences_manager as _upm
 
             meta, body = _upm.read_body(Path(agent.config_dir))
             lim = int(params.get("max_chars") or 16000)
@@ -25,7 +25,7 @@ def dispatch_agent_state_tool(agent: Any, action: str, params: Dict[str, Any]) -
 
     if action == "user_preferences_patch":
         try:
-            from .. import user_preferences_manager as _upm
+            from ...core.state import user_preferences_manager as _upm
 
             op = str(params.get("operation") or "upsert_section").strip().lower()
             if op == "replace_body":

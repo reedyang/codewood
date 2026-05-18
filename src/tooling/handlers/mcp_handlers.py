@@ -3,7 +3,7 @@ from __future__ import annotations
 import time
 from typing import Any, Dict, List, Optional
 
-from ..mcp_manager import McpError
+from ...integrations.mcp import McpError
 
 
 def dispatch_mcp_tool(agent: Any, action: str, params: Dict[str, Any]) -> Optional[Dict[str, Any]]:

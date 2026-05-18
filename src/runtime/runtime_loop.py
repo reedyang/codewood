@@ -6,9 +6,9 @@ import re
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Set
 
-from ..app_logging import get_log_file_path
+from ..core.logging.app_logging import get_log_file_path
 from ..controllers.builtin_command_router import dispatch_builtin_command
-from ..console_utils import _ansi_blue, _ansi_gray
+from ..core.console_utils import _ansi_blue, _ansi_gray
 
 
 def _sanitize_prompt_pollution(text: str, work_directory: Any) -> str:

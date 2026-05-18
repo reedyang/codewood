@@ -1,12 +1,12 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from typing import Any, Callable, Dict, Optional
 
-from .tool_handlers.core_handlers import dispatch_core_tool
-from .tool_handlers.file_shell_handlers import dispatch_file_shell_tool
-from .tool_handlers.mcp_handlers import dispatch_mcp_tool
-from .tool_handlers.memory_handlers import dispatch_memory_tool
-from .tool_handlers.agent_state_handlers import dispatch_agent_state_tool
+from .handlers.core_handlers import dispatch_core_tool
+from .handlers.file_shell_handlers import dispatch_file_shell_tool
+from .handlers.mcp_handlers import dispatch_mcp_tool
+from .handlers.memory_handlers import dispatch_memory_tool
+from .handlers.agent_state_handlers import dispatch_agent_state_tool
 
 
 class ToolDispatcher:
