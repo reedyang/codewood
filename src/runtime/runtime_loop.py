@@ -2,17 +2,38 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Set
 
-from .app_logging import get_log_file_path
-from .builtin_command_router import dispatch_builtin_command
-from .console_utils import _ansi_blue, _ansi_gray
+from ..app_logging import get_log_file_path
+from ..controllers.builtin_command_router import dispatch_builtin_command
+from ..console_utils import _ansi_blue, _ansi_gray
+
+
+def _sanitize_prompt_pollution(text: str, work_directory: Any) -> str:
+    s = str(text or "")
+    if not s:
+        return s
+    cleaned = s.replace("\r", "").strip()
+    if not cleaned:
+        return ""
+
+    wd = str(work_directory or "").strip()
+    if wd:
+        prompt_prefix = f"{wd}>"
+        while cleaned.startswith(prompt_prefix):
+            cleaned = cleaned[len(prompt_prefix):].lstrip()
+
+    if re.match(r"^>{2,}\s*\S", cleaned):
+        cleaned = re.sub(r"^>+\s*", "", cleaned, count=1)
+
+    return cleaned
 
 
 def run_agent_loop(agent: Any):
     """运行 AI Agent 主循环，使用 OpenAI tools 进行多轮自动执行，调用 done 结束。"""
-    from . import smart_shell_agent as _ssa
+    from .. import smart_shell_agent as _ssa
     KNOWLEDGE_AVAILABLE = getattr(_ssa, "KNOWLEDGE_AVAILABLE", False)
     self = agent
     import sys
@@ -75,6 +96,7 @@ def run_agent_loop(agent: Any):
                 self._queued_user_input = None
             else:
                 user_input = self._get_user_input_with_history()
+            user_input = _sanitize_prompt_pollution(user_input, self.work_directory)
             raw_user_input = str(user_input or "")
         
             # 保存到历史记录（非空输入）

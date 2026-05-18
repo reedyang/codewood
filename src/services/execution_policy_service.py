@@ -6,7 +6,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
-from . import command_security
+from .. import command_security
 
 
 def confirm_allowlist_path(agent: Any) -> Path:

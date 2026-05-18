@@ -6,7 +6,7 @@ import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from .console_utils import _decode_subprocess_output, _safe_console_write
+from ..console_utils import _decode_subprocess_output, _safe_console_write
 
 
 def action_shell_command(

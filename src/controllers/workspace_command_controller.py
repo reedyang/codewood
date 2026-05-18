@@ -8,7 +8,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 def _default_workspace_id() -> str:
     try:
-        from . import smart_shell_agent as _ssa
+        from .. import smart_shell_agent as _ssa
 
         return str(getattr(_ssa, "DEFAULT_WORKSPACE_ID", "default"))
     except Exception:
