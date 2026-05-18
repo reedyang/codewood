@@ -177,6 +177,8 @@ smart-shell/
 - `model`: 统一模型配置，用于普通任务与图片分析（需模型本身支持多模态）
 - `provider`: 支持 `ollama`、`openai`、`openwebui`
 - `params`: 包含API密钥、基础URL和模型名称
+- `config.json` 中所有字符串配置值都支持环境变量占位符：当值写成 `${ENV_NAME}` 时会在运行时读取对应环境变量
+- 占位符读取后会自动做类型转换：支持 `bool`（`true/false/yes/no/on/off`）、`int`/`float`、`null`、以及 JSON 的 `list/dict`（例如 `"[1,2]"`、`"{\"a\":1}"`）
 
 ### MCP 配置（`mcp.json`）
 
