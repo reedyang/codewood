@@ -240,7 +240,10 @@ class SmartShellAgent:
 
     def _bind_project_index_workspace(self) -> None:
         try:
-            self._project_context_index.bind_workspace(self.work_directory)
+            self._project_context_index.bind_workspace(
+                self.work_directory,
+                storage_dir=(self.ai_workspace_dir / "knowledge_db"),
+            )
         except Exception:
             pass
 
