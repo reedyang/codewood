@@ -1,7 +1,6 @@
 import os
 import sys
 import json
-import hashlib
 import re
 import shlex
 import threading
@@ -78,6 +77,7 @@ from .actions import command_actions
 from .runtime import bootstrap
 from .services import execution_policy_service
 from .runtime import prompt_composer
+from .managers import WorkspaceStateManager, ChatStateManager
 
 # memory_manager 在后台线程中导入（见 _schedule_memory_service_background），避免阻塞主线程初始化。
 MEMORY_AVAILABLE = False  # type: ignore[misc, assignment]
@@ -178,6 +178,12 @@ class SmartShellAgent:
         )
 
         self.config_dir = bootstrap.resolve_config_dir(config_dir)
+        self._workspace_state_manager = WorkspaceStateManager(
+            self,
+            default_workspace_id=DEFAULT_WORKSPACE_ID,
+            default_workspace_name=DEFAULT_WORKSPACE_NAME,
+        )
+        self._chat_state_manager = ChatStateManager(self, chat_state_file=CHAT_STATE_FILE)
 
         bootstrap.setup_workspace_and_history(
             self,
@@ -239,232 +245,49 @@ class SmartShellAgent:
             pass
 
     def _path_identity_key(self, path: Path) -> str:
-        value = str(self._resolve_path_lenient(path))
-        return value.casefold() if os.name == "nt" else value
+        return self._workspace_state_manager.path_identity_key(path)
 
     def _workspace_id_for_path(self, path: Path) -> str:
-        digest = hashlib.sha1(self._path_identity_key(path).encode("utf-8")).hexdigest()
-        return f"ws_{digest[:12]}"
+        return self._workspace_state_manager.workspace_id_for_path(path)
 
     def _default_workspace_entry(self) -> Dict[str, Any]:
-        root = self._resolve_path_lenient(self.config_dir / "workspace")
-        return {
-            "id": DEFAULT_WORKSPACE_ID,
-            "name": DEFAULT_WORKSPACE_NAME,
-            "kind": "default",
-            "root": str(root),
-            "storage": str(root),
-        }
+        return self._workspace_state_manager.default_workspace_entry()
 
     def _workspace_root_path(self, entry: Dict[str, Any]) -> Path:
-        if str(entry.get("id") or "") == DEFAULT_WORKSPACE_ID or str(entry.get("kind") or "").lower() == "default":
-            return self._resolve_path_lenient(self.config_dir / "workspace")
-        raw = entry.get("root") or entry.get("path") or entry.get("storage") or ""
-        root = self._resolve_path_lenient(Path(str(raw)).expanduser())
-        if root.name.casefold() == ".smartshell":
-            return root.parent
-        return root
+        return self._workspace_state_manager.workspace_root_path(entry)
 
     def _workspace_storage_path(self, entry: Dict[str, Any]) -> Path:
-        if str(entry.get("id") or "") == DEFAULT_WORKSPACE_ID or str(entry.get("kind") or "").lower() == "default":
-            return self._resolve_path_lenient(self.config_dir / "workspace")
-        storage = entry.get("storage")
-        if storage:
-            return self._resolve_path_lenient(Path(str(storage)).expanduser())
-        return self._workspace_root_path(entry) / ".smartshell"
+        return self._workspace_state_manager.workspace_storage_path(entry)
 
     def _workspace_current_dir_path(self, entry: Dict[str, Any]) -> Optional[Path]:
-        raw = entry.get("current_dir")
-        if not raw:
-            return None
-        return self._resolve_path_lenient(Path(str(raw)).expanduser())
+        return self._workspace_state_manager.workspace_current_dir_path(entry)
 
     def _load_workspace_state(self) -> Dict[str, Any]:
-        raw_state: Dict[str, Any] = {}
-        if self.workspace_registry_path.exists():
-            try:
-                with open(self.workspace_registry_path, "r", encoding="utf-8") as f:
-                    loaded = json.load(f)
-                if isinstance(loaded, dict):
-                    raw_state = loaded
-            except Exception as e:
-                print(f"⚠️ 读取 workspace registry 失败，使用默认 workspace: {e}")
-
-        raw_workspaces = raw_state.get("workspaces", {})
-        if not isinstance(raw_workspaces, dict):
-            raw_workspaces = {}
-
-        default_entry = self._default_workspace_entry()
-        old_default = raw_workspaces.get(DEFAULT_WORKSPACE_ID)
-        if isinstance(old_default, dict) and old_default.get("current_dir"):
-            default_entry["current_dir"] = str(
-                self._resolve_path_lenient(Path(str(old_default.get("current_dir"))))
-            )
-
-        workspaces: Dict[str, Dict[str, Any]] = {DEFAULT_WORKSPACE_ID: default_entry}
-        for key, raw_entry in raw_workspaces.items():
-            if key == DEFAULT_WORKSPACE_ID or not isinstance(raw_entry, dict):
-                continue
-            root_raw = raw_entry.get("root") or raw_entry.get("path")
-            if not root_raw and raw_entry.get("storage"):
-                storage_path = self._resolve_path_lenient(Path(str(raw_entry.get("storage"))))
-                root_path = storage_path.parent if storage_path.name.casefold() == ".smartshell" else storage_path
-            elif root_raw:
-                root_path = self._resolve_path_lenient(Path(str(root_raw)))
-            else:
-                continue
-
-            workspace_id = str(raw_entry.get("id") or key or self._workspace_id_for_path(root_path)).strip()
-            if not workspace_id or workspace_id == DEFAULT_WORKSPACE_ID:
-                workspace_id = self._workspace_id_for_path(root_path)
-            name = str(raw_entry.get("name") or root_path.name or str(root_path)).strip()
-            entry: Dict[str, Any] = {
-                "id": workspace_id,
-                "name": name,
-                "kind": "custom",
-                "root": str(root_path),
-                "storage": str(root_path / ".smartshell"),
-            }
-            if raw_entry.get("current_dir"):
-                entry["current_dir"] = str(
-                    self._resolve_path_lenient(Path(str(raw_entry.get("current_dir"))))
-                )
-            workspaces[workspace_id] = entry
-
-        active = str(raw_state.get("active") or DEFAULT_WORKSPACE_ID)
-        if active not in workspaces:
-            active = DEFAULT_WORKSPACE_ID
-        return {"version": 1, "active": active, "workspaces": workspaces}
+        return self._workspace_state_manager.load_workspace_state()
 
     def _save_workspace_state(self) -> None:
-        try:
-            self.config_dir.mkdir(parents=True, exist_ok=True)
-            tmp_path = self.workspace_registry_path.with_suffix(".json.tmp")
-            with open(tmp_path, "w", encoding="utf-8") as f:
-                json.dump(self._workspaces_state, f, ensure_ascii=False, indent=2)
-                f.write("\n")
-            os.replace(tmp_path, self.workspace_registry_path)
-        except Exception as e:
-            print(f"⚠️ 保存 workspace registry 失败: {e}")
+        self._workspace_state_manager.save_workspace_state()
 
     def _ensure_workspace_dirs(self) -> None:
-        try:
-            self.ai_workspace_dir.mkdir(parents=True, exist_ok=True)
-        except OSError as e:
-            print(f"⚠️ 无法创建 AI workspace 目录 {self.ai_workspace_dir}: {e}")
-        self.ai_workspace_temp_dir = self.ai_workspace_dir / "temp"
-        try:
-            self.ai_workspace_temp_dir.mkdir(parents=True, exist_ok=True)
-        except OSError as e:
-            print(f"⚠️ 无法创建 workspace temp 目录 {self.ai_workspace_temp_dir}: {e}")
+        self._workspace_state_manager.ensure_workspace_dirs()
 
     def _apply_workspace_entry(self, entry: Dict[str, Any], fallback_dir: Path) -> None:
-        workspace_id = str(entry.get("id") or DEFAULT_WORKSPACE_ID)
-        if workspace_id == DEFAULT_WORKSPACE_ID:
-            entry.update(self._default_workspace_entry())
-        root = self._workspace_root_path(entry)
-        storage = self._workspace_storage_path(entry)
-        self.workspace_id = workspace_id
-        self.workspace_name = str(entry.get("name") or (DEFAULT_WORKSPACE_NAME if workspace_id == DEFAULT_WORKSPACE_ID else root.name)).strip()
-        self.workspace_kind = str(entry.get("kind") or ("default" if workspace_id == DEFAULT_WORKSPACE_ID else "custom")).lower()
-        self.workspace_root = root
-        self.ai_workspace_dir = storage
-        self._ensure_workspace_dirs()
-
-        current_dir = self._workspace_current_dir_path(entry)
-        if current_dir is not None and current_dir.exists() and current_dir.is_dir():
-            self.work_directory = current_dir
-        elif self.workspace_kind != "default" and root.exists() and root.is_dir():
-            self.work_directory = root
-        else:
-            self.work_directory = self._resolve_path_lenient(fallback_dir)
-
-        self._workspaces_state["active"] = self.workspace_id
-        workspaces = self._workspaces_state.setdefault("workspaces", {})
-        if isinstance(workspaces, dict):
-            workspaces[self.workspace_id] = {
-                "id": self.workspace_id,
-                "name": self.workspace_name,
-                "kind": self.workspace_kind,
-                "root": str(self.workspace_root),
-                "storage": str(self.ai_workspace_dir),
-                **({"current_dir": str(self.work_directory)} if entry.get("current_dir") else {}),
-            }
+        self._workspace_state_manager.apply_workspace_entry(entry, fallback_dir)
 
     def _save_current_workspace_position(self) -> None:
-        self._sync_active_chat_messages()
-        if not hasattr(self, "_workspaces_state"):
-            return
-        workspaces = self._workspaces_state.setdefault("workspaces", {})
-        if not isinstance(workspaces, dict):
-            return
-        entry = workspaces.get(getattr(self, "workspace_id", DEFAULT_WORKSPACE_ID))
-        if not isinstance(entry, dict):
-            workspace_id = getattr(self, "workspace_id", DEFAULT_WORKSPACE_ID)
-            if workspace_id == DEFAULT_WORKSPACE_ID:
-                entry = self._default_workspace_entry()
-            else:
-                entry = {
-                    "id": workspace_id,
-                    "name": getattr(self, "workspace_name", str(workspace_id)),
-                    "kind": getattr(self, "workspace_kind", "custom"),
-                    "root": str(getattr(self, "workspace_root", self.work_directory)),
-                    "storage": str(getattr(self, "ai_workspace_dir", self.work_directory / ".smartshell")),
-                }
-            workspaces[workspace_id] = entry
-        entry["current_dir"] = str(self._resolve_path_lenient(self.work_directory))
-        self._workspaces_state["active"] = getattr(self, "workspace_id", DEFAULT_WORKSPACE_ID)
-        self._save_workspace_state()
+        self._workspace_state_manager.save_current_workspace_position()
 
     def _workspace_path_from_arg(self, raw: str) -> Path:
-        text = str(raw or "").strip().strip('"').strip("'")
-        path = Path(text).expanduser()
-        if not path.is_absolute():
-            path = self.work_directory / path
-        return self._resolve_path_lenient(path)
+        return self._workspace_state_manager.workspace_path_from_arg(raw)
 
     def _workspace_entry_by_root(self, root: Path, ignore_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
-        key = self._path_identity_key(root)
-        workspaces = self._workspaces_state.get("workspaces", {})
-        if not isinstance(workspaces, dict):
-            return None
-        for workspace_id, entry in workspaces.items():
-            if ignore_id and workspace_id == ignore_id:
-                continue
-            if isinstance(entry, dict) and self._path_identity_key(self._workspace_root_path(entry)) == key:
-                return entry
-        return None
+        return self._workspace_state_manager.workspace_entry_by_root(root, ignore_id=ignore_id)
 
     def _workspace_name_exists(self, name: str, ignore_id: Optional[str] = None) -> bool:
-        wanted = str(name or "").strip().casefold()
-        workspaces = self._workspaces_state.get("workspaces", {})
-        if not wanted or not isinstance(workspaces, dict):
-            return False
-        for workspace_id, entry in workspaces.items():
-            if ignore_id and workspace_id == ignore_id:
-                continue
-            if isinstance(entry, dict) and str(entry.get("name") or "").strip().casefold() == wanted:
-                return True
-        return False
+        return self._workspace_state_manager.workspace_name_exists(name, ignore_id=ignore_id)
 
     def _workspace_entry_by_selector(self, selector: str) -> Optional[Dict[str, Any]]:
-        text = str(selector or "").strip().strip('"').strip("'")
-        if not text:
-            return None
-        workspaces = self._workspaces_state.get("workspaces", {})
-        if not isinstance(workspaces, dict):
-            return None
-        if text in workspaces and isinstance(workspaces[text], dict):
-            return workspaces[text]
-        folded = text.casefold()
-        for entry in workspaces.values():
-            if isinstance(entry, dict) and str(entry.get("name") or "").strip().casefold() == folded:
-                return entry
-        try:
-            root = self._workspace_path_from_arg(text)
-            return self._workspace_entry_by_root(root)
-        except Exception:
-            return None
+        return self._workspace_state_manager.workspace_entry_by_selector(selector)
 
     def _split_workspace_args(self, text: str) -> Tuple[List[str], Optional[str]]:
         return split_workspace_args(text)
@@ -511,191 +334,40 @@ class SmartShellAgent:
         return workspace_delete_command(self, arg_text)
 
     def _chat_state_path(self) -> Path:
-        return self.ai_workspace_dir / CHAT_STATE_FILE
+        return self._chat_state_manager.chat_state_path()
 
     def _new_chat_entry(self, chat_id: str, name: str = "New Chat") -> Dict[str, Any]:
-        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        return {
-            "id": chat_id,
-            "name": name,
-            "name_source": "default",
-            "created_at": now,
-            "updated_at": now,
-            "messages": [],
-        }
+        return self._chat_state_manager.new_chat_entry(chat_id, name=name)
 
     def _sanitize_persisted_chat_message(self, role: str, content: str) -> Optional[str]:
-        r = str(role or "").strip().lower()
-        c = str(content or "")
-        if r != "user":
-            return c
-        marker = "\n\n【首轮回复硬性要求（必须遵守）】"
-        if marker in c:
-            c = c.split(marker, 1)[0]
-        if c.startswith("【用户原始需求】\n"):
-            return None
-        c = c.strip()
-        if not c:
-            return None
-        return c
+        return self._chat_state_manager.sanitize_persisted_chat_message(role, content)
 
     def _compact_redundant_user_turns(self, messages: List[Dict[str, str]]) -> List[Dict[str, str]]:
-        """
-        Collapse repeated identical user turns caused by multi-round internal tool orchestration.
-        Heuristic: if same user content reappears and all assistant messages in-between look like
-        tool-planning/tool-json messages, keep only the first user turn.
-        """
-        compact: List[Dict[str, str]] = []
-        last_user_content: Optional[str] = None
-        assistant_since_last_user: List[str] = []
-        for m in messages:
-            role = str(m.get("role") or "").strip().lower()
-            content = str(m.get("content") or "")
-            if role == "assistant":
-                assistant_since_last_user.append(content)
-                compact.append(m)
-                continue
-            if role != "user":
-                compact.append(m)
-                continue
-            same_user = last_user_content is not None and content == last_user_content
-            if same_user and assistant_since_last_user:
-                looks_internal = True
-                for a in assistant_since_last_user:
-                    s = str(a or "")
-                    if ("```json" not in s) and ('{"tool"' not in s) and ("Step " not in s):
-                        looks_internal = False
-                        break
-                if looks_internal:
-                    assistant_since_last_user = []
-                    continue
-            compact.append(m)
-            last_user_content = content
-            assistant_since_last_user = []
-        return compact
+        return self._chat_state_manager.compact_redundant_user_turns(messages)
 
     def _default_chat_state(self) -> Dict[str, Any]:
-        default_chat = self._new_chat_entry("chat-1")
-        return {"version": 1, "active": "chat-1", "chats": [default_chat]}
+        return self._chat_state_manager.default_chat_state()
 
     def _save_chat_state(self) -> None:
-        try:
-            p = self._chat_state_path()
-            p.parent.mkdir(parents=True, exist_ok=True)
-            with open(p, "w", encoding="utf-8") as f:
-                json.dump(self._chat_state, f, ensure_ascii=False, indent=2)
-        except Exception as e:
-            print(f"⚠️ 保存 chat 状态失败: {e}")
+        self._chat_state_manager.save_chat_state()
 
     def _chat_entries(self) -> List[Dict[str, Any]]:
-        chats = self._chat_state.get("chats", [])
-        if not isinstance(chats, list):
-            chats = []
-            self._chat_state["chats"] = chats
-        return chats
+        return self._chat_state_manager.chat_entries()
 
     def _find_chat_by_id(self, chat_id: str) -> Optional[Dict[str, Any]]:
-        for c in self._chat_entries():
-            if not isinstance(c, dict):
-                continue
-            if str(c.get("id") or "") == chat_id:
-                return c
-        return None
+        return self._chat_state_manager.find_chat_by_id(chat_id)
 
     def _resolve_chat_selector(self, selector: str) -> Optional[Dict[str, Any]]:
-        text = str(selector or "").strip()
-        if not text:
-            return None
-        chats = self._chat_entries()
-        if text.isdigit():
-            idx = int(text)
-            if 1 <= idx <= len(chats):
-                return chats[idx - 1]
-        low = text.casefold()
-        for c in chats:
-            if not isinstance(c, dict):
-                continue
-            cid = str(c.get("id") or "")
-            name = str(c.get("name") or "")
-            if text == cid or low == name.casefold():
-                return c
-        return None
+        return self._chat_state_manager.resolve_chat_selector(selector)
 
     def _next_chat_id(self) -> str:
-        existing = {str(c.get("id") or "") for c in self._chat_entries() if isinstance(c, dict)}
-        i = 1
-        while True:
-            cid = f"chat-{i}"
-            if cid not in existing:
-                return cid
-            i += 1
+        return self._chat_state_manager.next_chat_id()
 
     def _load_chat_state(self) -> None:
-        raw: Dict[str, Any] = {}
-        p = self._chat_state_path()
-        if p.exists():
-            try:
-                with open(p, "r", encoding="utf-8") as f:
-                    loaded = json.load(f)
-                if isinstance(loaded, dict):
-                    raw = loaded
-            except Exception as e:
-                print(f"⚠️ 读取 chat 状态失败，使用默认会话: {e}")
-        chats_raw = raw.get("chats", [])
-        chats: List[Dict[str, Any]] = []
-        if isinstance(chats_raw, list):
-            for c in chats_raw:
-                if not isinstance(c, dict):
-                    continue
-                cid = str(c.get("id") or "").strip()
-                if not cid:
-                    cid = self._next_chat_id()
-                name = str(c.get("name") or "New Chat").strip() or "New Chat"
-                source = str(c.get("name_source") or "default").strip().lower()
-                if source not in ("default", "auto", "manual"):
-                    source = "default"
-                messages = c.get("messages", [])
-                if not isinstance(messages, list):
-                    messages = []
-                msgs = []
-                for m in messages:
-                    if not isinstance(m, dict):
-                        continue
-                    role = str(m.get("role") or "").strip().lower()
-                    content = str(m.get("content") or "")
-                    if role in ("user", "assistant"):
-                        clean = self._sanitize_persisted_chat_message(role, content)
-                        if clean is None:
-                            continue
-                        msgs.append({"role": role, "content": clean})
-                chats.append(
-                    {
-                        "id": cid,
-                        "name": name,
-                        "name_source": source,
-                        "created_at": str(c.get("created_at") or ""),
-                        "updated_at": str(c.get("updated_at") or ""),
-                        "messages": self._compact_redundant_user_turns(msgs),
-                    }
-                )
-        if not chats:
-            self._chat_state = self._default_chat_state()
-            chats = self._chat_entries()
-        active = str(raw.get("active") or self._chat_state.get("active") or "").strip()
-        if not active or not any(str(c.get("id")) == active for c in chats):
-            active = str(chats[0].get("id") or "chat-1")
-        self._chat_state = {"version": 1, "active": active, "chats": chats}
-        self._save_chat_state()
-        self._activate_chat(active, announce=False, clear_screen=False, print_history=False)
+        self._chat_state_manager.load_chat_state()
 
     def _sync_active_chat_messages(self) -> None:
-        with self._chat_state_lock:
-            chat = self._find_chat_by_id(self.active_chat_id)
-            if not chat:
-                return
-            chat["messages"] = list(self.conversation_history)
-            chat["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            self._save_chat_state()
+        self._chat_state_manager.sync_active_chat_messages()
 
     def _activate_chat(
         self,
@@ -704,26 +376,12 @@ class SmartShellAgent:
         clear_screen: bool = False,
         print_history: bool = False,
     ) -> str:
-        with self._chat_state_lock:
-            chat = self._find_chat_by_id(chat_id)
-            if not chat:
-                return f"❌ 未找到 chat: {chat_id}"
-            self._chat_state["active"] = chat_id
-            self.active_chat_id = chat_id
-            self.active_chat_name = str(chat.get("name") or "New Chat")
-            self.conversation_history = list(chat.get("messages") or [])
-            self.operation_results = []
-            self._session_summary_llm = ""
-            self._session_summary_rolling = ""
-            self._last_llm_summary_pair_count = 0
-            self._save_chat_state()
-        if clear_screen:
-            os.system("cls" if os.name == "nt" else "clear")
-        if print_history:
-            self._print_chat_history()
-        if announce:
-            return f"✅ 已切换到 Chat: [{self.active_chat_name}]"
-        return ""
+        return self._chat_state_manager.activate_chat(
+            chat_id,
+            announce=announce,
+            clear_screen=clear_screen,
+            print_history=print_history,
+        )
 
     def _print_chat_history(self) -> None:
         title = f"===== Chat: [{self.active_chat_name}] ====="
