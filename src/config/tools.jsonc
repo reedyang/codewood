@@ -418,6 +418,10 @@
             "type": "boolean",
             "description": "是否在检索前做一次增量刷新（默认 true）"
           },
+          "refresh_async": {
+            "type": "boolean",
+            "description": "是否异步触发增量刷新（默认 false）；启用后本次先用当前索引返回候选，刷新结果在后续轮次生效"
+          },
           "force_rebuild": {
             "type": "boolean",
             "description": "是否强制全量重建索引后再检索（慢）"

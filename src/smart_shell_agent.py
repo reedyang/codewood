@@ -247,6 +247,43 @@ class SmartShellAgent:
         except Exception:
             pass
 
+    def _schedule_project_context_refresh_background(self, force: bool = False, reason: str = "") -> bool:
+        if not self._project_context_tool_allowed():
+            return False
+        index = getattr(self, "_project_context_index", None)
+        if index is None:
+            return False
+        gate = getattr(self, "_project_context_refresh_gate", None)
+        if gate is None:
+            gate = threading.Lock()
+            self._project_context_refresh_gate = gate
+        with gate:
+            if bool(getattr(self, "_project_context_refresh_inflight", False)):
+                return False
+            self._project_context_refresh_inflight = True
+        target_root = Path(self.work_directory)
+        target_storage = Path(self.ai_workspace_dir) / "knowledge_db"
+
+        def _run() -> None:
+            try:
+                index.bind_workspace(target_root, storage_dir=target_storage)
+                index.refresh_index(
+                    force=bool(force),
+                    timeout_ms=(None if force else 2000),
+                )
+            except Exception:
+                pass
+            finally:
+                with gate:
+                    self._project_context_refresh_inflight = False
+
+        threading.Thread(
+            target=_run,
+            daemon=True,
+            name=f"smartshell-project-context-refresh:{reason or 'background'}",
+        ).start()
+        return True
+
     def _path_identity_key(self, path: Path) -> str:
         return self._workspace_state_manager.path_identity_key(path)
 
@@ -548,6 +585,7 @@ class SmartShellAgent:
         self.memory_service = None
         self._last_memory_reflect_at = 0.0
         self._schedule_memory_service_background()
+        self._schedule_project_context_refresh_background(force=False, reason="workspace-refresh")
 
     def _schedule_memory_service_background(self) -> None:
         """后台初始化经验记忆：在本线程内 import memory_manager，再构造 MemoryService（Markdown 后端，无重型依赖）。"""
