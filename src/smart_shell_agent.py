@@ -135,7 +135,7 @@ from .completion.slash_dynamic_completions import (
 )
 from . import filesystem_actions
 from . import command_actions
-from . import command_security
+from . import execution_policy_service
 from . import prompt_composer
 
 # memory_manager 在后台线程中导入（见 _schedule_memory_service_background），避免阻塞主线程初始化。
@@ -2103,71 +2103,36 @@ class SmartShellAgent:
             print("  经验记忆不可用（初始化失败）；主程序可继续运行。")
 
     def _confirm_allowlist_path(self) -> Path:
-        return command_security.confirm_allowlist_path(self)
+        return execution_policy_service.confirm_allowlist_path(self)
 
     def _freedom_script_review_cache_path(self) -> Path:
-        return self.ai_workspace_dir / "freedom_script_review_cache.json"
+        return execution_policy_service.freedom_script_review_cache_path(self)
 
     def _load_freedom_script_review_cache(self) -> None:
-        self._freedom_script_review_entries = {}
-        p = self._freedom_script_review_cache_path()
-        if not p.is_file():
-            return
-        try:
-            data = json.loads(p.read_text(encoding="utf-8"))
-            if not isinstance(data, dict):
-                return
-            ent = data.get("entries")
-            if isinstance(ent, dict):
-                self._freedom_script_review_entries = {
-                    str(k): v for k, v in ent.items() if isinstance(v, dict)
-                }
-        except Exception as e:
-            print(f"⚠️ 读取 freedom_script_review_cache.json 失败: {e}")
+        return execution_policy_service.load_freedom_script_review_cache(self)
 
     def _save_freedom_script_review_cache(self) -> bool:
-        try:
-            p = self._freedom_script_review_cache_path()
-            payload = {
-                "version": 1,
-                "entries": dict(sorted(self._freedom_script_review_entries.items())),
-            }
-            p.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-            return True
-        except Exception as e:
-            print(f"⚠️ 写入 freedom_script_review_cache.json 失败: {e}")
-            return False
+        return execution_policy_service.save_freedom_script_review_cache(self)
 
     @staticmethod
     def _sha256_utf8(text: str) -> str:
-        return hashlib.sha256(text.encode("utf-8")).hexdigest()
+        return execution_policy_service.sha256_utf8(text)
 
     def _freedom_script_eligible_for_combined_review(self, sp: Path) -> bool:
-        """Local script types that get combined AI review in freedom mode (not python -c)."""
-        if not sp.is_file():
-            return False
-        suf = sp.suffix.lower()
-        if suf not in (".py", ".ps1", ".bat", ".cmd"):
-            return False
-        return True
+        return execution_policy_service.freedom_script_eligible_for_combined_review(sp)
 
     def _freedom_try_cached_user_script_review(
-        self, path_key: str, script_body: str, command: Dict[str, Any]
+        self,
+        path_key: str,
+        script_body: str,
+        command: Dict[str, Any],
     ) -> Optional[Tuple[bool, str]]:
-        """If cache matches path + script hash + command JSON hash, return (skip, reason)."""
-        cmd_json = json.dumps(command, ensure_ascii=False, sort_keys=True)
-        h_body = self._sha256_utf8(script_body)
-        h_cmd = self._sha256_utf8(cmd_json)
-        rec = self._freedom_script_review_entries.get(path_key)
-        if not isinstance(rec, dict):
-            return None
-        if rec.get("script_sha256") != h_body or rec.get("command_sha256") != h_cmd:
-            return None
-        skip = bool(rec.get("skip_confirm"))
-        reason = rec.get("reason") if isinstance(rec.get("reason"), str) else ""
-        if not reason:
-            reason = "（缓存无说明）"
-        return (skip, reason)
+        return execution_policy_service.freedom_try_cached_user_script_review(
+            self,
+            path_key=path_key,
+            script_body=script_body,
+            command=command,
+        )
 
     def _freedom_save_user_script_review_cache(
         self,
@@ -2177,69 +2142,53 @@ class SmartShellAgent:
         skip: bool,
         reason: str,
     ) -> None:
-        cmd_json = json.dumps(command, ensure_ascii=False, sort_keys=True)
-        self._freedom_script_review_entries[path_key] = {
-            "script_sha256": self._sha256_utf8(script_body),
-            "command_sha256": self._sha256_utf8(cmd_json),
-            "skip_confirm": skip,
-            "reason": (reason or "")[:800],
-            "updated_at": datetime.now().isoformat(timespec="seconds"),
-        }
-        self._save_freedom_script_review_cache()
+        return execution_policy_service.freedom_save_user_script_review_cache(
+            self,
+            path_key=path_key,
+            script_body=script_body,
+            command=command,
+            skip=skip,
+            reason=reason,
+        )
 
     def _normalize_path_allowlist_key(self, p: Path) -> str:
-        return command_security.normalize_path_allowlist_key(p)
+        return execution_policy_service.normalize_path_allowlist_key(p)
 
     def _shell_script_allowlist_key(self, command: str) -> Optional[str]:
-        """Resolved script file path key; ignores arguments. None if no script file (e.g. python -c)."""
-        return command_security.shell_script_allowlist_key(self, command)
+        return execution_policy_service.shell_script_allowlist_key(self, command)
 
     def _salted_sha256(self, text: str, salt: str) -> str:
-        return command_security.salted_sha256(text, salt)
+        return execution_policy_service.salted_sha256(text, salt)
 
     def _shell_script_hash(self, script_path: Path) -> Optional[str]:
-        """
-        Compute salted hash for an allowlisted script file.
-        Returns None if file cannot be read or salt is unavailable.
-        """
-        return command_security.shell_script_hash(self, script_path)
+        return execution_policy_service.shell_script_hash(self, script_path)
 
     def _shell_executable_allowlist_key(self, command: str) -> str:
-        """
-        Stable key for invocations without a script path: same executable / bare name
-        regardless of trailing arguments (e.g. git, dir, or full path to an .exe).
-        """
-        return command_security.shell_executable_allowlist_key(self, command)
+        return execution_policy_service.shell_executable_allowlist_key(self, command)
 
     def _load_confirm_allowlist(self) -> None:
-        """Load shell targets that skip confirm with path+salted-hash verification."""
-        return command_security.load_confirm_allowlist(self)
+        return execution_policy_service.load_confirm_allowlist(self)
 
     def _save_confirm_allowlist(self) -> bool:
-        return command_security.save_confirm_allowlist(self)
+        return execution_policy_service.save_confirm_allowlist(self)
 
     def _shell_command_in_allowlist(self, command: str) -> bool:
-        return command_security.shell_command_in_allowlist(self, command)
+        return execution_policy_service.shell_command_in_allowlist(self, command)
 
     def _shell_confirm_should_offer_always(self, command: str) -> bool:
-        """
-        Do not offer 'a' when shell runs a session-ephemeral AI script (created via script action
-        this session, tracked in _ephemeral_script_paths).
-        """
-        return command_security.shell_confirm_should_offer_always(self, command)
+        return execution_policy_service.shell_confirm_should_offer_always(self, command)
 
     def _script_basename_in_allowlist(self, safe_name: str) -> bool:
-        return command_security.script_basename_in_allowlist(self, safe_name)
+        return execution_policy_service.script_basename_in_allowlist(self, safe_name)
 
     def _add_shell_command_allowlist(self, command: str) -> None:
-        return command_security.add_shell_command_allowlist(self, command)
+        return execution_policy_service.add_shell_command_allowlist(self, command)
 
     def _add_script_basename_allowlist(self, safe_name: str) -> None:
-        return command_security.add_script_basename_allowlist(self, safe_name)
+        return execution_policy_service.add_script_basename_allowlist(self, safe_name)
 
     def _reset_always_confirm_skip(self) -> Dict[str, Any]:
-        """Clear allowlist and restore y/n prompts."""
-        return command_security.reset_always_confirm_skip(self)
+        return execution_policy_service.reset_always_confirm_skip(self)
 
     def _prompt_confirm_yes_no_maybe_always(
         self,
@@ -2250,368 +2199,57 @@ class SmartShellAgent:
         shell_command: Optional[str] = None,
         script_basename: Optional[str] = None,
     ) -> bool:
-        """
-        kind: 'shell' | 'script' | 'text_file'. Returns True if user proceeds.
-        The **a / always** option is only used for **shell** (execute command / run script via OS)
-        when offer_always is True; it records shell script path+hash or shell exe token.
-        Workspace `script` and `text_file` are file writes: y/n only (no a).
-        """
-        if kind == "shell" and shell_command is not None and self._shell_command_in_allowlist(
-            shell_command
-        ):
-            return True
-        if offer_always:
-            line = f"{prompt_core} (y/n/a，a=将本条加入免确认列表): "
-        else:
-            line = f"{prompt_core} (y/n): "
-        raw = input(line).strip().lower()
-        if offer_always and raw in ("a", "always"):
-            if kind == "shell" and shell_command is not None:
-                self._add_shell_command_allowlist(shell_command)
-            print(
-                f"ℹ️ 已写入 {self._confirm_allowlist_path()}。"
-                "可使用 /always_confirm-reset 清空列表。"
-            )
-            return True
-        return raw in ("y", "yes")
+        return execution_policy_service.prompt_confirm_yes_no_maybe_always(
+            self,
+            prompt_core,
+            offer_always=offer_always,
+            kind=kind,
+            shell_command=shell_command,
+            script_basename=script_basename,
+        )
 
     def _parse_reversibility_response(self, text: str) -> Tuple[bool, str]:
-        """Parse model JSON; on failure treat as irreversible (still require confirm)."""
-        if not text or not isinstance(text, str):
-            return False, "空响应"
-        s = text.strip()
-        fence = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", s, re.DOTALL)
-        if fence:
-            s = fence.group(1)
-        for i, ch in enumerate(s):
-            if ch != "{":
-                continue
-            depth = 0
-            for j in range(i, len(s)):
-                if s[j] == "{":
-                    depth += 1
-                elif s[j] == "}":
-                    depth -= 1
-                    if depth == 0:
-                        chunk = s[i : j + 1]
-                        try:
-                            obj = json.loads(chunk)
-                            if "reversible" in obj:
-                                r = obj["reversible"]
-                                if isinstance(r, str):
-                                    r = r.strip().lower() in ("true", "1", "yes", "是")
-                                reason = str(obj.get("reason", "")).strip()[:200]
-                                ok = bool(r)
-                                return ok, (reason or ("可逆" if ok else "不可逆"))
-                        except json.JSONDecodeError:
-                            pass
-                        break
-        return False, "无法解析可逆性判定"
+        return execution_policy_service.parse_reversibility_response(text)
 
     def _parse_combined_freedom_response(
-        self, text: str
+        self,
+        text: str,
     ) -> Tuple[bool, bool, Optional[bool], str]:
-        """Parse one-shot freedom JSON: safe_auto, reversible, manipulation (optional), reason."""
-        if not text or not isinstance(text, str):
-            return False, False, True, "空响应"
-        s = text.strip()
-        if s.startswith("❌"):
-            return False, False, True, s[:120]
-        fence = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", s, re.DOTALL)
-        if fence:
-            s = fence.group(1)
-        for i, ch in enumerate(s):
-            if ch != "{":
-                continue
-            depth = 0
-            for j in range(i, len(s)):
-                if s[j] == "{":
-                    depth += 1
-                elif s[j] == "}":
-                    depth -= 1
-                    if depth == 0:
-                        chunk = s[i : j + 1]
-                        try:
-                            obj = json.loads(chunk)
-                            if "safe_auto" in obj and "reversible" in obj:
-                                sa = obj["safe_auto"]
-                                rev = obj["reversible"]
-                                if isinstance(sa, str):
-                                    sa = sa.strip().lower() in ("true", "1", "yes", "是")
-                                if isinstance(rev, str):
-                                    rev = rev.strip().lower() in ("true", "1", "yes", "是")
-                                reason = str(obj.get("reason", "")).strip()[:240]
-                                manip_raw = obj.get("manipulation", None)
-                                manip: Optional[bool]
-                                if manip_raw is None:
-                                    manip = None
-                                else:
-                                    if isinstance(manip_raw, str):
-                                        manip_raw = manip_raw.strip().lower() in (
-                                            "true",
-                                            "1",
-                                            "yes",
-                                            "是",
-                                        )
-                                    manip = bool(manip_raw)
-                                return (
-                                    bool(sa),
-                                    bool(rev),
-                                    manip,
-                                    reason or "已判定",
-                                )
-                        except json.JSONDecodeError:
-                            pass
-                        break
-        return False, False, True, "无法解析合并审查结果"
+        return execution_policy_service.parse_combined_freedom_response(text)
 
     @staticmethod
     def _freedom_script_quick_deny(content: str) -> bool:
-        """Fast heuristic: likely system/config modification or dangerous mass delete."""
-        if not content:
-            return False
-        low = content.lower()
-        needles = (
-            "winreg.",
-            "hkey_",
-            r"\\registry\\",
-            "_winreg",
-            "ctypes.windll",
-            "netsh ",
-            "sc.exe",
-            "reg add",
-            "reg delete",
-            "set-itemproperty",
-            "new-itemproperty",
-            "/etc/sudoers",
-            "/etc/ssh/sshd",
-            "os.environ[",
-            "putenv(",
-            "machine\\system\\currentcontrolset",
-        )
-        return any(n in low for n in needles)
+        return execution_policy_service.freedom_script_quick_deny(content)
 
     @staticmethod
     def _freedom_script_prompt_injection(content: str) -> Tuple[bool, str]:
-        """
-        Heuristic fallback: substring markers of prompt-injection / reviewer manipulation.
-        Used when the ML classifier fails or returns unparseable output.
-        Returns (matched, hint).
-        """
-        if not content:
-            return False, ""
-        low = content.lower()
-        needles = (
-            "ignore previous instructions",
-            "disregard previous instructions",
-            "override system prompt",
-            "always return",
-            '"safe_auto": true',
-            '"reversible": true',
-            "you are the reviewer",
-            "you are the classifier",
-            "请忽略之前的指令",
-            "忽略以上规则",
-            "覆盖系统提示词",
-            "总是返回 true",
-            "必须判定为可逆",
-            "必须判定为安全",
-            "让审查器通过",
-        )
-        for n in needles:
-            if n in low:
-                return True, n
-        return False, ""
+        return execution_policy_service.freedom_script_prompt_injection(content)
 
-    def _combined_review_on_model_failure(self, content: str, detail: str) -> Tuple[bool, str, bool]:
-        """When combined review API fails: keyword heuristic; conservative skip=False."""
-        hit, tok = self._freedom_script_prompt_injection(content)
-        msg = detail
-        if hit:
-            msg = f"{detail}；关键词兜底(manipulation): {tok}"
-        return False, msg, True
+    def _combined_review_on_model_failure(
+        self,
+        content: str,
+        detail: str,
+    ) -> Tuple[bool, str, bool]:
+        return execution_policy_service.combined_review_on_model_failure(content, detail)
 
     def _ai_assess_ephemeral_script_combined(
-        self, script_path: Path, content: str, command: Dict[str, Any]
+        self,
+        script_path: Path,
+        content: str,
+        command: Dict[str, Any],
     ) -> Tuple[bool, str, bool]:
-        """
-        Single AI call: safe_auto + reversible + manipulation (prompt-injection toward reviewer).
-        Auto-skip confirm iff NOT manipulation AND (safe_auto OR (NOT safe_auto AND reversible)).
-        Returns (skip_confirm, reason, manipulation_risk).
-        """
-        keys = sorted(self._ai_created_path_keys)[:120]
-        payload = (
-            f"work_directory={self.work_directory.resolve()}\n"
-            f"ai_workspace_dir={self.ai_workspace_dir.resolve()}\n"
-            f"os={os.name}\n"
-            f"ai_tracked_path_keys_normalized={json.dumps(keys, ensure_ascii=False)}\n"
-            f"script_file={script_path.resolve()}\n\n"
-            f"--- script source ---\n{content}\n--- end ---\n\n"
-            f"--- command JSON ---\n{json.dumps(command, ensure_ascii=False)}\n"
+        return execution_policy_service.ai_assess_ephemeral_script_combined(
+            self,
+            script_path=script_path,
+            content=content,
+            command=command,
         )
-        raw = self.call_ai(
-            payload,
-            context="",
-            stream=False,
-            freedom_combined_review=True,
-        )
-        if not isinstance(raw, str):
-            return self._combined_review_on_model_failure(content, "模型返回类型异常")
-        if raw.strip().startswith("❌"):
-            return self._combined_review_on_model_failure(content, raw.strip()[:120])
-        safe_auto, reversible, manip, reason = self._parse_combined_freedom_response(raw)
-        if "无法解析" in reason:
-            return self._combined_review_on_model_failure(content, reason)
-        if manip is None:
-            hit, tok = self._freedom_script_prompt_injection(content)
-            manip = hit
-            if hit:
-                reason = f"{reason}；关键词兜底(manipulation): {tok}"
-        skip = (not manip) and (safe_auto or ((not safe_auto) and reversible))
-        return skip, reason, bool(manip)
 
     def _ai_assess_reversible(self, command: Dict[str, Any]) -> Tuple[bool, str]:
-        payload = json.dumps(command, ensure_ascii=False)
-        raw = self.call_ai(
-            payload, context="", stream=False, minimal_classifier=True
-        )
-        if not isinstance(raw, str):
-            return False, "模型返回类型异常"
-        if raw.strip().startswith("❌"):
-            return False, raw.strip()[:120]
-        return self._parse_reversibility_response(raw)
+        return execution_policy_service.ai_assess_reversible(self, command)
 
     def _freedom_auto_confirm(self, command: Dict[str, Any]) -> bool:
-        """Return True to skip interactive confirmation (move/delete/shell/text_file/git write)."""
-        policy = str(getattr(self, "execution_policy", "confirmation")).lower()
-        if policy == "confirmation":
-            return False
-        if policy == "unlimited":
-            return True
-        action = command.get("tool") or command.get("action")
-        params = command.get("args")
-        if not isinstance(params, dict):
-            params = command.get("params") or {}
-
-        if action == "delete":
-            p = params.get("path") or params.get("file_name") or params.get("name")
-            if p and self._is_ai_created_path(str(p)):
-                print("🦅 自由模式：删除目标为本会话 AI 创建或产出的文件，跳过确认。")
-                return True
-
-        if action == "move":
-            src = params.get("source")
-            if src and self._is_ai_created_path(str(src)):
-                print("🦅 自由模式：移动源为本会话 AI 创建或产出的文件，跳过确认。")
-                return True
-
-        if action == "shell":
-            cmd = params.get("command") or ""
-            s = (cmd or "").strip()
-
-            # Inline Python (-c): no script file on disk to review here
-            if re.search(
-                r"(?i)(?:^|[\s;&|])(?:py(?:thon)?(?:\d(?:\.\d)?)?|pythonw)\s+-\s*c\s+", s
-            ):
-                print("🦅 自由模式：工作目录内联 Python（-c），跳过确认。")
-                return True
-
-            sp = self._parse_shell_invoked_script_path(s)
-            if sp is not None:
-                # Reload allowlist so manual edits to confirm_allowlist.json can take effect immediately.
-                self._load_confirm_allowlist()
-                sk = self._normalize_path_allowlist_key(sp)
-                expected = self._allowlist_shell_paths.get(sk)
-                if expected:
-                    actual = self._shell_script_hash(sp)
-                    if actual and actual == expected:
-                        print("🦅 自由模式：命中免确认脚本哈希校验，跳过 AI 审核并直接执行。")
-                        return True
-
-                k = self._ephemeral_path_key(sp)
-                session_ephemeral = k in self._ephemeral_script_paths
-                combined_eligible = sp.is_file() and (
-                    session_ephemeral or self._freedom_script_eligible_for_combined_review(sp)
-                )
-                # Script file on disk: combined review for session AI scripts or workspace scripts
-                if combined_eligible:
-                    try:
-                        body = sp.read_text(encoding="utf-8", errors="replace")
-                    except OSError as e:
-                        print(f"⚠️ 无法读取待审查脚本: {e}")
-                        body = ""
-                    max_len = 200_000
-                    if len(body) > max_len:
-                        body = body[:max_len] + "\n# ... [truncated for review] ..."
-                    if self._freedom_script_quick_deny(body):
-                        print(
-                            "🦅 自由模式：脚本内容命中高风险启发规则（如注册表/系统配置相关），"
-                            "改由操作级可逆判定。"
-                        )
-                        reversible, reason = self._ai_assess_reversible(command)
-                        if reversible:
-                            print(f"🦅 判定为可逆，自动跳过确认 — {reason}")
-                        else:
-                            print(f"🦅 判定为不可逆或不确定，仍需手动确认 — {reason}")
-                        return reversible
-                    # Persist/cache only for scripts not created via this session's "script" action
-                    use_cache = not session_ephemeral
-                    if use_cache:
-                        cached = self._freedom_try_cached_user_script_review(k, body, command)
-                        if cached is not None:
-                            skip_c, reason_c = cached
-                            tag = "可自动跳过确认" if skip_c else "需手动确认"
-                            print(
-                                f"🦅 自由模式：已使用配置文件中的脚本审核缓存（脚本与命令哈希一致），{tag} — {reason_c}"
-                            )
-                            return skip_c
-                    print(
-                        "🦅 自由模式：正在审查脚本安全、诱导内容与操作可逆性（单次 AI）…"
-                    )
-                    skip, reason, inj_risk = self._ai_assess_ephemeral_script_combined(
-                        sp, body, command
-                    )
-                    if use_cache:
-                        self._freedom_save_user_script_review_cache(k, body, command, skip, reason)
-                    if inj_risk:
-                        print(
-                            _ansi_red(
-                                "🚫 自由模式：合并审查判定脚本存在审查诱导/提示词注入风险 — "
-                                f"{reason}"
-                            )
-                        )
-                        print(
-                            _ansi_red(
-                                "🚫 建议不要执行该脚本；如必须执行，请先人工审查并手动确认。"
-                            )
-                        )
-                        return False
-                    if skip:
-                        print(f"🦅 判定为可自动跳过确认 — {reason}")
-                    else:
-                        print(f"🦅 判定为需手动确认 — {reason}")
-                    return skip
-
-                if k in self._ai_created_path_keys:
-                    print("🦅 自由模式：命令作用于本会话已跟踪的 AI 产出路径，跳过确认。")
-                    return True
-
-            print("🦅 自由模式：正在请 AI 判定操作是否可逆…")
-            reversible, reason = self._ai_assess_reversible(command)
-            if reversible:
-                print(f"🦅 判定为可逆，自动跳过确认 — {reason}")
-            else:
-                print(f"🦅 判定为不可逆或不确定，仍需手动确认 — {reason}")
-            return reversible
-
-        print("🦅 自由模式：正在请 AI 判定操作是否可逆…")
-        reversible, reason = self._ai_assess_reversible(command)
-        if reversible:
-            print(f"🦅 判定为可逆，自动跳过确认 — {reason}")
-        else:
-            print(f"🦅 判定为不可逆或不确定，仍需手动确认 — {reason}")
-        return reversible
-
+        return execution_policy_service.freedom_auto_confirm(self, command)
     def _validate_model(self) -> None:
         """验证模型是否可用（仅 ollama 模式）。"""
         self._validate_single_model(self.provider, self.model_name, "模型")
