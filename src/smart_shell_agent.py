@@ -100,6 +100,31 @@ from .session_memory_service import SessionMemoryService
 from .policy.path_policy import PathPolicy
 from .tool_dispatcher import ToolDispatcher
 from .builtin_command_router import dispatch_builtin_command
+from .workspace_command_controller import (
+    handle_workspace_builtin_command,
+    parse_workspace_command_args,
+    print_workspace_current,
+    print_workspace_help,
+    print_workspace_list,
+    split_workspace_args,
+    workspace_create_command,
+    workspace_delete_command,
+    workspace_rename_command,
+    workspace_subcommand_usage,
+    workspace_switch_command,
+    workspace_update_command,
+    workspace_usage,
+)
+from .chat_command_controller import (
+    chat_usage,
+    handle_chat_builtin_command,
+    print_chat_list,
+)
+from .mcp_shortcut_controller import (
+    mcp_item_label,
+    parse_mcp_shortcut_command,
+    print_mcp_shortcut_result,
+)
 from .completion.slash_dynamic_completions import (
     build_mcp_scoped_commands,
     build_mcp_scoped_groups,
@@ -780,11 +805,7 @@ class SmartShellAgent:
             return None
 
     def _split_workspace_args(self, text: str) -> Tuple[List[str], Optional[str]]:
-        try:
-            parts = shlex.split(text or "", posix=False)
-        except ValueError as e:
-            return [], f"参数解析失败: {e}"
-        return [p.strip().strip('"').strip("'") for p in parts if p.strip()], None
+        return split_workspace_args(text)
 
     def _parse_workspace_command_args(
         self,
@@ -792,352 +813,40 @@ class SmartShellAgent:
         value_flags: Set[str],
         bool_flags: Set[str],
     ) -> Tuple[List[str], Dict[str, Any], Optional[str]]:
-        parts, err = self._split_workspace_args(text)
-        if err:
-            return [], {}, err
-        positionals: List[str] = []
-        options: Dict[str, Any] = {}
-        i = 0
-        while i < len(parts):
-            token = parts[i]
-            matched_value_flag = None
-            for flag in value_flags:
-                if token == flag or token.startswith(f"{flag}="):
-                    matched_value_flag = flag
-                    break
-            if matched_value_flag:
-                key = matched_value_flag[2:].replace("-", "_")
-                if token.startswith(f"{matched_value_flag}="):
-                    value = token.split("=", 1)[1].strip()
-                else:
-                    i += 1
-                    if i >= len(parts):
-                        return [], {}, f"{matched_value_flag} 需要一个值"
-                    value = parts[i]
-                options[key] = value
-            elif token in bool_flags:
-                options[token[2:].replace("-", "_")] = True
-            elif token.startswith("--"):
-                return [], {}, f"未知参数: {token}"
-            else:
-                positionals.append(token)
-            i += 1
-        return positionals, options, None
+        return parse_workspace_command_args(self, text, value_flags, bool_flags)
 
     def _workspace_usage(self) -> str:
-        return (
-            "用法:\n"
-            "  /workspace list\n"
-            "  /workspace current\n"
-            "  /workspace create <path> [--name <name>]\n"
-            "  /workspace switch <name|id|path>\n"
-            "  /workspace update <name|id|path> [--name <name>] [--path <path>]\n"
-            "  /workspace rename <name|id|path> <new name>\n"
-            "  /workspace delete <name|id|path> [--remove-files]\n"
-            "    --remove-files: 删除该自定义 workspace 根目录下的 .smartshell/，"
-            "包括 history、temp、skills、knowledge、knowledge_db 等 Smart Shell 数据；"
-            "不会删除 workspace 根目录或其它项目文件。"
-        )
+        return workspace_usage()
 
     def _workspace_subcommand_usage(self, subcommand: str) -> str:
-        usages = {
-            "help": "/workspace help",
-            "current": "/workspace current",
-            "list": "/workspace list",
-            "create": "/workspace create <path> [--name <name>]",
-            "switch": "/workspace switch <name|id|path>",
-            "update": "/workspace update <name|id|path> [--name <name>] [--path <path>]",
-            "rename": "/workspace rename <name|id|path> <new name>",
-            "delete": "/workspace delete <name|id|path> [--remove-files]",
-        }
-        usage = usages.get(str(subcommand or "").strip().lower())
-        if usage:
-            detail = ""
-            if str(subcommand or "").strip().lower() == "delete":
-                detail = (
-                    "\n说明: --remove-files 会删除该自定义 workspace 根目录下的 .smartshell/ "
-                    "及其所有文件和子目录；不会删除 workspace 根目录或其它项目文件。"
-                )
-            return f"用法: {usage}{detail}"
-        return self._workspace_usage()
+        return workspace_subcommand_usage(self, subcommand)
 
     def _handle_workspace_builtin_command(self, builtin_line: str) -> bool:
-        raw = (builtin_line or "").strip()
-        if not raw.lower().startswith("workspace"):
-            return False
-        parts, err = self._split_workspace_args(raw)
-        if err:
-            print(f"❌ {err}\n{self._workspace_usage()}")
-            return True
-        if not parts or parts[0].lower() != "workspace":
-            return False
-        if len(parts) == 1:
-            self._print_workspace_help()
-            return True
-
-        sub = parts[1].lower()
-        match = re.match(r"(?is)^workspace\s+\S+(?:\s+(.*))?$", raw)
-        arg_text = (match.group(1) if match else "") or ""
-
-        if sub == "help":
-            if arg_text.strip():
-                print(f"❌ {self._workspace_subcommand_usage('help')}")
-            else:
-                self._print_workspace_help()
-            return True
-        if sub == "current":
-            if arg_text.strip():
-                print(f"❌ {self._workspace_subcommand_usage('current')}")
-            else:
-                self._print_workspace_current()
-            return True
-        if sub == "list":
-            if arg_text.strip():
-                print(f"❌ {self._workspace_subcommand_usage('list')}")
-            else:
-                self._print_workspace_list()
-            return True
-        if sub == "create":
-            print(self._workspace_create_command(arg_text.strip()))
-            return True
-        if sub == "switch":
-            if not arg_text.strip():
-                print(f"❌ {self._workspace_subcommand_usage('switch')}")
-            else:
-                print(self._workspace_switch_command(arg_text.strip()))
-            return True
-        if sub == "update":
-            print(self._workspace_update_command(arg_text.strip()))
-            return True
-        if sub == "rename":
-            print(self._workspace_rename_command(arg_text.strip()))
-            return True
-        if sub == "delete":
-            print(self._workspace_delete_command(arg_text.strip()))
-            return True
-
-        print(f"❌ 无效 workspace 子命令: {parts[1]}\n{self._workspace_usage()}")
-        return True
+        return handle_workspace_builtin_command(self, builtin_line)
 
     def _print_workspace_help(self) -> None:
-        print(self._workspace_usage())
-        print("说明:")
-        print("  - 默认 workspace 固定名为 Default，数据目录仍为 config.json 同级的 workspace/")
-        print("  - 自定义 workspace 的 Smart Shell 数据保存在该目录下的 .smartshell/")
-        print("  - /workspace delete 默认只移除登记；带 --remove-files 时会删除该自定义 workspace 的 .smartshell/ 及其全部内容，不会删除 workspace 根目录或其它项目文件。")
-        print("  - 路径或名称包含空格时请使用引号")
+        print_workspace_help(self)
 
     def _print_workspace_current(self) -> None:
-        print(f"当前 workspace: {self.workspace_name} ({self.workspace_id})")
-        print(f"  root: {self.workspace_root}")
-        print(f"  storage: {self.ai_workspace_dir}")
-        print(f"  current directory: {self.work_directory}")
+        print_workspace_current(self)
 
     def _print_workspace_list(self) -> None:
-        workspaces = self._workspaces_state.get("workspaces", {})
-        if not isinstance(workspaces, dict):
-            print("未找到 workspace 配置")
-            return
-        print("Workspaces:")
-        ordered = sorted(
-            workspaces.values(),
-            key=lambda e: (0 if isinstance(e, dict) and e.get("id") == DEFAULT_WORKSPACE_ID else 1, str(e.get("name") if isinstance(e, dict) else "")),
-        )
-        for entry in ordered:
-            if not isinstance(entry, dict):
-                continue
-            marker = "*" if str(entry.get("id")) == getattr(self, "workspace_id", DEFAULT_WORKSPACE_ID) else " "
-            print(f"{marker} {entry.get('name')} ({entry.get('id')})")
-            print(f"    root: {self._workspace_root_path(entry)}")
-            print(f"    storage: {self._workspace_storage_path(entry)}")
-            if entry.get("current_dir"):
-                print(f"    current: {entry.get('current_dir')}")
+        print_workspace_list(self)
 
     def _workspace_create_command(self, arg_text: str) -> str:
-        positionals, options, err = self._parse_workspace_command_args(arg_text, {"--name"}, set())
-        if err:
-            return f"❌ {err}\n{self._workspace_subcommand_usage('create')}"
-        if len(positionals) != 1:
-            return f"用法: /workspace create <path> [--name <name>]"
-        root = self._workspace_path_from_arg(positionals[0])
-        name = str(options.get("name") or root.name or str(root)).strip()
-        if not name:
-            return "❌ workspace 名称不能为空"
-        if self._workspace_name_exists(name):
-            return f"❌ workspace 名称已存在: {name}"
-        existing = self._workspace_entry_by_root(root)
-        if existing:
-            return f"❌ 该目录已经是 workspace: {existing.get('name')} ({existing.get('id')})"
-        try:
-            root.mkdir(parents=True, exist_ok=True)
-            storage = root / ".smartshell"
-            storage.mkdir(parents=True, exist_ok=True)
-        except OSError as e:
-            return f"❌ 创建 workspace 目录失败: {e}"
-        workspace_id = self._workspace_id_for_path(root)
-        base_id = workspace_id
-        counter = 2
-        workspaces = self._workspaces_state.setdefault("workspaces", {})
-        while workspace_id in workspaces:
-            workspace_id = f"{base_id}_{counter}"
-            counter += 1
-        workspaces[workspace_id] = {
-            "id": workspace_id,
-            "name": name,
-            "kind": "custom",
-            "root": str(root),
-            "storage": str(storage),
-            "current_dir": str(root),
-        }
-        self._save_workspace_state()
-        self._refresh_input_handler_skill_completions()
-        return f"✅ 已创建 workspace: {name} ({workspace_id})\n  root: {root}\n  storage: {storage}"
+        return workspace_create_command(self, arg_text)
 
     def _workspace_switch_command(self, selector: str) -> str:
-        entry = self._workspace_entry_by_selector(selector)
-        if not entry:
-            return f"❌ 未找到 workspace: {selector}"
-        if str(entry.get("id")) == getattr(self, "workspace_id", DEFAULT_WORKSPACE_ID):
-            return f"ℹ️ 已经在 workspace: {self.workspace_name}"
-        self._save_current_workspace_position()
-        self._apply_workspace_entry(entry, self.work_directory)
-        # Do NOT save chat state here: _apply_workspace_entry already points
-        # ai_workspace_dir to target workspace, while conversation/chat state is
-        # still from previous workspace before _refresh_workspace_runtime().
-        # Saving now would copy old chats into the new workspace.
-        self._refresh_workspace_runtime()
-        return f"✅ 已切换到 workspace: {self.workspace_name}\n  current directory: {self.work_directory}"
+        return workspace_switch_command(self, selector)
 
     def _workspace_update_command(self, arg_text: str) -> str:
-        positionals, options, err = self._parse_workspace_command_args(arg_text, {"--name", "--path"}, set())
-        if err:
-            return f"❌ {err}\n{self._workspace_subcommand_usage('update')}"
-        if len(positionals) != 1 or not options:
-            return "用法: /workspace update <name|id|path> [--name <name>] [--path <path>]"
-        entry = self._workspace_entry_by_selector(positionals[0])
-        if not entry:
-            return f"❌ 未找到 workspace: {positionals[0]}"
-        workspace_id = str(entry.get("id") or "")
-        if workspace_id == DEFAULT_WORKSPACE_ID:
-            return "❌ 默认 workspace 的名称和目录固定，不能修改"
-        active_workspace = workspace_id == getattr(self, "workspace_id", DEFAULT_WORKSPACE_ID)
-        if active_workspace:
-            self._save_current_workspace_position()
-
-        old_root = self._workspace_root_path(entry)
-        old_storage = self._workspace_storage_path(entry)
-        messages: List[str] = []
-        if "name" in options:
-            new_name = str(options.get("name") or "").strip()
-            if not new_name:
-                return "❌ workspace 名称不能为空"
-            if self._workspace_name_exists(new_name, ignore_id=workspace_id):
-                return f"❌ workspace 名称已存在: {new_name}"
-            entry["name"] = new_name
-            messages.append(f"name={new_name}")
-
-        if "path" in options:
-            new_root = self._workspace_path_from_arg(str(options.get("path") or ""))
-            duplicate = self._workspace_entry_by_root(new_root, ignore_id=workspace_id)
-            if duplicate:
-                return f"❌ 目标目录已经是 workspace: {duplicate.get('name')} ({duplicate.get('id')})"
-            new_storage = new_root / ".smartshell"
-            if active_workspace:
-                self._shutdown_mcp_runtime()
-                self._shutdown_workspace_services(wait=True)
-            try:
-                new_root.mkdir(parents=True, exist_ok=True)
-                if old_storage.exists() and self._path_identity_key(old_storage) != self._path_identity_key(new_storage) and not new_storage.exists():
-                    new_storage.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.move(str(old_storage), str(new_storage))
-                    messages.append("storage=moved")
-                else:
-                    new_storage.mkdir(parents=True, exist_ok=True)
-                    if old_storage.exists() and self._path_identity_key(old_storage) != self._path_identity_key(new_storage):
-                        messages.append("storage=kept-existing-new-location")
-            except Exception as e:
-                return f"❌ 修改 workspace 目录失败: {e}"
-            current_dir = self._workspace_current_dir_path(entry)
-            try:
-                rel = current_dir.relative_to(old_root) if current_dir is not None else None
-            except Exception:
-                rel = None
-            if rel is not None:
-                candidate = new_root / rel
-                entry["current_dir"] = str(candidate if candidate.exists() else new_root)
-            else:
-                entry["current_dir"] = str(new_root)
-            entry["root"] = str(new_root)
-            entry["storage"] = str(new_storage)
-            messages.append(f"path={new_root}")
-
-        self._save_workspace_state()
-        self._refresh_input_handler_skill_completions()
-        if active_workspace:
-            self._apply_workspace_entry(entry, self.work_directory)
-            self._refresh_workspace_runtime()
-        return f"✅ 已修改 workspace: {entry.get('name')} ({workspace_id})\n  " + ", ".join(messages)
+        return workspace_update_command(self, arg_text)
 
     def _workspace_rename_command(self, arg_text: str) -> str:
-        positionals, options, err = self._parse_workspace_command_args(arg_text, set(), set())
-        if err:
-            return f"❌ {err}\n{self._workspace_subcommand_usage('rename')}"
-        if len(positionals) < 2:
-            return "用法: /workspace rename <name|id|path> <new name>"
-        selector = positionals[0]
-        new_name = " ".join(positionals[1:]).strip()
-        return self._workspace_update_command(f'"{selector}" --name "{new_name}"')
+        return workspace_rename_command(self, arg_text)
 
     def _workspace_delete_command(self, arg_text: str) -> str:
-        positionals, options, err = self._parse_workspace_command_args(arg_text, set(), {"--remove-files"})
-        if err:
-            return f"❌ {err}\n{self._workspace_subcommand_usage('delete')}"
-        if len(positionals) != 1:
-            return f"❌ {self._workspace_subcommand_usage('delete')}"
-        entry = self._workspace_entry_by_selector(positionals[0])
-        if not entry:
-            return f"❌ 未找到 workspace: {positionals[0]}"
-        workspace_id = str(entry.get("id") or "")
-        if workspace_id == DEFAULT_WORKSPACE_ID:
-            return "❌ 默认 workspace 不能删除"
-
-        storage = self._workspace_storage_path(entry)
-        remove_files = bool(options.get("remove_files"))
-        if remove_files and storage.exists():
-            confirm = input(f"确认删除 workspace 数据目录 '{storage}'？只会删除 .smartshell，不会删除 workspace 根目录。(y/n): ").strip().lower()
-            if confirm != "y":
-                return "已取消删除 workspace 数据目录"
-
-        active_deleted = workspace_id == getattr(self, "workspace_id", DEFAULT_WORKSPACE_ID)
-        if active_deleted:
-            self._save_current_workspace_position()
-        workspaces = self._workspaces_state.get("workspaces", {})
-        if isinstance(workspaces, dict):
-            workspaces.pop(workspace_id, None)
-        if active_deleted:
-            default_entry = (
-                workspaces.get(DEFAULT_WORKSPACE_ID)
-                if isinstance(workspaces, dict) and isinstance(workspaces.get(DEFAULT_WORKSPACE_ID), dict)
-                else self._default_workspace_entry()
-            )
-            if isinstance(workspaces, dict):
-                workspaces[DEFAULT_WORKSPACE_ID] = default_entry
-            self._apply_workspace_entry(default_entry, self.work_directory)
-            self._save_current_workspace_position()
-            self._refresh_workspace_runtime()
-        else:
-            self._save_workspace_state()
-        self._refresh_input_handler_skill_completions()
-
-        removed_data = False
-        if remove_files and storage.exists():
-            try:
-                shutil.rmtree(storage)
-                removed_data = True
-            except OSError as e:
-                return f"⚠️ workspace 已从列表删除，但删除数据目录失败: {e}"
-        suffix = f"\n  已删除数据目录: {storage}" if removed_data else ""
-        return f"✅ 已删除 workspace: {entry.get('name')} ({workspace_id}){suffix}"
+        return workspace_delete_command(self, arg_text)
 
     def _chat_state_path(self) -> Path:
         return self.ai_workspace_dir / CHAT_STATE_FILE
@@ -1490,125 +1199,13 @@ class SmartShellAgent:
                 self._save_chat_state()
 
     def _chat_usage(self) -> str:
-        return (
-            "用法:\n"
-            "  /chat list\n"
-            "  /chat current\n"
-            "  /chat new [name]\n"
-            "  /chat switch <index|id|name>\n"
-            "  /chat rename <index|id|name> <new name>\n"
-            "  /chat delete <index|id|name>\n"
-            "  /chat delete all\n"
-        )
+        return chat_usage()
 
     def _print_chat_list(self) -> None:
-        chats = self._chat_entries()
-        if not chats:
-            print("当前 workspace 下没有 chat")
-            return
-        print(f"Chats (workspace={self.workspace_name}):")
-        for i, c in enumerate(chats, start=1):
-            marker = "*" if str(c.get("id") or "") == self.active_chat_id else " "
-            name = str(c.get("name") or "New Chat")
-            cnt = len(c.get("messages") or [])
-            print(f"{marker} [{i}] {name} - {cnt} msgs")
+        print_chat_list(self)
 
     def _handle_chat_builtin_command(self, builtin_line: str) -> bool:
-        raw = str(builtin_line or "").strip()
-        if not raw.lower().startswith("chat"):
-            return False
-        parts = shlex.split(raw)
-        if len(parts) == 1 or parts[1].lower() in ("help", "-h", "--help"):
-            print(self._chat_usage())
-            return True
-        sub = parts[1].lower()
-        if sub == "list":
-            self._print_chat_list()
-            return True
-        if sub == "current":
-            print(f"当前 Chat: [{self.active_chat_name}] ({self.active_chat_id})")
-            return True
-        if sub == "new":
-            name = " ".join(parts[2:]).strip() if len(parts) > 2 else "New Chat"
-            with self._chat_state_lock:
-                cid = self._next_chat_id()
-                self._chat_entries().append(self._new_chat_entry(cid, name=name))
-                self._save_chat_state()
-            self._activate_chat(cid, announce=False, clear_screen=False, print_history=True)
-            print(f"✅ 已创建并切换到 Chat: [{self.active_chat_name}] ({self.active_chat_id})")
-            return True
-        if sub == "switch":
-            if len(parts) < 3:
-                print("❌ 用法: /chat switch <index|id|name>")
-                return True
-            selector = " ".join(parts[2:]).strip()
-            with self._chat_state_lock:
-                target = self._resolve_chat_selector(selector)
-                if not target:
-                    print(f"❌ 未找到 chat: {selector}")
-                    return True
-                cid = str(target.get("id") or "")
-            print(self._activate_chat(cid, announce=True, clear_screen=False, print_history=True))
-            return True
-        if sub == "rename":
-            if len(parts) < 4:
-                print("❌ 用法: /chat rename <index|id|name> <new name>")
-                return True
-            selector = parts[2]
-            new_name = " ".join(parts[3:]).strip()
-            if not new_name:
-                print("❌ Chat 名称不能为空")
-                return True
-            with self._chat_state_lock:
-                target = self._resolve_chat_selector(selector)
-                if not target:
-                    print(f"❌ 未找到 chat: {selector}")
-                    return True
-                target["name"] = new_name
-                target["name_source"] = "manual"
-                target["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                if str(target.get("id") or "") == self.active_chat_id:
-                    self.active_chat_name = new_name
-                self._save_chat_state()
-            print(f"✅ 已重命名 Chat: {new_name}")
-            return True
-        if sub == "delete":
-            if len(parts) < 3:
-                print("❌ 用法: /chat delete <index|id|name>")
-                return True
-            selector = " ".join(parts[2:]).strip()
-            if selector.lower() == "all":
-                with self._chat_state_lock:
-                    cid = self._next_chat_id()
-                    self._chat_state["chats"] = [self._new_chat_entry(cid, name="New Chat")]
-                    self._chat_state["active"] = cid
-                    self._save_chat_state()
-                self._activate_chat(cid, announce=False, clear_screen=False, print_history=True)
-                print("✅ 已删除所有 Chat，并自动创建新的 Chat: [New Chat]")
-                return True
-            with self._chat_state_lock:
-                target = self._resolve_chat_selector(selector)
-                if not target:
-                    print(f"❌ 未找到 chat: {selector}")
-                    return True
-                chats = self._chat_entries()
-                if len(chats) <= 1:
-                    print("❌ 至少保留一个 chat，不能删除最后一个")
-                    return True
-                tid = str(target.get("id") or "")
-                chats[:] = [c for c in chats if str(c.get("id") or "") != tid]
-                next_id = self.active_chat_id
-                if tid == self.active_chat_id:
-                    next_id = str(chats[0].get("id") or "")
-                self._chat_state["chats"] = chats
-                self._save_chat_state()
-            print(f"✅ 已删除 Chat: {target.get('name')} ({target.get('id')})")
-            if tid == self.active_chat_id and next_id:
-                self._activate_chat(next_id, announce=False, clear_screen=False, print_history=True)
-                print(f"✅ 已切换到 Chat: [{self.active_chat_name}]")
-            return True
-        print(f"❌ 未识别的 chat 子命令: {sub}\n{self._chat_usage()}")
-        return True
+        return handle_chat_builtin_command(self, builtin_line)
 
     def _shutdown_mcp_runtime(self) -> None:
         manager = getattr(self, "mcp_manager", None)
@@ -4211,205 +3808,14 @@ class SmartShellAgent:
         return execute_tool_call_legacy(self, tool_name, arguments)
 
     def _parse_mcp_shortcut_command(self, builtin_line: str) -> Tuple[Optional[str], Dict[str, Any], Optional[str]]:
-        """
-        Parse '/mcp ...' shortcuts into tool calls.
-        Rules:
-        - Only required parameters are accepted.
-        - Optional parameters are not supported in shortcuts.
-        - For 'mcp_list_disabled_tools', server is optional.
-        """
-        raw = (builtin_line or "").strip()
-        if not raw:
-            return None, {}, "命令为空"
-        parts = raw.split()
-        low = [p.lower() for p in parts]
-        if not low:
-            return None, {}, None
-        if low[0] != "mcp":
-            return None, {}, None
-        if len(parts) < 2:
-            return None, {}, "用法: /mcp <subcommand> [args]"
-        cmd = low[1]
-
-        if cmd == "reload-config" and len(parts) == 2:
-            return "mcp_reload_config", {}, None
-        if cmd == "reload-config" and len(parts) != 2:
-            return None, {}, "用法: /mcp reload-config"
-        if cmd == "status" and len(parts) == 2:
-            return "mcp_status", {}, None
-        if cmd == "status" and len(parts) != 2:
-            return None, {}, "用法: /mcp status"
-        if cmd == "status-refresh" and len(parts) == 2:
-            return "mcp_status_refresh", {}, None
-        if cmd == "status-refresh" and len(parts) != 2:
-            return None, {}, "用法: /mcp status-refresh"
-        if cmd == "reconnect" and len(parts) == 3:
-            return "mcp_reconnect", {"server": parts[2]}, None
-        if cmd == "reconnect":
-            return None, {}, "用法: /mcp reconnect <server>"
-        if cmd == "server-info" and len(parts) == 3:
-            return "mcp_server_info", {"server": parts[2]}, None
-        if cmd == "server-info":
-            return None, {}, "用法: /mcp server-info <server>"
-        if cmd == "list-tools" and len(parts) == 3:
-            return "mcp_list_tools", {"server": parts[2]}, None
-        if cmd == "list-tools":
-            return None, {}, "用法: /mcp list-tools <server>"
-        if cmd == "list-resources" and len(parts) == 3:
-            return "mcp_list_resources", {"server": parts[2]}, None
-        if cmd == "list-resources":
-            return None, {}, "用法: /mcp list-resources <server>"
-        if cmd == "list-resource-templates" and len(parts) == 3:
-            return "mcp_list_resource_templates", {"server": parts[2]}, None
-        if cmd == "list-resource-templates":
-            return None, {}, "用法: /mcp list-resource-templates <server>"
-        if cmd == "list-prompts" and len(parts) == 3:
-            return "mcp_list_prompts", {"server": parts[2]}, None
-        if cmd == "list-prompts":
-            return None, {}, "用法: /mcp list-prompts <server>"
-        if cmd == "list-disabled-tools":
-            if len(parts) == 2:
-                return "mcp_list_disabled_tools", {}, None
-            if len(parts) == 3:
-                return "mcp_list_disabled_tools", {"server": parts[2]}, None
-            return None, {}, "用法: /mcp list-disabled-tools [server]"
-
-        if cmd == "disable-tools" and len(parts) >= 4:
-            server = parts[2]
-            tools_csv = " ".join(parts[3:]).strip()
-            tools = [x.strip() for x in tools_csv.split(",") if x.strip()]
-            if not tools:
-                return None, {}, "缺少 tools 参数，请使用逗号分隔，例如: /mcp disable-tools playwright browser_click,browser_type"
-            return "mcp_disable_tools", {"server": server, "tools": tools}, None
-        if cmd == "disable-tools":
-            return None, {}, "用法: /mcp disable-tools <server> <tool1,tool2>"
-
-        if cmd == "enable-tools" and len(parts) >= 4:
-            server = parts[2]
-            tools_csv = " ".join(parts[3:]).strip()
-            tools = [x.strip() for x in tools_csv.split(",") if x.strip()]
-            if not tools:
-                return None, {}, "缺少 tools 参数，请使用逗号分隔，例如: /mcp enable-tools playwright browser_click,browser_type"
-            return "mcp_enable_tools", {"server": server, "tools": tools}, None
-        if cmd == "enable-tools":
-            return None, {}, "用法: /mcp enable-tools <server> <tool1,tool2>"
-
-        return None, {}, (
-            "无效 MCP 快捷命令。可用示例："
-            "/mcp status, /mcp status-refresh, /mcp reload-config, "
-            "/mcp reconnect <server>, /mcp server-info <server>, "
-            "/mcp list-tools <server>, /mcp list-resources <server>, "
-            "/mcp list-resource-templates <server>, /mcp list-prompts <server>, "
-            "/mcp list-disabled-tools [server], "
-            "/mcp disable-tools <server> <tool1,tool2>, /mcp enable-tools <server> <tool1,tool2>"
-        )
+        return parse_mcp_shortcut_command(builtin_line)
 
     @staticmethod
     def _mcp_item_label(item: Any) -> str:
-        if not isinstance(item, dict):
-            return str(item)
-        for k in ("display_name", "name", "uri", "id", "title"):
-            v = item.get(k)
-            if isinstance(v, str) and v.strip():
-                return v.strip()
-        return str(item)
+        return mcp_item_label(item)
 
     def _print_mcp_shortcut_result(self, tool_name: str, args: Dict[str, Any], result: Dict[str, Any]) -> None:
-        print("\n=== MCP Command Result ===")
-        print(f"Command: {tool_name}")
-        if not result.get("success", False):
-            print(f"Status : FAILED")
-            print(f"Error  : {result.get('error', '未知错误')}")
-            print("==========================\n")
-            return
-
-        print("Status : OK")
-        if tool_name == "mcp_reload_config":
-            print(f"Changed: {bool(result.get('changed', False))}")
-            summary = result.get("summary", {}) if isinstance(result.get("summary"), dict) else {}
-            added = ", ".join(summary.get("added", [])) or "None"
-            changed = ", ".join(summary.get("changed", [])) or "None"
-            removed = ", ".join(summary.get("removed", [])) or "None"
-            print(f"Added  : {added}")
-            print(f"Updated: {changed}")
-            print(f"Removed: {removed}")
-        elif tool_name in ("mcp_status", "mcp_status_refresh"):
-            status = result.get("status", {}) if isinstance(result.get("status"), dict) else {}
-            print(f"Total  : {status.get('total', 0)}")
-            print(f"Success: {status.get('success', 0)}")
-            print(f"Failed : {status.get('failed', 0)}")
-            print(f"Loading: {status.get('loading_count', 0)}")
-            print(f"Loaded : {status.get('all_loaded', False)}")
-            servers = status.get("servers", {}) if isinstance(status.get("servers"), dict) else {}
-            if servers:
-                print("Servers:")
-                for s, st in servers.items():
-                    if not isinstance(st, dict):
-                        continue
-                    print(f"- {s}: state={st.get('state','')}, tools={st.get('tool_count',0)}, source={st.get('source','')}")
-        elif tool_name == "mcp_reconnect":
-            print(f"Server : {result.get('server', args.get('server', ''))}")
-            print(f"Source : {result.get('source', '')}")
-            print(f"Tools  : {result.get('count', 0)}")
-        elif tool_name == "mcp_server_info":
-            info = result.get("info", {}) if isinstance(result.get("info"), dict) else {}
-            status = info.get("status", {}) if isinstance(info.get("status"), dict) else {}
-            print(f"Server : {result.get('server', args.get('server', ''))}")
-            print(f"State  : {status.get('state', '')}")
-            print(f"Source : {status.get('source', '')}")
-            sections = info.get("sections", {}) if isinstance(info.get("sections"), dict) else {}
-            for sec_key, title in (
-                ("tools", "Tools"),
-                ("resources", "Resources"),
-                ("resource_templates", "ResourceTemplates"),
-                ("prompts", "Prompts"),
-            ):
-                sec = sections.get(sec_key, {}) if isinstance(sections.get(sec_key), dict) else {}
-                count = sec.get("count", 0)
-                print(f"{title:<16}: {count}")
-                items = sec.get("items", []) if isinstance(sec.get("items"), list) else []
-                if items and sec_key in ("tools", "resources", "prompts"):
-                    labels = [self._mcp_item_label(x) for x in items]
-                    print(f"  - {', '.join(labels)}")
-        elif tool_name in ("mcp_disable_tools", "mcp_enable_tools"):
-            print(f"Server : {result.get('server', args.get('server', ''))}")
-            disabled = result.get("disabled_tools", [])
-            if not isinstance(disabled, list):
-                disabled = []
-            print(f"Disabled tools ({len(disabled)}): {', '.join(disabled) if disabled else 'None'}")
-        elif tool_name == "mcp_list_disabled_tools":
-            data = result.get("disabled_tools", {})
-            if isinstance(data, dict):
-                for s, arr in data.items():
-                    tools = arr if isinstance(arr, list) else []
-                    print(f"- {s}: {', '.join(tools) if tools else 'None'}")
-            else:
-                print("Disabled tools: None")
-        elif tool_name in (
-            "mcp_list_tools",
-            "mcp_list_resources",
-            "mcp_list_resource_templates",
-            "mcp_list_prompts",
-        ):
-            server = result.get("server", args.get("server", ""))
-            count = result.get("count", 0)
-            print(f"Server : {server}")
-            print(f"Count  : {count}")
-            key = {
-                "mcp_list_tools": "tools",
-                "mcp_list_resources": "resources",
-                "mcp_list_resource_templates": "templates",
-                "mcp_list_prompts": "prompts",
-            }.get(tool_name, "")
-            items = result.get(key, []) if isinstance(result.get(key), list) else []
-            if items:
-                labels = [self._mcp_item_label(x) for x in items]
-                print(f"Items  : {', '.join(labels)}")
-        else:
-            msg = result.get("message", "")
-            if msg:
-                print(f"Message: {msg}")
-        print("==========================\n")
+        print_mcp_shortcut_result(tool_name, args, result)
 
     def _print_main_help(self) -> None:
         print("\nSmart Shell Help")
