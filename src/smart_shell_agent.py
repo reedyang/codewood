@@ -289,64 +289,11 @@ class SmartShellAgent:
     def _workspace_entry_by_selector(self, selector: str) -> Optional[Dict[str, Any]]:
         return self._workspace_state_manager.workspace_entry_by_selector(selector)
 
-    def _split_workspace_args(self, text: str) -> Tuple[List[str], Optional[str]]:
-        return split_workspace_args(text)
-
-    def _parse_workspace_command_args(
-        self,
-        text: str,
-        value_flags: Set[str],
-        bool_flags: Set[str],
-    ) -> Tuple[List[str], Dict[str, Any], Optional[str]]:
-        return parse_workspace_command_args(self, text, value_flags, bool_flags)
-
-    def _workspace_usage(self) -> str:
-        return workspace_usage()
-
-    def _workspace_subcommand_usage(self, subcommand: str) -> str:
-        return workspace_subcommand_usage(self, subcommand)
-
     def _handle_workspace_builtin_command(self, builtin_line: str) -> bool:
         return handle_workspace_builtin_command(self, builtin_line)
 
-    def _print_workspace_help(self) -> None:
-        print_workspace_help(self)
-
-    def _print_workspace_current(self) -> None:
-        print_workspace_current(self)
-
-    def _print_workspace_list(self) -> None:
-        print_workspace_list(self)
-
-    def _workspace_create_command(self, arg_text: str) -> str:
-        return workspace_create_command(self, arg_text)
-
-    def _workspace_switch_command(self, selector: str) -> str:
-        return workspace_switch_command(self, selector)
-
-    def _workspace_update_command(self, arg_text: str) -> str:
-        return workspace_update_command(self, arg_text)
-
-    def _workspace_rename_command(self, arg_text: str) -> str:
-        return workspace_rename_command(self, arg_text)
-
-    def _workspace_delete_command(self, arg_text: str) -> str:
-        return workspace_delete_command(self, arg_text)
-
-    def _chat_state_path(self) -> Path:
-        return self._chat_state_manager.chat_state_path()
-
     def _new_chat_entry(self, chat_id: str, name: str = "New Chat") -> Dict[str, Any]:
         return self._chat_state_manager.new_chat_entry(chat_id, name=name)
-
-    def _sanitize_persisted_chat_message(self, role: str, content: str) -> Optional[str]:
-        return self._chat_state_manager.sanitize_persisted_chat_message(role, content)
-
-    def _compact_redundant_user_turns(self, messages: List[Dict[str, str]]) -> List[Dict[str, str]]:
-        return self._chat_state_manager.compact_redundant_user_turns(messages)
-
-    def _default_chat_state(self) -> Dict[str, Any]:
-        return self._chat_state_manager.default_chat_state()
 
     def _save_chat_state(self) -> None:
         self._chat_state_manager.save_chat_state()
@@ -518,12 +465,6 @@ class SmartShellAgent:
                     self.active_chat_name = t
                 self._save_chat_state()
 
-    def _chat_usage(self) -> str:
-        return chat_usage()
-
-    def _print_chat_list(self) -> None:
-        print_chat_list(self)
-
     def _handle_chat_builtin_command(self, builtin_line: str) -> bool:
         return handle_chat_builtin_command(self, builtin_line)
 
@@ -660,63 +601,8 @@ class SmartShellAgent:
         except Exception:
             return str(self.work_directory)
 
-    def _update_session_summary_rolling(self) -> None:
-        return self.session_memory_service.update_session_summary_rolling()
-
-    def _session_summary_for_retrieval(self) -> str:
-        return self.session_memory_service.session_summary_for_retrieval()
-
-    def _maybe_refresh_session_summary_llm(self) -> None:
-        return self.session_memory_service.maybe_refresh_session_summary_llm()
-
-    def _build_memory_retrieval_query(self, user_input: str) -> str:
-        return self.session_memory_service.build_memory_retrieval_query(user_input)
-
-    @staticmethod
-    def _memory_row_sort_key(r: Dict[str, Any]) -> Tuple[int, float, int]:
-        return SessionMemoryService.memory_row_sort_key(r)
-
-    @staticmethod
-    def _user_input_emphasizes_memory_or_identity(user_input: str) -> bool:
-        return SessionMemoryService.user_input_emphasizes_memory_or_identity(user_input)
-
-    def _memory_dialogue_excerpt_for_expansion(self) -> str:
-        return self.session_memory_service.memory_dialogue_excerpt_for_expansion()
-
-    def _memory_expansion_reference_block(self) -> str:
-        return self.session_memory_service.memory_expansion_reference_block()
-
-    @staticmethod
-    def _parse_memory_expansion_json(text: str) -> Optional[Dict[str, Any]]:
-        return SessionMemoryService.parse_memory_expansion_json(text)
-
-    def _memory_expansion_keywords_query_string(self, expansion: Dict[str, Any]) -> str:
-        return self.session_memory_service.memory_expansion_keywords_query_string(expansion)
-
-    def _should_run_memory_query_expansion(
-        self,
-        rows_sem: List[Dict[str, Any]],
-        rows_boost: List[Dict[str, Any]],
-        identity_mode: bool,
-    ) -> bool:
-        return self.session_memory_service.should_run_memory_query_expansion(
-            rows_sem, rows_boost, identity_mode
-        )
-
-    def _run_memory_expansion_llm(self, user_input: str) -> Optional[Dict[str, Any]]:
-        return self.session_memory_service.run_memory_expansion_llm(user_input)
-
-    def _memory_rows_for_prompt(self, user_input: str) -> List[Dict[str, Any]]:
-        return self.session_memory_service.memory_rows_for_prompt(user_input)
-
-    def _memory_context_for_prompt(self, user_input: str, max_chars: int = 2400) -> str:
-        return self.session_memory_service.memory_context_for_prompt(user_input, max_chars)
-
     def _schedule_auto_memory_reflect(self) -> None:
         return self.session_memory_service.schedule_auto_memory_reflect()
-
-    def _run_memory_reflection_body(self) -> None:
-        return self.session_memory_service.run_memory_reflection_body()
 
     def _schedule_knowledge_service_background(self) -> None:
         """
@@ -901,77 +787,14 @@ class SmartShellAgent:
             "message": "MCP 配置重载完成",
         }
 
-    def _build_mcp_system_append(self) -> str:
-        return prompt_composer.build_mcp_system_append(self)
-
-    @staticmethod
-    def _strip_jsonc_comments(text: str) -> str:
-        return prompt_composer.strip_jsonc_comments(text)
-
     def _load_tools_spec_from_jsonc(self) -> List[Dict[str, Any]]:
         return prompt_composer.load_tools_spec_from_jsonc(self)
-
-    def _build_user_preferences_system_append(self) -> str:
-        return prompt_composer.build_user_preferences_system_append(self)
-
-    def _build_agents_md_system_append(self) -> str:
-        return prompt_composer.build_agents_md_system_append(self)
 
     def _compose_system_prompt_snapshot(self, include_tools: bool) -> str:
         return prompt_composer.compose_system_prompt_snapshot(self, include_tools=include_tools)
 
-    def _build_runtime_cache_prompt_append(self) -> str:
-        return prompt_composer.build_runtime_cache_prompt_append(
-            self,
-            default_workspace_id=DEFAULT_WORKSPACE_ID,
-        )
-
-    def _build_tools_prompt_append(self) -> str:
-        return prompt_composer.build_tools_prompt_append(self)
-
     def _load_tools_prompt_template(self) -> str:
         return prompt_composer.load_tools_prompt_template()
-
-    def _build_local_skill_context_pack(self, target: Any) -> str:
-        return prompt_composer.build_local_skill_context_pack(target)
-
-    def _default_skill_cache_dir(self, skill_id: str) -> Path:
-        return prompt_composer.default_skill_cache_dir(
-            self,
-            skill_id=skill_id,
-            default_workspace_id=DEFAULT_WORKSPACE_ID,
-        )
-
-    def _build_mcp_skill_context_pack(
-        self,
-        server: str,
-        skill_id: str,
-        rendered_parts: List[str],
-    ) -> str:
-        return prompt_composer.build_mcp_skill_context_pack(
-            server=server,
-            skill_id=skill_id,
-            rendered_parts=rendered_parts,
-        )
-
-    def _split_skill_body_sections(self, text: str) -> List[str]:
-        return prompt_composer.split_skill_body_sections(
-            text=text,
-            max_section_chars=SKILL_PROMPT_MAX_SECTION_CHARS,
-        )
-
-    def _render_skill_section_payload(
-        self,
-        sections: List[str],
-        requested_section: Optional[int],
-        full: bool,
-    ) -> Tuple[str, Dict[str, Any]]:
-        return prompt_composer.render_skill_section_payload(
-            sections=sections,
-            requested_section=requested_section,
-            full=full,
-            initial_sections=SKILL_PROMPT_INITIAL_SECTIONS,
-        )
 
     def _build_single_skill_prompt(
         self,
@@ -1000,12 +823,6 @@ class SmartShellAgent:
                     cmds.append(c)
         return sorted(cmds, key=str.lower)
 
-    def _get_slash_workspace_switch_commands(self) -> List[str]:
-        return build_workspace_action_commands(self._workspaces_state, "switch")
-
-    def _get_slash_workspace_delete_commands(self) -> List[str]:
-        return build_workspace_action_commands(self._workspaces_state, "delete")
-
     def _refresh_input_handler_skill_completions(self) -> None:
         try:
             if self.input_handler is not None and hasattr(self.input_handler, "set_slash_skill_commands"):
@@ -1023,47 +840,8 @@ class SmartShellAgent:
         except Exception:
             pass
 
-    def _get_slash_mcp_commands(self) -> List[str]:
-        return build_mcp_scoped_commands(self.mcp_manager)
-
     def _get_slash_mcp_server_commands(self) -> List[str]:
         return build_mcp_server_commands(self.mcp_manager.mcp_config)
-
-    def _get_slash_mcp_server_info_commands(self) -> List[str]:
-        """
-        Dynamic completions for:
-        - /mcp server-info <server>
-        """
-        return self._get_slash_mcp_server_target_commands("server-info")
-
-    def _get_slash_mcp_reconnect_commands(self) -> List[str]:
-        """
-        Dynamic completions for:
-        - /mcp reconnect <server>
-        """
-        return self._get_slash_mcp_server_target_commands("reconnect")
-
-    def _get_slash_mcp_list_tools_commands(self) -> List[str]:
-        return self._get_slash_mcp_server_target_commands("list-tools")
-
-    def _get_slash_mcp_list_resources_commands(self) -> List[str]:
-        return self._get_slash_mcp_server_target_commands("list-resources")
-
-    def _get_slash_mcp_list_resource_templates_commands(self) -> List[str]:
-        return self._get_slash_mcp_server_target_commands("list-resource-templates")
-
-    def _get_slash_mcp_list_prompts_commands(self) -> List[str]:
-        return self._get_slash_mcp_server_target_commands("list-prompts")
-
-    def _get_slash_mcp_disable_tools_commands(self) -> List[str]:
-        return self._get_slash_mcp_server_target_commands(
-            "disable-tools", with_trailing_space=True
-        )
-
-    def _get_slash_mcp_enable_tools_commands(self) -> List[str]:
-        return self._get_slash_mcp_server_target_commands(
-            "enable-tools", with_trailing_space=True
-        )
 
     def _get_slash_dynamic_rules(self) -> List[Dict[str, Any]]:
         return build_slash_dynamic_rules(
@@ -1421,90 +1199,17 @@ class SmartShellAgent:
         else:
             print("  经验记忆不可用（初始化失败）；主程序可继续运行。")
 
-    def _confirm_allowlist_path(self) -> Path:
-        return execution_policy_service.confirm_allowlist_path(self)
-
-    def _freedom_script_review_cache_path(self) -> Path:
-        return execution_policy_service.freedom_script_review_cache_path(self)
-
     def _load_freedom_script_review_cache(self) -> None:
         return execution_policy_service.load_freedom_script_review_cache(self)
 
-    def _save_freedom_script_review_cache(self) -> bool:
-        return execution_policy_service.save_freedom_script_review_cache(self)
-
-    @staticmethod
-    def _sha256_utf8(text: str) -> str:
-        return execution_policy_service.sha256_utf8(text)
-
-    def _freedom_script_eligible_for_combined_review(self, sp: Path) -> bool:
-        return execution_policy_service.freedom_script_eligible_for_combined_review(sp)
-
-    def _freedom_try_cached_user_script_review(
-        self,
-        path_key: str,
-        script_body: str,
-        command: Dict[str, Any],
-    ) -> Optional[Tuple[bool, str]]:
-        return execution_policy_service.freedom_try_cached_user_script_review(
-            self,
-            path_key=path_key,
-            script_body=script_body,
-            command=command,
-        )
-
-    def _freedom_save_user_script_review_cache(
-        self,
-        path_key: str,
-        script_body: str,
-        command: Dict[str, Any],
-        skip: bool,
-        reason: str,
-    ) -> None:
-        return execution_policy_service.freedom_save_user_script_review_cache(
-            self,
-            path_key=path_key,
-            script_body=script_body,
-            command=command,
-            skip=skip,
-            reason=reason,
-        )
-
-    def _normalize_path_allowlist_key(self, p: Path) -> str:
-        return execution_policy_service.normalize_path_allowlist_key(p)
-
-    def _shell_script_allowlist_key(self, command: str) -> Optional[str]:
-        return execution_policy_service.shell_script_allowlist_key(self, command)
-
-    def _salted_sha256(self, text: str, salt: str) -> str:
-        return execution_policy_service.salted_sha256(text, salt)
-
-    def _shell_script_hash(self, script_path: Path) -> Optional[str]:
-        return execution_policy_service.shell_script_hash(self, script_path)
-
-    def _shell_executable_allowlist_key(self, command: str) -> str:
-        return execution_policy_service.shell_executable_allowlist_key(self, command)
-
     def _load_confirm_allowlist(self) -> None:
         return execution_policy_service.load_confirm_allowlist(self)
-
-    def _save_confirm_allowlist(self) -> bool:
-        return execution_policy_service.save_confirm_allowlist(self)
 
     def _shell_command_in_allowlist(self, command: str) -> bool:
         return execution_policy_service.shell_command_in_allowlist(self, command)
 
     def _shell_confirm_should_offer_always(self, command: str) -> bool:
         return execution_policy_service.shell_confirm_should_offer_always(self, command)
-
-    def _script_basename_in_allowlist(self, safe_name: str) -> bool:
-        return execution_policy_service.script_basename_in_allowlist(self, safe_name)
-
-    def _add_shell_command_allowlist(self, command: str) -> None:
-        return execution_policy_service.add_shell_command_allowlist(self, command)
-
-    def _add_script_basename_allowlist(self, safe_name: str) -> None:
-        return execution_policy_service.add_script_basename_allowlist(self, safe_name)
 
     def _reset_always_confirm_skip(self) -> Dict[str, Any]:
         return execution_policy_service.reset_always_confirm_skip(self)
@@ -1526,46 +1231,6 @@ class SmartShellAgent:
             shell_command=shell_command,
             script_basename=script_basename,
         )
-
-    def _parse_reversibility_response(self, text: str) -> Tuple[bool, str]:
-        return execution_policy_service.parse_reversibility_response(text)
-
-    def _parse_combined_freedom_response(
-        self,
-        text: str,
-    ) -> Tuple[bool, bool, Optional[bool], str]:
-        return execution_policy_service.parse_combined_freedom_response(text)
-
-    @staticmethod
-    def _freedom_script_quick_deny(content: str) -> bool:
-        return execution_policy_service.freedom_script_quick_deny(content)
-
-    @staticmethod
-    def _freedom_script_prompt_injection(content: str) -> Tuple[bool, str]:
-        return execution_policy_service.freedom_script_prompt_injection(content)
-
-    def _combined_review_on_model_failure(
-        self,
-        content: str,
-        detail: str,
-    ) -> Tuple[bool, str, bool]:
-        return execution_policy_service.combined_review_on_model_failure(content, detail)
-
-    def _ai_assess_ephemeral_script_combined(
-        self,
-        script_path: Path,
-        content: str,
-        command: Dict[str, Any],
-    ) -> Tuple[bool, str, bool]:
-        return execution_policy_service.ai_assess_ephemeral_script_combined(
-            self,
-            script_path=script_path,
-            content=content,
-            command=command,
-        )
-
-    def _ai_assess_reversible(self, command: Dict[str, Any]) -> Tuple[bool, str]:
-        return execution_policy_service.ai_assess_reversible(self, command)
 
     def _freedom_auto_confirm(self, command: Dict[str, Any]) -> bool:
         return execution_policy_service.freedom_auto_confirm(self, command)
@@ -1690,21 +1355,12 @@ class SmartShellAgent:
             s = os.path.normcase(s)
         return s
 
-    def _safe_script_basename(self, filename: str) -> str:
-        """Only the last path segment; prevents traversal out of ai_workspace_dir."""
-        return Path(filename or "").name.strip()
-
     def _workspace_relative_script_triple(self, rel: Path) -> Tuple[Path, Path, Path]:
         """相对路径在 shell 解析时的三个候选根：当前工作目录、workspace/temp、workspace 根（兼容旧路径）。"""
         p_wd = (self.work_directory / rel).resolve()
         p_temp = (self.ai_workspace_temp_dir / rel).resolve()
         p_ws = (self.ai_workspace_dir / rel).resolve()
         return p_wd, p_temp, p_ws
-
-    def _register_ephemeral_script(self, script_path: Path) -> None:
-        key = self._ephemeral_path_key(script_path)
-        self._ephemeral_script_paths.add(key)
-        self._ai_created_path_keys.add(key)
 
     def _try_register_ai_output_literal(self, raw: str) -> None:
         """Register a path string as AI-created if it resolves under work_directory or ai_workspace_dir."""
@@ -1734,10 +1390,6 @@ class SmartShellAgent:
         except OSError:
             pass
 
-    def _register_outputs_from_shell_command(self, command: str) -> None:
-        """Heuristic: pandas/openpyxl output paths in -c one-liners → session AI outputs."""
-        return command_actions.register_outputs_from_shell_command(self, command)
-
     def _is_ai_created_path(self, path_str: str) -> bool:
         if not path_str or not str(path_str).strip():
             return False
@@ -1757,22 +1409,6 @@ class SmartShellAgent:
     def _parse_shell_invoked_script_path(self, command: str) -> Optional[Path]:
         return command_actions.parse_shell_invoked_script_path(self, command)
 
-    def _rewrite_shell_command_script_arg_to_abs(self, command: str, resolved: Path) -> str:
-        """Replace the script token with resolved absolute path (for python/py/... invocations)."""
-        return command_actions.rewrite_shell_command_script_arg_to_abs(self, command, resolved)
-
-    def _ensure_absolute_script_for_shell_cwd(self, command: str) -> str:
-        """If the invoked script file lives only under ai_workspace_dir, expand it to an absolute path."""
-        return command_actions.ensure_absolute_script_for_shell_cwd(self, command)
-
-    def _tune_7z_output_for_piped_terminal(self, command: str) -> str:
-        """Improve 7z visibility under piped/non-tty execution by adding stable output switches."""
-        return command_actions.tune_7z_output_for_piped_terminal(command)
-
-    def _parse_shell_invoked_executable(self, command: str) -> Optional[Path]:
-        """Best-effort: path to the primary script/exe the user asked to run (first token)."""
-        return command_actions.parse_shell_invoked_executable(self, command)
-
     def _get_path_policy(self) -> PathPolicy:
         pol = getattr(self, "path_policy", None)
         if pol is None:
@@ -1782,12 +1418,6 @@ class SmartShellAgent:
 
     def _is_path_under(self, child: Path, root: Path) -> bool:
         return self._get_path_policy().is_path_under(child, root)
-
-    def _is_smart_shell_protected_path(self, path: Path) -> bool:
-        return self._get_path_policy().is_smart_shell_protected_path(path)
-
-    def _reject_ai_workspace_root_level_write(self, path: Path) -> Optional[str]:
-        return self._get_path_policy().reject_ai_workspace_root_level_write(path)
 
     def _workspace_skills_root(self) -> Path:
         return self._get_path_policy().workspace_skills_root()
@@ -1862,23 +1492,6 @@ class SmartShellAgent:
                 print("🔄 检测到 workspace/skills 变更，已自动重新加载 skills。")
         except Exception as e:
             print(f"⚠️ 自动重载 skills 失败: {e}")
-
-    def _is_dependency_install_command(self, command: str) -> bool:
-        return command_actions.is_dependency_install_command(command)
-
-    def _is_ai_workspace_script_command(self, command: str) -> bool:
-        return command_actions.is_ai_workspace_script_command(self, command)
-
-    def _blocked_by_self_protection(self, action: str) -> Dict[str, Any]:
-        return self._get_path_policy().blocked_by_self_protection(action)
-
-    def _try_remove_ephemeral_script_after_shell(self, command: str) -> Optional[str]:
-        """Returns basename if an ephemeral script was removed, else None."""
-        return command_actions.try_remove_ephemeral_script_after_shell(self, command)
-
-    def _resolve_model_context_file_env(self, command: str) -> Optional[str]:
-        """Resolve skill-provided merge env var for shell command."""
-        return command_actions.resolve_model_context_file_env(self, command)
 
     def _append_shell_merge_output_path(
         self,
@@ -1964,14 +1577,6 @@ class SmartShellAgent:
         """跨平台文件比较：Windows上优先使用diff.exe，否则使用fc命令；其他平台使用diff命令"""
         return filesystem_actions.action_diff(self, file1=file1, file2=file2, options=options)
 
-    def _grep_read_path_allowed(self, path: Path) -> bool:
-        """Paths that may be read by grep (workspace + AI workspace)."""
-        return command_actions.grep_read_path_allowed(self, path)
-
-    def _grep_output_path_allowed(self, path: Path) -> bool:
-        """Output file may be under workspace, AI workspace, or system temp."""
-        return command_actions.grep_output_path_allowed(self, path)
-
     def action_grep(self, params: Dict[str, Any]) -> dict:
         """Recursive regex grep over text files; results written to caller-specified file."""
         return command_actions.action_grep(self, params=params)
@@ -1983,48 +1588,6 @@ class SmartShellAgent:
         - return ranked candidate files/symbols for the query
         """
         return command_actions.action_project_context_search(self, params=params)
-
-    def _build_first_round_evidence_block(self, user_task: str) -> str:
-        """
-        Build one-shot evidence block for the first task round.
-        Disabled in default workspace by hard policy.
-        """
-        if not self._project_context_feature_enabled():
-            return ""
-        q = str(user_task or "").strip()
-        if not q:
-            return ""
-        try:
-            res = self.action_project_context_search(
-                {"query": q, "max_files": 8, "refresh": True}
-            )
-        except Exception:
-            return ""
-        if not isinstance(res, dict) or not res.get("success", False):
-            return ""
-        cands = res.get("candidates") if isinstance(res.get("candidates"), list) else []
-        if not cands:
-            return ""
-        lines: List[str] = [
-            "【首轮 Evidence Block（自动注入）】",
-            "以下候选文件来自 project_context_search，请优先基于这些证据展开 read/grep/shell，避免盲目全局扫描：",
-        ]
-        for i, c in enumerate(cands[:8], start=1):
-            if not isinstance(c, dict):
-                continue
-            p = str(c.get("path") or "").strip()
-            score = c.get("score")
-            reasons = c.get("reasons") if isinstance(c.get("reasons"), list) else []
-            syms = c.get("symbols") if isinstance(c.get("symbols"), list) else []
-            if not p:
-                continue
-            lines.append(
-                f"{i}. `{p}` (score={score}; reasons={', '.join(str(x) for x in reasons[:3]) or '-'})"
-            )
-            if syms:
-                lines.append(f"   symbols: {', '.join(str(x) for x in syms[:4])}")
-        lines.append("")
-        return "\n".join(lines)
 
     def _render_evidence_block_from_project_context_result(self, res: Dict[str, Any]) -> str:
         if not isinstance(res, dict) or not res.get("success", False):
@@ -2312,10 +1875,6 @@ class SmartShellAgent:
     def _parse_mcp_shortcut_command(self, builtin_line: str) -> Tuple[Optional[str], Dict[str, Any], Optional[str]]:
         return parse_mcp_shortcut_command(builtin_line)
 
-    @staticmethod
-    def _mcp_item_label(item: Any) -> str:
-        return mcp_item_label(item)
-
     def _print_mcp_shortcut_result(self, tool_name: str, args: Dict[str, Any], result: Dict[str, Any]) -> None:
         print_mcp_shortcut_result(tool_name, args, result)
 
@@ -2548,158 +2107,6 @@ class SmartShellAgent:
                 
         return False
 
-    def _handle_prefixed_command_inline(self, stripped_in: str, system_cmd_re: Any, os_name: str) -> bool:
-        """
-        Execute `/...` and `!...` immediately in wait-states (e.g. ask_more_info supplement).
-        Returns True when consumed so caller should keep waiting for real supplement text.
-        """
-        s = str(stripped_in or "").strip()
-        if not s:
-            return False
-        if s.startswith("/"):
-            # In wait-state, '/skill-id ...' or '/server/tool ...' should be routed by
-            # the main loop task parser, not treated as builtin slash command.
-            try:
-                if self._extract_forced_skill_reference(s) or self._extract_forced_mcp_reference(s):
-                    return False
-            except Exception:
-                pass
-            builtin_line = s[1:].lstrip()
-            if not builtin_line:
-                print("ℹ️ 单独输入 / 无效。")
-                return True
-            handled, should_exit = dispatch_builtin_command(
-                self,
-                builtin_line,
-                os_name=os_name,
-                wait_for_supplement=True,
-                consume_unknown=False,
-            )
-            if handled:
-                if should_exit:
-                    raise SystemExit(0)
-                return True
-            bl = builtin_line.lower()
-            mcp_tool, mcp_args, mcp_err = self._parse_mcp_shortcut_command(builtin_line)
-            if mcp_tool:
-                mcp_res = self.execute_tool_call(mcp_tool, mcp_args)
-                self._print_mcp_shortcut_result(mcp_tool, mcp_args, mcp_res if isinstance(mcp_res, dict) else {})
-                return True
-            if bl == "mcp" or bl.startswith("mcp "):
-                print(f"❌ {mcp_err}")
-                return True
-            if bl in ("exit", "quit"):
-                self._save_current_workspace_position()
-                print("👋 已退出 Smart Shell，再见！")
-                raise SystemExit(0)
-            if bl in ("cls", "clear screen"):
-                os.system("cls" if os_name == "nt" else "clear")
-                return True
-            if bl == "clear":
-                print("用法: /clear <screen|history|context>")
-                return True
-            if bl == "clear history":
-                self.history_manager.clear_history()
-                if self.input_handler is not None and hasattr(self.input_handler, "reset_command_history"):
-                    self.input_handler.reset_command_history(self.history_manager.get_all_history())
-                print("✅ 历史记录已清除")
-                return True
-            if bl == "clear context":
-                self.conversation_history.clear()
-                self._sync_active_chat_messages()
-                self.operation_results.clear()
-                self._last_auto_removed_ephemeral = None
-                self._session_summary_llm = ""
-                self._session_summary_rolling = ""
-                self._last_llm_summary_pair_count = 0
-                print("✅ 已清空 AI 上下文（对话历史与近期操作结果缓存，不影响命令行输入历史）")
-                return True
-            if self._handle_chat_builtin_command(builtin_line):
-                return True
-
-            if self._handle_workspace_builtin_command(builtin_line):
-                return True
-            if bl.startswith("execution-policy "):
-                policy = bl.split(" ", 1)[1].strip().lower()
-                if policy == "show":
-                    self._print_execution_policy_details()
-                elif policy:
-                    self.execute_tool_call("execution_policy_set", {"policy": policy})
-                else:
-                    print("用法: /execution-policy <show|unlimited|moderate|confirmation>")
-                return True
-            if bl == "execution-policy":
-                print("用法: /execution-policy <show|unlimited|moderate|confirmation>")
-                return True
-            if bl == "always_confirm-reset":
-                self.execute_tool_call("always_confirm_reset", {})
-                return True
-            if bl == "knowledge status":
-                self._print_knowledge_status_details()
-                return True
-            if bl == "memory status":
-                self._print_memory_status_details()
-                return True
-            if bl == "memory enable":
-                self.memory_enabled = True
-                ok = self._save_memory_enabled_to_config()
-                print(
-                    "✅ 经验记忆功能已开启"
-                    + ("；已写入 config.json" if ok else "（配置保存失败，仅本次进程生效）")
-                )
-                return True
-            if bl == "memory disable":
-                self.memory_enabled = False
-                ok = self._save_memory_enabled_to_config()
-                print(
-                    "✅ 经验记忆功能已关闭"
-                    + ("；已写入 config.json" if ok else "（配置保存失败，仅本次进程生效）")
-                )
-                return True
-            if bl == "help":
-                print("ℹ️ /help 可用；当前仍在等待补充信息，输入非命令文本将恢复原任务。")
-                return True
-            print("❌ 未识别的内置命令。请使用 /help 查看列表。")
-            return True
-
-        if s.startswith("!"):
-            ui = s[1:].lstrip()
-            if not ui:
-                print("ℹ️ 单独输入 ! 无效。")
-                return True
-            if self._is_executable_file(ui):
-                self._execute_file_directly(ui)
-                return True
-            user_input_cmd = ui
-            if system_cmd_re.match(ui):
-                if user_input_cmd.lower().startswith("ls") and os_name == "nt":
-                    user_input_cmd = "dir " + user_input_cmd[2:].strip()
-                elif user_input_cmd.lower().startswith("list") and os_name == "nt":
-                    user_input_cmd = "dir " + user_input_cmd[4:].strip()
-                elif user_input_cmd.lower().startswith("dir") and os_name != "nt":
-                    user_input_cmd = "ls " + user_input_cmd[3:].strip()
-                if user_input_cmd.lower().startswith("cd "):
-                    path = user_input_cmd[3:].strip()
-                    result = self.action_change_directory(path)
-                    if not result["success"]:
-                        print(f"❌ {result['error']}")
-                    return True
-            try:
-                process = subprocess.Popen(
-                    user_input_cmd if system_cmd_re.match(ui) else ui,
-                    shell=True,
-                    stdin=sys.stdin,
-                    stdout=sys.stdout,
-                    stderr=sys.stderr,
-                    cwd=str(self.work_directory),
-                )
-                process.wait()
-            except Exception as e:
-                print(f"❌ 命令执行异常: {e}")
-            return True
-
-        return False
-    
     def _get_user_input_with_history(self) -> str:
         """
         获取用户输入，支持历史记录导航
