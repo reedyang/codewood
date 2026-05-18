@@ -116,11 +116,21 @@ class ProjectContextIndex:
         self.version: int = 1
         self._load()
 
-    def bind_workspace(self, workspace_root: Path) -> None:
+    def bind_workspace(self, workspace_root: Path, storage_dir: Optional[Path] = None) -> None:
         root = Path(workspace_root).resolve()
-        if str(root) == str(self.workspace_root):
+        target_storage = (
+            Path(storage_dir).resolve() if storage_dir is not None else self.storage_dir
+        )
+        if (
+            str(root) == str(self.workspace_root)
+            and str(target_storage) == str(self.storage_dir)
+        ):
             return
         self.workspace_root = root
+        if str(target_storage) != str(self.storage_dir):
+            self.storage_dir = target_storage
+            self.storage_dir.mkdir(parents=True, exist_ok=True)
+            self.index_path = self.storage_dir / "project_context_index.json"
         self.files = {}
         self.last_index_at = 0.0
         self._load()
