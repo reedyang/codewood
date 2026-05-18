@@ -280,10 +280,16 @@ def setup_input_handler(
 
 def setup_runtime_services(agent: Any) -> None:
     agent._workspace_runtime_generation = 0
+    agent._project_context_refresh_gate = threading.Lock()
+    agent._project_context_refresh_inflight = False
     agent._project_context_index = ProjectContextIndex(
         workspace_root=agent.work_directory,
         storage_dir=(agent.ai_workspace_dir / "knowledge_db"),
     )
+    try:
+        agent._schedule_project_context_refresh_background(force=False, reason="startup")
+    except Exception:
+        pass
     agent._schedule_model_validation_background()
     agent._schedule_knowledge_service_background()
     agent.memory_service = None

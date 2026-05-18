@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -114,6 +115,7 @@ class ProjectContextIndex:
         self.files: Dict[str, _FileEntry] = {}
         self.last_index_at: float = 0.0
         self.version: int = 1
+        self._lock = threading.RLock()
         self._load()
 
     def bind_workspace(self, workspace_root: Path, storage_dir: Optional[Path] = None) -> None:
@@ -121,21 +123,23 @@ class ProjectContextIndex:
         target_storage = (
             Path(storage_dir).resolve() if storage_dir is not None else self.storage_dir
         )
-        if (
-            str(root) == str(self.workspace_root)
-            and str(target_storage) == str(self.storage_dir)
-        ):
-            return
-        self.workspace_root = root
-        if str(target_storage) != str(self.storage_dir):
-            self.storage_dir = target_storage
-            self.storage_dir.mkdir(parents=True, exist_ok=True)
-            self.index_path = self.storage_dir / "project_context_index.json"
-        self.files = {}
-        self.last_index_at = 0.0
-        self._load()
+        with self._lock:
+            if (
+                str(root) == str(self.workspace_root)
+                and str(target_storage) == str(self.storage_dir)
+            ):
+                return
+            self.workspace_root = root
+            if str(target_storage) != str(self.storage_dir):
+                self.storage_dir = target_storage
+                self.storage_dir.mkdir(parents=True, exist_ok=True)
+                self.index_path = self.storage_dir / "project_context_index.json"
+            self.files = {}
+            self.last_index_at = 0.0
+            self._load()
 
     def _load(self) -> None:
+        # Caller controls synchronization. Keep this helper lock-free.
         if not self.index_path.is_file():
             return
         try:
@@ -157,6 +161,7 @@ class ProjectContextIndex:
             self.last_index_at = 0.0
 
     def _save(self) -> None:
+        # Caller controls synchronization. Keep this helper lock-free.
         payload = {
             "version": self.version,
             "workspace_root": str(self.workspace_root),
@@ -248,85 +253,131 @@ class ProjectContextIndex:
             tokens=tokens,
         )
 
-    def refresh_index(self, force: bool = False) -> Dict[str, Any]:
+    def refresh_index(self, force: bool = False, timeout_ms: Optional[int] = None) -> Dict[str, Any]:
         t0 = _now_ts()
-        root = self.workspace_root
-        if not root.is_dir():
-            return {"success": False, "error": f"workspace 不存在: {root}"}
+        budget_s = None
+        try:
+            if timeout_ms is not None:
+                v = int(timeout_ms)
+                if v > 0:
+                    budget_s = v / 1000.0
+        except Exception:
+            budget_s = None
+        deadline = (_now_ts() + budget_s) if budget_s is not None else None
 
-        scanned = self._iter_code_files()
-        seen_rel: Set[str] = set()
-        added = 0
-        updated = 0
-        unchanged = 0
-        for p in scanned:
-            try:
-                rel = str(p.relative_to(root)).replace("\\", "/")
-                st = p.stat()
-            except Exception:
-                continue
-            seen_rel.add(rel)
-            old = self.files.get(rel)
-            mtime_ns = int(getattr(st, "st_mtime_ns", int(st.st_mtime * 1e9)))
-            size = int(st.st_size)
-            if (
-                (not force)
-                and old is not None
-                and old.mtime_ns == mtime_ns
-                and old.size == size
-            ):
-                unchanged += 1
-                continue
-            entry = self._parse_file(p, rel, mtime_ns, size)
-            self.files[rel] = entry
-            if old is None:
-                added += 1
-            else:
-                updated += 1
+        with self._lock:
+            root = self.workspace_root
+            if not root.is_dir():
+                return {"success": False, "error": f"workspace 不存在: {root}"}
 
-        deleted = 0
-        for rel in list(self.files.keys()):
-            if rel not in seen_rel:
-                deleted += 1
-                self.files.pop(rel, None)
+            scanned = self._iter_code_files()
+            base_files = self.files
+            next_files: Dict[str, _FileEntry] = dict(base_files)
+            seen_rel: Set[str] = set()
+            added = 0
+            updated = 0
+            unchanged = 0
+            timed_out = False
+            processed = 0
 
-        self.last_index_at = _now_ts()
-        self._save()
-        return {
-            "success": True,
-            "force": bool(force),
-            "workspace_root": str(root),
-            "files_total": len(self.files),
-            "scanned": len(scanned),
-            "added": added,
-            "updated": updated,
-            "unchanged": unchanged,
-            "deleted": deleted,
-            "elapsed_ms": int((_now_ts() - t0) * 1000),
-            "index_path": str(self.index_path),
-        }
+            for p in scanned:
+                if deadline is not None and _now_ts() >= deadline:
+                    timed_out = True
+                    break
+                try:
+                    rel = str(p.relative_to(root)).replace("\\", "/")
+                    st = p.stat()
+                except Exception:
+                    continue
+                processed += 1
+                seen_rel.add(rel)
+                old = base_files.get(rel)
+                mtime_ns = int(getattr(st, "st_mtime_ns", int(st.st_mtime * 1e9)))
+                size = int(st.st_size)
+                if (
+                    (not force)
+                    and old is not None
+                    and old.mtime_ns == mtime_ns
+                    and old.size == size
+                ):
+                    unchanged += 1
+                    continue
+                entry = self._parse_file(p, rel, mtime_ns, size)
+                next_files[rel] = entry
+                if old is None:
+                    added += 1
+                else:
+                    updated += 1
+
+            deleted = 0
+            if not timed_out:
+                for rel in list(next_files.keys()):
+                    if rel not in seen_rel:
+                        deleted += 1
+                        next_files.pop(rel, None)
+
+                changed = (
+                    added > 0
+                    or updated > 0
+                    or deleted > 0
+                    or force
+                    or len(next_files) != len(base_files)
+                )
+                self.files = next_files
+                self.last_index_at = _now_ts()
+                if changed:
+                    self._save()
+
+            return {
+                "success": True,
+                "force": bool(force),
+                "workspace_root": str(root),
+                "files_total": len(self.files),
+                "scanned": len(scanned),
+                "processed": processed,
+                "added": added,
+                "updated": updated,
+                "unchanged": unchanged,
+                "deleted": deleted,
+                "timed_out": timed_out,
+                "stale": timed_out,
+                "elapsed_ms": int((_now_ts() - t0) * 1000),
+                "index_path": str(self.index_path),
+            }
 
     def status(self) -> Dict[str, Any]:
-        return {
-            "success": True,
-            "workspace_root": str(self.workspace_root),
-            "index_path": str(self.index_path),
-            "files_total": len(self.files),
-            "last_index_at": self.last_index_at,
-        }
+        with self._lock:
+            return {
+                "success": True,
+                "workspace_root": str(self.workspace_root),
+                "index_path": str(self.index_path),
+                "files_total": len(self.files),
+                "last_index_at": self.last_index_at,
+            }
 
-    def search(self, query: str, max_files: int = 12, auto_refresh: bool = True) -> Dict[str, Any]:
+    def search(
+        self,
+        query: str,
+        max_files: int = 12,
+        auto_refresh: bool = True,
+        refresh_timeout_ms: Optional[int] = None,
+    ) -> Dict[str, Any]:
         q = str(query or "").strip()
         if not q:
             return {"success": False, "error": "query 不能为空"}
+        refresh_result: Optional[Dict[str, Any]] = None
         if auto_refresh:
             # incremental refresh (non-force) keeps cost acceptable for M1.
-            self.refresh_index(force=False)
+            refresh_result = self.refresh_index(force=False, timeout_ms=refresh_timeout_ms)
+
+        with self._lock:
+            files_items = list(self.files.items())
+            status_snapshot = self.status()
 
         q_tokens = _split_words(q)
         q_l = q.lower()
         scored: List[Tuple[float, Dict[str, Any]]] = []
-        for rel, e in self.files.items():
+        for rel, e in files_items:
             path_l = rel.lower()
             score = 0.0
             reasons: List[str] = []
@@ -365,12 +416,16 @@ class ProjectContextIndex:
             )
         scored.sort(key=lambda x: x[0], reverse=True)
         top = [x[1] for x in scored[: max(1, int(max_files or 12))]]
-        return {
+        out = {
             "success": True,
             "query": q,
             "query_tokens": q_tokens,
             "total_matches": len(scored),
             "candidates": top,
-            "index_status": self.status(),
+            "index_status": status_snapshot,
+            "stale": bool(refresh_result.get("timed_out")) if isinstance(refresh_result, dict) else False,
         }
+        if isinstance(refresh_result, dict):
+            out["index_refresh"] = refresh_result
+        return out
 

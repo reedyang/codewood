@@ -517,7 +517,8 @@ def run_agent_loop(agent: Any):
                 ev_args = {
                     "query": original_user_task,
                     "max_files": 8,
-                    "refresh": True,
+                    "refresh": False,
+                    "refresh_async": True,
                 }
                 ev_res = self.execute_tool_call("project_context_search", ev_args)
                 self.operation_results.append(

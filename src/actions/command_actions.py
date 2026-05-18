@@ -321,6 +321,7 @@ def action_project_context_search(agent: Any, params: Dict[str, Any]) -> dict:
     query = str(params.get("query") or "").strip()
     max_files = params.get("max_files", 12)
     refresh = params.get("refresh", None)
+    refresh_async = bool(params.get("refresh_async", False))
     status_only = bool(params.get("status_only", False))
     force_rebuild = bool(params.get("force_rebuild", False))
 
@@ -345,12 +346,19 @@ def action_project_context_search(agent: Any, params: Dict[str, Any]) -> dict:
         idx_res = agent._project_context_index.refresh_index(force=True)
         if not idx_res.get("success", False):
             return idx_res
+    elif refresh_async:
+        agent._schedule_project_context_refresh_background(force=False, reason="project-context-search")
 
     result = agent._project_context_index.search(
         query=query,
         max_files=max_files_i,
-        auto_refresh=(True if refresh is None else bool(refresh)) or force_rebuild,
+        auto_refresh=(
+            ((True if refresh is None else bool(refresh)) or force_rebuild) and (not refresh_async)
+        ),
+        refresh_timeout_ms=2000,
     )
+    if refresh_async:
+        result["refresh_scheduled"] = True
     return result
 
 
