@@ -1827,7 +1827,80 @@ class SmartShellAgent:
             text,
             flags=re.IGNORECASE | re.DOTALL,
         )
-        return out.strip()
+        stripped = out.strip()
+        if not stripped:
+            return ""
+
+        # Fallback for malformed responses that leave an unclosed markdown fence:
+        # narrative + "```json\n{...tool...}" (no closing ```).
+        unclosed = re.search(r"```(?:json)?\s*(.*)\Z", stripped, flags=re.IGNORECASE | re.DOTALL)
+        if unclosed:
+            body = (unclosed.group(1) or "").strip()
+            if body.startswith("`") and body.endswith("`") and len(body) >= 2:
+                body = body[1:-1].strip()
+            try:
+                obj = json.loads(body)
+            except Exception:
+                obj = None
+            if isinstance(obj, dict) and isinstance((obj.get("tool") or obj.get("action")), str):
+                return stripped[: unclosed.start()].strip()
+
+        # Fallback for non-fenced trailing tool JSON.
+        def _find_trailing_tool_json_span(s: str) -> Optional[Tuple[int, int]]:
+            s = s.rstrip()
+            if not s:
+                return None
+            n = len(s)
+            for m_obj in re.finditer(r"\{", s):
+                start = m_obj.start()
+                depth = 0
+                in_str = False
+                esc = False
+                end = -1
+                i = start
+                while i < n:
+                    ch = s[i]
+                    if in_str:
+                        if esc:
+                            esc = False
+                        elif ch == "\\":
+                            esc = True
+                        elif ch == '"':
+                            in_str = False
+                        i += 1
+                        continue
+                    if ch == '"':
+                        in_str = True
+                        i += 1
+                        continue
+                    if ch == "{":
+                        depth += 1
+                    elif ch == "}":
+                        depth -= 1
+                        if depth == 0:
+                            end = i + 1
+                            break
+                    i += 1
+                if end == -1 or end != n:
+                    continue
+                chunk = s[start:end].strip()
+                try:
+                    obj = json.loads(chunk)
+                except Exception:
+                    continue
+                if not isinstance(obj, dict):
+                    continue
+                if isinstance((obj.get("tool") or obj.get("action")), str):
+                    return (start, end)
+            return None
+
+        trailing_span = _find_trailing_tool_json_span(stripped)
+        if trailing_span:
+            start, _ = trailing_span
+            prefix = stripped[:start]
+            prefix = re.sub(r"```(?:json)?\s*$", "", prefix, flags=re.IGNORECASE)
+            return prefix.strip()
+        return stripped
 
     def _normalize_display_text(self, text: str) -> str:
         """
@@ -1862,6 +1935,29 @@ class SmartShellAgent:
     def _tool_call_summary(self, tool_name: str, args: Dict[str, Any]) -> str:
         """Generate one-line tool execution summary."""
         a = args if isinstance(args, dict) else {}
+        if str(tool_name).strip().lower() == "read" and a:
+            def _fmt_val(v: Any) -> str:
+                vv = str(v).strip().replace("\n", " ")
+                return (vv[:120] + "...") if len(vv) > 120 else vv
+
+            preferred = ("path", "file_path", "filename", "file")
+            parts: List[str] = []
+            seen: set = set()
+            for k in preferred:
+                if k in a and a.get(k) not in (None, ""):
+                    parts.append(f"{k}={_fmt_val(a.get(k))}")
+                    seen.add(k)
+                    break
+            for k in sorted(a.keys()):
+                if k in seen:
+                    continue
+                v = a.get(k)
+                if v is None or v == "":
+                    continue
+                parts.append(f"{k}={_fmt_val(v)}")
+            if parts:
+                return f"{tool_name} ({', '.join(parts)})"
+
         for k in (
             "skill_id",
             "mcp",
