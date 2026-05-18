@@ -7,14 +7,13 @@ from typing import Any, Dict, List, Optional, Set
 
 from .app_logging import get_log_file_path
 from .builtin_command_router import dispatch_builtin_command
+from .console_utils import _ansi_blue, _ansi_gray
 
 
 def run_agent_loop(agent: Any):
     """运行 AI Agent 主循环，使用 OpenAI tools 进行多轮自动执行，调用 done 结束。"""
     from . import smart_shell_agent as _ssa
     KNOWLEDGE_AVAILABLE = getattr(_ssa, "KNOWLEDGE_AVAILABLE", False)
-    _ansi_blue = getattr(_ssa, "_ansi_blue")
-    _ansi_gray = getattr(_ssa, "_ansi_gray")
     self = agent
     import sys
     import os

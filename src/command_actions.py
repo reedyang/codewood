@@ -6,53 +6,7 @@ import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-
-def _decode_subprocess_output(data: Optional[bytes]) -> str:
-    if not data:
-        return ""
-    if data.startswith(b"\xef\xbb\xbf"):
-        return data[3:].decode("utf-8", errors="replace")
-    for dec in ("utf-8", "utf-8-sig"):
-        try:
-            return data.decode(dec, errors="strict")
-        except UnicodeDecodeError:
-            continue
-    import locale
-
-    enc = locale.getpreferredencoding(False) or "utf-8"
-    try:
-        return data.decode(enc, errors="replace")
-    except LookupError:
-        return data.decode("utf-8", errors="replace")
-
-
-def _safe_console_write(text: str, stream: Any = None, append_newline: bool = True) -> None:
-    if text is None:
-        return
-    s = stream or sys.stdout
-    try:
-        s.write(text)
-        if append_newline and not text.endswith("\n"):
-            s.write("\n")
-        s.flush()
-        return
-    except UnicodeEncodeError:
-        pass
-
-    enc = getattr(s, "encoding", None) or "utf-8"
-    payload = text if (text.endswith("\n") or not append_newline) else (text + "\n")
-    try:
-        if hasattr(s, "buffer"):
-            s.buffer.write(payload.encode(enc, errors="replace"))
-            s.flush()
-        else:
-            s.write(payload.encode(enc, errors="replace").decode(enc, errors="replace"))
-            s.flush()
-    except Exception:
-        try:
-            print(payload.encode("ascii", errors="replace").decode("ascii"), end="")
-        except Exception:
-            pass
+from .console_utils import _decode_subprocess_output, _safe_console_write
 
 
 def action_shell_command(
