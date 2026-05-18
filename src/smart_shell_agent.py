@@ -83,7 +83,7 @@ def _safe_console_write(text: str, stream: Any = None, append_newline: bool = Tr
 
 
 # 导入历史记录管理器
-from .app_logging import get_logger, setup_app_logging
+from .app_logging import get_logger
 from .history_manager import HistoryManager
 from .skills_loader import (
     build_skills_routing_prefix,
@@ -91,14 +91,10 @@ from .skills_loader import (
     load_skills_merged,
 )
 from .mcp_manager import McpManager, McpError
-from .tools.project_context_index import ProjectContextIndex
 from .change_preview_formatter import ChangePreviewFormatter
 from .ai_provider_clients import AICallContext
-from .ai_orchestrator import AIOrchestrator, AgentAIContext
-from .config_env import resolve_string_values_in_data
 from .session_memory_service import SessionMemoryService
 from .policy.path_policy import PathPolicy
-from .tool_dispatcher import ToolDispatcher
 from .builtin_command_router import dispatch_builtin_command
 from .workspace_command_controller import (
     handle_workspace_builtin_command,
@@ -135,6 +131,7 @@ from .completion.slash_dynamic_completions import (
 )
 from . import filesystem_actions
 from . import command_actions
+from . import bootstrap
 from . import execution_policy_service
 from . import prompt_composer
 
@@ -299,255 +296,45 @@ class SmartShellAgent:
             builtin_skills_dir: 内建 Agent Skills 根目录；未传则使用项目根目录下的 skills/
         """
         startup_work_directory = Path(work_directory) if work_directory else Path.cwd()
-        self.work_directory = startup_work_directory
-        # Runtime guard: prevent AI from modifying smart-shell itself.
-        self._self_repo_root = Path(__file__).resolve().parent.parent
-        self.conversation_history = []
-        self._chat_state: Dict[str, Any] = {}
-        self.active_chat_id: str = ""
-        self.active_chat_name: str = "New Chat"
-        self._chat_state_lock = threading.RLock()
-        self._queued_user_input: Optional[str] = None
-        # 会话摘要（经验记忆检索 query 前缀）：滚动摘录始终更新；LLM 摘要按轮次节流更新。
-        self._session_summary_llm: str = ""
-        self._session_summary_rolling: str = ""
-        self._last_llm_summary_pair_count: int = 0
-        self.operation_results = []
-        # Session-local paths created by action "script"; may be auto-removed after shell runs them
-        self._ephemeral_script_paths: Set[str] = set()
-        # All path keys for files AI created this session (scripts + outputs detected from shell), for freedom auto-confirm
-        self._ai_created_path_keys: Set[str] = set()
-        # Basename of last ephemeral script auto-removed after shell (avoid redundant delete + freedom prompt)
-        self._last_auto_removed_ephemeral: Optional[str] = None
-        # MCP auth-gate: avoid repeated token-prompt shell loops.
-        self._mcp_pending_user_input: Dict[str, Dict[str, Any]] = {}
-        
-        if config_dir:
-            self.config_dir = Path(config_dir)
-        else:
-            # 自动查找配置文件目录
-            current_config_dir = Path(".smartshell")
-            user_config_dir = Path.home() / ".smartshell"
 
-            # 如果用户目录下有配置文件，使用用户目录
-            if (user_config_dir / "config.json").exists():
-                config_dir = user_config_dir
-            elif (current_config_dir / "config.json").exists():
-                config_dir = current_config_dir
-            else:
-                # 默认使用用户目录
-                config_dir = user_config_dir
-
-            self.config_dir = Path(config_dir)
-
-        self.workspace_registry_path = self.config_dir / WORKSPACE_STATE_FILE
-        self._workspaces_state = self._load_workspace_state()
-        active_workspace_id = str(
-            self._workspaces_state.get("active") or DEFAULT_WORKSPACE_ID
-        )
-        workspaces = self._workspaces_state.get("workspaces", {})
-        active_workspace = workspaces.get(active_workspace_id) if isinstance(workspaces, dict) else None
-        if not isinstance(active_workspace, dict):
-            active_workspace = self._default_workspace_entry()
-            self._workspaces_state["active"] = DEFAULT_WORKSPACE_ID
-        self._apply_workspace_entry(active_workspace, startup_work_directory)
-
-        self.history_manager = HistoryManager(str(self.ai_workspace_dir))
-        self._load_chat_state()
-
-        setup_app_logging(self.config_dir)
-
-        # 知识库：不在主线程 import knowledge_manager（否则会同步加载 chromadb、transformers、torch 等，冷启动可达数秒）。
-        # 实际加载见 _schedule_knowledge_service_background；单测可在构造前将本模块 KNOWLEDGE_AVAILABLE=False 以跳过。
-        self.knowledge_manager = None
-
-        # 加载配置（执行策略默认 confirmation）；知识库在依赖可用时始终启用，不再提供开关
-        self.execution_policy = "confirmation"
-        self.memory_enabled: bool = True
-        self.session_summary_llm_enabled: bool = True
-        self.memory_fallback_expansion_enabled: bool = True
-        self.project_context_first_round_evidence_enabled: bool = True
-        self.max_tool_rounds: int = 20
-        try:
-            cfg_path = self.config_dir / "config.json"
-            if cfg_path.exists():
-                with open(cfg_path, "r", encoding="utf-8") as f:
-                    cfg_data = resolve_string_values_in_data(json.load(f))
-                pol = str(cfg_data.get("execution_policy", "confirmation")).strip().lower()
-                if pol not in ("unlimited", "moderate", "confirmation"):
-                    pol = "confirmation"
-                self.execution_policy = pol
-                _sslm = cfg_data.get("session_summary_llm", True)
-                if isinstance(_sslm, bool):
-                    self.session_summary_llm_enabled = _sslm
-                else:
-                    self.session_summary_llm_enabled = str(_sslm).strip().lower() in (
-                        "1",
-                        "true",
-                        "yes",
-                        "on",
-                    )
-                _mfe = cfg_data.get("memory_fallback_expansion", True)
-                if isinstance(_mfe, bool):
-                    self.memory_fallback_expansion_enabled = _mfe
-                else:
-                    self.memory_fallback_expansion_enabled = str(_mfe).strip().lower() in (
-                        "1",
-                        "true",
-                        "yes",
-                        "on",
-                    )
-                _me = cfg_data.get("memory_enabled", True)
-                if isinstance(_me, bool):
-                    self.memory_enabled = _me
-                else:
-                    self.memory_enabled = str(_me).strip().lower() in (
-                        "1",
-                        "true",
-                        "yes",
-                        "on",
-                    )
-                _pcfr = cfg_data.get("project_context_first_round_evidence", True)
-                if isinstance(_pcfr, bool):
-                    self.project_context_first_round_evidence_enabled = _pcfr
-                else:
-                    self.project_context_first_round_evidence_enabled = str(_pcfr).strip().lower() in (
-                        "1",
-                        "true",
-                        "yes",
-                        "on",
-                    )
-                _mtr = cfg_data.get("max_tool_rounds", 20)
-                try:
-                    self.max_tool_rounds = int(_mtr)
-                except Exception:
-                    self.max_tool_rounds = 20
-                if self.max_tool_rounds < 1:
-                    self.max_tool_rounds = 1
-                if self.max_tool_rounds > 200:
-                    self.max_tool_rounds = 200
-        except Exception as e:
-            print(f"⚠️ 读取 config.json 失败（执行策略 / session_summary_llm 等使用默认值）: {e}")
-
-        # Per-target allowlist for y/n confirmations (see confirm_allowlist.json)
-        self._allowlist_shell_paths: Dict[str, str] = {}
-        self._allowlist_shell_exes: Set[str] = set()
-        self._allowlist_script: Set[str] = set()
-        self._confirm_allowlist_salt: str = ""
-        self._load_confirm_allowlist()
-        # Cached combined script review for non-session scripts (path + content + command hash)
-        self._freedom_script_review_entries: Dict[str, Dict[str, Any]] = {}
-        self._load_freedom_script_review_cache()
-
-        # 单模型配置（model_config 优先）
-        if model_config and isinstance(model_config, dict):
-            self.provider = str(model_config.get("provider", provider) or provider).strip()
-            self.params = model_config.get("params", {}) or {}
-            self.model_name = str(self.params.get("model", model_name) or model_name).strip()
-        else:
-            self.model_name = model_name
-            self.provider = provider
-            self.params = params or {}
-        self.openai_conf = self.params if self.provider == "openai" else openai_conf
-        self.openwebui_conf = self.params if self.provider == "openwebui" else openwebui_conf
-        self.path_policy = PathPolicy(self)
-        self.session_memory_service = SessionMemoryService(self)
-        self.ai_orchestrator = AIOrchestrator(
-            AgentAIContext(
-                provider=self.provider,
-                model_name=self.model_name,
-                openai_conf=self.openai_conf,
-                openwebui_conf=self.openwebui_conf,
-                work_directory=str(self.work_directory),
-                history_writer=self._append_chat_message,
-                regular_message_builder=self._build_regular_task_messages,
-                ollama_importer=_import_ollama_client,
-            )
+        bootstrap.setup_core_state(
+            self,
+            startup_work_directory=startup_work_directory,
+            self_repo_root=Path(__file__).resolve().parent.parent,
         )
 
-        # 模型可用性校验（ollama.list）可能阻塞网络；见 _schedule_model_validation_background，在后台执行
+        self.config_dir = bootstrap.resolve_config_dir(config_dir)
 
-        # 系统提示词
-        prompt_path = os.path.join(os.path.dirname(__file__), 'system_prompt.md')
-        with open(prompt_path, 'r', encoding='utf-8') as f:
-            self._base_system_prompt = f.read()
-        self.mcp_config = self._load_mcp_config()
-        self.mcp_manager = McpManager(
-            self.config_dir,
-            self.mcp_config,
-            self.ai_workspace_dir,
-            tool_policy_parent=self.ai_workspace_dir,
+        bootstrap.setup_workspace_and_history(
+            self,
+            startup_work_directory=startup_work_directory,
+            workspace_state_file=WORKSPACE_STATE_FILE,
+            default_workspace_id=DEFAULT_WORKSPACE_ID,
         )
-        self.mcp_manager.register_client_method_handler("elicitation/create", self._handle_mcp_elicitation_create)
-        # Async preload MCP tools cache on startup (non-blocking).
-        self.mcp_manager.preload_all_async(timeout_s=12.0, force=False)
-        self._mcp_config_path = self.config_dir / "mcp.json"
-        self._mcp_config_file_sig = self._get_mcp_config_file_sig()
-        self._mcp_config_struct_sig = self._calc_mcp_config_sig(self.mcp_config)
-        self._mcp_config_last_failed_file_sig: Optional[Tuple[bool, int, int]] = None
-        self.system_prompt = self._compose_system_prompt_snapshot(include_tools=False)
-        self.tool_specs = self._load_tools_spec_from_jsonc()
-        self.tools_prompt_template = self._load_tools_prompt_template()
+        bootstrap.setup_runtime_preferences(self)
+        bootstrap.setup_policy_caches(self)
 
-        self._builtin_skills_root = (
-            Path(builtin_skills_dir).expanduser().resolve()
-            if builtin_skills_dir
-            else Path(__file__).resolve().parent.parent / "skills"
+        bootstrap.setup_model_ai_stack(
+            self,
+            model_name=model_name,
+            provider=provider,
+            openai_conf=openai_conf,
+            openwebui_conf=openwebui_conf,
+            params=params,
+            model_config=model_config,
+            ollama_importer=_import_ollama_client,
         )
-        self.skills = load_skills_merged(
-            self.config_dir,
-            self._builtin_skills_root,
-            self.ai_workspace_dir,
-        )
-        self._skills_dirs_fingerprint = calc_skills_dirs_fingerprint(
-            self.config_dir,
-            self._builtin_skills_root,
-            self.ai_workspace_dir,
-        )
-        self._skills_routing_prefix = build_skills_routing_prefix(self.skills)
-        self._active_skill_full_prompt: str = ""
-        self._active_skill_id: Optional[str] = None
-        self._active_skill_source: Optional[str] = None  # local | mcp
-        self._active_skill_section: int = 0
-        self._active_skill_total_sections: int = 0
-        self._active_skill_chunked: bool = False
 
-        # 初始化输入处理器，确保属性存在
-        self.input_handler = None
-        if TAB_COMPLETION_AVAILABLE:
-            try:
-                if INPUT_HANDLER_TYPE == "windows":
-                    try:
-                        initial_history = self.history_manager.get_all_history()
-                    except Exception:
-                        initial_history = []
-                    self.input_handler = create_windows_input_handler(
-                        work_directory=self.work_directory,
-                        initial_history=initial_history,
-                        slash_skill_commands=self._get_slash_skill_commands(),
-                        slash_mcp_commands=self._get_slash_mcp_server_commands(),
-                        slash_dynamic_rules=self._get_slash_dynamic_rules(),
-                    )
-                elif INPUT_HANDLER_TYPE == "readline":
-                    self.input_handler = create_tab_completer(self.work_directory)
-                else:
-                    print("⚠️ 未知的输入处理器类型")
-            except Exception as e:
-                print(f"⚠️ 输入处理器初始化失败: {e}")
-        else:
-            print("⚠️ Tab补全功能不可用")
-
-        self._workspace_runtime_generation = 0
-        self._project_context_index = ProjectContextIndex(
-            workspace_root=self.work_directory,
-            storage_dir=(self.ai_workspace_dir / "knowledge_db"),
+        bootstrap.setup_prompt_and_mcp(self)
+        bootstrap.setup_skills(self, builtin_skills_dir=builtin_skills_dir)
+        bootstrap.setup_input_handler(
+            self,
+            tab_completion_available=TAB_COMPLETION_AVAILABLE,
+            input_handler_type=INPUT_HANDLER_TYPE,
+            create_windows_input_handler=globals().get("create_windows_input_handler"),
+            create_tab_completer=globals().get("create_tab_completer"),
         )
-        self._schedule_model_validation_background()
-        self._schedule_knowledge_service_background()
-        self.memory_service = None
-        self._last_memory_reflect_at = 0.0
-        self._schedule_memory_service_background()
-        self.tool_dispatcher = ToolDispatcher(self, self._execute_tool_call_legacy)
+        bootstrap.setup_runtime_services(self)
 
     def _resolve_path_lenient(self, path: Path) -> Path:
         try:
