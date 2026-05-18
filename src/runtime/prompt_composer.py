@@ -3,7 +3,12 @@ import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from .skills_loader import _list_bundled_script_paths
+from ..skills_loader import _list_bundled_script_paths
+
+
+def _src_root() -> Path:
+    """Return absolute src/ root regardless of current module subdirectory."""
+    return Path(__file__).resolve().parent.parent
 
 
 def build_mcp_system_append(agent: Any) -> str:
@@ -124,7 +129,7 @@ def strip_jsonc_comments(text: str) -> str:
 
 def load_tools_spec_from_jsonc(agent: Any) -> List[Dict[str, Any]]:
     """Load tool specs from tools.jsonc with comment stripping."""
-    path = Path(__file__).resolve().parent / "tools.jsonc"
+    path = _src_root() / "tools.jsonc"
     try:
         raw = path.read_text(encoding="utf-8")
         clean = strip_jsonc_comments(raw)
@@ -140,7 +145,7 @@ def load_tools_spec_from_jsonc(agent: Any) -> List[Dict[str, Any]]:
 def build_user_preferences_system_append(agent: Any) -> str:
     """持久化用户偏好文件，固定注入 system（在 MCP/tools 之前）。"""
     try:
-        from . import user_preferences_manager as _upm
+        from .. import user_preferences_manager as _upm
 
         return _upm.build_system_append(Path(agent.config_dir))
     except Exception:
@@ -270,7 +275,7 @@ def build_tools_prompt_append(agent: Any) -> str:
 
 def load_tools_prompt_template() -> str:
     """Load tools-related prompt template from external markdown file."""
-    path = Path(__file__).resolve().parent / "tools_prompt.md"
+    path = _src_root() / "tools_prompt.md"
     try:
         return path.read_text(encoding="utf-8")
     except Exception as e:

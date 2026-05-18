@@ -24,7 +24,6 @@ try:
     )
     from prompt_toolkit.key_binding import KeyBindings
     from prompt_toolkit.history import InMemoryHistory
-    from prompt_toolkit.formatted_text import FormattedText
     from prompt_toolkit.styles import Style
     try:
         from prompt_toolkit.cursor_shapes import CursorShape
@@ -74,6 +73,30 @@ def _attach_blink_after_render_hook(session) -> None:
             evt.add_handler(_on_after_render)
     except Exception:
         pass
+
+
+def _sanitize_prompt_pollution(text: str, work_directory: Optional[Path] = None) -> str:
+    """
+    Best-effort cleanup for rare cases where prompt fragments leak into input.
+    Example: 'D:\\tmp\\builds>>>>/exit' -> '/exit'
+    """
+    s = str(text or "")
+    if not s:
+        return s
+    cleaned = s.replace("\r", "").strip()
+    if not cleaned:
+        return ""
+
+    wd = str(work_directory or "").strip()
+    if wd:
+        prompt_prefix = f"{wd}>"
+        while cleaned.startswith(prompt_prefix):
+            cleaned = cleaned[len(prompt_prefix):].lstrip()
+
+    if re.match(r"^>{2,}\s*\S", cleaned):
+        cleaned = re.sub(r"^>+\s*", "", cleaned, count=1)
+
+    return cleaned
 
 
 class FileCompleter(Completer):
@@ -847,7 +870,9 @@ class WindowsInputHandler:
             if initial_history:
                 for entry in initial_history:
                     try:
-                        self._pt_history.append_string(entry)
+                        cleaned = _sanitize_prompt_pollution(entry, work_directory)
+                        if cleaned:
+                            self._pt_history.append_string(cleaned)
                     except Exception:
                         pass
             session_kwargs = dict(
@@ -880,19 +905,19 @@ class WindowsInputHandler:
                 # 使用prompt_toolkit
                 if "\n" in prompt:
                     first, rest = prompt.split("\n", 1)
-                    prompt_obj = FormattedText(
-                        [
-                            ("fg:ansibrightblack", first),
-                            ("", "\n"),
-                            ("", rest),
-                        ]
-                    )
-                    user_input = self.session.prompt(prompt_obj).strip()
+                    # Use a plain one-line prompt for prompt_toolkit input.
+                    # Multi-line prompt rendering can leave visual artifacts
+                    # (such as repeated '>') when browsing history with arrow keys
+                    # on some Windows terminals.
+                    print(f"\x1b[90m{first}\x1b[0m")
+                    user_input = self.session.prompt(rest).strip()
                 else:
                     user_input = self.session.prompt(prompt).strip()
             else:
                 # 回退到标准input
                 user_input = input(prompt).strip()
+
+            user_input = _sanitize_prompt_pollution(user_input, self.work_directory)
             
             # 保存到历史记录
             if user_input:
@@ -1116,7 +1141,9 @@ class WindowsInputHandler:
         self._pt_history = InMemoryHistory()
         for entry in entries:
             try:
-                self._pt_history.append_string(entry)
+                cleaned = _sanitize_prompt_pollution(entry, self.work_directory)
+                if cleaned:
+                    self._pt_history.append_string(cleaned)
             except Exception:
                 pass
         session_kwargs = dict(

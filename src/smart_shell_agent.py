@@ -35,12 +35,12 @@ from .skills_loader import (
 )
 from .mcp_manager import McpManager, McpError
 from .change_preview_formatter import ChangePreviewFormatter
-from .ai_provider_clients import AICallContext
-from .session_memory_service import SessionMemoryService
+from .ai.ai_provider_clients import AICallContext
+from .services.session_memory_service import SessionMemoryService
 from .policy.path_policy import PathPolicy
 from .console_utils import _ansi_blue, _ansi_gray, _ansi_red, _ansi_yellow
-from .builtin_command_router import dispatch_builtin_command
-from .workspace_command_controller import (
+from .controllers.builtin_command_router import dispatch_builtin_command
+from .controllers.workspace_command_controller import (
     handle_workspace_builtin_command,
     parse_workspace_command_args,
     print_workspace_current,
@@ -55,12 +55,12 @@ from .workspace_command_controller import (
     workspace_update_command,
     workspace_usage,
 )
-from .chat_command_controller import (
+from .controllers.chat_command_controller import (
     chat_usage,
     handle_chat_builtin_command,
     print_chat_list,
 )
-from .mcp_shortcut_controller import (
+from .controllers.mcp_shortcut_controller import (
     mcp_item_label,
     parse_mcp_shortcut_command,
     print_mcp_shortcut_result,
@@ -73,11 +73,11 @@ from .completion.slash_dynamic_completions import (
     build_slash_dynamic_rules,
     build_workspace_action_commands,
 )
-from . import filesystem_actions
-from . import command_actions
-from . import bootstrap
-from . import execution_policy_service
-from . import prompt_composer
+from .actions import filesystem_actions
+from .actions import command_actions
+from .runtime import bootstrap
+from .services import execution_policy_service
+from .runtime import prompt_composer
 
 # memory_manager 在后台线程中导入（见 _schedule_memory_service_background），避免阻塞主线程初始化。
 MEMORY_AVAILABLE = False  # type: ignore[misc, assignment]
@@ -2705,7 +2705,7 @@ class SmartShellAgent:
         print("=" * 80)
 
     def run(self):
-        from .runtime_loop import run_agent_loop
+        from .runtime.runtime_loop import run_agent_loop
         return run_agent_loop(self)
 
     def _build_step_progress_context(self) -> str:
@@ -3070,7 +3070,6 @@ class SmartShellAgent:
             try:
                 from prompt_toolkit import PromptSession
                 from prompt_toolkit.history import InMemoryHistory
-                from prompt_toolkit.formatted_text import FormattedText
                 try:
                     from prompt_toolkit.cursor_shapes import CursorShape
                     from prompt_toolkit.cursor_shapes import SimpleCursorShapeConfig
@@ -3116,15 +3115,9 @@ class SmartShellAgent:
                 except Exception:
                     pass
                 
-                # 获取用户输入
-                prompt_obj = FormattedText(
-                    [
-                        ("fg:ansibrightblack", workspace_prompt_line),
-                        ("", "\n"),
-                        ("", f"{str(self.work_directory)}>"),
-                    ]
-                )
-                user_input = session.prompt(prompt_obj).strip()
+                # 使用单行 prompt，减少 Windows 终端在历史重绘时的视觉残留。
+                print(f"\x1b[90m{workspace_prompt_line}\x1b[0m")
+                user_input = session.prompt(f"{str(self.work_directory)}>").strip()
                 
                 # 保存到历史记录
                 if user_input:
