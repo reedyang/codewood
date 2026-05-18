@@ -16,7 +16,7 @@ from pathlib import Path
 current_dir = Path(__file__).resolve().parent
 project_root = current_dir.parent
 sys.path.insert(0, str(project_root))
-from src.config_env import resolve_string_values_in_data
+from src.core.config.config_env import resolve_string_values_in_data
 
 
 def _set_windows_console_title():
@@ -66,7 +66,7 @@ def main():
             config = None
 
     if config_dir:
-        from src.app_logging import get_logger, setup_app_logging
+        from src.core.logging.app_logging import get_logger, setup_app_logging
         setup_app_logging(Path(config_dir))
         get_logger().info("Smart Shell 启动，config_dir=%s", config_dir)
     

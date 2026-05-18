@@ -5,7 +5,7 @@ import time
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-from ..app_logging import get_logger
+from ..core.logging.app_logging import get_logger
 
 MEMORY_RETRIEVAL_ROUNDS = 3
 MEMORY_RETRIEVAL_MSG_MAX_CHARS = 400
