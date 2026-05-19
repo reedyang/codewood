@@ -2318,12 +2318,17 @@ class SmartShellAgent:
                     except Exception:
                         pass
                 session = PromptSession(**session_kwargs)
-                # Re-assert cursor blink after every redraw (Windows Terminal compat).
-                # NOTE: Application.after_render is an Event — must add via add_handler.
+                # 对 Windows Terminal 维持闪烁；Cursor 内置终端不强制发闪烁序列。
                 try:
                     _app = getattr(session, "app", None)
                     if _app is not None:
+                        _is_vscode_term = (
+                            str(os.environ.get("TERM_PROGRAM", "") or "").strip().lower()
+                            == "vscode"
+                        )
                         def _on_after_render(_a) -> None:
+                            if _is_vscode_term:
+                                return
                             try:
                                 _o = getattr(_a, "output", None)
                                 if _o is not None and hasattr(_o, "write_raw") and hasattr(_o, "flush"):
