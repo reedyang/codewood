@@ -14,6 +14,7 @@ from .ai_special_mode_prompts import build_special_mode_messages
 class AgentAIContext:
     provider: str
     model_name: str
+    model_params: Optional[Dict[str, Any]]
     openai_conf: Optional[Dict[str, Any]]
     openwebui_conf: Optional[Dict[str, Any]]
     work_directory: str
@@ -85,6 +86,7 @@ class AIOrchestrator:
             provider_ctx = ProviderCallContext(
                 provider=provider,
                 model_name=model_name,
+                model_params=self.context.model_params,
                 openai_conf=self.context.openai_conf,
                 openwebui_conf=self.context.openwebui_conf,
                 messages=messages,

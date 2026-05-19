@@ -21,6 +21,7 @@ class _FakeAgent:
         self._session_summary_rolling = ""
         self._last_llm_summary_pair_count = 0
         self.applied_chat_model_calls = 0
+        self.refresh_status_usage_calls = 0
 
     def _apply_chat_model_from_entry(self, chat, persist_if_missing=False):
         self.applied_chat_model_calls += 1
@@ -31,6 +32,9 @@ class _FakeAgent:
 
     def _print_chat_history(self):
         return None
+
+    def _refresh_status_context_usage_snapshot(self):
+        self.refresh_status_usage_calls += 1
 
 
 class ChatStateModelPersistenceTests(unittest.TestCase):
@@ -63,10 +67,24 @@ class ChatStateModelPersistenceTests(unittest.TestCase):
             msg = manager.activate_chat("chat-1", announce=False, clear_screen=False, print_history=False)
             self.assertEqual(msg, "")
             self.assertEqual(agent.applied_chat_model_calls, 1)
+            self.assertEqual(agent.refresh_status_usage_calls, 1)
             chat = manager.find_chat_by_id("chat-1")
             self.assertIsNotNone(chat)
             self.assertEqual(chat.get("model_provider"), "openai")
             self.assertEqual(chat.get("model_name"), "gpt-4.1")
+
+    def test_compact_keeps_repeated_identical_user_turns(self):
+        with tempfile.TemporaryDirectory() as td:
+            agent = _FakeAgent(Path(td))
+            manager = ChatStateManager(agent, "chats.json")
+            messages = [
+                {"role": "user", "content": "你好"},
+                {"role": "assistant", "content": '{"tool":"noop"}'},
+                {"role": "user", "content": "你好"},
+                {"role": "assistant", "content": "你好！有什么我可以帮助您的？"},
+            ]
+            compact = manager.compact_redundant_user_turns(messages)
+            self.assertEqual(compact, messages)
 
 
 if __name__ == "__main__":

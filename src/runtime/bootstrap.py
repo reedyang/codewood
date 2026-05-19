@@ -181,6 +181,7 @@ def setup_model_ai_stack(
         AgentAIContext(
             provider=agent.provider,
             model_name=agent.model_name,
+            model_params=agent.params,
             openai_conf=agent.openai_conf,
             openwebui_conf=agent.openwebui_conf,
             work_directory=str(agent.work_directory),

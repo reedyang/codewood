@@ -2,6 +2,8 @@ import json
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+from ..core.config.model_providers import DEFAULT_CONTEXT_WINDOW, parse_context_window
+
 
 @dataclass(frozen=True)
 class AICallContext:
@@ -23,6 +25,7 @@ class AICallContext:
 class ProviderCallContext:
     provider: str
     model_name: str
+    model_params: Optional[Dict[str, Any]]
     openai_conf: Optional[Dict[str, Any]]
     openwebui_conf: Optional[Dict[str, Any]]
     messages: List[Dict[str, Any]]
@@ -143,7 +146,14 @@ def _call_with_openai_compatible(
         payload["temperature"] = 0.2
 
     url = base_url.rstrip("/") + "/chat/completions"
-    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    context_window = parse_context_window(
+        conf.get("context_window"), default_value=DEFAULT_CONTEXT_WINDOW
+    )
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+        "X-Context-Window": str(context_window),
+    }
     resp = requests.post(url, headers=headers, json=payload, verify=False, timeout=120, stream=stream)
     resp.raise_for_status()
     if stream:
@@ -173,6 +183,7 @@ def _call_with_ollama(
     memory_query_expansion_mode: bool,
     append_history: Callable[[str], None],
     ollama_importer: Callable[[], Any],
+    context_window: int,
 ):
     try:
         ollama = ollama_importer()
@@ -189,8 +200,19 @@ def _call_with_ollama(
     else:
         provider_messages = messages
 
+    ollama_options: Dict[str, Any] = {"num_ctx": int(context_window)}
+    if session_summary_mode:
+        ollama_options.update({"num_predict": 512, "temperature": 0.3})
+    elif memory_query_expansion_mode:
+        ollama_options.update({"num_predict": 512, "temperature": 0.2})
+
     if stream:
-        response = ollama.chat(model=model_name, messages=provider_messages, stream=True)
+        response = ollama.chat(
+            model=model_name,
+            messages=provider_messages,
+            stream=True,
+            options=ollama_options,
+        )
 
         def gen():
             buffer = ""
@@ -208,11 +230,12 @@ def _call_with_ollama(
 
         return gen()
 
-    chat_kwargs: Dict[str, Any] = {"model": model_name, "messages": provider_messages, "stream": False}
-    if session_summary_mode:
-        chat_kwargs["options"] = {"num_predict": 512, "temperature": 0.3}
-    elif memory_query_expansion_mode:
-        chat_kwargs["options"] = {"num_predict": 512, "temperature": 0.2}
+    chat_kwargs: Dict[str, Any] = {
+        "model": model_name,
+        "messages": provider_messages,
+        "stream": False,
+        "options": ollama_options,
+    }
     response = ollama.chat(**chat_kwargs)
     message = response.get("message", {}) or {}
     ai_response = message.get("content", "") or ""
@@ -261,6 +284,10 @@ def call_ai_with_provider(
             stream_decode_unicode=True,
         )
     if context.provider == "ollama":
+        context_window = parse_context_window(
+            ((context.model_params or {}).get("context_window")),
+            default_value=DEFAULT_CONTEXT_WINDOW,
+        )
         return _call_with_ollama(
             model_name=context.model_name,
             messages=context.messages,
@@ -273,5 +300,6 @@ def call_ai_with_provider(
             memory_query_expansion_mode=context.memory_query_expansion_mode,
             append_history=append_history,
             ollama_importer=ollama_importer,
+            context_window=context_window,
         )
     return f"❌ 错误：不支持的模型提供者 '{context.provider}'。支持的提供者：ollama, openai, openwebui"

@@ -3,8 +3,9 @@ import re
 import threading
 import time
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
+from ..core.config.model_providers import DEFAULT_CONTEXT_WINDOW, parse_context_window
 from ..core.logging.app_logging import get_logger
 
 MEMORY_RETRIEVAL_ROUNDS = 3
@@ -19,11 +20,26 @@ SESSION_SUMMARY_LLM_INTERVAL_PAIRS = 6
 SESSION_SUMMARY_LLM_MAX_CHARS = 1200
 SESSION_SUMMARY_LLM_HISTORY_MSGS = 16
 CHAT_RECENT_MESSAGES = 10
+CONTEXT_OUTPUT_RESERVE_RATIO = 0.20
+CONTEXT_OUTPUT_RESERVE_MIN = 512
+CONTEXT_OUTPUT_RESERVE_MAX = 8192
+CONTEXT_SAFETY_MARGIN_RATIO = 0.10
+CONTEXT_SAFETY_MARGIN_MIN = 256
+SYSTEM_BUCKET_RATIO = 0.45
+HISTORY_BUCKET_RATIO = 0.35
+OP_CONTEXT_BUCKET_RATIO = 0.12
+
+SMALL_CTX_MAX = 16_000
+MEDIUM_CTX_MAX = 64_000
+AGGRESSIVE_COMPRESS_TRIGGER_PCT = 80
+AGGRESSIVE_COMPRESS_TARGET_PCT = 20
 
 
 class SessionMemoryService:
     def __init__(self, agent: Any) -> None:
         self.agent = agent
+        self._builtin_token_counter: Optional[Callable[[str], int]] = None
+        self._builtin_token_counter_init_done = False
 
     def append_chat_message(self, role: str, content: str) -> None:
         r = str(role or "").strip().lower()
@@ -484,6 +500,259 @@ class SessionMemoryService:
             except Exception:
                 continue
 
+    def _resolve_token_counter(self) -> Optional[Callable[[str], int]]:
+        custom = getattr(self.agent, "token_estimator", None)
+        if callable(custom):
+            return custom
+        if self._builtin_token_counter_init_done:
+            return self._builtin_token_counter
+        self._builtin_token_counter_init_done = True
+        try:
+            import tiktoken  # type: ignore
+
+            enc = tiktoken.get_encoding("cl100k_base")
+            self._builtin_token_counter = lambda s: len(enc.encode(str(s or "")))
+        except Exception:
+            self._builtin_token_counter = None
+        return self._builtin_token_counter
+
+    def _estimate_text_tokens(self, text: str) -> int:
+        s = str(text or "")
+        if not s:
+            return 0
+        counter = self._resolve_token_counter()
+        if callable(counter):
+            try:
+                n = int(counter(s))
+                if n >= 0:
+                    return n
+            except Exception:
+                pass
+        cjk = len(re.findall(r"[\u3400-\u9fff]", s))
+        other = max(0, len(s) - cjk)
+        # CJK average token density is higher; ASCII often ~= 4 chars per token.
+        return cjk + max(1, (other + 3) // 4)
+
+    def _estimate_message_tokens(self, role: str, content: str) -> int:
+        return 6 + self._estimate_text_tokens(role) + self._estimate_text_tokens(content)
+
+    def _store_context_usage_snapshot(self, context_window: int, total_input_tokens: int) -> None:
+        ctx_window = max(1, int(context_window or DEFAULT_CONTEXT_WINDOW))
+        total = max(0, int(total_input_tokens or 0))
+        usage_pct = max(0, min(999, int(round((total * 100.0) / ctx_window))))
+        self.agent._last_context_window = ctx_window
+        self.agent._last_context_input_tokens = total
+        self.agent._last_context_usage_percent = usage_pct
+
+    def _clip_text_to_token_budget(self, text: str, max_tokens: int) -> str:
+        s = str(text or "")
+        if max_tokens <= 0 or not s:
+            return ""
+        if self._estimate_text_tokens(s) <= max_tokens:
+            return s
+        lo, hi = 0, len(s)
+        best = ""
+        suffix = "…"
+        while lo <= hi:
+            mid = (lo + hi) // 2
+            candidate = s[:mid].rstrip()
+            if mid < len(s):
+                candidate = (candidate + suffix) if candidate else suffix
+            if self._estimate_text_tokens(candidate) <= max_tokens:
+                best = candidate
+                lo = mid + 1
+            else:
+                hi = mid - 1
+        return best
+
+    def _first_user_requirement(self, fallback: str) -> str:
+        hist = list(getattr(self.agent, "conversation_history", None) or [])
+        for msg in hist:
+            if str(msg.get("role") or "").strip().lower() != "user":
+                continue
+            c = str(msg.get("content") or "").strip()
+            if c:
+                return c
+        return str(fallback or "").strip()
+
+    def _context_token_budgets(self) -> Dict[str, int]:
+        ctx_window = parse_context_window(
+            ((getattr(self.agent, "params", None) or {}).get("context_window")),
+            default_value=DEFAULT_CONTEXT_WINDOW,
+        )
+        if ctx_window <= SMALL_CTX_MAX:
+            profile = "small"
+            system_ratio, history_ratio, op_ratio, summary_ratio = 0.50, 0.26, 0.14, 0.10
+            memory_share_ratio = 0.42
+            assistant_clip_tokens = 180
+        elif ctx_window <= MEDIUM_CTX_MAX:
+            profile = "medium"
+            system_ratio, history_ratio, op_ratio, summary_ratio = 0.45, 0.35, 0.12, 0.08
+            memory_share_ratio = 0.45
+            assistant_clip_tokens = 260
+        else:
+            profile = "large"
+            system_ratio, history_ratio, op_ratio, summary_ratio = 0.38, 0.48, 0.10, 0.06
+            memory_share_ratio = 0.55
+            assistant_clip_tokens = 400
+
+        output_reserve = int(ctx_window * CONTEXT_OUTPUT_RESERVE_RATIO)
+        output_reserve = max(CONTEXT_OUTPUT_RESERVE_MIN, min(output_reserve, CONTEXT_OUTPUT_RESERVE_MAX))
+        safety_margin = max(CONTEXT_SAFETY_MARGIN_MIN, int(ctx_window * CONTEXT_SAFETY_MARGIN_RATIO))
+        input_budget = max(512, ctx_window - output_reserve - safety_margin)
+        system_budget = max(200, int(input_budget * system_ratio))
+        history_budget = max(120, int(input_budget * history_ratio))
+        op_context_budget = max(80, int(input_budget * op_ratio))
+        history_summary_budget = max(80, int(input_budget * summary_ratio))
+        return {
+            "profile": profile,
+            "context_window": ctx_window,
+            "input_budget": input_budget,
+            "system_budget": system_budget,
+            "history_budget": history_budget,
+            "op_context_budget": op_context_budget,
+            "history_summary_budget": history_summary_budget,
+            "memory_share_ratio": int(memory_share_ratio * 100),
+            "assistant_clip_tokens": assistant_clip_tokens,
+        }
+
+    def _summarize_history_excerpt(self, rows: List[Dict[str, Any]], summary_budget: int) -> str:
+        if not rows or summary_budget <= 0:
+            return ""
+        lines: List[str] = []
+        for item in rows:
+            role = "U" if str(item.get("role") or "").strip().lower() == "user" else "A"
+            c = str(item.get("content") or "").replace("\n", " ").strip()
+            if not c:
+                continue
+            lines.append(f"{role}:{c[:180]}")
+            if len(lines) >= 12:
+                break
+        if not lines:
+            return ""
+        summary = "[历史摘要]\n" + " | ".join(lines)
+        return self._clip_text_to_token_budget(summary, summary_budget)
+
+    def _build_history_messages_by_budget(
+        self, history_budget: int, summary_budget: int, assistant_clip_tokens: int
+    ) -> Tuple[List[Dict[str, Any]], Dict[str, int]]:
+        hist = list(getattr(self.agent, "conversation_history", None) or [])
+        if not hist or history_budget <= 0:
+            return [], {"assistant_trimmed": 0, "summary_messages": 0, "dropped_messages": 0}
+
+        normalized: List[Dict[str, Any]] = []
+        assistant_trimmed = 0
+        for msg in hist:
+            role = str(msg.get("role") or "").strip().lower()
+            if role not in ("user", "assistant"):
+                continue
+            content = str(msg.get("content") or "")
+            if role == "assistant":
+                before = content
+                content = self._clip_text_to_token_budget(content, assistant_clip_tokens)
+                if content != before:
+                    assistant_trimmed += 1
+            normalized.append({"role": role, "content": content})
+
+        if not normalized:
+            return [], {"assistant_trimmed": assistant_trimmed, "summary_messages": 0, "dropped_messages": 0}
+
+        def _total_cost(items: List[Dict[str, Any]]) -> int:
+            return sum(self._estimate_message_tokens(str(i.get("role") or ""), str(i.get("content") or "")) for i in items)
+
+        working = list(normalized)
+        dropped_for_summary: List[Dict[str, Any]] = []
+        summary_message: Optional[Dict[str, Any]] = None
+
+        # Stage 2: compress older dialogue into one summary message before dropping whole messages.
+        target_without_summary = max(24, history_budget - max(40, summary_budget))
+        while len(working) > 2 and _total_cost(working) > target_without_summary:
+            dropped_for_summary.append(working.pop(0))
+        if dropped_for_summary:
+            summary_text = self._summarize_history_excerpt(dropped_for_summary, summary_budget)
+            if summary_text:
+                summary_message = {"role": "assistant", "content": summary_text}
+                working.insert(0, summary_message)
+
+        # Stage 3: still too big -> drop whole oldest messages.
+        dropped_messages = 0
+        while len(working) > 1 and _total_cost(working) > history_budget:
+            if summary_message is not None and len(working) > 2:
+                working.pop(1)
+            else:
+                working.pop(0)
+            dropped_messages += 1
+
+        if summary_message is not None and working and working[0] is summary_message and _total_cost(working) > history_budget:
+            other_cost = _total_cost(working[1:])
+            allowed = max(16, history_budget - other_cost - 6)
+            clipped_summary = self._clip_text_to_token_budget(str(summary_message.get("content") or ""), allowed)
+            if clipped_summary:
+                summary_message["content"] = clipped_summary
+            else:
+                working.pop(0)
+
+        if not working and normalized:
+            # keep one latest message as last resort
+            last = normalized[-1]
+            max_content_tokens = max(16, history_budget - 8)
+            working = [
+                {
+                    "role": str(last.get("role") or "assistant"),
+                    "content": self._clip_text_to_token_budget(str(last.get("content") or ""), max_content_tokens),
+                }
+            ]
+
+        stats = {
+            "assistant_trimmed": assistant_trimmed,
+            "summary_messages": 1 if summary_message else 0,
+            "dropped_messages": dropped_messages,
+        }
+        return working, stats
+
+    def refresh_context_usage_snapshot(self, user_input_hint: str = "", context_hint: str = "") -> None:
+        """
+        Refresh status-bar usage percentage from current chat/model state
+        without invoking memory retrieval or LLM calls.
+        """
+        try:
+            budgets = self._context_token_budgets()
+            history_messages, _stats = self._build_history_messages_by_budget(
+                int(budgets["history_budget"]),
+                int(budgets["history_summary_budget"]),
+                int(budgets["assistant_clip_tokens"]),
+            )
+            history_tokens = sum(
+                self._estimate_message_tokens(str(m.get("role") or ""), str(m.get("content") or ""))
+                for m in history_messages
+            )
+            sys_text = (
+                f"{str(getattr(self.agent, '_skills_routing_prefix', '') or '')}"
+                f"{str(getattr(self.agent, 'system_prompt', '') or '')}\n"
+                f"当前 workspace 名称：{str(getattr(self.agent, 'workspace_name', '') or '')}\n"
+                f"当前 chat 名称：{str(getattr(self.agent, 'active_chat_name', '') or '')}\n"
+            )
+            system_tokens = self._estimate_message_tokens("system", sys_text)
+            requirement = self._first_user_requirement(str(user_input_hint or "").strip())
+            user_anchor = (
+                "【关键约束】\n"
+                "1) 用户原始需求必须持续满足。\n"
+                "2) 本轮用户输入优先级最高。\n\n"
+                f"用户原始需求: {requirement}\n"
+                f"用户输入: {str(user_input_hint or '').strip()}\n"
+            )
+            if context_hint:
+                user_anchor += f"操作上下文: {str(context_hint)}\n"
+            user_tokens = self._estimate_message_tokens("user", user_anchor)
+            total_input_tokens = int(system_tokens + history_tokens + user_tokens)
+            self._store_context_usage_snapshot(
+                int(budgets.get("context_window") or DEFAULT_CONTEXT_WINDOW),
+                total_input_tokens,
+            )
+        except Exception:
+            # Keep previous snapshot on refresh failure.
+            pass
+
     def build_regular_task_messages(self, user_input: str, context: str = "") -> Tuple[List[Dict[str, Any]], bool]:
         import os
 
@@ -494,9 +763,21 @@ class SessionMemoryService:
         self.maybe_refresh_session_summary_llm()
         self.agent._reload_skills()
         self.agent.system_prompt = self.agent._compose_system_prompt_snapshot(include_tools=True)
-        mem_block = self.memory_context_for_prompt(user_input)
-        tail_context = (
-            f"{self.agent._skills_routing_prefix}{self.agent.system_prompt}\n{self.agent._active_skill_full_prompt}"
+        budgets = self._context_token_budgets()
+        op_context_budget = int(budgets["op_context_budget"])
+        memory_share = float(int(budgets.get("memory_share_ratio", 45))) / 100.0
+        mem_budget = max(80, int(int(budgets["system_budget"]) * memory_share))
+        tail_budget = max(120, int(int(budgets["system_budget"]) - mem_budget))
+        mem_block_raw = self.memory_context_for_prompt(user_input)
+        mem_block = mem_block_raw
+        if mem_block:
+            mem_block = self._clip_text_to_token_budget(mem_block, mem_budget)
+        immutable_system_core = (
+            f"{self.agent._skills_routing_prefix}{self.agent.system_prompt}\n"
+            f"{self.agent._active_skill_full_prompt}"
+        )
+        # Key runtime metadata is intentionally non-clippable.
+        runtime_tail_raw = (
             f"当前操作系统信息：{os_info}\n当前日期时间：{date_time}\n"
             f"当前 smart-shell 根目录（绝对路径）：{self.agent._self_repo_root}\n"
             f"当前 config 目录（绝对路径）：{self.agent.config_dir}\n"
@@ -504,6 +785,7 @@ class SessionMemoryService:
             f"当前 chat 名称（弱提示，仅会话标签，不代表本轮任务目标）：{self.agent.active_chat_name}\n"
             f"当前 workspace 目录（绝对路径）：{self.agent.ai_workspace_dir}\n"
         )
+        tail_context = immutable_system_core + runtime_tail_raw
         if mem_block:
             sys_prefix = (
                 "【经验记忆 — 须主动落实】\n"
@@ -514,10 +796,22 @@ class SessionMemoryService:
         else:
             sys_prefix = tail_context
         messages: List[Dict[str, Any]] = [{"role": "system", "content": sys_prefix}]
-        for msg in self.agent.conversation_history[-CHAT_RECENT_MESSAGES:]:
+        history_messages, history_stats = self._build_history_messages_by_budget(
+            int(budgets["history_budget"]),
+            int(budgets["history_summary_budget"]),
+            int(budgets["assistant_clip_tokens"]),
+        )
+        for msg in history_messages:
             messages.append(msg)
 
+        original_requirement = self._first_user_requirement(user_input)
         current_input = ""
+        current_input += (
+            "【关键约束】\n"
+            "1) 用户原始需求必须持续满足。\n"
+            "2) 本轮用户输入优先级最高。\n"
+            "3) 如有最近操作结果，结论需与其一致。\n\n"
+        )
         if mem_block:
             current_input += (
                 "【硬性要求】作答前须核对上一条 system 开头的「经验记忆」："
@@ -528,9 +822,130 @@ class SessionMemoryService:
             f"当前工作目录: {self.agent.work_directory}\n"
         )
         if self.agent.operation_results:
-            current_input += f"最近的操作结果: {self.agent.operation_results[-1]}\n"
+            op_line = f"最近的操作结果: {self.agent.operation_results[-1]}\n"
+            current_input += self._clip_text_to_token_budget(op_line, op_context_budget)
         if context:
-            current_input += f"操作上下文: {context}\n"
+            ctx_line = f"操作上下文: {context}\n"
+            current_input += self._clip_text_to_token_budget(ctx_line, op_context_budget)
+        # 用户原始需求必须进入上下文（即使历史被压缩）。
+        current_input += f"用户原始需求: {original_requirement}\n"
         current_input += f"用户输入: {user_input}"
-        messages.append({"role": "user", "content": current_input})
+        current_user_msg = {"role": "user", "content": current_input}
+        messages.append(current_user_msg)
+
+        system_tokens = 0
+        history_tokens = 0
+        user_tokens = 0
+        try:
+            system_tokens = self._estimate_message_tokens("system", sys_prefix)
+            history_tokens = sum(
+                self._estimate_message_tokens(str(m.get("role") or ""), str(m.get("content") or ""))
+                for m in history_messages
+            )
+            user_tokens = self._estimate_message_tokens("user", current_input)
+            total_input_tokens = int(system_tokens + history_tokens + user_tokens)
+            ctx_window = int(budgets.get("context_window") or DEFAULT_CONTEXT_WINDOW)
+            usage_pct = max(0, min(999, int(round((total_input_tokens * 100.0) / max(1, ctx_window)))))
+            self.agent._last_context_usage_percent_precompression = usage_pct
+            self.agent._last_context_aggressive_compression_applied = False
+            if usage_pct > AGGRESSIVE_COMPRESS_TRIGGER_PCT:
+                target_tokens = max(256, int((ctx_window * AGGRESSIVE_COMPRESS_TARGET_PCT) / 100))
+                aggressive_user_budget = max(120, int(target_tokens * 0.45))
+                aggressive_system_budget = max(80, int(target_tokens * 0.35))
+                aggressive_history_budget = max(40, int(target_tokens * 0.20))
+                aggressive_history_summary_budget = max(30, int(aggressive_history_budget * 0.55))
+                aggressive_assistant_clip = max(48, int(int(budgets.get("assistant_clip_tokens") or 180) * 0.35))
+                aggressive_op_context_budget = max(24, int(op_context_budget * 0.35))
+                aggressive_mem_budget = max(24, int(aggressive_system_budget * 0.35))
+
+                mem_block2 = ""
+                if mem_block_raw:
+                    mem_block2 = self._clip_text_to_token_budget(mem_block_raw, aggressive_mem_budget)
+                tail_context2 = immutable_system_core + runtime_tail_raw
+                if mem_block2:
+                    sys_prefix2 = (
+                        "【经验记忆 — 压缩模式】\n"
+                        + mem_block2
+                        + "\n\n---\n\n"
+                        + tail_context2
+                    )
+                else:
+                    sys_prefix2 = tail_context2
+
+                history_messages2, history_stats2 = self._build_history_messages_by_budget(
+                    aggressive_history_budget,
+                    aggressive_history_summary_budget,
+                    aggressive_assistant_clip,
+                )
+                current_input2_head = ""
+                current_input2_head += (
+                    "【关键约束】\n"
+                    "1) 用户原始需求必须持续满足。\n"
+                    "2) 本轮用户输入优先级最高。\n"
+                    "3) 如有最近操作结果，结论需与其一致。\n\n"
+                )
+                current_input2_optional = (
+                    f"当前 workspace: {self.agent.workspace_name}\n"
+                    f"当前工作目录: {self.agent.work_directory}\n"
+                )
+                if self.agent.operation_results:
+                    op_line2 = f"最近的操作结果: {self.agent.operation_results[-1]}\n"
+                    current_input2_optional += self._clip_text_to_token_budget(op_line2, aggressive_op_context_budget)
+                if context:
+                    ctx_line2 = f"操作上下文: {context}\n"
+                    current_input2_optional += self._clip_text_to_token_budget(ctx_line2, aggressive_op_context_budget)
+                # Hard anchors: never clip original requirement and current input.
+                current_input2_tail = (
+                    f"用户原始需求: {original_requirement}\n"
+                    f"用户输入: {user_input}"
+                )
+                required_anchor = current_input2_head + current_input2_tail
+                optional_budget = max(0, aggressive_user_budget - self._estimate_text_tokens(required_anchor))
+                current_input2_optional = self._clip_text_to_token_budget(current_input2_optional, optional_budget)
+                current_input2 = current_input2_head + current_input2_optional + current_input2_tail
+
+                system_tokens2 = self._estimate_message_tokens("system", sys_prefix2)
+                history_tokens2 = sum(
+                    self._estimate_message_tokens(str(m.get("role") or ""), str(m.get("content") or ""))
+                    for m in history_messages2
+                )
+                user_tokens2 = self._estimate_message_tokens("user", current_input2)
+                total_input_tokens2 = int(system_tokens2 + history_tokens2 + user_tokens2)
+
+                if total_input_tokens2 < total_input_tokens:
+                    messages = [{"role": "system", "content": sys_prefix2}] + list(history_messages2) + [
+                        {"role": "user", "content": current_input2}
+                    ]
+                    sys_prefix = sys_prefix2
+                    history_messages = history_messages2
+                    current_input = current_input2
+                    history_stats = history_stats2
+                    system_tokens = system_tokens2
+                    history_tokens = history_tokens2
+                    user_tokens = user_tokens2
+                    total_input_tokens = total_input_tokens2
+                    self.agent._last_context_aggressive_compression_applied = True
+                    get_logger().info(
+                        "context-pack aggressive-compress triggered pre_pct=%s target_pct=%s post_pct=%s",
+                        usage_pct,
+                        AGGRESSIVE_COMPRESS_TARGET_PCT,
+                        int(round((total_input_tokens2 * 100.0) / max(1, ctx_window))),
+                    )
+
+            self._store_context_usage_snapshot(ctx_window, total_input_tokens)
+            get_logger().info(
+                "context-pack profile=%s ctx_window=%s input_budget=%s system=%s history=%s user=%s "
+                "history_trimmed_assistant=%s history_summary_messages=%s history_dropped=%s",
+                budgets.get("profile"),
+                budgets.get("context_window"),
+                budgets.get("input_budget"),
+                system_tokens,
+                history_tokens,
+                user_tokens,
+                history_stats.get("assistant_trimmed", 0),
+                history_stats.get("summary_messages", 0),
+                history_stats.get("dropped_messages", 0),
+            )
+        except Exception:
+            pass
         return messages, True

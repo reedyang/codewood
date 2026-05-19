@@ -46,34 +46,9 @@ class ChatStateManager:
         return c
 
     def compact_redundant_user_turns(self, messages: List[Dict[str, str]]) -> List[Dict[str, str]]:
-        compact: List[Dict[str, str]] = []
-        last_user_content: Optional[str] = None
-        assistant_since_last_user: List[str] = []
-        for m in messages:
-            role = str(m.get("role") or "").strip().lower()
-            content = str(m.get("content") or "")
-            if role == "assistant":
-                assistant_since_last_user.append(content)
-                compact.append(m)
-                continue
-            if role != "user":
-                compact.append(m)
-                continue
-            same_user = last_user_content is not None and content == last_user_content
-            if same_user and assistant_since_last_user:
-                looks_internal = True
-                for a in assistant_since_last_user:
-                    s = str(a or "")
-                    if ("```json" not in s) and ('{"tool"' not in s) and ("Step " not in s):
-                        looks_internal = False
-                        break
-                if looks_internal:
-                    assistant_since_last_user = []
-                    continue
-            compact.append(m)
-            last_user_content = content
-            assistant_since_last_user = []
-        return compact
+        # Keep persisted user turns intact, even when adjacent user texts are identical.
+        # Collapsing these turns may hide meaningful repetition after `/chat reload`.
+        return list(messages or [])
 
     def default_chat_state(self) -> Dict[str, Any]:
         default_chat = self.new_chat_entry("chat-1")
@@ -228,6 +203,10 @@ class ChatStateManager:
             except Exception:
                 pass
             self.save_chat_state()
+        try:
+            self._agent._refresh_status_context_usage_snapshot()
+        except Exception:
+            pass
         if clear_screen:
             os.system("cls" if os.name == "nt" else "clear")
         if print_history:

@@ -168,13 +168,18 @@ smart-shell/
       "params": {
         "api_key": "${HAPPYCODING_API_KEY}",
         "base_url": "https://happycoding.corp.zoom.com/api/v1",
-        "models": ["gpt-oss-120b"]
+        "models": [
+          { "name": "gpt-oss-120b", "context_window": "128K" },
+          { "name": "gpt-4o-mini", "context_window": 64000 }
+        ]
       }
     },
     {
       "provider": "ollama",
       "params": {
-        "models": ["qwen2.5vl:3b"]
+        "models": [
+          { "name": "qwen2.5vl:3b", "context_window": "96k" }
+        ]
       }
     }
   ],
@@ -188,7 +193,10 @@ smart-shell/
 **配置说明**:
 - `model_providers`: 多模型提供方列表；启动时默认使用第一个 provider
 - `model_providers[i].provider`: 支持 `ollama`、`openai`、`openwebui`
-- `model_providers[i].params.models`: 模型列表；默认使用第一个模型
+- `model_providers[i].params.models`: 模型列表；默认使用第一个模型。每项支持两种写法：
+  - 字符串：`"gpt-oss-120b"`（使用默认 `context_window=128000`）
+  - 对象：`{"name":"gpt-oss-120b","context_window":"128K"}`（可为数字，或带 `k/K` 后缀的字符串）
+- `context_window`: 仅接受正整数，或形如 `^\d+[kK]?$` 的字符串（`k/K` 表示乘以 1000）；无效值会自动回退到默认 `128000`
 - `model_providers[i].params`: 该 provider 的参数（例如 API 密钥、基础 URL 等）
 - `config.json` 中所有字符串配置值都支持环境变量占位符：当值写成 `${ENV_NAME}` 时会在运行时读取对应环境变量
 - 占位符读取后会自动做类型转换：支持 `bool`（`true/false/yes/no/on/off`）、`int`/`float`、`null`、以及 JSON 的 `list/dict`（例如 `"[1,2]"`、`"{\"a\":1}"`）
