@@ -32,6 +32,7 @@ from .core.config.skills_loader import (
     calc_skills_dirs_fingerprint,
     load_skills_merged,
 )
+from .core.config.config_env import resolve_string_values_in_data
 from .integrations.mcp import McpManager, McpError
 from .core.change_preview_formatter import ChangePreviewFormatter
 from .ai.ai_provider_clients import AICallContext
@@ -65,6 +66,9 @@ from .controllers.chat_command_controller import (
     chat_usage,
     handle_chat_builtin_command,
     print_chat_list,
+)
+from .controllers.model_command_controller import (
+    handle_model_builtin_command,
 )
 from .controllers.mcp_shortcut_controller import (
     mcp_item_label,
@@ -211,6 +215,7 @@ class SmartShellAgent:
             model_config=model_config,
             ollama_importer=_import_ollama_client,
         )
+        self._restore_active_chat_model()
 
         bootstrap.setup_prompt_and_mcp(self)
         bootstrap.setup_skills(self, builtin_skills_dir=builtin_skills_dir)
@@ -338,6 +343,192 @@ class SmartShellAgent:
 
     def _handle_workspace_builtin_command(self, builtin_line: str) -> bool:
         return handle_workspace_builtin_command(self, builtin_line)
+
+    def _load_runtime_config_data(self) -> Dict[str, Any]:
+        cached = getattr(self, "_resolved_config_data", None)
+        if isinstance(cached, dict) and cached:
+            return cached
+        cfg_data: Dict[str, Any] = {}
+        try:
+            cfg_path = self.config_dir / "config.json"
+            if cfg_path.exists():
+                with open(cfg_path, "r", encoding="utf-8") as f:
+                    loaded = resolve_string_values_in_data(json.load(f))
+                if isinstance(loaded, dict):
+                    cfg_data = loaded
+        except Exception:
+            cfg_data = {}
+        self._resolved_config_data = dict(cfg_data)
+        return cfg_data
+
+    def _get_configured_model_catalog(self) -> List[Dict[str, Any]]:
+        cfg_data = self._load_runtime_config_data()
+        providers = cfg_data.get("model_providers")
+        if not isinstance(providers, list):
+            return []
+        out: List[Dict[str, Any]] = []
+        seen: Set[str] = set()
+        for item in providers:
+            if not isinstance(item, dict):
+                continue
+            provider = str(item.get("provider") or "").strip()
+            params_raw = item.get("params", {})
+            if not provider or not isinstance(params_raw, dict):
+                continue
+            models = params_raw.get("models")
+            if not isinstance(models, list):
+                continue
+            base_params = dict(params_raw)
+            for model_item in models:
+                model_name = str(model_item or "").strip()
+                if not model_name:
+                    continue
+                selector = f"{provider}:{model_name}"
+                key = selector.lower()
+                if key in seen:
+                    continue
+                seen.add(key)
+                params = dict(base_params)
+                params["model"] = model_name
+                out.append(
+                    {
+                        "provider": provider,
+                        "name": model_name,
+                        "selector": selector,
+                        "params": params,
+                    }
+                )
+        return out
+
+    def _get_configured_model_selectors(self) -> List[str]:
+        return [str(item.get("selector") or "") for item in self._get_configured_model_catalog()]
+
+    def _current_model_selector(self) -> str:
+        provider = str(getattr(self, "provider", "") or "").strip()
+        model_name = str(getattr(self, "model_name", "") or "").strip()
+        if not provider or not model_name:
+            return ""
+        return f"{provider}:{model_name}"
+
+    def _find_configured_model_choice(self, selector: str) -> Optional[Dict[str, Any]]:
+        needle = str(selector or "").strip().lower()
+        if not needle:
+            return None
+        for item in self._get_configured_model_catalog():
+            if str(item.get("selector") or "").strip().lower() == needle:
+                return item
+        return None
+
+    def _apply_runtime_model_choice(self, choice: Dict[str, Any], validate: bool = False) -> None:
+        provider = str(choice.get("provider") or "").strip()
+        model_name = str(choice.get("name") or "").strip()
+        params = dict(choice.get("params") or {})
+        if model_name:
+            params["model"] = model_name
+        self.provider = provider
+        self.model_name = model_name
+        self.params = params
+        self.openai_conf = self.params if self.provider == "openai" else None
+        self.openwebui_conf = self.params if self.provider == "openwebui" else None
+        try:
+            ctx = self.ai_orchestrator.context
+            ctx.provider = self.provider
+            ctx.model_name = self.model_name
+            ctx.openai_conf = self.openai_conf
+            ctx.openwebui_conf = self.openwebui_conf
+        except Exception:
+            pass
+        if validate and self.provider == "ollama":
+            try:
+                self._validate_single_model(self.provider, self.model_name, "模型")
+            except Exception:
+                pass
+
+    def _set_active_chat_model(
+        self,
+        provider: str,
+        model_name: str,
+        save_state: bool = True,
+    ) -> None:
+        with self._chat_state_lock:
+            chat = self._find_chat_by_id(self.active_chat_id)
+            if not chat:
+                return
+            chat["model_provider"] = str(provider or "").strip()
+            chat["model_name"] = str(model_name or "").strip()
+            chat["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            if save_state:
+                self._save_chat_state()
+
+    def _apply_chat_model_from_entry(
+        self, chat: Dict[str, Any], persist_if_missing: bool = False
+    ) -> bool:
+        provider = str((chat or {}).get("model_provider") or "").strip()
+        model_name = str((chat or {}).get("model_name") or "").strip()
+        if not provider or not model_name:
+            if persist_if_missing:
+                chat["model_provider"] = str(getattr(self, "provider", "") or "").strip()
+                chat["model_name"] = str(getattr(self, "model_name", "") or "").strip()
+            return False
+
+        current = self._current_model_selector().lower()
+        selector = f"{provider}:{model_name}".lower()
+        if selector == current:
+            return False
+
+        choice = self._find_configured_model_choice(f"{provider}:{model_name}")
+        if choice:
+            self._apply_runtime_model_choice(choice, validate=False)
+        else:
+            fallback_params = dict(getattr(self, "params", {}) or {})
+            if str(getattr(self, "provider", "") or "").strip().lower() != provider.lower():
+                fallback_params = {}
+            fallback_params["model"] = model_name
+            self._apply_runtime_model_choice(
+                {
+                    "provider": provider,
+                    "name": model_name,
+                    "params": fallback_params,
+                    "selector": f"{provider}:{model_name}",
+                },
+                validate=False,
+            )
+        return True
+
+    def _restore_active_chat_model(self) -> None:
+        with self._chat_state_lock:
+            chat = self._find_chat_by_id(self.active_chat_id)
+            if not chat:
+                return
+            self._apply_chat_model_from_entry(chat, persist_if_missing=True)
+            self._save_chat_state()
+
+    def _switch_model_by_selector(self, selector: str) -> str:
+        choice = self._find_configured_model_choice(selector)
+        if not choice:
+            selectors = self._get_configured_model_selectors()
+            if selectors:
+                return (
+                    f"❌ 未找到模型: {selector}\n"
+                    "可选模型:\n  - " + "\n  - ".join(selectors)
+                )
+            return "❌ 未找到模型配置，请检查 config.json 的 model_providers"
+
+        target = str(choice.get("selector") or "").strip()
+        if target.lower() == self._current_model_selector().lower():
+            self._set_active_chat_model(
+                str(choice.get("provider") or ""),
+                str(choice.get("name") or ""),
+                save_state=True,
+            )
+            return f"ℹ️ 当前已使用模型: {target}"
+
+        self._apply_runtime_model_choice(choice, validate=True)
+        self._set_active_chat_model(self.provider, self.model_name, save_state=True)
+        return f"✅ 已切换模型: {target}"
+
+    def _handle_model_builtin_command(self, builtin_line: str) -> bool:
+        return handle_model_builtin_command(self, builtin_line)
 
     def _new_chat_entry(self, chat_id: str, name: str = "New Chat") -> Dict[str, Any]:
         return self._chat_state_manager.new_chat_entry(chat_id, name=name)
@@ -964,6 +1155,7 @@ class SmartShellAgent:
             workspaces_state=self._workspaces_state,
             mcp_config=self.mcp_manager.mcp_config,
             mcp_scoped_groups_provider=self._get_slash_mcp_scoped_groups,
+            model_selectors_provider=self._get_configured_model_selectors,
         )
 
     def _get_slash_mcp_server_target_commands(
@@ -2099,6 +2291,7 @@ class SmartShellAgent:
         print("  /clear history")
         print("  /clear context")
         print("  /help")
+        print("  /model [<model_provider>:<name>]")
         print("\nChat commands:")
         print("  /chat list | current | new [name] | switch <selector> | rename <selector> <new> | delete <selector> | delete all")
         print("\nWorkspace commands:")

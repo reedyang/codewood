@@ -69,6 +69,9 @@ def dispatch_builtin_command(
         print("AI context cleared.")
         return True, False
 
+    if agent._handle_model_builtin_command(builtin_line):
+        return True, False
+
     if agent._handle_chat_builtin_command(builtin_line):
         return True, False
 

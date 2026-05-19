@@ -17,12 +17,16 @@ class ChatStateManager:
 
     def new_chat_entry(self, chat_id: str, name: str = "New Chat") -> Dict[str, Any]:
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        provider = str(getattr(self._agent, "provider", "") or "").strip()
+        model_name = str(getattr(self._agent, "model_name", "") or "").strip()
         return {
             "id": chat_id,
             "name": name,
             "name_source": "default",
             "created_at": now,
             "updated_at": now,
+            "model_provider": provider,
+            "model_name": model_name,
             "messages": [],
         }
 
@@ -176,6 +180,8 @@ class ChatStateManager:
                         "name_source": source,
                         "created_at": str(c.get("created_at") or ""),
                         "updated_at": str(c.get("updated_at") or ""),
+                        "model_provider": str(c.get("model_provider") or "").strip(),
+                        "model_name": str(c.get("model_name") or "").strip(),
                         "messages": self.compact_redundant_user_turns(msgs),
                     }
                 )
@@ -217,6 +223,10 @@ class ChatStateManager:
             self._agent._session_summary_llm = ""
             self._agent._session_summary_rolling = ""
             self._agent._last_llm_summary_pair_count = 0
+            try:
+                self._agent._apply_chat_model_from_entry(chat, persist_if_missing=True)
+            except Exception:
+                pass
             self.save_chat_state()
         if clear_screen:
             os.system("cls" if os.name == "nt" else "clear")

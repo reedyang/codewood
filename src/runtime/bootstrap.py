@@ -87,11 +87,14 @@ def setup_runtime_preferences(agent: Any) -> None:
     agent.memory_fallback_expansion_enabled = True
     agent.project_context_first_round_evidence_enabled = True
     agent.max_tool_rounds = 20
+    agent._resolved_config_data = {}
     try:
         cfg_path = agent.config_dir / "config.json"
         if cfg_path.exists():
             with open(cfg_path, "r", encoding="utf-8") as f:
                 cfg_data = resolve_string_values_in_data(json.load(f))
+            if isinstance(cfg_data, dict):
+                agent._resolved_config_data = dict(cfg_data)
             pol = str(cfg_data.get("execution_policy", "confirmation")).strip().lower()
             if pol not in ("unlimited", "moderate", "confirmation"):
                 pol = "confirmation"
