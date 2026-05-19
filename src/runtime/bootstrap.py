@@ -34,6 +34,7 @@ def setup_core_state(agent: Any, startup_work_directory: Path, self_repo_root: P
     agent._last_llm_summary_pair_count = 0
     agent.operation_results = []
     agent._in_task_execution = False
+    agent._last_shell_output_visible_lines = 0
 
     agent._ephemeral_script_paths = set()
     agent._ai_created_path_keys = set()
