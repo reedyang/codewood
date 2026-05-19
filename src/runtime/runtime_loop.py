@@ -647,7 +647,7 @@ def run_agent_loop(agent: Any):
             user_message_recorded = False
             while tool_round < max_tool_rounds:
                 tool_round += 1
-                print("🤖 AI正在思考...")
+                print("正在思考...")
                 ai_response = self.call_ai(
                     next_input,
                     context=json.dumps(last_result, ensure_ascii=False) if last_result else "",
@@ -836,7 +836,6 @@ def run_agent_loop(agent: Any):
                     break
 
                 if result.get("finished"):
-                    print("✅ AI已声明所有操作完成。")
                     break
                 if bool(result.get("task_changed", False)):
                     new_task = str(result.get("new_task") or "").strip()
