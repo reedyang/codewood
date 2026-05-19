@@ -37,7 +37,6 @@ except ImportError:
 
 
 def _is_vscode_terminal() -> bool:
-    """Cursor 内置终端基于 VS Code 终端环境变量。"""
     return str(os.environ.get("TERM_PROGRAM", "") or "").strip().lower() == "vscode"
 
 
@@ -45,11 +44,6 @@ def _attach_blink_after_render_hook(
     session, status_provider: Optional[Callable[[], str]] = None
 ) -> None:
     """
-    Register an `after_render` handler on the prompt_toolkit Application so the
-    cursor-blink DEC mode is re-asserted after every redraw. prompt_toolkit's
-    renderer toggles cursor visibility on each repaint and on Windows Terminal
-    that can leave the caret in a non-blinking state once the user starts typing.
-
     `Application.after_render` is an `Event` object — handlers must be added via
     `+=`/`add_handler` rather than reassignment, otherwise `Event.fire()` breaks.
     """
@@ -102,21 +96,16 @@ def _attach_blink_after_render_hook(
                         state["text"] = desired
                 except Exception:
                     pass
-                # Cursor: VS Code/Cursor 终端对 DEC blink 模式兼容差，避免强制 ?12h。
-                if _is_vscode_terminal():
-                    output.write_raw("\x1b[?25h")
-                else:
+                if not _is_vscode_terminal():
                     output.write_raw("\x1b[?12h\x1b[?25h")
                 output.flush()
                 return
         except Exception:
             pass
         try:
-            if _is_vscode_terminal():
-                sys.stdout.write("\x1b[?25h")
-            else:
+            if not _is_vscode_terminal():
                 sys.stdout.write("\x1b[?12h\x1b[?25h")
-            sys.stdout.flush()
+                sys.stdout.flush()
         except Exception:
             pass
 
@@ -911,7 +900,6 @@ class WindowsInputHandler:
             PROMPT_TOOLKIT_AVAILABLE
             and CursorShape is not None
             and SimpleCursorShapeConfig is not None
-            and not _is_vscode_terminal()
         ):
             try:
                 self._pt_cursor_shape = SimpleCursorShapeConfig(CursorShape.BLINKING_BEAM)
