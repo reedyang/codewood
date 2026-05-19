@@ -2520,7 +2520,7 @@ class SmartShellAgent:
         print("  /help")
         print("  /model [<model_provider>:<name>]")
         print("\nChat commands:")
-        print("  /chat list | current | new [name] | switch <selector> | rename <selector> <new> | delete <selector> | delete all")
+        print("  /chat list | current | reload | new [name] | switch <selector> | rename <selector> <new> | delete <selector> | delete all")
         print("\nWorkspace commands:")
         print("  /workspace current | list | create <path> [--name <name>] | switch <selector>")
         print("  /workspace update <selector> [--name <name>] [--path <path>]")
