@@ -1,5 +1,7 @@
 import unittest
 from pathlib import Path
+import threading
+import time
 from unittest.mock import MagicMock, patch
 
 from src.services.session_memory_service import SessionMemoryService
@@ -115,6 +117,46 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
         base_messages, _ = base_svc.build_regular_task_messages("继续")
         custom_messages, _ = custom_svc.build_regular_task_messages("继续")
         self.assertLessEqual(len(custom_messages[1:-1]), len(base_messages[1:-1]))
+
+    def test_token_counter_resolution_is_non_blocking_before_warmup_ready(self):
+        agent = _FakeAgent()
+        svc = SessionMemoryService(agent)
+        svc._builtin_token_counter_init_done = False
+        svc._builtin_token_counter = None
+        called = {"n": 0}
+
+        def _fake_warmup():
+            called["n"] += 1
+
+        svc._start_token_counter_warmup = _fake_warmup  # type: ignore[assignment]
+        out = svc._resolve_token_counter()
+        self.assertIsNone(out)
+        self.assertEqual(called["n"], 1)
+        # Falls back to heuristic immediately instead of blocking.
+        self.assertGreater(svc._estimate_text_tokens("hello world"), 0)
+
+    def test_schedule_context_usage_refresh_async_is_non_blocking_and_debounced(self):
+        agent = _FakeAgent()
+        svc = SessionMemoryService(agent)
+        entered = threading.Event()
+        release = threading.Event()
+
+        def _slow_refresh(*_args, **_kwargs):
+            entered.set()
+            release.wait(timeout=1.0)
+
+        svc.refresh_context_usage_snapshot = _slow_refresh  # type: ignore[assignment]
+        first = svc.schedule_context_usage_refresh_async()
+        self.assertTrue(first)
+        self.assertTrue(entered.wait(timeout=0.5))
+        # Inflight refresh should reject duplicate scheduling.
+        second = svc.schedule_context_usage_refresh_async()
+        self.assertFalse(second)
+        release.set()
+        # allow worker to exit
+        time.sleep(0.05)
+        third = svc.schedule_context_usage_refresh_async()
+        self.assertTrue(third)
 
     def test_logs_budget_and_keeps_hard_anchors(self):
         agent = _FakeAgent()

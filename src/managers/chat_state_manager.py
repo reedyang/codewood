@@ -19,6 +19,9 @@ class ChatStateManager:
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         provider = str(getattr(self._agent, "provider", "") or "").strip()
         model_name = str(getattr(self._agent, "model_name", "") or "").strip()
+        usage_pct = int(getattr(self._agent, "_last_context_usage_percent", 0) or 0)
+        usage_tokens = int(getattr(self._agent, "_last_context_input_tokens", 0) or 0)
+        usage_window = int(getattr(self._agent, "_last_context_window", 0) or 0)
         return {
             "id": chat_id,
             "name": name,
@@ -28,6 +31,9 @@ class ChatStateManager:
             "model_provider": provider,
             "model_name": model_name,
             "messages": [],
+            "context_usage_percent": usage_pct,
+            "context_input_tokens": usage_tokens,
+            "context_window": usage_window,
         }
 
     def sanitize_persisted_chat_message(self, role: str, content: str) -> Optional[str]:
@@ -53,6 +59,20 @@ class ChatStateManager:
     def default_chat_state(self) -> Dict[str, Any]:
         default_chat = self.new_chat_entry("chat-1")
         return {"version": 1, "active": "chat-1", "chats": [default_chat]}
+
+    def _apply_chat_usage_snapshot(self, chat: Dict[str, Any]) -> None:
+        try:
+            self._agent._last_context_usage_percent = int(chat.get("context_usage_percent") or 0)
+        except Exception:
+            self._agent._last_context_usage_percent = 0
+        try:
+            self._agent._last_context_input_tokens = int(chat.get("context_input_tokens") or 0)
+        except Exception:
+            self._agent._last_context_input_tokens = 0
+        try:
+            self._agent._last_context_window = int(chat.get("context_window") or 0)
+        except Exception:
+            self._agent._last_context_window = 0
 
     def save_chat_state(self) -> None:
         try:
@@ -158,6 +178,9 @@ class ChatStateManager:
                         "model_provider": str(c.get("model_provider") or "").strip(),
                         "model_name": str(c.get("model_name") or "").strip(),
                         "messages": self.compact_redundant_user_turns(msgs),
+                        "context_usage_percent": int(c.get("context_usage_percent") or 0),
+                        "context_input_tokens": int(c.get("context_input_tokens") or 0),
+                        "context_window": int(c.get("context_window") or 0),
                     }
                 )
         if not chats:
@@ -176,6 +199,15 @@ class ChatStateManager:
             if not chat:
                 return
             chat["messages"] = list(self._agent.conversation_history)
+            chat["context_usage_percent"] = int(
+                getattr(self._agent, "_last_context_usage_percent", 0) or 0
+            )
+            chat["context_input_tokens"] = int(
+                getattr(self._agent, "_last_context_input_tokens", 0) or 0
+            )
+            chat["context_window"] = int(
+                getattr(self._agent, "_last_context_window", 0) or 0
+            )
             chat["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             self.save_chat_state()
 
@@ -202,11 +234,8 @@ class ChatStateManager:
                 self._agent._apply_chat_model_from_entry(chat, persist_if_missing=True)
             except Exception:
                 pass
+            self._apply_chat_usage_snapshot(chat)
             self.save_chat_state()
-        try:
-            self._agent._refresh_status_context_usage_snapshot()
-        except Exception:
-            pass
         if clear_screen:
             os.system("cls" if os.name == "nt" else "clear")
         if print_history:

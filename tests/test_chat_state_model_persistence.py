@@ -22,6 +22,9 @@ class _FakeAgent:
         self._last_llm_summary_pair_count = 0
         self.applied_chat_model_calls = 0
         self.refresh_status_usage_calls = 0
+        self._last_context_usage_percent = 0
+        self._last_context_input_tokens = 0
+        self._last_context_window = 0
 
     def _apply_chat_model_from_entry(self, chat, persist_if_missing=False):
         self.applied_chat_model_calls += 1
@@ -61,13 +64,19 @@ class ChatStateModelPersistenceTests(unittest.TestCase):
                         "created_at": "",
                         "updated_at": "",
                         "messages": [],
+                        "context_usage_percent": 44,
+                        "context_input_tokens": 1234,
+                        "context_window": 64000,
                     }
                 ],
             }
             msg = manager.activate_chat("chat-1", announce=False, clear_screen=False, print_history=False)
             self.assertEqual(msg, "")
             self.assertEqual(agent.applied_chat_model_calls, 1)
-            self.assertEqual(agent.refresh_status_usage_calls, 1)
+            self.assertEqual(agent.refresh_status_usage_calls, 0)
+            self.assertEqual(agent._last_context_usage_percent, 44)
+            self.assertEqual(agent._last_context_input_tokens, 1234)
+            self.assertEqual(agent._last_context_window, 64000)
             chat = manager.find_chat_by_id("chat-1")
             self.assertIsNotNone(chat)
             self.assertEqual(chat.get("model_provider"), "openai")
