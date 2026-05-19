@@ -67,7 +67,6 @@ def _set_windows_console_title():
 def main():
     """主函数"""
     _set_windows_console_title()
-    print("启动 Smart Shell...")
 
     work_directory = None
     config = None
@@ -113,7 +112,6 @@ def main():
         return 1
 
     params = model_config.get("params", {})
-    print(f"模型: {provider} - {model_name}")
 
     # 配置就绪后再加载重型 agent 模块，缩短「启动」到「模型信息」之间的等待
     from src.smart_shell_agent import SmartShellAgent

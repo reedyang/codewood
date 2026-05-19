@@ -36,7 +36,14 @@ except ImportError:
     PROMPT_TOOLKIT_AVAILABLE = False
 
 
-def _attach_blink_after_render_hook(session) -> None:
+def _is_vscode_terminal() -> bool:
+    """Cursor 内置终端基于 VS Code 终端环境变量。"""
+    return str(os.environ.get("TERM_PROGRAM", "") or "").strip().lower() == "vscode"
+
+
+def _attach_blink_after_render_hook(
+    session, status_provider: Optional[Callable[[], str]] = None
+) -> None:
     """
     Register an `after_render` handler on the prompt_toolkit Application so the
     cursor-blink DEC mode is re-asserted after every redraw. prompt_toolkit's
@@ -52,22 +59,71 @@ def _attach_blink_after_render_hook(session) -> None:
     if app is None:
         return
 
+    # `desired`: 当前渲染周期希望显示的状态栏文本（空串表示隐藏）
+    state = {"visible": False, "text": "", "desired": ""}
+
+    def _draw_overlay_line(output, text: str) -> None:
+        # 使用保存/恢复光标，仅在提示符下方两行写入状态栏。
+        output.write_raw("\x1b7")
+        output.write_raw("\x1b[2B\r")
+        output.write_raw("\x1b[2K")
+        if text:
+            output.write_raw(text)
+        output.write_raw("\x1b8")
+
+    def _on_before_render(_app) -> None:
+        try:
+            desired = str(status_provider() or "") if callable(status_provider) else ""
+            state["desired"] = desired
+            output = getattr(_app, "output", None)
+            if (
+                desired == ""
+                and state["visible"]
+                and output is not None
+                and hasattr(output, "write_raw")
+                and hasattr(output, "flush")
+            ):
+                _draw_overlay_line(output, "")
+                output.flush()
+                state["visible"] = False
+                state["text"] = ""
+        except Exception:
+            pass
+
     def _on_after_render(_app) -> None:
         try:
             output = getattr(_app, "output", None)
             if output is not None and hasattr(output, "write_raw") and hasattr(output, "flush"):
-                output.write_raw("\x1b[?12h\x1b[?25h")
+                try:
+                    desired = str(state.get("desired") or "")
+                    if desired and (not state["visible"] or desired != state["text"]):
+                        _draw_overlay_line(output, desired)
+                        state["visible"] = True
+                        state["text"] = desired
+                except Exception:
+                    pass
+                # Cursor: VS Code/Cursor 终端对 DEC blink 模式兼容差，避免强制 ?12h。
+                if _is_vscode_terminal():
+                    output.write_raw("\x1b[?25h")
+                else:
+                    output.write_raw("\x1b[?12h\x1b[?25h")
                 output.flush()
                 return
         except Exception:
             pass
         try:
-            sys.stdout.write("\x1b[?12h\x1b[?25h")
+            if _is_vscode_terminal():
+                sys.stdout.write("\x1b[?25h")
+            else:
+                sys.stdout.write("\x1b[?12h\x1b[?25h")
             sys.stdout.flush()
         except Exception:
             pass
 
     try:
+        evt_before = getattr(app, "before_render", None)
+        if evt_before is not None and hasattr(evt_before, "add_handler"):
+            evt_before.add_handler(_on_before_render)
         evt = getattr(app, "after_render", None)
         if evt is not None and hasattr(evt, "add_handler"):
             evt.add_handler(_on_after_render)
@@ -846,11 +902,16 @@ class WindowsInputHandler:
         """
         self.work_directory = work_directory
         self.history = []
+        self._status_bar_text = ""
+        self._status_bar_fragments = []
+        self._status_bar_enabled = True
+        self._pt_style = None
         self._pt_cursor_shape = None
         if (
             PROMPT_TOOLKIT_AVAILABLE
             and CursorShape is not None
             and SimpleCursorShapeConfig is not None
+            and not _is_vscode_terminal()
         ):
             try:
                 self._pt_cursor_shape = SimpleCursorShapeConfig(CursorShape.BLINKING_BEAM)
@@ -858,6 +919,15 @@ class WindowsInputHandler:
                 self._pt_cursor_shape = None
         
         if PROMPT_TOOLKIT_AVAILABLE:
+            try:
+                self._pt_style = Style.from_dict(
+                    {
+                        # Keep toolbar with no background color.
+                        "bottom-toolbar": "",
+                    }
+                )
+            except Exception:
+                self._pt_style = None
             # 使用prompt_toolkit，并将历史记录注入到会话中
             self.completer = FileCompleter(
                 work_directory,
@@ -884,35 +954,88 @@ class WindowsInputHandler:
                 complete_in_thread=True,
                 complete_while_typing=True,
             )
+            if self._pt_style is not None:
+                session_kwargs["style"] = self._pt_style
             if self._pt_cursor_shape is not None:
                 session_kwargs["cursor"] = self._pt_cursor_shape
             self.session = PromptSession(**session_kwargs)
-            _attach_blink_after_render_hook(self.session)
+            _attach_blink_after_render_hook(
+                self.session,
+                status_provider=self._status_line_for_overlay,
+            )
         else:
             # 回退到标准input
             self.session = None
-    
-    def get_input_with_completion(self, prompt: str) -> str:
+
+    def _render_bottom_toolbar(self):
+        try:
+            if not self._status_bar_enabled:
+                return ""
+            text = str(self._status_bar_text or "")
+            frags = self._status_bar_fragments if isinstance(self._status_bar_fragments, list) else []
+            if (not text.strip()) and (not frags):
+                return ""
+            if self.session is None:
+                return ""
+            # Keep one blank line between prompt and status line.
+            if frags:
+                return [("", "\n")] + frags
+            return [("", "\n" + text)]
+        except Exception:
+            return ""
+
+    def _status_line_for_overlay(self) -> str:
+        try:
+            if not self._status_bar_enabled:
+                return ""
+            if self.session is not None:
+                app = getattr(self.session, "app", None)
+                if app is not None:
+                    buf = getattr(app, "current_buffer", None)
+                    if buf is not None and str(getattr(buf, "text", "") or ""):
+                        # Hide status line while user is typing; show again when cleared.
+                        return ""
+            return str(self._status_bar_text or "")
+        except Exception:
+            return ""
+
+    def get_input_with_completion(
+        self,
+        prompt: str,
+        status_bar_text: str = "",
+        status_bar_fragments: Optional[List[Tuple[str, str]]] = None,
+        show_status_bar: bool = True,
+    ) -> str:
         """
         获取带自动补全的用户输入
         Args:
             prompt: 输入提示
+            status_bar_text: 状态栏文本（显示在控制台最底部）
+            status_bar_fragments: 状态栏分段样式文本（prompt_toolkit formatted text）
+            show_status_bar: 是否显示状态栏
         Returns:
             用户输入的文本
         """
+        self._status_bar_text = str(status_bar_text or "")
+        self._status_bar_fragments = (
+            list(status_bar_fragments)
+            if isinstance(status_bar_fragments, list)
+            else []
+        )
+        self._status_bar_enabled = bool(show_status_bar)
         try:
             if self.session:
-                # 使用prompt_toolkit
+                # Avoid bottom_toolbar (it is pinned to terminal bottom). Render a
+                # status line 2 lines below prompt while keeping prompt_toolkit in
+                # charge of prompt/cursor layout to avoid corruption.
                 if "\n" in prompt:
                     first, rest = prompt.split("\n", 1)
-                    # Use a plain one-line prompt for prompt_toolkit input.
-                    # Multi-line prompt rendering can leave visual artifacts
-                    # (such as repeated '>') when browsing history with arrow keys
-                    # on some Windows terminals.
                     print(f"\x1b[90m{first}\x1b[0m")
-                    user_input = self.session.prompt(rest).strip()
+                    prompt_line = rest
                 else:
-                    user_input = self.session.prompt(prompt).strip()
+                    prompt_line = prompt
+
+                user_input = self.session.prompt(prompt_line).strip()
             else:
                 # 回退到标准input
                 user_input = input(prompt).strip()
@@ -1155,10 +1278,15 @@ class WindowsInputHandler:
             complete_in_thread=True,
             complete_while_typing=True,
         )
+        if getattr(self, "_pt_style", None) is not None:
+            session_kwargs["style"] = self._pt_style
         if getattr(self, "_pt_cursor_shape", None) is not None:
             session_kwargs["cursor"] = self._pt_cursor_shape
         self.session = PromptSession(**session_kwargs)
-        _attach_blink_after_render_hook(self.session)
+        _attach_blink_after_render_hook(
+            self.session,
+            status_provider=self._status_line_for_overlay,
+        )
 
 
 def create_windows_input_handler(

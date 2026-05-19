@@ -8,7 +8,7 @@ from typing import Any, Dict, List, Optional, Set
 
 from ..core.logging.app_logging import get_log_file_path
 from ..controllers.builtin_command_router import dispatch_builtin_command
-from ..core.console_utils import _ansi_blue, _ansi_gray
+from ..core.console_utils import _ansi_blue, _ansi_gray, _ansi_white
 
 
 def _sanitize_prompt_pollution(text: str, work_directory: Any) -> str:
@@ -29,6 +29,65 @@ def _sanitize_prompt_pollution(text: str, work_directory: Any) -> str:
         cleaned = re.sub(r"^>+\s*", "", cleaned, count=1)
 
     return cleaned
+
+
+def _print_startup_overview(agent: Any) -> None:
+    model_name = str(getattr(agent, "model_name", "") or "")
+    workspace_name = str(getattr(agent, "workspace_name", "") or "")
+    workspace_dir = str(getattr(agent, "workspace_root", "") or "")
+    version = "v0.1"
+
+    line1 = f">_ Smart Shell ({version})"
+    line2 = f"model:     {model_name}  /model to change"
+    line3 = f"workspace: {workspace_name} directory: {workspace_dir}"
+
+    width = max(len(line1), len(line2), len(line3)) + 2
+    top = "╭" + ("─" * width) + "╮"
+    mid1 = "│ " + line1.ljust(width - 1) + "│"
+    mid2 = "│" + (" " * width) + "│"
+    mid3 = "│ " + line2.ljust(width - 1) + "│"
+    mid4 = "│ " + line3.ljust(width - 1) + "│"
+    bottom = "╰" + ("─" * width) + "╯"
+
+    print(_ansi_gray(top))
+    # Header line: Smart Shell + version white, prefix gray.
+    print(
+        _ansi_gray("│ ")
+        + _ansi_gray(">_ ")
+        + _ansi_white(f"Smart Shell ({version})")
+        + _ansi_gray(" " * max(0, width - 1 - len(line1)))
+        + _ansi_gray("│")
+    )
+    print(_ansi_gray(mid2))
+    # model line
+    prefix_model = "model:     "
+    suffix_model = "  /model to change"
+    print(
+        _ansi_gray("│ ")
+        + _ansi_gray(prefix_model)
+        + _ansi_white(model_name)
+        + _ansi_gray("  ")
+        + _ansi_blue("/model")
+        + _ansi_gray(" to change")
+        + _ansi_gray(" " * max(0, width - 1 - len(line2)))
+        + _ansi_gray("│")
+    )
+    # workspace line
+    prefix_workspace = "workspace: "
+    middle_workspace = " directory: "
+    print(
+        _ansi_gray("│ ")
+        + _ansi_gray(prefix_workspace)
+        + _ansi_white(workspace_name)
+        + _ansi_gray(middle_workspace)
+        + _ansi_white(workspace_dir)
+        + _ansi_gray(" " * max(0, width - 1 - len(line3)))
+        + _ansi_gray("│")
+    )
+    print(_ansi_gray(bottom))
+    print("")
+    print(_ansi_white("Tip: Use /workspace to manage workspaces."))
+    print("")
 
 
 def run_agent_loop(agent: Any):
@@ -61,11 +120,7 @@ def run_agent_loop(agent: Any):
     if self.skills:
         _sk_path = self.config_dir / "skills"
 
-    self._print_execution_policy_details()
-
-    print("输入 '/help' 查看帮助")
-    print("=" * 80)
-    self._print_chat_history()
+    _print_startup_overview(self)
     try:
         sys.stdout.flush()
     except Exception:
@@ -88,6 +143,7 @@ def run_agent_loop(agent: Any):
 
     while True:
         in_task_execution = False
+        self._in_task_execution = False
         try:
             self._refresh_input_handler_skill_completions()
             # 获取用户输入（含等待态回注输入），统一走主循环处理路径
@@ -426,6 +482,8 @@ def run_agent_loop(agent: Any):
                 continue
 
             # Natural-language turn: rewrite prompt line as chat-style user line.
+            in_task_execution = True
+            self._in_task_execution = True
             self._rewrite_previous_prompt_as_user(raw_user_input.strip())
 
             last_result = None
@@ -837,11 +895,13 @@ def run_agent_loop(agent: Any):
                     "请继续提问以续跑，或缩小目标范围后重试。"
                 )
             in_task_execution = False
+            self._in_task_execution = False
             self._schedule_auto_memory_reflect()
 
         except KeyboardInterrupt:
             if in_task_execution:
                 in_task_execution = False
+                self._in_task_execution = False
                 self._active_skill_full_prompt = ""
                 self._active_skill_id = None
                 self._active_skill_source = None
@@ -852,6 +912,7 @@ def run_agent_loop(agent: Any):
                 print("\n⏹️ 已取消当前任务")
                 continue
 
+            self._in_task_execution = False
             print("")
             try:
                 should_exit = input("是否结束 Smart Shell？(y/n): ").strip().lower() == "y"
@@ -864,5 +925,6 @@ def run_agent_loop(agent: Any):
                 break
             continue
         except Exception as e:
+            self._in_task_execution = False
             print(f"❌ 发生错误: {str(e)}")
 
