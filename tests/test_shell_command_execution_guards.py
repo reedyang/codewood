@@ -1,8 +1,11 @@
 import unittest
+import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
 from src.actions.command_actions import action_shell_command
+from src.actions.command_actions import parse_shell_invoked_script_path
+from src.core.security.command_security import shell_script_allowlist_key
 from src.services.execution_policy_service import freedom_auto_confirm
 
 
@@ -106,6 +109,37 @@ class _FakePopen:
 
 
 class ShellCommandExecutionGuardsTests(unittest.TestCase):
+    def test_parse_shell_invoked_script_path_unwraps_powershell(self):
+        agent = _DummyAgent()
+        tf = tempfile.NamedTemporaryFile(suffix=".py", delete=False)
+        tf.close()
+        script_path = Path(tf.name).resolve()
+        command = (
+            f'powershell -ExecutionPolicy Bypass -Command '
+            f'"python \\"{script_path}\\" --query \\"gmail\\""'
+        )
+        try:
+            parsed = parse_shell_invoked_script_path(agent, command)
+            self.assertIsNotNone(parsed)
+            self.assertEqual(parsed.resolve(), script_path)
+        finally:
+            script_path.unlink(missing_ok=True)
+
+    def test_shell_script_allowlist_key_uses_inner_script_when_powershell_wrapped(self):
+        agent = _DummyAgent()
+        tf = tempfile.NamedTemporaryFile(suffix=".py", delete=False)
+        tf.close()
+        script_path = Path(tf.name).resolve()
+        command = (
+            f'powershell -ExecutionPolicy Bypass -Command '
+            f'"python \\"{script_path}\\" install --confirm \\"YES\\""'
+        )
+        try:
+            key = shell_script_allowlist_key(agent, command)
+            self.assertEqual(key, str(script_path).lower())
+        finally:
+            script_path.unlink(missing_ok=True)
+
     def test_freedom_auto_confirm_marks_manual_when_ai_says_not_reversible(self):
         agent = _DummyAgent()
         agent.execution_policy = "moderate"
