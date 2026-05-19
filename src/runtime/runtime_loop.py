@@ -58,7 +58,8 @@ def _print_startup_overview(agent: Any) -> None:
     print(
         _ansi_gray("│ ")
         + _ansi_gray(">_ ")
-        + _ansi_white(f"{app_name} ({version})")
+        + _ansi_white(app_name)
+        + _ansi_gray(f" ({version})")
         + _ansi_gray(" " * max(0, width - 1 - len(line1)))
         + _ansi_gray("│")
     )
@@ -164,6 +165,7 @@ def run_agent_loop(agent: Any):
                 user_input = self._get_user_input_with_history()
             user_input = _sanitize_prompt_pollution(user_input, self.work_directory)
             raw_user_input = str(user_input or "")
+            self._clear_prompt_separator()
         
             # 保存到历史记录（非空输入）
             if user_input.strip():

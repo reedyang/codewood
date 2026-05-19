@@ -41,7 +41,8 @@ def _is_vscode_terminal() -> bool:
 
 
 def _attach_blink_after_render_hook(
-    session, status_provider: Optional[Callable[[], str]] = None
+    session,
+    status_provider: Optional[Callable[[], str]] = None,
 ) -> None:
     """
     `Application.after_render` is an `Event` object — handlers must be added via
@@ -90,7 +91,10 @@ def _attach_blink_after_render_hook(
             if output is not None and hasattr(output, "write_raw") and hasattr(output, "flush"):
                 try:
                     desired = str(state.get("desired") or "")
-                    if desired and (not state["visible"] or desired != state["text"]):
+                    # Always redraw when desired text exists: external prints (e.g.
+                    # /chat switch history) may scroll previous overlay away, while
+                    # state still says "visible".
+                    if desired:
                         _draw_overlay_line(output, desired)
                         state["visible"] = True
                         state["text"] = desired
@@ -118,6 +122,25 @@ def _attach_blink_after_render_hook(
             evt.add_handler(_on_after_render)
     except Exception:
         pass
+
+
+def _get_output_columns(session: Any, default: int = 80) -> int:
+    """
+    获取 prompt_toolkit 当前输出窗口列数（随窗口变化）。
+    """
+    try:
+        output = getattr(session, "output", None)
+        if output is None:
+            app = getattr(session, "app", None)
+            output = getattr(app, "output", None) if app is not None else None
+        if output is not None and hasattr(output, "get_size"):
+            size = output.get_size()
+            cols = int(getattr(size, "columns", 0) or 0)
+            if cols > 0:
+                return cols
+    except Exception:
+        pass
+    return int(default or 80)
 
 
 def _sanitize_prompt_pollution(text: str, work_directory: Optional[Path] = None) -> str:
@@ -894,6 +917,7 @@ class WindowsInputHandler:
         self._status_bar_text = ""
         self._status_bar_fragments = []
         self._status_bar_enabled = True
+        self.renders_prompt_separator_inline = False
         self._pt_style = None
         self._pt_cursor_shape = None
         if (
@@ -981,11 +1005,16 @@ class WindowsInputHandler:
                 if app is not None:
                     buf = getattr(app, "current_buffer", None)
                     if buf is not None and str(getattr(buf, "text", "") or ""):
-                        # Hide status line while user is typing; show again when cleared.
+                        # 输入中隐藏状态栏，清空输入后再显示。
                         return ""
             return str(self._status_bar_text or "")
         except Exception:
             return ""
+
+    def get_terminal_columns(self, default: int = 80) -> int:
+        if self.session is not None:
+            return _get_output_columns(self.session, default=default)
+        return int(default or 80)
 
     def get_input_with_completion(
         self,
@@ -993,6 +1022,7 @@ class WindowsInputHandler:
         status_bar_text: str = "",
         status_bar_fragments: Optional[List[Tuple[str, str]]] = None,
         show_status_bar: bool = True,
+        show_separator: bool = True,
     ) -> str:
         """
         获取带自动补全的用户输入
@@ -1033,7 +1063,7 @@ class WindowsInputHandler:
             # 保存到历史记录
             if user_input:
                 self.history.append(user_input)
-            
+
             return user_input
             
         except KeyboardInterrupt:
