@@ -415,7 +415,7 @@ class SmartShellAgent:
             # Current cursor is on line after Enter:
             #   <cwd>...
             #   <cursor here>
-            # Move up once and clear the prompt line.
+            # Move up once and clear prompt line.
             sys.stdout.write("\x1b[1A\r\x1b[2K")
             sys.stdout.write(f"{_ansi_gray('你:')} {txt}\n")
             sys.stdout.flush()
@@ -433,6 +433,76 @@ class SmartShellAgent:
             sys.stdout.flush()
         except Exception:
             pass
+
+    def _print_prompt_separator(self) -> None:
+        """
+        在命令提示符前输出一行分隔符，宽度随终端窗口实时变化。
+        """
+        if not hasattr(sys.stdout, "isatty") or not sys.stdout.isatty():
+            return
+        width = 80
+        width_from_input_handler = False
+        ih = getattr(self, "input_handler", None)
+        try:
+            if ih is not None and hasattr(ih, "get_terminal_columns"):
+                cols = int(ih.get_terminal_columns(default=80) or 0)
+                if cols > 0:
+                    width = cols
+                    width_from_input_handler = True
+        except Exception:
+            pass
+        if not width_from_input_handler:
+            try:
+                width1 = int(os.get_terminal_size(sys.__stdout__.fileno()).columns or 0)
+                if width1 > 0:
+                    width = width1
+            except Exception:
+                pass
+            if width <= 0:
+                width = 80
+            try:
+                width2 = int(os.get_terminal_size(sys.stdout.fileno()).columns or 0)
+                if width2 > 0:
+                    width = width2
+            except Exception:
+                pass
+            if width <= 0:
+                try:
+                    width = int(shutil.get_terminal_size(fallback=(80, 24)).columns or 80)
+                except Exception:
+                    width = 80
+        width = max(1, width)
+        try:
+            print(_ansi_gray("─" * width))
+            self._prompt_separator_rendered = True
+        except Exception:
+            try:
+                print(_ansi_gray("-" * width))
+                self._prompt_separator_rendered = True
+            except Exception:
+                self._prompt_separator_rendered = False
+
+    def _clear_prompt_separator(self) -> None:
+        """
+        清理上一轮输入前显示的分隔符（不清理提示符行）。
+        该方法应在用户按回车后、开始输出新消息前调用。
+        """
+        if not bool(getattr(self, "_prompt_separator_rendered", False)):
+            return
+        if not hasattr(sys.stdout, "isatty") or not sys.stdout.isatty():
+            self._prompt_separator_rendered = False
+            return
+        try:
+            # Current cursor is on the line below prompt after Enter:
+            #   separator
+            #   prompt line
+            #   cursor here
+            # Move to separator, clear it, and return to current line.
+            sys.stdout.write("\x1b[2A\r\x1b[2K\x1b[2B\r")
+            sys.stdout.flush()
+        except Exception:
+            pass
+        self._prompt_separator_rendered = False
 
     def _append_chat_message(self, role: str, content: str) -> None:
         return self.session_memory_service.append_chat_message(role, content)
@@ -2271,6 +2341,15 @@ class SmartShellAgent:
             f"{_ansi_white(str(self.active_chat_name))}"
         )
         prompt = f"{str(self.work_directory)}>"
+        suppress_separator_once = bool(getattr(self, "_suppress_next_separator", False))
+        if suppress_separator_once:
+            self._suppress_next_separator = False
+
+        show_separator = not suppress_separator_once
+        if show_separator and not bool(
+            getattr(self.input_handler, "renders_prompt_separator_inline", False)
+        ):
+            self._print_prompt_separator()
         
         # 重置历史记录索引
         self.history_manager.reset_index()
@@ -2284,7 +2363,9 @@ class SmartShellAgent:
                         status_bar_text=status_bar_plain,
                         status_bar_fragments=status_bar_fragments,
                         show_status_bar=True,
+                        show_separator=show_separator,
                     )
+                    self._prompt_separator_rendered = bool(show_separator)
                 except TypeError:
                     # readline/tab_completer handlers may not support status bar kwargs.
                     user_input = self.input_handler.get_input_with_completion(prompt)
