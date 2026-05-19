@@ -19,6 +19,39 @@ sys.path.insert(0, str(project_root))
 from src.core.config.config_env import resolve_string_values_in_data
 
 
+def _extract_model_runtime_config(config: dict):
+    """Extract runtime model config from the new model_providers format."""
+    model_providers = config.get("model_providers")
+    if not isinstance(model_providers, list) or not model_providers:
+        return None, None, None, "❌ 配置错误：缺少 model_providers 配置"
+
+    first_provider = model_providers[0]
+    if not isinstance(first_provider, dict):
+        return None, None, None, "❌ 配置错误：model_providers[0] 必须是对象"
+
+    provider = str(first_provider.get("provider", "")).strip()
+    params_raw = first_provider.get("params", {})
+    if not isinstance(params_raw, dict):
+        return None, None, None, "❌ 配置错误：model_providers[0].params 必须是对象"
+
+    models = params_raw.get("models")
+    if not isinstance(models, list) or not models:
+        return None, None, None, "❌ 配置错误：model_providers[0].params.models 缺失或为空"
+
+    model_name = str(models[0]).strip()
+    if not provider or not model_name:
+        return None, None, None, "❌ 配置错误：model_providers[0].provider 或首个 model 为空"
+
+    params = dict(params_raw)
+    params["model"] = model_name
+
+    model_config = {
+        "provider": provider,
+        "params": params,
+    }
+    return provider, model_name, model_config, None
+
+
 def _set_windows_console_title():
     """Set a Unicode console title on Windows without relying on batch encoding."""
     if sys.platform != "win32":
@@ -74,18 +107,12 @@ def main():
         # 默认配置
         print("📋 未找到配置文件")
         return 1
-    model_config = config.get("model")
-    if not isinstance(model_config, dict):
-        print("❌ 配置错误：缺少 model 配置")
+    provider, model_name, model_config, config_error = _extract_model_runtime_config(config)
+    if config_error:
+        print(config_error)
         return 1
-    provider = str(model_config.get("provider", "")).strip()
-    params = model_config.get("params", {}) if isinstance(model_config.get("params", {}), dict) else {}
-    model_config = dict(model_config)
-    model_config["params"] = params
-    model_name = str(params.get("model", "")).strip()
-    if not provider or not model_name:
-        print("❌ 配置错误：model.provider 或 model.params.model 缺失")
-        return 1
+
+    params = model_config.get("params", {})
     print(f"模型: {provider} - {model_name}")
 
     # 配置就绪后再加载重型 agent 模块，缩短「启动」到「模型信息」之间的等待
