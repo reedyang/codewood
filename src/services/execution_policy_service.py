@@ -444,11 +444,13 @@ def freedom_auto_confirm(agent: Any, command: Dict[str, Any]) -> bool:
     if action == "shell":
         cmd = params.get("command") or ""
         s = (cmd or "").strip()
+        agent._manual_confirm_required_shell_once = False
 
         if re.search(
             r"(?i)(?:^|[\s;&|])(?:py(?:thon)?(?:\d(?:\.\d)?)?|pythonw)\s+-\s*c\s+", s
         ):
             _print_with_auto_hide_tracking(agent, "🦅 自由模式：工作目录内联 Python（-c），跳过确认。")
+            agent._manual_confirm_required_shell_once = False
             return True
 
         sp = agent._parse_shell_invoked_script_path(s)
@@ -460,6 +462,7 @@ def freedom_auto_confirm(agent: Any, command: Dict[str, Any]) -> bool:
                 actual = shell_script_hash(agent, sp)
                 if actual and actual == expected:
                     _print_with_auto_hide_tracking(agent, "🦅 自由模式：命中免确认脚本哈希校验，跳过 AI 审核并直接执行。")
+                    agent._manual_confirm_required_shell_once = False
                     return True
 
             k = agent._ephemeral_path_key(sp)
@@ -485,8 +488,10 @@ def freedom_auto_confirm(agent: Any, command: Dict[str, Any]) -> bool:
                     reversible, reason = ai_assess_reversible(agent, command)
                     if reversible:
                         _print_with_auto_hide_tracking(agent, f"🦅 判定为可逆，自动跳过确认 — {reason}")
+                        agent._manual_confirm_required_shell_once = False
                     else:
                         _print_with_auto_hide_tracking(agent, f"🦅 判定为不可逆或不确定，仍需手动确认 — {reason}")
+                        agent._manual_confirm_required_shell_once = True
                     return reversible
                 use_cache = not session_ephemeral
                 if use_cache:
@@ -498,6 +503,7 @@ def freedom_auto_confirm(agent: Any, command: Dict[str, Any]) -> bool:
                             agent,
                             f"🦅 自由模式：已使用配置文件中的脚本审核缓存（脚本与命令哈希一致），{tag} — {reason_c}"
                         )
+                        agent._manual_confirm_required_shell_once = not bool(skip_c)
                         return skip_c
                 _print_with_auto_hide_tracking(
                     agent,
@@ -517,23 +523,29 @@ def freedom_auto_confirm(agent: Any, command: Dict[str, Any]) -> bool:
                         f"{reason}",
                     )
                     _print_with_auto_hide_tracking(agent, "🚫 建议不要执行该脚本；如必须执行，请先人工审查并手动确认。")
+                    agent._manual_confirm_required_shell_once = True
                     return False
                 if skip:
                     _print_with_auto_hide_tracking(agent, f"🦅 判定为可自动跳过确认 — {reason}")
+                    agent._manual_confirm_required_shell_once = False
                 else:
                     _print_with_auto_hide_tracking(agent, f"🦅 判定为需手动确认 — {reason}")
+                    agent._manual_confirm_required_shell_once = True
                 return skip
 
             if k in agent._ai_created_path_keys:
                 _print_with_auto_hide_tracking(agent, "🦅 自由模式：命令作用于本会话已跟踪的 AI 产出路径，跳过确认。")
+                agent._manual_confirm_required_shell_once = False
                 return True
 
         _print_with_auto_hide_tracking(agent, "🦅 自由模式：正在请 AI 判定操作是否可逆…")
         reversible, reason = ai_assess_reversible(agent, command)
         if reversible:
             _print_with_auto_hide_tracking(agent, f"🦅 判定为可逆，自动跳过确认 — {reason}")
+            agent._manual_confirm_required_shell_once = False
         else:
             _print_with_auto_hide_tracking(agent, f"🦅 判定为不可逆或不确定，仍需手动确认 — {reason}")
+            agent._manual_confirm_required_shell_once = True
         return reversible
 
     _print_with_auto_hide_tracking(agent, "🦅 自由模式：正在请 AI 判定操作是否可逆…")

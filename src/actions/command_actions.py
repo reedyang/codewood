@@ -83,6 +83,9 @@ def action_shell_command(
     """Run a shell command; capture stdout/stderr for AI context while echoing to the terminal."""
     if not command.strip():
         return {"success": False, "error": "命令不能为空"}
+    manual_confirm_from_ai = bool(getattr(agent, "_manual_confirm_required_shell_once", False))
+    if manual_confirm_from_ai:
+        agent._manual_confirm_required_shell_once = False
     command = ensure_absolute_script_for_shell_cwd(agent, command.strip())
     command = tune_7z_output_for_piped_terminal(command)
     enforce_res = _enforce_windows_powershell_command_prefix(command)
@@ -97,15 +100,34 @@ def action_shell_command(
     if not decision.get("allowed", False):
         return {"success": False, "error": decision.get("error", "")}
     agent._load_confirm_allowlist()
-    force_manual_confirm = (not confirmed) and is_high_risk_skillhub_install_command(command)
-    in_allowlist = agent._shell_command_in_allowlist(command) if not force_manual_confirm else False
-    if not confirmed and not in_allowlist:
+    execution_policy = str(getattr(agent, "execution_policy", "confirmation")).lower()
+    force_manual_confirm_by_policy = (
+        ((execution_policy in ("moderate", "unlimited")) and (not confirmed))
+        or manual_confirm_from_ai
+    )
+    # Hard guard: if AI/policy requires manual confirmation, never bypass it via confirmed=True.
+    if force_manual_confirm_by_policy:
+        confirmed = False
+    in_allowlist = (
+        agent._shell_command_in_allowlist(command)
+        if not force_manual_confirm_by_policy
+        else False
+    )
+    should_prompt_confirm = (
+        force_manual_confirm_by_policy
+        or ((not confirmed) and (not in_allowlist))
+    )
+    if should_prompt_confirm:
         prompt_text = f"⚠️ 确认执行系统命令: {command} ?"
-        if force_manual_confirm:
-            prompt_text = f"⚠️ 高风险安装命令，必须确认后执行: {command} ?"
+        if force_manual_confirm_by_policy:
+            prompt_text = f"⚠️ AI 判定需手动确认，继续执行前请确认: {command} ?"
         ok = agent._prompt_confirm_yes_no_maybe_always(
             prompt_text,
-            offer_always=(False if force_manual_confirm else agent._shell_confirm_should_offer_always(command)),
+            offer_always=(
+                False
+                if force_manual_confirm_by_policy
+                else agent._shell_confirm_should_offer_always(command)
+            ),
             kind="shell",
             shell_command=command,
         )
@@ -590,13 +612,6 @@ def is_dependency_install_command(command: str) -> bool:
         r"^bun\s+add\b",
     ]
     return any(re.match(pat, s) for pat in install_patterns)
-
-
-def is_high_risk_skillhub_install_command(command: str) -> bool:
-    s = (command or "").strip().lower()
-    if not s:
-        return False
-    return ("skillhub_installer.py" in s) and (" install " in f" {s} ")
 
 
 def is_ai_workspace_script_command(agent: Any, command: str) -> bool:

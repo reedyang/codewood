@@ -3,6 +3,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from src.actions.command_actions import action_shell_command
+from src.services.execution_policy_service import freedom_auto_confirm
 
 
 class _Policy:
@@ -14,9 +15,11 @@ class _DummyAgent:
     def __init__(self):
         self.work_directory = Path.cwd()
         self.ai_workspace_dir = Path.cwd()
+        self.execution_policy = "confirmation"
         self.skills = []
         self._ephemeral_script_paths = set()
         self._ai_created_path_keys = set()
+        self._manual_confirm_required_shell_once = False
         self.prompt_calls = []
         self.prompt_result = True
         self.allowlist_hit = False
@@ -103,17 +106,69 @@ class _FakePopen:
 
 
 class ShellCommandExecutionGuardsTests(unittest.TestCase):
-    def test_skillhub_install_requires_prompt_even_if_allowlisted(self):
+    def test_freedom_auto_confirm_marks_manual_when_ai_says_not_reversible(self):
+        agent = _DummyAgent()
+        agent.execution_policy = "moderate"
+
+        with patch("src.services.execution_policy_service.ai_assess_reversible", return_value=(False, "not reversible")), patch(
+            "src.services.execution_policy_service._print_with_auto_hide_tracking"
+        ):
+            ok = freedom_auto_confirm(
+                agent,
+                {"action": "shell", "params": {"command": "echo hi"}},
+            )
+
+        self.assertFalse(ok)
+        self.assertTrue(bool(agent._manual_confirm_required_shell_once))
+
+    def test_manual_confirm_marker_forces_prompt_even_with_allowlist(self):
+        agent = _DummyAgent()
+        agent.allowlist_hit = True
+        agent._manual_confirm_required_shell_once = True
+        agent.prompt_result = False
+
+        result = action_shell_command(agent, 'python -c "print(2)"', confirmed=False, interactive=True, input_data=None)
+
+        self.assertFalse(result.get("success", True))
+        self.assertEqual(result.get("error"), "用户取消了操作")
+        self.assertEqual(len(agent.prompt_calls), 1)
+        self.assertFalse(bool(agent.prompt_calls[0].get("offer_always", True)))
+        self.assertFalse(bool(agent._manual_confirm_required_shell_once))
+
+    def test_moderate_mode_manual_confirm_ignores_allowlist(self):
+        agent = _DummyAgent()
+        agent.execution_policy = "moderate"
+        agent.allowlist_hit = True
+        agent.prompt_result = False
+
+        result = action_shell_command(agent, 'python -c "print(1)"', confirmed=False, interactive=True, input_data=None)
+
+        self.assertFalse(result.get("success", True))
+        self.assertEqual(result.get("error"), "用户取消了操作")
+        self.assertEqual(len(agent.prompt_calls), 1)
+        self.assertFalse(bool(agent.prompt_calls[0].get("offer_always", True)))
+
+    def test_unlimited_mode_non_reversible_result_still_requires_prompt(self):
+        agent = _DummyAgent()
+        agent.execution_policy = "unlimited"
+        agent.allowlist_hit = True
+        agent.prompt_result = False
+
+        result = action_shell_command(agent, 'python -c "print(1)"', confirmed=False, interactive=True, input_data=None)
+
+        self.assertFalse(result.get("success", True))
+        self.assertEqual(result.get("error"), "用户取消了操作")
+        self.assertEqual(len(agent.prompt_calls), 1)
+        self.assertFalse(bool(agent.prompt_calls[0].get("offer_always", True)))
+
+    def test_manual_confirm_marker_still_requires_prompt_when_confirmed_true(self):
         agent = _DummyAgent()
         agent.allowlist_hit = True
         agent.prompt_result = False
-        script = (Path.cwd() / "skills" / "skillhub-skill-installer" / "scripts" / "skillhub_installer.py").resolve()
-        command = (
-            f'python "{script}" install --query "gmail" '
-            f'--config-dir "{Path.cwd()}"'
-        )
+        agent._manual_confirm_required_shell_once = True
+        command = 'python -c "print(42)"'
 
-        result = action_shell_command(agent, command, confirmed=False, interactive=True, input_data=None)
+        result = action_shell_command(agent, command, confirmed=True, interactive=True, input_data=None)
 
         self.assertFalse(result.get("success", True))
         self.assertEqual(result.get("error"), "用户取消了操作")
