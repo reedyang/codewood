@@ -40,6 +40,7 @@ def dispatch_builtin_command(
 
     if bl in ("cls", "clear screen"):
         os.system("cls" if os_name == "nt" else "clear")
+        agent._suppress_next_separator = True
         return True, False
 
     if bl == "clear":

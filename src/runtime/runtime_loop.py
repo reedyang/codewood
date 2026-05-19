@@ -235,6 +235,7 @@ def run_agent_loop(agent: Any):
                 # clear screen
                 if bl == 'cls' or bl == 'clear screen':
                     os.system('cls' if os_name == 'nt' else 'clear')
+                    self._suppress_next_separator = True
                     continue
                 if bl == "clear":
                     print("用法: /clear <screen|history|context>")
