@@ -177,6 +177,7 @@ DEFAULT_WORKSPACE_ID = "default"
 DEFAULT_WORKSPACE_NAME = "Default"
 WORKSPACE_STATE_FILE = "workspaces.json"
 CHAT_STATE_FILE = "chats.json"
+ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 
 
 class SmartShellAgent:
@@ -636,6 +637,60 @@ class SmartShellAgent:
             return
         try:
             sys.stdout.write("\x1b[1A\r\x1b[2K")
+            sys.stdout.flush()
+        except Exception:
+            pass
+
+    def _terminal_columns_for_line_estimate(self) -> int:
+        width = 80
+        ih = getattr(self, "input_handler", None)
+        try:
+            if ih is not None and hasattr(ih, "get_terminal_columns"):
+                cols = int(ih.get_terminal_columns(default=80) or 0)
+                if cols > 0:
+                    return cols
+        except Exception:
+            pass
+        try:
+            cols = int(shutil.get_terminal_size(fallback=(80, 24)).columns or 80)
+            if cols > 0:
+                width = cols
+        except Exception:
+            pass
+        return max(1, int(width))
+
+    def _estimate_rendered_line_count(self, text: str) -> int:
+        raw = str(text or "")
+        if not raw:
+            return 0
+        normalized = raw.replace("\r\n", "\n").replace("\r", "\n")
+        parts = normalized.split("\n")
+        if parts and parts[-1] == "":
+            parts = parts[:-1]
+        if not parts:
+            return 0
+        width = self._terminal_columns_for_line_estimate()
+        total = 0
+        for part in parts:
+            clean = ANSI_ESCAPE_RE.sub("", part).expandtabs(4)
+            plen = len(clean)
+            total += max(1, (plen + width - 1) // width)
+        return total
+
+    def _register_shell_output_for_auto_hide(self, stdout_text: str, stderr_text: str = "") -> None:
+        total = self._estimate_rendered_line_count(stdout_text) + self._estimate_rendered_line_count(stderr_text)
+        self._last_shell_output_visible_lines = max(0, int(total))
+
+    def _hide_previous_shell_output_if_needed(self) -> None:
+        lines = int(getattr(self, "_last_shell_output_visible_lines", 0) or 0)
+        if lines <= 0:
+            return
+        self._last_shell_output_visible_lines = 0
+        if not hasattr(sys.stdout, "isatty") or not sys.stdout.isatty():
+            return
+        try:
+            for _ in range(min(lines, 2000)):
+                sys.stdout.write("\x1b[1A\r\x1b[2K")
             sys.stdout.flush()
         except Exception:
             pass

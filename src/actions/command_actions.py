@@ -8,6 +8,56 @@ from typing import Any, Dict, List, Optional
 
 from ..core.console_utils import _decode_subprocess_output, _safe_console_write
 
+SHELL_OUTPUT_SUPPRESS_THRESHOLD_LINES = 100
+
+
+def _count_output_lines(text: str) -> int:
+    raw = str(text or "")
+    if not raw:
+        return 0
+    normalized = raw.replace("\r\n", "\n").replace("\r", "\n")
+    parts = normalized.split("\n")
+    if parts and parts[-1] == "":
+        parts = parts[:-1]
+    return len(parts)
+
+
+def _shell_command_may_wait_user_input(command: str) -> bool:
+    cmd = str(command or "").strip().lower()
+    if not cmd:
+        return False
+    wait_patterns = (
+        r"\bread-host\b",
+        r"\bset\s*/p\b",
+        r"\bpause\b",
+        r"\binput\s*\(",
+        r"\braw_input\s*\(",
+        r"\bselect\b",
+        r"\bmore\b",
+        r"\bless\b",
+        r"\bvim\b",
+        r"\bnano\b",
+        r"\btop\b",
+        r"\bhtop\b",
+    )
+    if any(re.search(p, cmd, re.IGNORECASE) for p in wait_patterns):
+        return True
+    repl_cmd_patterns = (
+        r"^\s*python(\.exe)?\s*$",
+        r"^\s*py\s*$",
+        r"^\s*node(\.exe)?\s*$",
+        r"^\s*powershell(\.exe)?\s*$",
+        r"^\s*pwsh(\.exe)?\s*$",
+        r"^\s*bash(\.exe)?\s*$",
+        r"^\s*sh\s*$",
+        r"^\s*cmd(\.exe)?\s*$",
+    )
+    return any(re.match(p, cmd, re.IGNORECASE) for p in repl_cmd_patterns)
+
+
+def _should_suppress_large_output(total_lines: int, wait_for_user_input: bool) -> bool:
+    return (not bool(wait_for_user_input)) and int(total_lines or 0) > SHELL_OUTPUT_SUPPRESS_THRESHOLD_LINES
+
 
 def _enforce_windows_powershell_command_prefix(command: str) -> Dict[str, Any]:
     if os.name != "nt":
@@ -83,15 +133,19 @@ def action_shell_command(
             except OSError:
                 merge_path = None
         interactive = True
+        wait_for_user_input = _shell_command_may_wait_user_input(command)
         return_code = -1
         out = ""
         err = ""
+        displayed_out = ""
+        displayed_err = ""
         try:
             if interactive:
                 import threading
                 import codecs
 
-                print("⌨️ shell 交互模式已开启：请按命令提示在终端中输入。")
+                if wait_for_user_input:
+                    print("⌨️ shell 交互模式已开启：请按命令提示在终端中输入。")
                 stdout_chunks: List[str] = []
                 stderr_chunks: List[str] = []
                 merge_stderr_for_interactive = (
@@ -111,24 +165,31 @@ def action_shell_command(
                     except Exception:
                         pass
 
-                def _stream_and_capture(pipe: Any, target: Any, bucket: List[str]) -> None:
+                def _stream_and_capture(
+                    pipe: Any,
+                    target: Any,
+                    bucket: List[str],
+                    echo_to_screen: bool = True,
+                ) -> None:
                     decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
                     try:
                         while True:
                             if hasattr(pipe, "read1"):
-                                chunk = pipe.read1(1)
+                                chunk = pipe.read1(1024)
                             else:
-                                chunk = pipe.read(1)
+                                chunk = pipe.read(1024)
                             if not chunk:
                                 break
                             text_chunk = decoder.decode(chunk, final=False)
                             if text_chunk:
                                 bucket.append(text_chunk)
-                                _safe_console_write(text_chunk, target, append_newline=False)
+                                if echo_to_screen:
+                                    _safe_console_write(text_chunk, target, append_newline=False)
                         tail = decoder.decode(b"", final=True)
                         if tail:
                             bucket.append(tail)
-                            _safe_console_write(tail, target, append_newline=False)
+                            if echo_to_screen:
+                                _safe_console_write(tail, target, append_newline=False)
                     except Exception:
                         pass
                     finally:
@@ -152,7 +213,7 @@ def action_shell_command(
                     )
                     t_out = threading.Thread(
                         target=_stream_and_capture,
-                        args=(process.stdout, sys.stdout, stdout_chunks),  # type: ignore[arg-type]
+                        args=(process.stdout, sys.stdout, stdout_chunks, wait_for_user_input),  # type: ignore[arg-type]
                         daemon=True,
                     )
                     t_out.start()
@@ -160,7 +221,7 @@ def action_shell_command(
                     if not merge_stderr_for_interactive:
                         t_err = threading.Thread(
                             target=_stream_and_capture,
-                            args=(process.stderr, sys.stderr, stderr_chunks),  # type: ignore[arg-type]
+                            args=(process.stderr, sys.stderr, stderr_chunks, wait_for_user_input),  # type: ignore[arg-type]
                             daemon=True,
                         )
                         t_err.start()
@@ -170,6 +231,20 @@ def action_shell_command(
                         t_err.join(timeout=1.0)
                     out = "".join(stdout_chunks)
                     err = "" if merge_stderr_for_interactive else "".join(stderr_chunks)
+                    if not wait_for_user_input:
+                        total_lines = _count_output_lines(out) + _count_output_lines(err)
+                        if _should_suppress_large_output(total_lines, wait_for_user_input):
+                            pass
+                        else:
+                            if out:
+                                _safe_console_write(out, sys.stdout, append_newline=False)
+                            if err:
+                                _safe_console_write(err, sys.stderr, append_newline=False)
+                            displayed_out = out
+                            displayed_err = err
+                    else:
+                        displayed_out = out
+                        displayed_err = err
                 finally:
                     _restore_console_after_interactive()
             else:
@@ -188,12 +263,25 @@ def action_shell_command(
                 raw_stdout = _decode_subprocess_output(completed.stdout)
                 out = raw_stdout
                 err = _decode_subprocess_output(completed.stderr)
-                if raw_stdout:
-                    _safe_console_write(raw_stdout, sys.stdout)
-                if err:
-                    _safe_console_write(err, sys.stderr)
+                total_lines = _count_output_lines(out) + _count_output_lines(err)
+                if _should_suppress_large_output(total_lines, wait_for_user_input):
+                    pass
+                else:
+                    if out:
+                        _safe_console_write(out, sys.stdout, append_newline=False)
+                    if err:
+                        _safe_console_write(err, sys.stderr, append_newline=False)
+                    displayed_out = out
+                    displayed_err = err
 
             out = append_shell_merge_output_path(out, return_code, merge_path)
+            try:
+                if wait_for_user_input:
+                    agent._register_shell_output_for_auto_hide(out, err)
+                else:
+                    agent._register_shell_output_for_auto_hide(displayed_out, displayed_err)
+            except Exception:
+                pass
             base_out: Dict[str, Any] = {
                 "output": out,
                 "stderr": err,
