@@ -15,7 +15,7 @@ from ..config.startup_tips import (
 )
 from ..core.logging.app_logging import get_log_file_path
 from ..controllers.builtin_command_router import dispatch_builtin_command
-from ..core.console_utils import _ansi_blue, _ansi_bold, _ansi_gray, _ansi_white, _ansi_cyan
+from ..core.console_utils import _ansi_bold, _ansi_gray, _ansi_white, _ansi_cyan, _ansi_bright_blue
 
 
 def _sanitize_prompt_pollution(text: str, work_directory: Any) -> str:
@@ -663,9 +663,7 @@ def run_agent_loop(agent: Any):
                 if not user_message_recorded:
                     user_message_recorded = True
                 if ai_response:
-                    display_response = self._normalize_display_text(
-                        self._strip_tool_json_blocks_for_display(ai_response)
-                    )
+                    display_response = self._format_assistant_display_response(ai_response)
                     if display_response:
                         sys.stdout.write(f"{_ansi_gray('助手:')} {display_response}")
                         if not display_response.endswith("\n"):
@@ -676,7 +674,7 @@ def run_agent_loop(agent: Any):
                 if fallback_plan:
                     tool_name, args = fallback_plan
                     if tool_name != "done":
-                        print(f"{_ansi_gray('🔧 执行工具:')} {_ansi_blue(self._tool_call_summary(tool_name, args))}")
+                        print(f"{_ansi_gray('执行工具:')} {_ansi_bright_blue(self._tool_call_summary(tool_name, args))}")
                     if tool_name == "text_file":
                         content = ""
                         if isinstance(args, dict):

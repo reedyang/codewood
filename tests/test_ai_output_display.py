@@ -1,6 +1,7 @@
 import sys
 import types
 import unittest
+from unittest.mock import patch
 
 
 if "ollama" not in sys.modules:
@@ -45,6 +46,45 @@ class AiOutputDisplayTests(unittest.TestCase):
         )
         out = self.agent._strip_tool_json_blocks_for_display(text)
         self.assertEqual(out, "Step 2 [in_progress]: 继续读取文件。")
+
+    def test_format_assistant_display_response_highlights_key_tokens(self):
+        text = (
+            "1. Check https://127.0.0.1:4001 and OPENWEBUI_API_KEY\n"
+            "./scripts/start-gateway.ps1 # Windows wrapper"
+        )
+        with patch("src.smart_shell_agent._ansi_bright_blue", side_effect=lambda s: f"<BB>{s}</BB>"), patch(
+            "src.smart_shell_agent._ansi_blue", side_effect=lambda s: f"<B>{s}</B>"
+        ), patch(
+            "src.smart_shell_agent._ansi_cyan", side_effect=lambda s: f"<C>{s}</C>"
+        ), patch("src.smart_shell_agent._ansi_gray", side_effect=lambda s: f"<G>{s}</G>"):
+            out = self.agent._format_assistant_display_response(text)
+
+        self.assertIn("<BB>1. </BB>", out)
+        self.assertIn("<C>https://127.0.0.1:4001</C>", out)
+        self.assertIn("<C>OPENWEBUI_API_KEY</C>", out)
+        self.assertIn("<BB>./scripts/start-gateway.ps1</BB>", out)
+        self.assertIn("<G> # Windows wrapper</G>", out)
+
+    def test_format_assistant_display_response_highlights_shell_command_lines(self):
+        text = (
+            "powershell -File .\\scripts\\stop-gateway.ps1\n"
+            ".\\.venv\\Scripts\\python -m pip install \"litellm[proxy]==1.83.14\""
+        )
+        with patch("src.smart_shell_agent._ansi_bright_blue", side_effect=lambda s: f"<BB>{s}</BB>"), patch(
+            "src.smart_shell_agent._ansi_yellow", side_effect=lambda s: f"<Y>{s}</Y>"
+        ), patch("src.smart_shell_agent._ansi_green", side_effect=lambda s: f"<G>{s}</G>"), patch(
+            "src.smart_shell_agent._ansi_cyan", side_effect=lambda s: f"<C>{s}</C>"
+        ), patch("src.smart_shell_agent._ansi_gray", side_effect=lambda s: f"<GR>{s}</GR>"):
+            out = self.agent._format_assistant_display_response(text)
+
+        self.assertIn("<BB>powershell</BB>", out)
+        self.assertIn("<Y>-File</Y>", out)
+        self.assertIn("<C>.\\scripts\\stop-gateway.ps1</C>", out)
+        self.assertIn("<BB>.\\.venv\\Scripts\\python</BB>", out)
+        self.assertIn("<Y>-m</Y>", out)
+        self.assertIn("<BB>pip</BB>", out)
+        self.assertIn("<BB>install</BB>", out)
+        self.assertIn("<G>\"litellm[proxy]==1.83.14\"</G>", out)
 
 
 if __name__ == "__main__":

@@ -1,4 +1,5 @@
 import os
+import os
 import sys
 from typing import Any, Optional
 
@@ -130,6 +131,13 @@ def _ansi_blue(text: str) -> str:
         _enable_windows_console_vt()
     return f"\033[34m{text}\033[0m"
 
+def _ansi_bright_blue(text: str) -> str:
+    if not _stdout_color_enabled():
+        return text
+    if sys.platform == "win32":
+        _enable_windows_console_vt()
+    return f"\033[94m{text}\033[0m"
+
 def _ansi_cyan(text: str) -> str:
     if not _stdout_color_enabled():
         return text
@@ -142,7 +150,8 @@ def _ansi_green(text: str) -> str:
         return text
     if sys.platform == "win32":
         _enable_windows_console_vt()
-    return f"\033[32m{text}\033[0m"
+    # Use a softer syntax-green that matches the CLI screenshot style better than the default bright green.
+    return f"\033[38;2;152;195;121m{text}\033[0m"
 
 
 def _ansi_white(text: str) -> str:
