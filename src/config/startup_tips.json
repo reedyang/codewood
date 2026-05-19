@@ -1,0 +1,84 @@
+{
+  "tips": [
+    {
+      "text": "Use /model to switch model providers and model names quickly.",
+      "highlights": ["/model"]
+    },
+    {
+      "text": "Type /chat new to start a fresh thread while keeping workspace context.",
+      "highlights": ["/chat new"]
+    },
+    {
+      "text": "Use /chat switch <name|id|index> to jump between task threads.",
+      "highlights": ["/chat switch"]
+    },
+    {
+      "text": "Run /chat list to view all chats in the current workspace.",
+      "highlights": ["/chat list"]
+    },
+    {
+      "text": "Use /workspace list to see every registered workspace.",
+      "highlights": ["/workspace list"]
+    },
+    {
+      "text": "Run /workspace switch <name|id|path> before starting work on another project.",
+      "highlights": ["/workspace switch"]
+    },
+    {
+      "text": "Use /workspace create <path> --name <name> to register a new project space.",
+      "highlights": ["/workspace create", "--name"]
+    },
+    {
+      "text": "Type /memory status to check whether memory is enabled and ready.",
+      "highlights": ["/memory status"]
+    },
+    {
+      "text": "Use /memory remember <text> to save stable preferences for later sessions.",
+      "highlights": ["/memory remember"]
+    },
+    {
+      "text": "Run /memory search <query> when you want to recall prior decisions.",
+      "highlights": ["/memory search"]
+    },
+    {
+      "text": "Use /knowledge status to inspect knowledge service readiness.",
+      "highlights": ["/knowledge status"]
+    },
+    {
+      "text": "Run /knowledge sync after adding docs you want the agent to retrieve.",
+      "highlights": ["/knowledge sync"]
+    },
+    {
+      "text": "Use /knowledge search <query> for targeted document lookup.",
+      "highlights": ["/knowledge search"]
+    },
+    {
+      "text": "Use /execution-policy show to inspect current execution confirmation mode.",
+      "highlights": ["/execution-policy show"]
+    },
+    {
+      "text": "Use /session-summary show to verify conversation summarization settings.",
+      "highlights": ["/session-summary show"]
+    },
+    {
+      "text": "Prefix local shell commands with !, for example !git status.",
+      "highlights": ["!", "!git status"]
+    },
+    {
+      "text": "Use /clear context to reset AI context but keep command history.",
+      "highlights": ["/clear context"]
+    },
+    {
+      "text": "Use /clear history to clear terminal input history.",
+      "highlights": ["/clear history"]
+    },
+    {
+      "text": "Use /mcp status to inspect MCP server health and loading state.",
+      "highlights": ["/mcp status"]
+    },
+    {
+      "text": "Use /help to view built-in commands whenever you are unsure.",
+      "highlights": ["/help"]
+    }
+  ]
+}

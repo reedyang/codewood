@@ -45,6 +45,7 @@ from .core.console_utils import (
     _ansi_yellow,
     _ansi_green,
     _ansi_white,
+    _ansi_rgb,
 )
 from .controllers.builtin_command_router import dispatch_builtin_command
 from .controllers.workspace_command_controller import (
@@ -163,6 +164,10 @@ DEFAULT_WORKSPACE_ID = "default"
 DEFAULT_WORKSPACE_NAME = "Default"
 WORKSPACE_STATE_FILE = "workspaces.json"
 CHAT_STATE_FILE = "chats.json"
+STATUS_MODEL_COLOR_HEX = "#d7ba7d"
+STATUS_WORKSPACE_COLOR_HEX = "#98c379"
+STATUS_MODEL_COLOR_RGB = (0xD7, 0xBA, 0x7D)
+STATUS_WORKSPACE_COLOR_RGB = (0x98, 0xC3, 0x79)
 
 
 class SmartShellAgent:
@@ -2522,15 +2527,16 @@ class SmartShellAgent:
 
         workspace_prompt_line = f"[Workspace: {self.workspace_name}][Chat: {self.active_chat_name}]"
         status_bar_fragments = [
-            ("fg:ansiyellow", str(self.model_name)),
+            ("", "  "),
+            (f"fg:{STATUS_MODEL_COLOR_HEX}", str(self.model_name)),
             ("", " "),
-            ("fg:ansigreen", str(self.workspace_name)),
+            (f"fg:{STATUS_WORKSPACE_COLOR_HEX}", str(self.workspace_name)),
             ("", " "),
             ("fg:ansiwhite", str(self.active_chat_name)),
         ]
         status_bar_plain = (
-            f"{_ansi_yellow(str(self.model_name))} "
-            f"{_ansi_green(str(self.workspace_name))} "
+            f"  {_ansi_rgb(str(self.model_name), *STATUS_MODEL_COLOR_RGB)} "
+            f"{_ansi_rgb(str(self.workspace_name), *STATUS_WORKSPACE_COLOR_RGB)} "
             f"{_ansi_white(str(self.active_chat_name))}"
         )
         prompt = f"{str(self.work_directory)}>"
