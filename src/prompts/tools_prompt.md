@@ -34,6 +34,8 @@
 - 可通过操作系统命令完成的文本文件读取、检索、创建、编辑与替换，必须使用 `shell`。
 - Windows 上，以上文本文件操作必须且仅能通过 `powershell -ExecutionPolicy Bypass -Command "<command>"` 执行；禁止使用 `type`、`findstr`、`copy`、`move`、`del`、`cmd /c` 等非该前缀方式处理这些文件操作。
 - 在非 Windows 上，以上文本文件操作使用 POSIX shell 语法。
+- 当需要定位关键词并读取文本文件附近内容时，必须先检索命中位置，再按行号读取附近片段；禁止一次读取整个文件。
+- 读取文本文件时，单次读取不得超过 100 行；超出范围必须分段多次读取。
 - 禁止假设存在 `read`、`text_file`、`edit_text`、`grep` 这类文件操作工具。
 
 图片任务规则（强制）：
