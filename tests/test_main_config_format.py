@@ -29,6 +29,65 @@ class MainConfigFormatTests(unittest.TestCase):
         self.assertEqual(model_config["provider"], "openwebui")
         self.assertEqual(model_config["params"]["models"][0], "gpt-oss-120b")
         self.assertEqual(model_config["params"]["model"], "gpt-oss-120b")
+        self.assertEqual(model_config["params"]["context_window"], 128000)
+
+    def test_supports_object_model_with_numeric_context_window(self):
+        provider, model_name, model_config, error = _extract_model_runtime_config(
+            {
+                "model_providers": [
+                    {
+                        "provider": "openwebui",
+                        "params": {
+                            "models": [
+                                {"name": "gpt-oss-120b", "context_window": 64000},
+                                {"name": "gpt-4o-mini", "context_window": "96k"},
+                            ]
+                        },
+                    }
+                ]
+            }
+        )
+        self.assertIsNone(error)
+        self.assertEqual(provider, "openwebui")
+        self.assertEqual(model_name, "gpt-oss-120b")
+        self.assertEqual(model_config["params"]["models"], ["gpt-oss-120b", "gpt-4o-mini"])
+        self.assertEqual(model_config["params"]["context_window"], 64000)
+
+    def test_supports_k_suffix_context_window(self):
+        _, _, model_config, error = _extract_model_runtime_config(
+            {
+                "model_providers": [
+                    {
+                        "provider": "openwebui",
+                        "params": {
+                            "models": [
+                                {"name": "gpt-oss-120b", "context_window": "128K"},
+                            ]
+                        },
+                    }
+                ]
+            }
+        )
+        self.assertIsNone(error)
+        self.assertEqual(model_config["params"]["context_window"], 128000)
+
+    def test_invalid_context_window_falls_back_to_default(self):
+        _, _, model_config, error = _extract_model_runtime_config(
+            {
+                "model_providers": [
+                    {
+                        "provider": "openwebui",
+                        "params": {
+                            "models": [
+                                {"name": "gpt-oss-120b", "context_window": "bad-value"},
+                            ]
+                        },
+                    }
+                ]
+            }
+        )
+        self.assertIsNone(error)
+        self.assertEqual(model_config["params"]["context_window"], 128000)
 
     def test_requires_model_providers(self):
         provider, model_name, model_config, error = _extract_model_runtime_config({})

@@ -17,6 +17,7 @@ current_dir = Path(__file__).resolve().parent
 project_root = current_dir.parent
 sys.path.insert(0, str(project_root))
 from src.core.config.config_env import resolve_string_values_in_data
+from src.core.config.model_providers import parse_configured_models
 
 
 def _extract_model_runtime_config(config: dict):
@@ -34,16 +35,19 @@ def _extract_model_runtime_config(config: dict):
     if not isinstance(params_raw, dict):
         return None, None, None, "❌ 配置错误：model_providers[0].params 必须是对象"
 
-    models = params_raw.get("models")
-    if not isinstance(models, list) or not models:
+    parsed_models = parse_configured_models(params_raw)
+    if not parsed_models:
         return None, None, None, "❌ 配置错误：model_providers[0].params.models 缺失或为空"
 
-    model_name = str(models[0]).strip()
+    first_model = parsed_models[0]
+    model_name = str(first_model.get("name") or "").strip()
     if not provider or not model_name:
         return None, None, None, "❌ 配置错误：model_providers[0].provider 或首个 model 为空"
 
     params = dict(params_raw)
+    params["models"] = [str(item.get("name") or "").strip() for item in parsed_models]
     params["model"] = model_name
+    params["context_window"] = int(first_model.get("context_window") or 0)
 
     model_config = {
         "provider": provider,

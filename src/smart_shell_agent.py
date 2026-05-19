@@ -33,6 +33,7 @@ from .core.config.skills_loader import (
     load_skills_merged,
 )
 from .core.config.config_env import resolve_string_values_in_data
+from .core.config.model_providers import parse_configured_models
 from .integrations.mcp import McpManager, McpError
 from .core.change_preview_formatter import ChangePreviewFormatter
 from .ai.ai_provider_clients import AICallContext
@@ -234,6 +235,10 @@ class SmartShellAgent:
             create_tab_completer=globals().get("create_tab_completer"),
         )
         bootstrap.setup_runtime_services(self)
+        # Startup chat may be auto-activated before prompt/skills are fully loaded.
+        # Recompute once after full initialization so first status-bar percentage
+        # matches subsequent /chat reload behavior.
+        self._refresh_status_context_usage_snapshot()
 
     def _resolve_path_lenient(self, path: Path) -> Path:
         try:
@@ -382,14 +387,14 @@ class SmartShellAgent:
             params_raw = item.get("params", {})
             if not provider or not isinstance(params_raw, dict):
                 continue
-            models = params_raw.get("models")
-            if not isinstance(models, list):
+            parsed_models = parse_configured_models(params_raw)
+            if not parsed_models:
                 continue
             base_params = dict(params_raw)
-            for model_item in models:
-                model_name = str(model_item or "").strip()
-                if not model_name:
-                    continue
+            base_params["models"] = [str(item.get("name") or "").strip() for item in parsed_models]
+            for model_item in parsed_models:
+                model_name = str(model_item.get("name") or "").strip()
+                context_window = int(model_item.get("context_window") or 0)
                 selector = f"{provider}:{model_name}"
                 key = selector.lower()
                 if key in seen:
@@ -397,6 +402,7 @@ class SmartShellAgent:
                 seen.add(key)
                 params = dict(base_params)
                 params["model"] = model_name
+                params["context_window"] = context_window
                 out.append(
                     {
                         "provider": provider,
@@ -509,6 +515,7 @@ class SmartShellAgent:
                 return
             self._apply_chat_model_from_entry(chat, persist_if_missing=True)
             self._save_chat_state()
+        self._refresh_status_context_usage_snapshot()
 
     def _switch_model_by_selector(self, selector: str) -> str:
         choice = self._find_configured_model_choice(selector)
@@ -528,10 +535,12 @@ class SmartShellAgent:
                 str(choice.get("name") or ""),
                 save_state=True,
             )
+            self._refresh_status_context_usage_snapshot()
             return f"ℹ️ 当前已使用模型: {target}"
 
         self._apply_runtime_model_choice(choice, validate=True)
         self._set_active_chat_model(self.provider, self.model_name, save_state=True)
+        self._refresh_status_context_usage_snapshot()
         return f"✅ 已切换模型: {target}"
 
     def _handle_model_builtin_command(self, builtin_line: str) -> bool:
@@ -701,7 +710,9 @@ class SmartShellAgent:
         self._prompt_separator_rendered = False
 
     def _append_chat_message(self, role: str, content: str) -> None:
-        return self.session_memory_service.append_chat_message(role, content)
+        self.session_memory_service.append_chat_message(role, content)
+        self._refresh_status_context_usage_snapshot()
+        return None
 
     def _maybe_schedule_auto_chat_name(self) -> None:
         with self._chat_state_lock:
@@ -1613,6 +1624,7 @@ class SmartShellAgent:
         )
         self.ai_orchestrator.context.provider = self.provider
         self.ai_orchestrator.context.model_name = self.model_name
+        self.ai_orchestrator.context.model_params = self.params
         self.ai_orchestrator.context.openai_conf = self.openai_conf
         self.ai_orchestrator.context.openwebui_conf = self.openwebui_conf
         self.ai_orchestrator.context.work_directory = str(self.work_directory)
@@ -2739,6 +2751,62 @@ class SmartShellAgent:
                 
         return False
 
+    def _status_token_usage_percent(self) -> int:
+        try:
+            v = int(getattr(self, "_last_context_usage_percent", 0) or 0)
+        except Exception:
+            v = 0
+        if v < 0:
+            return 0
+        if v > 999:
+            return 999
+        return v
+
+    def _refresh_status_context_usage_snapshot(self, user_input_hint: str = "", context_hint: str = "") -> None:
+        try:
+            svc = getattr(self, "session_memory_service", None)
+            if svc is not None and hasattr(svc, "refresh_context_usage_snapshot"):
+                svc.refresh_context_usage_snapshot(
+                    user_input_hint=str(user_input_hint or ""),
+                    context_hint=str(context_hint or ""),
+                )
+                return
+        except Exception:
+            pass
+        # Early-startup fallback (before session_memory_service is initialized).
+        try:
+            total_chars = 0
+            for m in list(getattr(self, "conversation_history", None) or []):
+                total_chars += len(str(m.get("content") or ""))
+            ctx_window = int((getattr(self, "params", None) or {}).get("context_window") or 128000)
+            approx_tokens = max(0, total_chars // 4)
+            pct = max(0, min(999, int(round((approx_tokens * 100.0) / max(1, ctx_window)))))
+            self._last_context_window = ctx_window
+            self._last_context_input_tokens = approx_tokens
+            self._last_context_usage_percent = pct
+        except Exception:
+            pass
+
+    def _status_bar_render_data(self) -> Tuple[List[Tuple[str, str]], str]:
+        usage_pct = self._status_token_usage_percent()
+        usage_text = f"({usage_pct}%)"
+        status_bar_fragments: List[Tuple[str, str]] = [
+            ("", "  "),
+            (f"fg:{STATUS_MODEL_COLOR_HEX}", str(self.model_name)),
+            ("", " "),
+            (f"fg:{STATUS_WORKSPACE_COLOR_HEX}", str(self.workspace_name)),
+            ("", " "),
+            ("fg:ansiwhite", str(self.active_chat_name)),
+            ("fg:ansibrightblack", usage_text),
+        ]
+        status_bar_plain = (
+            f"  {_ansi_rgb(str(self.model_name), *STATUS_MODEL_COLOR_RGB)} "
+            f"{_ansi_rgb(str(self.workspace_name), *STATUS_WORKSPACE_COLOR_RGB)} "
+            f"{_ansi_white(str(self.active_chat_name))}"
+            f"{_ansi_gray(usage_text)}"
+        )
+        return status_bar_fragments, status_bar_plain
+
     def _get_user_input_with_history(self) -> str:
         """
         获取用户输入，支持历史记录导航
@@ -2747,20 +2815,7 @@ class SmartShellAgent:
         """
         import platform
 
-        workspace_prompt_line = f"[Workspace: {self.workspace_name}][Chat: {self.active_chat_name}]"
-        status_bar_fragments = [
-            ("", "  "),
-            (f"fg:{STATUS_MODEL_COLOR_HEX}", str(self.model_name)),
-            ("", " "),
-            (f"fg:{STATUS_WORKSPACE_COLOR_HEX}", str(self.workspace_name)),
-            ("", " "),
-            ("fg:ansiwhite", str(self.active_chat_name)),
-        ]
-        status_bar_plain = (
-            f"  {_ansi_rgb(str(self.model_name), *STATUS_MODEL_COLOR_RGB)} "
-            f"{_ansi_rgb(str(self.workspace_name), *STATUS_WORKSPACE_COLOR_RGB)} "
-            f"{_ansi_white(str(self.active_chat_name))}"
-        )
+        status_bar_fragments, status_bar_plain = self._status_bar_render_data()
         prompt = f"{str(self.work_directory)}>"
         startup_prompt_pending = bool(getattr(self, "_startup_prompt_pending", True))
         if startup_prompt_pending:
