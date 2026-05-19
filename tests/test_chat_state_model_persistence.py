@@ -1,6 +1,7 @@
 import tempfile
 import threading
 import unittest
+import json
 from pathlib import Path
 
 from src.managers.chat_state_manager import ChatStateManager
@@ -94,6 +95,74 @@ class ChatStateModelPersistenceTests(unittest.TestCase):
             ]
             compact = manager.compact_redundant_user_turns(messages)
             self.assertEqual(compact, messages)
+
+    def test_load_chat_state_skips_save_when_state_is_clean(self):
+        with tempfile.TemporaryDirectory() as td:
+            workspace = Path(td)
+            chat_path = workspace / "chats.json"
+            payload = {
+                "version": 1,
+                "active": "chat-1",
+                "chats": [
+                    {
+                        "id": "chat-1",
+                        "name": "Clean",
+                        "name_source": "manual",
+                        "created_at": "",
+                        "updated_at": "",
+                        "model_provider": "openai",
+                        "model_name": "gpt-4.1",
+                        "messages": [{"role": "user", "content": "hello"}],
+                        "context_usage_percent": 0,
+                        "context_input_tokens": 0,
+                        "context_window": 0,
+                    }
+                ],
+            }
+            chat_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+            agent = _FakeAgent(workspace)
+            manager = ChatStateManager(agent, "chats.json")
+            save_calls = []
+            manager.save_chat_state = lambda: save_calls.append("saved")
+
+            manager.load_chat_state()
+            self.assertEqual(save_calls, [])
+            self.assertEqual(agent.active_chat_id, "chat-1")
+
+    def test_load_chat_state_persists_when_model_snapshot_missing(self):
+        with tempfile.TemporaryDirectory() as td:
+            workspace = Path(td)
+            chat_path = workspace / "chats.json"
+            payload = {
+                "version": 1,
+                "active": "chat-1",
+                "chats": [
+                    {
+                        "id": "chat-1",
+                        "name": "Legacy",
+                        "name_source": "manual",
+                        "created_at": "",
+                        "updated_at": "",
+                        "messages": [],
+                        "context_usage_percent": 0,
+                        "context_input_tokens": 0,
+                        "context_window": 0,
+                    }
+                ],
+            }
+            chat_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+            agent = _FakeAgent(workspace)
+            manager = ChatStateManager(agent, "chats.json")
+            save_calls = []
+            manager.save_chat_state = lambda: save_calls.append("saved")
+
+            manager.load_chat_state()
+            self.assertEqual(save_calls, ["saved"])
+            chat = manager.find_chat_by_id("chat-1")
+            self.assertEqual(chat.get("model_provider"), "openai")
+            self.assertEqual(chat.get("model_name"), "gpt-4.1")
 
 
 if __name__ == "__main__":

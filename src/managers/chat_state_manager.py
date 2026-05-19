@@ -133,41 +133,62 @@ class ChatStateManager:
     def load_chat_state(self) -> None:
         raw: Dict[str, Any] = {}
         p = self.chat_state_path()
+        file_exists = p.exists()
+        state_changed = False
         if p.exists():
             try:
                 with open(p, "r", encoding="utf-8") as f:
                     loaded = json.load(f)
                 if isinstance(loaded, dict):
                     raw = loaded
+                else:
+                    state_changed = True
             except Exception as e:
                 print(f"⚠️ 读取 chat 状态失败，使用默认会话: {e}")
+                state_changed = True
         chats_raw = raw.get("chats", [])
         chats: List[Dict[str, Any]] = []
         if isinstance(chats_raw, list):
             for c in chats_raw:
                 if not isinstance(c, dict):
+                    state_changed = True
                     continue
                 cid = str(c.get("id") or "").strip()
                 if not cid:
                     cid = self.next_chat_id()
+                    state_changed = True
                 name = str(c.get("name") or "New Chat").strip() or "New Chat"
                 source = str(c.get("name_source") or "default").strip().lower()
                 if source not in ("default", "auto", "manual"):
                     source = "default"
+                    state_changed = True
                 messages = c.get("messages", [])
                 if not isinstance(messages, list):
                     messages = []
+                    state_changed = True
                 msgs = []
                 for m in messages:
                     if not isinstance(m, dict):
+                        state_changed = True
                         continue
                     role = str(m.get("role") or "").strip().lower()
                     content = str(m.get("content") or "")
                     if role in ("user", "assistant"):
                         clean = self.sanitize_persisted_chat_message(role, content)
                         if clean is None:
+                            state_changed = True
                             continue
+                        if clean != content:
+                            state_changed = True
                         msgs.append({"role": role, "content": clean})
+                    else:
+                        state_changed = True
+
+                model_provider = str(c.get("model_provider") or "").strip()
+                model_name = str(c.get("model_name") or "").strip()
+                if not model_provider or not model_name:
+                    # Missing model snapshot will be backfilled during activate_chat().
+                    state_changed = True
                 chats.append(
                     {
                         "id": cid,
@@ -175,23 +196,32 @@ class ChatStateManager:
                         "name_source": source,
                         "created_at": str(c.get("created_at") or ""),
                         "updated_at": str(c.get("updated_at") or ""),
-                        "model_provider": str(c.get("model_provider") or "").strip(),
-                        "model_name": str(c.get("model_name") or "").strip(),
+                        "model_provider": model_provider,
+                        "model_name": model_name,
                         "messages": self.compact_redundant_user_turns(msgs),
                         "context_usage_percent": int(c.get("context_usage_percent") or 0),
                         "context_input_tokens": int(c.get("context_input_tokens") or 0),
                         "context_window": int(c.get("context_window") or 0),
                     }
                 )
+        else:
+            state_changed = True
         if not chats:
             self._agent._chat_state = self.default_chat_state()
             chats = self.chat_entries()
+            state_changed = True
         active = str(raw.get("active") or self._agent._chat_state.get("active") or "").strip()
         if not active or not any(str(c.get("id")) == active for c in chats):
             active = str(chats[0].get("id") or "chat-1")
+            state_changed = True
         self._agent._chat_state = {"version": 1, "active": active, "chats": chats}
-        self.save_chat_state()
-        self.activate_chat(active, announce=False, clear_screen=False, print_history=False)
+        self.activate_chat(
+            active,
+            announce=False,
+            clear_screen=False,
+            print_history=False,
+            persist=(state_changed or not file_exists),
+        )
 
     def sync_active_chat_messages(self) -> None:
         with self._agent._chat_state_lock:
@@ -217,6 +247,7 @@ class ChatStateManager:
         announce: bool = True,
         clear_screen: bool = False,
         print_history: bool = False,
+        persist: bool = True,
     ) -> str:
         with self._agent._chat_state_lock:
             chat = self.find_chat_by_id(chat_id)
@@ -235,7 +266,8 @@ class ChatStateManager:
             except Exception:
                 pass
             self._apply_chat_usage_snapshot(chat)
-            self.save_chat_state()
+            if persist:
+                self.save_chat_state()
         if clear_screen:
             os.system("cls" if os.name == "nt" else "clear")
         if print_history:
