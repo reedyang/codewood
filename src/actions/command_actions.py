@@ -9,6 +9,28 @@ from typing import Any, Dict, List, Optional
 from ..core.console_utils import _decode_subprocess_output, _safe_console_write
 
 
+def _enforce_windows_powershell_command_prefix(command: str) -> Dict[str, Any]:
+    if os.name != "nt":
+        return {"ok": True, "command": command}
+    cmd = str(command or "").strip()
+    if not cmd:
+        return {"ok": True, "command": command}
+    if not re.match(r"(?i)^powershell(?:\.exe)?\b", cmd):
+        return {"ok": True, "command": command}
+    m = re.match(
+        r"(?is)^powershell(?:\.exe)?\s+-ExecutionPolicy\s+Bypass\s+-Command\s+(.+)$",
+        cmd,
+    )
+    if not m:
+        return {
+            "ok": False,
+            "error": 'Windows 上调用 PowerShell 必须使用: powershell -ExecutionPolicy Bypass -Command "<command>"',
+        }
+    # Normalize executable token to `powershell` while preserving the command payload.
+    payload = m.group(1).strip()
+    return {"ok": True, "command": f"powershell -ExecutionPolicy Bypass -Command {payload}"}
+
+
 def action_shell_command(
     agent: Any,
     command: str,
@@ -21,6 +43,10 @@ def action_shell_command(
         return {"success": False, "error": "命令不能为空"}
     command = ensure_absolute_script_for_shell_cwd(agent, command.strip())
     command = tune_7z_output_for_piped_terminal(command)
+    enforce_res = _enforce_windows_powershell_command_prefix(command)
+    if not enforce_res.get("ok", False):
+        return {"success": False, "error": str(enforce_res.get("error", "PowerShell 命令格式不符合要求"))}
+    command = str(enforce_res.get("command") or command)
     policy = agent._get_path_policy()
     decision = policy.can_run_shell_in_workdir(
         is_dependency_install=is_dependency_install_command(command),
@@ -221,94 +247,6 @@ def action_shell_command(
 
     except Exception as e:
         return {"success": False, "error": f"系统命令执行异常: {str(e)}"}
-
-
-def action_grep(agent: Any, params: Dict[str, Any]) -> dict:
-    from tools.grep_tool import run_grep
-
-    pattern = str(params.get("pattern") or "").strip()
-    out_raw = str(params.get("output_path") or params.get("output_file") or "").strip()
-    root_raw = str(params.get("root") or "").strip()
-    files_raw = params.get("files")
-    extensions = params.get("extensions")
-    ignore_case = bool(params.get("ignore_case", False))
-    multiline = bool(params.get("multiline", False))
-    max_matches = int(params.get("max_matches", 100_000))
-    max_file_bytes = int(params.get("max_file_bytes", 20 * 1024 * 1024))
-    exclude_dir_names = params.get("exclude_dir_names")
-    max_workers = params.get("max_workers")
-
-    if not pattern:
-        return {"success": False, "error": "grep 缺少 pattern（正则表达式）"}
-    if not out_raw:
-        return {"success": False, "error": "grep 缺少 output_path（结果输出文件路径）"}
-
-    out_path = agent._resolve_user_path(out_raw)
-    policy = agent._get_path_policy()
-    decision = policy.can_write_grep_output(out_path)
-    if not decision.get("allowed", False):
-        return {"success": False, "error": decision.get("error", "")}
-
-    root_path: Optional[Path] = None
-    file_list: Optional[List[Path]] = None
-
-    if isinstance(files_raw, list) and len(files_raw) > 0:
-        file_list = []
-        for fr in files_raw:
-            p = agent._resolve_user_path(str(fr).strip())
-            if not policy.can_read_for_grep(p):
-                return {"success": False, "error": f"禁止检索该路径（超出允许范围）: {p}"}
-            if p.is_file():
-                file_list.append(p)
-        if not file_list:
-            return {"success": False, "error": "files 列表中没有有效的现有文件"}
-    elif root_raw:
-        root_path = agent._resolve_user_path(root_raw)
-        if not root_path.is_dir():
-            return {"success": False, "error": f"root 不是目录: {root_path}"}
-        if not policy.can_read_for_grep(root_path):
-            return {"success": False, "error": "禁止在该 root 下检索（超出允许范围）"}
-    else:
-        return {"success": False, "error": "必须提供 root（目录）或 files（文件路径列表）"}
-
-    ext_arg = None
-    if isinstance(extensions, list):
-        ext_arg = [str(x) for x in extensions if str(x).strip()]
-    excl_arg = None
-    if isinstance(exclude_dir_names, list):
-        excl_arg = [str(x) for x in exclude_dir_names if str(x).strip()]
-    mw = int(max_workers) if max_workers is not None else None
-
-    try:
-        result = run_grep(
-            root=root_path,
-            files=file_list,
-            output_file=out_path,
-            pattern=pattern,
-            extensions=ext_arg,
-            ignore_case=ignore_case,
-            multiline=multiline,
-            max_matches=max_matches,
-            max_file_bytes=max_file_bytes,
-            exclude_dir_names=excl_arg,
-            max_workers=mw,
-        )
-    except Exception as e:
-        return {"success": False, "error": f"grep 执行失败: {e}"}
-
-    if not result.get("success"):
-        return dict(result)
-    print(f"\n📎 grep: {result.get('message', '完成')} → {result.get('output_path', '')}")
-    return {
-        "success": True,
-        "message": result.get("message", ""),
-        "output_path": result.get("output_path"),
-        "output_file": result.get("output_path"),
-        "match_count": result.get("match_count"),
-        "files_with_matches": result.get("files_with_matches"),
-        "files_scanned": result.get("files_scanned"),
-        "truncated": result.get("truncated", False),
-    }
 
 
 def action_project_context_search(agent: Any, params: Dict[str, Any]) -> dict:
@@ -670,9 +608,3 @@ def append_shell_merge_output_path(stdout_text: str, return_code: int, merge_pat
     return head + "\n\n---\n" + marker + "\n" + extra
 
 
-def grep_read_path_allowed(agent: Any, path: Path) -> bool:
-    return agent._get_path_policy().can_read_for_grep(path)
-
-
-def grep_output_path_allowed(agent: Any, path: Path) -> bool:
-    return bool(agent._get_path_policy().can_write_grep_output(path).get("allowed", False))

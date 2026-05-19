@@ -1,80 +1,11 @@
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any, Dict, Optional
 
 from ...core.security.git_guard import guard_git_clone_precheck
 
 
 def dispatch_file_shell_tool(agent: Any, action: str, params: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    if action == "list":
-        path = params.get("path")
-        file_filter = params.get("filter")
-        smart_filter = params.get("smart_filter")
-        result = agent.action_list_directory(path, file_filter)
-        if result.get("success"):
-            if smart_filter:
-                filtered_result = agent.action_intelligent_filter(result, smart_filter)
-                if filtered_result.get("success"):
-                    result = filtered_result
-        return result
-
-    if action == "cd":
-        path = params.get("path", "")
-        result = agent.action_change_directory(path)
-        if result.get("success"):
-            agent._bind_project_index_workspace()
-        return result
-
-    if action == "rename":
-        old_name = params.get("old_name")
-        new_name = params.get("new_name")
-        if old_name and new_name:
-            return agent.action_rename_file(old_name, new_name)
-        return {"success": False, "error": "missing old_name/new_name"}
-
-    if action == "move":
-        source = params.get("source")
-        destination = params.get("destination")
-        if source and destination:
-            move_cmd = {"tool": "move", "args": {"source": source, "destination": destination}}
-            confirmed = agent._freedom_auto_confirm(move_cmd)
-            return agent.action_move_file(source, destination, confirmed=confirmed)
-        return {"success": False, "error": "missing source/destination"}
-
-    if action == "delete":
-        file_name = params.get("file_name") or params.get("path") or params.get("name")
-        if not file_name:
-            return {"success": False, "error": "missing file_name/path/name"}
-        target_path = agent.work_directory / file_name
-        base = Path(file_name).name
-        if (
-            not target_path.exists()
-            and agent._last_auto_removed_ephemeral
-            and base.lower() == agent._last_auto_removed_ephemeral.lower()
-        ):
-            agent._last_auto_removed_ephemeral = None
-            return {
-                "success": True,
-                "message": f"file {base} already removed by auto cleanup",
-                "skipped_duplicate_delete": True,
-            }
-        del_cmd = {"tool": "delete", "args": {"path": file_name}}
-        confirmed = agent._freedom_auto_confirm(del_cmd)
-        return agent.action_delete_file(file_name, confirmed=confirmed)
-
-    if action == "mkdir":
-        path = params.get("path")
-        if path:
-            return agent.action_create_directory(path)
-        return {"success": False, "error": "missing path"}
-
-    if action == "info":
-        file_name = params.get("file_name") or params.get("path") or params.get("name")
-        if file_name:
-            return agent.action_get_file_info(file_name)
-        return {"success": False, "error": "missing file_name/path/name"}
-
     if action == "ffmpeg":
         source = params.get("source")
         target = params.get("target")
@@ -82,12 +13,6 @@ def dispatch_file_shell_tool(agent: Any, action: str, params: Dict[str, Any]) ->
         if source and target:
             return agent.action_ffmpeg(source, target, options)
         return {"success": False, "error": "missing source/target"}
-
-    if action == "summarize":
-        file_path = params.get("path")
-        if file_path:
-            return agent.action_summarize_file(file_path)
-        return {"success": False, "error": "missing path"}
 
     if action == "shell":
         shell_cmd = params.get("command")
@@ -170,54 +95,6 @@ def dispatch_file_shell_tool(agent: Any, action: str, params: Dict[str, Any]) ->
             input_data=None,
         )
 
-    if action == "text_file":
-        filename = params.get("filename")
-        content = params.get("content")
-        overwrite = bool(params.get("overwrite", False))
-        if filename and content is not None:
-            file_cmd = {"action": "text_file", "params": {"filename": filename, "content": ""}}
-            confirmed = agent._freedom_auto_confirm(file_cmd)
-            return agent.action_create_text_file(
-                filename, content, confirmed=confirmed, overwrite=overwrite
-            )
-        return {"success": False, "error": "missing filename/content"}
-
-    if action == "read":
-        file_path = params.get("path")
-        max_lines = params.get("max_lines") if "max_lines" in params else None
-        start_line = params.get("start_line") if "start_line" in params else None
-        line_count = params.get("line_count") if "line_count" in params else None
-        if file_path:
-            return agent.action_read_file(file_path, max_lines, start_line, line_count)
-        return {"success": False, "error": "missing path"}
-
-    if action == "edit_text":
-        file_path = params.get("path")
-        start_line = params.get("start_line")
-        line_span = params.get("line_span", 0)
-        operation = params.get("operation")
-        content = params.get("content")
-        if file_path and start_line is not None and operation:
-            edit_cmd = {
-                "action": "edit_text",
-                "params": {
-                    "path": file_path,
-                    "start_line": start_line,
-                    "line_span": line_span,
-                    "operation": operation,
-                },
-            }
-            confirmed = agent._freedom_auto_confirm(edit_cmd)
-            return agent.action_edit_text_file(
-                file_path=file_path,
-                start_line=start_line,
-                line_span=line_span,
-                operation=operation,
-                content=content,
-                confirmed=confirmed,
-            )
-        return {"success": False, "error": "missing path/start_line/operation"}
-
     if action == "apply_patch":
         file_path = params.get("path")
         patch = params.get("patch")
@@ -235,9 +112,6 @@ def dispatch_file_shell_tool(agent: Any, action: str, params: Dict[str, Any]) ->
         if file_path:
             return agent.action_read_image(file_path, prompt)
         return {"success": False, "error": "missing path"}
-
-    if action == "grep":
-        return agent.action_grep(params if isinstance(params, dict) else {})
 
     if action == "project_context_search":
         return agent.action_project_context_search(params if isinstance(params, dict) else {})

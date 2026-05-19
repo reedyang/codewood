@@ -1635,45 +1635,9 @@ class SmartShellAgent:
         self.ai_orchestrator.context.work_directory = str(self.work_directory)
         return self.ai_orchestrator.call(call_ctx=call_ctx)
 
-    def action_list_directory(self, path: Optional[str] = None, file_filter: Optional[str] = None) -> Dict[str, Any]:
-        """列出目录内容"""
-        return filesystem_actions.action_list_directory(self, path=path, file_filter=file_filter)
-
-    def action_intelligent_filter(self, file_list_result: Dict[str, Any], filter_condition: str) -> Dict[str, Any]:
-        """使用AI智能过滤文件列表"""
-        return filesystem_actions.action_intelligent_filter(self, file_list_result=file_list_result, filter_condition=filter_condition)
-
-    def action_change_directory(self, path: str) -> Dict[str, Any]:
-        """切换工作目录"""
-        return filesystem_actions.action_change_directory(self, path=path)
-
-    def action_rename_file(self, old_name: str, new_name: str) -> Dict[str, Any]:
-        """重命名文件或文件夹"""
-        return filesystem_actions.action_rename_file(self, old_name=old_name, new_name=new_name)
-
-    def action_move_file(self, source: str, destination: str, confirmed: bool = False) -> Dict[str, Any]:
-        """移动文件或文件夹，支持通配符批量移动"""
-        return filesystem_actions.action_move_file(self, source=source, destination=destination, confirmed=confirmed)
-
-    def action_delete_file(self, file_name: str, confirmed: bool = False) -> Dict[str, Any]:
-        """删除文件或文件夹，支持通配符批量删除"""
-        return filesystem_actions.action_delete_file(self, file_name=file_name, confirmed=confirmed)
-
-    def action_create_directory(self, dir_name: str) -> Dict[str, Any]:
-        """创建新文件夹"""
-        return filesystem_actions.action_create_directory(self, dir_name=dir_name)
-
-    def action_get_file_info(self, file_name: str) -> Dict[str, Any]:
-        """获取文件信息"""
-        return filesystem_actions.action_get_file_info(self, file_name=file_name)
-
     def action_ffmpeg(self, source: str, target: str, options: Optional[str] = None) -> Dict[str, Any]:
         """调用ffmpeg处理媒体文件"""
         return filesystem_actions.action_ffmpeg(self, source=source, target=target, options=options)
-    
-    def action_summarize_file(self, file_path: str, max_lines: int = 50) -> dict:
-        """总结文本文件内容"""
-        return filesystem_actions.action_summarize_file(self, file_path=file_path, max_lines=max_lines)
 
     def _ephemeral_path_key(self, path: Path) -> str:
         try:
@@ -1847,50 +1811,6 @@ class SmartShellAgent:
             input_data=input_data,
         )
 
-    def action_create_text_file(
-        self, filename: str, content: str, confirmed: bool = False, overwrite: bool = False
-    ) -> dict:
-        """Create a user-requested file; supports relative paths."""
-        return filesystem_actions.action_create_text_file(
-            self, filename=filename, content=content, confirmed=confirmed, overwrite=overwrite
-        )
-
-    def action_read_file(
-        self,
-        file_path: str,
-        max_lines: Optional[int] = None,
-        start_line: Optional[int] = None,
-        line_count: Optional[int] = None,
-    ) -> dict:
-        """读取文本文件内容（带行号），支持按行读取片段。"""
-        return filesystem_actions.action_read_file(
-            self,
-            file_path=file_path,
-            max_lines=max_lines,
-            start_line=start_line,
-            line_count=line_count,
-        )
-
-    def action_edit_text_file(
-        self,
-        file_path: str,
-        start_line: int,
-        line_span: int,
-        operation: str,
-        content: Optional[str] = None,
-        confirmed: bool = False,
-    ) -> dict:
-        """按起始行与跨度对文本文件进行插入/删除/替换。"""
-        return filesystem_actions.action_edit_text_file(
-            self,
-            file_path=file_path,
-            start_line=start_line,
-            line_span=line_span,
-            operation=operation,
-            content=content,
-            confirmed=confirmed,
-        )
-
     def action_apply_unified_patch(
         self, file_path: str, patch: str, confirmed: bool = False
     ) -> dict:
@@ -1906,10 +1826,6 @@ class SmartShellAgent:
     def action_diff(self, file1: str, file2: str, options: Optional[str] = None) -> dict:
         """跨平台文件比较：Windows上优先使用diff.exe，否则使用fc命令；其他平台使用diff命令"""
         return filesystem_actions.action_diff(self, file1=file1, file2=file2, options=options)
-
-    def action_grep(self, params: Dict[str, Any]) -> dict:
-        """Recursive regex grep over text files; results written to caller-specified file."""
-        return command_actions.action_grep(self, params=params)
 
     def action_project_context_search(self, params: Dict[str, Any]) -> dict:
         """
@@ -1927,7 +1843,7 @@ class SmartShellAgent:
             return ""
         lines: List[str] = [
             "【首轮 Evidence Block（自动注入）】",
-            "以下候选文件来自 project_context_search，请优先基于这些证据展开 read/grep/shell，避免盲目全局扫描：",
+            "以下候选文件来自 project_context_search，请优先基于这些证据展开 shell 检索与读取，避免盲目全局扫描：",
         ]
         for i, c in enumerate(cands[:8], start=1):
             if not isinstance(c, dict):
@@ -2103,29 +2019,26 @@ class SmartShellAgent:
     def _tool_call_summary(self, tool_name: str, args: Dict[str, Any]) -> str:
         """Generate one-line tool execution summary."""
         a = args if isinstance(args, dict) else {}
-        if str(tool_name).strip().lower() == "read" and a:
-            def _fmt_val(v: Any) -> str:
-                vv = str(v).strip().replace("\n", " ")
-                return (vv[:120] + "...") if len(vv) > 120 else vv
-
-            preferred = ("path", "file_path", "filename", "file")
-            parts: List[str] = []
-            seen: set = set()
-            for k in preferred:
-                if k in a and a.get(k) not in (None, ""):
-                    parts.append(f"{k}={_fmt_val(a.get(k))}")
-                    seen.add(k)
-                    break
-            for k in sorted(a.keys()):
-                if k in seen:
-                    continue
-                v = a.get(k)
-                if v is None or v == "":
-                    continue
-                parts.append(f"{k}={_fmt_val(v)}")
-            if parts:
-                return f"{tool_name} ({', '.join(parts)})"
-
+        if str(tool_name).strip().lower() == "shell":
+            cmd = str(a.get("command") or "").strip()
+            m = re.match(
+                r"(?is)^(?:powershell(?:\.exe)?)\s+-ExecutionPolicy\s+Bypass\s+-Command\s+(?P<payload>.+)$",
+                cmd,
+            )
+            if m:
+                summary = m.group("payload").strip()
+                if len(summary) >= 2 and summary[0] == summary[-1] and summary[0] in ("'", '"'):
+                    quote = summary[0]
+                    summary = summary[1:-1]
+                    if quote == '"':
+                        summary = summary.replace('`"', '"')
+                    else:
+                        summary = summary.replace("''", "'")
+                if not summary:
+                    summary = cmd
+                if len(summary) > 160:
+                    summary = summary[:160] + "..."
+                return summary
         for k in (
             "skill_id",
             "mcp",
@@ -2254,7 +2167,7 @@ class SmartShellAgent:
     def _compact_result_for_next_input(self, result: Dict[str, Any], max_chars: int = 3000) -> str:
         """
         Keep next-round context focused by compressing large tool payloads.
-        Especially important for read/grep outputs in long investigative tasks.
+        Especially important for large shell outputs in long investigative tasks.
         """
         if not isinstance(result, dict):
             return ""
@@ -2276,9 +2189,9 @@ class SmartShellAgent:
         lookback: int = 6,
     ) -> bool:
         """
-        Detect repeated read/grep loops with near-identical arguments.
+        Detect repeated shell loops with near-identical arguments.
         """
-        if tool_name not in ("read", "grep"):
+        if tool_name not in ("shell",):
             return False
         target = json.dumps({"tool": tool_name, "args": args or {}}, ensure_ascii=False, sort_keys=True)
         hits = 0

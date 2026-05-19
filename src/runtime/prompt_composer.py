@@ -221,6 +221,7 @@ def compose_system_prompt_snapshot(agent: Any, include_tools: bool) -> str:
         + build_user_preferences_system_append(agent)
         + build_mcp_system_append(agent)
         + build_runtime_cache_prompt_append(agent, default_workspace_id="default")
+        + build_os_file_ops_prompt_append()
     )
     if include_tools:
         return core + "\n" + build_tools_prompt_append(agent)
@@ -271,6 +272,24 @@ def build_tools_prompt_append(agent: Any) -> str:
         arg_keys = ", ".join(sorted(str(k) for k in props.keys())) if props else "-"
         lines.append(f"- {name}: {desc} | args: {arg_keys}")
     return "\n".join(lines)
+
+
+def build_os_file_ops_prompt_append() -> str:
+    """Inject OS-specific shell policy for file operations."""
+    if os.name == "nt":
+        return (
+            "\n\n## File Operation Policy (OS-Specific)\n"
+            "- 可通过操作系统命令完成的文件操作（读取、检索、创建、编辑、批量替换）必须使用 `shell` 工具执行。\n"
+            '- 当前系统为 Windows：以上文件操作必须且仅能使用 `powershell -ExecutionPolicy Bypass -Command "<command>"` 形式执行。\n'
+            "- 禁止使用 `type`、`findstr`、`copy`、`move`、`del`、`cmd /c` 等非该前缀方式处理这些文件操作。\n"
+            "- 禁止假设存在 `read`/`text_file`/`edit_text`/`grep` 这类文件操作工具。"
+        )
+    return (
+        "\n\n## File Operation Policy (OS-Specific)\n"
+        "- 可通过操作系统命令完成的文件操作（读取、检索、创建、编辑、批量替换）必须使用 `shell` 工具执行。\n"
+        "- 当前系统为非 Windows：`shell.command` 使用 POSIX shell 规范（优先 `cat`/`sed`/`awk`/`grep`/`find`，需要修改文件时优先 `sed -i` 或重定向）。\n"
+        "- 禁止假设存在 `read`/`text_file`/`edit_text`/`grep` 这类文件操作工具。"
+    )
 
 
 def load_tools_prompt_template() -> str:

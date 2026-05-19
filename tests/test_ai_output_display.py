@@ -34,8 +34,8 @@ class AiOutputDisplayTests(unittest.TestCase):
         )
         self.assertIn("read", s)
         self.assertIn("path=src/main.py", s)
-        self.assertIn("line_count=10", s)
-        self.assertIn("start_line=101", s)
+        self.assertNotIn("line_count=10", s)
+        self.assertNotIn("start_line=101", s)
 
     def test_strip_tool_json_unclosed_fence_keeps_narrative(self):
         text = (
@@ -85,6 +85,11 @@ class AiOutputDisplayTests(unittest.TestCase):
         self.assertIn("<BB>pip</BB>", out)
         self.assertIn("<BB>install</BB>", out)
         self.assertIn("<G>\"litellm[proxy]==1.83.14\"</G>", out)
+
+    def test_tool_call_summary_for_powershell_shell_only_shows_command(self):
+        cmd = 'powershell -ExecutionPolicy Bypass -Command "Get-ChildItem -Force"'
+        s = self.agent._tool_call_summary("shell", {"command": cmd, "force": True, "input": "x"})
+        self.assertEqual(s, "Get-ChildItem -Force")
 
 
 if __name__ == "__main__":

@@ -14,6 +14,7 @@ class TaskControlToolTests(unittest.TestCase):
     def setUp(self):
         # Bypass heavy init; these tool branches are pure.
         self.agent = SmartShellAgent.__new__(SmartShellAgent)
+        self.agent.skills = []
 
     def test_ask_more_info_returns_need_user_input_payload(self):
         result = self.agent.execute_tool_call(
@@ -40,6 +41,27 @@ class TaskControlToolTests(unittest.TestCase):
         self.assertTrue(result.get("task_changed"))
         self.assertEqual(result.get("new_task"), "Generate release notes")
         self.assertEqual(result.get("reason"), "user changed request")
+
+    def test_removed_file_tools_must_fail(self):
+        removed = [
+            "list",
+            "cd",
+            "rename",
+            "move",
+            "delete",
+            "mkdir",
+            "info",
+            "summarize",
+            "text_file",
+            "read",
+            "edit_text",
+            "grep",
+        ]
+        for tool_name in removed:
+            with self.subTest(tool=tool_name):
+                result = self.agent.execute_tool_call(tool_name, {})
+                self.assertFalse(result.get("success", True))
+                self.assertIn("未知的操作类型", str(result.get("error", "")))
 
 
 if __name__ == "__main__":

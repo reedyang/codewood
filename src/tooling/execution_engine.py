@@ -1,7 +1,6 @@
 """Legacy tool execution engine extracted from SmartShellAgent._execute_tool_call_legacy."""
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any, Dict
 
 from ..core.security.git_guard import guard_git_clone_precheck
@@ -91,150 +90,6 @@ def execute_tool_call_legacy(agent: Any, tool_name: str, arguments: Dict[str, An
                 all_success = False
         return {"success": all_success, "results": results}
 
-    elif action == "list":
-        path = params.get("path")
-        file_filter = params.get("filter")
-        smart_filter = params.get("smart_filter")  # 智能过滤条件
-
-        # 首先获取所有文件
-        result = self.action_list_directory(path, file_filter)
-
-        if result["success"]:
-            # 如果有智能过滤条件，使用AI进行筛选
-            if smart_filter:
-                print(f"🧠 正在使用AI智能过滤: {smart_filter}")
-                filtered_result = self.action_intelligent_filter(result, smart_filter)
-                if filtered_result["success"]:
-                    result = filtered_result
-
-            title_extra = result.get("filter_info", "")
-            if smart_filter and "智能过滤" not in title_extra:
-                title_extra += f" [智能过滤: {smart_filter}]"
-            print(f"\n📁 目录内容 ({result['path']}){title_extra}:")
-            print("-" * 80)
-            for item in result["items"]:
-                icon = "📁" if item["type"] == "directory" else "📄"
-                print(f"{icon} {item['name']:<40} {item['size']:>10} bytes  {item['modified']}")
-            print("-" * 80)
-            print(f"📊 统计: {result['total_dirs']} 个文件夹, {result['total_files']} 个文件")
-            if file_filter:
-                print(f"🔍 已应用过滤器: {file_filter}")
-            if smart_filter:
-                print(f"🧠 智能过滤条件: {smart_filter}")
-        else:
-            print(f"❌ {result['error']}")
-
-        return result
-
-    elif action == "cd":
-        path = params.get("path", "")
-        result = self.action_change_directory(path)
-        if result.get("success"):
-            self._bind_project_index_workspace()
-
-        if not result["success"]:
-            print(f"❌ {result['error']}")
-
-        return result
-
-    elif action == "rename":
-        old_name = params.get("old_name")
-        new_name = params.get("new_name")
-        if old_name and new_name:
-            result = self.action_rename_file(old_name, new_name)
-
-            if result["success"]:
-                print(f"✅ {result['message']}")
-            else:
-                print(f"❌ {result['error']}")
-
-            return result
-
-    elif action == "move":
-        source = params.get("source")
-        destination = params.get("destination")
-        if source and destination:
-            move_cmd = {"tool": "move", "args": {"source": source, "destination": destination}}
-            confirmed = self._freedom_auto_confirm(move_cmd)
-            result = self.action_move_file(source, destination, confirmed=confirmed)
-
-            if result["success"]:
-                print(f"✅ {result['message']}")
-            else:
-                print(f"❌ {result['error']}")
-
-            return result
-
-    elif action == "delete":
-        # 支持多种参数名: file_name, path, name
-        file_name = params.get("file_name") or params.get("path") or params.get("name")
-        if file_name:
-            target_path = self.work_directory / file_name
-            base = Path(file_name).name
-            if (
-                not target_path.exists()
-                and self._last_auto_removed_ephemeral
-                and base.lower() == self._last_auto_removed_ephemeral.lower()
-            ):
-                print(
-                    f"ℹ️ «{base}» 已由上一步 shell 成功后自动删除，跳过重复的 delete（无需 freedom 确认）。"
-                )
-                self._last_auto_removed_ephemeral = None
-                return {
-                    "success": True,
-                    "message": f"文件 «{base}» 已不存在（已由系统自动清理）",
-                    "skipped_duplicate_delete": True,
-                }
-            del_cmd = {"tool": "delete", "args": {"path": file_name}}
-            confirmed = self._freedom_auto_confirm(del_cmd)
-            result = self.action_delete_file(file_name, confirmed=confirmed)
-
-            if result["success"]:
-                print(f"✅ {result['message']}")
-            elif result.get("confirmation_needed"):
-                print(f"⚠️ {result['warning']}")
-                print(f"💡 如需确认删除，请使用：删除{file_name}并确认")
-
-            return result
-        else:
-            print("❌ 删除命令缺少文件名参数")
-            return {"success": False, "error": "缺少文件名参数"}
-
-    elif action == "mkdir":
-        path = params.get("path")
-        if path:
-            result = self.action_create_directory(path)
-
-            if result["success"]:
-                print(f"✅ {result['message']}")
-            else:
-                print(f"❌ {result['error']}")
-
-            return result
-
-    elif action == "info":
-        # 支持多种参数名: file_name, path, name
-        file_name = params.get("file_name") or params.get("path") or params.get("name")
-        if file_name:
-            result = self.action_get_file_info(file_name)
-
-            if result["success"]:
-                print(f"\n📋 文件信息：")
-                print(f"名称: {result['name']}")
-                print(f"类型: {result['type']}")
-                print(f"大小: {result['size']} bytes")
-                print(f"创建时间: {result['created']}")
-                print(f"修改时间: {result['modified']}")
-                print(f"权限: {result['permissions']}")
-                print(f"完整路径: {result['full_path']}")
-            else:
-                print(f"❌ {result['error']}")
-
-            return result
-        else:
-            print("❌ 查看文件信息命令缺少文件名参数")
-            return {"success": False, "error": "缺少文件名参数"}
-
     elif action == "ffmpeg":
         source = params.get("source")
         target = params.get("target")
@@ -249,20 +104,6 @@ def execute_tool_call_legacy(agent: Any, tool_name: str, arguments: Dict[str, An
         else:
             print("❌ 命令缺少参数 source 或 target")
             return {"success": False, "error": "缺少 source 或 target 参数"}
-
-    elif action == "summarize":
-        file_path = params.get("path")
-        if file_path:
-            result = self.action_summarize_file(file_path)
-            if result["success"]:
-                print(f"\n📄 文件 {result['file']} 总结：")
-                print(result["summary"])
-            else:
-                print(f"❌ {result['error']}")
-            return result
-        else:
-            print("❌ summarize命令缺少path参数")
-            return {"success": False, "error": "缺少path参数"}
 
     elif action == "shell":
         shell_cmd = params.get("command")
@@ -354,75 +195,6 @@ def execute_tool_call_legacy(agent: Any, tool_name: str, arguments: Dict[str, An
             print("❌ shell命令缺少command参数")
             return {"success": False, "error": "缺少command参数"}
 
-    elif action == "text_file":
-        filename = params.get("filename")
-        content = params.get("content")
-        overwrite = bool(params.get("overwrite", False))
-        if filename and content is not None:
-            file_cmd = {
-                "action": "text_file",
-                "params": {"filename": filename, "content": ""},
-            }
-            confirmed = self._freedom_auto_confirm(file_cmd)
-            result = self.action_create_text_file(
-                filename, content, confirmed=confirmed, overwrite=overwrite
-            )
-            if result["success"]:
-                print(f"✅ {result['message']}")
-            else:
-                print(f"❌ {result['error']}")
-            return result
-        else:
-            print("❌ text_file命令缺少filename或content参数")
-            return {"success": False, "error": "缺少filename或content参数"}
-
-    elif action == "read":
-        file_path = params.get("path")
-        max_lines = params.get("max_lines") if "max_lines" in params else None
-        start_line = params.get("start_line") if "start_line" in params else None
-        line_count = params.get("line_count") if "line_count" in params else None
-        if file_path:
-            result = self.action_read_file(file_path, max_lines, start_line, line_count)
-            if not result["success"]:
-                print(f"❌ {result['error']}")
-            return result
-        else:
-            print("❌ read命令缺少path参数")
-            return {"success": False, "error": "缺少path参数"}
-
-    elif action == "edit_text":
-        file_path = params.get("path")
-        start_line = params.get("start_line")
-        line_span = params.get("line_span", 0)
-        operation = params.get("operation")
-        content = params.get("content")
-        if file_path and start_line is not None and operation:
-            edit_cmd = {
-                "action": "edit_text",
-                "params": {
-                    "path": file_path,
-                    "start_line": start_line,
-                    "line_span": line_span,
-                    "operation": operation,
-                },
-            }
-            confirmed = self._freedom_auto_confirm(edit_cmd)
-            result = self.action_edit_text_file(
-                file_path=file_path,
-                start_line=start_line,
-                line_span=line_span,
-                operation=operation,
-                content=content,
-                confirmed=confirmed,
-            )
-            if result["success"]:
-                print(f"✅ {result['message']}")
-            else:
-                print(f"❌ {result['error']}")
-            return result
-        print("❌ edit_text命令缺少 path/start_line/operation 参数")
-        return {"success": False, "error": "缺少 path/start_line/operation 参数"}
-
     elif action == "apply_patch":
         file_path = params.get("path")
         patch = params.get("patch")
@@ -459,14 +231,6 @@ def execute_tool_call_legacy(agent: Any, tool_name: str, arguments: Dict[str, An
         else:
             print("❌ read_image命令缺少path参数")
             return {"success": False, "error": "缺少path参数"}
-
-    elif action == "grep":
-        result = self.action_grep(params if isinstance(params, dict) else {})
-        if result.get("success"):
-            pass
-        else:
-            print(f"❌ grep 失败: {result.get('error', '')}")
-        return result
 
     elif action == "project_context_search":
         result = self.action_project_context_search(params if isinstance(params, dict) else {})
