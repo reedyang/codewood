@@ -53,6 +53,7 @@ WINDOWS_SLASH_BUILTIN_COMMANDS: List[str] = [
     "/memory search ",
     "/memory stats",
     "/memory status",
+    "/model",
     "/quit",
     "/session-summary ",
     "/session-summary off",
@@ -116,5 +117,7 @@ def windows_slash_builtin_completions(
             if key not in seen:
                 seen.add(key)
                 out.append(c)
-    out.sort(key=str.lower)
+    # Keep '/model ' candidates in configured order (from config model_providers).
+    if not pl.startswith("/model "):
+        out.sort(key=str.lower)
     return out

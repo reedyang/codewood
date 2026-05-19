@@ -17,6 +17,21 @@ def _sorted_unique_ci(values: List[str]) -> List[str]:
     return sorted(out, key=str.lower)
 
 
+def _unique_ci_preserve_order(values: List[str]) -> List[str]:
+    out: List[str] = []
+    seen: Set[str] = set()
+    for raw in values or []:
+        value = str(raw or "").strip()
+        if not value:
+            continue
+        key = value.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(value)
+    return out
+
+
 def _get_mcp_servers(mcp_config: Any) -> Dict[str, Any]:
     try:
         servers = (mcp_config or {}).get("mcpServers", {})
@@ -168,9 +183,29 @@ def build_mcp_scoped_groups(mcp_manager: Any) -> List[Tuple[str, List[str]]]:
     return sorted(groups, key=lambda x: x[0].lower())
 
 
+def build_model_switch_commands(model_selectors: List[str]) -> List[str]:
+    commands: List[str] = []
+    for raw in model_selectors or []:
+        selector = str(raw or "").strip()
+        if not selector:
+            continue
+        commands.append(f"/model {selector}")
+    return _unique_ci_preserve_order(commands)
+
+
 def build_slash_dynamic_rules(
-    workspaces_state: Dict[str, Any], mcp_config: Any, mcp_scoped_groups_provider: Any
+    workspaces_state: Dict[str, Any],
+    mcp_config: Any,
+    mcp_scoped_groups_provider: Any,
+    model_selectors_provider: Any = None,
 ) -> List[Dict[str, Any]]:
+    model_commands: List[str] = []
+    try:
+        if callable(model_selectors_provider):
+            model_commands = build_model_switch_commands(model_selectors_provider())
+    except Exception:
+        model_commands = []
+
     return [
         {
             "trigger": "/mcp server-info ",
@@ -217,6 +252,10 @@ def build_slash_dynamic_rules(
         {
             "trigger": "/workspace delete ",
             "candidates": build_workspace_action_commands(workspaces_state, "delete"),
+        },
+        {
+            "trigger": "/model ",
+            "candidates": model_commands,
         },
         {
             "groups_provider": mcp_scoped_groups_provider,

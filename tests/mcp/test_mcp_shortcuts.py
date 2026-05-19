@@ -94,6 +94,13 @@ class McpShortcutCommandTests(unittest.TestCase):
         for item in expected:
             self.assertIn(item, WINDOWS_SLASH_BUILTIN_COMMANDS)
 
+    def test_completion_contains_model_commands(self):
+        expected = [
+            "/model",
+        ]
+        for item in expected:
+            self.assertIn(item, WINDOWS_SLASH_BUILTIN_COMMANDS)
+
 
 if __name__ == "__main__":
     unittest.main()
