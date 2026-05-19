@@ -25,7 +25,7 @@ class StatusBarTokenUsageTests(unittest.TestCase):
         _frags, plain = agent._status_bar_render_data()
         self.assertIn("(999%)", plain)
 
-    def test_startup_fallback_refresh_updates_usage(self):
+    def test_refresh_without_service_keeps_cached_usage(self):
         agent = self._make_agent()
         agent.conversation_history = [
             {"role": "user", "content": "hello " * 120},
@@ -33,9 +33,9 @@ class StatusBarTokenUsageTests(unittest.TestCase):
         ]
         agent.params = {"context_window": 2000}
         agent.session_memory_service = None
-        agent._last_context_usage_percent = 0
+        agent._last_context_usage_percent = 42
         agent._refresh_status_context_usage_snapshot()
-        self.assertGreater(int(getattr(agent, "_last_context_usage_percent", 0)), 0)
+        self.assertEqual(int(getattr(agent, "_last_context_usage_percent", 0)), 42)
 
 
 if __name__ == "__main__":

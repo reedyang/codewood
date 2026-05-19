@@ -13,6 +13,7 @@ from ..config.startup_tips import (
     format_tip_with_highlights,
     get_random_startup_tip_entry,
 )
+from ..core.assistant_output_highlighter import format_assistant_display_response
 from ..core.logging.app_logging import get_log_file_path
 from ..controllers.builtin_command_router import dispatch_builtin_command
 from ..core.console_utils import _ansi_bold, _ansi_gray, _ansi_white, _ansi_cyan, _ansi_bright_blue
@@ -663,7 +664,7 @@ def run_agent_loop(agent: Any):
                 if not user_message_recorded:
                     user_message_recorded = True
                 if ai_response:
-                    display_response = self._format_assistant_display_response(ai_response)
+                    display_response = format_assistant_display_response(ai_response)
                     if display_response:
                         sys.stdout.write(f"{_ansi_gray('助手:')} {display_response}")
                         if not display_response.endswith("\n"):

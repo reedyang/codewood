@@ -40,6 +40,34 @@ class SessionMemoryService:
         self.agent = agent
         self._builtin_token_counter: Optional[Callable[[str], int]] = None
         self._builtin_token_counter_init_done = False
+        self._token_counter_warmup_started = False
+        self._token_counter_lock = threading.Lock()
+        self._context_usage_refresh_lock = threading.Lock()
+        self._context_usage_refresh_inflight = False
+        self._start_token_counter_warmup()
+
+    def _start_token_counter_warmup(self) -> None:
+        with self._token_counter_lock:
+            if self._token_counter_warmup_started:
+                return
+            self._token_counter_warmup_started = True
+
+        def _run() -> None:
+            try:
+                import tiktoken  # type: ignore
+
+                enc = tiktoken.get_encoding("cl100k_base")
+                self._builtin_token_counter = lambda s: len(enc.encode(str(s or "")))
+            except Exception:
+                self._builtin_token_counter = None
+            finally:
+                self._builtin_token_counter_init_done = True
+
+        threading.Thread(
+            target=_run,
+            daemon=True,
+            name="smartshell-token-counter-warmup",
+        ).start()
 
     def append_chat_message(self, role: str, content: str) -> None:
         r = str(role or "").strip().lower()
@@ -506,15 +534,10 @@ class SessionMemoryService:
             return custom
         if self._builtin_token_counter_init_done:
             return self._builtin_token_counter
-        self._builtin_token_counter_init_done = True
-        try:
-            import tiktoken  # type: ignore
-
-            enc = tiktoken.get_encoding("cl100k_base")
-            self._builtin_token_counter = lambda s: len(enc.encode(str(s or "")))
-        except Exception:
-            self._builtin_token_counter = None
-        return self._builtin_token_counter
+        # Non-blocking: warmup continues in background; foreground falls back
+        # to heuristic estimation until tokenizer is ready.
+        self._start_token_counter_warmup()
+        return None
 
     def _estimate_text_tokens(self, text: str) -> int:
         s = str(text or "")
@@ -752,6 +775,34 @@ class SessionMemoryService:
         except Exception:
             # Keep previous snapshot on refresh failure.
             pass
+
+    def schedule_context_usage_refresh_async(
+        self, user_input_hint: str = "", context_hint: str = ""
+    ) -> bool:
+        """
+        Recompute context usage in background to avoid blocking UI/input loop.
+        """
+        with self._context_usage_refresh_lock:
+            if self._context_usage_refresh_inflight:
+                return False
+            self._context_usage_refresh_inflight = True
+
+        def _run() -> None:
+            try:
+                self.refresh_context_usage_snapshot(
+                    user_input_hint=user_input_hint,
+                    context_hint=context_hint,
+                )
+            finally:
+                with self._context_usage_refresh_lock:
+                    self._context_usage_refresh_inflight = False
+
+        threading.Thread(
+            target=_run,
+            daemon=True,
+            name="smartshell-context-usage-refresh",
+        ).start()
+        return True
 
     def build_regular_task_messages(self, user_input: str, context: str = "") -> Tuple[List[Dict[str, Any]], bool]:
         import os

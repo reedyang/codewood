@@ -3,6 +3,8 @@ import types
 import unittest
 from unittest.mock import patch
 
+from src.core import assistant_output_highlighter as aoh
+
 
 if "ollama" not in sys.modules:
     fake_ollama = types.SimpleNamespace(list=lambda: {"models": []})
@@ -22,7 +24,7 @@ class AiOutputDisplayTests(unittest.TestCase):
             "{\"tool\":\"read\",\"args\":{\"path\":\"a.py\"}}\n"
             "```\n"
         )
-        out = self.agent._strip_tool_json_blocks_for_display(text)
+        out = aoh.strip_tool_json_blocks_for_display(text)
         self.assertEqual(out, "我将先读取文件。")
 
     def test_tool_call_summary_prefers_path_like_fields(self):
@@ -44,7 +46,7 @@ class AiOutputDisplayTests(unittest.TestCase):
             '  "args": {"path": "src/main.py", "start_line": 101}\n'
             "}\n"
         )
-        out = self.agent._strip_tool_json_blocks_for_display(text)
+        out = aoh.strip_tool_json_blocks_for_display(text)
         self.assertEqual(out, "Step 2 [in_progress]: 继续读取文件。")
 
     def test_format_assistant_display_response_highlights_key_tokens(self):
@@ -52,12 +54,10 @@ class AiOutputDisplayTests(unittest.TestCase):
             "1. Check https://127.0.0.1:4001 and OPENWEBUI_API_KEY\n"
             "./scripts/start-gateway.ps1 # Windows wrapper"
         )
-        with patch("src.smart_shell_agent._ansi_bright_blue", side_effect=lambda s: f"<BB>{s}</BB>"), patch(
-            "src.smart_shell_agent._ansi_blue", side_effect=lambda s: f"<B>{s}</B>"
-        ), patch(
-            "src.smart_shell_agent._ansi_cyan", side_effect=lambda s: f"<C>{s}</C>"
-        ), patch("src.smart_shell_agent._ansi_gray", side_effect=lambda s: f"<G>{s}</G>"):
-            out = self.agent._format_assistant_display_response(text)
+        with patch("src.core.assistant_output_highlighter._ansi_bright_blue", side_effect=lambda s: f"<BB>{s}</BB>"), patch(
+            "src.core.assistant_output_highlighter._ansi_cyan", side_effect=lambda s: f"<C>{s}</C>"
+        ), patch("src.core.assistant_output_highlighter._ansi_gray", side_effect=lambda s: f"<G>{s}</G>"):
+            out = aoh.format_assistant_display_response(text)
 
         self.assertIn("<BB>1. </BB>", out)
         self.assertIn("<C>https://127.0.0.1:4001</C>", out)
@@ -70,12 +70,12 @@ class AiOutputDisplayTests(unittest.TestCase):
             "powershell -File .\\scripts\\stop-gateway.ps1\n"
             ".\\.venv\\Scripts\\python -m pip install \"litellm[proxy]==1.83.14\""
         )
-        with patch("src.smart_shell_agent._ansi_bright_blue", side_effect=lambda s: f"<BB>{s}</BB>"), patch(
-            "src.smart_shell_agent._ansi_yellow", side_effect=lambda s: f"<Y>{s}</Y>"
-        ), patch("src.smart_shell_agent._ansi_green", side_effect=lambda s: f"<G>{s}</G>"), patch(
-            "src.smart_shell_agent._ansi_cyan", side_effect=lambda s: f"<C>{s}</C>"
-        ), patch("src.smart_shell_agent._ansi_gray", side_effect=lambda s: f"<GR>{s}</GR>"):
-            out = self.agent._format_assistant_display_response(text)
+        with patch("src.core.assistant_output_highlighter._ansi_bright_blue", side_effect=lambda s: f"<BB>{s}</BB>"), patch(
+            "src.core.assistant_output_highlighter._ansi_yellow", side_effect=lambda s: f"<Y>{s}</Y>"
+        ), patch("src.core.assistant_output_highlighter._ansi_green", side_effect=lambda s: f"<G>{s}</G>"), patch(
+            "src.core.assistant_output_highlighter._ansi_cyan", side_effect=lambda s: f"<C>{s}</C>"
+        ), patch("src.core.assistant_output_highlighter._ansi_gray", side_effect=lambda s: f"<GR>{s}</GR>"):
+            out = aoh.format_assistant_display_response(text)
 
         self.assertIn("<BB>powershell</BB>", out)
         self.assertIn("<Y>-File</Y>", out)
