@@ -445,6 +445,11 @@ def freedom_auto_confirm(agent: Any, command: Dict[str, Any]) -> bool:
         cmd = params.get("command") or ""
         s = (cmd or "").strip()
         agent._manual_confirm_required_shell_once = False
+        # If user selected "always" before, skip AI reversibility review entirely.
+        load_confirm_allowlist(agent)
+        if shell_command_in_allowlist(agent, s):
+            _print_with_auto_hide_tracking(agent, "🦅 自由模式：命中免确认列表，跳过 AI 审核并直接执行。")
+            return True
 
         if re.search(
             r"(?i)(?:^|[\s;&|])(?:py(?:thon)?(?:\d(?:\.\d)?)?|pythonw)\s+-\s*c\s+", s
@@ -455,7 +460,6 @@ def freedom_auto_confirm(agent: Any, command: Dict[str, Any]) -> bool:
 
         sp = agent._parse_shell_invoked_script_path(s)
         if sp is not None:
-            load_confirm_allowlist(agent)
             sk = normalize_path_allowlist_key(sp)
             expected = agent._allowlist_shell_paths.get(sk)
             if expected:
