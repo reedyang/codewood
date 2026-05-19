@@ -2341,11 +2341,16 @@ class SmartShellAgent:
             f"{_ansi_white(str(self.active_chat_name))}"
         )
         prompt = f"{str(self.work_directory)}>"
+        startup_prompt_pending = bool(getattr(self, "_startup_prompt_pending", True))
+        if startup_prompt_pending:
+            self._startup_prompt_pending = False
+        suppress_separator_on_startup = startup_prompt_pending
+
         suppress_separator_once = bool(getattr(self, "_suppress_next_separator", False))
         if suppress_separator_once:
             self._suppress_next_separator = False
 
-        show_separator = not suppress_separator_once
+        show_separator = (not suppress_separator_once) and (not suppress_separator_on_startup)
         if show_separator and not bool(
             getattr(self.input_handler, "renders_prompt_separator_inline", False)
         ):
