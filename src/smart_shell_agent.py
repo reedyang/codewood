@@ -679,12 +679,15 @@ class SmartShellAgent:
 
     def _register_shell_output_for_auto_hide(self, stdout_text: str, stderr_text: str = "") -> None:
         total = self._estimate_rendered_line_count(stdout_text) + self._estimate_rendered_line_count(stderr_text)
-        self._last_shell_output_visible_lines = max(0, int(total))
+        prev = int(getattr(self, "_last_shell_output_visible_lines", 0) or 0)
+        self._last_shell_output_visible_lines = max(0, prev + int(total))
 
-    def _hide_previous_shell_output_if_needed(self) -> None:
+    def _hide_previous_shell_output_if_needed(self, safety_buffer_lines: int = 0) -> None:
         lines = int(getattr(self, "_last_shell_output_visible_lines", 0) or 0)
         if lines <= 0:
             return
+        extra = max(0, int(safety_buffer_lines or 0))
+        lines = lines + extra
         self._last_shell_output_visible_lines = 0
         if not hasattr(sys.stdout, "isatty") or not sys.stdout.isatty():
             return

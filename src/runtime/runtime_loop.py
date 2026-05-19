@@ -683,7 +683,7 @@ def run_agent_loop(agent: Any):
                     user_message_recorded = True
                 if ai_response:
                     try:
-                        self._hide_previous_shell_output_if_needed()
+                        self._hide_previous_shell_output_if_needed(safety_buffer_lines=2)
                     except Exception:
                         pass
                     display_response = format_assistant_display_response(ai_response)
