@@ -34,11 +34,15 @@ from .core.config.skills_loader import (
 )
 from .core.config.config_env import resolve_string_values_in_data
 from .core.config.model_providers import parse_configured_models
-from .core import assistant_output_highlighter as _assistant_output_highlighter
 from .core.assistant_output_highlighter import (
     format_assistant_display_response,
     normalize_display_text,
     strip_tool_json_blocks_for_display,
+)
+from .core.status_bar import (
+    build_status_bar_render_data,
+    clamp_status_token_usage_percent,
+    refresh_status_context_usage_snapshot as refresh_status_context_usage_snapshot_fn,
 )
 from .integrations.mcp import McpManager, McpError
 from .core.change_preview_formatter import ChangePreviewFormatter
@@ -173,10 +177,6 @@ DEFAULT_WORKSPACE_ID = "default"
 DEFAULT_WORKSPACE_NAME = "Default"
 WORKSPACE_STATE_FILE = "workspaces.json"
 CHAT_STATE_FILE = "chats.json"
-STATUS_MODEL_COLOR_HEX = "#d7ba7d"
-STATUS_WORKSPACE_COLOR_HEX = "#98c379"
-STATUS_MODEL_COLOR_RGB = (0xD7, 0xBA, 0x7D)
-STATUS_WORKSPACE_COLOR_RGB = (0x98, 0xC3, 0x79)
 
 
 class SmartShellAgent:
@@ -2098,11 +2098,6 @@ class SmartShellAgent:
         return normalize_display_text(text)
 
     def _format_assistant_display_response(self, text: str) -> str:
-        _assistant_output_highlighter._ansi_bright_blue = _ansi_bright_blue
-        _assistant_output_highlighter._ansi_cyan = _ansi_cyan
-        _assistant_output_highlighter._ansi_gray = _ansi_gray
-        _assistant_output_highlighter._ansi_green = _ansi_green
-        _assistant_output_highlighter._ansi_yellow = _ansi_yellow
         return format_assistant_display_response(text)
 
     def _tool_call_summary(self, tool_name: str, args: Dict[str, Any]) -> str:
@@ -2419,46 +2414,22 @@ class SmartShellAgent:
         return False
 
     def _status_token_usage_percent(self) -> int:
-        try:
-            v = int(getattr(self, "_last_context_usage_percent", 0) or 0)
-        except Exception:
-            v = 0
-        if v < 0:
-            return 0
-        if v > 999:
-            return 999
-        return v
+        return clamp_status_token_usage_percent(getattr(self, "_last_context_usage_percent", 0))
 
     def _refresh_status_context_usage_snapshot(self, user_input_hint: str = "", context_hint: str = "") -> None:
-        try:
-            svc = getattr(self, "session_memory_service", None)
-            if svc is not None and hasattr(svc, "refresh_context_usage_snapshot"):
-                svc.refresh_context_usage_snapshot(
-                    user_input_hint=str(user_input_hint or ""),
-                    context_hint=str(context_hint or ""),
-                )
-        except Exception:
-            pass
+        refresh_status_context_usage_snapshot_fn(
+            getattr(self, "session_memory_service", None),
+            user_input_hint=user_input_hint,
+            context_hint=context_hint,
+        )
 
     def _status_bar_render_data(self) -> Tuple[List[Tuple[str, str]], str]:
-        usage_pct = self._status_token_usage_percent()
-        usage_text = f"({usage_pct}%)"
-        status_bar_fragments: List[Tuple[str, str]] = [
-            ("", "  "),
-            (f"fg:{STATUS_MODEL_COLOR_HEX}", str(self.model_name)),
-            ("", " "),
-            (f"fg:{STATUS_WORKSPACE_COLOR_HEX}", str(self.workspace_name)),
-            ("", " "),
-            ("fg:ansiwhite", str(self.active_chat_name)),
-            ("fg:ansibrightblack", usage_text),
-        ]
-        status_bar_plain = (
-            f"  {_ansi_rgb(str(self.model_name), *STATUS_MODEL_COLOR_RGB)} "
-            f"{_ansi_rgb(str(self.workspace_name), *STATUS_WORKSPACE_COLOR_RGB)} "
-            f"{_ansi_white(str(self.active_chat_name))}"
-            f"{_ansi_gray(usage_text)}"
+        return build_status_bar_render_data(
+            str(getattr(self, "model_name", "") or ""),
+            str(getattr(self, "workspace_name", "") or ""),
+            str(getattr(self, "active_chat_name", "") or ""),
+            getattr(self, "_last_context_usage_percent", 0),
         )
-        return status_bar_fragments, status_bar_plain
 
     def _get_user_input_with_history(self) -> str:
         """
