@@ -1762,11 +1762,14 @@ class SmartShellAgent:
         for k in ("cancelled", "cancelled_by_user", "user_cancelled"):
             if bool(result.get(k, False)):
                 return True
+        success_flag = result.get("success")
+        if isinstance(success_flag, bool) and success_flag:
+            # Successful tool calls may legitimately contain words like "用户取消" in
+            # file content; do not treat normal output as cancellation.
+            return False
         text_parts = [
             str(result.get("error") or ""),
             str(result.get("message") or ""),
-            str(result.get("output") or ""),
-            str(result.get("stderr") or ""),
         ]
         text = "\n".join(text_parts).lower()
         needles = [
@@ -2079,6 +2082,13 @@ class SmartShellAgent:
             old_start_line=old_start_line,
             new_start_line=new_start_line,
         )
+
+    def _format_side_by_side_change_preview_segments(
+        self,
+        segments: List[Dict[str, Any]],
+    ) -> List[str]:
+        """Build side-by-side preview for multiple hunks with omitted-line markers."""
+        return ChangePreviewFormatter.format_side_by_side_segments(segments=segments)
 
     def execute_tool_call(self, tool_name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
         dispatcher = getattr(self, "tool_dispatcher", None)

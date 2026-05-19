@@ -91,6 +91,7 @@ def action_apply_unified_patch(agent: Any, file_path: str, patch: str, confirmed
         result_lines: List[str] = []
         src_idx = 0
         preview_lines: List[str] = []
+        preview_segments: List[Dict[str, Any]] = []
         for hunk in hunks:
             old_start = hunk["old_start"]
             target_idx = src_idx if old_start is None else int(old_start) - 1
@@ -153,14 +154,16 @@ def action_apply_unified_patch(agent: Any, file_path: str, patch: str, confirmed
                 preview_new = context_before + hunk_new_fragment + context_after
                 preview_old_start = max(1, target_idx - len(context_before) + 1)
                 preview_new_start = max(1, new_target_idx - len(context_before) + 1)
-                preview_lines.extend(
-                    agent._format_side_by_side_change_preview(
-                        preview_old,
-                        preview_new,
-                        old_start_line=preview_old_start,
-                        new_start_line=preview_new_start,
-                    )
+                preview_segments.append(
+                    {
+                        "old_lines": preview_old,
+                        "new_lines": preview_new,
+                        "old_start_line": preview_old_start,
+                        "new_start_line": preview_new_start,
+                    }
                 )
+        if preview_segments:
+            preview_lines = agent._format_side_by_side_change_preview_segments(preview_segments)
         result_lines.extend(old_lines[src_idx:])
         new_text = newline.join(result_lines)
         if had_trailing_newline and len(result_lines) > 0:

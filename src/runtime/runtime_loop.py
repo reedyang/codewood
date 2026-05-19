@@ -652,8 +652,6 @@ def run_agent_loop(agent: Any):
                     }
                 )
                 first_round_evidence = self._render_evidence_block_from_project_context_result(ev_res)
-                if first_round_evidence:
-                    print("🧭 首轮 Evidence Block 已注入。")
             next_input = (
                 f"{forced_mcp_prefix}{forced_skill_prefix}{original_user_task}"
                 f"{first_round_contract}"
