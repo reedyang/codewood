@@ -112,9 +112,11 @@ def action_apply_unified_patch(agent: Any, file_path: str, patch: str, confirmed
                         return {"success": False, "error": "patch 锚点未命中，无法定位 hunk"}
                     target_idx = found_idx
             result_lines.extend(old_lines[src_idx:target_idx])
+            new_target_idx = len(result_lines)
             cur = target_idx
             hunk_old_fragment: List[str] = []
             hunk_new_fragment: List[str] = []
+            has_change = False
             for hl in hunk["lines"]:
                 if hl.startswith("*** "):
                     continue
@@ -135,20 +137,28 @@ def action_apply_unified_patch(agent: Any, file_path: str, patch: str, confirmed
                     if cur >= len(old_lines) or old_lines[cur] != text:
                         return {"success": False, "error": f"patch 删除行不匹配（行 {cur + 1}）"}
                     hunk_old_fragment.append(old_lines[cur])
+                    has_change = True
                     cur += 1
                 elif prefix == "+":
                     result_lines.append(text)
                     hunk_new_fragment.append(text)
+                    has_change = True
                 else:
                     return {"success": False, "error": f"不支持的 hunk 行前缀: {prefix}"}
             src_idx = cur
-            if hunk_old_fragment or hunk_new_fragment:
+            if has_change:
+                context_before = old_lines[max(0, target_idx - 2):target_idx]
+                context_after = old_lines[cur:min(len(old_lines), cur + 2)]
+                preview_old = context_before + hunk_old_fragment + context_after
+                preview_new = context_before + hunk_new_fragment + context_after
+                preview_old_start = max(1, target_idx - len(context_before) + 1)
+                preview_new_start = max(1, new_target_idx - len(context_before) + 1)
                 preview_lines.extend(
                     agent._format_side_by_side_change_preview(
-                        hunk_old_fragment,
-                        hunk_new_fragment,
-                        old_start_line=max(1, target_idx + 1),
-                        new_start_line=max(1, target_idx + 1),
+                        preview_old,
+                        preview_new,
+                        old_start_line=preview_old_start,
+                        new_start_line=preview_new_start,
                     )
                 )
         result_lines.extend(old_lines[src_idx:])
