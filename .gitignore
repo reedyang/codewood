@@ -4,3 +4,4 @@
 .cursor
 # Baidu skill local SERP cache (see skills/baidu/SKILL.md)
 skills/**/.cache/
+AGENTS.override.md

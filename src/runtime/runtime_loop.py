@@ -6,6 +6,7 @@ import re
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Set
 
+from ..config.app_info import get_app_display_version, get_app_name
 from ..core.logging.app_logging import get_log_file_path
 from ..controllers.builtin_command_router import dispatch_builtin_command
 from ..core.console_utils import _ansi_blue, _ansi_gray, _ansi_white
@@ -35,9 +36,10 @@ def _print_startup_overview(agent: Any) -> None:
     model_name = str(getattr(agent, "model_name", "") or "")
     workspace_name = str(getattr(agent, "workspace_name", "") or "")
     workspace_dir = str(getattr(agent, "workspace_root", "") or "")
-    version = "v0.1"
+    app_name = get_app_name()
+    version = get_app_display_version()
 
-    line1 = f">_ Smart Shell ({version})"
+    line1 = f">_ {app_name} ({version})"
     line2 = f"model:     {model_name}  /model to change"
     line3 = f"workspace: {workspace_name}"
     line4 = f"directory: {workspace_dir}"
@@ -56,7 +58,7 @@ def _print_startup_overview(agent: Any) -> None:
     print(
         _ansi_gray("│ ")
         + _ansi_gray(">_ ")
-        + _ansi_white(f"Smart Shell ({version})")
+        + _ansi_white(f"{app_name} ({version})")
         + _ansi_gray(" " * max(0, width - 1 - len(line1)))
         + _ansi_gray("│")
     )

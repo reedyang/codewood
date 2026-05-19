@@ -11,6 +11,7 @@ Smart Shell 包
 import importlib
 import sys
 
+from .config.app_info import get_app_version
 from .smart_shell_agent import SmartShellAgent
 
 _LEGACY_MODULE_ALIASES = {
@@ -35,6 +36,6 @@ for _legacy_name, _new_module in _LEGACY_MODULE_ALIASES.items():
     if _legacy_qualified not in sys.modules:
         sys.modules[_legacy_qualified] = importlib.import_module(_new_module, __name__)
 
-__version__ = "1.0.0"
+__version__ = get_app_version()
 __author__ = "AI Assistant"
 __all__ = ["SmartShellAgent"] 
