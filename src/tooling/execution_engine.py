@@ -11,6 +11,16 @@ from .handlers.mcp_handlers import dispatch_mcp_tool
 from .handlers.memory_handlers import dispatch_memory_tool
 
 
+def _print_with_auto_hide_tracking(agent: Any, text: str) -> None:
+    msg = str(text or "")
+    print(msg)
+    try:
+        if hasattr(agent, "_register_shell_output_for_auto_hide"):
+            agent._register_shell_output_for_auto_hide(msg, "")
+    except Exception:
+        pass
+
+
 def execute_tool_call_legacy(agent: Any, tool_name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
     """执行工具命令，支持批量命令和 cls 命令。"""
     self = agent
@@ -157,7 +167,7 @@ def execute_tool_call_legacy(agent: Any, tool_name: str, arguments: Dict[str, An
                                 "检测到重复 shell 命令，已跳过本次执行。"
                                 "如确需重复运行，请在 params 中设置 force=true。"
                             )
-                            print(f"ℹ️ {msg}")
+                            _print_with_auto_hide_tracking(self, f"ℹ️ {msg}")
                             return {
                                 "success": True,
                                 "message": msg,
@@ -187,9 +197,9 @@ def execute_tool_call_legacy(agent: Any, tool_name: str, arguments: Dict[str, An
                 input_data=None,
             )
             if result["success"]:
-                print(f"\n💻 系统命令执行成功: {result['message']}")
+                _print_with_auto_hide_tracking(self, f"\n💻 系统命令执行成功: {result['message']}")
             else:
-                print(f"❌ 系统命令执行失败: {result.get('error', '未知错误')}")
+                _print_with_auto_hide_tracking(self, f"❌ 系统命令执行失败: {result.get('error', '未知错误')}")
             return result
         else:
             print("❌ shell命令缺少command参数")

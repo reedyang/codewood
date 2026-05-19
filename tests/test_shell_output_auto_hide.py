@@ -41,6 +41,12 @@ class ShellOutputAutoHideTests(unittest.TestCase):
             self.agent._register_shell_output_for_auto_hide("line1\nline2\n", "err1\n")
         self.assertEqual(self.agent._last_shell_output_visible_lines, 3)
 
+    def test_register_shell_output_for_auto_hide_is_additive(self):
+        with patch.object(self.agent, "_terminal_columns_for_line_estimate", return_value=80):
+            self.agent._register_shell_output_for_auto_hide("line1\n", "")
+            self.agent._register_shell_output_for_auto_hide("line2\nline3\n", "")
+        self.assertEqual(self.agent._last_shell_output_visible_lines, 3)
+
     def test_hide_previous_shell_output_clears_exact_count(self):
         fake_stdout = _FakeStdout()
         self.agent._last_shell_output_visible_lines = 2
@@ -48,6 +54,14 @@ class ShellOutputAutoHideTests(unittest.TestCase):
             self.agent._hide_previous_shell_output_if_needed()
         self.assertEqual(self.agent._last_shell_output_visible_lines, 0)
         self.assertEqual(fake_stdout.writes.count("\x1b[1A\r\x1b[2K"), 2)
+
+    def test_hide_previous_shell_output_honors_safety_buffer(self):
+        fake_stdout = _FakeStdout()
+        self.agent._last_shell_output_visible_lines = 2
+        with patch("src.smart_shell_agent.sys.stdout", fake_stdout):
+            self.agent._hide_previous_shell_output_if_needed(safety_buffer_lines=2)
+        self.assertEqual(self.agent._last_shell_output_visible_lines, 0)
+        self.assertEqual(fake_stdout.writes.count("\x1b[1A\r\x1b[2K"), 4)
 
 
 if __name__ == "__main__":
