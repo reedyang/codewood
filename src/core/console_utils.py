@@ -130,6 +130,12 @@ def _ansi_blue(text: str) -> str:
         _enable_windows_console_vt()
     return f"\033[34m{text}\033[0m"
 
+def _ansi_cyan(text: str) -> str:
+    if not _stdout_color_enabled():
+        return text
+    if sys.platform == "win32":
+        _enable_windows_console_vt()
+    return f"\033[36m{text}\033[0m"
 
 def _ansi_green(text: str) -> str:
     if not _stdout_color_enabled():
@@ -145,3 +151,22 @@ def _ansi_white(text: str) -> str:
     if sys.platform == "win32":
         _enable_windows_console_vt()
     return f"\033[37m{text}\033[0m"
+
+
+def _ansi_bold(text: str) -> str:
+    if not _stdout_color_enabled():
+        return text
+    if sys.platform == "win32":
+        _enable_windows_console_vt()
+    return f"\033[1m{text}\033[0m"
+
+
+def _ansi_rgb(text: str, r: int, g: int, b: int) -> str:
+    if not _stdout_color_enabled():
+        return text
+    if sys.platform == "win32":
+        _enable_windows_console_vt()
+    rr = max(0, min(255, int(r)))
+    gg = max(0, min(255, int(g)))
+    bb = max(0, min(255, int(b)))
+    return f"\033[38;2;{rr};{gg};{bb}m{text}\033[0m"

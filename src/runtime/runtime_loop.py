@@ -7,9 +7,13 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional, Set
 
 from ..config.app_info import get_app_display_version, get_app_name
+from ..config.startup_tips import (
+    format_tip_with_highlights,
+    get_random_startup_tip_entry,
+)
 from ..core.logging.app_logging import get_log_file_path
 from ..controllers.builtin_command_router import dispatch_builtin_command
-from ..core.console_utils import _ansi_blue, _ansi_gray, _ansi_white
+from ..core.console_utils import _ansi_blue, _ansi_bold, _ansi_gray, _ansi_white, _ansi_cyan
 
 
 def _sanitize_prompt_pollution(text: str, work_directory: Any) -> str:
@@ -66,13 +70,12 @@ def _print_startup_overview(agent: Any) -> None:
     print(_ansi_gray(mid2))
     # model line
     prefix_model = "model:     "
-    suffix_model = "  /model to change"
     print(
         _ansi_gray("│ ")
         + _ansi_gray(prefix_model)
         + _ansi_white(model_name)
         + _ansi_gray("  ")
-        + _ansi_blue("/model")
+        + _ansi_cyan("/model")
         + _ansi_gray(" to change")
         + _ansi_gray(" " * max(0, width - 1 - len(line2)))
         + _ansi_gray("│")
@@ -97,7 +100,16 @@ def _print_startup_overview(agent: Any) -> None:
     )
     print(_ansi_gray(bottom))
     print("")
-    print(_ansi_white("Tip: Use /workspace to manage workspaces."))
+    tip_entry = get_random_startup_tip_entry()
+    tip_text = str(tip_entry.get("text") or "")
+    highlights_raw = tip_entry.get("highlights", [])
+    highlights = highlights_raw if isinstance(highlights_raw, list) else []
+    rendered_tip = format_tip_with_highlights(
+        text=tip_text,
+        highlights=[str(h or "") for h in highlights],
+        highlight_formatter=_ansi_cyan,
+    )
+    print(_ansi_white("  ") + _ansi_bold("Tip: ") + rendered_tip)
     print("")
 
 
