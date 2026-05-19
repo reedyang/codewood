@@ -66,17 +66,19 @@ class ResolveStringValuesInDataTests(unittest.TestCase):
         try:
             raw = {
                 "execution_policy": "${EXEC_POLICY}",
-                "model": {
-                    "provider": "${MODEL_PROVIDER}",
-                    "params": {
-                        "model": "${MODEL_NAME}",
-                    },
-                },
+                "model_providers": [
+                    {
+                        "provider": "${MODEL_PROVIDER}",
+                        "params": {
+                            "models": ["${MODEL_NAME}"],
+                        },
+                    }
+                ],
             }
             got = resolve_string_values_in_data(raw)
             self.assertEqual(got["execution_policy"], "moderate")
-            self.assertEqual(got["model"]["provider"], "openwebui")
-            self.assertEqual(got["model"]["params"]["model"], "gpt-4o-mini")
+            self.assertEqual(got["model_providers"][0]["provider"], "openwebui")
+            self.assertEqual(got["model_providers"][0]["params"]["models"][0], "gpt-4o-mini")
         finally:
             if old_provider is None:
                 os.environ.pop("MODEL_PROVIDER", None)

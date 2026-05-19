@@ -13,7 +13,7 @@
 - 📝 **历史记录**: 支持命令历史记录和导航
 - 📚 **知识库**: 自动索引文档，提供智能检索和上下文增强
 - 🔄 **跨平台**: 支持Windows、Linux、macOS
-- 🎯 **统一模型配置**: 使用单一 `model` 配置，同时支持文本与多模态调用
+- 🎯 **统一模型配置**: 使用 `model_providers` 管理多模型提供方，默认选择第一个 provider 的第一个模型
 - 📎 **Agent Skills**: 在 `config.json` 所在目录的 `skills/` 下按 [Anthropic Agent Skills](https://github.com/anthropics/skills/blob/main/README.md) 放置 `SKILL.md`，启动时加载并注入系统提示（架构原则见 **[docs/skill-architecture.md](docs/skill-architecture.md)**，便于在其他 AI 编程工具中复用）
 
 ## 🚀 快速开始
@@ -156,27 +156,40 @@ smart-shell/
 ```
 
 ## 🔧 配置
-- 必须配置 `model`
+- 必须配置 `model_providers`
 
 创建 `.smartshell/config.json` 配置文件到用户目录：
 
 ```json
 {
-  "model": {
-    "provider": "openai",
-    "params": {
-      "api_key": "your_api_key",
-      "base_url": "https://your-api-url.com/api/v1",
-      "model": "gpt-4o-mini"
+  "model_providers": [
+    {
+      "provider": "openwebui",
+      "params": {
+        "api_key": "${HAPPYCODING_API_KEY}",
+        "base_url": "https://happycoding.corp.zoom.com/api/v1",
+        "models": ["gpt-oss-120b"]
+      }
+    },
+    {
+      "provider": "ollama",
+      "params": {
+        "models": ["qwen2.5vl:3b"]
+      }
     }
-  }
+  ],
+  "execution_policy": "moderate",
+  "project_context_first_round_evidence": true,
+  "max_tool_rounds": 30,
+  "memory_enabled": false
 }
 ```
 
 **配置说明**:
-- `model`: 统一模型配置，用于普通任务与图片分析（需模型本身支持多模态）
-- `provider`: 支持 `ollama`、`openai`、`openwebui`
-- `params`: 包含API密钥、基础URL和模型名称
+- `model_providers`: 多模型提供方列表；启动时默认使用第一个 provider
+- `model_providers[i].provider`: 支持 `ollama`、`openai`、`openwebui`
+- `model_providers[i].params.models`: 模型列表；默认使用第一个模型
+- `model_providers[i].params`: 该 provider 的参数（例如 API 密钥、基础 URL 等）
 - `config.json` 中所有字符串配置值都支持环境变量占位符：当值写成 `${ENV_NAME}` 时会在运行时读取对应环境变量
 - 占位符读取后会自动做类型转换：支持 `bool`（`true/false/yes/no/on/off`）、`int`/`float`、`null`、以及 JSON 的 `list/dict`（例如 `"[1,2]"`、`"{\"a\":1}"`）
 
