@@ -90,9 +90,9 @@
 ## 执行策略
 
 - 能用内置工具完成时，优先内置工具；再考虑 shell；最后才考虑临时脚本。
-- 临时任务脚本使用 `text_file` 创建并配合 `shell` 执行（建议写到 `workspace/temp/`）；只有用户明确要长期保留文件时才写到长期路径。
-- 修改**现有文本文件**时，必须优先使用 `edit_text` 或 `apply_patch`，禁止通过 `text_file` 或  `shell` 直接重写文件内容。
-- 对**同一个文本文件一次性修改多段代码/多处片段**时，必须先生成临时 unified patch 文件（例如放在 `workspace/temp/`），再用 `apply_patch` 工具应用，禁止拆成多次零散改写。
+- 可通过操作系统命令完成的文件操作（读取、检索、创建、编辑、替换）必须使用 `shell`。
+- Windows 环境下，以上文件操作必须且仅能使用 PowerShell 命令执行：`shell.command` 必须以 `powershell -ExecutionPolicy Bypass -Command "<command>"` 开头；禁止使用 `type`、`findstr`、`copy`、`move`、`del`、`cmd /c` 等非该前缀方式处理这些文件操作。
+- 非 Windows 环境下，以上文件操作统一使用 POSIX shell 语法。
 - 处理图片相关任务（如 `read_image`）时，先基于当前模型配置判断是否支持多模态输入；若不支持，必须直接告知用户“当前模型不支持图片任务，请切换多模态模型”，并结束本轮任务（调用 `done`）。
 - 涉及单文件媒体处理时优先使用 `ffmpeg` 工具，不要绕过它直接拼接 ffmpeg shell 命令。
 - shell 命令不编造参数；仅在确有必要时重复执行同一命令。

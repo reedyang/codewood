@@ -3,131 +3,6 @@
   {
     "type": "function",
     "function": {
-      "name": "list",
-      "description": "列出目录条目，支持基础过滤与智能过滤。",
-      "parameters": {
-        "type": "object",
-        "properties": {
-          "path": {
-            "type": "string",
-            "description": "路径或名称；若非绝对路径则相对当前工作目录"
-          },
-          "filter": {
-            "type": "string",
-            "description": "简单名称/扩展名过滤"
-          },
-          "smart_filter": {
-            "type": "string",
-            "description": "用于大小/时间/复合条件的自然语言过滤"
-          }
-        }
-      }
-    }
-  },
-  {
-    "type": "function",
-    "function": {
-      "name": "cd",
-      "description": "校验后切换当前工作目录。",
-      "parameters": {
-        "type": "object",
-        "properties": {
-          "path": {
-            "type": "string"
-          }
-        }
-      }
-    }
-  },
-  {
-    "type": "function",
-    "function": {
-      "name": "rename",
-      "description": "重命名当前工作区中的文件或目录。",
-      "parameters": {
-        "type": "object",
-        "properties": {
-          "old_name": {
-            "type": "string"
-          },
-          "new_name": {
-            "type": "string"
-          }
-        },
-        "required": ["old_name", "new_name"]
-      }
-    }
-  },
-  {
-    "type": "function",
-    "function": {
-      "name": "move",
-      "description": "移动文件或文件夹；支持通配符源路径模式。",
-      "parameters": {
-        "type": "object",
-        "properties": {
-          "source": {
-            "type": "string"
-          },
-          "destination": {
-            "type": "string"
-          }
-        },
-        "required": ["source", "destination"]
-      }
-    }
-  },
-  {
-    "type": "function",
-    "function": {
-      "name": "delete",
-      "description": "删除文件/文件夹（支持通配符模式）。",
-      "parameters": {
-        "type": "object",
-        "properties": {
-          "path": {
-            "type": "string"
-          }
-        },
-        "required": ["path"]
-      }
-    }
-  },
-  {
-    "type": "function",
-    "function": {
-      "name": "mkdir",
-      "description": "创建目录。",
-      "parameters": {
-        "type": "object",
-        "properties": {
-          "path": {
-            "type": "string"
-          }
-        },
-        "required": ["path"]
-      }
-    }
-  },
-  {
-    "type": "function",
-    "function": {
-      "name": "info",
-      "description": "获取文件或目录的详细元数据。",
-      "parameters": {
-        "type": "object",
-        "properties": {
-          "path": {
-            "type": "string"
-          }
-        },
-        "required": ["path"]
-      }
-    }
-  },
-  {
-    "type": "function",
-    "function": {
       "name": "ffmpeg",
       "description": "使用内置 ffmpeg 封装处理单个媒体文件。",
       "parameters": {
@@ -144,22 +19,6 @@
           }
         },
         "required": ["source", "target"]
-      }
-    }
-  },
-  {
-    "type": "function",
-    "function": {
-      "name": "summarize",
-      "description": "将文件内容总结为简洁文本。",
-      "parameters": {
-        "type": "object",
-        "properties": {
-          "path": {
-            "type": "string"
-          }
-        },
-        "required": ["path"]
       }
     }
   },
@@ -209,86 +68,6 @@
           }
         },
         "required": ["command"]
-      }
-    }
-  },
-  {
-    "type": "function",
-    "function": {
-      "name": "text_file",
-      "description": "在目标路径创建可长期保留的文本/代码文件。",
-      "parameters": {
-        "type": "object",
-        "properties": {
-          "filename": {
-            "type": "string"
-          },
-          "content": {
-            "type": "string"
-          },
-          "overwrite": {
-            "type": "boolean"
-          }
-        },
-        "required": ["filename", "content"]
-      }
-    }
-  },
-  {
-    "type": "function",
-    "function": {
-      "name": "read",
-      "description": "读取文本文件内容，返回内容包含每行行号；支持按起始行与行数读取片段。",
-      "parameters": {
-        "type": "object",
-        "properties": {
-          "path": {
-            "type": "string"
-          },
-          "max_lines": {
-            "type": "integer"
-          },
-          "start_line": {
-            "type": "integer",
-            "description": "可选。起始行号（从 1 开始）。"
-          },
-          "line_count": {
-            "type": "integer",
-            "description": "可选。读取的行数。若提供则优先于 max_lines。"
-          }
-        }
-      }
-    }
-  },
-  {
-    "type": "function",
-    "function": {
-      "name": "edit_text",
-      "description": "按起始行和跨度对现有文本文件执行插入、删除或替换。",
-      "parameters": {
-        "type": "object",
-        "properties": {
-          "path": {
-            "type": "string"
-          },
-          "start_line": {
-            "type": "integer",
-            "description": "起始行号（从 1 开始）。"
-          },
-          "line_span": {
-            "type": "integer",
-            "description": "影响行数。delete/replace 默认 1；insert 可为 0。"
-          },
-          "operation": {
-            "type": "string",
-            "enum": ["insert", "delete", "replace"]
-          },
-          "content": {
-            "type": "string",
-            "description": "insert/replace 时要写入的文本内容（可多行）。"
-          }
-        },
-        "required": ["path", "start_line", "operation"]
       }
     }
   },
@@ -350,51 +129,6 @@
           }
         },
         "required": ["file1", "file2"]
-      }
-    }
-  },
-  {
-    "type": "function",
-    "function": {
-      "name": "grep",
-      "description": "在指定目录（递归）或指定文件列表中，用 Python re 正则检索文本内容；匹配写入 output_path 指向的 UTF-8 文件。每行格式：行号<TAB>绝对路径<TAB>匹配行（制表符分隔）。默认仅扫描常见文本扩展名；可传 extensions 覆盖。跳过 .git、node_modules 等目录。大目录下使用多线程读文件。",
-      "parameters": {
-        "type": "object",
-        "properties": {
-          "pattern": {
-            "type": "string",
-            "description": "正则表达式（Python re 语义）；可用 ignore_case / multiline"
-          },
-          "output_path": {
-            "type": "string",
-            "description": "结果输出文件的绝对或相对路径（须位于工作区、AI 工作区或系统临时目录）"
-          },
-          "root": {
-            "type": "string",
-            "description": "要递归检索的根目录；与 files 二选一"
-          },
-          "files": {
-            "type": "array",
-            "items": { "type": "string" },
-            "description": "显式要检索的文件路径列表；与 root 二选一"
-          },
-          "extensions": {
-            "type": "array",
-            "items": { "type": "string" },
-            "description": "限定扩展名，如 [\".py\",\".md\"]；不传则使用内置常见文本类型集合"
-          },
-          "ignore_case": { "type": "boolean" },
-          "multiline": { "type": "boolean" },
-          "max_matches": { "type": "integer" },
-          "max_file_bytes": { "type": "integer", "description": "单文件超过此字节则跳过，默认约 20MB" },
-          "exclude_dir_names": {
-            "type": "array",
-            "items": { "type": "string" },
-            "description": "额外要跳过的目录名（与内置跳过表合并）"
-          },
-          "max_workers": { "type": "integer", "description": "线程数上限，默认按 CPU 自动" }
-        },
-        "required": ["pattern", "output_path"]
       }
     }
   },
@@ -902,7 +636,7 @@
     "type": "function",
     "function": {
       "name": "memory_add",
-      "description": "写入一条经验记忆（非知识库文档）。仅用于事实性的简短条目（约定、偏好结论、纠正结果）。若用户强调「永远/长期/一直记住」且内容是稳定默认（称呼、助手显示名、长期交互规则），应改用 user_preferences_patch，勿仅用本工具代替。禁止保存代码片段、脚本/命令原始输出、日志原文或总结后的大段文本；代码/输出信息应通过 read/grep/summarize/shell 实时读取。禁止写入密码、token、私钥。若你认为用户观点可能有误，可在 system_note 中写明你的独立判断。",
+      "description": "写入一条经验记忆（非知识库文档）。仅用于事实性的简短条目（约定、偏好结论、纠正结果）。若用户强调「永远/长期/一直记住」且内容是稳定默认（称呼、助手显示名、长期交互规则），应改用 user_preferences_patch，勿仅用本工具代替。禁止保存代码片段、脚本/命令原始输出、日志原文或总结后的大段文本；代码/输出信息应通过 shell（必要时配合 summarize）实时读取。禁止写入密码、token、私钥。若你认为用户观点可能有误，可在 system_note 中写明你的独立判断。",
       "parameters": {
         "type": "object",
         "properties": {

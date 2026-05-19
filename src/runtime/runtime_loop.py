@@ -491,9 +491,29 @@ def run_agent_loop(agent: Any):
                     try:
                         if user_input_cmd.lower().startswith('cd '):
                             path = user_input_cmd[3:].strip()
-                            result = self.action_change_directory(path)
-                            if not result["success"]:
-                                print(f"❌ {result['error']}")
+                            try:
+                                if path == "..":
+                                    new_path = self.work_directory.parent
+                                elif path == ".":
+                                    new_path = self.work_directory
+                                else:
+                                    raw_path = Path(path)
+                                    if raw_path.is_absolute():
+                                        new_path = raw_path
+                                    else:
+                                        new_path = self.work_directory / raw_path
+                                new_path = new_path.resolve()
+                                if not new_path.exists():
+                                    print(f"❌ 目录 '{path}' 不存在")
+                                elif not new_path.is_dir():
+                                    print(f"❌ '{path}' 不是一个目录")
+                                else:
+                                    self.work_directory = new_path
+                                    if self.input_handler:
+                                        self.input_handler.update_work_directory(new_path)
+                                    self._save_current_workspace_position()
+                            except Exception as e:
+                                print(f"❌ 切换目录失败: {e}")
                         else:
                             try:
                                 process = subprocess.Popen(
@@ -676,12 +696,6 @@ def run_agent_loop(agent: Any):
                     tool_name, args = fallback_plan
                     if tool_name != "done":
                         print(f"{_ansi_gray('执行工具:')} {_ansi_bright_blue(self._tool_call_summary(tool_name, args))}")
-                    if tool_name == "text_file":
-                        content = ""
-                        if isinstance(args, dict):
-                            content = str(args.get("content") or "")
-                        print("📄 text_file 内容:")
-                        print(content)
                 else:
                     tool_name, args = "", {}
 
@@ -804,7 +818,7 @@ def run_agent_loop(agent: Any):
                 if self._is_repeated_tool_call_pattern(tool_name, args):
                     next_input = (
                         f"【用户原始需求】\n{original_user_task}\n\n"
-                        "检测到你在重复调用相同的 read/grep（参数几乎相同）。\n"
+                        "检测到你在重复调用相同的 shell（参数几乎相同）。\n"
                         "请停止重复检索，改为：\n"
                         "1) 基于现有结果先给出阶段性结论；\n"
                         "2) 若证据不足，仅补充一次更有针对性的工具调用；\n"
@@ -912,7 +926,7 @@ def run_agent_loop(agent: Any):
                         "详情报告输出完成后，请基于【用户原始需求】自行判断："
                         "若原始需求仅为查询/展示该指定 MCP 信息，则下一步必须直接输出 done；"
                         "若原始需求还包含其他未完成目标，则继续输出与原始需求相关的下一条工具调用。"
-                        "查询/展示类需求默认只需自然语言回复，禁止创建 text_file 或执行 shell 落盘；"
+                        "查询/展示类需求默认只需自然语言回复，禁止创建额外文件或执行 shell 落盘；"
                         "仅当用户明确要求“导出/保存/写入文件”时，才允许创建文件。"
                         "禁止为凑步骤而调用 mcp_status/mcp_status_refresh 或 shell 等无关工具。"
                     )
