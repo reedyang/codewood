@@ -97,10 +97,15 @@ def action_shell_command(
     if not decision.get("allowed", False):
         return {"success": False, "error": decision.get("error", "")}
     agent._load_confirm_allowlist()
-    if not confirmed and not agent._shell_command_in_allowlist(command):
+    force_manual_confirm = (not confirmed) and is_high_risk_skillhub_install_command(command)
+    in_allowlist = agent._shell_command_in_allowlist(command) if not force_manual_confirm else False
+    if not confirmed and not in_allowlist:
+        prompt_text = f"⚠️ 确认执行系统命令: {command} ?"
+        if force_manual_confirm:
+            prompt_text = f"⚠️ 高风险安装命令，必须确认后执行: {command} ?"
         ok = agent._prompt_confirm_yes_no_maybe_always(
-            f"⚠️ 确认执行系统命令: {command} ?",
-            offer_always=agent._shell_confirm_should_offer_always(command),
+            prompt_text,
+            offer_always=(False if force_manual_confirm else agent._shell_confirm_should_offer_always(command)),
             kind="shell",
             shell_command=command,
         )
@@ -171,9 +176,11 @@ def action_shell_command(
                             text_chunk = decoder.decode(chunk, final=False)
                             if text_chunk:
                                 bucket.append(text_chunk)
+                                _safe_console_write(text_chunk, target, append_newline=False)
                         tail = decoder.decode(b"", final=True)
                         if tail:
                             bucket.append(tail)
+                            _safe_console_write(tail, target, append_newline=False)
                     except Exception:
                         pass
                     finally:
@@ -583,6 +590,13 @@ def is_dependency_install_command(command: str) -> bool:
         r"^bun\s+add\b",
     ]
     return any(re.match(pat, s) for pat in install_patterns)
+
+
+def is_high_risk_skillhub_install_command(command: str) -> bool:
+    s = (command or "").strip().lower()
+    if not s:
+        return False
+    return ("skillhub_installer.py" in s) and (" install " in f" {s} ")
 
 
 def is_ai_workspace_script_command(agent: Any, command: str) -> bool:
