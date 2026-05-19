@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 
 from ..config.app_info import get_app_display_version, get_app_name
@@ -36,10 +38,27 @@ def _sanitize_prompt_pollution(text: str, work_directory: Any) -> str:
     return cleaned
 
 
+def _format_startup_directory(workspace_dir: Any) -> str:
+    raw = str(workspace_dir or "")
+    if not raw:
+        return raw
+    try:
+        current = Path(raw).expanduser().resolve(strict=False)
+        home = Path.home().resolve(strict=False)
+        relative = current.relative_to(home)
+    except Exception:
+        return raw
+
+    rel_text = str(relative)
+    if not rel_text or rel_text == ".":
+        return "~"
+    return f"~{os.sep}{rel_text}"
+
+
 def _print_startup_overview(agent: Any) -> None:
     model_name = str(getattr(agent, "model_name", "") or "")
     workspace_name = str(getattr(agent, "workspace_name", "") or "")
-    workspace_dir = str(getattr(agent, "workspace_root", "") or "")
+    workspace_dir = _format_startup_directory(getattr(agent, "workspace_root", "") or "")
     app_name = get_app_name()
     version = get_app_display_version()
 
