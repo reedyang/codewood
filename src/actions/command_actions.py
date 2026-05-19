@@ -385,8 +385,31 @@ def register_outputs_from_shell_command(agent: Any, command: str) -> None:
             agent._try_register_ai_output_literal(m.group(1))
 
 
+def _unwrap_windows_powershell_command(command: str) -> str:
+    s = str(command or "").strip()
+    if not s:
+        return s
+    m = re.match(
+        r"(?is)^powershell(?:\.exe)?\s+-ExecutionPolicy\s+Bypass\s+-Command\s+(.+)$",
+        s,
+    )
+    if not m:
+        return s
+    payload = m.group(1).strip()
+    if len(payload) >= 2 and payload[0] == payload[-1] and payload[0] in ("'", '"'):
+        quote = payload[0]
+        payload = payload[1:-1]
+        if quote == '"':
+            payload = payload.replace('`"', '"')
+        else:
+            payload = payload.replace("''", "'")
+    # Handle escaped quotes passed through wrapper construction.
+    payload = payload.replace('\\"', '"')
+    return payload.strip()
+
+
 def parse_shell_invoked_script_path(agent: Any, command: str) -> Optional[Path]:
-    s = command.strip()
+    s = _unwrap_windows_powershell_command(command.strip())
     if not s:
         return None
     if s.lower().startswith("call "):
