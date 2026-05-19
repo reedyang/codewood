@@ -39,14 +39,16 @@ def _print_startup_overview(agent: Any) -> None:
 
     line1 = f">_ Smart Shell ({version})"
     line2 = f"model:     {model_name}  /model to change"
-    line3 = f"workspace: {workspace_name} directory: {workspace_dir}"
+    line3 = f"workspace: {workspace_name}"
+    line4 = f"directory: {workspace_dir}"
 
-    width = max(len(line1), len(line2), len(line3)) + 2
+    width = max(len(line1), len(line2), len(line3), len(line4)) + 2
     top = "╭" + ("─" * width) + "╮"
     mid1 = "│ " + line1.ljust(width - 1) + "│"
     mid2 = "│" + (" " * width) + "│"
     mid3 = "│ " + line2.ljust(width - 1) + "│"
     mid4 = "│ " + line3.ljust(width - 1) + "│"
+    mid5 = "│ " + line4.ljust(width - 1) + "│"
     bottom = "╰" + ("─" * width) + "╯"
 
     print(_ansi_gray(top))
@@ -74,14 +76,20 @@ def _print_startup_overview(agent: Any) -> None:
     )
     # workspace line
     prefix_workspace = "workspace: "
-    middle_workspace = " directory: "
     print(
         _ansi_gray("│ ")
         + _ansi_gray(prefix_workspace)
         + _ansi_white(workspace_name)
-        + _ansi_gray(middle_workspace)
-        + _ansi_white(workspace_dir)
         + _ansi_gray(" " * max(0, width - 1 - len(line3)))
+        + _ansi_gray("│")
+    )
+    # directory line
+    prefix_directory = "directory: "
+    print(
+        _ansi_gray("│ ")
+        + _ansi_gray(prefix_directory)
+        + _ansi_white(workspace_dir)
+        + _ansi_gray(" " * max(0, width - 1 - len(line4)))
         + _ansi_gray("│")
     )
     print(_ansi_gray(bottom))
