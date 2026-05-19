@@ -37,7 +37,14 @@ from .core.change_preview_formatter import ChangePreviewFormatter
 from .ai.ai_provider_clients import AICallContext
 from .services.session_memory_service import SessionMemoryService
 from .policy.path_policy import PathPolicy
-from .core.console_utils import _ansi_blue, _ansi_gray, _ansi_red, _ansi_yellow
+from .core.console_utils import (
+    _ansi_blue,
+    _ansi_gray,
+    _ansi_red,
+    _ansi_yellow,
+    _ansi_green,
+    _ansi_white,
+)
 from .controllers.builtin_command_router import dispatch_builtin_command
 from .controllers.workspace_command_controller import (
     handle_workspace_builtin_command,
@@ -397,7 +404,7 @@ class SmartShellAgent:
 
     def _rewrite_previous_prompt_as_user(self, user_text: str) -> None:
         """
-        Best-effort: clear workspace+prompt lines, then rewrite as gray '你:' line.
+        Best-effort: clear previous prompt line, then rewrite as gray '你:' line.
         """
         txt = str(user_text or "")
         if not txt:
@@ -406,11 +413,9 @@ class SmartShellAgent:
             return
         try:
             # Current cursor is on line after Enter:
-            #   [Workspace: ...]
             #   <cwd>...
             #   <cursor here>
-            # Move up twice and clear both prompt lines.
-            sys.stdout.write("\x1b[1A\r\x1b[2K")
+            # Move up once and clear the prompt line.
             sys.stdout.write("\x1b[1A\r\x1b[2K")
             sys.stdout.write(f"{_ansi_gray('你:')} {txt}\n")
             sys.stdout.flush()
@@ -2251,9 +2256,21 @@ class SmartShellAgent:
             用户输入的字符串
         """
         import platform
-        
+
         workspace_prompt_line = f"[Workspace: {self.workspace_name}][Chat: {self.active_chat_name}]"
-        prompt = f"{workspace_prompt_line}\n{str(self.work_directory)}>"
+        status_bar_fragments = [
+            ("fg:ansiyellow", str(self.model_name)),
+            ("", " "),
+            ("fg:ansigreen", str(self.workspace_name)),
+            ("", " "),
+            ("fg:ansiwhite", str(self.active_chat_name)),
+        ]
+        status_bar_plain = (
+            f"{_ansi_yellow(str(self.model_name))} "
+            f"{_ansi_green(str(self.workspace_name))} "
+            f"{_ansi_white(str(self.active_chat_name))}"
+        )
+        prompt = f"{str(self.work_directory)}>"
         
         # 重置历史记录索引
         self.history_manager.reset_index()
@@ -2261,7 +2278,16 @@ class SmartShellAgent:
         # 优先使用已初始化的输入处理器（例如 Windows 下的 prompt_toolkit 补全）
         if self.input_handler is not None:
             try:
-                user_input = self.input_handler.get_input_with_completion(prompt)
+                try:
+                    user_input = self.input_handler.get_input_with_completion(
+                        prompt,
+                        status_bar_text=status_bar_plain,
+                        status_bar_fragments=status_bar_fragments,
+                        show_status_bar=True,
+                    )
+                except TypeError:
+                    # readline/tab_completer handlers may not support status bar kwargs.
+                    user_input = self.input_handler.get_input_with_completion(prompt)
                 # 这里不直接写入 HistoryManager，交由上层 run() 统一处理，避免重复
                 return user_input
             except Exception as e:
@@ -2317,8 +2343,6 @@ class SmartShellAgent:
                 except Exception:
                     pass
                 
-                # 使用单行 prompt，减少 Windows 终端在历史重绘时的视觉残留。
-                print(f"\x1b[90m{workspace_prompt_line}\x1b[0m")
                 user_input = session.prompt(f"{str(self.work_directory)}>").strip()
                 
                 # 保存到历史记录
@@ -2331,6 +2355,8 @@ class SmartShellAgent:
                 # 如果没有prompt_toolkit，回退到标准input
                 print("⚠️ 提示：安装 prompt_toolkit 可获得更好的输入体验：pip install prompt_toolkit")
                 try:
+                    print("")
+                    print(status_bar_plain)
                     user_input = input(prompt).strip()
                     if user_input:
                         self.history_manager.add_entry(user_input)
@@ -2341,6 +2367,8 @@ class SmartShellAgent:
                 # 如果prompt_toolkit出错，回退到标准input
                 print(f"⚠️ prompt_toolkit 出错，回退到标准输入: {e}")
                 try:
+                    print("")
+                    print(status_bar_plain)
                     user_input = input(prompt).strip()
                     if user_input:
                         self.history_manager.add_entry(user_input)
@@ -2350,6 +2378,8 @@ class SmartShellAgent:
         else:
             # 非Windows系统使用简单的input
             try:
+                print("")
+                print(status_bar_plain)
                 user_input = input(prompt).strip()
                 if user_input:
                     self.history_manager.add_entry(user_input)
