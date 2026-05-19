@@ -101,18 +101,17 @@ def action_shell_command(
         return {"success": False, "error": decision.get("error", "")}
     agent._load_confirm_allowlist()
     execution_policy = str(getattr(agent, "execution_policy", "confirmation")).lower()
+    in_allowlist = agent._shell_command_in_allowlist(command)
     force_manual_confirm_by_policy = (
-        ((execution_policy in ("moderate", "unlimited")) and (not confirmed))
-        or manual_confirm_from_ai
+        (
+            ((execution_policy in ("moderate", "unlimited")) and (not confirmed))
+            or manual_confirm_from_ai
+        )
+        and (not in_allowlist)
     )
     # Hard guard: if AI/policy requires manual confirmation, never bypass it via confirmed=True.
     if force_manual_confirm_by_policy:
         confirmed = False
-    in_allowlist = (
-        agent._shell_command_in_allowlist(command)
-        if not force_manual_confirm_by_policy
-        else False
-    )
     should_prompt_confirm = (
         force_manual_confirm_by_policy
         or ((not confirmed) and (not in_allowlist))
@@ -123,11 +122,7 @@ def action_shell_command(
             prompt_text = f"⚠️ AI 判定需手动确认，继续执行前请确认: {command} ?"
         ok = agent._prompt_confirm_yes_no_maybe_always(
             prompt_text,
-            offer_always=(
-                False
-                if force_manual_confirm_by_policy
-                else agent._shell_confirm_should_offer_always(command)
-            ),
+            offer_always=agent._shell_confirm_should_offer_always(command),
             kind="shell",
             shell_command=command,
         )

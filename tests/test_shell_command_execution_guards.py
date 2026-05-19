@@ -112,6 +112,8 @@ class ShellCommandExecutionGuardsTests(unittest.TestCase):
 
         with patch("src.services.execution_policy_service.ai_assess_reversible", return_value=(False, "not reversible")), patch(
             "src.services.execution_policy_service._print_with_auto_hide_tracking"
+        ), patch(
+            "src.services.execution_policy_service.shell_command_in_allowlist", return_value=False
         ):
             ok = freedom_auto_confirm(
                 agent,
@@ -121,9 +123,27 @@ class ShellCommandExecutionGuardsTests(unittest.TestCase):
         self.assertFalse(ok)
         self.assertTrue(bool(agent._manual_confirm_required_shell_once))
 
+    def test_freedom_auto_confirm_skips_ai_review_when_shell_allowlisted(self):
+        agent = _DummyAgent()
+        agent.execution_policy = "moderate"
+
+        with patch("src.services.execution_policy_service.ai_assess_reversible") as assess, patch(
+            "src.services.execution_policy_service._print_with_auto_hide_tracking"
+        ), patch(
+            "src.services.execution_policy_service.shell_command_in_allowlist", return_value=True
+        ):
+            ok = freedom_auto_confirm(
+                agent,
+                {"action": "shell", "params": {"command": "echo hi"}},
+            )
+
+        self.assertTrue(ok)
+        self.assertFalse(bool(agent._manual_confirm_required_shell_once))
+        assess.assert_not_called()
+
     def test_manual_confirm_marker_forces_prompt_even_with_allowlist(self):
         agent = _DummyAgent()
-        agent.allowlist_hit = True
+        agent.allowlist_hit = False
         agent._manual_confirm_required_shell_once = True
         agent.prompt_result = False
 
@@ -132,13 +152,13 @@ class ShellCommandExecutionGuardsTests(unittest.TestCase):
         self.assertFalse(result.get("success", True))
         self.assertEqual(result.get("error"), "用户取消了操作")
         self.assertEqual(len(agent.prompt_calls), 1)
-        self.assertFalse(bool(agent.prompt_calls[0].get("offer_always", True)))
+        self.assertTrue(bool(agent.prompt_calls[0].get("offer_always", False)))
         self.assertFalse(bool(agent._manual_confirm_required_shell_once))
 
     def test_moderate_mode_manual_confirm_ignores_allowlist(self):
         agent = _DummyAgent()
         agent.execution_policy = "moderate"
-        agent.allowlist_hit = True
+        agent.allowlist_hit = False
         agent.prompt_result = False
 
         result = action_shell_command(agent, 'python -c "print(1)"', confirmed=False, interactive=True, input_data=None)
@@ -146,24 +166,22 @@ class ShellCommandExecutionGuardsTests(unittest.TestCase):
         self.assertFalse(result.get("success", True))
         self.assertEqual(result.get("error"), "用户取消了操作")
         self.assertEqual(len(agent.prompt_calls), 1)
-        self.assertFalse(bool(agent.prompt_calls[0].get("offer_always", True)))
+        self.assertTrue(bool(agent.prompt_calls[0].get("offer_always", False)))
 
-    def test_unlimited_mode_non_reversible_result_still_requires_prompt(self):
+    def test_allowlisted_command_skips_prompt_even_when_non_reversible(self):
         agent = _DummyAgent()
         agent.execution_policy = "unlimited"
         agent.allowlist_hit = True
-        agent.prompt_result = False
+        agent.prompt_result = True
 
         result = action_shell_command(agent, 'python -c "print(1)"', confirmed=False, interactive=True, input_data=None)
 
-        self.assertFalse(result.get("success", True))
-        self.assertEqual(result.get("error"), "用户取消了操作")
-        self.assertEqual(len(agent.prompt_calls), 1)
-        self.assertFalse(bool(agent.prompt_calls[0].get("offer_always", True)))
+        self.assertTrue(result.get("success", False))
+        self.assertEqual(len(agent.prompt_calls), 0)
 
     def test_manual_confirm_marker_still_requires_prompt_when_confirmed_true(self):
         agent = _DummyAgent()
-        agent.allowlist_hit = True
+        agent.allowlist_hit = False
         agent.prompt_result = False
         agent._manual_confirm_required_shell_once = True
         command = 'python -c "print(42)"'
@@ -173,7 +191,7 @@ class ShellCommandExecutionGuardsTests(unittest.TestCase):
         self.assertFalse(result.get("success", True))
         self.assertEqual(result.get("error"), "用户取消了操作")
         self.assertEqual(len(agent.prompt_calls), 1)
-        self.assertFalse(bool(agent.prompt_calls[0].get("offer_always", True)))
+        self.assertTrue(bool(agent.prompt_calls[0].get("offer_always", False)))
 
     def test_interactive_stream_writes_output_immediately(self):
         agent = _DummyAgent()
