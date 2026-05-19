@@ -10,6 +10,7 @@ def chat_usage() -> str:
         "用法:\n"
         "  /chat list\n"
         "  /chat current\n"
+        "  /chat reload\n"
         "  /chat new [name]\n"
         "  /chat switch <index|id|name>\n"
         "  /chat rename <index|id|name> <new name>\n"
@@ -45,6 +46,25 @@ def handle_chat_builtin_command(agent: Any, builtin_line: str) -> bool:
         return True
     if sub == "current":
         print(f"当前 Chat: [{agent.active_chat_name}] ({agent.active_chat_id})")
+        return True
+    if sub == "reload":
+        current_chat_id = str(getattr(agent, "active_chat_id", "") or "").strip()
+        if not current_chat_id:
+            print("❌ 当前没有可重载的 Chat")
+            return True
+        # Reload persisted chat state first, then restore current chat by id.
+        # This allows users to force-refresh current session messages from disk.
+        agent._load_chat_state()
+        reload_result = agent._activate_chat(
+            current_chat_id,
+            announce=False,
+            clear_screen=False,
+            print_history=True,
+        )
+        if reload_result:
+            print(reload_result)
+            return True
+        print(f"✅ 已重新加载当前 Chat 历史消息: [{agent.active_chat_name}] ({agent.active_chat_id})")
         return True
     if sub == "new":
         name = " ".join(parts[2:]).strip() if len(parts) > 2 else "New Chat"

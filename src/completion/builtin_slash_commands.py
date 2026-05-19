@@ -12,6 +12,7 @@ WINDOWS_SLASH_BUILTIN_COMMANDS: List[str] = [
     "/chat delete all",
     "/chat list",
     "/chat new ",
+    "/chat reload",
     "/chat rename ",
     "/chat switch ",
     "/cls",
