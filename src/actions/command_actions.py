@@ -496,6 +496,120 @@ def register_outputs_from_shell_command(agent: Any, command: str) -> None:
             agent._try_register_ai_output_literal(m.group(1))
 
 
+_SCRIPT_SUFFIXES = (
+    ".py",
+    ".ps1",
+    ".bat",
+    ".cmd",
+    ".sh",
+    ".bash",
+    ".zsh",
+    ".ksh",
+    ".fish",
+    ".vbs",
+    ".js",
+    ".jse",
+    ".wsf",
+    ".rb",
+    ".pl",
+    ".php",
+    ".lua",
+    ".r",
+    ".psm1",
+)
+
+_SCRIPT_INTERPRETER_EXES = {
+    "python",
+    "pythonw",
+    "py",
+    "node",
+    "nodejs",
+    "ruby",
+    "perl",
+    "php",
+    "lua",
+    "rscript",
+    "cscript",
+    "wscript",
+    "bash",
+    "sh",
+    "zsh",
+    "ksh",
+    "dash",
+    "fish",
+    "pwsh",
+    "powershell",
+    "deno",
+}
+
+_OPTION_VALUE_FLAGS_BY_EXE = {
+    "python": {"-x"},
+    "pythonw": {"-x"},
+    "py": set(),
+    "node": set(),
+    "nodejs": set(),
+    "ruby": set(),
+    "perl": set(),
+    "php": {"-f"},
+    "lua": set(),
+    "rscript": {"-e"},
+    "cscript": set(),
+    "wscript": set(),
+    "bash": set(),
+    "sh": set(),
+    "zsh": set(),
+    "ksh": set(),
+    "dash": set(),
+    "fish": set(),
+    "pwsh": {"-file", "-f"},
+    "powershell": {"-file", "-f", "/f"},
+}
+
+_INLINE_EXEC_FLAGS_BY_EXE = {
+    "python": {"-c", "-m"},
+    "pythonw": {"-c", "-m"},
+    "py": {"-c", "-m"},
+    "node": {"-e", "-p"},
+    "nodejs": {"-e", "-p"},
+    "ruby": {"-e"},
+    "perl": {"-e", "-m"},
+    "php": {"-r"},
+    "lua": {"-e"},
+    "rscript": {"-e"},
+    "pwsh": {"-command", "-c", "/c", "-encodedcommand", "-enc", "-e"},
+    "powershell": {"-command", "-c", "/c", "-encodedcommand", "-enc", "-e"},
+}
+
+
+def _split_shell_like(command: str) -> List[str]:
+    try:
+        return shlex.split(command, posix=os.name != "nt")
+    except ValueError:
+        return command.split()
+
+
+def _token_exe_base(token: str) -> str:
+    base = token.replace("\\", "/").split("/")[-1].lower()
+    if base.endswith(".exe"):
+        return base[:-4]
+    return base
+
+
+def _strip_wrapping_quotes(token: str) -> str:
+    t = str(token or "").strip()
+    if len(t) >= 2 and t[0] == t[-1] and t[0] in ("'", '"'):
+        return t[1:-1]
+    return t
+
+
+def _find_option_value(parts: List[str], names: tuple[str, ...]) -> Optional[str]:
+    wanted = {n.lower() for n in names}
+    for i in range(1, len(parts) - 1):
+        if parts[i].lower() in wanted:
+            return parts[i + 1]
+    return None
+
+
 def _unwrap_windows_powershell_command(command: str) -> str:
     s = str(command or "").strip()
     if not s:
@@ -505,7 +619,12 @@ def _unwrap_windows_powershell_command(command: str) -> str:
         s,
     )
     if not m:
-        return s
+        m = re.match(
+            r"(?is)^(?:powershell|pwsh)(?:\.exe)?\s+.*?(?:-Command|-C|/C)\s+(.+)$",
+            s,
+        )
+        if not m:
+            return s
     payload = m.group(1).strip()
     if len(payload) >= 2 and payload[0] == payload[-1] and payload[0] in ("'", '"'):
         quote = payload[0]
@@ -514,93 +633,219 @@ def _unwrap_windows_powershell_command(command: str) -> str:
             payload = payload.replace('`"', '"')
         else:
             payload = payload.replace("''", "'")
-    # Handle escaped quotes passed through wrapper construction.
     payload = payload.replace('\\"', '"')
     return payload.strip()
 
 
+def _unwrap_shell_command_layers(command: str, max_depth: int = 8) -> str:
+    s = str(command or "").strip()
+    if not s:
+        return s
+    for _ in range(max(1, max_depth)):
+        changed = False
+        if s.lower().startswith("call "):
+            s = s[5:].strip()
+            changed = True
+        ps_unwrapped = _unwrap_windows_powershell_command(s)
+        if ps_unwrapped != s:
+            s = ps_unwrapped
+            changed = True
+        parts = _split_shell_like(s)
+        if not parts:
+            return s
+        exe = _token_exe_base(parts[0])
+        if len(parts) >= 3 and exe == "cmd" and parts[1].lower() in ("/c", "/k"):
+            s = " ".join(parts[2:]).strip()
+            changed = True
+        elif exe in ("bash", "sh", "zsh", "ksh", "dash", "fish"):
+            payload = _find_option_value(parts, ("-c", "-lc"))
+            if payload is not None:
+                s = _strip_wrapping_quotes(payload).strip()
+                changed = True
+        elif exe == "env":
+            payload = _find_option_value(parts, ("-s", "--split-string"))
+            if payload is not None:
+                s = _strip_wrapping_quotes(payload).strip()
+                changed = True
+            else:
+                env_opts_need_value = {"-u", "--unset", "-c", "--chdir", "-p", "--path"}
+                i = 1
+                if i < len(parts) and parts[i] == "--":
+                    i += 1
+                while i < len(parts):
+                    t = parts[i]
+                    if t == "--":
+                        i += 1
+                        break
+                    if t.startswith("-"):
+                        if t.lower() in env_opts_need_value and i + 1 < len(parts):
+                            i += 2
+                            continue
+                        if t.lower().startswith("--unset="):
+                            i += 1
+                            continue
+                        i += 1
+                        continue
+                    if "=" in t and not t.startswith(("/", "\\", ".", "-")):
+                        i += 1
+                        continue
+                    break
+                if i > 1 and i < len(parts):
+                    s = " ".join(parts[i:]).strip()
+                    changed = True
+        elif exe in ("sudo", "doas", "nohup", "setsid"):
+            sudo_opts_need_value = {
+                "-u",
+                "-g",
+                "-h",
+                "-p",
+                "-r",
+                "-t",
+                "-c",
+                "--user",
+                "--group",
+                "--host",
+                "--prompt",
+                "--role",
+                "--type",
+                "--chdir",
+                "--close-from",
+            }
+            doas_opts_need_value = {"-u", "-c"}
+            i = 1
+            while i < len(parts):
+                t = parts[i]
+                if t == "--":
+                    i += 1
+                    break
+                if t.startswith("-"):
+                    tl = t.lower()
+                    if (
+                        (exe == "sudo" and tl in sudo_opts_need_value)
+                        or (exe == "doas" and tl in doas_opts_need_value)
+                    ) and i + 1 < len(parts):
+                        i += 2
+                        continue
+                    i += 1
+                    continue
+                break
+            if i > 1 and i < len(parts):
+                s = " ".join(parts[i:]).strip()
+                changed = True
+        if not changed:
+            break
+    return s
+
+
 def parse_shell_invoked_script_path(agent: Any, command: str) -> Optional[Path]:
-    s = _unwrap_windows_powershell_command(command.strip())
+    s = _unwrap_shell_command_layers(command.strip())
     if not s:
         return None
-    if s.lower().startswith("call "):
-        s = s[5:].strip()
-    try:
-        parts = shlex.split(s, posix=os.name != "nt")
-    except ValueError:
-        parts = s.split()
+    parts = _split_shell_like(s)
     if not parts:
         return None
-    base0 = parts[0].replace("\\", "/").split("/")[-1].lower().rstrip(".exe")
-    if len(parts) >= 3 and base0 == "cmd" and parts[1].lower() in ("/c", "/k"):
-        return parse_shell_invoked_script_path(agent, " ".join(parts[2:]))
-    exe = base0
-    if exe in ("python", "pythonw", "py") and len(parts) >= 2:
+    exe = _token_exe_base(parts[0])
+
+    def _resolve_script_token(tok_raw: str) -> Optional[Path]:
+        tok = _strip_wrapping_quotes(tok_raw).strip()
+        if not tok:
+            return None
+        if tok.startswith(".\\") or tok.startswith("./"):
+            tok = tok[2:]
+        p = Path(tok)
+        if not p.is_absolute():
+            p_wd, p_temp, p_ws = agent._workspace_relative_script_triple(p)
+            if p_wd.is_file():
+                return p_wd
+            if p_temp.is_file():
+                return p_temp
+            if p_ws.is_file():
+                return p_ws
+            return p_wd
+        try:
+            return p.resolve()
+        except OSError:
+            return p
+
+    if exe in _SCRIPT_INTERPRETER_EXES and len(parts) >= 2:
+        if exe == "deno":
+            # deno run <script>
+            if len(parts) >= 3 and parts[1].lower() == "run":
+                i = 2
+                while i < len(parts):
+                    t = _strip_wrapping_quotes(parts[i]).lower()
+                    if t == "--":
+                        i += 1
+                        break
+                    if t.startswith("-"):
+                        i += 1
+                        continue
+                    break
+                if i >= len(parts):
+                    return None
+                return _resolve_script_token(parts[i])
+            return None
+
+        inline_flags = _INLINE_EXEC_FLAGS_BY_EXE.get(exe, set())
+        value_flags = _OPTION_VALUE_FLAGS_BY_EXE.get(exe, set())
         i = 1
         while i < len(parts):
-            t = parts[i].strip('"').strip("'")
-            if t in ("-c", "-m"):
+            t = _strip_wrapping_quotes(parts[i])
+            tl = t.lower()
+            if tl == "--":
+                i += 1
+                break
+            if tl in inline_flags:
                 return None
-            if t.startswith("-") and len(t) > 1:
+            if tl in value_flags:
+                if tl in ("-file", "-f", "/f"):
+                    if i + 1 >= len(parts):
+                        return None
+                    return _resolve_script_token(parts[i + 1])
+                i += 2
+                continue
+            if t.startswith("-") or t.startswith("/"):
                 i += 1
                 continue
             break
         if i >= len(parts):
             return None
-        tok = parts[i].strip('"').strip("'")
-        if tok.startswith(".\\") or tok.startswith("./"):
-            tok = tok[2:]
-        p = Path(tok)
-        if not p.is_absolute():
-            p_wd, p_temp, p_ws = agent._workspace_relative_script_triple(p)
-            if p_wd.is_file():
-                return p_wd
-            if p_temp.is_file():
-                return p_temp
-            if p_ws.is_file():
-                return p_ws
-            return p_wd
-        try:
-            return p.resolve()
-        except OSError:
-            return p
-    tok = parts[0].strip('"').strip("'")
-    low = tok.lower()
-    if low.endswith((".py", ".ps1", ".bat", ".cmd")):
-        if tok.startswith(".\\") or tok.startswith("./"):
-            tok = tok[2:]
-        p = Path(tok)
-        if not p.is_absolute():
-            p_wd, p_temp, p_ws = agent._workspace_relative_script_triple(p)
-            if p_wd.is_file():
-                return p_wd
-            if p_temp.is_file():
-                return p_temp
-            if p_ws.is_file():
-                return p_ws
-            return p_wd
-        try:
-            return p.resolve()
-        except OSError:
-            return p
+        return _resolve_script_token(parts[i])
+
+    tok = _strip_wrapping_quotes(parts[0])
+    if tok.lower().endswith(_SCRIPT_SUFFIXES):
+        return _resolve_script_token(tok)
     return None
 
 
 def rewrite_shell_command_script_arg_to_abs(agent: Any, command: str, resolved: Path) -> str:
     import subprocess
 
-    s = command.strip()
+    s = str(command or "").strip()
+    if not s:
+        return command
     call_prefix = ""
     if s.lower().startswith("call "):
         call_prefix = "call "
         s = s[5:].strip()
-    try:
-        parts = shlex.split(s, posix=os.name != "nt")
-    except ValueError:
-        return command
+    parts = _split_shell_like(s)
     if not parts:
         return command
-    base0 = parts[0].replace("\\", "/").split("/")[-1].lower().rstrip(".exe")
+    base0 = _token_exe_base(parts[0])
+    if base0 in ("powershell", "pwsh"):
+        payload = _find_option_value(parts, ("-command", "-c", "/c"))
+        if payload is not None:
+            inner_re = rewrite_shell_command_script_arg_to_abs(agent, payload, resolved)
+            if inner_re == payload:
+                return command
+            new_parts = list(parts)
+            for i in range(1, len(new_parts) - 1):
+                if new_parts[i].lower() in ("-command", "-c", "/c"):
+                    new_parts[i + 1] = inner_re
+                    break
+            if os.name == "nt":
+                return call_prefix + subprocess.list2cmdline(new_parts)
+            return call_prefix + shlex.join(new_parts)
     if len(parts) >= 3 and base0 == "cmd" and parts[1].lower() in ("/c", "/k"):
         inner = " ".join(parts[2:])
         inner_re = rewrite_shell_command_script_arg_to_abs(agent, inner, resolved)
@@ -691,32 +936,27 @@ def tune_7z_output_for_piped_terminal(command: str) -> str:
 
 
 def parse_shell_invoked_executable(agent: Any, command: str) -> Optional[Path]:
-    s = command.strip()
+    s = _unwrap_shell_command_layers(command.strip())
     if not s:
         return None
-    if s.lower().startswith("call "):
-        s = s[5:].strip()
-    try:
-        parts = shlex.split(s, posix=os.name != "nt")
-    except ValueError:
-        parts = s.split()
+    parts = _split_shell_like(s)
     if not parts:
         return None
-    base0 = parts[0].replace("\\", "/").split("/")[-1].lower().rstrip(".exe")
-    token = parts[2] if len(parts) >= 3 and base0 == "cmd" and parts[1].lower() in ("/c", "/k") else parts[0]
-    token = token.strip('"').strip("'")
-    if token.startswith(".\\") or token.startswith("./"):
-        token = token[2:]
+    token = _strip_wrapping_quotes(parts[0])
+    if not token:
+        return None
     p = Path(token)
     if not p.is_absolute():
-        p_wd, p_temp, p_ws = agent._workspace_relative_script_triple(p)
-        if p_wd.is_file():
+        if any(sep in token for sep in ("/", "\\")) or token.startswith("."):
+            p_wd, p_temp, p_ws = agent._workspace_relative_script_triple(p)
+            if p_wd.is_file():
+                return p_wd
+            if p_temp.is_file():
+                return p_temp
+            if p_ws.is_file():
+                return p_ws
             return p_wd
-        if p_temp.is_file():
-            return p_temp
-        if p_ws.is_file():
-            return p_ws
-        return p_wd
+        return None
     try:
         return p.resolve()
     except OSError:

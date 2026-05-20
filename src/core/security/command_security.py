@@ -2,7 +2,6 @@ import hashlib
 import json
 import os
 import secrets
-import shlex
 from pathlib import Path
 from typing import Any, Optional
 
@@ -44,25 +43,17 @@ def shell_script_hash(agent: Any, script_path: Path) -> Optional[str]:
 
 
 def shell_executable_allowlist_key(agent: Any, command: str) -> str:
-    s = command.strip()
+    from ...actions.command_actions import _split_shell_like, _unwrap_shell_command_layers
+
+    s = _unwrap_shell_command_layers(command.strip())
     if not s:
         return ""
-    if s.lower().startswith("call "):
-        s = s[5:].strip()
-    try:
-        parts = shlex.split(s, posix=os.name != "nt")
-    except ValueError:
-        parts = s.split()
+    parts = _split_shell_like(s)
     if not parts:
         return ""
-    base0 = parts[0].replace("\\", "/").split("/")[-1].lower().rstrip(".exe")
-    if len(parts) >= 3 and base0 == "cmd" and parts[1].lower() in ("/c", "/k"):
-        return shell_executable_allowlist_key(agent, " ".join(parts[2:]))
     tok = parts[0].strip('"').strip("'")
-    if tok.startswith(".\\") or tok.startswith("./"):
-        tok = tok[2:]
     p = Path(tok)
-    if p.is_absolute() or (os.name == "nt" and len(tok) >= 2 and tok[1] == ":"):
+    if p.is_absolute():
         try:
             r = p.resolve()
             if r.is_file():
@@ -70,6 +61,18 @@ def shell_executable_allowlist_key(agent: Any, command: str) -> str:
         except OSError:
             pass
         return str(p).lower() if os.name == "nt" else str(p)
+    if any(sep in tok for sep in ("/", "\\")) or tok.startswith("."):
+        if tok.startswith(".\\") or tok.startswith("./"):
+            tok = tok[2:]
+        rel = Path(tok)
+        p_wd, p_temp, p_ws = agent._workspace_relative_script_triple(rel)
+        for cand in (p_wd, p_temp, p_ws):
+            try:
+                if cand.is_file():
+                    return normalize_path_allowlist_key(cand)
+            except OSError:
+                continue
+        return normalize_path_allowlist_key(p_wd)
     return Path(tok).name.lower() if os.name == "nt" else Path(tok).name
 
 
