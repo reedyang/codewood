@@ -26,6 +26,8 @@ class _FakeAgent:
         self._last_context_usage_percent = 0
         self._last_context_input_tokens = 0
         self._last_context_window = 0
+        self._active_runtime_task_id = ""
+        self._active_runtime_task_domains = []
 
     def _apply_chat_model_from_entry(self, chat, persist_if_missing=False):
         self.applied_chat_model_calls += 1
@@ -64,6 +66,8 @@ class ChatStateModelPersistenceTests(unittest.TestCase):
                         "name_source": "manual",
                         "created_at": "",
                         "updated_at": "",
+                        "tasks": [],
+                        "active_task_id": "",
                         "messages": [],
                         "context_usage_percent": 44,
                         "context_input_tokens": 1234,
@@ -93,15 +97,48 @@ class ChatStateModelPersistenceTests(unittest.TestCase):
                 {"role": "user", "content": "你好"},
                 {"role": "assistant", "content": "你好！有什么我可以帮助您的？"},
             ]
-            compact = manager.compact_redundant_user_turns(messages)
-            self.assertEqual(compact, messages)
+            chat = {
+                "id": "chat-1",
+                "name": "demo",
+                "name_source": "manual",
+                "created_at": "",
+                "updated_at": "",
+                "model_provider": "openai",
+                "model_name": "gpt-4.1",
+                "tasks": [
+                    {
+                        "id": "task-1",
+                        "status": "open",
+                        "root_user_input": "你好",
+                        "domains": ["general_other"],
+                        "domain_scores": {},
+                        "classifier": {},
+                        "created_at": "",
+                        "updated_at": "",
+                        "closed_at": "",
+                        "switched_from_task_id": "",
+                    }
+                ],
+                "active_task_id": "task-1",
+                "messages": [
+                    {**messages[0], "task_id": "task-1", "created_at": ""},
+                    {**messages[1], "task_id": "task-1", "created_at": ""},
+                    {**messages[2], "task_id": "task-1", "created_at": ""},
+                    {**messages[3], "task_id": "task-1", "created_at": ""},
+                ],
+                "context_usage_percent": 0,
+                "context_input_tokens": 0,
+                "context_window": 0,
+            }
+            normalized = manager._validate_chat_entry(chat)
+            self.assertEqual(len(normalized["messages"]), 4)
 
     def test_load_chat_state_skips_save_when_state_is_clean(self):
         with tempfile.TemporaryDirectory() as td:
             workspace = Path(td)
             chat_path = workspace / "chats.json"
             payload = {
-                "version": 1,
+                "version": 2,
                 "active": "chat-1",
                 "chats": [
                     {
@@ -112,7 +149,24 @@ class ChatStateModelPersistenceTests(unittest.TestCase):
                         "updated_at": "",
                         "model_provider": "openai",
                         "model_name": "gpt-4.1",
-                        "messages": [{"role": "user", "content": "hello"}],
+                        "tasks": [
+                            {
+                                "id": "task-1",
+                                "status": "open",
+                                "root_user_input": "hello",
+                                "domains": ["general_other"],
+                                "domain_scores": {},
+                                "classifier": {},
+                                "created_at": "",
+                                "updated_at": "",
+                                "closed_at": "",
+                                "switched_from_task_id": "",
+                            }
+                        ],
+                        "active_task_id": "task-1",
+                        "messages": [
+                            {"role": "user", "content": "hello", "task_id": "task-1", "created_at": ""}
+                        ],
                         "context_usage_percent": 0,
                         "context_input_tokens": 0,
                         "context_window": 0,
@@ -129,8 +183,9 @@ class ChatStateModelPersistenceTests(unittest.TestCase):
             manager.load_chat_state()
             self.assertEqual(save_calls, [])
             self.assertEqual(agent.active_chat_id, "chat-1")
+            self.assertEqual(agent._active_runtime_task_id, "task-1")
 
-    def test_load_chat_state_persists_when_model_snapshot_missing(self):
+    def test_load_chat_state_invalid_schema_resets_and_persists_default(self):
         with tempfile.TemporaryDirectory() as td:
             workspace = Path(td)
             chat_path = workspace / "chats.json"
@@ -144,10 +199,6 @@ class ChatStateModelPersistenceTests(unittest.TestCase):
                         "name_source": "manual",
                         "created_at": "",
                         "updated_at": "",
-                        "messages": [],
-                        "context_usage_percent": 0,
-                        "context_input_tokens": 0,
-                        "context_window": 0,
                     }
                 ],
             }
@@ -160,9 +211,8 @@ class ChatStateModelPersistenceTests(unittest.TestCase):
 
             manager.load_chat_state()
             self.assertEqual(save_calls, ["saved"])
-            chat = manager.find_chat_by_id("chat-1")
-            self.assertEqual(chat.get("model_provider"), "openai")
-            self.assertEqual(chat.get("model_name"), "gpt-4.1")
+            self.assertEqual(agent.active_chat_id, "chat-1")
+            self.assertEqual(agent._chat_state.get("version"), 2)
 
 
 if __name__ == "__main__":

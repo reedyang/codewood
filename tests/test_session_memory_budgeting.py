@@ -27,6 +27,10 @@ class _FakeAgent:
         self.params = {"context_window": 800}
         self._force_current_input_as_requirement_once = False
         self._last_cancelled_task = ""
+        self.active_chat_id = "chat-1"
+        self._chat_state = {"chats": []}
+        self._active_runtime_task_id = ""
+        self._active_runtime_task_domains = []
 
     def _reload_skills(self):
         return None
@@ -38,8 +42,45 @@ class _FakeAgent:
     def _ensure_memory_service(self):
         return False
 
+    def _find_chat_by_id(self, chat_id: str):
+        for c in self._chat_state.get("chats", []):
+            if str(c.get("id") or "") == str(chat_id or ""):
+                return c
+        return None
+
 
 class SessionMemoryBudgetingTests(unittest.TestCase):
+    def test_domain_filtered_history_collects_all_matching_tasks(self):
+        agent = _FakeAgent()
+        agent._active_runtime_task_id = "task-a"
+        agent._active_runtime_task_domains = ["software_development"]
+        agent._chat_state = {
+            "chats": [
+                {
+                    "id": "chat-1",
+                    "tasks": [
+                        {"id": "task-a", "domains": ["software_development"]},
+                        {"id": "task-b", "domains": ["software_development", "documentation_writing"]},
+                        {"id": "task-c", "domains": ["visual_design"]},
+                    ],
+                    "messages": [
+                        {"role": "user", "content": "A1", "task_id": "task-a"},
+                        {"role": "assistant", "content": "A2", "task_id": "task-a"},
+                        {"role": "user", "content": "B1", "task_id": "task-b"},
+                        {"role": "assistant", "content": "B2", "task_id": "task-b"},
+                        {"role": "user", "content": "C1", "task_id": "task-c"},
+                    ],
+                }
+            ]
+        }
+        agent.conversation_history = list(agent._chat_state["chats"][0]["messages"])
+        svc = SessionMemoryService(agent)
+        filtered = svc._domain_filtered_history()
+        joined = " | ".join(str(x.get("content") or "") for x in filtered)
+        self.assertIn("A1", joined)
+        self.assertIn("B1", joined)
+        self.assertNotIn("C1", joined)
+
     def test_context_window_budget_prefers_recent_history(self):
         agent = _FakeAgent()
         # First requirement should be preserved explicitly.

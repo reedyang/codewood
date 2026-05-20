@@ -16,6 +16,7 @@ class AICallContext:
     reflection_mode: bool = False
     session_summary_mode: bool = False
     memory_query_expansion_mode: bool = False
+    domain_classifier_mode: bool = False
     image_path: Optional[str] = None
     history_user_input: Optional[str] = None
     history_skip_user: bool = False
@@ -36,6 +37,7 @@ class ProviderCallContext:
     image_user_text: str
     session_summary_mode: bool
     memory_query_expansion_mode: bool
+    domain_classifier_mode: bool
 
 
 def prepare_image_input(
@@ -117,6 +119,7 @@ def _call_with_openai_compatible(
     image_user_text: str,
     session_summary_mode: bool,
     memory_query_expansion_mode: bool,
+    domain_classifier_mode: bool,
     append_history: Callable[[str], None],
     api_key_error_msg: str,
     default_base_url: str,
@@ -140,9 +143,9 @@ def _call_with_openai_compatible(
             ],
         }
         payload["messages"] = provider_messages
-    if session_summary_mode or memory_query_expansion_mode:
+    if session_summary_mode or memory_query_expansion_mode or domain_classifier_mode:
         payload["max_tokens"] = 512
-    if memory_query_expansion_mode:
+    if memory_query_expansion_mode or domain_classifier_mode:
         payload["temperature"] = 0.2
 
     url = base_url.rstrip("/") + "/chat/completions"
@@ -181,6 +184,7 @@ def _call_with_ollama(
     image_user_text: str,
     session_summary_mode: bool,
     memory_query_expansion_mode: bool,
+    domain_classifier_mode: bool,
     append_history: Callable[[str], None],
     ollama_importer: Callable[[], Any],
     context_window: int,
@@ -203,7 +207,7 @@ def _call_with_ollama(
     ollama_options: Dict[str, Any] = {"num_ctx": int(context_window)}
     if session_summary_mode:
         ollama_options.update({"num_predict": 512, "temperature": 0.3})
-    elif memory_query_expansion_mode:
+    elif memory_query_expansion_mode or domain_classifier_mode:
         ollama_options.update({"num_predict": 512, "temperature": 0.2})
 
     if stream:
@@ -261,6 +265,7 @@ def call_ai_with_provider(
             image_user_text=context.image_user_text,
             session_summary_mode=context.session_summary_mode,
             memory_query_expansion_mode=context.memory_query_expansion_mode,
+            domain_classifier_mode=context.domain_classifier_mode,
             append_history=append_history,
             api_key_error_msg="❌ 错误：OpenAI API密钥未配置。请在 config.json 的 model.params 中设置 api_key。",
             default_base_url="https://api.openai.com/v1",
@@ -278,6 +283,7 @@ def call_ai_with_provider(
             image_user_text=context.image_user_text,
             session_summary_mode=context.session_summary_mode,
             memory_query_expansion_mode=context.memory_query_expansion_mode,
+            domain_classifier_mode=context.domain_classifier_mode,
             append_history=append_history,
             api_key_error_msg="❌ 错误：OpenWebUI API密钥未配置。请在 config.json 的 model.params 中设置 api_key。",
             default_base_url="http://localhost:8080/v1",
@@ -298,6 +304,7 @@ def call_ai_with_provider(
             image_user_text=context.image_user_text,
             session_summary_mode=context.session_summary_mode,
             memory_query_expansion_mode=context.memory_query_expansion_mode,
+            domain_classifier_mode=context.domain_classifier_mode,
             append_history=append_history,
             ollama_importer=ollama_importer,
             context_window=context_window,

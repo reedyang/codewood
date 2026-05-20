@@ -16,7 +16,14 @@ from ..config.startup_tips import (
 from ..core.assistant_output_highlighter import format_assistant_display_response
 from ..core.logging.app_logging import get_log_file_path
 from ..controllers.builtin_command_router import dispatch_builtin_command
-from ..core.console_utils import _ansi_bold, _ansi_gray, _ansi_white, _ansi_cyan, _ansi_bright_blue
+from ..core.console_utils import (
+    _ansi_bold,
+    _ansi_gray,
+    _ansi_white,
+    _ansi_cyan,
+    _ansi_bright_blue,
+    _ansi_yellow,
+)
 
 
 def _sanitize_prompt_pollution(text: str, work_directory: Any) -> str:
@@ -119,6 +126,9 @@ def _print_startup_overview(agent: Any) -> None:
         + _ansi_gray("│")
     )
     print(_ansi_gray(bottom))
+    startup_chat_warning = str(getattr(agent, "_startup_chat_state_warning", "") or "").strip()
+    if startup_chat_warning:
+        print(_ansi_yellow(startup_chat_warning))
     print("")
     tip_entry = get_random_startup_tip_entry()
     tip_text = str(tip_entry.get("text") or "")
@@ -187,6 +197,7 @@ def run_agent_loop(agent: Any):
     while True:
         in_task_execution = False
         self._in_task_execution = False
+        current_task_id = ""
         try:
             self._refresh_input_handler_skill_completions()
             # 获取用户输入（含等待态回注输入），统一走主循环处理路径
@@ -561,6 +572,12 @@ def run_agent_loop(agent: Any):
             last_result = None
             self._last_auto_removed_ephemeral = None
             original_user_task = task_user_input
+            domain_info = self._classify_task_domains(original_user_task)
+            current_task_id = self._start_chat_task(
+                root_user_input=original_user_task,
+                domains=list(domain_info.get("domains") or []),
+                classifier=domain_info,
+            )
             in_task_execution = True
             self._active_skill_full_prompt = ""
             self._active_skill_id = None
@@ -858,10 +875,14 @@ def run_agent_loop(agent: Any):
                 if self._result_indicates_user_cancelled(result):
                     self._force_current_input_as_requirement_once = True
                     self._last_cancelled_task = str(original_user_task or "").strip()
+                    if current_task_id:
+                        self._close_chat_task(current_task_id, "cancelled")
                     print("⏹️ 检测到用户取消，已结束当前任务，不再自动续步。")
                     break
 
                 if result.get("finished"):
+                    if current_task_id:
+                        self._close_chat_task(current_task_id, "done")
                     break
                 if bool(result.get("task_changed", False)):
                     new_task = str(result.get("new_task") or "").strip()
@@ -870,6 +891,15 @@ def run_agent_loop(agent: Any):
                         break
                     old_task = original_user_task
                     original_user_task = new_task
+                    if current_task_id:
+                        self._close_chat_task(current_task_id, "switched")
+                    domain_info = self._classify_task_domains(original_user_task)
+                    current_task_id = self._start_chat_task(
+                        root_user_input=original_user_task,
+                        domains=list(domain_info.get("domains") or []),
+                        classifier=domain_info,
+                        switched_from_task_id=str(current_task_id or ""),
+                    )
                     print("🔄 AI判定用户补充信息与原需求无关，已切换为新任务。")
                     print(f"   旧任务: {old_task}")
                     print(f"   新任务: {original_user_task}")
@@ -972,6 +1002,8 @@ def run_agent_loop(agent: Any):
                 in_task_execution = False
                 self._in_task_execution = False
                 self._force_current_input_as_requirement_once = True
+                if current_task_id:
+                    self._close_chat_task(current_task_id, "cancelled")
                 try:
                     self._last_cancelled_task = str(original_user_task or "").strip()
                 except Exception:

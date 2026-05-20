@@ -73,6 +73,21 @@ SESSION_SUMMARY_SYSTEM_PROMPT = (
     "只输出正文，不要 markdown、不要标题、不要 JSON、不要复述本说明。"
 )
 
+DOMAIN_CLASSIFIER_SYSTEM_PROMPT = (
+    "你是任务领域分类器。请根据用户输入，输出软件工作领域的大类标签。"
+    "只输出一个 JSON 对象，不要 markdown，不要代码块，不要额外解释。\n"
+    "可选 domain 仅允许以下值："
+    "software_development, documentation_writing, visual_design, data_analysis, finance, lifestyle, project_coordination, general_other。\n"
+    "输出格式必须是："
+    '{"primary_domain":"...","secondary_domains":["..."],"confidence":0.0,"reason":"..."}\n'
+    "约束：\n"
+    "1) primary_domain 必须是上述之一。\n"
+    "2) secondary_domains 是去重后的数组，可为空，但元素也必须来自上述集合，且不能包含 primary_domain。\n"
+    "3) confidence 范围 [0,1]。\n"
+    "4) 无法判断时 primary_domain=general_other。\n"
+    "5) 宁可宽松召回，不要过度细分。"
+)
+
 
 def build_special_mode_messages(
     user_input: str,
@@ -82,6 +97,7 @@ def build_special_mode_messages(
     reflection_mode: bool,
     session_summary_mode: bool,
     memory_query_expansion_mode: bool,
+    domain_classifier_mode: bool,
     work_directory: str,
 ) -> Tuple[Optional[List[Dict[str, Any]]], bool, Optional[str]]:
     os_info = os.uname() if hasattr(os, "uname") else os.name
@@ -130,6 +146,14 @@ def build_special_mode_messages(
             return None, False, "❌ 错误：会话摘要不支持流式模式。"
         return [
             {"role": "system", "content": SESSION_SUMMARY_SYSTEM_PROMPT},
+            {"role": "user", "content": user_input},
+        ], False, None
+
+    if domain_classifier_mode:
+        if stream:
+            return None, False, "❌ 错误：领域分类不支持流式模式。"
+        return [
+            {"role": "system", "content": DOMAIN_CLASSIFIER_SYSTEM_PROMPT},
             {"role": "user", "content": user_input},
         ], False, None
 
