@@ -148,6 +148,7 @@ def execute_tool_call_legacy(agent: Any, tool_name: str, arguments: Dict[str, An
             clone_guard = guard_git_clone_precheck(self.work_directory, str(shell_cmd), shell_force)
             if isinstance(clone_guard, dict):
                 return clone_guard
+            shell_interactive = bool(params.get("interactive", False))
             if not shell_force:
                 # Guardrail: avoid accidental duplicate execution loops in multi-step tasks.
                 for item in reversed(self.operation_results[-6:]):
@@ -167,13 +168,12 @@ def execute_tool_call_legacy(agent: Any, tool_name: str, arguments: Dict[str, An
                                 "success": True,
                                 "message": msg,
                                 "skipped_duplicate": True,
-                                "interactive": True,
+                                "interactive": shell_interactive,
                                 "output": "",
                                 "stderr": "",
                                 "return_code": 0,
                             }
                         break
-            shell_interactive = True
             shell_input = params.get("input")
             shell_cmd_dict = {
                 "action": "shell",
@@ -188,7 +188,7 @@ def execute_tool_call_legacy(agent: Any, tool_name: str, arguments: Dict[str, An
             result = self.action_shell_command(
                 shell_cmd,
                 confirmed=confirmed,
-                interactive=True,
+                interactive=shell_interactive,
                 input_data=None,
             )
             if result["success"]:

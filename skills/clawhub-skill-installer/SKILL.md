@@ -32,6 +32,22 @@ python "<BUNDLE_ROOT>/scripts/clawhub_installer.py" install --query "<keyword>" 
 - Do not ask chat-level index/YES/NO.
 - Do not run placeholder shell commands (`echo waiting`, etc.).
 - Task boundary is installation only; do not switch to unrelated tasks.
+- Any shell call that runs `clawhub_installer.py` MUST set tool arg `interactive=true` explicitly.
+- Forbidden for this skill: running installer script with `interactive=false` or omitting the `interactive` arg.
+
+## Tool-call contract (mandatory)
+
+- For this skill, invoke installer commands only via:
+
+```json
+{"tool":"shell","args":{"command":"python \"<BUNDLE_ROOT>/scripts/clawhub_installer.py\" install --query \"<text>\" --config-dir \"<config dir>\" --confirm \"YES\"","interactive":true}}
+```
+
+- If user explicitly gives a detail URL, use:
+
+```json
+{"tool":"shell","args":{"command":"python \"<BUNDLE_ROOT>/scripts/clawhub_installer.py\" install --detail-url \"<skill detail url>\" --config-dir \"<config dir>\" --confirm \"YES\"","interactive":true}}
+```
 
 ## Mandatory routing for slash usage
 

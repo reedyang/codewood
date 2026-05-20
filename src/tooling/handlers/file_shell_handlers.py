@@ -53,6 +53,7 @@ def dispatch_file_shell_tool(agent: Any, action: str, params: Dict[str, Any]) ->
             }
 
         shell_force = bool(params.get("force", False))
+        shell_interactive = bool(params.get("interactive", False))
         clone_guard = guard_git_clone_precheck(agent.work_directory, str(shell_cmd), shell_force)
         if isinstance(clone_guard, dict):
             return clone_guard
@@ -71,7 +72,7 @@ def dispatch_file_shell_tool(agent: Any, action: str, params: Dict[str, Any]) ->
                             "success": True,
                             "message": msg,
                             "skipped_duplicate": True,
-                            "interactive": True,
+                            "interactive": shell_interactive,
                             "output": "",
                             "stderr": "",
                             "return_code": 0,
@@ -82,7 +83,7 @@ def dispatch_file_shell_tool(agent: Any, action: str, params: Dict[str, Any]) ->
             "action": "shell",
             "params": {
                 "command": shell_cmd,
-                "interactive": True,
+                "interactive": shell_interactive,
                 "force": shell_force,
                 "input": params.get("input") if isinstance(params.get("input"), str) else None,
             },
@@ -91,7 +92,7 @@ def dispatch_file_shell_tool(agent: Any, action: str, params: Dict[str, Any]) ->
         return agent.action_shell_command(
             shell_cmd,
             confirmed=confirmed,
-            interactive=True,
+            interactive=shell_interactive,
             input_data=None,
         )
 

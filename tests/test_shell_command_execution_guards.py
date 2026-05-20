@@ -131,6 +131,13 @@ class _FakePopenMultiLine:
         return 0
 
 
+class _FakeCompleted:
+    def __init__(self, stdout_text: str, stderr_text: str = "", return_code: int = 0):
+        self.returncode = int(return_code)
+        self.stdout = stdout_text.encode("utf-8")
+        self.stderr = stderr_text.encode("utf-8")
+
+
 class ShellCommandExecutionGuardsTests(unittest.TestCase):
     def test_parse_shell_invoked_script_path_unwraps_powershell(self):
         agent = _DummyAgent()
@@ -469,6 +476,29 @@ class ShellCommandExecutionGuardsTests(unittest.TestCase):
 
         self.assertTrue(result.get("success", False))
         self.assertIn("... omitted", "".join(writes))
+
+    def test_non_interactive_mode_displays_only_tail_summary(self):
+        agent = _DummyAgent()
+        command = 'python -c "print(123)"'
+        writes = []
+        big_out = "\n".join(f"line{i}" for i in range(1, 80)) + "\n"
+
+        def _capture_write(text, _stream, append_newline=False):
+            writes.append(str(text))
+            return None
+
+        with patch("subprocess.run", return_value=_FakeCompleted(big_out)), patch(
+            "src.actions.command_actions._dynamic_tail_line_limit", return_value=5
+        ), patch(
+            "src.actions.command_actions._safe_console_write",
+            side_effect=_capture_write,
+        ), patch("subprocess.Popen") as popen_mock:
+            result = action_shell_command(agent, command, confirmed=False, interactive=False, input_data=None)
+
+        self.assertTrue(result.get("success", False))
+        self.assertIn("... omitted", "".join(writes))
+        self.assertNotIn("line1\n", "".join(writes))
+        popen_mock.assert_not_called()
 
 
 if __name__ == "__main__":

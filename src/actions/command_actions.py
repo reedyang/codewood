@@ -227,7 +227,7 @@ def action_shell_command(
                 run_env[merge_env_name] = merge_path
             except OSError:
                 merge_path = None
-        interactive = True
+        interactive = bool(interactive)
         return_code = -1
         out = ""
         err = ""
