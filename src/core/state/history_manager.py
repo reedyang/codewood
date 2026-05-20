@@ -57,15 +57,15 @@ class HistoryManager:
         Args:
             command: 用户输入的命令
         """
-        if not command.strip():
+        cleaned_command = command.strip()
+        if not cleaned_command:
             return
-        
-        # 去重：如果与最后一条记录相同，不添加
-        if self.history and self.history[-1] == command.strip():
-            return
-        
+
+        # 追加前先清理历史中的同内容旧记录，确保同一命令仅保留最新一条。
+        self.history = [entry for entry in self.history if entry != cleaned_command]
+
         # 添加新记录
-        self.history.append(command.strip())
+        self.history.append(cleaned_command)
         
         # 维护最大记录数
         if len(self.history) > self.max_entries:

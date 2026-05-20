@@ -202,6 +202,13 @@ def run_agent_loop(agent: Any):
             # 保存到历史记录（非空输入）
             if user_input.strip():
                 self.history_manager.add_entry(user_input)
+                # 同步输入处理器内存历史（如 prompt_toolkit），确保上下键与持久化去重结果一致。
+                if self.input_handler is not None and hasattr(
+                    self.input_handler, "reset_command_history"
+                ):
+                    self.input_handler.reset_command_history(
+                        self.history_manager.get_all_history()
+                    )
 
             stripped_in = user_input.strip()
             if not stripped_in:
