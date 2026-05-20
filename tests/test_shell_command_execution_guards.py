@@ -108,6 +108,17 @@ class _FakePopen:
         return 0
 
 
+class _FakePopenNoTrailingNewline:
+    def __init__(self, *args, **kwargs):
+        self.args = args
+        self.kwargs = kwargs
+        self.stdout = _FakePipe([b"stream-no-nl"])
+        self.stderr = _FakePipe([])
+
+    def wait(self):
+        return 0
+
+
 class ShellCommandExecutionGuardsTests(unittest.TestCase):
     def test_parse_shell_invoked_script_path_unwraps_powershell(self):
         agent = _DummyAgent()
@@ -244,6 +255,25 @@ class ShellCommandExecutionGuardsTests(unittest.TestCase):
 
         self.assertTrue(result.get("success", False))
         self.assertIn("stream-line", "".join(writes))
+
+    def test_interactive_stream_appends_newline_boundary_when_output_has_no_trailing_newline(self):
+        agent = _DummyAgent()
+        command = 'python -c "import sys; sys.stdout.write(\'x\')"'
+        writes = []
+
+        def _capture_write(text, _stream, append_newline=False):
+            writes.append(str(text))
+            return None
+
+        with patch("subprocess.Popen", _FakePopenNoTrailingNewline), patch("threading.Thread", _ImmediateThread), patch(
+            "src.actions.command_actions._safe_console_write",
+            side_effect=_capture_write,
+        ):
+            result = action_shell_command(agent, command, confirmed=False, interactive=True, input_data=None)
+
+        self.assertTrue(result.get("success", False))
+        self.assertIn("stream-no-nl", "".join(writes))
+        self.assertIn("\n", writes)
 
 
 if __name__ == "__main__":

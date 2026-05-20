@@ -644,18 +644,32 @@ class SmartShellAgent:
 
     def _terminal_columns_for_line_estimate(self) -> int:
         width = 80
-        ih = getattr(self, "input_handler", None)
+        # Keep consistent with command output rendering path: prefer real stream
+        # terminal size over input-handler cached columns to avoid over-clear.
         try:
-            if ih is not None and hasattr(ih, "get_terminal_columns"):
-                cols = int(ih.get_terminal_columns(default=80) or 0)
-                if cols > 0:
-                    return cols
+            cols1 = int(os.get_terminal_size(sys.__stdout__.fileno()).columns or 0)
+            if cols1 > 0:
+                return cols1
         except Exception:
             pass
         try:
-            cols = int(shutil.get_terminal_size(fallback=(80, 24)).columns or 80)
-            if cols > 0:
-                width = cols
+            cols2 = int(os.get_terminal_size(sys.stdout.fileno()).columns or 0)
+            if cols2 > 0:
+                return cols2
+        except Exception:
+            pass
+        ih = getattr(self, "input_handler", None)
+        try:
+            if ih is not None and hasattr(ih, "get_terminal_columns"):
+                cols3 = int(ih.get_terminal_columns(default=80) or 0)
+                if cols3 > 0:
+                    return cols3
+        except Exception:
+            pass
+        try:
+            cols4 = int(shutil.get_terminal_size(fallback=(80, 24)).columns or 80)
+            if cols4 > 0:
+                width = cols4
         except Exception:
             pass
         return max(1, int(width))
