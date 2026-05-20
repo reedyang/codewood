@@ -5,6 +5,7 @@ from unittest.mock import patch
 
 from src.actions.command_actions import action_shell_command
 from src.actions.command_actions import parse_shell_invoked_script_path
+from src.core.security.command_security import shell_executable_allowlist_key
 from src.core.security.command_security import shell_script_allowlist_key
 from src.services.execution_policy_service import freedom_auto_confirm
 
@@ -148,6 +149,167 @@ class ShellCommandExecutionGuardsTests(unittest.TestCase):
         try:
             key = shell_script_allowlist_key(agent, command)
             self.assertEqual(key, str(script_path).lower())
+        finally:
+            script_path.unlink(missing_ok=True)
+
+    def test_parse_shell_invoked_script_path_unwraps_cmd_pwsh_python(self):
+        agent = _DummyAgent()
+        tf = tempfile.NamedTemporaryFile(suffix=".py", delete=False)
+        tf.close()
+        script_path = Path(tf.name).resolve()
+        command = f'cmd /c pwsh -c "python \\"{script_path}\\" --flag 1"'
+        try:
+            parsed = parse_shell_invoked_script_path(agent, command)
+            self.assertIsNotNone(parsed)
+            self.assertEqual(parsed.resolve(), script_path)
+        finally:
+            script_path.unlink(missing_ok=True)
+
+    def test_parse_shell_invoked_script_path_unwraps_bash_lc_python(self):
+        agent = _DummyAgent()
+        tf = tempfile.NamedTemporaryFile(suffix=".py", delete=False)
+        tf.close()
+        script_path = Path(tf.name).resolve()
+        command = f"bash -lc 'python \"{script_path.as_posix()}\" --query demo'"
+        try:
+            with patch("src.actions.command_actions.os.name", "posix"):
+                parsed = parse_shell_invoked_script_path(agent, command)
+            self.assertIsNotNone(parsed)
+            self.assertEqual(parsed.resolve(), script_path)
+        finally:
+            script_path.unlink(missing_ok=True)
+
+    def test_parse_shell_invoked_script_path_unwraps_env_prefix(self):
+        agent = _DummyAgent()
+        tf = tempfile.NamedTemporaryFile(suffix=".py", delete=False)
+        tf.close()
+        script_path = Path(tf.name).resolve()
+        command = f'env FOO=bar python "{script_path.as_posix()}" --check'
+        try:
+            with patch("src.actions.command_actions.os.name", "posix"):
+                parsed = parse_shell_invoked_script_path(agent, command)
+            self.assertIsNotNone(parsed)
+            self.assertEqual(parsed.resolve(), script_path)
+        finally:
+            script_path.unlink(missing_ok=True)
+
+    def test_parse_shell_invoked_script_path_recognizes_node_js_script(self):
+        agent = _DummyAgent()
+        tf = tempfile.NamedTemporaryFile(suffix=".js", delete=False)
+        tf.close()
+        script_path = Path(tf.name).resolve()
+        command = f'node "{script_path}" --mode prod'
+        try:
+            parsed = parse_shell_invoked_script_path(agent, command)
+            self.assertIsNotNone(parsed)
+            self.assertEqual(parsed.resolve(), script_path)
+        finally:
+            script_path.unlink(missing_ok=True)
+
+    def test_shell_script_allowlist_key_uses_inner_script_when_bash_wrapped(self):
+        agent = _DummyAgent()
+        tf = tempfile.NamedTemporaryFile(suffix=".py", delete=False)
+        tf.close()
+        script_path = Path(tf.name).resolve()
+        command = f"bash -c 'python \"{script_path.as_posix()}\" install --confirm YES'"
+        try:
+            with patch("src.actions.command_actions.os.name", "posix"), patch(
+                "src.core.security.command_security.os.name", "posix"
+            ):
+                key = shell_script_allowlist_key(agent, command)
+            self.assertEqual(key, str(script_path))
+        finally:
+            script_path.unlink(missing_ok=True)
+
+    def test_shell_executable_allowlist_key_unwraps_powershell_command(self):
+        agent = _DummyAgent()
+        command = 'powershell -ExecutionPolicy Bypass -Command "git status --short"'
+        key = shell_executable_allowlist_key(agent, command)
+        self.assertEqual(key, "git")
+
+    def test_parse_shell_invoked_script_path_unwraps_pwsh_file(self):
+        agent = _DummyAgent()
+        tf = tempfile.NamedTemporaryFile(suffix=".ps1", delete=False)
+        tf.close()
+        script_path = Path(tf.name).resolve()
+        command = f'pwsh -File "{script_path}" -Task Build'
+        try:
+            parsed = parse_shell_invoked_script_path(agent, command)
+            self.assertIsNotNone(parsed)
+            self.assertEqual(parsed.resolve(), script_path)
+        finally:
+            script_path.unlink(missing_ok=True)
+
+    def test_parse_shell_invoked_script_path_unwraps_env_s_sudo_pwsh_file(self):
+        agent = _DummyAgent()
+        tf = tempfile.NamedTemporaryFile(suffix=".ps1", delete=False)
+        tf.close()
+        script_path = Path(tf.name).resolve()
+        command = (
+            f'env -S "sudo -u root pwsh -File {script_path.as_posix()} --mode dry-run"'
+        )
+        try:
+            with patch("src.actions.command_actions.os.name", "posix"):
+                parsed = parse_shell_invoked_script_path(agent, command)
+            self.assertIsNotNone(parsed)
+            self.assertEqual(parsed.resolve(), script_path)
+        finally:
+            script_path.unlink(missing_ok=True)
+
+    def test_parse_shell_invoked_script_path_unwraps_sudo_u_user_python(self):
+        agent = _DummyAgent()
+        tf = tempfile.NamedTemporaryFile(suffix=".py", delete=False)
+        tf.close()
+        script_path = Path(tf.name).resolve()
+        command = f'sudo -u buildbot python "{script_path.as_posix()}" --check'
+        try:
+            with patch("src.actions.command_actions.os.name", "posix"):
+                parsed = parse_shell_invoked_script_path(agent, command)
+            self.assertIsNotNone(parsed)
+            self.assertEqual(parsed.resolve(), script_path)
+        finally:
+            script_path.unlink(missing_ok=True)
+
+    def test_parse_shell_invoked_script_path_unwraps_cmd_cscript_nologo(self):
+        agent = _DummyAgent()
+        tf = tempfile.NamedTemporaryFile(suffix=".vbs", delete=False)
+        tf.close()
+        script_path = Path(tf.name).resolve()
+        command = f'cmd /c cscript //nologo "{script_path}" //B'
+        try:
+            parsed = parse_shell_invoked_script_path(agent, command)
+            self.assertIsNotNone(parsed)
+            self.assertEqual(parsed.resolve(), script_path)
+        finally:
+            script_path.unlink(missing_ok=True)
+
+    def test_parse_shell_invoked_script_path_unwraps_wscript_with_options(self):
+        agent = _DummyAgent()
+        tf = tempfile.NamedTemporaryFile(suffix=".vbs", delete=False)
+        tf.close()
+        script_path = Path(tf.name).resolve()
+        command = f'wscript //nologo //B "{script_path}" /job:main'
+        try:
+            parsed = parse_shell_invoked_script_path(agent, command)
+            self.assertIsNotNone(parsed)
+            self.assertEqual(parsed.resolve(), script_path)
+        finally:
+            script_path.unlink(missing_ok=True)
+
+    def test_shell_script_allowlist_key_uses_inner_script_when_env_s_nested(self):
+        agent = _DummyAgent()
+        tf = tempfile.NamedTemporaryFile(suffix=".ps1", delete=False)
+        tf.close()
+        script_path = Path(tf.name).resolve()
+        command = (
+            f'env -S "sudo -u root pwsh -File {script_path.as_posix()} --sync"'
+        )
+        try:
+            with patch("src.actions.command_actions.os.name", "posix"), patch(
+                "src.core.security.command_security.os.name", "posix"
+            ):
+                key = shell_script_allowlist_key(agent, command)
+            self.assertEqual(key, str(script_path))
         finally:
             script_path.unlink(missing_ok=True)
 
