@@ -240,6 +240,9 @@ def action_shell_command(
 
                 stdout_chunks: List[str] = []
                 stderr_chunks: List[str] = []
+                stream_chunks_lock = threading.Lock()
+                allow_realtime_echo = threading.Event()
+                allow_realtime_echo.set()
                 merge_stderr_for_interactive = (
                     os.environ.get("SMART_SHELL_SEPARATE_STDERR", "").strip().lower()
                     not in {"1", "true", "yes", "on"}
@@ -273,12 +276,16 @@ def action_shell_command(
                                 break
                             text_chunk = decoder.decode(chunk, final=False)
                             if text_chunk:
-                                bucket.append(text_chunk)
-                                _safe_console_write(text_chunk, target, append_newline=False)
+                                with stream_chunks_lock:
+                                    bucket.append(text_chunk)
+                                if allow_realtime_echo.is_set():
+                                    _safe_console_write(text_chunk, target, append_newline=False)
                         tail = decoder.decode(b"", final=True)
                         if tail:
-                            bucket.append(tail)
-                            _safe_console_write(tail, target, append_newline=False)
+                            with stream_chunks_lock:
+                                bucket.append(tail)
+                            if allow_realtime_echo.is_set():
+                                _safe_console_write(tail, target, append_newline=False)
                     except Exception:
                         pass
                     finally:
@@ -315,11 +322,20 @@ def action_shell_command(
                         )
                         t_err.start()
                     return_code = process.wait()
+                    # Stop direct stream echo immediately after process exit to
+                    # prevent delayed raw chunks from appearing in later turns.
+                    allow_realtime_echo.clear()
                     t_out.join(timeout=1.0)
                     if t_err is not None:
                         t_err.join(timeout=1.0)
-                    out = "".join(stdout_chunks)
-                    err = "" if merge_stderr_for_interactive else "".join(stderr_chunks)
+                    # Give readers a brief extra window to capture residual bytes
+                    # without writing them directly to the terminal.
+                    t_out.join(timeout=0.2)
+                    if t_err is not None:
+                        t_err.join(timeout=0.2)
+                    with stream_chunks_lock:
+                        out = "".join(stdout_chunks)
+                        err = "" if merge_stderr_for_interactive else "".join(stderr_chunks)
                 finally:
                     _restore_console_after_interactive()
             else:
@@ -344,10 +360,22 @@ def action_shell_command(
             err_tail_limit = _dynamic_tail_line_limit(sys.stderr)
             displayed_out = _build_tail_output_for_display(out, sys.stdout, out_tail_limit)
             displayed_err = _build_tail_output_for_display(err, sys.stderr, err_tail_limit)
+            last_rendered_chunk = ""
             if displayed_out:
                 _safe_console_write(displayed_out, sys.stdout, append_newline=False)
+                last_rendered_chunk = displayed_out
             if displayed_err:
                 _safe_console_write(displayed_err, sys.stderr, append_newline=False)
+                last_rendered_chunk = displayed_err
+            # Keep next assistant/status lines on a fresh line even when command
+            # output does not end with newline. This avoids off-by-one over-clear
+            # caused by mixing "正在思考..." into the output's last visual line.
+            if last_rendered_chunk and not str(last_rendered_chunk).endswith("\n"):
+                _safe_console_write("\n", sys.stdout, append_newline=False)
+                if displayed_err:
+                    displayed_err = str(displayed_err) + "\n"
+                else:
+                    displayed_out = str(displayed_out) + "\n"
             try:
                 agent._register_shell_output_for_auto_hide(displayed_out, displayed_err)
             except Exception:
