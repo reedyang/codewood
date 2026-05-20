@@ -51,6 +51,14 @@ class ShellOutputSuppressionTests(unittest.TestCase):
         body = out.split("\n", 1)[1]
         self.assertEqual(body, ("x" * 10 + "\n") * 5)
 
+    def test_build_tail_output_respects_wrapped_visual_lines_for_cjk(self):
+        text = ("中" * 12) + "\n"
+        with patch("src.actions.command_actions._terminal_columns_for_tail_display", return_value=10):
+            out = _build_tail_output_for_display(text, _FakePipe(), 2)
+        self.assertTrue(out.startswith("... omitted 1 lines ...\n"))
+        body = out.split("\n", 1)[1]
+        self.assertEqual(body, ("中" * 5) + "\n" + ("中" * 2) + "\n")
+
 
 if __name__ == "__main__":
     unittest.main()
