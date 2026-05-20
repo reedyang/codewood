@@ -5,6 +5,7 @@ from src.actions.command_actions import (
     SHELL_OUTPUT_DISPLAY_TAIL_LINES,
     _build_tail_output_for_display,
     _count_output_lines,
+    _dynamic_tail_line_limit,
 )
 
 
@@ -19,6 +20,14 @@ class _FakePipe:
 
 
 class ShellOutputSuppressionTests(unittest.TestCase):
+    def test_dynamic_tail_line_limit_caps_at_30_then_minus_3(self):
+        with patch("src.actions.command_actions._terminal_rows_for_tail_display", return_value=100):
+            self.assertEqual(_dynamic_tail_line_limit(_FakePipe()), 27)
+
+    def test_dynamic_tail_line_limit_uses_terminal_height_then_minus_3(self):
+        with patch("src.actions.command_actions._terminal_rows_for_tail_display", return_value=20):
+            self.assertEqual(_dynamic_tail_line_limit(_FakePipe()), 17)
+
     def test_count_output_lines_handles_crlf(self):
         self.assertEqual(_count_output_lines("a\r\nb\r\n"), 2)
         self.assertEqual(_count_output_lines("a\nb\nc"), 3)
