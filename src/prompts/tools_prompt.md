@@ -40,7 +40,6 @@
 - 读取文本文件时，单次读取不得超过 100 行；超出范围必须分段多次读取。
 - 脚本执行时禁止使用多余的 PowerShell 包装。能直接调用解释器就直接调用，例如 `python tools/a.py --x 1`、`py scripts/job.py`；禁止 `powershell -ExecutionPolicy Bypass -Command "python tools/a.py --x 1"`。
 - 在输出命令前必须自检：若命令包含 python/py + 脚本文件，则直接调用 python/py；若命令目标是文本文件操作，则使用 PowerShell 前缀。
-- 禁止假设存在 `read`、`text_file`、`edit_text`、`grep` 这类文件操作工具。
 
 图片任务规则（强制）：
 

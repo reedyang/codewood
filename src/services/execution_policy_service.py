@@ -424,18 +424,6 @@ def freedom_auto_confirm(agent: Any, command: Dict[str, Any]) -> bool:
     if not isinstance(params, dict):
         params = command.get("params") or {}
 
-    if action == "delete":
-        p = params.get("path") or params.get("file_name") or params.get("name")
-        if p and agent._is_ai_created_path(str(p)):
-            _print_with_auto_hide_tracking(agent, "🦅 自由模式：删除目标为本会话 AI 创建或产出的文件，跳过确认。")
-            return True
-
-    if action == "move":
-        src = params.get("source")
-        if src and agent._is_ai_created_path(str(src)):
-            _print_with_auto_hide_tracking(agent, "🦅 自由模式：移动源为本会话 AI 创建或产出的文件，跳过确认。")
-            return True
-
     if action == "shell":
         cmd = params.get("command") or ""
         s = (cmd or "").strip()

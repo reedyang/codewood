@@ -25,6 +25,76 @@ from ..core.console_utils import (
     _ansi_yellow,
 )
 
+_CODE_MUTATION_TOOLS = {
+    "apply_patch",
+}
+
+
+def _is_software_development_domain(domains: List[str]) -> bool:
+    return "software_development" in {str(x or "").strip() for x in (domains or [])}
+
+
+def _shell_command_indicates_verification(command: str) -> bool:
+    c = str(command or "").strip().lower()
+    if not c:
+        return False
+    needles = (
+        "pytest",
+        "unittest",
+        "py_compile",
+        "mypy",
+        "ruff",
+        "flake8",
+        "eslint",
+        "npm test",
+        "pnpm test",
+        "yarn test",
+        "go test",
+        "cargo test",
+        "gradle test",
+        "mvn test",
+        "ctest",
+    )
+    return any(n in c for n in needles)
+
+
+def _tool_change_and_verification_hints(
+    tool_name: str,
+    args: Dict[str, Any],
+    result: Dict[str, Any],
+) -> Dict[str, Any]:
+    t = str(tool_name or "").strip()
+    out: Dict[str, Any] = {
+        "code_changed": False,
+        "changed_files": [],
+        "verified": False,
+        "verification_summary": "",
+    }
+
+    if t in _CODE_MUTATION_TOOLS:
+        out["code_changed"] = True
+        p = str(args.get("path") or "").strip()
+        if p:
+            out["changed_files"] = [p]
+
+    if t == "shell":
+        cmd = str(args.get("command") or "").strip()
+        if _shell_command_indicates_verification(cmd):
+            ok = bool(result.get("success", False))
+            out["verified"] = ok
+            status = "passed" if ok else "failed"
+            out["verification_summary"] = f"shell verification `{cmd}` => {status}"
+    return out
+
+
+def _build_minimal_verification_command(changed_files: List[str]) -> str:
+    files = [str(x or "").strip() for x in (changed_files or []) if str(x or "").strip()]
+    py_files = [f for f in files if f.lower().endswith(".py")]
+    if py_files:
+        joined = " ".join(f'"{f}"' for f in py_files)
+        return f"python -m py_compile {joined}"
+    return "请先执行最小验证（相关测试、编译或静态检查）"
+
 
 def _sanitize_prompt_pollution(text: str, work_directory: Any) -> str:
     s = str(text or "")
@@ -578,6 +648,10 @@ def run_agent_loop(agent: Any):
                 domains=list(domain_info.get("domains") or []),
                 classifier=domain_info,
             )
+            code_changed_in_task = False
+            verification_done_in_task = False
+            changed_files_in_task: Set[str] = set()
+            verification_evidence_in_task: List[str] = []
             in_task_execution = True
             self._active_skill_full_prompt = ""
             self._active_skill_id = None
@@ -765,6 +839,31 @@ def run_agent_loop(agent: Any):
                     print("❌ 工具计划缺少名称，结束本轮。")
                     break
 
+                if (
+                    tool_name == "done"
+                    and _is_software_development_domain(
+                        list(getattr(self, "_active_runtime_task_domains", None) or [])
+                    )
+                    and code_changed_in_task
+                    and (not verification_done_in_task)
+                ):
+                    suggested_verify = _build_minimal_verification_command(
+                        sorted(changed_files_in_task)
+                    )
+                    print(
+                        "⚠️ 检测到本任务已修改代码，但尚未完成验证；已拦截 done 并要求先执行最小验证。"
+                    )
+                    next_input = (
+                        f"【用户原始需求】\n{original_user_task}\n\n"
+                        "你已经修改了代码，但还没有验证结果。\n"
+                        "在 software_development 领域，修改后禁止直接 done。\n"
+                        "请先输出一条验证工具调用 JSON；优先执行以下最小验证命令：\n"
+                        f"`{suggested_verify}`\n\n"
+                        "请输出：{\"tool\":\"shell\",\"args\":{\"command\":\"<验证命令>\"}}"
+                    )
+                    no_tool_rounds = 0
+                    continue
+
                 if tool_name == "request_skill_prompt":
                     sid = str(args.get("skill_id") or "").strip()
                     canon_sid = self._canonical_skill_id(sid)
@@ -871,6 +970,18 @@ def run_agent_loop(agent: Any):
                 })
                 last_result = result
                 is_first_round = False
+                hints = _tool_change_and_verification_hints(tool_name, args, result)
+                if bool(hints.get("code_changed", False)):
+                    code_changed_in_task = True
+                    for fp in list(hints.get("changed_files") or []):
+                        fpp = str(fp or "").strip()
+                        if fpp:
+                            changed_files_in_task.add(fpp)
+                if bool(hints.get("verified", False)):
+                    verification_done_in_task = True
+                summary = str(hints.get("verification_summary") or "").strip()
+                if summary:
+                    verification_evidence_in_task.append(summary)
 
                 if self._result_indicates_user_cancelled(result):
                     self._force_current_input_as_requirement_once = True
@@ -881,6 +992,31 @@ def run_agent_loop(agent: Any):
                     break
 
                 if result.get("finished"):
+                    if (
+                        _is_software_development_domain(
+                            list(getattr(self, "_active_runtime_task_domains", None) or [])
+                        )
+                        and code_changed_in_task
+                    ):
+                        ai_lower = str(ai_response or "").lower()
+                        has_verify_summary = ("验证" in str(ai_response or "")) or ("verification" in ai_lower)
+                        if not has_verify_summary:
+                            evidence_text = (
+                                "\n".join(f"- {x}" for x in verification_evidence_in_task[-3:])
+                                if verification_evidence_in_task
+                                else "- （暂无可提取验证证据）"
+                            )
+                            next_input = (
+                                f"【用户原始需求】\n{original_user_task}\n\n"
+                                "在 software_development 领域，完成前必须先给验证审核总结，再 done。\n"
+                                "请先给出：修改点、验证命令、验证结果、剩余风险；"
+                                "然后在结尾输出 done JSON。\n"
+                                f"可用验证证据：\n{evidence_text}\n\n"
+                                "请输出自然语言总结，并在最后一行输出："
+                                "{\"tool\":\"done\",\"args\":{}}"
+                            )
+                            no_tool_rounds = 0
+                            continue
                     if current_task_id:
                         self._close_chat_task(current_task_id, "done")
                     break
@@ -900,6 +1036,10 @@ def run_agent_loop(agent: Any):
                         classifier=domain_info,
                         switched_from_task_id=str(current_task_id or ""),
                     )
+                    code_changed_in_task = False
+                    verification_done_in_task = False
+                    changed_files_in_task = set()
+                    verification_evidence_in_task = []
                     print("🔄 AI判定用户补充信息与原需求无关，已切换为新任务。")
                     print(f"   旧任务: {old_task}")
                     print(f"   新任务: {original_user_task}")

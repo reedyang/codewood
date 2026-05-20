@@ -42,27 +42,6 @@ class TaskControlToolTests(unittest.TestCase):
         self.assertEqual(result.get("new_task"), "Generate release notes")
         self.assertEqual(result.get("reason"), "user changed request")
 
-    def test_removed_file_tools_must_fail(self):
-        removed = [
-            "list",
-            "cd",
-            "rename",
-            "move",
-            "delete",
-            "mkdir",
-            "info",
-            "summarize",
-            "text_file",
-            "read",
-            "edit_text",
-            "grep",
-        ]
-        for tool_name in removed:
-            with self.subTest(tool=tool_name):
-                result = self.agent.execute_tool_call(tool_name, {})
-                self.assertFalse(result.get("success", True))
-                self.assertIn("未知的操作类型", str(result.get("error", "")))
-
     def test_cancel_detection_does_not_scan_success_output_text(self):
         result = {
             "success": True,
