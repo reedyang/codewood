@@ -42,6 +42,9 @@ def setup_core_state(agent: Any, startup_work_directory: Path, self_repo_root: P
     agent._mcp_pending_user_input = {}
     agent._force_current_input_as_requirement_once = False
     agent._last_cancelled_task = ""
+    agent._active_runtime_task_id = ""
+    agent._active_runtime_task_domains = []
+    agent._startup_chat_state_warning = ""
 
 
 def resolve_config_dir(config_dir: Optional[str]) -> Path:

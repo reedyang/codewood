@@ -179,6 +179,18 @@ DEFAULT_WORKSPACE_NAME = "Default"
 WORKSPACE_STATE_FILE = "workspaces.json"
 CHAT_STATE_FILE = "chats.json"
 ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+TASK_DOMAIN_VALUES = frozenset(
+    {
+        "software_development",
+        "documentation_writing",
+        "visual_design",
+        "data_analysis",
+        "finance",
+        "lifestyle",
+        "project_coordination",
+        "general_other",
+    }
+)
 
 
 class SmartShellAgent:
@@ -572,6 +584,111 @@ class SmartShellAgent:
 
     def _sync_active_chat_messages(self) -> None:
         self._chat_state_manager.sync_active_chat_messages()
+
+    def _start_chat_task(
+        self,
+        root_user_input: str,
+        domains: List[str],
+        classifier: Optional[Dict[str, Any]] = None,
+        switched_from_task_id: str = "",
+    ) -> str:
+        tid = self._chat_state_manager.start_task(
+            self.active_chat_id,
+            root_user_input=root_user_input,
+            domains=domains,
+            classifier=classifier,
+            switched_from_task_id=switched_from_task_id,
+        )
+        task_id = str(tid or "").strip()
+        if task_id:
+            self._active_runtime_task_id = task_id
+        dvals = [str(x).strip() for x in (domains or []) if str(x).strip()]
+        self._active_runtime_task_domains = dvals if dvals else ["general_other"]
+        return task_id
+
+    def _close_chat_task(self, task_id: str, status: str) -> bool:
+        tid = str(task_id or "").strip()
+        if not tid:
+            return False
+        return bool(self._chat_state_manager.close_task(self.active_chat_id, tid, status))
+
+    @staticmethod
+    def _parse_domain_classifier_json(text: str) -> Optional[Dict[str, Any]]:
+        raw = str(text or "").strip()
+        if not raw or raw.startswith("❌") or raw.startswith("调用大模型"):
+            return None
+        if raw.startswith("```"):
+            raw = re.sub(r"^```(?:json)?\s*", "", raw, flags=re.IGNORECASE)
+            raw = re.sub(r"\s*```\s*$", "", raw)
+        data = None
+        try:
+            data = json.loads(raw)
+        except Exception:
+            start = raw.find("{")
+            if start >= 0:
+                depth = 0
+                for i in range(start, len(raw)):
+                    if raw[i] == "{":
+                        depth += 1
+                    elif raw[i] == "}":
+                        depth -= 1
+                        if depth == 0:
+                            try:
+                                data = json.loads(raw[start : i + 1])
+                            except Exception:
+                                data = None
+                            break
+        if not isinstance(data, dict):
+            return None
+        return data
+
+    def _classify_task_domains(self, user_input: str) -> Dict[str, Any]:
+        default = {
+            "primary_domain": "general_other",
+            "secondary_domains": [],
+            "confidence": 0.0,
+            "reason": "fallback",
+            "domains": ["general_other"],
+        }
+        try:
+            raw = self.call_ai(
+                str(user_input or ""),
+                context="",
+                stream=False,
+                domain_classifier_mode=True,
+                history_skip_user=True,
+            )
+        except Exception:
+            return default
+        if not isinstance(raw, str):
+            return default
+        parsed = self._parse_domain_classifier_json(raw)
+        if not isinstance(parsed, dict):
+            return default
+        primary = str(parsed.get("primary_domain") or "").strip()
+        if primary not in TASK_DOMAIN_VALUES:
+            primary = "general_other"
+        secondary_raw = parsed.get("secondary_domains")
+        secondary: List[str] = []
+        if isinstance(secondary_raw, list):
+            for item in secondary_raw:
+                dom = str(item or "").strip()
+                if dom and dom in TASK_DOMAIN_VALUES and dom != primary and dom not in secondary:
+                    secondary.append(dom)
+        try:
+            confidence = float(parsed.get("confidence") or 0.0)
+        except Exception:
+            confidence = 0.0
+        confidence = max(0.0, min(1.0, confidence))
+        reason = str(parsed.get("reason") or "").strip()
+        domains = [primary] + [d for d in secondary if d != primary]
+        return {
+            "primary_domain": primary,
+            "secondary_domains": secondary,
+            "confidence": confidence,
+            "reason": reason,
+            "domains": domains or ["general_other"],
+        }
 
     def _activate_chat(
         self,
@@ -1688,6 +1805,7 @@ class SmartShellAgent:
         reflection_mode: bool = False,
         session_summary_mode: bool = False,
         memory_query_expansion_mode: bool = False,
+        domain_classifier_mode: bool = False,
         image_path: Optional[str] = None,
         history_user_input: Optional[str] = None,
         history_skip_user: bool = False,
@@ -1703,6 +1821,7 @@ class SmartShellAgent:
             reflection_mode=reflection_mode,
             session_summary_mode=session_summary_mode,
             memory_query_expansion_mode=memory_query_expansion_mode,
+            domain_classifier_mode=domain_classifier_mode,
             image_path=image_path,
             history_user_input=history_user_input,
             history_skip_user=history_skip_user,

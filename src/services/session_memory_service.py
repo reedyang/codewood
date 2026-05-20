@@ -73,10 +73,59 @@ class SessionMemoryService:
         r = str(role or "").strip().lower()
         if r not in ("user", "assistant"):
             return
-        self.agent.conversation_history.append({"role": r, "content": str(content or "")})
+        self.agent.conversation_history.append(
+            {
+                "role": r,
+                "content": str(content or ""),
+                "task_id": str(getattr(self.agent, "_active_runtime_task_id", "") or "").strip(),
+                "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            }
+        )
         self.agent._sync_active_chat_messages()
         if r == "user":
             self.agent._maybe_schedule_auto_chat_name()
+
+    def _domain_filtered_history(self) -> List[Dict[str, Any]]:
+        hist = list(getattr(self.agent, "conversation_history", None) or [])
+        try:
+            chat = self.agent._find_chat_by_id(getattr(self.agent, "active_chat_id", ""))
+        except Exception:
+            chat = None
+        if not isinstance(chat, dict):
+            return hist
+        chat_messages = chat.get("messages")
+        if not isinstance(chat_messages, list) or not chat_messages:
+            return hist
+        current_domains = list(getattr(self.agent, "_active_runtime_task_domains", None) or [])
+        cur_set = {str(x).strip() for x in current_domains if str(x).strip()}
+        if not cur_set:
+            return hist
+        tasks = chat.get("tasks")
+        if not isinstance(tasks, list):
+            return hist
+        matched_task_ids: Set[str] = set()
+        for t in tasks:
+            if not isinstance(t, dict):
+                continue
+            tid = str(t.get("id") or "").strip()
+            if not tid:
+                continue
+            domains = t.get("domains")
+            if not isinstance(domains, list):
+                continue
+            dset = {str(x).strip() for x in domains if str(x).strip()}
+            if dset & cur_set:
+                matched_task_ids.add(tid)
+        if not matched_task_ids:
+            return hist
+        filtered: List[Dict[str, Any]] = []
+        for m in chat_messages:
+            if not isinstance(m, dict):
+                continue
+            tid = str(m.get("task_id") or "").strip()
+            if tid and tid in matched_task_ids:
+                filtered.append(m)
+        return filtered or hist
 
     def update_session_summary_rolling(self) -> None:
         hist = list(getattr(self.agent, "conversation_history", None) or [])
@@ -589,7 +638,24 @@ class SessionMemoryService:
         return best
 
     def _first_user_requirement(self, fallback: str) -> str:
-        hist = list(getattr(self.agent, "conversation_history", None) or [])
+        try:
+            chat = self.agent._find_chat_by_id(getattr(self.agent, "active_chat_id", ""))
+        except Exception:
+            chat = None
+        active_task_id = str(getattr(self.agent, "_active_runtime_task_id", "") or "").strip()
+        if isinstance(chat, dict) and active_task_id:
+            tasks = chat.get("tasks")
+            if isinstance(tasks, list):
+                for t in tasks:
+                    if not isinstance(t, dict):
+                        continue
+                    if str(t.get("id") or "").strip() != active_task_id:
+                        continue
+                    root = str(t.get("root_user_input") or "").strip()
+                    if root:
+                        return root
+                    break
+        hist = self._domain_filtered_history()
         for msg in hist:
             if str(msg.get("role") or "").strip().lower() != "user":
                 continue
@@ -657,9 +723,13 @@ class SessionMemoryService:
         return self._clip_text_to_token_budget(summary, summary_budget)
 
     def _build_history_messages_by_budget(
-        self, history_budget: int, summary_budget: int, assistant_clip_tokens: int
+        self,
+        history_budget: int,
+        summary_budget: int,
+        assistant_clip_tokens: int,
+        source_history: Optional[List[Dict[str, Any]]] = None,
     ) -> Tuple[List[Dict[str, Any]], Dict[str, int]]:
-        hist = list(getattr(self.agent, "conversation_history", None) or [])
+        hist = list(source_history if source_history is not None else self._domain_filtered_history())
         if not hist or history_budget <= 0:
             return [], {"assistant_trimmed": 0, "summary_messages": 0, "dropped_messages": 0}
 
@@ -740,10 +810,12 @@ class SessionMemoryService:
         """
         try:
             budgets = self._context_token_budgets()
+            filtered_history = self._domain_filtered_history()
             history_messages, _stats = self._build_history_messages_by_budget(
                 int(budgets["history_budget"]),
                 int(budgets["history_summary_budget"]),
                 int(budgets["assistant_clip_tokens"]),
+                source_history=filtered_history,
             )
             history_tokens = sum(
                 self._estimate_message_tokens(str(m.get("role") or ""), str(m.get("content") or ""))
@@ -854,10 +926,12 @@ class SessionMemoryService:
         else:
             sys_prefix = tail_context
         messages: List[Dict[str, Any]] = [{"role": "system", "content": sys_prefix}]
+        filtered_history = self._domain_filtered_history()
         history_messages, history_stats = self._build_history_messages_by_budget(
             int(budgets["history_budget"]),
             int(budgets["history_summary_budget"]),
             int(budgets["assistant_clip_tokens"]),
+            source_history=filtered_history,
         )
         for msg in history_messages:
             messages.append(msg)
@@ -949,6 +1023,7 @@ class SessionMemoryService:
                     aggressive_history_budget,
                     aggressive_history_summary_budget,
                     aggressive_assistant_clip,
+                    source_history=filtered_history,
                 )
                 current_input2_head = ""
                 current_input2_head += (
