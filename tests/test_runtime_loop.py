@@ -4,7 +4,12 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from src.runtime.runtime_loop import _format_startup_directory
+from src.runtime.runtime_loop import (
+    _build_minimal_verification_command,
+    _format_startup_directory,
+    _shell_command_indicates_verification,
+    _tool_change_and_verification_hints,
+)
 
 
 class RuntimeLoopTests(unittest.TestCase):
@@ -27,6 +32,32 @@ class RuntimeLoopTests(unittest.TestCase):
                     _format_startup_directory(str(outside_path)),
                     str(outside_path),
                 )
+
+    def test_shell_command_indicates_verification(self):
+        self.assertTrue(_shell_command_indicates_verification("pytest -q"))
+        self.assertTrue(_shell_command_indicates_verification("python -m py_compile a.py"))
+        self.assertFalse(_shell_command_indicates_verification("echo hello"))
+
+    def test_build_minimal_verification_command_prefers_py_compile(self):
+        cmd = _build_minimal_verification_command(["a.py", "b.txt"])
+        self.assertIn("python -m py_compile", cmd)
+        self.assertIn("a.py", cmd)
+
+    def test_tool_change_and_verification_hints(self):
+        hints_change = _tool_change_and_verification_hints(
+            "apply_patch",
+            {"path": "helloworld.py"},
+            {"success": True},
+        )
+        self.assertTrue(bool(hints_change.get("code_changed")))
+        self.assertIn("helloworld.py", hints_change.get("changed_files") or [])
+
+        hints_verify = _tool_change_and_verification_hints(
+            "shell",
+            {"command": "pytest -q"},
+            {"success": True},
+        )
+        self.assertTrue(bool(hints_verify.get("verified")))
 
 
 if __name__ == "__main__":
