@@ -457,9 +457,12 @@ def cmd_install(args: argparse.Namespace) -> int:
                 if c.snippet:
                     print(f"   snippet: {c.snippet}", flush=True)
             try:
-                picked = _prompt_inline(f"Type index to install (1-{len(cards)}): ").strip()
+                picked = _prompt_inline(f"Type index to install (1-{len(cards)}) or \"c\" to Cancel: ").strip()
             except EOFError:
                 print("Installation aborted: no interactive index received.")
+                return 2
+            if picked.lower() == "c":
+                print("Installation aborted by user.")
                 return 2
             if not picked.isdigit():
                 print("Installation aborted: invalid index input.")
@@ -540,7 +543,7 @@ def cmd_install(args: argparse.Namespace) -> int:
                 print("Install aborted: no conflict resolution input received.")
                 return 3
             if choice in ("c", "cancel"):
-                print("Install cancelled by user.")
+                print("Installation aborted by user.")
                 return 3
             if choice in ("o", "overwrite"):
                 for p in paths:
