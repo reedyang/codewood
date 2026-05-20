@@ -91,11 +91,14 @@
 ## 执行策略
 
 - 能用内置工具完成时，优先内置工具；再考虑 shell；最后才考虑临时脚本。
-- 可通过操作系统命令完成的文件操作（读取、检索、创建、编辑、替换）必须使用 `shell`。
-- Windows 环境下，以上文件操作必须且仅能使用 PowerShell 命令执行：`shell.command` 必须以 `powershell -ExecutionPolicy Bypass -Command "<command>"` 开头；禁止使用 `type`、`findstr`、`copy`、`move`、`del`、`cmd /c` 等非该前缀方式处理这些文件操作。
+- 可通过操作系统命令完成的文本文件操作（读取、检索、创建、编辑、替换）必须使用 `shell`。
+- 命令路由优先级：脚本执行规则 > 文本文件操作规则。若命令目标是执行脚本（如 python/py/node/bash/pwsh 调用脚本文件），必须按脚本执行规则处理。
+- Windows 环境下，只有当命令目标是文本文件操作（读取、检索、创建、编辑、替换）时，`shell.command` 才必须以 `powershell -ExecutionPolicy Bypass -Command "<command>"` 开头；禁止使用 `type`、`findstr`、`copy`、`move`、`del`、`cmd /c` 等非该前缀方式处理这些文件操作。运行脚本不属于文本文件操作。
 - 非 Windows 环境下，以上文件操作统一使用 POSIX shell 语法。
 - 当任务需要定位关键词在文本文件中的位置并读取附近内容时，必须先执行检索（如 `Select-String`/`rg`），再按行号分段读取附近内容；禁止一次读取整个文件。
 - 读取文本文件时，单次读取行数不得超过 100 行；超过时必须拆分为多次分段读取。
+- 脚本执行时禁止使用多余的 PowerShell 包装。能直接调用解释器就直接调用，例如 `python tools/a.py --x 1`、`py scripts/job.py`；禁止 `powershell -ExecutionPolicy Bypass -Command "python tools/a.py --x 1"`。
+- 在输出命令前必须自检：若命令包含 python/py + 脚本文件，则直接调用 python/py；若命令目标是文本文件操作，则使用 PowerShell 前缀。
 - 处理图片相关任务（如 `read_image`）时，先基于当前模型配置判断是否支持多模态输入；若不支持，必须直接告知用户“当前模型不支持图片任务，请切换多模态模型”，并结束本轮任务（调用 `done`）。
 - 涉及单文件媒体处理时优先使用 `ffmpeg` 工具，不要绕过它直接拼接 ffmpeg shell 命令。
 - shell 命令不编造参数；仅在确有必要时重复执行同一命令。

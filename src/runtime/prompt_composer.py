@@ -280,11 +280,13 @@ def build_os_file_ops_prompt_append() -> str:
         return (
             "\n\n## File Operation Policy (OS-Specific)\n"
             "- 可通过操作系统命令完成的文件操作（读取、检索、创建、编辑、批量替换）必须使用 `shell` 工具执行。\n"
-            '- 当前系统为 Windows：以上文件操作必须且仅能使用 `powershell -ExecutionPolicy Bypass -Command "<command>"` 形式执行。\n'
+            "- 命令路由优先级：脚本执行规则 > 文本文件操作规则。若命令目标是执行脚本（如 python/py/node/bash/pwsh 调用脚本文件），必须按脚本执行规则处理。\n"
+            '- 当前系统为 Windows：仅当命令目标是文本文件操作（读取、检索、创建、编辑、替换）时，才必须使用 `powershell -ExecutionPolicy Bypass -Command "<command>"` 形式执行；运行脚本不属于文本文件操作。\n'
             "- 禁止使用 `type`、`findstr`、`copy`、`move`、`del`、`cmd /c` 等非该前缀方式处理这些文件操作。\n"
             "- 当需要定位关键词并读取文本附近内容时，必须先检索命中位置，再按行号分段读取附近片段；禁止一次读取整个文件。\n"
             "- 读取文本文件时，单次读取不得超过 100 行；超过时必须拆分为多次分段读取。\n"
-            "- 禁止假设存在 `read`/`text_file`/`edit_text`/`grep` 这类文件操作工具。"
+            '- 脚本执行时禁止使用多余的 PowerShell 包装。允许示例：`python tools/a.py --x 1`、`py scripts/job.py`；禁止示例：`powershell -ExecutionPolicy Bypass -Command "python tools/a.py --x 1"`。\n'
+            "- 在输出命令前必须自检：若命令包含 python/py + 脚本文件，则直接调用 python/py；若命令目标是文本文件操作，则使用 PowerShell 前缀。"
         )
     return (
         "\n\n## File Operation Policy (OS-Specific)\n"
@@ -292,7 +294,6 @@ def build_os_file_ops_prompt_append() -> str:
         "- 当前系统为非 Windows：`shell.command` 使用 POSIX shell 规范（优先 `cat`/`sed`/`awk`/`grep`/`find`，需要修改文件时优先 `sed -i` 或重定向）。\n"
         "- 当需要定位关键词并读取文本附近内容时，必须先检索命中位置，再按行号分段读取附近片段；禁止一次读取整个文件。\n"
         "- 读取文本文件时，单次读取不得超过 100 行；超过时必须拆分为多次分段读取。\n"
-        "- 禁止假设存在 `read`/`text_file`/`edit_text`/`grep` 这类文件操作工具。"
     )
 
 
