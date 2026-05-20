@@ -14,11 +14,6 @@ from .handlers.memory_handlers import dispatch_memory_tool
 def _print_with_auto_hide_tracking(agent: Any, text: str) -> None:
     msg = str(text or "")
     print(msg)
-    try:
-        if hasattr(agent, "_register_shell_output_for_auto_hide"):
-            agent._register_shell_output_for_auto_hide(msg, "")
-    except Exception:
-        pass
 
 
 def execute_tool_call_legacy(agent: Any, tool_name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:

@@ -13,11 +13,11 @@ class _DummyAgent:
 
 
 class ExecutionEngineOutputTrackingTests(unittest.TestCase):
-    def test_print_with_auto_hide_tracking_records_line(self):
+    def test_print_with_auto_hide_tracking_does_not_register_auto_hide(self):
         agent = _DummyAgent()
         with patch("builtins.print"):
             _print_with_auto_hide_tracking(agent, "ok")
-        self.assertEqual(agent.calls, [("ok", "")])
+        self.assertEqual(agent.calls, [])
 
 
 if __name__ == "__main__":

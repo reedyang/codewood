@@ -12,11 +12,6 @@ from ..core.security import command_security
 def _print_with_auto_hide_tracking(agent: Any, text: str) -> None:
     msg = str(text or "")
     print(msg)
-    try:
-        if hasattr(agent, "_register_shell_output_for_auto_hide"):
-            agent._register_shell_output_for_auto_hide(msg, "")
-    except Exception:
-        pass
 
 
 def confirm_allowlist_path(agent: Any) -> Path:
