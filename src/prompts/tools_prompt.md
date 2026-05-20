@@ -33,10 +33,13 @@
 文本文件操作规则（强制）：
 
 - 可通过操作系统命令完成的文本文件读取、检索、创建、编辑与替换，必须使用 `shell`。
-- Windows 上，以上文本文件操作必须且仅能通过 `powershell -ExecutionPolicy Bypass -Command "<command>"` 执行；禁止使用 `type`、`findstr`、`copy`、`move`、`del`、`cmd /c` 等非该前缀方式处理这些文件操作。
+- 命令路由优先级：脚本执行规则 > 文本文件操作规则。若命令目标是执行脚本（如 python/py/node/bash/pwsh 调用脚本文件），必须按脚本执行规则处理。
+- Windows 上，只有当命令目标是文本文件操作（读取、检索、创建、编辑、替换）时，才必须使用 `powershell -ExecutionPolicy Bypass -Command "<command>"`；禁止使用 `type`、`findstr`、`copy`、`move`、`del`、`cmd /c` 等非该前缀方式处理这些文件操作。运行脚本不属于文本文件操作。
 - 在非 Windows 上，以上文本文件操作使用 POSIX shell 语法。
 - 当需要定位关键词并读取文本文件附近内容时，必须先检索命中位置，再按行号读取附近片段；禁止一次读取整个文件。
 - 读取文本文件时，单次读取不得超过 100 行；超出范围必须分段多次读取。
+- 脚本执行时禁止使用多余的 PowerShell 包装。能直接调用解释器就直接调用，例如 `python tools/a.py --x 1`、`py scripts/job.py`；禁止 `powershell -ExecutionPolicy Bypass -Command "python tools/a.py --x 1"`。
+- 在输出命令前必须自检：若命令包含 python/py + 脚本文件，则直接调用 python/py；若命令目标是文本文件操作，则使用 PowerShell 前缀。
 - 禁止假设存在 `read`、`text_file`、`edit_text`、`grep` 这类文件操作工具。
 
 图片任务规则（强制）：
