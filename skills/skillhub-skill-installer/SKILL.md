@@ -98,7 +98,7 @@ Special terminal condition:
 
 - On any non-zero exit from installer script, output error summary and next actionable options only.
 - On any non-zero exit from installer script, after one concise error summary, immediately end with `{"tool":"done","args":{}}`.
-- If installer output contains `Installation aborted by user.` (for example user entered `n` at `Yes(y)/No(n)`), treat it as final terminal state and immediately end with `{"tool":"done","args":{}}`.
+- If installer output contains `Installation aborted by user.` (for example user entered `n` at `Yes(y)/No(n)`, `c/C` at index selection, or `cancel(c)` in conflict resolution), treat it as final terminal state and immediately end with `{"tool":"done","args":{}}`.
 - Forbidden after failure:
   - switching to unrelated workflows
   - asking unrelated inputs

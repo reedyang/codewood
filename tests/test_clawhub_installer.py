@@ -1,9 +1,12 @@
 import importlib.util
 import io
 import sys
+import tempfile
 import unittest
 import zipfile
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 
 def _load_installer_module():
@@ -80,6 +83,27 @@ content
         txt = self.mod._extract_skill_md_from_zip(mem.getvalue())
         self.assertTrue(txt.startswith("---"))
         self.assertIn("name: gmail", txt)
+
+    def test_install_index_cancel_is_user_abort_terminal(self):
+        args = SimpleNamespace(
+            confirm="YES",
+            detail_url="",
+            query="gmail",
+            max_results=8,
+            insecure=False,
+            no_verify=False,
+            config_dir=tempfile.gettempdir(),
+            builtin_skills_root="",
+            workspace_skills_root="",
+        )
+        cards = [self.mod.SkillCard(name="Gmail", detail_url="https://clawhub.ai/skills/gmail", snippet="")]
+        captured = io.StringIO()
+        with patch.object(self.mod, "_search", return_value=cards):
+            with patch.object(self.mod, "_prompt_inline", return_value="C"):
+                with patch("sys.stdout", new=captured):
+                    rc = self.mod.cmd_install(args)
+        self.assertEqual(rc, 2)
+        self.assertIn("Installation aborted by user.", captured.getvalue())
 
 
 if __name__ == "__main__":
