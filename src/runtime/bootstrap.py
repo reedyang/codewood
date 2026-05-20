@@ -40,6 +40,8 @@ def setup_core_state(agent: Any, startup_work_directory: Path, self_repo_root: P
     agent._ai_created_path_keys = set()
     agent._last_auto_removed_ephemeral = None
     agent._mcp_pending_user_input = {}
+    agent._force_current_input_as_requirement_once = False
+    agent._last_cancelled_task = ""
 
 
 def resolve_config_dir(config_dir: Optional[str]) -> Path:

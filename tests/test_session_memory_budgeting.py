@@ -25,6 +25,8 @@ class _FakeAgent:
         self.work_directory = Path("D:/SourceCode/opensource/smart-shell")
         self.system_prompt = ""
         self.params = {"context_window": 800}
+        self._force_current_input_as_requirement_once = False
+        self._last_cancelled_task = ""
 
     def _reload_skills(self):
         return None
@@ -67,6 +69,23 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
         messages, _ = svc.build_regular_task_messages("请写一个脚本")
         self.assertIn("用户原始需求: 请写一个脚本", messages[-1]["content"])
         self.assertIn("用户输入: 请写一个脚本", messages[-1]["content"])
+
+    def test_cancelled_previous_task_forces_new_requirement_once(self):
+        agent = _FakeAgent()
+        agent.conversation_history.append({"role": "user", "content": "旧任务：修复A模块"})
+        agent._force_current_input_as_requirement_once = True
+        agent._last_cancelled_task = "旧任务：修复A模块"
+        svc = SessionMemoryService(agent)
+
+        messages, _ = svc.build_regular_task_messages("新任务：实现B功能")
+        user_block = messages[-1]["content"]
+        self.assertIn("用户原始需求: 新任务：实现B功能", user_block)
+        self.assertIn("最近被取消的任务: 旧任务：修复A模块", user_block)
+        self.assertIn("禁止主动恢复或重做被取消任务", user_block)
+        self.assertFalse(bool(getattr(agent, "_force_current_input_as_requirement_once", True)))
+
+        messages2, _ = svc.build_regular_task_messages("继续")
+        self.assertIn("用户原始需求: 旧任务：修复A模块", messages2[-1]["content"])
 
     def test_degradation_adds_history_summary_before_full_drop(self):
         agent = _FakeAgent()

@@ -756,7 +756,14 @@ class SessionMemoryService:
                 f"当前 chat 名称：{str(getattr(self.agent, 'active_chat_name', '') or '')}\n"
             )
             system_tokens = self._estimate_message_tokens("system", sys_text)
-            requirement = self._first_user_requirement(str(user_input_hint or "").strip())
+            force_new_requirement = bool(
+                getattr(self.agent, "_force_current_input_as_requirement_once", False)
+            )
+            requirement = (
+                str(user_input_hint or "").strip()
+                if force_new_requirement
+                else self._first_user_requirement(str(user_input_hint or "").strip())
+            )
             user_anchor = (
                 "【关键约束】\n"
                 "1) 用户原始需求必须持续满足。\n"
@@ -855,7 +862,14 @@ class SessionMemoryService:
         for msg in history_messages:
             messages.append(msg)
 
-        original_requirement = self._first_user_requirement(user_input)
+        force_new_requirement = bool(
+            getattr(self.agent, "_force_current_input_as_requirement_once", False)
+        )
+        original_requirement = (
+            str(user_input or "").strip()
+            if force_new_requirement
+            else self._first_user_requirement(user_input)
+        )
         current_input = ""
         current_input += (
             "【关键约束】\n"
@@ -863,6 +877,14 @@ class SessionMemoryService:
             "2) 本轮用户输入优先级最高。\n"
             "3) 如有最近操作结果，结论需与其一致。\n\n"
         )
+        if force_new_requirement:
+            last_cancelled_task = str(getattr(self.agent, "_last_cancelled_task", "") or "").strip()
+            current_input += (
+                "4) 上一任务已由用户取消；本轮若是新任务，禁止主动恢复或重做被取消任务，"
+                "除非用户明确要求继续。\n\n"
+            )
+            if last_cancelled_task:
+                current_input += f"最近被取消的任务: {last_cancelled_task}\n"
         if mem_block:
             current_input += (
                 "【硬性要求】作答前须核对上一条 system 开头的「经验记忆」："
@@ -935,6 +957,14 @@ class SessionMemoryService:
                     "2) 本轮用户输入优先级最高。\n"
                     "3) 如有最近操作结果，结论需与其一致。\n\n"
                 )
+                if force_new_requirement:
+                    last_cancelled_task = str(getattr(self.agent, "_last_cancelled_task", "") or "").strip()
+                    current_input2_head += (
+                        "4) 上一任务已由用户取消；本轮若是新任务，禁止主动恢复或重做被取消任务，"
+                        "除非用户明确要求继续。\n\n"
+                    )
+                    if last_cancelled_task:
+                        current_input2_head += f"最近被取消的任务: {last_cancelled_task}\n"
                 current_input2_optional = (
                     f"当前 workspace: {self.agent.workspace_name}\n"
                     f"当前工作目录: {self.agent.work_directory}\n"
@@ -984,6 +1014,8 @@ class SessionMemoryService:
                     )
 
             self._store_context_usage_snapshot(ctx_window, total_input_tokens)
+            if force_new_requirement:
+                self.agent._force_current_input_as_requirement_once = False
             get_logger().info(
                 "context-pack profile=%s ctx_window=%s input_budget=%s system=%s history=%s user=%s "
                 "history_trimmed_assistant=%s history_summary_messages=%s history_dropped=%s",
