@@ -1502,7 +1502,7 @@ class SmartShellAgent:
         if pol == "unlimited":
             print(
                 _ansi_red(
-                    "  所有操作直接执行，不做可逆性检测与确认。"
+                    "  所有操作直接执行，不做安全性检测与确认。"
                     f"输入 {_pm} 可切换到 moderate；输入 {_pc} 可切回 confirmation。"
                 )
             )
@@ -1510,7 +1510,7 @@ class SmartShellAgent:
         elif pol == "moderate":
             print(
                 _ansi_yellow(
-                    "  可逆操作在执行前会由 AI 判定，可逆则自动跳过 y/n 确认。AI 可逆性判定可能会犯错，请谨慎使用。"
+                    "  安全操作在执行前会由 AI 判定，安全则自动跳过 y/n 确认。AI 安全性判定可能会犯错，请谨慎使用。"
                     f"输入 {_pc} 可切回 confirmation。"
                 )
             )

@@ -232,11 +232,11 @@ def parse_reversibility_response(text: str) -> Tuple[bool, str]:
                                 r = r.strip().lower() in ("true", "1", "yes", "是")
                             reason = str(obj.get("reason", "")).strip()[:200]
                             ok = bool(r)
-                            return ok, (reason or ("可逆" if ok else "不可逆"))
+                            return ok, (reason or ("安全" if ok else "不安全"))
                     except json.JSONDecodeError:
                         pass
                     break
-    return False, "无法解析可逆性判定"
+    return False, "无法解析安全性判定"
 
 
 def parse_combined_freedom_response(
@@ -487,14 +487,14 @@ def freedom_auto_confirm(agent: Any, command: Dict[str, Any]) -> bool:
                     _print_with_auto_hide_tracking(
                         agent,
                         "🦅 自由模式：脚本内容命中高风险启发规则（如注册表/系统配置相关），"
-                        "改由操作级可逆判定。",
+                        "改由操作安全判定。",
                     )
                     reversible, reason = ai_assess_reversible(agent, command)
                     if reversible:
-                        _print_with_auto_hide_tracking(agent, f"🦅 判定为可逆，自动跳过确认 — {reason}")
+                        _print_with_auto_hide_tracking(agent, f"🦅 判定为安全，自动跳过确认 — {reason}")
                         agent._manual_confirm_required_shell_once = False
                     else:
-                        _print_with_auto_hide_tracking(agent, f"🦅 判定为不可逆或不确定，仍需手动确认 — {reason}")
+                        _print_with_auto_hide_tracking(agent, f"🦅 判定为不安全或不确定，仍需手动确认 — {reason}")
                         agent._manual_confirm_required_shell_once = True
                     return reversible
                 use_cache = not session_ephemeral
@@ -511,7 +511,7 @@ def freedom_auto_confirm(agent: Any, command: Dict[str, Any]) -> bool:
                         return skip_c
                 _print_with_auto_hide_tracking(
                     agent,
-                    "🦅 自由模式：正在审查脚本安全、诱导内容与操作可逆性（单次 AI）…"
+                    "🦅 自由模式：正在审查脚本安全、诱导内容…"
                 )
                 skip, reason, inj_risk = ai_assess_ephemeral_script_combined(
                     agent, sp, body, command
@@ -542,20 +542,20 @@ def freedom_auto_confirm(agent: Any, command: Dict[str, Any]) -> bool:
                 agent._manual_confirm_required_shell_once = False
                 return True
 
-        _print_with_auto_hide_tracking(agent, "🦅 自由模式：正在请 AI 判定操作是否可逆…")
+        _print_with_auto_hide_tracking(agent, "🦅 自由模式：正在请 AI 判定操作是否安全…")
         reversible, reason = ai_assess_reversible(agent, command)
         if reversible:
-            _print_with_auto_hide_tracking(agent, f"🦅 判定为可逆，自动跳过确认 — {reason}")
+            _print_with_auto_hide_tracking(agent, f"🦅 判定为安全，自动跳过确认 — {reason}")
             agent._manual_confirm_required_shell_once = False
         else:
-            _print_with_auto_hide_tracking(agent, f"🦅 判定为不可逆或不确定，仍需手动确认 — {reason}")
+            _print_with_auto_hide_tracking(agent, f"🦅 判定为不安全或不确定，仍需手动确认 — {reason}")
             agent._manual_confirm_required_shell_once = True
         return reversible
 
-    _print_with_auto_hide_tracking(agent, "🦅 自由模式：正在请 AI 判定操作是否可逆…")
+    _print_with_auto_hide_tracking(agent, "🦅 自由模式：正在请 AI 判定操作是否安全…")
     reversible, reason = ai_assess_reversible(agent, command)
     if reversible:
-        _print_with_auto_hide_tracking(agent, f"🦅 判定为可逆，自动跳过确认 — {reason}")
+        _print_with_auto_hide_tracking(agent, f"🦅 判定为安全，自动跳过确认 — {reason}")
     else:
-        _print_with_auto_hide_tracking(agent, f"🦅 判定为不可逆或不确定，仍需手动确认 — {reason}")
+        _print_with_auto_hide_tracking(agent, f"🦅 判定为不安全或不确定，仍需手动确认 — {reason}")
     return reversible

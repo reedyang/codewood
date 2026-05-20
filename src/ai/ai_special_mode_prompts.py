@@ -97,7 +97,7 @@ def build_special_mode_messages(
 
     if minimal_classifier:
         if stream:
-            return None, False, "❌ 错误：内部可逆性判定不支持流式模式。"
+            return None, False, "❌ 错误：内部安全性判定不支持流式模式。"
         return [
             {"role": "system", "content": MINIMAL_CLASSIFIER_SYSTEM_PROMPT},
             {
