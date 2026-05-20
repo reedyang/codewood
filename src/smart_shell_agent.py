@@ -191,6 +191,15 @@ TASK_DOMAIN_VALUES = frozenset(
         "general_other",
     }
 )
+DOMAIN_PROMPT_FILE_MAP: Dict[str, str] = {
+    "software_development": "domain_software_development.md",
+    "documentation_writing": "domain_documentation_writing.md",
+    "visual_design": "domain_visual_design.md",
+    "data_analysis": "domain_data_analysis.md",
+    "finance": "domain_finance.md",
+    "lifestyle": "domain_lifestyle.md",
+    "project_coordination": "domain_project_coordination.md",
+}
 
 
 class SmartShellAgent:
@@ -689,6 +698,39 @@ class SmartShellAgent:
             "reason": reason,
             "domains": domains or ["general_other"],
         }
+
+    def _domain_specific_system_prompt_append(self) -> str:
+        domains = list(getattr(self, "_active_runtime_task_domains", None) or [])
+        if not domains:
+            return ""
+        cache = getattr(self, "_domain_prompt_cache", None)
+        if not isinstance(cache, dict):
+            cache = {}
+            self._domain_prompt_cache = cache
+        blocks: List[str] = []
+        seen: Set[str] = set()
+        for d in domains:
+            dom = str(d or "").strip()
+            if not dom or dom in seen or dom == "general_other":
+                continue
+            seen.add(dom)
+            text = ""
+            path_name = DOMAIN_PROMPT_FILE_MAP.get(dom, "")
+            if path_name:
+                if path_name in cache:
+                    text = str(cache.get(path_name) or "")
+                else:
+                    p = Path(__file__).resolve().parent / "prompts" / path_name
+                    try:
+                        text = p.read_text(encoding="utf-8").strip()
+                    except Exception:
+                        text = ""
+                    cache[path_name] = text
+            if text:
+                blocks.append(text.strip())
+        if not blocks:
+            return ""
+        return "\n\n" + "\n\n".join(blocks) + "\n"
 
     def _activate_chat(
         self,

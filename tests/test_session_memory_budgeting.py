@@ -48,8 +48,22 @@ class _FakeAgent:
                 return c
         return None
 
+    def _domain_specific_system_prompt_append(self):
+        domains = list(getattr(self, "_active_runtime_task_domains", None) or [])
+        if "software_development" in domains:
+            return "\n\n【领域强化：软件开发】\n硬性要求...\n"
+        return ""
+
 
 class SessionMemoryBudgetingTests(unittest.TestCase):
+    def test_domain_prompt_is_appended_for_specific_domain(self):
+        agent = _FakeAgent()
+        agent._active_runtime_task_domains = ["software_development"]
+        svc = SessionMemoryService(agent)
+        messages, _ = svc.build_regular_task_messages("请修复构建错误")
+        system_content = str(messages[0].get("content") or "")
+        self.assertIn("【领域强化：软件开发】", system_content)
+
     def test_domain_filtered_history_collects_all_matching_tasks(self):
         agent = _FakeAgent()
         agent._active_runtime_task_id = "task-a"

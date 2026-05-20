@@ -705,6 +705,16 @@ class SessionMemoryService:
             "assistant_clip_tokens": assistant_clip_tokens,
         }
 
+    def _domain_prompt_append(self) -> str:
+        fn = getattr(self.agent, "_domain_specific_system_prompt_append", None)
+        if not callable(fn):
+            return ""
+        try:
+            extra = fn()
+        except Exception:
+            return ""
+        return str(extra or "")
+
     def _summarize_history_excerpt(self, rows: List[Dict[str, Any]], summary_budget: int) -> str:
         if not rows or summary_budget <= 0:
             return ""
@@ -824,6 +834,7 @@ class SessionMemoryService:
             sys_text = (
                 f"{str(getattr(self.agent, '_skills_routing_prefix', '') or '')}"
                 f"{str(getattr(self.agent, 'system_prompt', '') or '')}\n"
+                f"{self._domain_prompt_append()}"
                 f"当前 workspace 名称：{str(getattr(self.agent, 'workspace_name', '') or '')}\n"
                 f"当前 chat 名称：{str(getattr(self.agent, 'active_chat_name', '') or '')}\n"
             )
@@ -904,6 +915,7 @@ class SessionMemoryService:
             mem_block = self._clip_text_to_token_budget(mem_block, mem_budget)
         immutable_system_core = (
             f"{self.agent._skills_routing_prefix}{self.agent.system_prompt}\n"
+            f"{self._domain_prompt_append()}"
             f"{self.agent._active_skill_full_prompt}"
         )
         # Key runtime metadata is intentionally non-clippable.
