@@ -360,13 +360,28 @@ def action_shell_command(
             err_tail_limit = _dynamic_tail_line_limit(sys.stderr)
             displayed_out = _build_tail_output_for_display(out, sys.stdout, out_tail_limit)
             displayed_err = _build_tail_output_for_display(err, sys.stderr, err_tail_limit)
+            should_replay_out = True
+            should_replay_err = True
+            if interactive:
+                # Interactive mode already streamed raw output to console.
+                # Skip replay when output fully fits within the tail limit and
+                # no post-processing changed the displayed text.
+                if displayed_out and (_count_output_lines(out) <= out_tail_limit) and (displayed_out == out):
+                    should_replay_out = False
+                if displayed_err and (_count_output_lines(err) <= err_tail_limit) and (displayed_err == err):
+                    should_replay_err = False
             last_rendered_chunk = ""
-            if displayed_out:
+            if displayed_out and should_replay_out:
                 _safe_console_write(displayed_out, sys.stdout, append_newline=False)
                 last_rendered_chunk = displayed_out
-            if displayed_err:
+            if displayed_err and should_replay_err:
                 _safe_console_write(displayed_err, sys.stderr, append_newline=False)
                 last_rendered_chunk = displayed_err
+            if (not last_rendered_chunk) and interactive:
+                if (not should_replay_err) and err:
+                    last_rendered_chunk = err
+                elif (not should_replay_out) and out:
+                    last_rendered_chunk = out
             # Keep next assistant/status lines on a fresh line even when command
             # output does not end with newline. This avoids off-by-one over-clear
             # caused by mixing "正在思考..." into the output's last visual line.
