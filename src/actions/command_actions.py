@@ -4,6 +4,7 @@ import shlex
 import shutil
 import sys
 import tempfile
+import unicodedata
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -56,7 +57,28 @@ def _wrap_line_for_display(line: str, width: int) -> List[str]:
     if not clean:
         return [""]
     w = max(1, int(width or 1))
-    return [clean[i : i + w] for i in range(0, len(clean), w)]
+    chunks: List[str] = []
+    current: List[str] = []
+    current_w = 0
+    for ch in clean:
+        if unicodedata.combining(ch):
+            ch_w = 0
+        else:
+            cat = unicodedata.category(ch)
+            if cat in ("Cc", "Cf"):
+                ch_w = 0
+            else:
+                ch_w = 2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1
+        if current and (current_w + ch_w > w):
+            chunks.append("".join(current))
+            current = [ch]
+            current_w = ch_w
+        else:
+            current.append(ch)
+            current_w += ch_w
+    if current:
+        chunks.append("".join(current))
+    return chunks or [""]
 
 
 def _build_tail_output_for_display(text: str, stream: Any, tail_lines: int = SHELL_OUTPUT_DISPLAY_TAIL_LINES) -> str:

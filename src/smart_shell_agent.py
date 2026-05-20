@@ -6,6 +6,7 @@ import shlex
 import threading
 import importlib
 import warnings
+import unicodedata
 from pathlib import Path
 from typing import List, Dict, Optional, Any, Tuple, Set
 import shutil
@@ -673,7 +674,14 @@ class SmartShellAgent:
         total = 0
         for part in parts:
             clean = ANSI_ESCAPE_RE.sub("", part).expandtabs(4)
-            plen = len(clean)
+            plen = 0
+            for ch in clean:
+                if unicodedata.combining(ch):
+                    continue
+                cat = unicodedata.category(ch)
+                if cat in ("Cc", "Cf"):
+                    continue
+                plen += 2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1
             total += max(1, (plen + width - 1) // width)
         return total
 
