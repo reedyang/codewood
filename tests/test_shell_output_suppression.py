@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import patch
 
 from src.actions.command_actions import (
     SHELL_OUTPUT_DISPLAY_TAIL_LINES,
@@ -41,6 +42,14 @@ class ShellOutputSuppressionTests(unittest.TestCase):
         text = "\n".join(f"line{i}" for i in range(1, 55)) + "\n"
         out = _build_tail_output_for_display(text, _FakePipe(), SHELL_OUTPUT_DISPLAY_TAIL_LINES)
         self.assertTrue(out.startswith("... omitted 24 lines ...\n"))
+
+    def test_build_tail_output_respects_wrapped_visual_lines(self):
+        text = "x" * 120 + "\n"
+        with patch("src.actions.command_actions._terminal_columns_for_tail_display", return_value=10):
+            out = _build_tail_output_for_display(text, _FakePipe(), 5)
+        self.assertTrue(out.startswith("... omitted 7 lines ...\n"))
+        body = out.split("\n", 1)[1]
+        self.assertEqual(body, ("x" * 10 + "\n") * 5)
 
 
 if __name__ == "__main__":

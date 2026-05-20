@@ -1,6 +1,7 @@
 import os
 import re
 import shlex
+import shutil
 import sys
 import tempfile
 from pathlib import Path
@@ -9,6 +10,7 @@ from typing import Any, Dict, List, Optional
 from ..core.console_utils import _decode_subprocess_output, _safe_console_write
 
 SHELL_OUTPUT_DISPLAY_TAIL_LINES = 30
+ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 
 
 def _count_output_lines(text: str) -> int:
@@ -32,6 +34,31 @@ def _format_omitted_lines_notice(omitted_lines: int, stream: Any) -> str:
     return msg + "\n"
 
 
+def _terminal_columns_for_tail_display(stream: Any) -> int:
+    try:
+        if stream is not None and hasattr(stream, "fileno"):
+            cols = int(os.get_terminal_size(stream.fileno()).columns or 0)
+            if cols > 0:
+                return cols
+    except Exception:
+        pass
+    try:
+        cols = int(shutil.get_terminal_size(fallback=(80, 24)).columns or 80)
+        if cols > 0:
+            return cols
+    except Exception:
+        pass
+    return 80
+
+
+def _wrap_line_for_display(line: str, width: int) -> List[str]:
+    clean = ANSI_ESCAPE_RE.sub("", str(line or "")).expandtabs(4)
+    if not clean:
+        return [""]
+    w = max(1, int(width or 1))
+    return [clean[i : i + w] for i in range(0, len(clean), w)]
+
+
 def _build_tail_output_for_display(text: str, stream: Any, tail_lines: int = SHELL_OUTPUT_DISPLAY_TAIL_LINES) -> str:
     raw = str(text or "")
     if not raw:
@@ -42,10 +69,14 @@ def _build_tail_output_for_display(text: str, stream: Any, tail_lines: int = SHE
     if trailing_newline and lines and lines[-1] == "":
         lines = lines[:-1]
     limit = max(1, int(tail_lines or 1))
-    if len(lines) <= limit:
+    width = _terminal_columns_for_tail_display(stream)
+    rendered_lines: List[str] = []
+    for line in lines:
+        rendered_lines.extend(_wrap_line_for_display(line, width))
+    if len(rendered_lines) <= limit:
         return raw
-    omitted = len(lines) - limit
-    tail = "\n".join(lines[-limit:])
+    omitted = len(rendered_lines) - limit
+    tail = "\n".join(rendered_lines[-limit:])
     if trailing_newline:
         tail += "\n"
     return _format_omitted_lines_notice(omitted, stream) + tail
