@@ -11,6 +11,7 @@ from typing import Any, Dict, List, Optional
 from ..core.console_utils import _decode_subprocess_output, _safe_console_write
 
 SHELL_OUTPUT_DISPLAY_TAIL_LINES = 30
+SHELL_OUTPUT_DISPLAY_RESERVED_LINES = 3
 ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 
 
@@ -50,6 +51,33 @@ def _terminal_columns_for_tail_display(stream: Any) -> int:
     except Exception:
         pass
     return 80
+
+
+def _terminal_rows_for_tail_display(stream: Any) -> int:
+    try:
+        if stream is not None and hasattr(stream, "fileno"):
+            rows = int(os.get_terminal_size(stream.fileno()).lines or 0)
+            if rows > 0:
+                return rows
+    except Exception:
+        pass
+    try:
+        rows = int(shutil.get_terminal_size(fallback=(80, 24)).lines or 24)
+        if rows > 0:
+            return rows
+    except Exception:
+        pass
+    return 24
+
+
+def _dynamic_tail_line_limit(
+    stream: Any,
+    max_tail_lines: int = SHELL_OUTPUT_DISPLAY_TAIL_LINES,
+    reserved_lines: int = SHELL_OUTPUT_DISPLAY_RESERVED_LINES,
+) -> int:
+    rows = _terminal_rows_for_tail_display(stream)
+    visible_cap = min(max(1, int(rows)), max(1, int(max_tail_lines or 1)))
+    return max(1, visible_cap - max(0, int(reserved_lines or 0)))
 
 
 def _wrap_line_for_display(line: str, width: int) -> List[str]:
@@ -312,8 +340,10 @@ def action_shell_command(
                 err = _decode_subprocess_output(completed.stderr)
 
             out = append_shell_merge_output_path(out, return_code, merge_path)
-            displayed_out = _build_tail_output_for_display(out, sys.stdout, SHELL_OUTPUT_DISPLAY_TAIL_LINES)
-            displayed_err = _build_tail_output_for_display(err, sys.stderr, SHELL_OUTPUT_DISPLAY_TAIL_LINES)
+            out_tail_limit = _dynamic_tail_line_limit(sys.stdout)
+            err_tail_limit = _dynamic_tail_line_limit(sys.stderr)
+            displayed_out = _build_tail_output_for_display(out, sys.stdout, out_tail_limit)
+            displayed_err = _build_tail_output_for_display(err, sys.stderr, err_tail_limit)
             if displayed_out:
                 _safe_console_write(displayed_out, sys.stdout, append_newline=False)
             if displayed_err:
