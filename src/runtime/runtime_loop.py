@@ -621,6 +621,7 @@ def run_agent_loop(agent: Any):
                 "6) 若任务需要把自然语言指称解析为稳定标识符/映射：先阅读【经验记忆】，仍不足则首轮或次轮使用 memory_search，再执行检索、shell 或 request_skill_prompt；禁止在未核对记忆时先猜标识符再搜网。\n"
                 "7) 若你已输出 Step 1..N 且含「检索/搜索」与后续「分析、再跑脚本、再请求其它 skill」等，禁止在仅完成靠前步骤且仍有 pending 时 {\"tool\":\"done\"}；须继续直至各步完成或显式说明改计划原因。\n\n"
                 "8) 只要调用了网络检索相关的工具、命令、脚本或 skill（网页搜索、联网抓取、在线查询等），调用 done 前必须先输出一次检索结果总结（关键信息、来源要点、与用户问题的对应关系）；禁止检索后直接 done。\n\n"
+                "9) 若上一任务已被用户取消，而本轮用户输入是新任务，禁止主动恢复或重做被取消任务；仅当用户明确要求“继续/重做”时才可恢复。\n\n"
                 "【MCP 工具选择补充约束】\n"
                 "- 用户若请求“指定 MCP server 的信息/详情”，首个查询工具必须是 mcp_server_info。\n"
                 "- mcp_status/mcp_status_refresh 仅用于全局 MCP 状态总览，不可替代指定 server 的详情查询。\n\n"
@@ -855,6 +856,8 @@ def run_agent_loop(agent: Any):
                 is_first_round = False
 
                 if self._result_indicates_user_cancelled(result):
+                    self._force_current_input_as_requirement_once = True
+                    self._last_cancelled_task = str(original_user_task or "").strip()
                     print("⏹️ 检测到用户取消，已结束当前任务，不再自动续步。")
                     break
 
@@ -968,6 +971,11 @@ def run_agent_loop(agent: Any):
             if in_task_execution:
                 in_task_execution = False
                 self._in_task_execution = False
+                self._force_current_input_as_requirement_once = True
+                try:
+                    self._last_cancelled_task = str(original_user_task or "").strip()
+                except Exception:
+                    self._last_cancelled_task = str(getattr(self, "_last_cancelled_task", "") or "")
                 self._active_skill_full_prompt = ""
                 self._active_skill_id = None
                 self._active_skill_source = None
