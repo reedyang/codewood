@@ -1379,15 +1379,22 @@ class SmartShellAgent:
             max_section_chars=SKILL_PROMPT_MAX_SECTION_CHARS,
         )
     def _get_slash_skill_commands(self) -> List[str]:
+        if self.skills:
+            return ["/skills/"]
+        return []
+
+    def _get_slash_skill_target_commands(self) -> List[str]:
         cmds: List[str] = []
         seen: Set[str] = set()
         for s in self.skills or []:
             sid = str(getattr(s, "skill_id", "")).strip()
-            if sid:
-                c = f"/{sid}"
-                if c.lower() not in seen:
-                    seen.add(c.lower())
-                    cmds.append(c)
+            if not sid:
+                continue
+            c = f"/skills/{sid}"
+            if c.lower() in seen:
+                continue
+            seen.add(c.lower())
+            cmds.append(c)
         return sorted(cmds, key=str.lower)
 
     def _refresh_input_handler_skill_completions(self) -> None:
@@ -1416,6 +1423,7 @@ class SmartShellAgent:
             mcp_config=self.mcp_manager.mcp_config,
             mcp_scoped_groups_provider=self._get_slash_mcp_scoped_groups,
             model_selectors_provider=self._get_configured_model_selectors,
+            skill_targets_provider=self._get_slash_skill_target_commands,
         )
 
     def _get_slash_mcp_server_target_commands(
@@ -1432,14 +1440,16 @@ class SmartShellAgent:
 
     def _extract_forced_skill_reference(self, user_text: str) -> Optional[Dict[str, Any]]:
         """
-        Find one or more '/skill-id' tokens and match loaded skills by skill_id or name.
+        Find one or more '/skills/<skill-name>' references and match loaded skills by
+        skill_id or name.
         Returns {"skills":[{"skill_id","name"}...], "rest"} when matched.
         """
         raw = (user_text or "").strip()
         if not raw:
             return None
-        # token boundary: start or whitespace before '/', then read token until whitespace
-        matches = list(re.finditer(r"(?<!\S)/([^\s/]+)", raw))
+        matches = list(
+            re.finditer(r"(?<!\S)/skills/([^\s/]+)", raw, flags=re.IGNORECASE)
+        )
         if not matches:
             return None
         skill_by_token: Dict[str, Dict[str, str]] = {}
@@ -1464,10 +1474,17 @@ class SmartShellAgent:
                 if sid_l and sid_l not in selected_ids:
                     selected_ids.add(sid_l)
                     selected.append(matched)
-                pieces.append(raw[cursor:m.start()])
-                cursor = m.end()
         if not selected:
             return None
+        for m in matches:
+            start, end = m.start(), m.end()
+            if start < cursor:
+                continue
+            token_l = (m.group(1) or "").strip().lower()
+            if token_l not in skill_by_token:
+                continue
+            pieces.append(raw[cursor:start])
+            cursor = end
         pieces.append(raw[cursor:])
         cleaned = "".join(pieces).strip()
         cleaned = re.sub(r"\s{2,}", " ", cleaned)
@@ -2384,7 +2401,7 @@ class SmartShellAgent:
                 f"\nLoaded Agent Skills: {len(self.skills)} "
                 f"(builtin: {self._builtin_skills_root}, external: {self.config_dir / 'skills'})"
             )
-            print("  Use /<skill-id> <task> to force a skill in current turn.")
+            print("  Use /skills/<skill-name> <task> to force a skill in current turn.")
             skill_cmds = self._get_slash_skill_commands()
             if skill_cmds:
                 print("  Skill shortcuts:")
