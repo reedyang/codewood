@@ -8,7 +8,7 @@ if "ollama" not in sys.modules:
     sys.modules["ollama"] = fake_ollama
 
 from src.smart_shell_agent import SmartShellAgent
-from src.completion.builtin_slash_commands import WINDOWS_SLASH_BUILTIN_COMMANDS
+from src.completion.builtin_slash_commands import SLASH_BUILTIN_COMMANDS
 
 
 class McpShortcutCommandTests(unittest.TestCase):
@@ -79,7 +79,7 @@ class McpShortcutCommandTests(unittest.TestCase):
             "/mcp enable-tools ",
         ]
         for item in expected:
-            self.assertIn(item, WINDOWS_SLASH_BUILTIN_COMMANDS)
+            self.assertIn(item, SLASH_BUILTIN_COMMANDS)
 
     def test_completion_contains_memory_commands(self):
         expected = [
@@ -92,14 +92,14 @@ class McpShortcutCommandTests(unittest.TestCase):
             "/memory delete ",
         ]
         for item in expected:
-            self.assertIn(item, WINDOWS_SLASH_BUILTIN_COMMANDS)
+            self.assertIn(item, SLASH_BUILTIN_COMMANDS)
 
     def test_completion_contains_model_commands(self):
         expected = [
             "/model",
         ]
         for item in expected:
-            self.assertIn(item, WINDOWS_SLASH_BUILTIN_COMMANDS)
+            self.assertIn(item, SLASH_BUILTIN_COMMANDS)
 
 
 if __name__ == "__main__":

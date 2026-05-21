@@ -57,7 +57,6 @@ from .core.console_utils import (
     _ansi_red,
     _ansi_yellow,
     _ansi_green,
-    _ansi_white,
     _ansi_rgb,
     _ansi_bright_blue,
 )
@@ -119,17 +118,17 @@ import platform
 
 if platform.system() == "Windows":
     try:
-        from .completion.windows_input import create_windows_input_handler
+        from .completion.prompt_toolkit_input import create_prompt_toolkit_input_handler
         TAB_COMPLETION_AVAILABLE = True
-        INPUT_HANDLER_TYPE = "windows"
+        INPUT_HANDLER_TYPE = "prompt_toolkit"
     except ImportError:
         TAB_COMPLETION_AVAILABLE = False
         INPUT_HANDLER_TYPE = "none"
 else:
     try:
-        from .completion.unix_input import create_tab_completer
+        from .completion.prompt_toolkit_input import create_prompt_toolkit_input_handler
         TAB_COMPLETION_AVAILABLE = True
-        INPUT_HANDLER_TYPE = "readline"
+        INPUT_HANDLER_TYPE = "prompt_toolkit"
     except ImportError:
         TAB_COMPLETION_AVAILABLE = False
         INPUT_HANDLER_TYPE = "none"
@@ -260,8 +259,7 @@ class SmartShellAgent:
             self,
             tab_completion_available=TAB_COMPLETION_AVAILABLE,
             input_handler_type=INPUT_HANDLER_TYPE,
-            create_windows_input_handler=globals().get("create_windows_input_handler"),
-            create_tab_completer=globals().get("create_tab_completer"),
+            create_prompt_toolkit_input_handler=globals().get("create_prompt_toolkit_input_handler"),
         )
         bootstrap.setup_runtime_services(self)
 
@@ -2683,7 +2681,7 @@ class SmartShellAgent:
                     )
                     self._prompt_separator_rendered = bool(show_separator)
                 except TypeError:
-                    # readline/unix_input handlers may not support status bar kwargs.
+                    # Legacy handlers may not support status bar kwargs.
                     user_input = self.input_handler.get_input_with_completion(prompt)
                 # 这里不直接写入 HistoryManager，交由上层 run() 统一处理，避免重复
                 return user_input

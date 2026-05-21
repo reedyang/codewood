@@ -12,7 +12,7 @@ from src.completion.slash_dynamic_completions import (
     build_mcp_server_commands,
     build_slash_dynamic_rules,
 )
-from src.completion.builtin_slash_commands import windows_slash_builtin_completions
+from src.completion.builtin_slash_commands import slash_builtin_completions
 from src.smart_shell_agent import SmartShellAgent
 
 
@@ -113,7 +113,7 @@ class McpReferenceFormatTests(unittest.TestCase):
 
     def test_root_level_completion_does_not_show_mcp_server_items(self):
         delayed_groups = [("/mcp/", ["/mcp/playwright/"])]
-        root_out = windows_slash_builtin_completions(
+        root_out = slash_builtin_completions(
             "/",
             dynamic_commands=[],
             delayed_dynamic_groups=delayed_groups,
@@ -121,7 +121,7 @@ class McpReferenceFormatTests(unittest.TestCase):
         self.assertIn("/mcp/", root_out)
         self.assertNotIn("/mcp/playwright/", root_out)
 
-        mcp_out = windows_slash_builtin_completions(
+        mcp_out = slash_builtin_completions(
             "/mcp/",
             dynamic_commands=[],
             delayed_dynamic_groups=delayed_groups,

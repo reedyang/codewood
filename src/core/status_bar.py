@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Tuple
 
-from .console_utils import _ansi_gray, _ansi_rgb, _ansi_white
+from .console_utils import _ansi_gray, _ansi_rgb
 
 STATUS_MODEL_COLOR_HEX = "#d7ba7d"
 STATUS_WORKSPACE_COLOR_HEX = "#98c379"
@@ -36,13 +36,13 @@ def build_status_bar_render_data(
         ("", " "),
         (f"fg:{STATUS_WORKSPACE_COLOR_HEX}", str(workspace_name)),
         ("", " "),
-        ("fg:ansiwhite", str(active_chat_name)),
+        ("", str(active_chat_name)),
         ("fg:ansibrightblack", usage_text),
     ]
     status_bar_plain = (
         f"  {_ansi_rgb(str(model_name), *STATUS_MODEL_COLOR_RGB)} "
         f"{_ansi_rgb(str(workspace_name), *STATUS_WORKSPACE_COLOR_RGB)} "
-        f"{_ansi_white(str(active_chat_name))}"
+        f"{str(active_chat_name)}"
         f"{_ansi_gray(usage_text)}"
     )
     return status_bar_fragments, status_bar_plain

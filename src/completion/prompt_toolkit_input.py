@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Windows兼容的输入处理模块
-使用prompt_toolkit库实现稳定的Tab补全功能和中文输入支持
+基于 prompt_toolkit 的跨平台输入处理模块
+提供稳定的 Tab 补全、状态栏渲染和中文输入支持
 """
 
 import os
@@ -12,7 +12,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 _WIN_DRIVE_BANG = re.compile(r"^([A-Za-z]:)(/.*)?$")
 
-from .builtin_slash_commands import windows_slash_builtin_completions
+from .builtin_slash_commands import slash_builtin_completions
 
 try:
     from prompt_toolkit import PromptSession
@@ -359,37 +359,35 @@ class FileCompleter(Completer):
                         )
                     return
 
-        # Windows: "/" -> built-in + skill slash commands only (no path-as-/foo)
-        if os.name == "nt":
-            idx, slash_part = self._slash_fragment_for_completion(text)
-            if idx >= 0 and slash_part:
-                delayed_groups = self._resolve_dynamic_groups()
-                builtin_matches = windows_slash_builtin_completions(
-                    slash_part,
-                    dynamic_commands=(
-                        self.slash_skill_commands
-                        + self.slash_mcp_commands
-                    ),
-                    delayed_dynamic_groups=delayed_groups,
-                )
+        # Slash built-ins: always provide command completion when applicable.
+        # Special-case lone "/" on non-Windows to avoid enumerating root files.
+        idx, slash_part = self._slash_fragment_for_completion(text)
+        if idx >= 0 and slash_part:
+            delayed_groups = self._resolve_dynamic_groups()
+            builtin_matches = slash_builtin_completions(
+                slash_part,
+                dynamic_commands=(
+                    self.slash_skill_commands
+                    + self.slash_mcp_commands
+                ),
+                delayed_dynamic_groups=delayed_groups,
+            )
+            if builtin_matches:
+                # When delayed dynamic completion is active, hide the trigger
+                # command itself from menu (e.g. "/workspace switch ").
+                active_trigger_norms = {
+                    str(trigger or "").rstrip().lower()
+                    for trigger, _ in delayed_groups
+                    if str(trigger or "").strip()
+                    and slash_part.lower().startswith(str(trigger or "").lower())
+                }
+                if active_trigger_norms:
+                    builtin_matches = [
+                        mc
+                        for mc in builtin_matches
+                        if str(mc or "").rstrip().lower() not in active_trigger_norms
+                    ]
                 if builtin_matches:
-                    # When delayed dynamic completion is active, hide the trigger
-                    # command itself from menu (e.g. "/workspace switch ").
-                    active_trigger_norms = {
-                        str(trigger or "").rstrip().lower()
-                        for trigger, _ in delayed_groups
-                        if str(trigger or "").strip()
-                        and slash_part.lower().startswith(str(trigger or "").lower())
-                    }
-                    if active_trigger_norms:
-                        builtin_matches = [
-                            mc
-                            for mc in builtin_matches
-                            if str(mc or "").rstrip().lower() not in active_trigger_norms
-                        ]
-                    if not builtin_matches:
-                        return
-
                     spos = -len(slash_part)
                     seen = set()
                     all_delayed_groups = delayed_groups
@@ -406,6 +404,11 @@ class FileCompleter(Completer):
                             display=display_text,
                         )
                     return
+            if slash_part == "/":
+                return
+            # Keep Windows behavior: slash prefix is command namespace, not file path.
+            if os.name == "nt":
+                return
 
         # Generic token-based file/path completion (from last whitespace boundary)
         if token:
@@ -616,7 +619,7 @@ class FileCompleter(Completer):
             根目录下的文件/文件夹列表
         """
         try:
-            # Windows-only input handler: always use current drive root.
+            # Drive-root completion: use current drive root.
             current_drive = Path.cwd().anchor  # 例如 'C:\\'
             root_dir = Path(current_drive)
             
@@ -634,7 +637,7 @@ class FileCompleter(Completer):
                     if file_part and not item.name.lower().startswith(file_part.lower()):
                         continue
                     
-                    # 构建Windows风格路径
+                    # 构建反斜杠风格路径
                     path = f"\\{item.name}"
                     
                     matches.append(path)
@@ -648,7 +651,7 @@ class FileCompleter(Completer):
             return []
 
     @staticmethod
-    def _windows_bang_drive_base(rel: str) -> Optional[Tuple[Path, str]]:
+    def _drive_letter_bang_base(rel: str) -> Optional[Tuple[Path, str]]:
         """
         If rel is a Windows path starting with X: (absolute drive), return (directory to
         list, filename prefix). pathlib's (workdir / 'd:') is not drive root when cwd is
@@ -675,7 +678,7 @@ class FileCompleter(Completer):
     def _get_workspace_path_completions_for_bang(self, bang_part: str) -> List[str]:
         """
         Build workspace-relative path completions for leading '!...'.
-        Example: '!src/win' -> '!src\\windows_input.py'
+        Example: '!src/p' -> '!src\\completion\\prompt_toolkit_input.py'
         On Windows, '!d:\\' lists D:\\ root (not the workspace when it is on D:).
         """
         try:
@@ -694,7 +697,7 @@ class FileCompleter(Completer):
                 # Bare "x:" only — do not list drive root until user types !x:\ or !x:/
                 if re.fullmatch(r"[A-Za-z]:", nd):
                     return []
-                drive_pair = self._windows_bang_drive_base(rel)
+                drive_pair = self._drive_letter_bang_base(rel)
                 if drive_pair is not None:
                     base_dir, file_part = drive_pair
                     if not base_dir.exists() or not base_dir.is_dir():
@@ -764,7 +767,7 @@ class FileCompleter(Completer):
     def _get_path_completions(self, text: str) -> List[str]:
         """获取路径补全"""
         try:
-            # Windows-only input handler: normalize to Windows separator.
+            # Normalize to backslash separator for workspace-style suggestions.
             text = text.replace("/", "\\")
             separator = '\\'
             
@@ -786,7 +789,7 @@ class FileCompleter(Completer):
             
             # 解析目录路径
             if dir_part.startswith("\\") or (len(dir_part) > 1 and dir_part[1] == ':'):
-                # Absolute path on Windows:
+                # Absolute path with drive letter:
                 # - leading "\" is drive-root relative (map to current drive root)
                 # - "d:" should be normalized to "d:\\" for drive root
                 if dir_part.startswith("\\"):
@@ -807,7 +810,7 @@ class FileCompleter(Completer):
             matches = []
             for item in base_dir.iterdir():
                 if item.name.lower().startswith(file_part.lower()):
-                    # 构建Windows风格路径
+                    # 构建反斜杠风格路径
                     relative_path = f"{dir_part}\\{item.name}"
                     
                     # Only append separator for directories when input ends with separator
@@ -898,8 +901,8 @@ class FileCompleter(Completer):
         return strings[0][:min_len]
 
 
-class WindowsInputHandler:
-    """Windows输入处理器，使用prompt_toolkit实现Tab补全和中文输入支持"""
+class PromptToolkitInputHandler:
+    """prompt_toolkit 输入处理器（跨平台）"""
     
     def __init__(
         self,
@@ -1310,15 +1313,15 @@ class WindowsInputHandler:
         )
 
 
-def create_windows_input_handler(
+def create_prompt_toolkit_input_handler(
     work_directory: Path,
     initial_history: Optional[List[str]] = None,
     slash_skill_commands: Optional[List[str]] = None,
     slash_mcp_commands: Optional[List[str]] = None,
     slash_dynamic_rules: Optional[List[Dict[str, Any]]] = None,
-) -> WindowsInputHandler:
-    """创建Windows输入处理器"""
-    return WindowsInputHandler(
+) -> PromptToolkitInputHandler:
+    """创建 prompt_toolkit 输入处理器"""
+    return PromptToolkitInputHandler(
         work_directory,
         initial_history,
         slash_skill_commands,

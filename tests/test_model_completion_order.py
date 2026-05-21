@@ -1,6 +1,6 @@
 import unittest
 
-from src.completion.builtin_slash_commands import windows_slash_builtin_completions
+from src.completion.builtin_slash_commands import slash_builtin_completions
 from src.completion.slash_dynamic_completions import build_model_switch_commands
 
 
@@ -20,7 +20,7 @@ class ModelCompletionOrderTests(unittest.TestCase):
                 ["/model openwebui:b", "/model openai:a", "/model ollama:c"],
             )
         ]
-        out = windows_slash_builtin_completions(
+        out = slash_builtin_completions(
             "/model ",
             dynamic_commands=[],
             delayed_dynamic_groups=delayed_groups,
