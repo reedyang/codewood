@@ -6,9 +6,10 @@ import contextlib
 import concurrent.futures
 import gc
 import logging
+import queue
 import threading
 from pathlib import Path
-from typing import List, Dict, Optional, Any, Iterator, Tuple
+from typing import List, Dict, Optional, Any, Iterator, Tuple, Callable
 from datetime import datetime
 
 # Knowledge base imports: ChromaDB has known issues on Python 3.14 (Pydantic v1 incompatibility).
@@ -590,19 +591,58 @@ class KnowledgeManager:
 
 class KnowledgeService:
     """
-    在单一线程池工作线程上执行全部 KnowledgeManager 操作（初始化、同步、检索）。
+    在单一工作线程上执行全部 KnowledgeManager 操作（初始化、同步、检索）。
     Chroma 使用 SQLite 持久化时，要求在创建客户端的线程内访问；若在后台线程初始化、在主线程 query，会导致检索为空或异常。
     """
 
     def __init__(self, config_dir: str, embedding_model: str = DEFAULT_LOCAL_EMBEDDING_MODEL):
         self._config_dir = str(Path(config_dir))
         self._embedding_model = embedding_model
-        self._executor = concurrent.futures.ThreadPoolExecutor(
-            max_workers=1, thread_name_prefix="smartshell-kb"
+        self._task_queue: "queue.Queue[Optional[Tuple[Callable[[], Any], concurrent.futures.Future]]]" = queue.Queue()
+        self._closed = threading.Event()
+        self._worker = threading.Thread(
+            target=self._worker_loop,
+            name="smartshell-kb",
+            daemon=True,
         )
+        self._worker.start()
         self._km: Optional[KnowledgeManager] = None
         self._ready = threading.Event()
-        self._executor.submit(self._bootstrap)
+        self._enqueue_background(self._bootstrap)
+
+    def _worker_loop(self) -> None:
+        while True:
+            task = self._task_queue.get()
+            if task is None:
+                return
+            fn, future = task
+            if future.cancelled():
+                continue
+            try:
+                result = fn()
+            except Exception as e:
+                try:
+                    future.set_exception(e)
+                except Exception:
+                    pass
+            else:
+                try:
+                    future.set_result(result)
+                except Exception:
+                    pass
+
+    def _enqueue_background(self, fn: Callable[[], Any]) -> None:
+        if self._closed.is_set():
+            return
+        future: concurrent.futures.Future = concurrent.futures.Future()
+        self._task_queue.put((fn, future))
+
+    def _submit(self, fn: Callable[[], Any], timeout: float) -> Any:
+        if self._closed.is_set():
+            raise RuntimeError("KnowledgeService 已关闭")
+        future: concurrent.futures.Future = concurrent.futures.Future()
+        self._task_queue.put((fn, future))
+        return future.result(timeout=timeout)
 
     def _bootstrap(self) -> None:
         try:
@@ -639,7 +679,7 @@ class KnowledgeService:
             return
         if self._km is None:
             return
-        self._executor.submit(_do).result(timeout=600.0)
+        self._submit(_do, timeout=600.0)
 
     def search_knowledge(self, query: str, top_k: int = 5) -> List[Dict[str, Any]]:
         def _do() -> List[Dict[str, Any]]:
@@ -651,7 +691,7 @@ class KnowledgeService:
             return []
         if self._km is None:
             return []
-        return self._executor.submit(_do).result(timeout=120.0)
+        return self._submit(_do, timeout=120.0)
 
     def get_knowledge_stats(self) -> Dict[str, Any]:
         def _do() -> Dict[str, Any]:
@@ -663,7 +703,7 @@ class KnowledgeService:
             return {}
         if self._km is None:
             return {}
-        return self._executor.submit(_do).result(timeout=60.0)
+        return self._submit(_do, timeout=60.0)
 
     def get_knowledge_context(self, query: str, max_length: int = 2000) -> str:
         def _do() -> str:
@@ -675,21 +715,31 @@ class KnowledgeService:
             return ""
         if self._km is None:
             return ""
-        return self._executor.submit(_do).result(timeout=120.0)
+        return self._submit(_do, timeout=120.0)
 
     def shutdown(self, wait: bool = False) -> None:
         """释放 KnowledgeManager/Chroma 资源和线程池。"""
+        if self._closed.is_set():
+            return
+        self._closed.set()
+
         def _do() -> None:
             km = self._km
             self._km = None
             if km is not None:
                 km.close()
 
+        future: concurrent.futures.Future = concurrent.futures.Future()
         try:
-            future = self._executor.submit(_do)
+            self._task_queue.put((_do, future))
             if wait:
                 future.result(timeout=120.0)
         except Exception:
             _kb_log.debug("KnowledgeService shutdown cleanup failed", exc_info=True)
         finally:
-            self._executor.shutdown(wait=wait)
+            self._task_queue.put(None)
+            if wait:
+                try:
+                    self._worker.join(timeout=2.0)
+                except Exception:
+                    pass

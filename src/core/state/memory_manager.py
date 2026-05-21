@@ -11,12 +11,13 @@ import concurrent.futures
 import hashlib
 import json
 import logging
+import queue
 import re
 import threading
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple, Callable
 
 import yaml
 
@@ -580,12 +581,51 @@ class MemoryService:
     def __init__(self, config_dir: str, embedding_model: str = ""):
         self._config_dir = str(Path(config_dir))
         self._embedding_model = embedding_model
-        self._executor = concurrent.futures.ThreadPoolExecutor(
-            max_workers=1, thread_name_prefix="smartshell-memory"
+        self._task_queue: "queue.Queue[Optional[Tuple[Callable[[], Any], concurrent.futures.Future]]]" = queue.Queue()
+        self._closed = threading.Event()
+        self._worker = threading.Thread(
+            target=self._worker_loop,
+            name="smartshell-memory",
+            daemon=True,
         )
+        self._worker.start()
         self._mm: Optional[MemoryManager] = None
         self._ready = threading.Event()
-        self._executor.submit(self._bootstrap)
+        self._enqueue_background(self._bootstrap)
+
+    def _worker_loop(self) -> None:
+        while True:
+            task = self._task_queue.get()
+            if task is None:
+                return
+            fn, future = task
+            if future.cancelled():
+                continue
+            try:
+                result = fn()
+            except Exception as e:
+                try:
+                    future.set_exception(e)
+                except Exception:
+                    pass
+            else:
+                try:
+                    future.set_result(result)
+                except Exception:
+                    pass
+
+    def _enqueue_background(self, fn: Callable[[], Any]) -> None:
+        if self._closed.is_set():
+            return
+        future: concurrent.futures.Future = concurrent.futures.Future()
+        self._task_queue.put((fn, future))
+
+    def _submit(self, fn: Callable[[], Any], timeout: float) -> Any:
+        if self._closed.is_set():
+            raise RuntimeError("MemoryService 已关闭")
+        future: concurrent.futures.Future = concurrent.futures.Future()
+        self._task_queue.put((fn, future))
+        return future.result(timeout=timeout)
 
     def _bootstrap(self) -> None:
         try:
@@ -616,7 +656,7 @@ class MemoryService:
             raise RuntimeError("记忆服务未就绪")
         if self._mm is None:
             raise RuntimeError("记忆服务不可用")
-        return self._executor.submit(_do).result(timeout=60.0)
+        return self._submit(_do, timeout=60.0)
 
     def search_memories(self, query: str, top_k: int = 6, scope_key: Optional[str] = None) -> List[Dict[str, Any]]:
         def _do() -> List[Dict[str, Any]]:
@@ -626,7 +666,7 @@ class MemoryService:
 
         if not self.wait_ready(120.0) or self._mm is None:
             return []
-        return self._executor.submit(_do).result(timeout=60.0)
+        return self._submit(_do, timeout=60.0)
 
     def list_recent(self, limit: int = 20, scope_key: Optional[str] = None) -> List[Dict[str, Any]]:
         def _do() -> List[Dict[str, Any]]:
@@ -636,7 +676,7 @@ class MemoryService:
 
         if not self.wait_ready(120.0) or self._mm is None:
             return []
-        return self._executor.submit(_do).result(timeout=30.0)
+        return self._submit(_do, timeout=30.0)
 
     def delete_memory(self, memory_id: str) -> bool:
         def _do() -> bool:
@@ -646,7 +686,7 @@ class MemoryService:
 
         if not self.wait_ready(120.0) or self._mm is None:
             return False
-        return self._executor.submit(_do).result(timeout=30.0)
+        return self._submit(_do, timeout=30.0)
 
     def touch_memory(self, memory_id: str) -> None:
         def _do() -> None:
@@ -656,7 +696,7 @@ class MemoryService:
 
         if not self.wait_ready(120.0) or self._mm is None:
             return
-        self._executor.submit(_do).result(timeout=10.0)
+        self._submit(_do, timeout=10.0)
 
     def stats(self) -> Dict[str, Any]:
         def _do() -> Dict[str, Any]:
@@ -666,7 +706,27 @@ class MemoryService:
 
         if not self.wait_ready(120.0) or self._mm is None:
             return {}
-        return self._executor.submit(_do).result(timeout=10.0)
+        return self._submit(_do, timeout=10.0)
 
     def shutdown(self, wait: bool = False) -> None:
-        self._executor.shutdown(wait=wait)
+        if self._closed.is_set():
+            return
+        self._closed.set()
+
+        def _do() -> None:
+            self._mm = None
+
+        future: concurrent.futures.Future = concurrent.futures.Future()
+        try:
+            self._task_queue.put((_do, future))
+            if wait:
+                future.result(timeout=30.0)
+        except Exception:
+            _mem_log.debug("MemoryService shutdown cleanup failed", exc_info=True)
+        finally:
+            self._task_queue.put(None)
+            if wait:
+                try:
+                    self._worker.join(timeout=2.0)
+                except Exception:
+                    pass
