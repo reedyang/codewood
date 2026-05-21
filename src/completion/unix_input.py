@@ -7,6 +7,8 @@ Tab键自动补全模块
 import os
 import sys
 import glob
+import time
+import threading
 from pathlib import Path
 from typing import List, Optional, Tuple
 
@@ -15,6 +17,7 @@ try:
     import readline
     READLINE_AVAILABLE = True
 except ImportError:
+    readline = None  # type: ignore[assignment]
     READLINE_AVAILABLE = False
 
 
@@ -529,21 +532,77 @@ class TabCompleter:
             if status_text.strip():
                 # TTY 下将状态栏画在提示符下两行（中间保留一空行），再恢复光标到提示符继续输入。
                 if bool(getattr(sys.stdout, "isatty", lambda: False)()):
+                    watcher_stop = threading.Event()
+                    watcher_thread: Optional[threading.Thread] = None
+
+                    def _save_cursor() -> None:
+                        # Emit both DEC and CSI variants for wider terminal compatibility.
+                        sys.stdout.write("\x1b7\x1b[s")
+
+                    def _restore_cursor() -> None:
+                        sys.stdout.write("\x1b[u\x1b8")
+
+                    def _clear_status_overlay_line() -> None:
+                        try:
+                            _save_cursor()
+                            sys.stdout.write("\x1b[2B\r")      # move 2 lines below prompt
+                            sys.stdout.write("\x1b[2K")        # clear target line
+                            _restore_cursor()
+                            sys.stdout.flush()
+                        except Exception:
+                            pass
+
                     try:
                         sys.stdout.write(str(prompt))
                         sys.stdout.flush()
-                        sys.stdout.write("\x1b7")          # save cursor
+                        # Reserve two lines under prompt so status line always stays one blank line below.
+                        _save_cursor()
+                        sys.stdout.write("\n\n")
+                        _restore_cursor()
+                        _save_cursor()
                         sys.stdout.write("\x1b[2B\r")      # move 2 lines below prompt
                         sys.stdout.write("\x1b[2K")        # clear target line
                         sys.stdout.write(status_text)
-                        sys.stdout.write("\x1b8")          # restore cursor
+                        _restore_cursor()
                         sys.stdout.flush()
+
+                        # Readline hooks cannot reliably detect first typed key.
+                        # Use a lightweight watcher during input; hide once buffer is non-empty.
+                        if (
+                            READLINE_AVAILABLE
+                            and readline is not None
+                            and hasattr(readline, "get_line_buffer")
+                        ):
+                            def _watch_input_and_hide() -> None:
+                                while not watcher_stop.is_set():
+                                    try:
+                                        line_buf = str(readline.get_line_buffer() or "")
+                                    except Exception:
+                                        line_buf = ""
+                                    if line_buf:
+                                        _clear_status_overlay_line()
+                                        return
+                                    time.sleep(0.03)
+
+                            watcher_thread = threading.Thread(
+                                target=_watch_input_and_hide,
+                                daemon=True,
+                                name="smartshell-unix-statusbar-watch",
+                            )
+                            watcher_thread.start()
                         return input("")
                     except Exception:
                         # 回退到普通渲染，保证功能可用。
                         print("")
                         print(status_text)
                         return input(prompt)
+                    finally:
+                        watcher_stop.set()
+                        if watcher_thread is not None and watcher_thread.is_alive():
+                            try:
+                                watcher_thread.join(timeout=0.2)
+                            except Exception:
+                                pass
                 else:
                     # 非 TTY（如测试重定向）使用简单渲染，避免 ANSI 光标控制污染输出。
                     print("")
