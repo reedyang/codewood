@@ -32,7 +32,7 @@ WINDOWS_SLASH_BUILTIN_COMMANDS: List[str] = [
     "/knowledge stats",
     "/knowledge status",
     "/knowledge sync",
-    "/mcp ",
+    "/mcp/",
     "/mcp disable-tools ",
     "/mcp enable-tools ",
     "/mcp list-disabled-tools",

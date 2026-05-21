@@ -64,7 +64,7 @@ class McpShortcutCommandTests(unittest.TestCase):
 
     def test_completion_contains_all_mcp_shortcuts(self):
         expected = [
-            "/mcp ",
+            "/mcp/",
             "/mcp reload-config",
             "/mcp status",
             "/mcp status-refresh",

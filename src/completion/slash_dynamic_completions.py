@@ -58,7 +58,11 @@ def build_workspace_action_commands(
 
 
 def build_mcp_server_commands(mcp_config: Any) -> List[str]:
-    commands = [f"/{name.strip()}/" for name in _get_mcp_servers(mcp_config).keys() if str(name or "").strip()]
+    commands = [
+        f"/mcp/{name.strip()}/"
+        for name in _get_mcp_servers(mcp_config).keys()
+        if str(name or "").strip()
+    ]
     return _sorted_unique_ci(commands)
 
 
@@ -115,7 +119,7 @@ def build_mcp_scoped_commands(mcp_manager: Any) -> List[str]:
         if not is_loaded:
             continue
 
-        _add(f"/{srv}/")
+        _add(f"/mcp/{srv}/")
 
         tool_items = []
         try:
@@ -131,7 +135,7 @@ def build_mcp_scoped_commands(mcp_manager: Any) -> List[str]:
                     else ""
                 )
                 if name:
-                    _add(f"/{srv}/{name}")
+                    _add(f"/mcp/{srv}/{name}")
 
         prompt_items = []
         try:
@@ -147,7 +151,7 @@ def build_mcp_scoped_commands(mcp_manager: Any) -> List[str]:
                     else ""
                 )
                 if name:
-                    _add(f"/{srv}/{name}")
+                    _add(f"/mcp/{srv}/{name}")
 
     return sorted(out, key=str.lower)
 
@@ -159,14 +163,14 @@ def build_mcp_scoped_groups(mcp_manager: Any) -> List[Tuple[str, List[str]]]:
     for cmd in build_mcp_scoped_commands(mcp_manager):
         if not isinstance(cmd, str):
             continue
-        match = re.match(r"^/([^/]+)/([^/].*)$", cmd)
+        match = re.match(r"^/mcp/([^/]+)/([^/].*)$", cmd, flags=re.IGNORECASE)
         if not match:
             continue
         server = str(match.group(1) or "").strip()
         name = str(match.group(2) or "").strip()
         if not server or not name:
             continue
-        trigger = f"/{server}/"
+        trigger = f"/mcp/{server}/"
         if trigger not in buckets:
             buckets[trigger] = []
             seen_by_trigger[trigger] = set()
@@ -199,9 +203,11 @@ def build_slash_dynamic_rules(
     mcp_scoped_groups_provider: Any,
     model_selectors_provider: Any = None,
     skill_targets_provider: Any = None,
+    mcp_root_server_commands_provider: Any = None,
 ) -> List[Dict[str, Any]]:
     model_commands: List[str] = []
     skill_commands: List[str] = []
+    mcp_root_server_commands: List[str] = []
     try:
         if callable(model_selectors_provider):
             model_commands = build_model_switch_commands(model_selectors_provider())
@@ -212,6 +218,13 @@ def build_slash_dynamic_rules(
             skill_commands = _sorted_unique_ci(list(skill_targets_provider() or []))
     except Exception:
         skill_commands = []
+    try:
+        if callable(mcp_root_server_commands_provider):
+            mcp_root_server_commands = _sorted_unique_ci(
+                list(mcp_root_server_commands_provider() or [])
+            )
+    except Exception:
+        mcp_root_server_commands = []
 
     return [
         {
@@ -251,6 +264,10 @@ def build_slash_dynamic_rules(
             "candidates": build_mcp_server_target_commands(
                 mcp_config, "enable-tools", with_trailing_space=True
             ),
+        },
+        {
+            "trigger": "/mcp/",
+            "candidates": mcp_root_server_commands,
         },
         {
             "trigger": "/workspace switch ",
