@@ -48,7 +48,28 @@ class SkillHubInstallerTests(unittest.TestCase):
         self.assertEqual(rc, 2)
         self.assertIn("Installation aborted by user.", captured.getvalue())
 
+    def test_extract_github_link_prefers_repo_url_from_embedded_json(self):
+        detail_html = (
+            '<a href="https://github.com/someone/awesome">profile</a>'
+            '...repo_url\\":\\"https://github.com/openclaw/skills#skills~owner~demo-skill\\"...'
+            '<a href="https://github.com/another/repo">other</a>'
+        )
+        url = self.mod._extract_github_link(detail_html)
+        self.assertEqual(url, "https://github.com/openclaw/skills#skills~owner~demo-skill")
+
+    def test_extract_skill_md_from_prose_html_matches_new_class_layout(self):
+        detail_html = """
+        <div class="prose-skill min-w-0 max-w-full overflow-x-auto p-4 sm:p-6">
+          <h1>Demo Skill</h1>
+          <p>Line one.</p>
+          <ul><li>Item A</li><li>Item B</li></ul>
+        </div>
+        """
+        skill_md = self.mod._extract_skill_md_from_prose_html(detail_html)
+        self.assertIn("# Demo Skill", skill_md)
+        self.assertIn("Line one.", skill_md)
+        self.assertIn("- Item A", skill_md)
+
 
 if __name__ == "__main__":
     unittest.main()
-
