@@ -498,15 +498,57 @@ class TabCompleter:
         """更新工作目录"""
         self.work_directory = new_directory
     
-    def get_input_with_completion(self, prompt: str) -> str:
+    def get_input_with_completion(
+        self,
+        prompt: str,
+        status_bar_text: str = "",
+        status_bar_fragments: Optional[List[Tuple[str, str]]] = None,
+        show_status_bar: bool = True,
+        show_separator: bool = True,
+    ) -> str:
         """
         获取带自动补全的用户输入
         Args:
             prompt: 输入提示
+            status_bar_text: 状态栏纯文本
+            status_bar_fragments: 状态栏分段样式文本（readline 路径下退化为纯文本）
+            show_status_bar: 是否显示状态栏
+            show_separator: 为兼容统一接口保留，readline 路径不使用
         Returns:
             用户输入的文本
         """
         try:
+            _ = show_separator
+            status_text = ""
+            if show_status_bar:
+                status_text = str(status_bar_text or "")
+                if (not status_text.strip()) and isinstance(status_bar_fragments, list):
+                    status_text = "".join(
+                        str(seg[1]) for seg in status_bar_fragments if isinstance(seg, tuple) and len(seg) >= 2
+                    )
+            if status_text.strip():
+                # TTY 下将状态栏画在提示符下两行（中间保留一空行），再恢复光标到提示符继续输入。
+                if bool(getattr(sys.stdout, "isatty", lambda: False)()):
+                    try:
+                        sys.stdout.write(str(prompt))
+                        sys.stdout.flush()
+                        sys.stdout.write("\x1b7")          # save cursor
+                        sys.stdout.write("\x1b[2B\r")      # move 2 lines below prompt
+                        sys.stdout.write("\x1b[2K")        # clear target line
+                        sys.stdout.write(status_text)
+                        sys.stdout.write("\x1b8")          # restore cursor
+                        sys.stdout.flush()
+                        return input("")
+                    except Exception:
+                        # 回退到普通渲染，保证功能可用。
+                        print("")
+                        print(status_text)
+                        return input(prompt)
+                else:
+                    # 非 TTY（如测试重定向）使用简单渲染，避免 ANSI 光标控制污染输出。
+                    print("")
+                    print(status_text)
+                    return input(prompt)
             if READLINE_AVAILABLE:
                 return input(prompt)
             else:

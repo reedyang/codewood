@@ -127,7 +127,7 @@ if platform.system() == "Windows":
         INPUT_HANDLER_TYPE = "none"
 else:
     try:
-        from .completion.tab_completer import create_tab_completer
+        from .completion.unix_input import create_tab_completer
         TAB_COMPLETION_AVAILABLE = True
         INPUT_HANDLER_TYPE = "readline"
     except ImportError:
@@ -2683,7 +2683,7 @@ class SmartShellAgent:
                     )
                     self._prompt_separator_rendered = bool(show_separator)
                 except TypeError:
-                    # readline/tab_completer handlers may not support status bar kwargs.
+                    # readline/unix_input handlers may not support status bar kwargs.
                     user_input = self.input_handler.get_input_with_completion(prompt)
                 # 这里不直接写入 HistoryManager，交由上层 run() 统一处理，避免重复
                 return user_input
