@@ -1415,7 +1415,23 @@ class SmartShellAgent:
             pass
 
     def _get_slash_mcp_server_commands(self) -> List[str]:
-        return build_mcp_server_commands(self.mcp_manager.mcp_config)
+        # MCP server candidates are provided by delayed dynamic trigger '/mcp/'.
+        # Keep first-layer '/' menu clean: do not inject '/mcp/<server>/' here.
+        return []
+
+    def _get_slash_connected_mcp_server_commands(self) -> List[str]:
+        cmds: List[str] = []
+        seen: Set[str] = set()
+        for cmd in build_mcp_scoped_commands(self.mcp_manager):
+            value = str(cmd or "").strip()
+            if not re.match(r"^/mcp/[^/]+/$", value, flags=re.IGNORECASE):
+                continue
+            key = value.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            cmds.append(value)
+        return sorted(cmds, key=str.lower)
 
     def _get_slash_dynamic_rules(self) -> List[Dict[str, Any]]:
         return build_slash_dynamic_rules(
@@ -1424,6 +1440,7 @@ class SmartShellAgent:
             mcp_scoped_groups_provider=self._get_slash_mcp_scoped_groups,
             model_selectors_provider=self._get_configured_model_selectors,
             skill_targets_provider=self._get_slash_skill_target_commands,
+            mcp_root_server_commands_provider=self._get_slash_connected_mcp_server_commands,
         )
 
     def _get_slash_mcp_server_target_commands(
@@ -1492,13 +1509,13 @@ class SmartShellAgent:
 
     def _extract_forced_mcp_reference(self, user_text: str) -> Optional[Dict[str, Any]]:
         """
-        Find one or more '/<server>/<tool_or_prompt>' tokens.
+        Find one or more '/mcp/<mcp-server-name>/<tool-name|prompt-name>' tokens.
         Returns {"entries":[{server,name,kind}], "rest"} when matched.
         """
         raw = (user_text or "").strip()
         if not raw:
             return None
-        matches = list(re.finditer(r"(?<!\S)/([^\s/]+)/([^\s]+)", raw))
+        matches = list(re.finditer(r"(?<!\S)/mcp/([^\s/]+)/([^\s]+)", raw, flags=re.IGNORECASE))
         if not matches:
             return None
 
@@ -1565,7 +1582,7 @@ class SmartShellAgent:
             srv = str(e.get("server", "")).strip()
             name = str(e.get("name", "")).strip()
             kind = str(e.get("kind", "")).strip() or "unknown"
-            lines.append(f"- `{srv}/{name}` ({kind})")
+            lines.append(f"- `/mcp/{srv}/{name}` ({kind})")
             if kind == "prompt":
                 try:
                     pobj = self.mcp_manager.get_prompt(srv, name, {}, timeout_s=20.0)

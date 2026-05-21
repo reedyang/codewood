@@ -666,7 +666,7 @@ def run_agent_loop(agent: Any):
                     srv = str(e.get("server", "")).strip()
                     name = str(e.get("name", "")).strip()
                     kind = str(e.get("kind", "")).strip() or "unknown"
-                    print(f"🧩 启用 MCP 引用: {srv}/{name} ({kind})")
+                    print(f"🧩 启用 MCP 引用: /mcp/{srv}/{name} ({kind})")
                 forced_mcp_prefix = self._build_forced_mcp_prefix(forced_mcp_entries)
             preloaded_skill_ids: Set[str] = set()
             if forced_skills:

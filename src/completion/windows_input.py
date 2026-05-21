@@ -253,7 +253,7 @@ class FileCompleter(Completer):
         Returns (index_of_slash, fragment_from_slash_to_cursor), or (-1, '').
         """
         # Prefer the trailing slash token near cursor.
-        # Token may include nested slashes, e.g. "/windbg/" or "/windbg/list_xxx".
+        # Token may include nested slashes, e.g. "/mcp/windbg/" or "/mcp/windbg/list_xxx".
         # Strict boundary: if there is a previous character, it must be whitespace.
         m = re.search(r"/[^\s]*$", text)
         if m:
@@ -324,6 +324,9 @@ class FileCompleter(Completer):
             if not c_l.startswith(trig_l):
                 continue
             rest = c[len(trig):]
+            # For '/mcp/' second-layer completion, display only server name.
+            if trig_l == "/mcp/" and rest.endswith("/"):
+                rest = rest[:-1]
             # If no visible incremental part, keep full display text.
             return rest if rest else c
         return c
@@ -1099,7 +1102,7 @@ class WindowsInputHandler:
         @kb.add("tab")
         def _on_tab(event):
             """
-            Trigger completion and, for '/<mcp-server>/' roots, immediately
+            Trigger completion and, for '/mcp/<mcp-server-name>/' roots, immediately
             trigger a second completion so tools/prompts show without extra typing.
             """
             buf = event.current_buffer
