@@ -305,7 +305,7 @@ def run_agent_loop(agent: Any):
                 list(forced_skill.get("skills", [])) if forced_skill else []
             )
             # When slash references are present, route the remaining natural-language
-            # part as the task text to avoid the model treating "/skill-id" itself as work.
+            # part as the task text to avoid the model treating "/skills/<skill-name>" itself as work.
             task_user_input = stripped_in
             try:
                 if forced_mcp and str(forced_mcp.get("rest") or "").strip():
@@ -702,7 +702,7 @@ def run_agent_loop(agent: Any):
                 "1) 对于需要两步及以上完成的任务，先简要说明“将要完成哪些事情”，紧随其后再输出任务编排：Step 1..N，并为每步标注状态（pending/in_progress/completed/failed）。\n"
                 "2) 在同一条回复结尾输出且仅输出一个工具调用 JSON。\n"
                 "3) 仅当当前会话尚未注入目标 skill 正文时，优先请求 skill 提示；"
-                "若该 skill 已注入（例如用户通过 `/skill-id` 显式启用），通常不应重复调用 request_skill_prompt。"
+                "若该 skill 已注入（例如用户通过 `/skills/<skill-name>` 显式启用），通常不应重复调用 request_skill_prompt。"
                 "但若系统提示明确为「分段注入」且你确需后续段，可调用带 section/full 参数的 request_skill_prompt。"
                 "如确需请求，也必须先给出上述步骤编排，再在结尾输出 "
                 "{\"tool\":\"request_skill_prompt\",\"args\":{\"skill_id\":\"...\"}}。\n"
@@ -880,7 +880,7 @@ def run_agent_loop(agent: Any):
                     if canon_sid and canon_sid in preloaded_skill_ids and not request_is_expansion:
                         next_input = (
                             f"【用户原始需求】\n{original_user_task}\n\n"
-                            f"skill_id=`{sid}` 已由本轮显式 `/skill` 引用预注入。"
+                            f"skill_id=`{sid}` 已由本轮显式 `/skills/<skill-name>` 引用预注入。"
                             "禁止再次调用 request_skill_prompt。请直接输出下一条业务工具调用 JSON。"
                         )
                         no_tool_rounds = 0

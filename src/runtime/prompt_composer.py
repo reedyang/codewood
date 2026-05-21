@@ -207,7 +207,7 @@ def build_agents_md_system_append(agent: Any) -> str:
     header = (
         "\n\n## User Custom Prompts (AGENTS.md)\n\n"
         "优先级说明：本节用于注入用户自定义提示；当用户在当前请求中**显式指定 skill**"
-        "（例如 `/skill-id` 或已触发 `request_skill_prompt`）且与本节冲突时，"
+        "（例如 `/skills/<skill-name>` 或已触发 `request_skill_prompt`）且与本节冲突时，"
         "以显式指定的 skill 正文为准。\n\n"
     )
     return header + "\n\n".join(sections) + "\n"
@@ -252,7 +252,7 @@ def build_tools_prompt_append(agent: Any) -> str:
         1,
         "当且仅当当前会话尚未注入目标 skill 正文时，先输出："
         "{\"tool\":\"request_skill_prompt\",\"args\":{\"skill_id\":\"<skill_id>\"}}；"
-        "若该 skill 已注入（例如通过 `/skill-id` 显式启用），默认禁止重复调用 request_skill_prompt，直接继续业务步骤；"
+        "若该 skill 已注入（例如通过 `/skills/<skill-name>` 显式启用），默认禁止重复调用 request_skill_prompt，直接继续业务步骤；"
         "但当技能正文为分段注入时，可按需调用 "
         "{\"tool\":\"request_skill_prompt\",\"args\":{\"skill_id\":\"<skill_id>\",\"section\":<n>}} "
         "加载第 n 段，或用 "

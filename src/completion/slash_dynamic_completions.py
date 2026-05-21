@@ -198,13 +198,20 @@ def build_slash_dynamic_rules(
     mcp_config: Any,
     mcp_scoped_groups_provider: Any,
     model_selectors_provider: Any = None,
+    skill_targets_provider: Any = None,
 ) -> List[Dict[str, Any]]:
     model_commands: List[str] = []
+    skill_commands: List[str] = []
     try:
         if callable(model_selectors_provider):
             model_commands = build_model_switch_commands(model_selectors_provider())
     except Exception:
         model_commands = []
+    try:
+        if callable(skill_targets_provider):
+            skill_commands = _sorted_unique_ci(list(skill_targets_provider() or []))
+    except Exception:
+        skill_commands = []
 
     return [
         {
@@ -256,6 +263,10 @@ def build_slash_dynamic_rules(
         {
             "trigger": "/model ",
             "candidates": model_commands,
+        },
+        {
+            "trigger": "/skills/",
+            "candidates": skill_commands,
         },
         {
             "groups_provider": mcp_scoped_groups_provider,
