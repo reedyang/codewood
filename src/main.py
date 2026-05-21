@@ -121,6 +121,7 @@ def main():
     from src.smart_shell_agent import SmartShellAgent
 
     if provider == "openai" and params:
+        agent = None
         try:
             agent = SmartShellAgent(
                 model_name=model_name,
@@ -136,7 +137,14 @@ def main():
         except Exception as e:
             print(f"❌ OpenAI API模式运行错误: {str(e)}")
             return 1
+        finally:
+            if agent is not None:
+                try:
+                    agent.shutdown(wait=False)
+                except Exception:
+                    pass
     elif provider == "openwebui" and params:
+        agent = None
         try:
             agent = SmartShellAgent(
                 model_name=model_name,
@@ -152,8 +160,15 @@ def main():
         except Exception as e:
             print(f"❌ OpenWebUI API模式运行错误: {str(e)}")
             return 1
+        finally:
+            if agent is not None:
+                try:
+                    agent.shutdown(wait=False)
+                except Exception:
+                    pass
     elif provider == "ollama" and params:
         # ollama：不在此处 import ollama（未使用 ollama 的配置不会加载该包）；校验在 SmartShellAgent 后台线程中完成
+        agent = None
         try:
             agent = SmartShellAgent(
                 model_name=model_name,
@@ -172,6 +187,12 @@ def main():
         except Exception as e:
             print(f"❌ 运行错误: {str(e)}")
             return 1
+        finally:
+            if agent is not None:
+                try:
+                    agent.shutdown(wait=False)
+                except Exception:
+                    pass
     else:
         print(f"模型 provider {provider} 不被支持")
         return 1

@@ -1206,7 +1206,7 @@ class SmartShellAgent:
                             self.knowledge_manager = svc
                         else:
                             try:
-                                svc.shutdown(wait=True)
+                                svc.shutdown(wait=False)
                             except Exception:
                                 pass
                     except Exception:
@@ -2428,6 +2428,19 @@ class SmartShellAgent:
     def run(self):
         from .runtime.runtime_loop import run_agent_loop
         return run_agent_loop(self)
+
+    def shutdown(self, wait: bool = False) -> None:
+        """
+        统一关闭运行期资源。默认非阻塞，避免退出流程被后台线程池/任务拖住。
+        """
+        try:
+            self._shutdown_workspace_services(wait=wait)
+        except Exception:
+            pass
+        try:
+            self._shutdown_mcp_runtime()
+        except Exception:
+            pass
 
     def _build_step_progress_context(self) -> str:
         """Build concise step progress summary from executed operations."""
