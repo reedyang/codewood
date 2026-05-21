@@ -47,6 +47,7 @@ class SkillCard:
     name: str
     detail_url: str
     snippet: str
+    repo_url: str = ""
 
 
 @dataclass
@@ -301,10 +302,11 @@ def _search(
         name = str(item.get("name") or slug).strip()
         desc = str(item.get("description") or "").strip()
         stars = item.get("github_stars")
+        repo_url = str(item.get("repo_url") or "").strip()
         snippet = desc if desc else f"slug: {slug}"
         if isinstance(stars, int):
             snippet = f"{snippet} (stars: {stars})"
-        cards.append(SkillCard(name=name, detail_url=detail_url, snippet=snippet[:220]))
+        cards.append(SkillCard(name=name, detail_url=detail_url, snippet=snippet[:220], repo_url=repo_url))
         if len(cards) >= result_limit:
             break
     return cards
@@ -345,13 +347,19 @@ def _extract_skill_md_from_prose_html(detail_html: str) -> str:
     Convert common tags to markdown-like text while preserving structure.
     """
     m = re.search(
-        r'<div class="p-6 prose-skill overflow-x-auto">(.*?)</div>\s*</div>\s*</div>',
+        r'<div[^>]*class="[^"]*\bprose-skill\b[^"]*"[^>]*>(?P<body>.*?)</div>',
         detail_html,
         flags=re.IGNORECASE | re.DOTALL,
     )
     if not m:
+        m = re.search(
+            r"<div[^>]*class='[^']*\bprose-skill\b[^']*'[^>]*>(?P<body>.*?)</div>",
+            detail_html,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+    if not m:
         return ""
-    block = m.group(1)
+    block = m.group("body")
     txt = block
     txt = txt.replace("\r\n", "\n")
     txt = re.sub(r"<h1[^>]*>(.*?)</h1>", lambda x: f"# {unescape(_text_only(x.group(1)))}\n\n", txt, flags=re.IGNORECASE | re.DOTALL)
@@ -373,8 +381,58 @@ def _extract_skill_md_from_prose_html(detail_html: str) -> str:
 
 
 def _extract_github_link(detail_html: str) -> str:
-    m = re.search(r'href="(https://github\.com/[^"]+)"', detail_html, flags=re.IGNORECASE)
-    return m.group(1).strip() if m else ""
+    # Prefer structured `repo_url` from embedded JSON payloads if present.
+    candidates: List[str] = []
+    for m in re.finditer(
+        r'repo_url\\?":\\?"(?P<u>https?://github\.com/[^"\\<\s]+)',
+        detail_html,
+        flags=re.IGNORECASE,
+    ):
+        candidates.append(m.group("u"))
+
+    # Source section often carries the canonical skill anchor.
+    for m in re.finditer(
+        r'Source(?:<!--\s*-->)?\s*:?(?:<!--\s*-->)?\s*<a[^>]*href="(?P<u>https://github\.com/[^"]+)"',
+        detail_html,
+        flags=re.IGNORECASE,
+    ):
+        candidates.append(m.group("u"))
+
+    # Generic href extraction.
+    candidates.extend(re.findall(r'href="(https://github\.com/[^"]+)"', detail_html, flags=re.IGNORECASE))
+    # Plain-text URL fallback.
+    candidates.extend(
+        re.findall(
+            r"(https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:#[^\s<)\"']+)?)",
+            detail_html,
+            flags=re.IGNORECASE,
+        )
+    )
+
+    seen: set[str] = set()
+    normalized: List[str] = []
+    for raw in candidates:
+        u = unescape((raw or "").strip()).replace("\\/", "/").rstrip(".,)")
+        if not u.lower().startswith("https://github.com/"):
+            continue
+        if u in seen:
+            continue
+        seen.add(u)
+        normalized.append(u)
+    if not normalized:
+        return ""
+
+    def _score(url: str) -> int:
+        low = url.lower()
+        score = 0
+        if "skills~" in low or "#skills" in low or "opencode~skill~" in low:
+            score += 100
+        if "/skills#" in low:
+            score += 20
+        return score
+
+    normalized.sort(key=_score, reverse=True)
+    return normalized[0]
 
 
 def _extract_github_repo_links(detail_html: str) -> List[str]:
@@ -757,6 +815,7 @@ def cmd_install(args: argparse.Namespace) -> int:
         urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
     detail_url = args.detail_url.strip() if args.detail_url else ""
+    selected_repo_url = ""
     query = (args.query or "").strip()
     if not detail_url:
         if not query:
@@ -806,6 +865,7 @@ def cmd_install(args: argparse.Namespace) -> int:
                 print("Installation aborted: index out of range.")
                 return 2
             detail_url = cards[idx - 1].detail_url
+            selected_repo_url = cards[idx - 1].repo_url
 
     parsed = urlparse(detail_url)
     if parsed.scheme not in ("http", "https") or parsed.netloc != "www.skillhub.club":
@@ -828,7 +888,7 @@ def cmd_install(args: argparse.Namespace) -> int:
         print(f"Install aborted: {exc}")
         return 1
 
-    github_url = _extract_github_link(detail_html)
+    github_url = selected_repo_url or _extract_github_link(detail_html)
     skill_md = _fetch_github_skill_md(github_url) or _extract_skill_md(detail_html) or _extract_skill_md_from_prose_html(detail_html)
     if not skill_md:
         print("Install aborted: failed to extract source SKILL.md exactly.")
