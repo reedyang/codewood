@@ -256,8 +256,7 @@ def setup_input_handler(
     *,
     tab_completion_available: bool,
     input_handler_type: str,
-    create_windows_input_handler: Any = None,
-    create_tab_completer: Any = None,
+    create_prompt_toolkit_input_handler: Any = None,
 ) -> None:
     agent.input_handler = None
     if not tab_completion_available:
@@ -265,24 +264,20 @@ def setup_input_handler(
         return
 
     try:
-        if input_handler_type == "windows":
+        if input_handler_type == "prompt_toolkit":
             try:
                 initial_history = agent.history_manager.get_all_history()
             except Exception:
                 initial_history = []
-            if create_windows_input_handler is None:
-                raise RuntimeError("Windows 输入处理器不可用")
-            agent.input_handler = create_windows_input_handler(
+            if create_prompt_toolkit_input_handler is None:
+                raise RuntimeError("prompt_toolkit 输入处理器不可用")
+            agent.input_handler = create_prompt_toolkit_input_handler(
                 work_directory=agent.work_directory,
                 initial_history=initial_history,
                 slash_skill_commands=agent._get_slash_skill_commands(),
                 slash_mcp_commands=agent._get_slash_mcp_server_commands(),
                 slash_dynamic_rules=agent._get_slash_dynamic_rules(),
             )
-        elif input_handler_type == "readline":
-            if create_tab_completer is None:
-                raise RuntimeError("readline 输入处理器不可用")
-            agent.input_handler = create_tab_completer(agent.work_directory)
         else:
             print("⚠️ 未知的输入处理器类型")
     except Exception as e:

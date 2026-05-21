@@ -2,7 +2,7 @@ import io
 import unittest
 from contextlib import redirect_stdout
 
-from src.completion.builtin_slash_commands import windows_slash_builtin_completions
+from src.completion.builtin_slash_commands import slash_builtin_completions
 from src.controllers.chat_command_controller import handle_chat_builtin_command
 
 
@@ -71,7 +71,7 @@ class ChatCommandControllerTests(unittest.TestCase):
         self.assertIn("❌ 未找到 chat: chat-2", buf.getvalue())
 
     def test_reload_is_in_slash_completions(self):
-        out = windows_slash_builtin_completions("/chat re")
+        out = slash_builtin_completions("/chat re")
         self.assertIn("/chat reload", out)
 
 

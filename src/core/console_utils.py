@@ -154,14 +154,6 @@ def _ansi_green(text: str) -> str:
     return f"\033[38;2;152;195;121m{text}\033[0m"
 
 
-def _ansi_white(text: str) -> str:
-    if not _stdout_color_enabled():
-        return text
-    if sys.platform == "win32":
-        _enable_windows_console_vt()
-    return f"\033[37m{text}\033[0m"
-
-
 def _ansi_bold(text: str) -> str:
     if not _stdout_color_enabled():
         return text

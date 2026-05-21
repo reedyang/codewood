@@ -19,7 +19,6 @@ from ..controllers.builtin_command_router import dispatch_builtin_command
 from ..core.console_utils import (
     _ansi_bold,
     _ansi_gray,
-    _ansi_white,
     _ansi_cyan,
     _ansi_bright_blue,
     _ansi_yellow,
@@ -155,11 +154,11 @@ def _print_startup_overview(agent: Any) -> None:
     bottom = "╰" + ("─" * width) + "╯"
 
     print(_ansi_gray(top))
-    # Header line: Smart Shell + version white, prefix gray.
+    # Header line: use terminal default foreground for main text, prefix gray.
     print(
         _ansi_gray("│ ")
         + _ansi_gray(">_ ")
-        + _ansi_white(app_name)
+        + app_name
         + _ansi_gray(f" ({version})")
         + _ansi_gray(" " * max(0, width - 1 - len(line1)))
         + _ansi_gray("│")
@@ -170,7 +169,7 @@ def _print_startup_overview(agent: Any) -> None:
     print(
         _ansi_gray("│ ")
         + _ansi_gray(prefix_model)
-        + _ansi_white(model_name)
+        + model_name
         + _ansi_gray("  ")
         + _ansi_cyan("/model")
         + _ansi_gray(" to change")
@@ -182,7 +181,7 @@ def _print_startup_overview(agent: Any) -> None:
     print(
         _ansi_gray("│ ")
         + _ansi_gray(prefix_workspace)
-        + _ansi_white(workspace_name)
+        + workspace_name
         + _ansi_gray(" " * max(0, width - 1 - len(line3)))
         + _ansi_gray("│")
     )
@@ -191,7 +190,7 @@ def _print_startup_overview(agent: Any) -> None:
     print(
         _ansi_gray("│ ")
         + _ansi_gray(prefix_directory)
-        + _ansi_white(workspace_dir)
+        + workspace_dir
         + _ansi_gray(" " * max(0, width - 1 - len(line4)))
         + _ansi_gray("│")
     )
@@ -209,7 +208,7 @@ def _print_startup_overview(agent: Any) -> None:
         highlights=[str(h or "") for h in highlights],
         highlight_formatter=_ansi_cyan,
     )
-    print(_ansi_white("  ") + _ansi_bold("Tip: ") + rendered_tip)
+    print("  " + _ansi_bold("Tip: ") + rendered_tip)
     print("")
 
 

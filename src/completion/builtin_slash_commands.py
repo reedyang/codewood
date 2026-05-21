@@ -1,11 +1,11 @@
-# Windows REPL: user input starting with "/" is dispatched as built-in or shell (see smart_shell_agent.run).
+# REPL: user input starting with "/" is dispatched as built-in or shell (see smart_shell_agent.run).
 # English command names only (no Chinese aliases). Keep in sync with built-in branches there.
 
 from __future__ import annotations
 
 from typing import List, Optional, Tuple
 
-WINDOWS_SLASH_BUILTIN_COMMANDS: List[str] = [
+SLASH_BUILTIN_COMMANDS: List[str] = [
     "/always_confirm-reset",
     "/chat ",
     "/chat current",
@@ -76,16 +76,16 @@ WINDOWS_SLASH_BUILTIN_COMMANDS: List[str] = [
 # Keep built-in completion list unique while preserving order.
 _seen_builtin = set()
 _deduped_builtin: List[str] = []
-for _cmd in WINDOWS_SLASH_BUILTIN_COMMANDS:
+for _cmd in SLASH_BUILTIN_COMMANDS:
     _key = _cmd.lower()
     if _key in _seen_builtin:
         continue
     _seen_builtin.add(_key)
     _deduped_builtin.append(_cmd)
-WINDOWS_SLASH_BUILTIN_COMMANDS = _deduped_builtin
+SLASH_BUILTIN_COMMANDS = _deduped_builtin
 
 
-def windows_slash_builtin_completions(
+def slash_builtin_completions(
     prefix_from_slash: str,
     dynamic_commands: Optional[List[str]] = None,
     delayed_dynamic_groups: Optional[List[Tuple[str, List[str]]]] = None,
@@ -99,7 +99,7 @@ def windows_slash_builtin_completions(
     pl = prefix_from_slash.lower()
     seen = set()
     out: List[str] = []
-    all_commands = list(WINDOWS_SLASH_BUILTIN_COMMANDS)
+    all_commands = list(SLASH_BUILTIN_COMMANDS)
     if dynamic_commands:
         all_commands.extend(dynamic_commands)
     if delayed_dynamic_groups:
