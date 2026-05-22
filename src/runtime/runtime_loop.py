@@ -35,6 +35,23 @@ def _is_software_development_domain(domains: List[str]) -> bool:
     return "software_development" in {str(x or "").strip() for x in (domains or [])}
 
 
+def _estimate_visible_lines(agent: Any, text: str) -> int:
+    s = str(text or "")
+    if not s:
+        return 0
+    fn = getattr(agent, "_estimate_rendered_line_count", None)
+    if callable(fn):
+        try:
+            return max(0, int(fn(s)))
+        except Exception:
+            pass
+    normalized = s.replace("\r\n", "\n").replace("\r", "\n")
+    parts = normalized.split("\n")
+    if parts and parts[-1] == "":
+        parts = parts[:-1]
+    return max(0, len(parts))
+
+
 def _shell_command_indicates_verification(command: str) -> bool:
     c = str(command or "").strip().lower()
     if not c:
@@ -566,7 +583,7 @@ def run_agent_loop(agent: Any):
 
             if run_direct_shell is not None:
                 ui = run_direct_shell
-                self._print_direct_shell_command_feedback(ui)
+                self._print_direct_shell_command_feedback(ui, failed=False)
                 execution_cwd = self._shell_execution_cwd()
                 raw_user_direct_cmd = f"!{ui}"
                 try:
@@ -576,6 +593,25 @@ def run_agent_loop(agent: Any):
                 if self._is_executable_file(ui):
                     exec_ok = bool(self._execute_file_directly(ui))
                     last_direct = getattr(self, "_last_direct_shell_execution", None)
+                    if not exec_ok:
+                        rendered_lines = 0
+                        cursor_at_line_start = True
+                        if isinstance(last_direct, dict):
+                            try:
+                                rendered_lines = int(last_direct.get("rendered_output_lines") or 0)
+                            except Exception:
+                                rendered_lines = 0
+                            cursor_at_line_start = bool(last_direct.get("cursor_at_line_start", True))
+                        else:
+                            rendered_lines = _estimate_visible_lines(
+                                self, "❌ 执行文件失败\n"
+                            )
+                        self._repaint_direct_shell_command_feedback_if_failed(
+                            ui,
+                            rendered_output_lines=rendered_lines,
+                            cursor_at_line_start=cursor_at_line_start,
+                            failed=True,
+                        )
                     if isinstance(last_direct, dict):
                         self._record_direct_shell_execution_history(
                             raw_user_command=raw_user_direct_cmd,
@@ -644,6 +680,15 @@ def run_agent_loop(agent: Any):
                                 print(msg)
                                 cd_stderr = f"{msg}\n"
                                 cd_return_code = 1
+                            if cd_return_code != 0:
+                                self._repaint_direct_shell_command_feedback_if_failed(
+                                    ui,
+                                    rendered_output_lines=_estimate_visible_lines(
+                                        self, cd_stderr
+                                    ),
+                                    cursor_at_line_start=True,
+                                    failed=True,
+                                )
                             self._record_direct_shell_execution_history(
                                 raw_user_command=raw_user_direct_cmd,
                                 executed_command=user_input_cmd,
@@ -662,6 +707,14 @@ def run_agent_loop(agent: Any):
                             except Exception as e:
                                 msg = f"❌ 命令执行异常: {e}"
                                 print(msg)
+                                self._repaint_direct_shell_command_feedback_if_failed(
+                                    ui,
+                                    rendered_output_lines=_estimate_visible_lines(
+                                        self, f"{msg}\n"
+                                    ),
+                                    cursor_at_line_start=True,
+                                    failed=True,
+                                )
                                 self._record_direct_shell_execution_history(
                                     raw_user_command=raw_user_direct_cmd,
                                     executed_command=user_input_cmd,
@@ -674,6 +727,23 @@ def run_agent_loop(agent: Any):
                                 self._reset_work_directory_to_startup_initial()
                             if return_code is not None:
                                 last_direct = getattr(self, "_last_direct_shell_execution", None)
+                                if int(return_code) != 0:
+                                    rendered_lines = 0
+                                    cursor_at_line_start = True
+                                    if isinstance(last_direct, dict):
+                                        try:
+                                            rendered_lines = int(last_direct.get("rendered_output_lines") or 0)
+                                        except Exception:
+                                            rendered_lines = 0
+                                        cursor_at_line_start = bool(
+                                            last_direct.get("cursor_at_line_start", True)
+                                        )
+                                    self._repaint_direct_shell_command_feedback_if_failed(
+                                        ui,
+                                        rendered_output_lines=rendered_lines,
+                                        cursor_at_line_start=cursor_at_line_start,
+                                        failed=True,
+                                    )
                                 if isinstance(last_direct, dict):
                                     self._record_direct_shell_execution_history(
                                         raw_user_command=raw_user_direct_cmd,
@@ -695,6 +765,14 @@ def run_agent_loop(agent: Any):
                     except Exception as e:
                         msg = f"❌ 系统命令执行异常: {e}"
                         print(msg)
+                        self._repaint_direct_shell_command_feedback_if_failed(
+                            ui,
+                            rendered_output_lines=_estimate_visible_lines(
+                                self, f"{msg}\n"
+                            ),
+                            cursor_at_line_start=True,
+                            failed=True,
+                        )
                         self._record_direct_shell_execution_history(
                             raw_user_command=raw_user_direct_cmd,
                             executed_command=user_input_cmd,
@@ -715,6 +793,14 @@ def run_agent_loop(agent: Any):
                 except Exception as e:
                     msg = f"❌ 命令执行异常: {e}"
                     print(msg)
+                    self._repaint_direct_shell_command_feedback_if_failed(
+                        ui,
+                        rendered_output_lines=_estimate_visible_lines(
+                            self, f"{msg}\n"
+                        ),
+                        cursor_at_line_start=True,
+                        failed=True,
+                    )
                     self._record_direct_shell_execution_history(
                         raw_user_command=raw_user_direct_cmd,
                         executed_command=ui,
@@ -727,6 +813,21 @@ def run_agent_loop(agent: Any):
                     self._reset_work_directory_to_startup_initial()
                 if return_code is not None:
                     last_direct = getattr(self, "_last_direct_shell_execution", None)
+                    if int(return_code) != 0:
+                        rendered_lines = 0
+                        cursor_at_line_start = True
+                        if isinstance(last_direct, dict):
+                            try:
+                                rendered_lines = int(last_direct.get("rendered_output_lines") or 0)
+                            except Exception:
+                                rendered_lines = 0
+                            cursor_at_line_start = bool(last_direct.get("cursor_at_line_start", True))
+                        self._repaint_direct_shell_command_feedback_if_failed(
+                            ui,
+                            rendered_output_lines=rendered_lines,
+                            cursor_at_line_start=cursor_at_line_start,
+                            failed=True,
+                        )
                     if isinstance(last_direct, dict):
                         self._record_direct_shell_execution_history(
                             raw_user_command=raw_user_direct_cmd,
