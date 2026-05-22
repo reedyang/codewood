@@ -114,6 +114,9 @@ MemoryService = None  # type: ignore[misc, assignment]
 KnowledgeService = None  # type: ignore
 KNOWLEDGE_AVAILABLE = True  # 构造前为「未探测」；单测设为 False 可跳过 knowledge 包加载
 
+DIRECT_SHELL_USER_HISTORY_PREFIX = "[DIRECT_SHELL_USER_COMMAND]"
+DIRECT_SHELL_RESULT_HISTORY_PREFIX = "[DIRECT_SHELL_RESULT]"
+
 # 根据操作系统选择合适的输入处理器
 import platform
 
@@ -793,8 +796,19 @@ class SmartShellAgent:
             role = str(msg.get("role") or "").strip().lower()
             content = str(msg.get("content") or "")
             if role == "user":
+                direct_cmd = self._parse_direct_shell_user_history_content(content)
+                if direct_cmd:
+                    print(f"{_ansi_rgb('•', 19, 161, 14)} You ran {_ansi_cyan(direct_cmd)}")
+                    continue
                 print(f"{_ansi_gray('›')} {content}")
             elif role == "assistant":
+                direct_result = self._parse_direct_shell_result_history_content(content)
+                if direct_result is not None:
+                    self._print_direct_shell_history_output(
+                        str(direct_result.get("stdout") or ""),
+                        str(direct_result.get("stderr") or ""),
+                    )
+                    continue
                 display_response = format_assistant_display_response(content)
                 if display_response:
                     print(f"{_ansi_gray('•')} {display_response}")
@@ -1000,6 +1014,94 @@ class SmartShellAgent:
         cmd = str(command or "").replace("\r", " ").replace("\n", " ").strip()
         print(f"{_ansi_rgb('•', 19, 161, 14)} You ran {_ansi_cyan(cmd)}")
 
+    def _build_direct_shell_user_history_content(self, raw_user_command: str) -> str:
+        cmd = str(raw_user_command or "").strip()
+        return f"{DIRECT_SHELL_USER_HISTORY_PREFIX}{cmd}"
+
+    def _parse_direct_shell_user_history_content(self, content: str) -> str:
+        text = str(content or "")
+        if not text.startswith(DIRECT_SHELL_USER_HISTORY_PREFIX):
+            return ""
+        cmd = text[len(DIRECT_SHELL_USER_HISTORY_PREFIX):].strip()
+        return cmd
+
+    def _build_direct_shell_result_history_content(
+        self,
+        raw_user_command: str,
+        executed_command: str,
+        cwd: str,
+        return_code: int,
+        stdout_text: str,
+        stderr_text: str,
+    ) -> str:
+        payload = {
+            "kind": "direct_shell_result",
+            "invoked_by": "user",
+            "raw_user_command": str(raw_user_command or ""),
+            "executed_command": str(executed_command or ""),
+            "cwd": str(cwd or ""),
+            "return_code": int(return_code),
+            "stdout": str(stdout_text or ""),
+            "stderr": str(stderr_text or ""),
+            "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        }
+        return f"{DIRECT_SHELL_RESULT_HISTORY_PREFIX}{json.dumps(payload, ensure_ascii=False)}"
+
+    def _parse_direct_shell_result_history_content(self, content: str) -> Optional[Dict[str, Any]]:
+        text = str(content or "")
+        if not text.startswith(DIRECT_SHELL_RESULT_HISTORY_PREFIX):
+            return None
+        body = text[len(DIRECT_SHELL_RESULT_HISTORY_PREFIX):].strip()
+        if not body:
+            return None
+        try:
+            payload = json.loads(body)
+        except Exception:
+            return None
+        if not isinstance(payload, dict):
+            return None
+        if str(payload.get("kind") or "").strip() != "direct_shell_result":
+            return None
+        return payload
+
+    def _print_direct_shell_history_output(self, stdout_text: str, stderr_text: str) -> None:
+        shared_state: Dict[str, Any] = {"first_line_emitted": False}
+        out_stream, err_stream = self._create_direct_shell_output_streams(shared_state)
+        out = str(stdout_text or "")
+        err = str(stderr_text or "")
+        if out:
+            out_stream.write(out)
+            out_stream.flush()
+        if err:
+            err_stream.write(err)
+            err_stream.flush()
+
+    def _record_direct_shell_execution_history(
+        self,
+        raw_user_command: str,
+        executed_command: str,
+        cwd: str,
+        return_code: int,
+        stdout_text: str,
+        stderr_text: str,
+    ) -> None:
+        raw_cmd = str(raw_user_command or "").strip()
+        if not raw_cmd:
+            return
+        executed = str(executed_command or "").strip() or raw_cmd
+        cwd_text = str(cwd or "").strip()
+        user_content = self._build_direct_shell_user_history_content(raw_cmd)
+        assistant_content = self._build_direct_shell_result_history_content(
+            raw_user_command=raw_cmd,
+            executed_command=executed,
+            cwd=cwd_text,
+            return_code=int(return_code),
+            stdout_text=str(stdout_text or ""),
+            stderr_text=str(stderr_text or ""),
+        )
+        self._append_chat_message("user", user_content)
+        self._append_chat_message("assistant", assistant_content)
+
     class _DirectShellOutputStream:
         def __init__(self, base_stream: Any, shared_state: Dict[str, Any]) -> None:
             self._base_stream = base_stream
@@ -1128,7 +1230,12 @@ class SmartShellAgent:
         err_stream = self._build_direct_shell_output_stream(sys.stderr, state)
         return out_stream, err_stream
 
-    def _stream_direct_shell_pipe_to_prefixed_output(self, pipe: Any, target_stream: Any) -> None:
+    def _stream_direct_shell_pipe_to_prefixed_output(
+        self,
+        pipe: Any,
+        target_stream: Any,
+        capture_chunks: Optional[List[str]] = None,
+    ) -> None:
         import codecs
 
         decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
@@ -1139,10 +1246,14 @@ class SmartShellAgent:
                     break
                 text_chunk = decoder.decode(chunk, final=False)
                 if text_chunk:
+                    if isinstance(capture_chunks, list):
+                        capture_chunks.append(text_chunk)
                     target_stream.write(text_chunk)
                     target_stream.flush()
             tail = decoder.decode(b"", final=True)
             if tail:
+                if isinstance(capture_chunks, list):
+                    capture_chunks.append(tail)
                 target_stream.write(tail)
                 target_stream.flush()
         except Exception:
@@ -1174,6 +1285,8 @@ class SmartShellAgent:
             "first_line_emitted": False,
             "on_text_emitted": _stop_status_ticker,
         }
+        stdout_chunks: List[str] = []
+        stderr_chunks: List[str] = []
         out_stream, err_stream = self._create_direct_shell_output_streams(stream_state)
         status_ticker = _WorkingStatusTicker(
             sys.stdout,
@@ -1197,14 +1310,14 @@ class SmartShellAgent:
             if stdout_pipe is not None and hasattr(stdout_pipe, "read"):
                 t_out = threading.Thread(
                     target=self._stream_direct_shell_pipe_to_prefixed_output,
-                    args=(stdout_pipe, out_stream),
+                    args=(stdout_pipe, out_stream, stdout_chunks),
                     daemon=True,
                 )
                 t_out.start()
             if stderr_pipe is not None and hasattr(stderr_pipe, "read"):
                 t_err = threading.Thread(
                     target=self._stream_direct_shell_pipe_to_prefixed_output,
-                    args=(stderr_pipe, err_stream),
+                    args=(stderr_pipe, err_stream, stderr_chunks),
                     daemon=True,
                 )
                 t_err.start()
@@ -1213,6 +1326,17 @@ class SmartShellAgent:
                 t_out.join(timeout=1.0)
             if t_err is not None:
                 t_err.join(timeout=1.0)
+            try:
+                self._last_direct_shell_execution = {
+                    "executed_command": str(command or ""),
+                    "cwd": str(cwd or ""),
+                    "return_code": int(return_code),
+                    "stdout": "".join(stdout_chunks),
+                    "stderr": "".join(stderr_chunks),
+                    "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                }
+            except Exception:
+                pass
             return int(return_code)
         finally:
             _stop_status_ticker()
