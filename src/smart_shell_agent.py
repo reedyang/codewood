@@ -51,6 +51,7 @@ from .ai.ai_provider_clients import AICallContext
 from .services.session_memory_service import SessionMemoryService
 from .policy.path_policy import PathPolicy
 from .core.console_utils import (
+    _WorkingStatusTicker,
     _ansi_blue,
     _ansi_cyan,
     _ansi_gray,
@@ -179,6 +180,7 @@ WORKSPACE_STATE_FILE = "workspaces.json"
 CHAT_STATE_FILE = "chats.json"
 ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 ANSI_OSC_RE = re.compile(r"\x1b\][^\a\x1b]*(?:\a|\x1b\\)")
+DIRECT_SHELL_WORKING_STATUS_MARQUEE_FPS = 10.0
 INPUT_PROMPT = "› "
 TASK_DOMAIN_VALUES = frozenset(
     {
@@ -1064,6 +1066,14 @@ class SmartShellAgent:
             s = SmartShellAgent._strip_console_color_controls(s)
             if not s:
                 return 0
+            if not bool(self._shared_state.get("_first_text_emitted_notified", False)):
+                self._shared_state["_first_text_emitted_notified"] = True
+                cb = self._shared_state.get("on_text_emitted")
+                if callable(cb):
+                    try:
+                        cb()
+                    except Exception:
+                        pass
             term_cols = max(8, int(self._terminal_columns() or 80))
             out_parts: List[str] = []
             for ch in s:
@@ -1106,8 +1116,14 @@ class SmartShellAgent:
         state = shared_state if isinstance(shared_state, dict) else {"first_line_emitted": False}
         return SmartShellAgent._DirectShellOutputStream(base_stream, state)
 
-    def _create_direct_shell_output_streams(self) -> Tuple[Any, Any]:
-        state: Dict[str, Any] = {"first_line_emitted": False}
+    def _create_direct_shell_output_streams(
+        self, shared_state: Optional[Dict[str, Any]] = None
+    ) -> Tuple[Any, Any]:
+        if isinstance(shared_state, dict):
+            state = shared_state
+            state.setdefault("first_line_emitted", False)
+        else:
+            state = {"first_line_emitted": False}
         out_stream = self._build_direct_shell_output_stream(sys.stdout, state)
         err_stream = self._build_direct_shell_output_stream(sys.stderr, state)
         return out_stream, err_stream
@@ -1141,40 +1157,65 @@ class SmartShellAgent:
         import subprocess
         import threading
 
-        out_stream, err_stream = self._create_direct_shell_output_streams()
-        process = subprocess.Popen(
-            command,
-            shell=True,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            cwd=str(cwd),
-            text=False,
+        status_ticker: Optional[_WorkingStatusTicker] = None
+        ticker_lock = threading.Lock()
+
+        def _stop_status_ticker() -> None:
+            nonlocal status_ticker
+            with ticker_lock:
+                if status_ticker is None:
+                    return
+                try:
+                    status_ticker.stop()
+                finally:
+                    status_ticker = None
+
+        stream_state: Dict[str, Any] = {
+            "first_line_emitted": False,
+            "on_text_emitted": _stop_status_ticker,
+        }
+        out_stream, err_stream = self._create_direct_shell_output_streams(stream_state)
+        status_ticker = _WorkingStatusTicker(
+            sys.stdout,
+            fps=DIRECT_SHELL_WORKING_STATUS_MARQUEE_FPS,
         )
-        t_out: Optional[threading.Thread] = None
-        t_err: Optional[threading.Thread] = None
-        stdout_pipe = getattr(process, "stdout", None)
-        stderr_pipe = getattr(process, "stderr", None)
-        if stdout_pipe is not None and hasattr(stdout_pipe, "read"):
-            t_out = threading.Thread(
-                target=self._stream_direct_shell_pipe_to_prefixed_output,
-                args=(stdout_pipe, out_stream),
-                daemon=True,
+        status_ticker.start()
+        try:
+            process = subprocess.Popen(
+                command,
+                shell=True,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                cwd=str(cwd),
+                text=False,
             )
-            t_out.start()
-        if stderr_pipe is not None and hasattr(stderr_pipe, "read"):
-            t_err = threading.Thread(
-                target=self._stream_direct_shell_pipe_to_prefixed_output,
-                args=(stderr_pipe, err_stream),
-                daemon=True,
-            )
-            t_err.start()
-        return_code = process.wait()
-        if t_out is not None:
-            t_out.join(timeout=1.0)
-        if t_err is not None:
-            t_err.join(timeout=1.0)
-        return int(return_code)
+            t_out: Optional[threading.Thread] = None
+            t_err: Optional[threading.Thread] = None
+            stdout_pipe = getattr(process, "stdout", None)
+            stderr_pipe = getattr(process, "stderr", None)
+            if stdout_pipe is not None and hasattr(stdout_pipe, "read"):
+                t_out = threading.Thread(
+                    target=self._stream_direct_shell_pipe_to_prefixed_output,
+                    args=(stdout_pipe, out_stream),
+                    daemon=True,
+                )
+                t_out.start()
+            if stderr_pipe is not None and hasattr(stderr_pipe, "read"):
+                t_err = threading.Thread(
+                    target=self._stream_direct_shell_pipe_to_prefixed_output,
+                    args=(stderr_pipe, err_stream),
+                    daemon=True,
+                )
+                t_err.start()
+            return_code = process.wait()
+            if t_out is not None:
+                t_out.join(timeout=1.0)
+            if t_err is not None:
+                t_err.join(timeout=1.0)
+            return int(return_code)
+        finally:
+            _stop_status_ticker()
 
     def _append_chat_message(self, role: str, content: str) -> None:
         self.session_memory_service.append_chat_message(role, content)
