@@ -1390,6 +1390,14 @@ def run_agent_loop(agent: Any):
                     self._last_cancelled_task = str(original_user_task or "").strip()
                 except Exception:
                     self._last_cancelled_task = str(getattr(self, "_last_cancelled_task", "") or "")
+                try:
+                    self._record_conversation_interrupted_history(
+                        interrupted_kind="task",
+                        reason="user_interrupt",
+                        detail=str(self._last_cancelled_task or ""),
+                    )
+                except Exception:
+                    pass
                 self._active_skill_full_prompt = ""
                 self._active_skill_id = None
                 self._active_skill_source = None

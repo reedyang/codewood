@@ -127,6 +127,116 @@ class SessionMemoryService:
                 filtered.append(m)
         return filtered or hist
 
+    def _normalize_history_content_for_model(self, role: str, content: str) -> str:
+        text = str(content or "")
+        norm_role = str(role or "").strip().lower()
+        if not text:
+            return ""
+        parse_user_cmd = getattr(self.agent, "_parse_direct_shell_user_history_content", None)
+        parse_direct_result = getattr(self.agent, "_parse_direct_shell_result_history_content", None)
+        is_direct_aborted = getattr(self.agent, "_is_direct_shell_result_aborted", None)
+        normalize_aborted = getattr(self.agent, "_normalize_aborted_direct_shell_stdout_for_history", None)
+        parse_interrupted = getattr(self.agent, "_parse_conversation_interrupted_history_content", None)
+
+        if norm_role == "user" and callable(parse_user_cmd):
+            try:
+                cmd = str(parse_user_cmd(text) or "").strip()
+            except Exception:
+                cmd = ""
+            if cmd:
+                return f"[用户直接执行命令] !{cmd}"
+
+        if norm_role == "assistant" and callable(parse_direct_result):
+            try:
+                payload = parse_direct_result(text)
+            except Exception:
+                payload = None
+            if isinstance(payload, dict):
+                executed = str(payload.get("executed_command") or "").strip()
+                rc = payload.get("return_code")
+                out = str(payload.get("stdout") or "")
+                err = str(payload.get("stderr") or "")
+                merged = out + err
+                aborted = False
+                if callable(is_direct_aborted):
+                    try:
+                        aborted = bool(is_direct_aborted(payload))
+                    except Exception:
+                        aborted = False
+                if aborted and callable(normalize_aborted):
+                    try:
+                        merged = str(normalize_aborted(merged) or "")
+                    except Exception:
+                        merged = out + err
+                status = "interrupted_by_user=true" if aborted else "interrupted_by_user=false"
+                header = f"[命令执行结果] command={executed or '<empty>'}; return_code={rc}; {status}"
+                body = merged.strip("\r\n")
+                return f"{header}\n{body}" if body else header
+
+        if norm_role == "assistant" and callable(parse_interrupted):
+            try:
+                payload2 = parse_interrupted(text)
+            except Exception:
+                payload2 = None
+            if isinstance(payload2, dict):
+                interrupted_kind = str(payload2.get("interrupted_kind") or "task").strip()
+                reason = str(payload2.get("reason") or "user_interrupt").strip()
+                detail = str(payload2.get("detail") or "").strip()
+                msg = (
+                    f"[会话中断事件] kind={interrupted_kind}; reason={reason}; "
+                    "任务被用户中断，除非用户明确要求继续，否则不要自动续跑。"
+                )
+                if detail:
+                    msg += f"\n被中断的任务: {detail}"
+                return msg
+
+        return text
+
+    def _latest_interruption_context_line(
+        self, source_history: Optional[List[Dict[str, Any]]] = None
+    ) -> str:
+        rows = list(source_history if source_history is not None else self._domain_filtered_history())
+        parse_direct_result = getattr(self.agent, "_parse_direct_shell_result_history_content", None)
+        is_direct_aborted = getattr(self.agent, "_is_direct_shell_result_aborted", None)
+        parse_interrupted = getattr(self.agent, "_parse_conversation_interrupted_history_content", None)
+        for msg in reversed(rows):
+            role = str(msg.get("role") or "").strip().lower()
+            if role != "assistant":
+                continue
+            content = str(msg.get("content") or "")
+            if callable(parse_interrupted):
+                try:
+                    evt = parse_interrupted(content)
+                except Exception:
+                    evt = None
+                if isinstance(evt, dict):
+                    detail = str(evt.get("detail") or "").strip()
+                    line = "最近一次任务执行被用户中断（ESC）。除非用户明确要求，禁止自动续跑被中断任务。"
+                    if detail:
+                        line += f" 被中断任务: {detail}"
+                    return line
+            if callable(parse_direct_result):
+                try:
+                    dr = parse_direct_result(content)
+                except Exception:
+                    dr = None
+                if isinstance(dr, dict):
+                    aborted = False
+                    if callable(is_direct_aborted):
+                        try:
+                            aborted = bool(is_direct_aborted(dr))
+                        except Exception:
+                            aborted = False
+                    if aborted:
+                        cmd = str(dr.get("executed_command") or "").strip()
+                        rc = dr.get("return_code")
+                        return (
+                            "最近一次直接命令执行被用户强制终止；"
+                            f"command={cmd or '<empty>'}; return_code={rc}。"
+                            "不要将该命令视为已完整成功执行。"
+                        )
+        return ""
+
     def update_session_summary_rolling(self) -> None:
         hist = list(getattr(self.agent, "conversation_history", None) or [])
         chunks: List[str] = []
@@ -749,7 +859,7 @@ class SessionMemoryService:
             role = str(msg.get("role") or "").strip().lower()
             if role not in ("user", "assistant"):
                 continue
-            content = str(msg.get("content") or "")
+            content = self._normalize_history_content_for_model(role, str(msg.get("content") or ""))
             if role == "assistant":
                 before = content
                 content = self._clip_text_to_token_budget(content, assistant_clip_tokens)
@@ -945,6 +1055,7 @@ class SessionMemoryService:
             int(budgets["assistant_clip_tokens"]),
             source_history=filtered_history,
         )
+        interruption_line = self._latest_interruption_context_line(filtered_history)
         for msg in history_messages:
             messages.append(msg)
 
@@ -987,6 +1098,8 @@ class SessionMemoryService:
         if context:
             ctx_line = f"操作上下文: {context}\n"
             current_input += self._clip_text_to_token_budget(ctx_line, op_context_budget)
+        if interruption_line:
+            current_input += f"最近的中断状态: {interruption_line}\n"
         # 用户原始需求必须进入上下文（即使历史被压缩）。
         current_input += f"用户原始需求: {original_requirement}\n"
         current_input += f"用户输入: {user_input}"
@@ -1053,6 +1166,8 @@ class SessionMemoryService:
                     )
                     if last_cancelled_task:
                         current_input2_head += f"最近被取消的任务: {last_cancelled_task}\n"
+                if interruption_line:
+                    current_input2_head += f"最近的中断状态: {interruption_line}\n"
                 current_input2_optional = (
                     f"当前 workspace: {self.agent.workspace_name}\n"
                     f"当前目录（workspace）: {workspace_directory}\n"

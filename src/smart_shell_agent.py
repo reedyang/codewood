@@ -116,6 +116,7 @@ KNOWLEDGE_AVAILABLE = True  # 构造前为「未探测」；单测设为 False �
 
 DIRECT_SHELL_USER_HISTORY_PREFIX = "[DIRECT_SHELL_USER_COMMAND]"
 DIRECT_SHELL_RESULT_HISTORY_PREFIX = "[DIRECT_SHELL_RESULT]"
+CONVERSATION_INTERRUPTED_HISTORY_PREFIX = "[CONVERSATION_INTERRUPTED]"
 
 # 根据操作系统选择合适的输入处理器
 import platform
@@ -902,6 +903,10 @@ class SmartShellAgent:
                     continue
                 print(f"{_ansi_gray('›')} {content}")
             elif role == "assistant":
+                interrupted_event = self._parse_conversation_interrupted_history_content(content)
+                if interrupted_event is not None:
+                    self._print_conversation_interrupted_banner()
+                    continue
                 direct_result = self._parse_direct_shell_result_history_content(content)
                 if direct_result is not None:
                     aborted_result = self._is_direct_shell_result_aborted(direct_result)
@@ -920,7 +925,9 @@ class SmartShellAgent:
                         err_text,
                         force_first_line_continuation=force_continuation,
                     )
-                    if not aborted_result:
+                    if aborted_result:
+                        self._print_conversation_interrupted_banner()
+                    else:
                         self._print_direct_shell_history_separator()
                     continue
                 display_response = format_assistant_display_response(content)
@@ -1256,6 +1263,51 @@ class SmartShellAgent:
         if str(payload.get("kind") or "").strip() != "direct_shell_result":
             return None
         return payload
+
+    def _build_conversation_interrupted_history_content(
+        self,
+        interrupted_kind: str = "task",
+        reason: str = "user_interrupt",
+        detail: str = "",
+    ) -> str:
+        payload = {
+            "kind": "conversation_interrupted",
+            "interrupted_kind": str(interrupted_kind or "task"),
+            "reason": str(reason or "user_interrupt"),
+            "detail": str(detail or ""),
+            "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        }
+        return f"{CONVERSATION_INTERRUPTED_HISTORY_PREFIX}{json.dumps(payload, ensure_ascii=False)}"
+
+    def _parse_conversation_interrupted_history_content(self, content: str) -> Optional[Dict[str, Any]]:
+        text = str(content or "")
+        if not text.startswith(CONVERSATION_INTERRUPTED_HISTORY_PREFIX):
+            return None
+        body = text[len(CONVERSATION_INTERRUPTED_HISTORY_PREFIX):].strip()
+        if not body:
+            return None
+        try:
+            payload = json.loads(body)
+        except Exception:
+            return None
+        if not isinstance(payload, dict):
+            return None
+        if str(payload.get("kind") or "").strip() != "conversation_interrupted":
+            return None
+        return payload
+
+    def _record_conversation_interrupted_history(
+        self,
+        interrupted_kind: str = "task",
+        reason: str = "user_interrupt",
+        detail: str = "",
+    ) -> None:
+        assistant_content = self._build_conversation_interrupted_history_content(
+            interrupted_kind=interrupted_kind,
+            reason=reason,
+            detail=detail,
+        )
+        self._append_chat_message("assistant", assistant_content)
 
     def _print_direct_shell_history_output(
         self,
