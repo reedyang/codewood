@@ -568,8 +568,32 @@ def run_agent_loop(agent: Any):
                 ui = run_direct_shell
                 self._print_direct_shell_command_feedback(ui)
                 execution_cwd = self._shell_execution_cwd()
+                raw_user_direct_cmd = f"!{ui}"
+                try:
+                    self._last_direct_shell_execution = None
+                except Exception:
+                    pass
                 if self._is_executable_file(ui):
-                    self._execute_file_directly(ui)
+                    exec_ok = bool(self._execute_file_directly(ui))
+                    last_direct = getattr(self, "_last_direct_shell_execution", None)
+                    if isinstance(last_direct, dict):
+                        self._record_direct_shell_execution_history(
+                            raw_user_command=raw_user_direct_cmd,
+                            executed_command=str(last_direct.get("executed_command") or ui),
+                            cwd=str(last_direct.get("cwd") or execution_cwd),
+                            return_code=int(last_direct.get("return_code") if last_direct.get("return_code") is not None else (0 if exec_ok else 1)),
+                            stdout_text=str(last_direct.get("stdout") or ""),
+                            stderr_text=str(last_direct.get("stderr") or ""),
+                        )
+                    else:
+                        self._record_direct_shell_execution_history(
+                            raw_user_command=raw_user_direct_cmd,
+                            executed_command=ui,
+                            cwd=str(execution_cwd),
+                            return_code=0 if exec_ok else 1,
+                            stdout_text="",
+                            stderr_text="" if exec_ok else "命令执行失败（未捕获到详细输出）\n",
+                        )
                     continue
 
                 user_input_cmd = ui
@@ -583,6 +607,9 @@ def run_agent_loop(agent: Any):
 
                     try:
                         if user_input_cmd.lower().startswith('cd '):
+                            cd_stdout = ""
+                            cd_stderr = ""
+                            cd_return_code = 0
                             path = user_input_cmd[3:].strip()
                             try:
                                 if path == "..":
@@ -597,9 +624,15 @@ def run_agent_loop(agent: Any):
                                         new_path = execution_cwd / raw_path
                                 new_path = new_path.resolve()
                                 if not new_path.exists():
-                                    print(f"❌ 目录 '{path}' 不存在")
+                                    msg = f"❌ 目录 '{path}' 不存在"
+                                    print(msg)
+                                    cd_stderr = f"{msg}\n"
+                                    cd_return_code = 1
                                 elif not new_path.is_dir():
-                                    print(f"❌ '{path}' 不是一个目录")
+                                    msg = f"❌ '{path}' 不是一个目录"
+                                    print(msg)
+                                    cd_stderr = f"{msg}\n"
+                                    cd_return_code = 1
                                 else:
                                     self.work_directory = new_path
                                     if self.input_handler:
@@ -607,31 +640,111 @@ def run_agent_loop(agent: Any):
                                     self._save_current_workspace_position()
                                     self._reset_work_directory_to_startup_initial()
                             except Exception as e:
-                                print(f"❌ 切换目录失败: {e}")
+                                msg = f"❌ 切换目录失败: {e}"
+                                print(msg)
+                                cd_stderr = f"{msg}\n"
+                                cd_return_code = 1
+                            self._record_direct_shell_execution_history(
+                                raw_user_command=raw_user_direct_cmd,
+                                executed_command=user_input_cmd,
+                                cwd=str(execution_cwd),
+                                return_code=cd_return_code,
+                                stdout_text=cd_stdout,
+                                stderr_text=cd_stderr,
+                            )
                         else:
+                            return_code: Optional[int] = None
                             try:
-                                self._run_direct_shell_with_prefixed_output(
+                                return_code = self._run_direct_shell_with_prefixed_output(
                                     user_input_cmd,
                                     execution_cwd,
                                 )
                             except Exception as e:
-                                print(f"❌ 命令执行异常: {e}")
+                                msg = f"❌ 命令执行异常: {e}"
+                                print(msg)
+                                self._record_direct_shell_execution_history(
+                                    raw_user_command=raw_user_direct_cmd,
+                                    executed_command=user_input_cmd,
+                                    cwd=str(execution_cwd),
+                                    return_code=1,
+                                    stdout_text="",
+                                    stderr_text=f"{msg}\n",
+                                )
                             finally:
                                 self._reset_work_directory_to_startup_initial()
+                            if return_code is not None:
+                                last_direct = getattr(self, "_last_direct_shell_execution", None)
+                                if isinstance(last_direct, dict):
+                                    self._record_direct_shell_execution_history(
+                                        raw_user_command=raw_user_direct_cmd,
+                                        executed_command=str(last_direct.get("executed_command") or user_input_cmd),
+                                        cwd=str(last_direct.get("cwd") or execution_cwd),
+                                        return_code=int(last_direct.get("return_code") if last_direct.get("return_code") is not None else return_code),
+                                        stdout_text=str(last_direct.get("stdout") or ""),
+                                        stderr_text=str(last_direct.get("stderr") or ""),
+                                    )
+                                else:
+                                    self._record_direct_shell_execution_history(
+                                        raw_user_command=raw_user_direct_cmd,
+                                        executed_command=user_input_cmd,
+                                        cwd=str(execution_cwd),
+                                        return_code=int(return_code),
+                                        stdout_text="",
+                                        stderr_text="",
+                                    )
                     except Exception as e:
-                        print(f"❌ 系统命令执行异常: {e}")
+                        msg = f"❌ 系统命令执行异常: {e}"
+                        print(msg)
+                        self._record_direct_shell_execution_history(
+                            raw_user_command=raw_user_direct_cmd,
+                            executed_command=user_input_cmd,
+                            cwd=str(execution_cwd),
+                            return_code=1,
+                            stdout_text="",
+                            stderr_text=f"{msg}\n",
+                        )
                     continue
 
                 # e.g. !git status — not in the small whitelist but still direct shell
+                return_code: Optional[int] = None
                 try:
-                    self._run_direct_shell_with_prefixed_output(
+                    return_code = self._run_direct_shell_with_prefixed_output(
                         ui,
                         execution_cwd,
                     )
                 except Exception as e:
-                    print(f"❌ 命令执行异常: {e}")
+                    msg = f"❌ 命令执行异常: {e}"
+                    print(msg)
+                    self._record_direct_shell_execution_history(
+                        raw_user_command=raw_user_direct_cmd,
+                        executed_command=ui,
+                        cwd=str(execution_cwd),
+                        return_code=1,
+                        stdout_text="",
+                        stderr_text=f"{msg}\n",
+                    )
                 finally:
                     self._reset_work_directory_to_startup_initial()
+                if return_code is not None:
+                    last_direct = getattr(self, "_last_direct_shell_execution", None)
+                    if isinstance(last_direct, dict):
+                        self._record_direct_shell_execution_history(
+                            raw_user_command=raw_user_direct_cmd,
+                            executed_command=str(last_direct.get("executed_command") or ui),
+                            cwd=str(last_direct.get("cwd") or execution_cwd),
+                            return_code=int(last_direct.get("return_code") if last_direct.get("return_code") is not None else return_code),
+                            stdout_text=str(last_direct.get("stdout") or ""),
+                            stderr_text=str(last_direct.get("stderr") or ""),
+                        )
+                    else:
+                        self._record_direct_shell_execution_history(
+                            raw_user_command=raw_user_direct_cmd,
+                            executed_command=ui,
+                            cwd=str(execution_cwd),
+                            return_code=int(return_code),
+                            stdout_text="",
+                            stderr_text="",
+                        )
                 continue
 
             # Natural-language turn: rewrite prompt line as chat-style user line.
