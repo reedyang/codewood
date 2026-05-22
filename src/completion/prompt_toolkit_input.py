@@ -160,6 +160,8 @@ def _sanitize_prompt_pollution(text: str, work_directory: Optional[Path] = None)
         prompt_prefix = f"{wd}>"
         while cleaned.startswith(prompt_prefix):
             cleaned = cleaned[len(prompt_prefix):].lstrip()
+    while cleaned.startswith("›"):
+        cleaned = cleaned[1:].lstrip()
 
     if re.match(r"^>{2,}\s*\S", cleaned):
         cleaned = re.sub(r"^>+\s*", "", cleaned, count=1)

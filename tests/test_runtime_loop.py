@@ -7,6 +7,7 @@ from unittest.mock import patch
 from src.runtime.runtime_loop import (
     _build_minimal_verification_command,
     _format_startup_directory,
+    _sanitize_prompt_pollution,
     _shell_command_indicates_verification,
     _tool_change_and_verification_hints,
 )
@@ -58,6 +59,14 @@ class RuntimeLoopTests(unittest.TestCase):
             {"success": True},
         )
         self.assertTrue(bool(hints_verify.get("verified")))
+
+    def test_sanitize_prompt_pollution_strips_fixed_prompt(self):
+        cleaned = _sanitize_prompt_pollution("› /help", Path("D:/ws"))
+        self.assertEqual(cleaned, "/help")
+
+    def test_sanitize_prompt_pollution_strips_multiple_fixed_prompts(self):
+        cleaned = _sanitize_prompt_pollution("› › !git status", Path("D:/ws"))
+        self.assertEqual(cleaned, "!git status")
 
 
 if __name__ == "__main__":

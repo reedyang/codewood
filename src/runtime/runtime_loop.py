@@ -190,6 +190,8 @@ def _sanitize_prompt_pollution(text: str, work_directory: Any) -> str:
         prompt_prefix = f"{wd}>"
         while cleaned.startswith(prompt_prefix):
             cleaned = cleaned[len(prompt_prefix):].lstrip()
+    while cleaned.startswith("›"):
+        cleaned = cleaned[1:].lstrip()
 
     if re.match(r"^>{2,}\s*\S", cleaned):
         cleaned = re.sub(r"^>+\s*", "", cleaned, count=1)
@@ -644,6 +646,8 @@ def run_agent_loop(agent: Any):
 
             if run_direct_shell is not None:
                 ui = run_direct_shell
+                self._print_direct_shell_command_feedback(ui)
+                execution_cwd = self._shell_execution_cwd()
                 if self._is_executable_file(ui):
                     self._execute_file_directly(ui)
                     continue
@@ -662,15 +666,15 @@ def run_agent_loop(agent: Any):
                             path = user_input_cmd[3:].strip()
                             try:
                                 if path == "..":
-                                    new_path = self.work_directory.parent
+                                    new_path = execution_cwd.parent
                                 elif path == ".":
-                                    new_path = self.work_directory
+                                    new_path = execution_cwd
                                 else:
                                     raw_path = Path(path)
                                     if raw_path.is_absolute():
                                         new_path = raw_path
                                     else:
-                                        new_path = self.work_directory / raw_path
+                                        new_path = execution_cwd / raw_path
                                 new_path = new_path.resolve()
                                 if not new_path.exists():
                                     print(f"❌ 目录 '{path}' 不存在")
@@ -681,6 +685,7 @@ def run_agent_loop(agent: Any):
                                     if self.input_handler:
                                         self.input_handler.update_work_directory(new_path)
                                     self._save_current_workspace_position()
+                                    self._reset_work_directory_to_startup_initial()
                             except Exception as e:
                                 print(f"❌ 切换目录失败: {e}")
                         else:
@@ -691,11 +696,13 @@ def run_agent_loop(agent: Any):
                                     stdin=sys.stdin,
                                     stdout=sys.stdout,
                                     stderr=sys.stderr,
-                                    cwd=str(self.work_directory)
+                                    cwd=str(execution_cwd)
                                 )
                                 process.wait()
                             except Exception as e:
                                 print(f"❌ 命令执行异常: {e}")
+                            finally:
+                                self._reset_work_directory_to_startup_initial()
                     except Exception as e:
                         print(f"❌ 系统命令执行异常: {e}")
                     continue
@@ -708,11 +715,13 @@ def run_agent_loop(agent: Any):
                         stdin=sys.stdin,
                         stdout=sys.stdout,
                         stderr=sys.stderr,
-                        cwd=str(self.work_directory)
+                        cwd=str(execution_cwd)
                     )
                     process.wait()
                 except Exception as e:
                     print(f"❌ 命令执行异常: {e}")
+                finally:
+                    self._reset_work_directory_to_startup_initial()
                 continue
 
             # Natural-language turn: rewrite prompt line as chat-style user line.
