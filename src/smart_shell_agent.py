@@ -791,6 +791,7 @@ class SmartShellAgent:
         print(f"{_ansi_gray(title)}\n")
         if not self.conversation_history:
             print("(当前 Chat 暂无历史消息)")
+            self._show_separator_next_prompt = False
             return
         hist = list(self.conversation_history or [])
         for idx, msg in enumerate(hist):
@@ -826,6 +827,7 @@ class SmartShellAgent:
                         str(direct_result.get("stdout") or ""),
                         str(direct_result.get("stderr") or ""),
                     )
+                    self._print_direct_shell_history_separator()
                     continue
                 display_response = format_assistant_display_response(content)
                 if display_response:
@@ -837,6 +839,16 @@ class SmartShellAgent:
                         print(f"{_ansi_gray('执行工具:')} {_ansi_bright_blue(self._tool_call_summary(tool_name, args))}")
             else:
                 print(content)
+        self._show_separator_next_prompt = False
+
+    def _print_direct_shell_history_separator(self) -> None:
+        width = max(1, int(self._terminal_columns_for_line_estimate()))
+        print("")
+        try:
+            print(_ansi_gray("─" * width))
+        except Exception:
+            print(_ansi_gray("-" * width))
+        print("")
 
     def _rewrite_previous_prompt_as_user(self, user_text: str) -> None:
         """
@@ -987,11 +999,15 @@ class SmartShellAgent:
                     width = 80
         width = max(1, width)
         try:
+            print("")
             print(_ansi_gray("─" * width))
+            print("")
             self._prompt_separator_rendered = True
         except Exception:
             try:
+                print("")
                 print(_ansi_gray("-" * width))
+                print("")
                 self._prompt_separator_rendered = True
             except Exception:
                 self._prompt_separator_rendered = False
@@ -3143,11 +3159,19 @@ class SmartShellAgent:
             self._startup_prompt_pending = False
         suppress_separator_on_startup = startup_prompt_pending
 
+        separator_requested = bool(getattr(self, "_show_separator_next_prompt", False))
+        if separator_requested:
+            self._show_separator_next_prompt = False
+
         suppress_separator_once = bool(getattr(self, "_suppress_next_separator", False))
         if suppress_separator_once:
             self._suppress_next_separator = False
 
-        show_separator = (not suppress_separator_once) and (not suppress_separator_on_startup)
+        show_separator = (
+            separator_requested
+            and (not suppress_separator_once)
+            and (not suppress_separator_on_startup)
+        )
         if show_separator and not bool(
             getattr(self.input_handler, "renders_prompt_separator_inline", False)
         ):
