@@ -1,10 +1,15 @@
 import unittest
+import json
 from pathlib import Path
 import threading
 import time
 from unittest.mock import MagicMock, patch
 
 from src.services.session_memory_service import SessionMemoryService
+
+DIRECT_SHELL_USER_HISTORY_PREFIX = "[DIRECT_SHELL_USER_COMMAND]"
+DIRECT_SHELL_RESULT_HISTORY_PREFIX = "[DIRECT_SHELL_RESULT]"
+CONVERSATION_INTERRUPTED_HISTORY_PREFIX = "[CONVERSATION_INTERRUPTED]"
 
 
 class _FakeAgent:
@@ -53,6 +58,109 @@ class _FakeAgent:
         if "software_development" in domains:
             return "\n\n【领域强化：软件开发】\n硬性要求...\n"
         return ""
+
+    def _build_direct_shell_user_history_content(self, raw_user_command: str) -> str:
+        return f"{DIRECT_SHELL_USER_HISTORY_PREFIX}{str(raw_user_command or '').strip()}"
+
+    def _build_direct_shell_result_history_content(
+        self,
+        raw_user_command: str,
+        executed_command: str,
+        cwd: str,
+        return_code: int,
+        stdout_text: str,
+        stderr_text: str,
+        aborted_by_user: bool = False,
+    ) -> str:
+        payload = {
+            "kind": "direct_shell_result",
+            "invoked_by": "user",
+            "raw_user_command": str(raw_user_command or ""),
+            "executed_command": str(executed_command or ""),
+            "cwd": str(cwd or ""),
+            "return_code": int(return_code),
+            "stdout": str(stdout_text or ""),
+            "stderr": str(stderr_text or ""),
+            "aborted_by_user": bool(aborted_by_user),
+        }
+        return f"{DIRECT_SHELL_RESULT_HISTORY_PREFIX}{json.dumps(payload, ensure_ascii=False)}"
+
+    def _parse_direct_shell_user_history_content(self, content: str) -> str:
+        text = str(content or "")
+        if not text.startswith(DIRECT_SHELL_USER_HISTORY_PREFIX):
+            return ""
+        return text[len(DIRECT_SHELL_USER_HISTORY_PREFIX):].strip()
+
+    def _parse_direct_shell_result_history_content(self, content: str):
+        text = str(content or "")
+        if not text.startswith(DIRECT_SHELL_RESULT_HISTORY_PREFIX):
+            return None
+        body = text[len(DIRECT_SHELL_RESULT_HISTORY_PREFIX):].strip()
+        if not body:
+            return None
+        try:
+            payload = json.loads(body)
+        except Exception:
+            return None
+        return payload if isinstance(payload, dict) and str(payload.get("kind") or "") == "direct_shell_result" else None
+
+    def _is_direct_shell_result_aborted(self, result):
+        if not isinstance(result, dict):
+            return False
+        if bool(result.get("aborted_by_user", False)):
+            return True
+        return "command aborted by user" in str(result.get("stdout") or "").lower()
+
+    def _normalize_aborted_direct_shell_stdout_for_history(self, stdout_text: str) -> str:
+        text = str(stdout_text or "")
+        marker = "command aborted by user"
+        if marker not in text.lower():
+            return text
+        lines = text.splitlines(keepends=True)
+        kept = []
+        found = False
+        for line in lines:
+            low = line.lower()
+            if marker not in low:
+                kept.append(line)
+                continue
+            found = True
+            idx = low.find(marker)
+            rebuilt = line[:idx] + line[idx + len(marker):]
+            if rebuilt.endswith("\n"):
+                rebuilt = rebuilt.rstrip(" \t\r\n") + "\n"
+            if rebuilt.strip():
+                kept.append(rebuilt)
+        merged = "".join(kept)
+        if found:
+            if merged and not merged.endswith("\n"):
+                merged += "\n"
+            merged += "command aborted by user\n"
+        return merged
+
+    def _build_conversation_interrupted_history_content(
+        self, interrupted_kind: str = "task", reason: str = "user_interrupt", detail: str = ""
+    ) -> str:
+        payload = {
+            "kind": "conversation_interrupted",
+            "interrupted_kind": str(interrupted_kind or "task"),
+            "reason": str(reason or "user_interrupt"),
+            "detail": str(detail or ""),
+        }
+        return f"{CONVERSATION_INTERRUPTED_HISTORY_PREFIX}{json.dumps(payload, ensure_ascii=False)}"
+
+    def _parse_conversation_interrupted_history_content(self, content: str):
+        text = str(content or "")
+        if not text.startswith(CONVERSATION_INTERRUPTED_HISTORY_PREFIX):
+            return None
+        body = text[len(CONVERSATION_INTERRUPTED_HISTORY_PREFIX):].strip()
+        if not body:
+            return None
+        try:
+            payload = json.loads(body)
+        except Exception:
+            return None
+        return payload if isinstance(payload, dict) and str(payload.get("kind") or "") == "conversation_interrupted" else None
 
 
 class SessionMemoryBudgetingTests(unittest.TestCase):
@@ -117,6 +225,49 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
         # User original requirement must be explicitly injected.
         self.assertIn("用户原始需求: 最初需求：做一个任务规划器", messages[-1]["content"])
         self.assertIn("用户输入: 现在请继续实现第2步", messages[-1]["content"])
+
+    def test_regular_task_messages_include_recent_aborted_command_context(self):
+        agent = _FakeAgent()
+        agent.conversation_history = [
+            {"role": "user", "content": agent._build_direct_shell_user_history_content("d:/tmp/builds/install-zr.bat")},
+            {
+                "role": "assistant",
+                "content": agent._build_direct_shell_result_history_content(
+                    "!d:/tmp/builds/install-zr.bat",
+                    "d:/tmp/builds/install-zr.bat",
+                    "D:/ws",
+                    137,
+                    "02:20:33 [Info] Searching artifacts...\ncommand aborted by user\n",
+                    "",
+                    aborted_by_user=True,
+                ),
+            },
+        ]
+        svc = SessionMemoryService(agent)
+        messages, _ = svc.build_regular_task_messages("继续处理后续步骤")
+        history_joined = "\n".join(str(m.get("content") or "") for m in messages[1:-1])
+        self.assertIn("[命令执行结果]", history_joined)
+        self.assertIn("interrupted_by_user=true", history_joined)
+        self.assertIn("最近一次直接命令执行被用户强制终止", str(messages[-1]["content"]))
+
+    def test_regular_task_messages_include_recent_interrupted_task_context(self):
+        agent = _FakeAgent()
+        agent.conversation_history = [
+            {"role": "user", "content": "请继续修复构建"},
+            {
+                "role": "assistant",
+                "content": agent._build_conversation_interrupted_history_content(
+                    interrupted_kind="task",
+                    reason="user_interrupt",
+                    detail="修复构建脚本",
+                ),
+            },
+        ]
+        svc = SessionMemoryService(agent)
+        messages, _ = svc.build_regular_task_messages("继续")
+        history_joined = "\n".join(str(m.get("content") or "") for m in messages[1:-1])
+        self.assertIn("[会话中断事件]", history_joined)
+        self.assertIn("最近一次任务执行被用户中断（ESC）", str(messages[-1]["content"]))
 
     def test_original_requirement_falls_back_to_current_input(self):
         agent = _FakeAgent()

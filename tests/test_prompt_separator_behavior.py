@@ -196,10 +196,12 @@ class PromptSeparatorBehaviorTests(unittest.TestCase):
             patch.object(agent, "_print_direct_shell_command_feedback"),
             patch.object(agent, "_print_direct_shell_history_output"),
             patch.object(agent, "_print_direct_shell_history_separator") as mock_sep,
+            patch.object(agent, "_print_conversation_interrupted_banner") as mock_banner,
             patch("builtins.print"),
         ):
             agent._print_chat_history()
         mock_sep.assert_not_called()
+        mock_banner.assert_called_once_with()
         self.assertFalse(agent._show_separator_next_prompt)
 
     def test_chat_history_aborted_direct_shell_output_always_moves_abort_marker_to_final_tail(self):
@@ -229,6 +231,7 @@ class PromptSeparatorBehaviorTests(unittest.TestCase):
             patch("src.smart_shell_agent._ansi_gray", side_effect=lambda s: s),
             patch.object(agent, "_print_direct_shell_command_feedback"),
             patch.object(agent, "_print_direct_shell_history_separator") as mock_sep,
+            patch.object(agent, "_print_conversation_interrupted_banner") as mock_banner,
             patch("builtins.print"),
         ):
             captured = {}
@@ -246,6 +249,31 @@ class PromptSeparatorBehaviorTests(unittest.TestCase):
         self.assertIn("02:00:41 [Info] Searching artifacts...\n", rendered)
         self.assertFalse(bool(captured.get("force", False)))
         mock_sep.assert_not_called()
+        mock_banner.assert_called_once_with()
+
+    def test_chat_history_task_interrupted_event_prints_banner(self):
+        agent = self._build_agent()
+        agent.active_chat_name = "Demo Chat"
+        agent.conversation_history = [
+            {"role": "user", "content": "继续执行上一个任务"},
+            {
+                "role": "assistant",
+                "content": agent._build_conversation_interrupted_history_content(
+                    interrupted_kind="task",
+                    reason="user_interrupt",
+                    detail="修复构建脚本",
+                ),
+            },
+        ]
+        with (
+            patch("src.smart_shell_agent._ansi_gray", side_effect=lambda s: s),
+            patch.object(agent, "_print_direct_shell_history_separator") as mock_sep,
+            patch.object(agent, "_print_conversation_interrupted_banner") as mock_banner,
+            patch("builtins.print"),
+        ):
+            agent._print_chat_history()
+        mock_sep.assert_not_called()
+        mock_banner.assert_called_once_with()
 
     def test_resize_reload_uses_recorded_history_anchor(self):
         agent = self._build_agent()
