@@ -178,6 +178,7 @@ DEFAULT_WORKSPACE_NAME = "Default"
 WORKSPACE_STATE_FILE = "workspaces.json"
 CHAT_STATE_FILE = "chats.json"
 ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+ANSI_OSC_RE = re.compile(r"\x1b\][^\a\x1b]*(?:\a|\x1b\\)")
 INPUT_PROMPT = "› "
 TASK_DOMAIN_VALUES = frozenset(
     {
@@ -1032,6 +1033,9 @@ class SmartShellAgent:
             s = str(text or "")
             if not s:
                 return 0
+            s = SmartShellAgent._strip_console_color_controls(s)
+            if not s:
+                return 0
             out_parts: List[str] = []
             for ch in s:
                 if self._line_start:
@@ -1044,8 +1048,17 @@ class SmartShellAgent:
                 out_parts.append(ch)
                 if ch == "\n":
                     self._line_start = True
-            self._base_stream.write("".join(out_parts))
+            rendered = "".join(out_parts)
+            self._base_stream.write(_ansi_gray(rendered))
             return len(s)
+
+    @staticmethod
+    def _strip_console_color_controls(text: str) -> str:
+        raw = str(text or "")
+        if not raw:
+            return ""
+        no_osc = ANSI_OSC_RE.sub("", raw)
+        return ANSI_ESCAPE_RE.sub("", no_osc)
 
     def _build_direct_shell_output_stream(
         self, base_stream: Any, shared_state: Optional[Dict[str, Any]] = None
@@ -1092,7 +1105,7 @@ class SmartShellAgent:
         process = subprocess.Popen(
             command,
             shell=True,
-            stdin=sys.stdin,
+            stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             cwd=str(cwd),
@@ -2251,7 +2264,7 @@ class SmartShellAgent:
         self,
         command: str,
         confirmed: bool = False,
-        interactive: bool = True,
+        interactive: bool = False,
         input_data: Optional[str] = None,
     ) -> dict:
         """Run a shell command; capture stdout/stderr for AI context while echoing to the terminal."""

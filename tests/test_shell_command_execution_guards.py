@@ -1,5 +1,6 @@
 import unittest
 import tempfile
+import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
@@ -448,7 +449,7 @@ class ShellCommandExecutionGuardsTests(unittest.TestCase):
         self.assertEqual(len(agent.prompt_calls), 1)
         self.assertTrue(bool(agent.prompt_calls[0].get("offer_always", False)))
 
-    def test_interactive_stream_writes_output_immediately(self):
+    def test_shell_execution_forces_non_interactive_even_when_interactive_true(self):
         agent = _DummyAgent()
         command = 'python -c "print(123)"'
         writes = []
@@ -457,55 +458,20 @@ class ShellCommandExecutionGuardsTests(unittest.TestCase):
             writes.append(str(text))
             return None
 
-        with patch("subprocess.Popen", _FakePopen), patch("threading.Thread", _ImmediateThread), patch(
-            "src.actions.command_actions._safe_console_write",
-            side_effect=_capture_write,
-        ):
-            result = action_shell_command(agent, command, confirmed=False, interactive=True, input_data=None)
-
-        self.assertTrue(result.get("success", False))
-        self.assertIn("stream-line", "".join(writes))
-        self.assertEqual("".join(writes).count("stream-line"), 1)
-
-    def test_interactive_stream_appends_newline_boundary_when_output_has_no_trailing_newline(self):
-        agent = _DummyAgent()
-        command = 'python -c "import sys; sys.stdout.write(\'x\')"'
-        writes = []
-
-        def _capture_write(text, _stream, append_newline=False):
-            writes.append(str(text))
-            return None
-
-        with patch("subprocess.Popen", _FakePopenNoTrailingNewline), patch("threading.Thread", _ImmediateThread), patch(
-            "src.actions.command_actions._safe_console_write",
-            side_effect=_capture_write,
-        ):
-            result = action_shell_command(agent, command, confirmed=False, interactive=True, input_data=None)
-
-        self.assertTrue(result.get("success", False))
-        self.assertIn("stream-no-nl", "".join(writes))
-        self.assertIn("\n", writes)
-
-    def test_interactive_stream_replays_when_tail_truncated(self):
-        agent = _DummyAgent()
-        command = 'python -c "print(123)"'
-        writes = []
-
-        def _capture_write(text, _stream, append_newline=False):
-            writes.append(str(text))
-            return None
-
-        with patch("subprocess.Popen", _FakePopenMultiLine), patch("threading.Thread", _ImmediateThread), patch(
+        with patch("subprocess.run", return_value=_FakeCompleted("stream-line\n")) as run_mock, patch(
             "src.actions.command_actions._dynamic_tail_line_limit",
             return_value=2,
         ), patch(
             "src.actions.command_actions._safe_console_write",
             side_effect=_capture_write,
-        ):
+        ), patch("subprocess.Popen") as popen_mock:
             result = action_shell_command(agent, command, confirmed=False, interactive=True, input_data=None)
 
         self.assertTrue(result.get("success", False))
-        self.assertIn("... omitted", "".join(writes))
+        self.assertEqual(result.get("interactive"), False)
+        self.assertIn("stream-line", "".join(writes))
+        self.assertEqual(run_mock.call_args.kwargs.get("stdin"), subprocess.DEVNULL)
+        popen_mock.assert_not_called()
 
     def test_non_interactive_mode_displays_only_tail_summary(self):
         agent = _DummyAgent()

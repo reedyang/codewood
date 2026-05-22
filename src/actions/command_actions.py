@@ -8,11 +8,12 @@ import unicodedata
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from ..core.console_utils import _decode_subprocess_output, _safe_console_write
+from ..core.console_utils import _ansi_gray, _decode_subprocess_output, _safe_console_write
 
 SHELL_OUTPUT_DISPLAY_TAIL_LINES = 30
 SHELL_OUTPUT_DISPLAY_RESERVED_LINES = 3
 ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+ANSI_OSC_RE = re.compile(r"\x1b\][^\a\x1b]*(?:\a|\x1b\\)")
 
 
 def _resolve_shell_execution_cwd(agent: Any) -> Path:
@@ -56,6 +57,26 @@ def _count_output_lines(text: str) -> int:
     if parts and parts[-1] == "":
         parts = parts[:-1]
     return len(parts)
+
+
+def _strip_console_color_controls(text: str) -> str:
+    raw = str(text or "")
+    if not raw:
+        return ""
+    no_osc = ANSI_OSC_RE.sub("", raw)
+    return ANSI_ESCAPE_RE.sub("", no_osc)
+
+
+def _gray_shell_display_text(text: str) -> str:
+    plain = _strip_console_color_controls(text)
+    if not plain:
+        return ""
+    trailing_newline = plain.endswith("\n")
+    core = plain[:-1] if trailing_newline else plain
+    if not core:
+        return "\n" if trailing_newline else ""
+    colored = _ansi_gray(core)
+    return colored + ("\n" if trailing_newline else "")
 
 
 def _format_omitted_lines_notice(omitted_lines: int, stream: Any) -> str:
@@ -260,7 +281,8 @@ def action_shell_command(
                 run_env[merge_env_name] = merge_path
             except OSError:
                 merge_path = None
-        interactive = bool(interactive)
+        # Global policy: all shell/script execution is non-interactive.
+        interactive = False
         return_code = -1
         out = ""
         err = ""
@@ -382,6 +404,7 @@ def action_shell_command(
                     capture_output=True,
                     env=run_env,
                     input=run_input,
+                    stdin=subprocess.DEVNULL if run_input is None else subprocess.PIPE,
                 )
                 return_code = completed.returncode
                 raw_stdout = _decode_subprocess_output(completed.stdout)
@@ -393,6 +416,10 @@ def action_shell_command(
             err_tail_limit = _dynamic_tail_line_limit(sys.stderr)
             displayed_out = _build_tail_output_for_display(out, sys.stdout, out_tail_limit)
             displayed_err = _build_tail_output_for_display(err, sys.stderr, err_tail_limit)
+            displayed_out_plain = _strip_console_color_controls(displayed_out)
+            displayed_err_plain = _strip_console_color_controls(displayed_err)
+            displayed_out = _gray_shell_display_text(displayed_out)
+            displayed_err = _gray_shell_display_text(displayed_err)
             should_replay_out = True
             should_replay_err = True
             if interactive:
@@ -406,10 +433,10 @@ def action_shell_command(
             last_rendered_chunk = ""
             if displayed_out and should_replay_out:
                 _safe_console_write(displayed_out, sys.stdout, append_newline=False)
-                last_rendered_chunk = displayed_out
+                last_rendered_chunk = displayed_out_plain
             if displayed_err and should_replay_err:
                 _safe_console_write(displayed_err, sys.stderr, append_newline=False)
-                last_rendered_chunk = displayed_err
+                last_rendered_chunk = displayed_err_plain
             if (not last_rendered_chunk) and interactive:
                 if (not should_replay_err) and err:
                     last_rendered_chunk = err
