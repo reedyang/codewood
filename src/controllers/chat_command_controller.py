@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import shlex
 from datetime import datetime
 from typing import Any
@@ -32,6 +33,23 @@ def print_chat_list(agent: Any) -> None:
         print(f"{marker} [{i}] {name} - {cnt} msgs")
 
 
+def _clear_terminal_screen() -> None:
+    try:
+        os.system("cls" if os.name == "nt" else "clear")
+    except Exception:
+        pass
+
+
+def _print_startup_overview_safe(agent: Any) -> None:
+    try:
+        from ..runtime.runtime_loop import _print_startup_overview
+
+        _print_startup_overview(agent)
+    except Exception:
+        # Best-effort: reload should still continue even if startup overview fails.
+        pass
+
+
 def handle_chat_builtin_command(agent: Any, builtin_line: str) -> bool:
     raw = str(builtin_line or "").strip()
     if not raw.lower().startswith("chat"):
@@ -52,8 +70,10 @@ def handle_chat_builtin_command(agent: Any, builtin_line: str) -> bool:
         if not current_chat_id:
             print("❌ 当前没有可重载的 Chat")
             return True
-        # Reload persisted chat state first, then restore current chat by id.
-        # This allows users to force-refresh current session messages from disk.
+        # Required UX order:
+        # 1) clear terminal 2) print startup overview 3) reload current chat history.
+        _clear_terminal_screen()
+        _print_startup_overview_safe(agent)
         agent._load_chat_state()
         reload_result = agent._activate_chat(
             current_chat_id,
@@ -64,6 +84,7 @@ def handle_chat_builtin_command(agent: Any, builtin_line: str) -> bool:
         if reload_result:
             print(reload_result)
             return True
+        print("✅ 已重新加载当前 Chat 历史消息")
         return True
     if sub == "new":
         name = " ".join(parts[2:]).strip() if len(parts) > 2 else "New Chat"

@@ -1,6 +1,7 @@
 import io
 import unittest
 from contextlib import redirect_stdout
+from unittest.mock import patch
 
 from src.completion.builtin_slash_commands import slash_builtin_completions
 from src.controllers.chat_command_controller import handle_chat_builtin_command
@@ -43,9 +44,15 @@ class ChatCommandControllerTests(unittest.TestCase):
     def test_reload_reloads_current_chat_history(self):
         agent = _FakeChatAgent()
         buf = io.StringIO()
-        with redirect_stdout(buf):
+        with (
+            patch("src.controllers.chat_command_controller._clear_terminal_screen") as mock_clear,
+            patch("src.controllers.chat_command_controller._print_startup_overview_safe") as mock_startup,
+            redirect_stdout(buf),
+        ):
             handled = handle_chat_builtin_command(agent, "chat reload")
         self.assertTrue(handled)
+        mock_clear.assert_called_once_with()
+        mock_startup.assert_called_once_with(agent)
         self.assertEqual(agent.load_chat_state_calls, 1)
         self.assertEqual(
             agent.activate_calls,
@@ -64,7 +71,11 @@ class ChatCommandControllerTests(unittest.TestCase):
         agent = _FakeChatAgent()
         agent.activate_result = "❌ 未找到 chat: chat-2"
         buf = io.StringIO()
-        with redirect_stdout(buf):
+        with (
+            patch("src.controllers.chat_command_controller._clear_terminal_screen"),
+            patch("src.controllers.chat_command_controller._print_startup_overview_safe"),
+            redirect_stdout(buf),
+        ):
             handled = handle_chat_builtin_command(agent, "chat reload")
         self.assertTrue(handled)
         self.assertEqual(agent.load_chat_state_calls, 1)
