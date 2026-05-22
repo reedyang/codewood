@@ -997,6 +997,132 @@ class SmartShellAgent:
         cmd = str(command or "").replace("\r", " ").replace("\n", " ").strip()
         print(f"{_ansi_rgb('•', 19, 161, 14)} You ran {_ansi_cyan(cmd)}")
 
+    class _DirectShellOutputStream:
+        def __init__(self, base_stream: Any, shared_state: Dict[str, Any]) -> None:
+            self._base_stream = base_stream
+            self._shared_state = shared_state
+            self._line_start = True
+
+        @property
+        def encoding(self) -> Optional[str]:
+            try:
+                return getattr(self._base_stream, "encoding", None)
+            except Exception:
+                return None
+
+        def fileno(self) -> int:
+            return self._base_stream.fileno()
+
+        def isatty(self) -> bool:
+            try:
+                return bool(self._base_stream.isatty())
+            except Exception:
+                return False
+
+        def flush(self) -> None:
+            try:
+                self._base_stream.flush()
+            except Exception:
+                pass
+
+        def writable(self) -> bool:
+            return True
+
+        def write(self, text: str) -> int:
+            s = str(text or "")
+            if not s:
+                return 0
+            out_parts: List[str] = []
+            for ch in s:
+                if self._line_start:
+                    if not bool(self._shared_state.get("first_line_emitted", False)):
+                        out_parts.append("  └ ")
+                        self._shared_state["first_line_emitted"] = True
+                    else:
+                        out_parts.append("    ")
+                    self._line_start = False
+                out_parts.append(ch)
+                if ch == "\n":
+                    self._line_start = True
+            self._base_stream.write("".join(out_parts))
+            return len(s)
+
+    def _build_direct_shell_output_stream(
+        self, base_stream: Any, shared_state: Optional[Dict[str, Any]] = None
+    ) -> Any:
+        state = shared_state if isinstance(shared_state, dict) else {"first_line_emitted": False}
+        return SmartShellAgent._DirectShellOutputStream(base_stream, state)
+
+    def _create_direct_shell_output_streams(self) -> Tuple[Any, Any]:
+        state: Dict[str, Any] = {"first_line_emitted": False}
+        out_stream = self._build_direct_shell_output_stream(sys.stdout, state)
+        err_stream = self._build_direct_shell_output_stream(sys.stderr, state)
+        return out_stream, err_stream
+
+    def _stream_direct_shell_pipe_to_prefixed_output(self, pipe: Any, target_stream: Any) -> None:
+        import codecs
+
+        decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+        try:
+            while True:
+                chunk = pipe.read(4096)
+                if not chunk:
+                    break
+                text_chunk = decoder.decode(chunk, final=False)
+                if text_chunk:
+                    target_stream.write(text_chunk)
+                    target_stream.flush()
+            tail = decoder.decode(b"", final=True)
+            if tail:
+                target_stream.write(tail)
+                target_stream.flush()
+        except Exception:
+            pass
+        finally:
+            try:
+                pipe.close()
+            except Exception:
+                pass
+
+    def _run_direct_shell_with_prefixed_output(self, command: str, cwd: Path) -> int:
+        import subprocess
+        import threading
+
+        out_stream, err_stream = self._create_direct_shell_output_streams()
+        process = subprocess.Popen(
+            command,
+            shell=True,
+            stdin=sys.stdin,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            cwd=str(cwd),
+            text=False,
+        )
+        t_out: Optional[threading.Thread] = None
+        t_err: Optional[threading.Thread] = None
+        stdout_pipe = getattr(process, "stdout", None)
+        stderr_pipe = getattr(process, "stderr", None)
+        if stdout_pipe is not None and hasattr(stdout_pipe, "read"):
+            t_out = threading.Thread(
+                target=self._stream_direct_shell_pipe_to_prefixed_output,
+                args=(stdout_pipe, out_stream),
+                daemon=True,
+            )
+            t_out.start()
+        if stderr_pipe is not None and hasattr(stderr_pipe, "read"):
+            t_err = threading.Thread(
+                target=self._stream_direct_shell_pipe_to_prefixed_output,
+                args=(stderr_pipe, err_stream),
+                daemon=True,
+            )
+            t_err.start()
+        return_code = process.wait()
+        if t_out is not None:
+            t_out.join(timeout=1.0)
+        if t_err is not None:
+            t_err.join(timeout=1.0)
+        return int(return_code)
+
     def _append_chat_message(self, role: str, content: str) -> None:
         self.session_memory_service.append_chat_message(role, content)
         if str(role or "").strip().lower() == "assistant":
@@ -2987,18 +3113,12 @@ class SmartShellAgent:
                 # Keep original command line as-is so "!python xxx.py" works correctly.
                 cmd = raw
             
-            # 使用Popen启动进程，让进程继承当前终端，支持交互
-            process = subprocess.Popen(
-                cmd,
-                shell=True,
-                stdin=sys.stdin,      # 继承当前终端的输入
-                stdout=sys.stdout,    # 继承当前终端的输出
-                stderr=sys.stderr,    # 继承当前终端的错误输出
-                cwd=str(self._shell_execution_cwd())
-            )
             try:
-                # 等待进程结束
-                return_code = process.wait()
+                # 通过父进程重放 stdout/stderr，确保输出前缀格式一致生效。
+                return_code = self._run_direct_shell_with_prefixed_output(
+                    cmd,
+                    self._shell_execution_cwd(),
+                )
 
                 if return_code == 0:
                     return True

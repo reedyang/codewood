@@ -76,6 +76,26 @@ class BangDirectExecutionTests(unittest.TestCase):
         self.assertIn("•", out)
         self.assertIn("\x1b[", out)
 
+    def test_direct_shell_output_stream_indents_lines(self):
+        class _TtyBuffer(StringIO):
+            def isatty(self):
+                return True
+
+            def fileno(self):
+                return 1
+
+        out_buf = _TtyBuffer()
+        err_buf = _TtyBuffer()
+        with patch("src.smart_shell_agent.sys.stdout", out_buf), patch(
+            "src.smart_shell_agent.sys.stderr", err_buf
+        ):
+            out_stream, err_stream = self.agent._create_direct_shell_output_streams()
+            out_stream.write("line1\nline2\n")
+            err_stream.write("err-line\n")
+
+        self.assertEqual(out_buf.getvalue(), "  └ line1\n    line2\n")
+        self.assertEqual(err_buf.getvalue(), "    err-line\n")
+
 
 if __name__ == "__main__":
     unittest.main()
