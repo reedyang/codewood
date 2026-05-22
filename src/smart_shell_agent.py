@@ -754,11 +754,11 @@ class SmartShellAgent:
             role = str(msg.get("role") or "").strip().lower()
             content = str(msg.get("content") or "")
             if role == "user":
-                print(f"{_ansi_gray('你:')} {content}")
+                print(f"{_ansi_gray('›')} {content}")
             elif role == "assistant":
                 display_response = format_assistant_display_response(content)
                 if display_response:
-                    print(f"{_ansi_gray('助手:')} {display_response}")
+                    print(f"{_ansi_gray('•')} {display_response}")
                 tool_plan = self._find_tool_plan_anywhere(content)
                 if tool_plan:
                     tool_name, args = tool_plan
@@ -769,7 +769,7 @@ class SmartShellAgent:
 
     def _rewrite_previous_prompt_as_user(self, user_text: str) -> None:
         """
-        Best-effort: clear previous prompt line, then rewrite as gray '你:' line.
+        Best-effort: clear previous prompt line, then rewrite as gray '›' line.
         """
         txt = str(user_text or "")
         if not txt:
@@ -782,7 +782,7 @@ class SmartShellAgent:
             #   <cursor here>
             # Move up once and clear prompt line.
             sys.stdout.write("\x1b[1A\r\x1b[2K")
-            sys.stdout.write(f"{_ansi_gray('你:')} {txt}\n")
+            sys.stdout.write(f"{_ansi_gray('›')} {txt}\n")
             sys.stdout.flush()
         except Exception:
             pass

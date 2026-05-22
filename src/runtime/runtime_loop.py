@@ -787,7 +787,7 @@ def run_agent_loop(agent: Any):
                         pass
                     display_response = format_assistant_display_response(ai_response)
                     if display_response:
-                        sys.stdout.write(f"{_ansi_gray('助手:')} {display_response}")
+                        sys.stdout.write(f"{_ansi_gray('•')} {display_response}")
                         if not display_response.endswith("\n"):
                             sys.stdout.write("\n")
                         sys.stdout.flush()
