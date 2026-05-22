@@ -178,6 +178,7 @@ DEFAULT_WORKSPACE_NAME = "Default"
 WORKSPACE_STATE_FILE = "workspaces.json"
 CHAT_STATE_FILE = "chats.json"
 ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+INPUT_PROMPT = "› "
 TASK_DOMAIN_VALUES = frozenset(
     {
         "software_development",
@@ -363,6 +364,41 @@ class SmartShellAgent:
 
     def _save_current_workspace_position(self) -> None:
         self._workspace_state_manager.save_current_workspace_position()
+
+    def _shell_execution_cwd(self) -> Path:
+        """Return the cwd to use when executing shell commands/scripts."""
+        try:
+            root = self._resolve_path_lenient(Path(self.workspace_root))
+        except Exception:
+            return self.work_directory
+        if root.exists() and root.is_dir():
+            return root
+        return self.work_directory
+
+    def _reset_work_directory_to_startup_initial(self) -> None:
+        """Restore current directory to startup initial directory and persist state."""
+        target = None
+        try:
+            startup_dir = getattr(self, "startup_initial_directory", None)
+            if startup_dir is not None:
+                target = self._resolve_path_lenient(Path(startup_dir))
+        except Exception:
+            target = None
+        if target is None:
+            target = self.work_directory
+        if not target.exists() or not target.is_dir():
+            return
+        self.work_directory = target
+        try:
+            if hasattr(self, "input_handler") and self.input_handler:
+                if hasattr(self.input_handler, "update_work_directory"):
+                    self.input_handler.update_work_directory(target)
+        except Exception:
+            pass
+        try:
+            self._save_current_workspace_position()
+        except Exception:
+            pass
 
     def _workspace_path_from_arg(self, raw: str) -> Path:
         return self._workspace_state_manager.workspace_path_from_arg(raw)
@@ -946,6 +982,20 @@ class SmartShellAgent:
         except Exception:
             pass
         self._prompt_separator_rendered = False
+
+    def _erase_last_user_input_line(self) -> None:
+        if not hasattr(sys.stdout, "isatty") or not sys.stdout.isatty():
+            return
+        try:
+            sys.stdout.write("\x1b[1A\r\x1b[2K\r")
+            sys.stdout.flush()
+        except Exception:
+            pass
+
+    def _print_direct_shell_command_feedback(self, command: str) -> None:
+        self._erase_last_user_input_line()
+        cmd = str(command or "").replace("\r", " ").replace("\n", " ").strip()
+        print(f"{_ansi_rgb('•', 19, 161, 14)} You ran {_ansi_cyan(cmd)}")
 
     def _append_chat_message(self, role: str, content: str) -> None:
         self.session_memory_service.append_chat_message(role, content)
@@ -2605,14 +2655,15 @@ class SmartShellAgent:
                 return True
         else:
             # 相对路径或文件名
+            execution_cwd = self._shell_execution_cwd()
             # 1. 检查当前目录
-            current_path = self.work_directory / command
+            current_path = execution_cwd / command
             if current_path.is_file() and os.access(current_path, os.X_OK):
                 return True
                 
             # 2. 检查当前目录下的常见可执行文件扩展名
             for ext in ['.exe', '.bat', '.cmd', '.com', '.py', '.ps1']:
-                current_path_with_ext = self.work_directory / (command + ext)
+                current_path_with_ext = execution_cwd / (command + ext)
                 if current_path_with_ext.is_file():
                     return True
                     
@@ -2649,7 +2700,7 @@ class SmartShellAgent:
         import platform
 
         status_bar_fragments, status_bar_plain = self._status_bar_render_data()
-        prompt = f"{str(self.work_directory)}>"
+        prompt = INPUT_PROMPT
         startup_prompt_pending = bool(getattr(self, "_startup_prompt_pending", True))
         if startup_prompt_pending:
             self._startup_prompt_pending = False
@@ -2743,7 +2794,7 @@ class SmartShellAgent:
                 except Exception:
                     pass
                 
-                user_input = session.prompt(f"{str(self.work_directory)}>").strip()
+                user_input = session.prompt(prompt).strip()
                 
                 # 保存到历史记录
                 if user_input:
@@ -2943,17 +2994,19 @@ class SmartShellAgent:
                 stdin=sys.stdin,      # 继承当前终端的输入
                 stdout=sys.stdout,    # 继承当前终端的输出
                 stderr=sys.stderr,    # 继承当前终端的错误输出
-                cwd=str(self.work_directory)
+                cwd=str(self._shell_execution_cwd())
             )
-            
-            # 等待进程结束
-            return_code = process.wait()
-            
-            if return_code == 0:
-                return True
-            else:
-                print(f"⚠️ 进程退出码: {return_code}")
-                return False
+            try:
+                # 等待进程结束
+                return_code = process.wait()
+
+                if return_code == 0:
+                    return True
+                else:
+                    print(f"⚠️ 进程退出码: {return_code}")
+                    return False
+            finally:
+                self._reset_work_directory_to_startup_initial()
                 
         except Exception as e:
             print(f"❌ 执行文件失败: {e}")

@@ -21,6 +21,10 @@ from ..tools.project_context_index import ProjectContextIndex
 
 def setup_core_state(agent: Any, startup_work_directory: Path, self_repo_root: Path) -> None:
     agent.work_directory = startup_work_directory
+    try:
+        agent.startup_initial_directory = Path(startup_work_directory).expanduser().resolve()
+    except Exception:
+        agent.startup_initial_directory = Path(startup_work_directory).expanduser()
     agent._self_repo_root = self_repo_root
     agent.conversation_history = []
     agent._chat_state = {}

@@ -15,6 +15,38 @@ SHELL_OUTPUT_DISPLAY_RESERVED_LINES = 3
 ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 
 
+def _resolve_shell_execution_cwd(agent: Any) -> Path:
+    resolver = getattr(agent, "_shell_execution_cwd", None)
+    if callable(resolver):
+        try:
+            resolved = resolver()
+            if isinstance(resolved, Path):
+                return resolved
+            if resolved:
+                return Path(str(resolved))
+        except Exception:
+            pass
+    raw_root = getattr(agent, "workspace_root", None)
+    if raw_root:
+        try:
+            root = Path(str(raw_root)).expanduser().resolve()
+            if root.exists() and root.is_dir():
+                return root
+        except Exception:
+            pass
+    return Path(getattr(agent, "work_directory", Path.cwd()))
+
+
+def _reset_work_directory_to_startup_initial(agent: Any) -> None:
+    """Best-effort restore of agent work directory to startup initial directory after shell execution."""
+    try:
+        resetter = getattr(agent, "_reset_work_directory_to_startup_initial", None)
+        if callable(resetter):
+            resetter()
+    except Exception:
+        pass
+
+
 def _count_output_lines(text: str) -> int:
     raw = str(text or "")
     if not raw:
@@ -213,6 +245,7 @@ def action_shell_command(
     import subprocess
 
     merge_path: Optional[str] = None
+    execution_cwd = _resolve_shell_execution_cwd(agent)
     try:
         run_env = os.environ.copy()
         run_env.setdefault("PYTHONUTF8", "1")
@@ -298,7 +331,7 @@ def action_shell_command(
                     process = subprocess.Popen(
                         command,
                         shell=True,
-                        cwd=str(agent.work_directory.resolve()),
+                        cwd=str(execution_cwd.resolve()),
                         env=run_env,
                         stdin=sys.stdin,
                         stdout=subprocess.PIPE,
@@ -345,7 +378,7 @@ def action_shell_command(
                 completed = subprocess.run(
                     command,
                     shell=True,
-                    cwd=str(agent.work_directory.resolve()),
+                    cwd=str(execution_cwd.resolve()),
                     capture_output=True,
                     env=run_env,
                     input=run_input,
@@ -410,8 +443,8 @@ def action_shell_command(
 
         if return_code == 0:
             register_outputs_from_shell_command(agent, command)
-            if agent._is_workspace_skill_path(agent.work_directory):
-                agent._reload_skills_if_workspace_skill_changed([agent.work_directory])
+            if agent._is_workspace_skill_path(execution_cwd):
+                agent._reload_skills_if_workspace_skill_changed([execution_cwd])
             removed = try_remove_ephemeral_script_after_shell(agent, command)
             if removed:
                 agent._last_auto_removed_ephemeral = removed
@@ -448,6 +481,8 @@ def action_shell_command(
 
     except Exception as e:
         return {"success": False, "error": f"系统命令执行异常: {str(e)}"}
+    finally:
+        _reset_work_directory_to_startup_initial(agent)
 
 
 def action_project_context_search(agent: Any, params: Dict[str, Any]) -> dict:

@@ -19,6 +19,8 @@ class _DummyAgent:
     def __init__(self):
         self.work_directory = Path.cwd()
         self.ai_workspace_dir = Path.cwd()
+        self.workspace_root = Path.cwd()
+        self.startup_initial_directory = Path.cwd()
         self.execution_policy = "confirmation"
         self.skills = []
         self._ephemeral_script_paths = set()
@@ -27,6 +29,7 @@ class _DummyAgent:
         self.prompt_calls = []
         self.prompt_result = True
         self.allowlist_hit = False
+        self.reset_calls = 0
 
     def _workspace_relative_script_triple(self, p: Path):
         return (self.work_directory / p, self.ai_workspace_dir / p, self.ai_workspace_dir / p)
@@ -49,6 +52,12 @@ class _DummyAgent:
 
     def _register_shell_output_for_auto_hide(self, _stdout_text, _stderr_text=""):
         return None
+
+    def _shell_execution_cwd(self):
+        return self.workspace_root
+
+    def _reset_work_directory_to_startup_initial(self):
+        self.reset_calls += 1
 
     def _is_workspace_skill_path(self, _path: Path) -> bool:
         return False
@@ -379,6 +388,27 @@ class ShellCommandExecutionGuardsTests(unittest.TestCase):
         self.assertEqual(len(agent.prompt_calls), 1)
         self.assertTrue(bool(agent.prompt_calls[0].get("offer_always", False)))
         self.assertFalse(bool(agent._manual_confirm_required_shell_once))
+        self.assertEqual(agent.reset_calls, 0)
+
+    def test_shell_command_execution_calls_startup_initial_reset(self):
+        agent = _DummyAgent()
+
+        with patch("subprocess.run", return_value=_FakeCompleted("ok\n")):
+            result = action_shell_command(agent, 'python -c "print(1)"', confirmed=False, interactive=False, input_data=None)
+
+        self.assertTrue(result.get("success", False))
+        self.assertEqual(agent.reset_calls, 1)
+
+    def test_shell_command_execution_uses_workspace_root_as_cwd(self):
+        agent = _DummyAgent()
+        agent.work_directory = Path.cwd() / "tests"
+        agent.workspace_root = Path.cwd()
+
+        with patch("subprocess.run", return_value=_FakeCompleted("ok\n")) as run_mock:
+            result = action_shell_command(agent, 'python -c "print(1)"', confirmed=False, interactive=False, input_data=None)
+
+        self.assertTrue(result.get("success", False))
+        self.assertEqual(run_mock.call_args.kwargs.get("cwd"), str(agent.workspace_root))
 
     def test_moderate_mode_manual_confirm_ignores_allowlist(self):
         agent = _DummyAgent()
