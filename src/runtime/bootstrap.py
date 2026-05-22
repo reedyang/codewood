@@ -277,6 +277,7 @@ def setup_input_handler(
                 raise RuntimeError("prompt_toolkit 输入处理器不可用")
             agent.input_handler = create_prompt_toolkit_input_handler(
                 work_directory=agent.work_directory,
+                workspace_directory=agent.workspace_root,
                 initial_history=initial_history,
                 slash_skill_commands=agent._get_slash_skill_commands(),
                 slash_mcp_commands=agent._get_slash_mcp_server_commands(),

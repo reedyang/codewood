@@ -31,6 +31,17 @@ class PromptToolkitInputCompletionTests(unittest.TestCase):
         self.assertTrue(mocked.called)
         self.assertTrue(any(getattr(c, "text", "") == "/tmp/demo.txt" for c in out))
 
+    def test_local_completion_prefers_workspace_directory(self):
+        with tempfile.TemporaryDirectory() as wd, tempfile.TemporaryDirectory() as ws:
+            wd_path = Path(wd)
+            ws_path = Path(ws)
+            (wd_path / "from_work_dir.txt").write_text("x", encoding="utf-8")
+            (ws_path / "from_workspace.txt").write_text("x", encoding="utf-8")
+            completer = FileCompleter(wd_path, workspace_directory=ws_path)
+            out = completer._get_local_completions("from_")
+        self.assertIn("from_workspace.txt", out)
+        self.assertNotIn("from_work_dir.txt", out)
+
 
 if __name__ == "__main__":
     unittest.main()

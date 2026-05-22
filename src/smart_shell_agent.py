@@ -1267,6 +1267,8 @@ class SmartShellAgent:
         self._load_chat_state()
         if self.input_handler is not None:
             try:
+                if hasattr(self.input_handler, "update_workspace_directory"):
+                    self.input_handler.update_workspace_directory(self.workspace_root)
                 if hasattr(self.input_handler, "update_work_directory"):
                     self.input_handler.update_work_directory(self.work_directory)
                 if hasattr(self.input_handler, "reset_command_history"):
