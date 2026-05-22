@@ -4,14 +4,21 @@ import shlex
 import shutil
 import sys
 import tempfile
+import threading
 import unicodedata
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from ..core.console_utils import _ansi_gray, _decode_subprocess_output, _safe_console_write
+from ..core.console_utils import (
+    _WorkingStatusTicker,
+    _ansi_gray,
+    _decode_subprocess_output,
+    _safe_console_write,
+)
 
 SHELL_OUTPUT_DISPLAY_TAIL_LINES = 30
 SHELL_OUTPUT_DISPLAY_RESERVED_LINES = 3
+SHELL_WORKING_STATUS_MARQUEE_FPS = 10.0
 ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 ANSI_OSC_RE = re.compile(r"\x1b\][^\a\x1b]*(?:\a|\x1b\\)")
 
@@ -288,9 +295,25 @@ def action_shell_command(
         err = ""
         displayed_out = ""
         displayed_err = ""
+        status_ticker: Optional[_WorkingStatusTicker] = None
+        status_ticker_lock = threading.Lock()
+
+        def _stop_status_ticker() -> None:
+            nonlocal status_ticker
+            with status_ticker_lock:
+                if status_ticker is None:
+                    return
+                try:
+                    status_ticker.stop()
+                finally:
+                    status_ticker = None
         try:
+            status_ticker = _WorkingStatusTicker(
+                sys.stdout,
+                fps=SHELL_WORKING_STATUS_MARQUEE_FPS,
+            )
+            status_ticker.start()
             if interactive:
-                import threading
                 import codecs
 
                 stdout_chunks: List[str] = []
@@ -333,12 +356,14 @@ def action_shell_command(
                             if text_chunk:
                                 with stream_chunks_lock:
                                     bucket.append(text_chunk)
+                                _stop_status_ticker()
                                 if allow_realtime_echo.is_set():
                                     _safe_console_write(text_chunk, target, append_newline=False)
                         tail = decoder.decode(b"", final=True)
                         if tail:
                             with stream_chunks_lock:
                                 bucket.append(tail)
+                            _stop_status_ticker()
                             if allow_realtime_echo.is_set():
                                 _safe_console_write(tail, target, append_newline=False)
                     except Exception:
@@ -410,6 +435,7 @@ def action_shell_command(
                 raw_stdout = _decode_subprocess_output(completed.stdout)
                 out = raw_stdout
                 err = _decode_subprocess_output(completed.stderr)
+            _stop_status_ticker()
 
             out = append_shell_merge_output_path(out, return_code, merge_path)
             out_tail_limit = _dynamic_tail_line_limit(sys.stdout)
@@ -462,6 +488,7 @@ def action_shell_command(
                 "interactive": interactive,
             }
         finally:
+            _stop_status_ticker()
             if merge_path:
                 try:
                     os.unlink(merge_path)

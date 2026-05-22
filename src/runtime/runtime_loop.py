@@ -4,8 +4,6 @@ from __future__ import annotations
 import json
 import os
 import re
-import threading
-import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
@@ -23,7 +21,7 @@ from ..core.console_utils import (
     _ansi_gray,
     _ansi_cyan,
     _ansi_bright_blue,
-    _render_working_status_line,
+    _WorkingStatusTicker,
     _ansi_yellow,
 )
 
@@ -31,84 +29,6 @@ _CODE_MUTATION_TOOLS = {
     "apply_patch",
 }
 _WORKING_STATUS_MARQUEE_FPS = 10.0
-_WORKING_STATUS_MIN_INTERVAL_SECONDS = 0.02
-
-
-class _WorkingStatusTicker:
-    def __init__(self, stream: Any, interval_seconds: float = 1.0) -> None:
-        self._stream = stream
-        self._interval_seconds = max(
-            _WORKING_STATUS_MIN_INTERVAL_SECONDS,
-            float(interval_seconds or 1.0),
-        )
-        self._stop_event = threading.Event()
-        self._thread: Optional[threading.Thread] = None
-        self._started = False
-        self._printed_plain_line = False
-        self._start_ts = 0.0
-
-    def _is_tty(self) -> bool:
-        try:
-            return bool(hasattr(self._stream, "isatty") and self._stream.isatty())
-        except Exception:
-            return False
-
-    def _render_frame(self, elapsed_seconds: int, frame: int) -> None:
-        line = _render_working_status_line(elapsed_seconds=elapsed_seconds, frame=frame)
-        try:
-            self._stream.write(f"\r\x1b[2K{line}")
-            self._stream.flush()
-        except Exception:
-            pass
-
-    def _run(self) -> None:
-        frame = 1
-        while not self._stop_event.wait(timeout=self._interval_seconds):
-            elapsed = int(time.monotonic() - self._start_ts)
-            self._render_frame(elapsed_seconds=elapsed, frame=frame)
-            frame += 1
-
-    def start(self) -> None:
-        if self._started:
-            return
-        self._started = True
-        self._start_ts = time.monotonic()
-        if not self._is_tty():
-            try:
-                self._stream.write(_render_working_status_line(elapsed_seconds=0, frame=0))
-                self._stream.write("\n")
-                self._stream.flush()
-                self._printed_plain_line = True
-            except Exception:
-                pass
-            return
-        self._render_frame(elapsed_seconds=0, frame=0)
-        self._thread = threading.Thread(
-            target=self._run,
-            name="smartshell-working-status",
-            daemon=True,
-        )
-        self._thread.start()
-
-    def stop(self) -> None:
-        if not self._started:
-            return
-        self._stop_event.set()
-        th = self._thread
-        if th is not None and th.is_alive():
-            th.join(timeout=self._interval_seconds + 0.2)
-        if self._is_tty():
-            try:
-                self._stream.write("\r\x1b[2K")
-                self._stream.flush()
-            except Exception:
-                pass
-        elif self._printed_plain_line:
-            # Keep non-TTY output readable and separated from following text.
-            try:
-                self._stream.flush()
-            except Exception:
-                pass
 
 
 def _is_software_development_domain(domains: List[str]) -> bool:
@@ -848,7 +768,7 @@ def run_agent_loop(agent: Any):
                 tool_round += 1
                 status_ticker = _WorkingStatusTicker(
                     sys.stdout,
-                    interval_seconds=(1.0 / _WORKING_STATUS_MARQUEE_FPS),
+                    fps=_WORKING_STATUS_MARQUEE_FPS,
                 )
                 status_ticker.start()
                 try:

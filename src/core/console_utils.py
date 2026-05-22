@@ -1,5 +1,7 @@
 import os
 import sys
+import threading
+import time
 from typing import Any, List, Optional, Tuple
 
 
@@ -229,3 +231,85 @@ def _render_working_status_line(
         + plain[seg_start:seg_end]
         + _gray_segment(plain[seg_end:])
     )
+
+
+class _WorkingStatusTicker:
+    def __init__(
+        self,
+        stream: Any,
+        fps: float = 6.0,
+        min_interval_seconds: float = 0.02,
+    ) -> None:
+        self._stream = stream
+        safe_fps = float(fps or 0.0)
+        if safe_fps <= 0:
+            safe_fps = 1.0
+        safe_min_interval = max(0.001, float(min_interval_seconds or 0.02))
+        self._interval_seconds = max(safe_min_interval, 1.0 / safe_fps)
+        self._stop_event = threading.Event()
+        self._thread: Optional[threading.Thread] = None
+        self._started = False
+        self._printed_plain_line = False
+        self._start_ts = 0.0
+
+    def _is_tty(self) -> bool:
+        try:
+            return bool(hasattr(self._stream, "isatty") and self._stream.isatty())
+        except Exception:
+            return False
+
+    def _render_frame(self, elapsed_seconds: int, frame: int) -> None:
+        line = _render_working_status_line(elapsed_seconds=elapsed_seconds, frame=frame)
+        try:
+            self._stream.write(f"\r\x1b[2K{line}")
+            self._stream.flush()
+        except Exception:
+            pass
+
+    def _run(self) -> None:
+        frame = 1
+        while not self._stop_event.wait(timeout=self._interval_seconds):
+            elapsed = int(time.monotonic() - self._start_ts)
+            self._render_frame(elapsed_seconds=elapsed, frame=frame)
+            frame += 1
+
+    def start(self) -> None:
+        if self._started:
+            return
+        self._started = True
+        self._start_ts = time.monotonic()
+        if not self._is_tty():
+            try:
+                self._stream.write(_render_working_status_line(elapsed_seconds=0, frame=0))
+                self._stream.write("\n")
+                self._stream.flush()
+                self._printed_plain_line = True
+            except Exception:
+                pass
+            return
+        self._render_frame(elapsed_seconds=0, frame=0)
+        self._thread = threading.Thread(
+            target=self._run,
+            name="smartshell-working-status",
+            daemon=True,
+        )
+        self._thread.start()
+
+    def stop(self) -> None:
+        if not self._started:
+            return
+        self._stop_event.set()
+        th = self._thread
+        if th is not None and th.is_alive():
+            th.join(timeout=self._interval_seconds + 0.2)
+        if self._is_tty():
+            try:
+                self._stream.write("\r\x1b[2K")
+                self._stream.flush()
+            except Exception:
+                pass
+        elif self._printed_plain_line:
+            try:
+                self._stream.flush()
+            except Exception:
+                pass
