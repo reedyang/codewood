@@ -690,15 +690,10 @@ def run_agent_loop(agent: Any):
                                 print(f"❌ 切换目录失败: {e}")
                         else:
                             try:
-                                process = subprocess.Popen(
+                                self._run_direct_shell_with_prefixed_output(
                                     user_input_cmd,
-                                    shell=True,
-                                    stdin=sys.stdin,
-                                    stdout=sys.stdout,
-                                    stderr=sys.stderr,
-                                    cwd=str(execution_cwd)
+                                    execution_cwd,
                                 )
-                                process.wait()
                             except Exception as e:
                                 print(f"❌ 命令执行异常: {e}")
                             finally:
@@ -709,15 +704,10 @@ def run_agent_loop(agent: Any):
 
                 # e.g. !git status — not in the small whitelist but still direct shell
                 try:
-                    process = subprocess.Popen(
+                    self._run_direct_shell_with_prefixed_output(
                         ui,
-                        shell=True,
-                        stdin=sys.stdin,
-                        stdout=sys.stdout,
-                        stderr=sys.stderr,
-                        cwd=str(execution_cwd)
+                        execution_cwd,
                     )
-                    process.wait()
                 except Exception as e:
                     print(f"❌ 命令执行异常: {e}")
                 finally:
