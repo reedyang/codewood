@@ -483,6 +483,12 @@ class ChatStateManager:
             except Exception:
                 pass
             self._apply_chat_usage_snapshot(chat)
+            try:
+                remember = getattr(self._agent, "_remember_active_chat_history_first_visible_index", None)
+                if callable(remember):
+                    remember(0 if print_history else len(list(self._agent.conversation_history or [])))
+            except Exception:
+                pass
             if persist:
                 self.save_chat_state()
         if clear_screen:

@@ -43,6 +43,7 @@ def _is_vscode_terminal() -> bool:
 def _attach_blink_after_render_hook(
     session,
     status_provider: Optional[Callable[[], str]] = None,
+    terminal_resize_callback: Optional[Callable[[int, int], bool]] = None,
 ) -> None:
     """
     `Application.after_render` is an `Event` object — handlers must be added via
@@ -55,7 +56,7 @@ def _attach_blink_after_render_hook(
         return
 
     # `desired`: 当前渲染周期希望显示的状态栏文本（空串表示隐藏）
-    state = {"visible": False, "text": "", "desired": ""}
+    state = {"visible": False, "text": "", "desired": "", "last_cols": 0}
 
     def _draw_overlay_line(output, text: str) -> None:
         # 使用保存/恢复光标，仅在提示符下方两行写入状态栏。
@@ -71,6 +72,29 @@ def _attach_blink_after_render_hook(
             desired = str(status_provider() or "") if callable(status_provider) else ""
             state["desired"] = desired
             output = getattr(_app, "output", None)
+            try:
+                if output is not None and hasattr(output, "get_size"):
+                    size = output.get_size()
+                    cols = int(getattr(size, "columns", 0) or 0)
+                    if cols > 0:
+                        prev_cols = int(state.get("last_cols", 0) or 0)
+                        if prev_cols > 0 and cols != prev_cols:
+                            should_interrupt = False
+                            if callable(terminal_resize_callback):
+                                try:
+                                    should_interrupt = bool(terminal_resize_callback(prev_cols, cols))
+                                except Exception:
+                                    should_interrupt = False
+                            state["last_cols"] = cols
+                            if should_interrupt:
+                                try:
+                                    _app.exit(result="")
+                                except Exception:
+                                    pass
+                        else:
+                            state["last_cols"] = cols
+            except Exception:
+                pass
             if (
                 desired == ""
                 and state["visible"]
@@ -925,6 +949,7 @@ class PromptToolkitInputHandler:
         slash_skill_commands: Optional[List[str]] = None,
         slash_mcp_commands: Optional[List[str]] = None,
         slash_dynamic_rules: Optional[List[Dict[str, Any]]] = None,
+        terminal_resize_callback: Optional[Callable[[int, int], bool]] = None,
     ):
         """
         初始化输入处理器
@@ -939,6 +964,7 @@ class PromptToolkitInputHandler:
         self._status_bar_fragments = []
         self._status_bar_enabled = True
         self.renders_prompt_separator_inline = False
+        self._terminal_resize_callback = terminal_resize_callback
         self._pt_style = None
         self._pt_cursor_shape = None
         if (
@@ -996,6 +1022,7 @@ class PromptToolkitInputHandler:
             _attach_blink_after_render_hook(
                 self.session,
                 status_provider=self._status_line_for_overlay,
+                terminal_resize_callback=self._terminal_resize_callback,
             )
         else:
             # 回退到标准input
@@ -1332,6 +1359,7 @@ class PromptToolkitInputHandler:
         _attach_blink_after_render_hook(
             self.session,
             status_provider=self._status_line_for_overlay,
+            terminal_resize_callback=self._terminal_resize_callback,
         )
 
 
@@ -1342,6 +1370,7 @@ def create_prompt_toolkit_input_handler(
     slash_skill_commands: Optional[List[str]] = None,
     slash_mcp_commands: Optional[List[str]] = None,
     slash_dynamic_rules: Optional[List[Dict[str, Any]]] = None,
+    terminal_resize_callback: Optional[Callable[[int, int], bool]] = None,
 ) -> PromptToolkitInputHandler:
     """创建 prompt_toolkit 输入处理器"""
     return PromptToolkitInputHandler(
@@ -1351,4 +1380,5 @@ def create_prompt_toolkit_input_handler(
         slash_skill_commands,
         slash_mcp_commands,
         slash_dynamic_rules,
+        terminal_resize_callback,
     )

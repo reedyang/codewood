@@ -65,7 +65,7 @@ class ChatCommandControllerTests(unittest.TestCase):
                 }
             ],
         )
-        self.assertIn("已重新加载当前 Chat 历史消息", buf.getvalue())
+        self.assertEqual(buf.getvalue(), "")
 
     def test_reload_prints_activate_error(self):
         agent = _FakeChatAgent()

@@ -49,6 +49,9 @@ def setup_core_state(agent: Any, startup_work_directory: Path, self_repo_root: P
     agent._active_runtime_task_id = ""
     agent._active_runtime_task_domains = []
     agent._startup_chat_state_warning = ""
+    agent._chat_history_first_visible_index_map = {}
+    agent._chat_history_reload_last_terminal_width = 0
+    agent._force_reload_chat_history_from_anchor_once = False
 
 
 def resolve_config_dir(config_dir: Optional[str]) -> Path:
@@ -282,6 +285,9 @@ def setup_input_handler(
                 slash_skill_commands=agent._get_slash_skill_commands(),
                 slash_mcp_commands=agent._get_slash_mcp_server_commands(),
                 slash_dynamic_rules=agent._get_slash_dynamic_rules(),
+                terminal_resize_callback=getattr(
+                    agent, "_handle_terminal_columns_changed_during_input", None
+                ),
             )
         else:
             print("⚠️ 未知的输入处理器类型")

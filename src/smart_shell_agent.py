@@ -786,14 +786,95 @@ class SmartShellAgent:
             print_history=print_history,
         )
 
-    def _print_chat_history(self) -> None:
+    def _active_chat_history_anchor_key(self) -> str:
+        workspace_id = str(getattr(self, "workspace_id", "") or "").strip()
+        chat_id = str(getattr(self, "active_chat_id", "") or "").strip()
+        if not chat_id:
+            return ""
+        if workspace_id:
+            return f"{workspace_id}::{chat_id}"
+        return chat_id
+
+    def _remember_active_chat_history_first_visible_index(self, index: int) -> None:
+        key = self._active_chat_history_anchor_key()
+        if not key:
+            return
+        try:
+            total = len(list(self.conversation_history or []))
+        except Exception:
+            total = 0
+        idx = max(0, min(int(index or 0), total))
+        anchors = getattr(self, "_chat_history_first_visible_index_map", None)
+        if not isinstance(anchors, dict):
+            anchors = {}
+            self._chat_history_first_visible_index_map = anchors
+        anchors[key] = idx
+
+    def _get_active_chat_history_first_visible_index(self) -> int:
+        key = self._active_chat_history_anchor_key()
+        if not key:
+            return 0
+        anchors = getattr(self, "_chat_history_first_visible_index_map", None)
+        if not isinstance(anchors, dict):
+            return 0
+        try:
+            total = len(list(self.conversation_history or []))
+        except Exception:
+            total = 0
+        try:
+            idx = int(anchors.get(key, 0) or 0)
+        except Exception:
+            idx = 0
+        return max(0, min(idx, total))
+
+    def _reload_chat_history_from_anchor_on_resize(self) -> None:
+        try:
+            os.system("cls" if os.name == "nt" else "clear")
+        except Exception:
+            pass
+        try:
+            from .runtime.runtime_loop import _print_startup_overview
+
+            _print_startup_overview(self)
+        except Exception:
+            pass
+        self._print_chat_history(start_index=self._get_active_chat_history_first_visible_index())
+
+    def _handle_terminal_columns_changed_during_input(self, previous_cols: int, new_cols: int) -> bool:
+        try:
+            prev = int(previous_cols or 0)
+            now = int(new_cols or 0)
+        except Exception:
+            return False
+        if prev <= 0 or now <= 0 or prev == now:
+            return False
+        self._chat_history_reload_last_terminal_width = now
+        self._force_reload_chat_history_from_anchor_once = True
+        return True
+
+    def _maybe_reload_chat_history_on_terminal_resize(self) -> None:
+        try:
+            width = max(1, int(self._terminal_columns_for_prompt_separator(default=80)))
+        except Exception:
+            return
+        prev = int(getattr(self, "_chat_history_reload_last_terminal_width", 0) or 0)
+        self._chat_history_reload_last_terminal_width = width
+        if prev <= 0 or prev == width:
+            return
+        self._reload_chat_history_from_anchor_on_resize()
+
+    def _print_chat_history(self, start_index: int = 0) -> None:
         title = f"===== Chat: [{self.active_chat_name}] ====="
         print(f"{_ansi_gray(title)}\n")
-        if not self.conversation_history:
-            print("(当前 Chat 暂无历史消息)")
+        all_hist = list(self.conversation_history or [])
+        start = max(0, min(int(start_index or 0), len(all_hist)))
+        self._remember_active_chat_history_first_visible_index(start)
+        hist = all_hist[start:]
+        if not hist:
+            if not all_hist:
+                print("(当前 Chat 暂无历史消息)")
             self._show_separator_next_prompt = False
             return
-        hist = list(self.conversation_history or [])
         for idx, msg in enumerate(hist):
             role = str(msg.get("role") or "").strip().lower()
             content = str(msg.get("content") or "")
@@ -966,12 +1047,29 @@ class SmartShellAgent:
         """
         if not hasattr(sys.stdout, "isatty") or not sys.stdout.isatty():
             return
-        width = 80
+        width = self._terminal_columns_for_prompt_separator(default=80)
+        width = max(1, int(width))
+        try:
+            print("")
+            print(_ansi_gray("─" * width))
+            print("")
+            self._prompt_separator_rendered = True
+        except Exception:
+            try:
+                print("")
+                print(_ansi_gray("-" * width))
+                print("")
+                self._prompt_separator_rendered = True
+            except Exception:
+                self._prompt_separator_rendered = False
+
+    def _terminal_columns_for_prompt_separator(self, default: int = 80) -> int:
+        width = max(1, int(default or 80))
         width_from_input_handler = False
         ih = getattr(self, "input_handler", None)
         try:
             if ih is not None and hasattr(ih, "get_terminal_columns"):
-                cols = int(ih.get_terminal_columns(default=80) or 0)
+                cols = int(ih.get_terminal_columns(default=width) or 0)
                 if cols > 0:
                     width = cols
                     width_from_input_handler = True
@@ -994,23 +1092,10 @@ class SmartShellAgent:
                 pass
             if width <= 0:
                 try:
-                    width = int(shutil.get_terminal_size(fallback=(80, 24)).columns or 80)
+                    width = int(shutil.get_terminal_size(fallback=(width, 24)).columns or width)
                 except Exception:
-                    width = 80
-        width = max(1, width)
-        try:
-            print("")
-            print(_ansi_gray("─" * width))
-            print("")
-            self._prompt_separator_rendered = True
-        except Exception:
-            try:
-                print("")
-                print(_ansi_gray("-" * width))
-                print("")
-                self._prompt_separator_rendered = True
-            except Exception:
-                self._prompt_separator_rendered = False
+                    width = max(1, int(default or 80))
+        return max(1, int(width))
 
     def _clear_prompt_separator(self) -> None:
         """
@@ -3151,6 +3236,12 @@ class SmartShellAgent:
             用户输入的字符串
         """
         import platform
+
+        if bool(getattr(self, "_force_reload_chat_history_from_anchor_once", False)):
+            self._force_reload_chat_history_from_anchor_once = False
+            self._reload_chat_history_from_anchor_on_resize()
+        else:
+            self._maybe_reload_chat_history_on_terminal_resize()
 
         status_bar_fragments, status_bar_plain = self._status_bar_render_data()
         prompt = INPUT_PROMPT
