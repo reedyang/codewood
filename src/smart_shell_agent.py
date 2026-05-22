@@ -789,12 +789,12 @@ class SmartShellAgent:
 
     def _clear_last_thinking_line(self) -> None:
         """
-        Best-effort clear of the previously printed '🤖 AI正在思考...' line.
+        Best-effort clear of the current transient working-status line.
         """
         if not hasattr(sys.stdout, "isatty") or not sys.stdout.isatty():
             return
         try:
-            sys.stdout.write("\x1b[1A\r\x1b[2K")
+            sys.stdout.write("\r\x1b[2K")
             sys.stdout.flush()
         except Exception:
             pass
