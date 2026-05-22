@@ -295,6 +295,7 @@ def action_shell_command(
         err = ""
         displayed_out = ""
         displayed_err = ""
+        aborted_by_user = False
         status_ticker: Optional[_WorkingStatusTicker] = None
         status_ticker_lock = threading.Lock()
 
@@ -375,6 +376,7 @@ def action_shell_command(
                             pass
 
                 try:
+                    process = None
                     process = subprocess.Popen(
                         command,
                         shell=True,
@@ -387,6 +389,9 @@ def action_shell_command(
                         else subprocess.PIPE,
                         text=False,
                     )
+                    reg_proc = getattr(agent, "_register_interruptible_process", None)
+                    if callable(reg_proc):
+                        reg_proc(process)
                     t_out = threading.Thread(
                         target=_stream_and_capture,
                         args=(process.stdout, sys.stdout, stdout_chunks),  # type: ignore[arg-type]
@@ -416,7 +421,18 @@ def action_shell_command(
                     with stream_chunks_lock:
                         out = "".join(stdout_chunks)
                         err = "" if merge_stderr_for_interactive else "".join(stderr_chunks)
+                    consume_abort = getattr(agent, "_consume_process_aborted", None)
+                    if callable(consume_abort):
+                        aborted_by_user = bool(consume_abort(process))
+                    if aborted_by_user:
+                        out = str(out) + ("command aborted by user\n")
                 finally:
+                    try:
+                        unreg_proc = getattr(agent, "_unregister_interruptible_process", None)
+                        if callable(unreg_proc):
+                            unreg_proc(process)
+                    except Exception:
+                        pass
                     _restore_console_after_interactive()
             else:
                 run_input = None
@@ -481,6 +497,13 @@ def action_shell_command(
                 agent._register_shell_output_for_auto_hide(displayed_out, displayed_err)
             except Exception:
                 pass
+            if aborted_by_user:
+                try:
+                    banner_fn = getattr(agent, "_print_conversation_interrupted_banner", None)
+                    if callable(banner_fn):
+                        banner_fn()
+                except Exception:
+                    pass
             base_out: Dict[str, Any] = {
                 "output": out,
                 "stderr": err,

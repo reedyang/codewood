@@ -3,6 +3,8 @@ import types
 import unittest
 import subprocess
 import re
+import threading
+import time
 from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
@@ -24,6 +26,10 @@ class BangDirectExecutionTests(unittest.TestCase):
         self.agent._save_current_workspace_position = lambda: None
         self.agent.input_handler = None
         self.agent._resolve_path_lenient = lambda p: Path(p).resolve()
+        self.agent._interrupt_state_lock = threading.RLock()
+        self.agent._interruptible_processes = {}
+        self.agent._task_interrupt_requested = False
+        self.agent._aborted_process_keys = set()
 
     @patch("subprocess.Popen")
     def test_keep_command_with_args_for_python_invocation(self, popen_mock):
@@ -97,7 +103,7 @@ class BangDirectExecutionTests(unittest.TestCase):
             err_stream.write("err-line\n")
 
         ansi_re = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
-        out_plain = ansi_re.sub("", out_buf.getvalue())
+        out_plain = ansi_re.sub("", out_buf.getvalue()).lstrip("\r")
         err_plain = ansi_re.sub("", err_buf.getvalue())
         self.assertEqual(out_plain, "  └ line1\n    line2\n")
         self.assertEqual(err_plain, "    err-line\n")
@@ -119,8 +125,213 @@ class BangDirectExecutionTests(unittest.TestCase):
             out_stream.write("12345678901")
 
         ansi_re = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
-        out_plain = ansi_re.sub("", out_buf.getvalue())
+        out_plain = ansi_re.sub("", out_buf.getvalue()).lstrip("\r")
         self.assertEqual(out_plain, "  └ 123456\n    78901")
+
+    def test_direct_shell_history_output_can_force_continuation_indent(self):
+        class _TtyBuffer(StringIO):
+            def isatty(self):
+                return True
+
+            def fileno(self):
+                return 1
+
+        out_buf = _TtyBuffer()
+        err_buf = _TtyBuffer()
+        with patch("src.smart_shell_agent.sys.stdout", out_buf), patch(
+            "src.smart_shell_agent.sys.stderr", err_buf
+        ):
+            self.agent._print_direct_shell_history_output(
+                "command aborted by user\n",
+                "",
+                force_first_line_continuation=True,
+            )
+
+        ansi_re = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+        out_plain = ansi_re.sub("", out_buf.getvalue()).lstrip("\r")
+        self.assertIn("    command aborted by user\n", out_plain)
+        self.assertNotIn("└ command aborted by user", out_plain)
+
+    @patch("subprocess.Popen")
+    def test_run_direct_shell_wraps_interrupt_monitor_and_process_registration(self, popen_mock):
+        proc = types.SimpleNamespace(
+            wait=lambda: 0,
+            poll=lambda: None,
+            pid=12345,
+            stdout=None,
+            stderr=None,
+        )
+        popen_mock.return_value = proc
+        with (
+            patch.object(self.agent, "_start_interrupt_monitor") as mock_start_monitor,
+            patch.object(self.agent, "_stop_interrupt_monitor") as mock_stop_monitor,
+            patch.object(self.agent, "_register_interruptible_process") as mock_register,
+            patch.object(self.agent, "_unregister_interruptible_process") as mock_unregister,
+        ):
+            rc = self.agent._run_direct_shell_with_prefixed_output("echo hi", Path.cwd())
+        self.assertEqual(rc, 0)
+        mock_start_monitor.assert_called_once_with(cancel_task_on_interrupt=False)
+        mock_stop_monitor.assert_called_once_with(cancel_task_on_interrupt=False)
+        mock_register.assert_called_once_with(proc)
+        mock_unregister.assert_called_once_with(proc)
+        self.assertEqual(popen_mock.call_args.kwargs.get("stderr"), subprocess.STDOUT)
+
+    def test_non_task_interrupt_does_not_set_task_interrupt_flag(self):
+        self.agent._task_interrupt_requested = False
+        with patch.object(self.agent, "_terminate_interruptible_processes") as mock_terminate:
+            self.agent._request_task_interrupt(cancel_task=False)
+        mock_terminate.assert_called_once_with()
+        self.assertFalse(self.agent._task_interrupt_requested)
+
+    def test_is_direct_shell_result_aborted_supports_legacy_stdout_marker(self):
+        self.assertTrue(
+            self.agent._is_direct_shell_result_aborted({"stdout": "...\ncommand aborted by user\n"})
+        )
+        self.assertFalse(self.agent._is_direct_shell_result_aborted({"stdout": "ok\n"}))
+
+    def test_normalize_aborted_stdout_moves_abort_marker_to_tail(self):
+        raw = (
+            "Version: Platform(x86/x64): Branch name: command aborted by user\n"
+            "02:00:41 [Info] Searching artifacts...\n"
+        )
+        normalized = self.agent._normalize_aborted_direct_shell_stdout_for_history(raw)
+        self.assertIn("Version: Platform(x86/x64): Branch name:\n", normalized)
+        self.assertIn("02:00:41 [Info] Searching artifacts...\n", normalized)
+        self.assertTrue(normalized.endswith("command aborted by user\n"))
+
+    @patch("subprocess.Popen")
+    def test_run_direct_shell_appends_abort_line_when_process_was_forced_terminated(self, popen_mock):
+        proc = types.SimpleNamespace(
+            wait=lambda: 137,
+            poll=lambda: None,
+            pid=22334,
+            stdout=None,
+            stderr=None,
+        )
+        popen_mock.return_value = proc
+
+        class _TtyBuffer(StringIO):
+            def isatty(self):
+                return True
+
+            def fileno(self):
+                return 1
+
+        out_buf = _TtyBuffer()
+        err_buf = _TtyBuffer()
+        with (
+            patch("src.smart_shell_agent.sys.stdout", out_buf),
+            patch("src.smart_shell_agent.sys.stderr", err_buf),
+            patch.object(self.agent, "_consume_process_aborted", return_value=True),
+        ):
+            rc = self.agent._run_direct_shell_with_prefixed_output("echo hi", Path.cwd())
+        self.assertEqual(rc, 137)
+        self.assertIn("command aborted by user", out_buf.getvalue())
+        ansi_re = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+        out_plain = ansi_re.sub("", out_buf.getvalue())
+        self.assertIn("    command aborted by user", out_plain)
+        self.assertNotIn("└ command aborted by user", out_plain)
+        self.assertIn(
+            "■ Conversation interrupted - tell the model what to do differently. Something went wrong?",
+            out_buf.getvalue(),
+        )
+        last = getattr(self.agent, "_last_direct_shell_execution", {})
+        self.assertIn("command aborted by user", str(last.get("stdout") or ""))
+        self.assertGreaterEqual(int(last.get("rendered_output_lines") or 0), 4)
+        self.assertTrue(bool(last.get("cursor_at_line_start", False)))
+
+    @patch("subprocess.Popen")
+    def test_run_direct_shell_abort_line_is_newline_separated_in_history_when_prev_output_has_no_newline(
+        self, popen_mock
+    ):
+        class _FakePipe:
+            def __init__(self, chunks):
+                self._chunks = list(chunks)
+
+            def read(self, _n):
+                if self._chunks:
+                    return self._chunks.pop(0)
+                return b""
+
+            def close(self):
+                return None
+
+        proc = types.SimpleNamespace(
+            wait=lambda: 137,
+            poll=lambda: None,
+            pid=33445,
+            stdout=_FakePipe([b"Version: Platform(x86/x64): Branch name: "]),
+            stderr=None,
+        )
+        popen_mock.return_value = proc
+
+        class _TtyBuffer(StringIO):
+            def isatty(self):
+                return True
+
+            def fileno(self):
+                return 1
+
+        with (
+            patch("src.smart_shell_agent.sys.stdout", _TtyBuffer()),
+            patch("src.smart_shell_agent.sys.stderr", _TtyBuffer()),
+            patch.object(self.agent, "_consume_process_aborted", return_value=True),
+        ):
+            rc = self.agent._run_direct_shell_with_prefixed_output("echo hi", Path.cwd())
+
+        self.assertEqual(rc, 137)
+        last = getattr(self.agent, "_last_direct_shell_execution", {})
+        out_text = str(last.get("stdout") or "")
+        self.assertIn(
+            "Version: Platform(x86/x64): Branch name: \ncommand aborted by user\n",
+            out_text,
+        )
+
+    @patch("subprocess.Popen")
+    def test_run_direct_shell_abort_line_stays_last_when_reader_finishes_late(self, popen_mock):
+        class _DelayedPipe:
+            def __init__(self):
+                self._idx = 0
+
+            def read(self, _n):
+                self._idx += 1
+                if self._idx == 1:
+                    return b"Version: Platform(x86/x64): Branch name:\n"
+                if self._idx == 2:
+                    time.sleep(1.15)
+                    return b"02:01:12 [Info] Searching artifacts...\n"
+                return b""
+
+            def close(self):
+                return None
+
+        proc = types.SimpleNamespace(
+            wait=lambda: 137,
+            poll=lambda: None,
+            pid=44556,
+            stdout=_DelayedPipe(),
+            stderr=None,
+        )
+        popen_mock.return_value = proc
+
+        class _TtyBuffer(StringIO):
+            def isatty(self):
+                return True
+
+            def fileno(self):
+                return 1
+
+        with (
+            patch("src.smart_shell_agent.sys.stdout", _TtyBuffer()),
+            patch("src.smart_shell_agent.sys.stderr", _TtyBuffer()),
+            patch.object(self.agent, "_consume_process_aborted", return_value=True),
+        ):
+            rc = self.agent._run_direct_shell_with_prefixed_output("echo hi", Path.cwd())
+
+        self.assertEqual(rc, 137)
+        out_text = str(getattr(self.agent, "_last_direct_shell_execution", {}).get("stdout") or "")
+        self.assertIn("02:01:12 [Info] Searching artifacts...\ncommand aborted by user\n", out_text)
+        self.assertTrue(out_text.rstrip().endswith("command aborted by user"))
 
 
 if __name__ == "__main__":

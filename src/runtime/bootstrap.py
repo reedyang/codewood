@@ -52,6 +52,15 @@ def setup_core_state(agent: Any, startup_work_directory: Path, self_repo_root: P
     agent._chat_history_first_visible_index_map = {}
     agent._chat_history_reload_last_terminal_width = 0
     agent._force_reload_chat_history_from_anchor_once = False
+    agent._task_interrupt_requested = False
+    agent._interruptible_processes = {}
+    agent._interrupt_state_lock = threading.RLock()
+    agent._interrupt_monitor_stop_event = threading.Event()
+    agent._interrupt_monitor_thread = None
+    agent._interrupt_monitor_refs = 0
+    agent._interrupt_monitor_cancel_task_refs = 0
+    agent._aborted_process_keys = set()
+    agent._conversation_interrupt_banner_recent = False
 
 
 def resolve_config_dir(config_dir: Optional[str]) -> Path:

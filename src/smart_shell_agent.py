@@ -904,11 +904,24 @@ class SmartShellAgent:
             elif role == "assistant":
                 direct_result = self._parse_direct_shell_result_history_content(content)
                 if direct_result is not None:
+                    aborted_result = self._is_direct_shell_result_aborted(direct_result)
+                    out_text = str(direct_result.get("stdout") or "")
+                    err_text = str(direct_result.get("stderr") or "")
+                    if aborted_result:
+                        merged = out_text + err_text
+                        out_text = self._normalize_aborted_direct_shell_stdout_for_history(merged)
+                        err_text = ""
+                    force_continuation = False
+                    if aborted_result:
+                        head = out_text.lstrip("\r\n").lower()
+                        force_continuation = head.startswith("command aborted by user")
                     self._print_direct_shell_history_output(
-                        str(direct_result.get("stdout") or ""),
-                        str(direct_result.get("stderr") or ""),
+                        out_text,
+                        err_text,
+                        force_first_line_continuation=force_continuation,
                     )
-                    self._print_direct_shell_history_separator()
+                    if not aborted_result:
+                        self._print_direct_shell_history_separator()
                     continue
                 display_response = format_assistant_display_response(content)
                 if display_response:
@@ -1097,6 +1110,28 @@ class SmartShellAgent:
                     width = max(1, int(default or 80))
         return max(1, int(width))
 
+    def _print_conversation_interrupted_banner(self) -> int:
+        msg = "■ Conversation interrupted - tell the model what to do differently. Something went wrong?"
+        print("")
+        try:
+            print(_ansi_rgb(msg, 197, 15, 31))
+        except Exception:
+            print(msg)
+        print("")
+        try:
+            self._conversation_interrupt_banner_recent = True
+        except Exception:
+            pass
+        return 3
+
+    def _consume_conversation_interrupted_banner_recent(self) -> bool:
+        try:
+            recent = bool(getattr(self, "_conversation_interrupt_banner_recent", False))
+            self._conversation_interrupt_banner_recent = False
+            return recent
+        except Exception:
+            return False
+
     def _clear_prompt_separator(self) -> None:
         """
         清理上一轮输入前显示的分隔符（不清理提示符行）。
@@ -1189,6 +1224,7 @@ class SmartShellAgent:
         return_code: int,
         stdout_text: str,
         stderr_text: str,
+        aborted_by_user: bool = False,
     ) -> str:
         payload = {
             "kind": "direct_shell_result",
@@ -1199,6 +1235,7 @@ class SmartShellAgent:
             "return_code": int(return_code),
             "stdout": str(stdout_text or ""),
             "stderr": str(stderr_text or ""),
+            "aborted_by_user": bool(aborted_by_user),
             "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         }
         return f"{DIRECT_SHELL_RESULT_HISTORY_PREFIX}{json.dumps(payload, ensure_ascii=False)}"
@@ -1220,8 +1257,13 @@ class SmartShellAgent:
             return None
         return payload
 
-    def _print_direct_shell_history_output(self, stdout_text: str, stderr_text: str) -> None:
-        shared_state: Dict[str, Any] = {"first_line_emitted": False}
+    def _print_direct_shell_history_output(
+        self,
+        stdout_text: str,
+        stderr_text: str,
+        force_first_line_continuation: bool = False,
+    ) -> None:
+        shared_state: Dict[str, Any] = {"first_line_emitted": bool(force_first_line_continuation)}
         out_stream, err_stream = self._create_direct_shell_output_streams(shared_state)
         out = str(stdout_text or "")
         err = str(stderr_text or "")
@@ -1240,6 +1282,7 @@ class SmartShellAgent:
         return_code: int,
         stdout_text: str,
         stderr_text: str,
+        aborted_by_user: bool = False,
     ) -> None:
         raw_cmd = str(raw_user_command or "").strip()
         if not raw_cmd:
@@ -1254,9 +1297,45 @@ class SmartShellAgent:
             return_code=int(return_code),
             stdout_text=str(stdout_text or ""),
             stderr_text=str(stderr_text or ""),
+            aborted_by_user=bool(aborted_by_user),
         )
         self._append_chat_message("user", user_content)
         self._append_chat_message("assistant", assistant_content)
+
+    def _is_direct_shell_result_aborted(self, result: Any) -> bool:
+        if not isinstance(result, dict):
+            return False
+        if bool(result.get("aborted_by_user", False)):
+            return True
+        out_text = str(result.get("stdout") or "")
+        return "command aborted by user" in out_text.lower()
+
+    def _normalize_aborted_direct_shell_stdout_for_history(self, stdout_text: str) -> str:
+        text = str(stdout_text or "")
+        marker = "command aborted by user"
+        if marker not in text.lower():
+            return text
+        lines = text.splitlines(keepends=True)
+        kept: List[str] = []
+        found = False
+        for line in lines:
+            low = line.lower()
+            if marker not in low:
+                kept.append(line)
+                continue
+            found = True
+            idx = low.find(marker)
+            rebuilt = line[:idx] + line[idx + len(marker):]
+            if rebuilt.endswith("\n"):
+                rebuilt = rebuilt.rstrip(" \t\r\n") + "\n"
+            if rebuilt.strip():
+                kept.append(rebuilt)
+        merged = "".join(kept)
+        if found:
+            if merged and not merged.endswith("\n"):
+                merged += "\n"
+            merged += "command aborted by user\n"
+        return merged
 
     class _DirectShellOutputStream:
         def __init__(self, base_stream: Any, shared_state: Dict[str, Any]) -> None:
@@ -1416,6 +1495,243 @@ class SmartShellAgent:
         err_stream = self._build_direct_shell_output_stream(sys.stderr, state)
         return out_stream, err_stream
 
+    def _register_interruptible_process(self, process: Any) -> None:
+        if process is None:
+            return
+        lock = getattr(self, "_interrupt_state_lock", None)
+        if lock is None:
+            return
+        with lock:
+            procs = getattr(self, "_interruptible_processes", None)
+            if not isinstance(procs, dict):
+                procs = {}
+                self._interruptible_processes = procs
+            procs[id(process)] = process
+
+    def _unregister_interruptible_process(self, process: Any) -> None:
+        if process is None:
+            return
+        lock = getattr(self, "_interrupt_state_lock", None)
+        if lock is None:
+            return
+        with lock:
+            procs = getattr(self, "_interruptible_processes", None)
+            if isinstance(procs, dict):
+                try:
+                    procs.pop(id(process), None)
+                except Exception:
+                    pass
+
+    def _terminate_single_process_tree(self, process: Any) -> None:
+        if process is None:
+            return
+        try:
+            if hasattr(process, "poll") and process.poll() is not None:
+                return
+        except Exception:
+            pass
+        pid = None
+        try:
+            pid = int(getattr(process, "pid", 0) or 0)
+        except Exception:
+            pid = None
+        if os.name == "nt" and pid:
+            try:
+                subprocess.run(
+                    ["taskkill", "/F", "/T", "/PID", str(pid)],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    check=False,
+                )
+            except Exception:
+                try:
+                    process.kill()
+                except Exception:
+                    pass
+            return
+        try:
+            if pid:
+                import signal
+
+                try:
+                    os.killpg(pid, signal.SIGKILL)
+                    return
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        try:
+            process.kill()
+        except Exception:
+            pass
+
+    @staticmethod
+    def _process_abort_key(process: Any) -> str:
+        pid = None
+        try:
+            pid = int(getattr(process, "pid", 0) or 0)
+        except Exception:
+            pid = 0
+        if pid and pid > 0:
+            return f"pid:{pid}"
+        return f"obj:{id(process)}"
+
+    def _mark_process_aborted(self, process: Any) -> None:
+        if process is None:
+            return
+        lock = getattr(self, "_interrupt_state_lock", None)
+        if lock is None:
+            return
+        key = self._process_abort_key(process)
+        with lock:
+            marks = getattr(self, "_aborted_process_keys", None)
+            if not isinstance(marks, set):
+                marks = set()
+                self._aborted_process_keys = marks
+            marks.add(key)
+
+    def _consume_process_aborted(self, process: Any) -> bool:
+        if process is None:
+            return False
+        lock = getattr(self, "_interrupt_state_lock", None)
+        if lock is None:
+            return False
+        key = self._process_abort_key(process)
+        with lock:
+            marks = getattr(self, "_aborted_process_keys", None)
+            if not isinstance(marks, set):
+                return False
+            if key in marks:
+                marks.discard(key)
+                return True
+            return False
+
+    def _terminate_interruptible_processes(self) -> None:
+        lock = getattr(self, "_interrupt_state_lock", None)
+        if lock is None:
+            return
+        with lock:
+            cur = getattr(self, "_interruptible_processes", {})
+            if isinstance(cur, dict):
+                procs = list(cur.values())
+            else:
+                procs = []
+        for p in procs:
+            self._mark_process_aborted(p)
+            self._terminate_single_process_tree(p)
+
+    def _request_task_interrupt(self, source: str = "esc", cancel_task: bool = False) -> None:
+        if cancel_task:
+            lock = getattr(self, "_interrupt_state_lock", None)
+            if lock is not None:
+                with lock:
+                    self._task_interrupt_requested = True
+            else:
+                self._task_interrupt_requested = True
+        self._terminate_interruptible_processes()
+        if cancel_task:
+            try:
+                import _thread
+
+                _thread.interrupt_main()
+            except Exception:
+                pass
+
+    def _consume_task_interrupt_requested(self) -> bool:
+        lock = getattr(self, "_interrupt_state_lock", None)
+        if lock is None:
+            wanted = bool(getattr(self, "_task_interrupt_requested", False))
+            self._task_interrupt_requested = False
+            return wanted
+        with lock:
+            wanted = bool(getattr(self, "_task_interrupt_requested", False))
+            self._task_interrupt_requested = False
+            return wanted
+
+    def _start_interrupt_monitor(self, cancel_task_on_interrupt: bool = False) -> None:
+        if os.name != "nt":
+            return
+        lock = getattr(self, "_interrupt_state_lock", None)
+        if lock is None:
+            return
+        with lock:
+            self._interrupt_monitor_refs = int(getattr(self, "_interrupt_monitor_refs", 0) or 0) + 1
+            if cancel_task_on_interrupt:
+                self._interrupt_monitor_cancel_task_refs = int(
+                    getattr(self, "_interrupt_monitor_cancel_task_refs", 0) or 0
+                ) + 1
+            existing = getattr(self, "_interrupt_monitor_thread", None)
+            if existing is not None and getattr(existing, "is_alive", lambda: False)():
+                return
+            stop_event = threading.Event()
+            self._interrupt_monitor_stop_event = stop_event
+
+            def _monitor() -> None:
+                try:
+                    import msvcrt
+                except Exception:
+                    return
+                while not stop_event.wait(0.03):
+                    try:
+                        if not msvcrt.kbhit():
+                            continue
+                        ch = msvcrt.getch()
+                        if ch in (b"\x00", b"\xe0"):
+                            try:
+                                if msvcrt.kbhit():
+                                    _ = msvcrt.getch()
+                            except Exception:
+                                pass
+                            continue
+                        if ch == b"\x1b":
+                            with lock:
+                                should_cancel_task = bool(
+                                    int(getattr(self, "_interrupt_monitor_cancel_task_refs", 0) or 0) > 0
+                                )
+                            self._request_task_interrupt(source="esc", cancel_task=should_cancel_task)
+                    except Exception:
+                        continue
+
+            th = threading.Thread(
+                target=_monitor,
+                name="smartshell-esc-interrupt-monitor",
+                daemon=True,
+            )
+            self._interrupt_monitor_thread = th
+            th.start()
+
+    def _stop_interrupt_monitor(self, cancel_task_on_interrupt: bool = False) -> None:
+        lock = getattr(self, "_interrupt_state_lock", None)
+        if lock is None:
+            return
+        stop_event = None
+        thread_obj = None
+        with lock:
+            refs = int(getattr(self, "_interrupt_monitor_refs", 0) or 0)
+            if refs > 0:
+                refs -= 1
+            self._interrupt_monitor_refs = refs
+            if cancel_task_on_interrupt:
+                c_refs = int(getattr(self, "_interrupt_monitor_cancel_task_refs", 0) or 0)
+                if c_refs > 0:
+                    c_refs -= 1
+                self._interrupt_monitor_cancel_task_refs = c_refs
+            if refs == 0:
+                stop_event = getattr(self, "_interrupt_monitor_stop_event", None)
+                thread_obj = getattr(self, "_interrupt_monitor_thread", None)
+                self._interrupt_monitor_thread = None
+                self._interrupt_monitor_cancel_task_refs = 0
+        if stop_event is not None:
+            try:
+                stop_event.set()
+            except Exception:
+                pass
+        if thread_obj is not None and getattr(thread_obj, "is_alive", lambda: False)():
+            try:
+                thread_obj.join(timeout=0.3)
+            except Exception:
+                pass
+
     def _stream_direct_shell_pipe_to_prefixed_output(
         self,
         pipe: Any,
@@ -1477,26 +1793,29 @@ class SmartShellAgent:
         }
         stdout_chunks: List[str] = []
         stderr_chunks: List[str] = []
-        out_stream, err_stream = self._create_direct_shell_output_streams(stream_state)
+        out_stream, _ = self._create_direct_shell_output_streams(stream_state)
         status_ticker = _WorkingStatusTicker(
             sys.stdout,
             fps=DIRECT_SHELL_WORKING_STATUS_MARQUEE_FPS,
         )
+        self._start_interrupt_monitor(cancel_task_on_interrupt=False)
         status_ticker.start()
         try:
+            process = None
             process = subprocess.Popen(
                 command,
                 shell=True,
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
+                # Merge stderr into stdout so rendered output order follows
+                # real arrival order and avoids cross-thread stream races.
+                stderr=subprocess.STDOUT,
                 cwd=str(cwd),
                 text=False,
             )
+            self._register_interruptible_process(process)
             t_out: Optional[threading.Thread] = None
-            t_err: Optional[threading.Thread] = None
             stdout_pipe = getattr(process, "stdout", None)
-            stderr_pipe = getattr(process, "stderr", None)
             if stdout_pipe is not None and hasattr(stdout_pipe, "read"):
                 t_out = threading.Thread(
                     target=self._stream_direct_shell_pipe_to_prefixed_output,
@@ -1504,18 +1823,37 @@ class SmartShellAgent:
                     daemon=True,
                 )
                 t_out.start()
-            if stderr_pipe is not None and hasattr(stderr_pipe, "read"):
-                t_err = threading.Thread(
-                    target=self._stream_direct_shell_pipe_to_prefixed_output,
-                    args=(stderr_pipe, err_stream, stderr_chunks),
-                    daemon=True,
-                )
-                t_err.start()
             return_code = process.wait()
             if t_out is not None:
-                t_out.join(timeout=1.0)
-            if t_err is not None:
-                t_err.join(timeout=1.0)
+                t_out.join()
+            aborted_by_user = bool(self._consume_process_aborted(process))
+            if aborted_by_user:
+                need_leading_newline = not bool(stream_state.get("cursor_at_line_start", True))
+                abort_notice = "command aborted by user\n"
+                try:
+                    if need_leading_newline:
+                        out_stream.write("\n")
+                    # Keep abort notice aligned with normal continuation output
+                    # (four-space indent), not as a new first output line.
+                    stream_state["first_line_emitted"] = True
+                    out_stream.write(abort_notice)
+                    out_stream.flush()
+                except Exception:
+                    pass
+                stdout_chunks.append(("\n" if need_leading_newline else "") + abort_notice)
+                banner_lines = 0
+                try:
+                    banner_lines = int(self._print_conversation_interrupted_banner() or 0)
+                except Exception:
+                    banner_lines = 0
+                if banner_lines > 0:
+                    try:
+                        stream_state["rendered_line_count"] = int(
+                            stream_state.get("rendered_line_count", 0) or 0
+                        ) + int(banner_lines)
+                    except Exception:
+                        pass
+                    stream_state["cursor_at_line_start"] = True
             try:
                 self._last_direct_shell_execution = {
                     "executed_command": str(command or ""),
@@ -1523,6 +1861,7 @@ class SmartShellAgent:
                     "return_code": int(return_code),
                     "stdout": "".join(stdout_chunks),
                     "stderr": "".join(stderr_chunks),
+                    "aborted_by_user": bool(aborted_by_user),
                     "rendered_output_lines": int(stream_state.get("rendered_line_count", 0) or 0),
                     "cursor_at_line_start": bool(stream_state.get("cursor_at_line_start", True)),
                     "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -1531,7 +1870,12 @@ class SmartShellAgent:
                 pass
             return int(return_code)
         finally:
+            try:
+                self._unregister_interruptible_process(process)
+            except Exception:
+                pass
             _stop_status_ticker()
+            self._stop_interrupt_monitor(cancel_task_on_interrupt=False)
 
     def _append_chat_message(self, role: str, content: str) -> None:
         self.session_memory_service.append_chat_message(role, content)

@@ -170,6 +170,83 @@ class PromptSeparatorBehaviorTests(unittest.TestCase):
         self.assertEqual(mock_sep.call_count, 2)
         self.assertFalse(agent._show_separator_next_prompt)
 
+    def test_chat_history_aborted_direct_shell_output_does_not_print_separator(self):
+        agent = self._build_agent()
+        agent.active_chat_name = "Demo Chat"
+        agent.conversation_history = [
+            {
+                "role": "user",
+                "content": agent._build_direct_shell_user_history_content("sleep 10"),
+            },
+            {
+                "role": "assistant",
+                "content": agent._build_direct_shell_result_history_content(
+                    "!sleep 10",
+                    "sleep 10",
+                    "D:/ws",
+                    137,
+                    "command aborted by user\n",
+                    "",
+                    aborted_by_user=True,
+                ),
+            },
+        ]
+        with (
+            patch("src.smart_shell_agent._ansi_gray", side_effect=lambda s: s),
+            patch.object(agent, "_print_direct_shell_command_feedback"),
+            patch.object(agent, "_print_direct_shell_history_output"),
+            patch.object(agent, "_print_direct_shell_history_separator") as mock_sep,
+            patch("builtins.print"),
+        ):
+            agent._print_chat_history()
+        mock_sep.assert_not_called()
+        self.assertFalse(agent._show_separator_next_prompt)
+
+    def test_chat_history_aborted_direct_shell_output_always_moves_abort_marker_to_final_tail(self):
+        agent = self._build_agent()
+        agent.active_chat_name = "Demo Chat"
+        raw_stdout = "Version: Platform(x86/x64): Branch name: command aborted by user\n"
+        raw_stderr = "02:00:41 [Info] Searching artifacts...\n"
+        agent.conversation_history = [
+            {
+                "role": "user",
+                "content": agent._build_direct_shell_user_history_content("d:/tmp/builds/install-zr.bat"),
+            },
+            {
+                "role": "assistant",
+                "content": agent._build_direct_shell_result_history_content(
+                    "!d:/tmp/builds/install-zr.bat",
+                    "d:/tmp/builds/install-zr.bat",
+                    "D:/ws",
+                    137,
+                    raw_stdout,
+                    raw_stderr,
+                    aborted_by_user=True,
+                ),
+            },
+        ]
+        with (
+            patch("src.smart_shell_agent._ansi_gray", side_effect=lambda s: s),
+            patch.object(agent, "_print_direct_shell_command_feedback"),
+            patch.object(agent, "_print_direct_shell_history_separator") as mock_sep,
+            patch("builtins.print"),
+        ):
+            captured = {}
+
+            def _capture_output(stdout_text, stderr_text, force_first_line_continuation=False):
+                captured["stdout"] = str(stdout_text)
+                captured["stderr"] = str(stderr_text)
+                captured["force"] = bool(force_first_line_continuation)
+
+            with patch.object(agent, "_print_direct_shell_history_output", side_effect=_capture_output):
+                agent._print_chat_history()
+        self.assertEqual(captured.get("stderr"), "")
+        rendered = str(captured.get("stdout") or "")
+        self.assertTrue(rendered.endswith("command aborted by user\n"))
+        self.assertIn("02:00:41 [Info] Searching artifacts...\n", rendered)
+        self.assertFalse(bool(captured.get("force", False)))
+        mock_sep.assert_not_called()
+
     def test_resize_reload_uses_recorded_history_anchor(self):
         agent = self._build_agent()
         agent.conversation_history = [

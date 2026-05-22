@@ -619,6 +619,7 @@ def run_agent_loop(agent: Any):
                             return_code=int(last_direct.get("return_code") if last_direct.get("return_code") is not None else (0 if exec_ok else 1)),
                             stdout_text=str(last_direct.get("stdout") or ""),
                             stderr_text=str(last_direct.get("stderr") or ""),
+                            aborted_by_user=bool(last_direct.get("aborted_by_user", False)),
                         )
                     else:
                         self._record_direct_shell_execution_history(
@@ -629,11 +630,12 @@ def run_agent_loop(agent: Any):
                             stdout_text="",
                             stderr_text="" if exec_ok else "命令执行失败（未捕获到详细输出）\n",
                         )
-                    self._show_separator_next_prompt = True
+                    self._show_separator_next_prompt = not self._is_direct_shell_result_aborted(last_direct)
                     continue
 
                 user_input_cmd = ui
                 if system_cmd_re.match(ui):
+                    current_direct_result = None
                     if user_input_cmd.lower().startswith('ls') and os_name == 'nt':
                         user_input_cmd = 'dir ' + user_input_cmd[2:].strip()
                     elif user_input_cmd.lower().startswith('list') and os_name == 'nt':
@@ -727,6 +729,7 @@ def run_agent_loop(agent: Any):
                                 self._reset_work_directory_to_startup_initial()
                             if return_code is not None:
                                 last_direct = getattr(self, "_last_direct_shell_execution", None)
+                                current_direct_result = last_direct
                                 if int(return_code) != 0:
                                     rendered_lines = 0
                                     cursor_at_line_start = True
@@ -752,6 +755,7 @@ def run_agent_loop(agent: Any):
                                         return_code=int(last_direct.get("return_code") if last_direct.get("return_code") is not None else return_code),
                                         stdout_text=str(last_direct.get("stdout") or ""),
                                         stderr_text=str(last_direct.get("stderr") or ""),
+                                        aborted_by_user=bool(last_direct.get("aborted_by_user", False)),
                                     )
                                 else:
                                     self._record_direct_shell_execution_history(
@@ -781,11 +785,14 @@ def run_agent_loop(agent: Any):
                             stdout_text="",
                             stderr_text=f"{msg}\n",
                         )
-                    self._show_separator_next_prompt = True
+                    self._show_separator_next_prompt = not self._is_direct_shell_result_aborted(
+                        current_direct_result
+                    )
                     continue
 
                 # e.g. !git status — not in the small whitelist but still direct shell
                 return_code: Optional[int] = None
+                last_direct = None
                 try:
                     return_code = self._run_direct_shell_with_prefixed_output(
                         ui,
@@ -837,6 +844,7 @@ def run_agent_loop(agent: Any):
                             return_code=int(last_direct.get("return_code") if last_direct.get("return_code") is not None else return_code),
                             stdout_text=str(last_direct.get("stdout") or ""),
                             stderr_text=str(last_direct.get("stderr") or ""),
+                            aborted_by_user=bool(last_direct.get("aborted_by_user", False)),
                         )
                     else:
                         self._record_direct_shell_execution_history(
@@ -847,12 +855,14 @@ def run_agent_loop(agent: Any):
                             stdout_text="",
                             stderr_text="",
                         )
-                self._show_separator_next_prompt = True
+                self._show_separator_next_prompt = not self._is_direct_shell_result_aborted(last_direct)
                 continue
 
             # Natural-language turn: rewrite prompt line as chat-style user line.
             in_task_execution = True
             self._in_task_execution = True
+            self._start_interrupt_monitor(cancel_task_on_interrupt=True)
+            self._consume_task_interrupt_requested()
             self._rewrite_previous_prompt_as_user(raw_user_input.strip())
 
             last_result = None
@@ -981,6 +991,8 @@ def run_agent_loop(agent: Any):
             tool_round = 0
             user_message_recorded = False
             while tool_round < max_tool_rounds:
+                if self._consume_task_interrupt_requested():
+                    raise KeyboardInterrupt
                 tool_round += 1
                 status_ticker = _WorkingStatusTicker(
                     sys.stdout,
@@ -999,6 +1011,8 @@ def run_agent_loop(agent: Any):
                 finally:
                     status_ticker.stop()
                     self._clear_last_thinking_line()
+                if self._consume_task_interrupt_requested():
+                    raise KeyboardInterrupt
                 if not isinstance(ai_response, str):
                     print(f"❌ AI返回异常: {ai_response}")
                     break
@@ -1184,6 +1198,8 @@ def run_agent_loop(agent: Any):
                         print(f"🧩 本步使用 Skill: {selected_skill.get('name')} ({selected_skill.get('skill_id')})")
                         last_announced_skill_key = skill_key
 
+                if self._consume_task_interrupt_requested():
+                    raise KeyboardInterrupt
                 result = self.execute_tool_call(tool_name, args)
                 no_tool_rounds = 0
                 self.operation_results.append({
@@ -1358,12 +1374,15 @@ def run_agent_loop(agent: Any):
                 )
             in_task_execution = False
             self._in_task_execution = False
+            self._stop_interrupt_monitor(cancel_task_on_interrupt=True)
             self._schedule_auto_memory_reflect()
 
         except KeyboardInterrupt:
             if in_task_execution:
                 in_task_execution = False
                 self._in_task_execution = False
+                self._stop_interrupt_monitor(cancel_task_on_interrupt=True)
+                self._consume_task_interrupt_requested()
                 self._force_current_input_as_requirement_once = True
                 if current_task_id:
                     self._close_chat_task(current_task_id, "cancelled")
@@ -1378,10 +1397,12 @@ def run_agent_loop(agent: Any):
                 self._active_skill_total_sections = 0
                 self._active_skill_chunked = False
                 self._last_auto_removed_ephemeral = None
-                print("\n⏹️ 已取消当前任务")
+                if not self._consume_conversation_interrupted_banner_recent():
+                    self._print_conversation_interrupted_banner()
                 continue
 
             self._in_task_execution = False
+            self._stop_interrupt_monitor(cancel_task_on_interrupt=True)
             print("")
             try:
                 should_exit = input("是否结束 Smart Shell？(y/n): ").strip().lower() == "y"
@@ -1395,5 +1416,6 @@ def run_agent_loop(agent: Any):
             continue
         except Exception as e:
             self._in_task_execution = False
+            self._stop_interrupt_monitor(cancel_task_on_interrupt=True)
             print(f"❌ 发生错误: {str(e)}")
 
