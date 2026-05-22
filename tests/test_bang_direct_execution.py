@@ -102,6 +102,26 @@ class BangDirectExecutionTests(unittest.TestCase):
         self.assertEqual(out_plain, "  └ line1\n    line2\n")
         self.assertEqual(err_plain, "    err-line\n")
 
+    def test_direct_shell_output_stream_wraps_long_lines_with_indent(self):
+        class _TtyBuffer(StringIO):
+            def isatty(self):
+                return True
+
+            def fileno(self):
+                return 1
+
+        out_buf = _TtyBuffer()
+        with patch("src.smart_shell_agent.sys.stdout", out_buf), patch(
+            "src.smart_shell_agent.SmartShellAgent._DirectShellOutputStream._terminal_columns",
+            return_value=10,
+        ):
+            out_stream, _ = self.agent._create_direct_shell_output_streams()
+            out_stream.write("12345678901")
+
+        ansi_re = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+        out_plain = ansi_re.sub("", out_buf.getvalue())
+        self.assertEqual(out_plain, "  └ 123456\n    78901")
+
 
 if __name__ == "__main__":
     unittest.main()

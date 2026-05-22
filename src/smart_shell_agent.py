@@ -1003,6 +1003,7 @@ class SmartShellAgent:
             self._base_stream = base_stream
             self._shared_state = shared_state
             self._line_start = True
+            self._visual_col = 0
 
         @property
         def encoding(self) -> Optional[str]:
@@ -1029,6 +1030,33 @@ class SmartShellAgent:
         def writable(self) -> bool:
             return True
 
+        def _terminal_columns(self) -> int:
+            try:
+                if hasattr(self._base_stream, "fileno"):
+                    cols = int(os.get_terminal_size(self._base_stream.fileno()).columns or 0)
+                    if cols > 0:
+                        return cols
+            except Exception:
+                pass
+            try:
+                cols = int(shutil.get_terminal_size(fallback=(80, 24)).columns or 80)
+                if cols > 0:
+                    return cols
+            except Exception:
+                pass
+            return 80
+
+        @staticmethod
+        def _char_display_width(ch: str) -> int:
+            if not ch:
+                return 0
+            if unicodedata.combining(ch):
+                return 0
+            cat = unicodedata.category(ch)
+            if cat in ("Cc", "Cf"):
+                return 0
+            return 2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1
+
         def write(self, text: str) -> int:
             s = str(text or "")
             if not s:
@@ -1036,18 +1064,30 @@ class SmartShellAgent:
             s = SmartShellAgent._strip_console_color_controls(s)
             if not s:
                 return 0
+            term_cols = max(8, int(self._terminal_columns() or 80))
             out_parts: List[str] = []
             for ch in s:
                 if self._line_start:
                     if not bool(self._shared_state.get("first_line_emitted", False)):
-                        out_parts.append("  └ ")
+                        indent = "  └ "
                         self._shared_state["first_line_emitted"] = True
                     else:
-                        out_parts.append("    ")
+                        indent = "    "
+                    out_parts.append(indent)
+                    self._visual_col = len(indent)
                     self._line_start = False
-                out_parts.append(ch)
                 if ch == "\n":
+                    out_parts.append("\n")
                     self._line_start = True
+                    self._visual_col = 0
+                    continue
+                ch_w = self._char_display_width(ch)
+                if ch_w > 0 and self._visual_col + ch_w > term_cols:
+                    out_parts.append("\n    ")
+                    self._line_start = False
+                    self._visual_col = 4
+                out_parts.append(ch)
+                self._visual_col += ch_w
             rendered = "".join(out_parts)
             self._base_stream.write(_ansi_gray(rendered))
             return len(s)
