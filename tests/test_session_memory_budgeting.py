@@ -247,8 +247,33 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
         messages, _ = svc.build_regular_task_messages("继续处理后续步骤")
         history_joined = "\n".join(str(m.get("content") or "") for m in messages[1:-1])
         self.assertIn("[命令执行结果]", history_joined)
+        self.assertIn("executed_success=false", history_joined)
         self.assertIn("interrupted_by_user=true", history_joined)
         self.assertIn("最近一次直接命令执行被用户强制终止", str(messages[-1]["content"]))
+
+    def test_regular_task_messages_include_direct_command_success_status(self):
+        agent = _FakeAgent()
+        agent.conversation_history = [
+            {"role": "user", "content": agent._build_direct_shell_user_history_content("echo hello")},
+            {
+                "role": "assistant",
+                "content": agent._build_direct_shell_result_history_content(
+                    "!echo hello",
+                    "echo hello",
+                    "D:/ws",
+                    0,
+                    "hello\n",
+                    "",
+                    aborted_by_user=False,
+                ),
+            },
+        ]
+        svc = SessionMemoryService(agent)
+        messages, _ = svc.build_regular_task_messages("继续")
+        history_joined = "\n".join(str(m.get("content") or "") for m in messages[1:-1])
+        self.assertIn("[命令执行结果]", history_joined)
+        self.assertIn("executed_success=true", history_joined)
+        self.assertIn("interrupted_by_user=false", history_joined)
 
     def test_regular_task_messages_include_recent_interrupted_task_context(self):
         agent = _FakeAgent()

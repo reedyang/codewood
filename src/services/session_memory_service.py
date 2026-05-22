@@ -153,7 +153,13 @@ class SessionMemoryService:
                 payload = None
             if isinstance(payload, dict):
                 executed = str(payload.get("executed_command") or "").strip()
-                rc = payload.get("return_code")
+                rc_raw = payload.get("return_code")
+                try:
+                    rc_num = int(rc_raw)
+                    rc_text = str(rc_num)
+                except Exception:
+                    rc_num = None
+                    rc_text = str(rc_raw)
                 out = str(payload.get("stdout") or "")
                 err = str(payload.get("stderr") or "")
                 merged = out + err
@@ -168,8 +174,19 @@ class SessionMemoryService:
                         merged = str(normalize_aborted(merged) or "")
                     except Exception:
                         merged = out + err
+                success = False
+                if not aborted:
+                    if rc_num is None:
+                        success = False
+                    else:
+                        success = rc_num == 0
                 status = "interrupted_by_user=true" if aborted else "interrupted_by_user=false"
-                header = f"[命令执行结果] command={executed or '<empty>'}; return_code={rc}; {status}"
+                success_text = "true" if success else "false"
+                header = (
+                    "[命令执行结果] "
+                    f"command={executed or '<empty>'}; return_code={rc_text}; "
+                    f"executed_success={success_text}; {status}"
+                )
                 body = merged.strip("\r\n")
                 return f"{header}\n{body}" if body else header
 
