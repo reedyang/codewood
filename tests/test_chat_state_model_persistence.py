@@ -28,6 +28,7 @@ class _FakeAgent:
         self._last_context_window = 0
         self._active_runtime_task_id = ""
         self._active_runtime_task_domains = []
+        self.remembered_history_anchor_indexes = []
 
     def _apply_chat_model_from_entry(self, chat, persist_if_missing=False):
         self.applied_chat_model_calls += 1
@@ -41,6 +42,9 @@ class _FakeAgent:
 
     def _refresh_status_context_usage_snapshot(self):
         self.refresh_status_usage_calls += 1
+
+    def _remember_active_chat_history_first_visible_index(self, index: int):
+        self.remembered_history_anchor_indexes.append(int(index))
 
 
 class ChatStateModelPersistenceTests(unittest.TestCase):
@@ -86,6 +90,37 @@ class ChatStateModelPersistenceTests(unittest.TestCase):
             self.assertIsNotNone(chat)
             self.assertEqual(chat.get("model_provider"), "openai")
             self.assertEqual(chat.get("model_name"), "gpt-4.1")
+            self.assertEqual(agent.remembered_history_anchor_indexes, [0])
+
+    def test_activate_chat_without_print_history_records_next_visible_index(self):
+        with tempfile.TemporaryDirectory() as td:
+            agent = _FakeAgent(Path(td))
+            manager = ChatStateManager(agent, "chats.json")
+            agent._chat_state = {
+                "version": 1,
+                "active": "chat-1",
+                "chats": [
+                    {
+                        "id": "chat-1",
+                        "name": "Legacy",
+                        "name_source": "manual",
+                        "created_at": "",
+                        "updated_at": "",
+                        "tasks": [],
+                        "active_task_id": "",
+                        "messages": [
+                            {"role": "user", "content": "hi", "task_id": "", "created_at": ""},
+                            {"role": "assistant", "content": "hello", "task_id": "", "created_at": ""},
+                        ],
+                        "context_usage_percent": 0,
+                        "context_input_tokens": 0,
+                        "context_window": 0,
+                    }
+                ],
+            }
+            msg = manager.activate_chat("chat-1", announce=False, clear_screen=False, print_history=False)
+            self.assertEqual(msg, "")
+            self.assertEqual(agent.remembered_history_anchor_indexes, [2])
 
     def test_compact_keeps_repeated_identical_user_turns(self):
         with tempfile.TemporaryDirectory() as td:
