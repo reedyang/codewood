@@ -298,7 +298,6 @@ def run_agent_loop(agent: Any):
                 user_input = self._get_user_input_with_history()
             user_input = _sanitize_prompt_pollution(user_input, self.work_directory)
             raw_user_input = str(user_input or "")
-            self._clear_prompt_separator()
         
             # 保存到历史记录（非空输入）
             if user_input.strip():
@@ -630,6 +629,7 @@ def run_agent_loop(agent: Any):
                             stdout_text="",
                             stderr_text="" if exec_ok else "命令执行失败（未捕获到详细输出）\n",
                         )
+                    self._show_separator_next_prompt = True
                     continue
 
                 user_input_cmd = ui
@@ -781,6 +781,7 @@ def run_agent_loop(agent: Any):
                             stdout_text="",
                             stderr_text=f"{msg}\n",
                         )
+                    self._show_separator_next_prompt = True
                     continue
 
                 # e.g. !git status — not in the small whitelist but still direct shell
@@ -846,6 +847,7 @@ def run_agent_loop(agent: Any):
                             stdout_text="",
                             stderr_text="",
                         )
+                self._show_separator_next_prompt = True
                 continue
 
             # Natural-language turn: rewrite prompt line as chat-style user line.

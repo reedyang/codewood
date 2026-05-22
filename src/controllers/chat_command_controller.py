@@ -84,7 +84,6 @@ def handle_chat_builtin_command(agent: Any, builtin_line: str) -> bool:
         if reload_result:
             print(reload_result)
             return True
-        print("✅ 已重新加载当前 Chat 历史消息")
         return True
     if sub == "new":
         name = " ".join(parts[2:]).strip() if len(parts) > 2 else "New Chat"
