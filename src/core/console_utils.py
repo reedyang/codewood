@@ -1,7 +1,6 @@
 import os
-import os
 import sys
-from typing import Any, Optional
+from typing import Any, List, Optional, Tuple
 
 
 def _decode_subprocess_output(data: Optional[bytes]) -> str:
@@ -171,3 +170,62 @@ def _ansi_rgb(text: str, r: int, g: int, b: int) -> str:
     gg = max(0, min(255, int(g)))
     bb = max(0, min(255, int(b)))
     return f"\033[38;2;{rr};{gg};{bb}m{text}\033[0m"
+
+
+def _format_elapsed_minutes_seconds(elapsed_seconds: int) -> str:
+    total = max(0, int(elapsed_seconds or 0))
+    minutes, seconds = divmod(total, 60)
+    return f"{minutes}m {seconds}s"
+
+
+def _build_marquee_windows(text_length: int, max_window: int = 3) -> List[Tuple[int, int]]:
+    length = max(0, int(text_length or 0))
+    if length <= 0:
+        return [(0, 0)]
+    window = min(max(1, length // 3), max(1, int(max_window or 1)), length)
+    windows: List[Tuple[int, int]] = []
+    # Head: grow from a single highlighted character.
+    for size in range(1, window + 1):
+        windows.append((0, size))
+    # Body: fixed-width window moving right.
+    for start in range(1, max(1, length - window + 1)):
+        windows.append((start, window))
+    # Tail: shrink while exiting at the far right.
+    for size in range(window - 1, 0, -1):
+        windows.append((length - size, size))
+    return windows or [(0, 0)]
+
+
+def _gray_segment(text: str) -> str:
+    s = str(text or "")
+    if not s:
+        return ""
+    return _ansi_gray(s)
+
+
+def _render_working_status_line(
+    elapsed_seconds: int,
+    frame: int,
+    label: str = "Working...",
+    interrupt_hint: str = "esc to interrupt",
+) -> str:
+    work_label = str(label or "Working...")
+    elapsed = _format_elapsed_minutes_seconds(elapsed_seconds)
+    plain = f"• {work_label} ({elapsed} • {interrupt_hint})"
+    if not _stdout_color_enabled():
+        return plain
+
+    label_offset = plain.find(work_label)
+    if label_offset < 0 or not work_label:
+        return _ansi_gray(plain)
+    windows = _build_marquee_windows(len(work_label), max_window=3)
+    start, size = windows[int(frame or 0) % len(windows)]
+    if size <= 0:
+        return _ansi_gray(plain)
+    seg_start = label_offset + start
+    seg_end = seg_start + size
+    return (
+        _gray_segment(plain[:seg_start])
+        + plain[seg_start:seg_end]
+        + _gray_segment(plain[seg_end:])
+    )
