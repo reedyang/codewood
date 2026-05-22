@@ -175,14 +175,23 @@ class FileCompleter(Completer):
     def __init__(
         self,
         work_directory: Path,
+        workspace_directory: Optional[Path] = None,
         slash_skill_commands: Optional[List[str]] = None,
         slash_mcp_commands: Optional[List[str]] = None,
         slash_dynamic_rules: Optional[List[Dict[str, Any]]] = None,
     ):
         self.work_directory = work_directory
+        self.workspace_directory = workspace_directory or work_directory
         self.slash_skill_commands = slash_skill_commands or []
         self.slash_mcp_commands = slash_mcp_commands or []
         self.slash_dynamic_rules = slash_dynamic_rules or []
+
+    def _matching_base_directory(self) -> Path:
+        base = self.workspace_directory or self.work_directory
+        try:
+            return Path(base).resolve()
+        except Exception:
+            return Path(base)
 
     def _resolve_dynamic_groups(self) -> List[Tuple[str, List[str]]]:
         """
@@ -482,7 +491,8 @@ class FileCompleter(Completer):
         
         # 获取当前目录的所有文件名
         try:
-            current_files = [item.name for item in self.work_directory.iterdir() if not item.name.startswith('.')]
+            base_dir = self._matching_base_directory()
+            current_files = [item.name for item in base_dir.iterdir() if not item.name.startswith('.')]
         except Exception:
             current_files = []
         
@@ -532,7 +542,7 @@ class FileCompleter(Completer):
         """获取当前目录的内容"""
         try:
             items = []
-            for item in self.work_directory.iterdir():
+            for item in self._matching_base_directory().iterdir():
                 # 只显示可见文件（不以.开头）
                 if not item.name.startswith('.'):
                     items.append(item.name)
@@ -547,7 +557,7 @@ class FileCompleter(Completer):
             if text == ".":
                 return []
             matches = []
-            for item in self.work_directory.iterdir():
+            for item in self._matching_base_directory().iterdir():
                 if item.name.lower().startswith(text.lower()):
                     matches.append(item.name)
             
@@ -582,20 +592,21 @@ class FileCompleter(Completer):
         common_extensions = ['.txt', '.py', '.js', '.html', '.css', '.json', '.xml', '.md', '.log', '.ini', '.cfg', '.conf']
         
         # 1. 尝试直接匹配（不区分大小写）
-        for item in self.work_directory.iterdir():
+        base_dir = self._matching_base_directory()
+        for item in base_dir.iterdir():
             if item.name.lower().startswith(text.lower()):
                 matches.append(item.name)
         
         # 2. 如果没有直接匹配，尝试添加常见扩展名
         if not matches:
             for ext in common_extensions:
-                potential_file = self.work_directory / (text + ext)
+                potential_file = base_dir / (text + ext)
                 if potential_file.exists() and potential_file.is_file():
                     matches.append(text + ext)
         
         # 3. 如果还是没有，尝试模糊匹配（包含子字符串）
         if not matches:
-            for item in self.work_directory.iterdir():
+            for item in base_dir.iterdir():
                 if text.lower() in item.name.lower():
                     matches.append(item.name)
         
@@ -605,7 +616,7 @@ class FileCompleter(Completer):
             base_name, partial_ext = text.rsplit('.', 1)
             for ext in common_extensions:
                 if ext.startswith('.' + partial_ext):
-                    potential_file = self.work_directory / (base_name + ext)
+                    potential_file = base_dir / (base_name + ext)
                     if potential_file.exists() and potential_file.is_file():
                         matches.append(base_name + ext)
         
@@ -622,7 +633,7 @@ class FileCompleter(Completer):
         """
         try:
             # Drive-root completion: use current drive root.
-            current_drive = Path.cwd().anchor  # 例如 'C:\\'
+            current_drive = self._matching_base_directory().anchor  # 例如 'C:\\'
             root_dir = Path(current_drive)
             
             if not root_dir.exists() or not root_dir.is_dir():
@@ -717,10 +728,10 @@ class FileCompleter(Completer):
             normalized = rel.replace("\\", "/")
             if "/" in normalized:
                 dir_part, file_part = normalized.rsplit("/", 1)
-                base_dir = (self.work_directory / dir_part).resolve()
+                base_dir = (self._matching_base_directory() / dir_part).resolve()
             else:
                 dir_part, file_part = "", normalized
-                base_dir = self.work_directory
+                base_dir = self._matching_base_directory()
 
             if not base_dir.exists() or not base_dir.is_dir():
                 return []
@@ -803,7 +814,7 @@ class FileCompleter(Completer):
                     base_dir = Path(dir_part)
             else:
                 # 相对路径
-                base_dir = self.work_directory / dir_part
+                base_dir = self._matching_base_directory() / dir_part
             
             if not base_dir.exists() or not base_dir.is_dir():
                 return []
@@ -909,6 +920,7 @@ class PromptToolkitInputHandler:
     def __init__(
         self,
         work_directory: Path,
+        workspace_directory: Optional[Path] = None,
         initial_history: Optional[List[str]] = None,
         slash_skill_commands: Optional[List[str]] = None,
         slash_mcp_commands: Optional[List[str]] = None,
@@ -921,6 +933,7 @@ class PromptToolkitInputHandler:
             initial_history: 预置的历史命令列表（通常来自持久化的HistoryManager）
         """
         self.work_directory = work_directory
+        self.workspace_directory = workspace_directory or work_directory
         self.history = []
         self._status_bar_text = ""
         self._status_bar_fragments = []
@@ -951,6 +964,7 @@ class PromptToolkitInputHandler:
             # 使用prompt_toolkit，并将历史记录注入到会话中
             self.completer = FileCompleter(
                 work_directory,
+                self.workspace_directory,
                 slash_skill_commands,
                 slash_mcp_commands,
                 slash_dynamic_rules,
@@ -1264,6 +1278,12 @@ class PromptToolkitInputHandler:
         if self.session and hasattr(self, 'completer'):
             self.completer.work_directory = new_directory
 
+    def update_workspace_directory(self, new_directory: Path):
+        """更新用于路径匹配/补全的 workspace 根目录。"""
+        self.workspace_directory = new_directory
+        if self.session and hasattr(self, "completer"):
+            self.completer.workspace_directory = new_directory
+
     def set_slash_skill_commands(self, slash_skill_commands: Optional[List[str]] = None) -> None:
         if hasattr(self, "completer"):
             self.completer.slash_skill_commands = slash_skill_commands or []
@@ -1317,6 +1337,7 @@ class PromptToolkitInputHandler:
 
 def create_prompt_toolkit_input_handler(
     work_directory: Path,
+    workspace_directory: Optional[Path] = None,
     initial_history: Optional[List[str]] = None,
     slash_skill_commands: Optional[List[str]] = None,
     slash_mcp_commands: Optional[List[str]] = None,
@@ -1325,6 +1346,7 @@ def create_prompt_toolkit_input_handler(
     """创建 prompt_toolkit 输入处理器"""
     return PromptToolkitInputHandler(
         work_directory,
+        workspace_directory,
         initial_history,
         slash_skill_commands,
         slash_mcp_commands,

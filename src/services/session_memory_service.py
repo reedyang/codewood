@@ -951,6 +951,7 @@ class SessionMemoryService:
         force_new_requirement = bool(
             getattr(self.agent, "_force_current_input_as_requirement_once", False)
         )
+        workspace_directory = getattr(self.agent, "workspace_root", self.agent.work_directory)
         original_requirement = (
             str(user_input or "").strip()
             if force_new_requirement
@@ -978,7 +979,7 @@ class SessionMemoryService:
             )
         current_input += (
             f"当前 workspace: {self.agent.workspace_name}\n"
-            f"当前工作目录: {self.agent.work_directory}\n"
+            f"当前目录（workspace）: {workspace_directory}\n"
         )
         if self.agent.operation_results:
             op_line = f"最近的操作结果: {self.agent.operation_results[-1]}\n"
@@ -1054,7 +1055,7 @@ class SessionMemoryService:
                         current_input2_head += f"最近被取消的任务: {last_cancelled_task}\n"
                 current_input2_optional = (
                     f"当前 workspace: {self.agent.workspace_name}\n"
-                    f"当前工作目录: {self.agent.work_directory}\n"
+                    f"当前目录（workspace）: {workspace_directory}\n"
                 )
                 if self.agent.operation_results:
                     op_line2 = f"最近的操作结果: {self.agent.operation_results[-1]}\n"
