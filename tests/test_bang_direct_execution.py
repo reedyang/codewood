@@ -1,6 +1,8 @@
 import sys
 import types
 import unittest
+import subprocess
+import re
 from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
@@ -59,6 +61,7 @@ class BangDirectExecutionTests(unittest.TestCase):
         self.assertTrue(ok)
         self.assertEqual(self.agent.work_directory, initial_dir)
         self.assertEqual(popen_mock.call_args.kwargs.get("cwd"), str(root))
+        self.assertEqual(popen_mock.call_args.kwargs.get("stdin"), subprocess.DEVNULL)
 
     def test_print_direct_shell_command_feedback_erases_and_prints_you_ran(self):
         class _TtyBuffer(StringIO):
@@ -93,8 +96,11 @@ class BangDirectExecutionTests(unittest.TestCase):
             out_stream.write("line1\nline2\n")
             err_stream.write("err-line\n")
 
-        self.assertEqual(out_buf.getvalue(), "  └ line1\n    line2\n")
-        self.assertEqual(err_buf.getvalue(), "    err-line\n")
+        ansi_re = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+        out_plain = ansi_re.sub("", out_buf.getvalue())
+        err_plain = ansi_re.sub("", err_buf.getvalue())
+        self.assertEqual(out_plain, "  └ line1\n    line2\n")
+        self.assertEqual(err_plain, "    err-line\n")
 
 
 if __name__ == "__main__":
