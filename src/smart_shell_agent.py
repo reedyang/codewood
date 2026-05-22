@@ -792,13 +792,31 @@ class SmartShellAgent:
         if not self.conversation_history:
             print("(当前 Chat 暂无历史消息)")
             return
-        for msg in self.conversation_history:
+        hist = list(self.conversation_history or [])
+        for idx, msg in enumerate(hist):
             role = str(msg.get("role") or "").strip().lower()
             content = str(msg.get("content") or "")
             if role == "user":
                 direct_cmd = self._parse_direct_shell_user_history_content(content)
                 if direct_cmd:
-                    print(f"{_ansi_rgb('•', 19, 161, 14)} You ran {_ansi_cyan(direct_cmd)}")
+                    failed = False
+                    if idx + 1 < len(hist):
+                        nxt = hist[idx + 1]
+                        nxt_role = str(nxt.get("role") or "").strip().lower()
+                        if nxt_role == "assistant":
+                            nxt_payload = self._parse_direct_shell_result_history_content(
+                                str(nxt.get("content") or "")
+                            )
+                            if isinstance(nxt_payload, dict):
+                                try:
+                                    failed = int(nxt_payload.get("return_code") or 0) != 0
+                                except Exception:
+                                    failed = False
+                    self._print_direct_shell_command_feedback(
+                        direct_cmd,
+                        failed=failed,
+                        erase_previous=False,
+                    )
                     continue
                 print(f"{_ansi_gray('›')} {content}")
             elif role == "assistant":
@@ -1009,10 +1027,47 @@ class SmartShellAgent:
         except Exception:
             pass
 
-    def _print_direct_shell_command_feedback(self, command: str) -> None:
-        self._erase_last_user_input_line()
+    def _print_direct_shell_command_feedback(
+        self,
+        command: str,
+        failed: bool = False,
+        erase_previous: bool = True,
+    ) -> None:
+        if erase_previous:
+            self._erase_last_user_input_line()
+        line = self._format_direct_shell_command_feedback_line(command, failed=failed)
+        print(line)
+
+    def _format_direct_shell_command_feedback_line(self, command: str, failed: bool = False) -> str:
         cmd = str(command or "").replace("\r", " ").replace("\n", " ").strip()
-        print(f"{_ansi_rgb('•', 19, 161, 14)} You ran {_ansi_cyan(cmd)}")
+        bullet = _ansi_rgb("•", 197, 15, 31) if bool(failed) else _ansi_rgb("•", 19, 161, 14)
+        return f"{bullet} You ran {_ansi_cyan(cmd)}"
+
+    def _repaint_direct_shell_command_feedback_if_failed(
+        self,
+        command: str,
+        rendered_output_lines: int,
+        cursor_at_line_start: bool,
+        failed: bool,
+    ) -> None:
+        if not bool(failed):
+            return
+        if not hasattr(sys.stdout, "isatty") or not sys.stdout.isatty():
+            return
+        try:
+            rendered = max(0, int(rendered_output_lines or 0))
+            at_line_start = bool(cursor_at_line_start)
+            offset = rendered + (1 if at_line_start else 0)
+            if offset <= 0:
+                offset = 1
+            line = self._format_direct_shell_command_feedback_line(command, failed=True)
+            # Save current cursor, repaint command feedback line in red, restore cursor.
+            sys.stdout.write("\x1b7")
+            sys.stdout.write(f"\x1b[{offset}A\r\x1b[2K{line}")
+            sys.stdout.write("\x1b8")
+            sys.stdout.flush()
+        except Exception:
+            pass
 
     def _build_direct_shell_user_history_content(self, raw_user_command: str) -> str:
         cmd = str(raw_user_command or "").strip()
@@ -1168,6 +1223,13 @@ class SmartShellAgent:
             s = SmartShellAgent._strip_console_color_controls(s)
             if not s:
                 return 0
+            if not bool(self._shared_state.get("_first_write_cleared_ticker_line", False)):
+                self._shared_state["_first_write_cleared_ticker_line"] = True
+                try:
+                    self._base_stream.write("\r\x1b[2K")
+                    self._base_stream.flush()
+                except Exception:
+                    pass
             if not bool(self._shared_state.get("_first_text_emitted_notified", False)):
                 self._shared_state["_first_text_emitted_notified"] = True
                 cb = self._shared_state.get("on_text_emitted")
@@ -1188,6 +1250,12 @@ class SmartShellAgent:
                     out_parts.append(indent)
                     self._visual_col = len(indent)
                     self._line_start = False
+                    try:
+                        self._shared_state["rendered_line_count"] = int(
+                            self._shared_state.get("rendered_line_count", 0) or 0
+                        ) + 1
+                    except Exception:
+                        self._shared_state["rendered_line_count"] = 1
                 if ch == "\n":
                     out_parts.append("\n")
                     self._line_start = True
@@ -1198,10 +1266,17 @@ class SmartShellAgent:
                     out_parts.append("\n    ")
                     self._line_start = False
                     self._visual_col = 4
+                    try:
+                        self._shared_state["rendered_line_count"] = int(
+                            self._shared_state.get("rendered_line_count", 0) or 0
+                        ) + 1
+                    except Exception:
+                        self._shared_state["rendered_line_count"] = 1
                 out_parts.append(ch)
                 self._visual_col += ch_w
             rendered = "".join(out_parts)
             self._base_stream.write(_ansi_gray(rendered))
+            self._shared_state["cursor_at_line_start"] = bool(self._line_start)
             return len(s)
 
     @staticmethod
@@ -1224,8 +1299,18 @@ class SmartShellAgent:
         if isinstance(shared_state, dict):
             state = shared_state
             state.setdefault("first_line_emitted", False)
+            state.setdefault("rendered_line_count", 0)
+            state.setdefault("cursor_at_line_start", True)
+            state.setdefault("_first_write_cleared_ticker_line", False)
+            state.setdefault("_first_text_emitted_notified", False)
         else:
-            state = {"first_line_emitted": False}
+            state = {
+                "first_line_emitted": False,
+                "rendered_line_count": 0,
+                "cursor_at_line_start": True,
+                "_first_write_cleared_ticker_line": False,
+                "_first_text_emitted_notified": False,
+            }
         out_stream = self._build_direct_shell_output_stream(sys.stdout, state)
         err_stream = self._build_direct_shell_output_stream(sys.stderr, state)
         return out_stream, err_stream
@@ -1283,6 +1368,10 @@ class SmartShellAgent:
 
         stream_state: Dict[str, Any] = {
             "first_line_emitted": False,
+            "rendered_line_count": 0,
+            "cursor_at_line_start": True,
+            "_first_write_cleared_ticker_line": False,
+            "_first_text_emitted_notified": False,
             "on_text_emitted": _stop_status_ticker,
         }
         stdout_chunks: List[str] = []
@@ -1333,6 +1422,8 @@ class SmartShellAgent:
                     "return_code": int(return_code),
                     "stdout": "".join(stdout_chunks),
                     "stderr": "".join(stderr_chunks),
+                    "rendered_output_lines": int(stream_state.get("rendered_line_count", 0) or 0),
+                    "cursor_at_line_start": bool(stream_state.get("cursor_at_line_start", True)),
                     "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 }
             except Exception:
@@ -3343,7 +3434,6 @@ class SmartShellAgent:
                 if return_code == 0:
                     return True
                 else:
-                    print(f"⚠️ 进程退出码: {return_code}")
                     return False
             finally:
                 self._reset_work_directory_to_startup_initial()
