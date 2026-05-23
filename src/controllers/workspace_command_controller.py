@@ -19,7 +19,7 @@ def split_workspace_args(text: str) -> Tuple[List[str], Optional[str]]:
     try:
         parts = shlex.split(text or "", posix=False)
     except ValueError as e:
-        return [], f"参数解析失败: {e}"
+        return [], f"Failed to parse arguments: {e}"
     return [p.strip().strip('"').strip("'") for p in parts if p.strip()], None
 
 
@@ -49,13 +49,13 @@ def parse_workspace_command_args(
             else:
                 i += 1
                 if i >= len(parts):
-                    return [], {}, f"{matched_value_flag} 需要一个值"
+                    return [], {}, f"{matched_value_flag} requires a value"
                 value = parts[i]
             options[key] = value
         elif token in bool_flags:
             options[token[2:].replace("-", "_")] = True
         elif token.startswith("--"):
-            return [], {}, f"未知参数: {token}"
+            return [], {}, f"Unknown parameter: {token}"
         else:
             positionals.append(token)
         i += 1
@@ -64,7 +64,7 @@ def parse_workspace_command_args(
 
 def workspace_usage() -> str:
     return (
-        "用法:\n"
+        "Usage:\n"
         "  /workspace list\n"
         "  /workspace current\n"
         "  /workspace create <path> [--name <name>]\n"
@@ -72,9 +72,9 @@ def workspace_usage() -> str:
         "  /workspace update <name|id|path> [--name <name>] [--path <path>]\n"
         "  /workspace rename <name|id|path> <new name>\n"
         "  /workspace delete <name|id|path> [--remove-files]\n"
-        "    --remove-files: 删除该自定义 workspace 根目录下的 .smartshell/，"
-        "包括 history、temp、skills、knowledge、knowledge_db 等 Smart Shell 数据；"
-        "不会删除 workspace 根目录或其它项目文件。"
+        "    --remove-files: Deletes .smartshell/ under this custom workspace root, "
+        "including Smart Shell data such as history, temp, skills, knowledge, and knowledge_db; "
+        "it will not delete the workspace root or other project files."
     )
 
 
@@ -94,24 +94,24 @@ def workspace_subcommand_usage(_agent: Any, subcommand: str) -> str:
         detail = ""
         if str(subcommand or "").strip().lower() == "delete":
             detail = (
-                "\n说明: --remove-files 会删除该自定义 workspace 根目录下的 .smartshell/ "
-                "及其所有文件和子目录；不会删除 workspace 根目录或其它项目文件。"
+                "\nNote: --remove-files deletes .smartshell/ under this custom workspace root "
+                "and all of its files and subdirectories; it will not delete the workspace root or other project files."
             )
-        return f"用法: {usage}{detail}"
+        return f"Usage: {usage}{detail}"
     return workspace_usage()
 
 
 def print_workspace_help(_agent: Any) -> None:
     print(workspace_usage())
-    print("说明:")
-    print("  - 默认 workspace 固定名为 Default，数据目录仍为 config.json 同级的 workspace/")
-    print("  - 自定义 workspace 的 Smart Shell 数据保存在该目录下的 .smartshell/")
-    print("  - /workspace delete 默认只移除登记；带 --remove-files 时会删除该自定义 workspace 的 .smartshell/ 及其全部内容，不会删除 workspace 根目录或其它项目文件。")
-    print("  - 路径或名称包含空格时请使用引号")
+    print("Notes:")
+    print("  - The default workspace is always named Default, and its data directory remains workspace/ next to config.json")
+    print("  - Smart Shell data for custom workspaces is stored under that workspace's .smartshell/")
+    print("  - /workspace delete removes registry entries by default; with --remove-files it deletes that custom workspace's .smartshell/ and all contents, but not the workspace root or other project files.")
+    print("  - Use quotes when a path or name contains spaces")
 
 
 def print_workspace_current(agent: Any) -> None:
-    print(f"当前 workspace: {agent.workspace_name} ({agent.workspace_id})")
+    print(f"Current workspace: {agent.workspace_name} ({agent.workspace_id})")
     print(f"  root: {agent.workspace_root}")
     print(f"  storage: {agent.ai_workspace_dir}")
     print(f"  current directory: {agent.work_directory}")
@@ -121,7 +121,7 @@ def print_workspace_list(agent: Any) -> None:
     default_workspace_id = _default_workspace_id()
     workspaces = agent._workspaces_state.get("workspaces", {})
     if not isinstance(workspaces, dict):
-        print("未找到 workspace 配置")
+        print("Workspace configuration not found")
         return
     print("Workspaces:")
     ordered = sorted(
@@ -155,22 +155,22 @@ def workspace_create_command(agent: Any, arg_text: str) -> str:
     if err:
         return f"❌ {err}\n{workspace_subcommand_usage(agent, 'create')}"
     if len(positionals) != 1:
-        return "用法: /workspace create <path> [--name <name>]"
+        return "Usage: /workspace create <path> [--name <name>]"
     root = agent._workspace_path_from_arg(positionals[0])
     name = str(options.get("name") or root.name or str(root)).strip()
     if not name:
-        return "❌ workspace 名称不能为空"
+        return "❌ Workspace name cannot be empty"
     if agent._workspace_name_exists(name):
-        return f"❌ workspace 名称已存在: {name}"
+        return f"❌ Workspace name already exists: {name}"
     existing = agent._workspace_entry_by_root(root)
     if existing:
-        return f"❌ 该目录已经是 workspace: {existing.get('name')} ({existing.get('id')})"
+        return f"❌ This directory is already a workspace: {existing.get('name')} ({existing.get('id')})"
     try:
         root.mkdir(parents=True, exist_ok=True)
         storage = root / ".smartshell"
         storage.mkdir(parents=True, exist_ok=True)
     except OSError as e:
-        return f"❌ 创建 workspace 目录失败: {e}"
+        return f"❌ Failed to create workspace directory: {e}"
     workspace_id = agent._workspace_id_for_path(root)
     base_id = workspace_id
     counter = 2
@@ -189,7 +189,7 @@ def workspace_create_command(agent: Any, arg_text: str) -> str:
     agent._save_workspace_state()
     agent._refresh_input_handler_skill_completions()
     return (
-        f"✅ 已创建 workspace: {name} ({workspace_id})\n"
+        f"✅ Workspace created: {name} ({workspace_id})\n"
         f"  root: {root}\n"
         f"  storage: {storage}"
     )
@@ -199,14 +199,14 @@ def workspace_switch_command(agent: Any, selector: str) -> str:
     default_workspace_id = _default_workspace_id()
     entry = agent._workspace_entry_by_selector(selector)
     if not entry:
-        return f"❌ 未找到 workspace: {selector}"
+        return f"❌ Workspace not found: {selector}"
     if str(entry.get("id")) == getattr(agent, "workspace_id", default_workspace_id):
-        return f"ℹ️ 已经在 workspace: {agent.workspace_name}"
+        return f"ℹ️ Already in workspace: {agent.workspace_name}"
     agent._save_current_workspace_position()
     agent._apply_workspace_entry(entry, agent.work_directory)
     agent._refresh_workspace_runtime()
     return (
-        f"✅ 已切换到 workspace: {agent.workspace_name}\n"
+        f"✅ Switched to workspace: {agent.workspace_name}\n"
         f"  current directory: {agent.work_directory}"
     )
 
@@ -219,13 +219,13 @@ def workspace_update_command(agent: Any, arg_text: str) -> str:
     if err:
         return f"❌ {err}\n{workspace_subcommand_usage(agent, 'update')}"
     if len(positionals) != 1 or not options:
-        return "用法: /workspace update <name|id|path> [--name <name>] [--path <path>]"
+        return "Usage: /workspace update <name|id|path> [--name <name>] [--path <path>]"
     entry = agent._workspace_entry_by_selector(positionals[0])
     if not entry:
-        return f"❌ 未找到 workspace: {positionals[0]}"
+        return f"❌ Workspace not found: {positionals[0]}"
     workspace_id = str(entry.get("id") or "")
     if workspace_id == default_workspace_id:
-        return "❌ 默认 workspace 的名称和目录固定，不能修改"
+        return "❌ Default workspace name and path are fixed and cannot be modified"
     active_workspace = workspace_id == getattr(agent, "workspace_id", default_workspace_id)
     if active_workspace:
         agent._save_current_workspace_position()
@@ -236,9 +236,9 @@ def workspace_update_command(agent: Any, arg_text: str) -> str:
     if "name" in options:
         new_name = str(options.get("name") or "").strip()
         if not new_name:
-            return "❌ workspace 名称不能为空"
+            return "❌ Workspace name cannot be empty"
         if agent._workspace_name_exists(new_name, ignore_id=workspace_id):
-            return f"❌ workspace 名称已存在: {new_name}"
+            return f"❌ Workspace name already exists: {new_name}"
         entry["name"] = new_name
         messages.append(f"name={new_name}")
 
@@ -246,7 +246,7 @@ def workspace_update_command(agent: Any, arg_text: str) -> str:
         new_root = agent._workspace_path_from_arg(str(options.get("path") or ""))
         duplicate = agent._workspace_entry_by_root(new_root, ignore_id=workspace_id)
         if duplicate:
-            return f"❌ 目标目录已经是 workspace: {duplicate.get('name')} ({duplicate.get('id')})"
+            return f"❌ Target directory is already a workspace: {duplicate.get('name')} ({duplicate.get('id')})"
         new_storage = new_root / ".smartshell"
         if active_workspace:
             agent._shutdown_mcp_runtime()
@@ -269,7 +269,7 @@ def workspace_update_command(agent: Any, arg_text: str) -> str:
                 ) != agent._path_identity_key(new_storage):
                     messages.append("storage=kept-existing-new-location")
         except Exception as e:
-            return f"❌ 修改 workspace 目录失败: {e}"
+            return f"❌ Failed to update workspace path: {e}"
         current_dir = agent._workspace_current_dir_path(entry)
         try:
             rel = current_dir.relative_to(old_root) if current_dir is not None else None
@@ -289,7 +289,7 @@ def workspace_update_command(agent: Any, arg_text: str) -> str:
     if active_workspace:
         agent._apply_workspace_entry(entry, agent.work_directory)
         agent._refresh_workspace_runtime()
-    return f"✅ 已修改 workspace: {entry.get('name')} ({workspace_id})\n  " + ", ".join(
+    return f"✅ Workspace updated: {entry.get('name')} ({workspace_id})\n  " + ", ".join(
         messages
     )
 
@@ -299,7 +299,7 @@ def workspace_rename_command(agent: Any, arg_text: str) -> str:
     if err:
         return f"❌ {err}\n{workspace_subcommand_usage(agent, 'rename')}"
     if len(positionals) < 2:
-        return "用法: /workspace rename <name|id|path> <new name>"
+        return "Usage: /workspace rename <name|id|path> <new name>"
     selector = positionals[0]
     new_name = " ".join(positionals[1:]).strip()
     return workspace_update_command(agent, f'"{selector}" --name "{new_name}"')
@@ -316,23 +316,23 @@ def workspace_delete_command(agent: Any, arg_text: str) -> str:
         return f"❌ {workspace_subcommand_usage(agent, 'delete')}"
     entry = agent._workspace_entry_by_selector(positionals[0])
     if not entry:
-        return f"❌ 未找到 workspace: {positionals[0]}"
+        return f"❌ Workspace not found: {positionals[0]}"
     workspace_id = str(entry.get("id") or "")
     if workspace_id == default_workspace_id:
-        return "❌ 默认 workspace 不能删除"
+        return "❌ Default workspace cannot be deleted"
 
     storage = agent._workspace_storage_path(entry)
     remove_files = bool(options.get("remove_files"))
     if remove_files and storage.exists():
         confirm = (
             input(
-                f"确认删除 workspace 数据目录 '{storage}'？只会删除 .smartshell，不会删除 workspace 根目录。(y/n): "
+                f"Confirm deletion of workspace data directory '{storage}'? Only .smartshell will be deleted, not the workspace root. (y/n): "
             )
             .strip()
             .lower()
         )
         if confirm != "y":
-            return "已取消删除 workspace 数据目录"
+            return "Workspace data directory deletion cancelled"
 
     active_deleted = workspace_id == getattr(agent, "workspace_id", default_workspace_id)
     if active_deleted:
@@ -362,9 +362,9 @@ def workspace_delete_command(agent: Any, arg_text: str) -> str:
             shutil.rmtree(storage)
             removed_data = True
         except OSError as e:
-            return f"⚠️ workspace 已从列表删除，但删除数据目录失败: {e}"
-    suffix = f"\n  已删除数据目录: {storage}" if removed_data else ""
-    return f"✅ 已删除 workspace: {entry.get('name')} ({workspace_id}){suffix}"
+            return f"⚠️ Workspace was removed from the list, but failed to delete data directory: {e}"
+    suffix = f"\n  Deleted data directory: {storage}" if removed_data else ""
+    return f"✅ Workspace deleted: {entry.get('name')} ({workspace_id}){suffix}"
 
 
 def handle_workspace_builtin_command(agent: Any, builtin_line: str) -> bool:
@@ -422,5 +422,5 @@ def handle_workspace_builtin_command(agent: Any, builtin_line: str) -> bool:
         print(workspace_delete_command(agent, arg_text.strip()))
         return True
 
-    print(f"❌ 无效 workspace 子命令: {parts[1]}\n{workspace_usage()}")
+    print(f"❌ Invalid workspace subcommand: {parts[1]}\n{workspace_usage()}")
     return True

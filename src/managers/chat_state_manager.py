@@ -232,7 +232,7 @@ class ChatStateManager:
             with open(p, "w", encoding="utf-8") as f:
                 json.dump(self._agent._chat_state, f, ensure_ascii=False, indent=2)
         except Exception as e:
-            print(f"⚠️ 保存 chat 状态失败: {e}")
+            print(f"⚠️ Failed to save chat state: {e}")
 
     def chat_entries(self) -> List[Dict[str, Any]]:
         chats = self._agent._chat_state.get("chats", [])
@@ -351,7 +351,7 @@ class ChatStateManager:
             )
         except Exception as e:
             self._agent._startup_chat_state_warning = (
-                f"⚠️ 读取 chat 状态失败，已清空并重置默认会话: {e}"
+                f"⚠️ Failed to read chat state; it has been reset to the default session: {e}"
             )
             self._agent._chat_state = self.default_chat_state()
             self.activate_chat(
@@ -460,7 +460,7 @@ class ChatStateManager:
         with self._agent._chat_state_lock:
             chat = self.find_chat_by_id(chat_id)
             if not chat:
-                return f"❌ 未找到 chat: {chat_id}"
+                return f"❌ Chat not found: {chat_id}"
             self._agent._chat_state["active"] = chat_id
             self._agent.active_chat_id = chat_id
             self._agent.active_chat_name = str(chat.get("name") or "New Chat")
@@ -496,5 +496,5 @@ class ChatStateManager:
         if print_history:
             self._agent._print_chat_history()
         if announce:
-            return f"✅ 已切换到 Chat: [{self._agent.active_chat_name}]"
+            return f"✅ Switched to Chat: [{self._agent.active_chat_name}]"
         return ""

@@ -69,7 +69,7 @@ class WorkspaceStateManager:
                 if isinstance(loaded, dict):
                     raw_state = loaded
             except Exception as e:
-                print(f"⚠️ 读取 workspace registry 失败，使用默认 workspace: {e}")
+                print(f"⚠️ Failed to read workspace registry, falling back to default workspace: {e}")
 
         raw_workspaces = raw_state.get("workspaces", {})
         if not isinstance(raw_workspaces, dict):
@@ -130,18 +130,18 @@ class WorkspaceStateManager:
                 f.write("\n")
             os.replace(tmp_path, self._agent.workspace_registry_path)
         except Exception as e:
-            print(f"⚠️ 保存 workspace registry 失败: {e}")
+            print(f"⚠️ Failed to save workspace registry: {e}")
 
     def ensure_workspace_dirs(self) -> None:
         try:
             self._agent.ai_workspace_dir.mkdir(parents=True, exist_ok=True)
         except OSError as e:
-            print(f"⚠️ 无法创建 AI workspace 目录 {self._agent.ai_workspace_dir}: {e}")
+            print(f"⚠️ Failed to create AI workspace directory {self._agent.ai_workspace_dir}: {e}")
         self._agent.ai_workspace_temp_dir = self._agent.ai_workspace_dir / "temp"
         try:
             self._agent.ai_workspace_temp_dir.mkdir(parents=True, exist_ok=True)
         except OSError as e:
-            print(f"⚠️ 无法创建 workspace temp 目录 {self._agent.ai_workspace_temp_dir}: {e}")
+            print(f"⚠️ Failed to create workspace temp directory {self._agent.ai_workspace_temp_dir}: {e}")
 
     def apply_workspace_entry(self, entry: Dict[str, Any], fallback_dir: Path) -> None:
         workspace_id = str(entry.get("id") or self._default_workspace_id)

@@ -48,7 +48,7 @@ def prepare_image_input(
     if image_path is None:
         return None, None, "", None
     if internal_mode:
-        return None, None, "", "❌ 错误：当前内部模式不支持图片输入。"
+        return None, None, "", "❌ Error: image input is not supported in the current internal mode."
 
     import base64
 
@@ -60,7 +60,7 @@ def prepare_image_input(
             image_user_idx = idx
             break
     if image_user_idx is None:
-        return None, None, "", "❌ 错误：多模态消息构建失败，缺少用户消息。"
+        return None, None, "", "❌ Error: failed to build multimodal message because no user message was found."
     image_user_text = str(messages[image_user_idx].get("content", "") or "")
     return image_data, image_user_idx, image_user_text, None
 
@@ -192,7 +192,7 @@ def _call_with_ollama(
     try:
         ollama = ollama_importer()
     except ImportError:
-        return "❌ 错误：未安装 ollama 包。请运行：pip install ollama"
+        return "❌ Error: the 'ollama' package is not installed. Please run: pip install ollama"
 
     if image_data is not None and image_user_idx is not None:
         provider_messages = [dict(m) for m in messages]
@@ -267,7 +267,7 @@ def call_ai_with_provider(
             memory_query_expansion_mode=context.memory_query_expansion_mode,
             domain_classifier_mode=context.domain_classifier_mode,
             append_history=append_history,
-            api_key_error_msg="❌ 错误：OpenAI API密钥未配置。请在 config.json 的 model.params 中设置 api_key。",
+            api_key_error_msg="❌ Error: OpenAI API key is not configured. Please set api_key in config.json model.params.",
             default_base_url="https://api.openai.com/v1",
             stream_decode_unicode=False,
         )
@@ -285,7 +285,7 @@ def call_ai_with_provider(
             memory_query_expansion_mode=context.memory_query_expansion_mode,
             domain_classifier_mode=context.domain_classifier_mode,
             append_history=append_history,
-            api_key_error_msg="❌ 错误：OpenWebUI API密钥未配置。请在 config.json 的 model.params 中设置 api_key。",
+            api_key_error_msg="❌ Error: OpenWebUI API key is not configured. Please set api_key in config.json model.params.",
             default_base_url="http://localhost:8080/v1",
             stream_decode_unicode=True,
         )
@@ -309,4 +309,4 @@ def call_ai_with_provider(
             ollama_importer=ollama_importer,
             context_window=context_window,
         )
-    return f"❌ 错误：不支持的模型提供者 '{context.provider}'。支持的提供者：ollama, openai, openwebui"
+    return f"❌ Error: unsupported model provider '{context.provider}'. Supported providers: ollama, openai, openwebui"

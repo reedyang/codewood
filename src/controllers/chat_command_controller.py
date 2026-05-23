@@ -8,7 +8,7 @@ from typing import Any
 
 def chat_usage() -> str:
     return (
-        "用法:\n"
+        "Usage:\n"
         "  /chat list\n"
         "  /chat current\n"
         "  /chat reload\n"
@@ -23,7 +23,7 @@ def chat_usage() -> str:
 def print_chat_list(agent: Any) -> None:
     chats = agent._chat_entries()
     if not chats:
-        print("当前 workspace 下没有 chat")
+        print("No chats found in the current workspace")
         return
     print(f"Chats (workspace={agent.workspace_name}):")
     for i, c in enumerate(chats, start=1):
@@ -63,12 +63,12 @@ def handle_chat_builtin_command(agent: Any, builtin_line: str) -> bool:
         print_chat_list(agent)
         return True
     if sub == "current":
-        print(f"当前 Chat: [{agent.active_chat_name}] ({agent.active_chat_id})")
+        print(f"Current chat: [{agent.active_chat_name}] ({agent.active_chat_id})")
         return True
     if sub == "reload":
         current_chat_id = str(getattr(agent, "active_chat_id", "") or "").strip()
         if not current_chat_id:
-            print("❌ 当前没有可重载的 Chat")
+            print("❌ There is no active chat to reload")
             return True
         # Required UX order:
         # 1) clear terminal 2) print startup overview 3) reload current chat history.
@@ -92,34 +92,34 @@ def handle_chat_builtin_command(agent: Any, builtin_line: str) -> bool:
             agent._chat_entries().append(agent._new_chat_entry(cid, name=name))
             agent._save_chat_state()
         agent._activate_chat(cid, announce=False, clear_screen=False, print_history=True)
-        print(f"✅ 已创建并切换到 Chat: [{agent.active_chat_name}] ({agent.active_chat_id})")
+        print(f"✅ Created and switched to chat: [{agent.active_chat_name}] ({agent.active_chat_id})")
         return True
     if sub == "switch":
         if len(parts) < 3:
-            print("❌ 用法: /chat switch <index|id|name>")
+            print("❌ Usage: /chat switch <index|id|name>")
             return True
         selector = " ".join(parts[2:]).strip()
         with agent._chat_state_lock:
             target = agent._resolve_chat_selector(selector)
             if not target:
-                print(f"❌ 未找到 chat: {selector}")
+                print(f"❌ Chat not found: {selector}")
                 return True
             cid = str(target.get("id") or "")
         print(agent._activate_chat(cid, announce=True, clear_screen=False, print_history=True))
         return True
     if sub == "rename":
         if len(parts) < 4:
-            print("❌ 用法: /chat rename <index|id|name> <new name>")
+            print("❌ Usage: /chat rename <index|id|name> <new name>")
             return True
         selector = parts[2]
         new_name = " ".join(parts[3:]).strip()
         if not new_name:
-            print("❌ Chat 名称不能为空")
+            print("❌ Chat name cannot be empty")
             return True
         with agent._chat_state_lock:
             target = agent._resolve_chat_selector(selector)
             if not target:
-                print(f"❌ 未找到 chat: {selector}")
+                print(f"❌ Chat not found: {selector}")
                 return True
             target["name"] = new_name
             target["name_source"] = "manual"
@@ -127,11 +127,11 @@ def handle_chat_builtin_command(agent: Any, builtin_line: str) -> bool:
             if str(target.get("id") or "") == agent.active_chat_id:
                 agent.active_chat_name = new_name
             agent._save_chat_state()
-        print(f"✅ 已重命名 Chat: {new_name}")
+        print(f"✅ Chat renamed: {new_name}")
         return True
     if sub == "delete":
         if len(parts) < 3:
-            print("❌ 用法: /chat delete <index|id|name>")
+            print("❌ Usage: /chat delete <index|id|name>")
             return True
         selector = " ".join(parts[2:]).strip()
         if selector.lower() == "all":
@@ -141,16 +141,16 @@ def handle_chat_builtin_command(agent: Any, builtin_line: str) -> bool:
                 agent._chat_state["active"] = cid
                 agent._save_chat_state()
             agent._activate_chat(cid, announce=False, clear_screen=False, print_history=True)
-            print("✅ 已删除所有 Chat，并自动创建新的 Chat: [New Chat]")
+            print("✅ Deleted all chats and automatically created a new chat: [New Chat]")
             return True
         with agent._chat_state_lock:
             target = agent._resolve_chat_selector(selector)
             if not target:
-                print(f"❌ 未找到 chat: {selector}")
+                print(f"❌ Chat not found: {selector}")
                 return True
             chats = agent._chat_entries()
             if len(chats) <= 1:
-                print("❌ 至少保留一个 chat，不能删除最后一个")
+                print("❌ At least one chat must be retained; cannot delete the last chat")
                 return True
             tid = str(target.get("id") or "")
             chats[:] = [c for c in chats if str(c.get("id") or "") != tid]
@@ -159,10 +159,10 @@ def handle_chat_builtin_command(agent: Any, builtin_line: str) -> bool:
                 next_id = str(chats[0].get("id") or "")
             agent._chat_state["chats"] = chats
             agent._save_chat_state()
-        print(f"✅ 已删除 Chat: {target.get('name')} ({target.get('id')})")
+        print(f"✅ Deleted chat: {target.get('name')} ({target.get('id')})")
         if tid == agent.active_chat_id and next_id:
             agent._activate_chat(next_id, announce=False, clear_screen=False, print_history=True)
-            print(f"✅ 已切换到 Chat: [{agent.active_chat_name}]")
+            print(f"✅ Switched to chat: [{agent.active_chat_name}]")
         return True
-    print(f"❌ 未识别的 chat 子命令: {sub}\n{chat_usage()}")
+    print(f"❌ Unrecognized chat subcommand: {sub}\n{chat_usage()}")
     return True

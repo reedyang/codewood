@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-Smart Shell主启动脚本
+Smart Shell main entry point.
 
-用法：
-    python src/main.py   # 使用配置文件中的模型配置
+Usage:
+    python src/main.py   # Run with model settings from the config file
 """
 
 import sys
@@ -24,25 +24,25 @@ def _extract_model_runtime_config(config: dict):
     """Extract runtime model config from the new model_providers format."""
     model_providers = config.get("model_providers")
     if not isinstance(model_providers, list) or not model_providers:
-        return None, None, None, "❌ 配置错误：缺少 model_providers 配置"
+        return None, None, None, "❌ Configuration error: missing 'model_providers' configuration."
 
     first_provider = model_providers[0]
     if not isinstance(first_provider, dict):
-        return None, None, None, "❌ 配置错误：model_providers[0] 必须是对象"
+        return None, None, None, "❌ Configuration error: model_providers[0] must be an object."
 
     provider = str(first_provider.get("provider", "")).strip()
     params_raw = first_provider.get("params", {})
     if not isinstance(params_raw, dict):
-        return None, None, None, "❌ 配置错误：model_providers[0].params 必须是对象"
+        return None, None, None, "❌ Configuration error: model_providers[0].params must be an object."
 
     parsed_models = parse_configured_models(params_raw)
     if not parsed_models:
-        return None, None, None, "❌ 配置错误：model_providers[0].params.models 缺失或为空"
+        return None, None, None, "❌ Configuration error: model_providers[0].params.models is missing or empty."
 
     first_model = parsed_models[0]
     model_name = str(first_model.get("name") or "").strip()
     if not provider or not model_name:
-        return None, None, None, "❌ 配置错误：model_providers[0].provider 或首个 model 为空"
+        return None, None, None, "❌ Configuration error: model_providers[0].provider or the first model is empty."
 
     params = dict(params_raw)
     params["models"] = [str(item.get("name") or "").strip() for item in parsed_models]
@@ -69,7 +69,7 @@ def _set_windows_console_title():
 
 
 def main():
-    """主函数"""
+    """Main function."""
     _set_windows_console_title()
 
     work_directory = None
@@ -98,17 +98,17 @@ def main():
                 config = json.load(f)
             config = resolve_string_values_in_data(config)
         except Exception as e:
-            print(f"⚠️ 配置文件读取失败: {e}")
+            print(f"⚠️ Failed to read config file: {e}")
             config = None
 
     if config_dir:
         from src.core.logging.app_logging import get_logger, setup_app_logging
         setup_app_logging(Path(config_dir))
-        get_logger().info("Smart Shell 启动，config_dir=%s", config_dir)
+        get_logger().info("Smart Shell started, config_dir=%s", config_dir)
     
     if not config:
         # 默认配置
-        print("📋 未找到配置文件")
+        print("📋 Config file not found")
         return 1
     provider, model_name, model_config, config_error = _extract_model_runtime_config(config)
     if config_error:
@@ -135,7 +135,7 @@ def main():
             agent.run()
             return 0
         except Exception as e:
-            print(f"❌ OpenAI API模式运行错误: {str(e)}")
+            print(f"❌ OpenAI API mode runtime error: {str(e)}")
             return 1
         finally:
             if agent is not None:
@@ -158,7 +158,7 @@ def main():
             agent.run()
             return 0
         except Exception as e:
-            print(f"❌ OpenWebUI API模式运行错误: {str(e)}")
+            print(f"❌ OpenWebUI API mode runtime error: {str(e)}")
             return 1
         finally:
             if agent is not None:
@@ -182,10 +182,10 @@ def main():
             agent.run()
             return 0
         except KeyboardInterrupt:
-            print("\n👋 程序已退出")
+            print("\n👋 Program exited")
             return 0
         except Exception as e:
-            print(f"❌ 运行错误: {str(e)}")
+            print(f"❌ Runtime error: {str(e)}")
             return 1
         finally:
             if agent is not None:
@@ -194,7 +194,7 @@ def main():
                 except Exception:
                     pass
     else:
-        print(f"模型 provider {provider} 不被支持")
+        print(f"Model provider '{provider}' is not supported")
         return 1
 
 if __name__ == "__main__":

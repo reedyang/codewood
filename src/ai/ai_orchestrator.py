@@ -53,7 +53,7 @@ class AIOrchestrator:
                 )
 
             if not provider or not model_name:
-                return "❌ 错误：模型未正确配置。请检查 config.json 中的 model 配置。"
+                return "❌ Error: model is not configured correctly. Please check the model settings in config.json."
 
             internal_mode = any(
                 (
@@ -107,4 +107,4 @@ class AIOrchestrator:
                 ollama_importer=self.context.ollama_importer,
             )
         except Exception as e:
-            return f"调用大模型API时出错: {str(e)} (provider: {provider}, model: {model_name})"
+            return f"Error calling LLM API: {str(e)} (provider: {provider}, model: {model_name})"

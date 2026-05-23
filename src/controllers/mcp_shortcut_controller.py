@@ -15,7 +15,7 @@ def parse_mcp_shortcut_command(
     """
     raw = (builtin_line or "").strip()
     if not raw:
-        return None, {}, "命令为空"
+        return None, {}, "Command is empty"
     parts = raw.split()
     low = [p.lower() for p in parts]
     if not low:
@@ -23,51 +23,51 @@ def parse_mcp_shortcut_command(
     if low[0] != "mcp":
         return None, {}, None
     if len(parts) < 2:
-        return None, {}, "用法: /mcp <subcommand> [args]"
+        return None, {}, "Usage: /mcp <subcommand> [args]"
     cmd = low[1]
 
     if cmd == "reload-config" and len(parts) == 2:
         return "mcp_reload_config", {}, None
     if cmd == "reload-config" and len(parts) != 2:
-        return None, {}, "用法: /mcp reload-config"
+        return None, {}, "Usage: /mcp reload-config"
     if cmd == "status" and len(parts) == 2:
         return "mcp_status", {}, None
     if cmd == "status" and len(parts) != 2:
-        return None, {}, "用法: /mcp status"
+        return None, {}, "Usage: /mcp status"
     if cmd == "status-refresh" and len(parts) == 2:
         return "mcp_status_refresh", {}, None
     if cmd == "status-refresh" and len(parts) != 2:
-        return None, {}, "用法: /mcp status-refresh"
+        return None, {}, "Usage: /mcp status-refresh"
     if cmd == "reconnect" and len(parts) == 3:
         return "mcp_reconnect", {"server": parts[2]}, None
     if cmd == "reconnect":
-        return None, {}, "用法: /mcp reconnect <server>"
+        return None, {}, "Usage: /mcp reconnect <server>"
     if cmd == "server-info" and len(parts) == 3:
         return "mcp_server_info", {"server": parts[2]}, None
     if cmd == "server-info":
-        return None, {}, "用法: /mcp server-info <server>"
+        return None, {}, "Usage: /mcp server-info <server>"
     if cmd == "list-tools" and len(parts) == 3:
         return "mcp_list_tools", {"server": parts[2]}, None
     if cmd == "list-tools":
-        return None, {}, "用法: /mcp list-tools <server>"
+        return None, {}, "Usage: /mcp list-tools <server>"
     if cmd == "list-resources" and len(parts) == 3:
         return "mcp_list_resources", {"server": parts[2]}, None
     if cmd == "list-resources":
-        return None, {}, "用法: /mcp list-resources <server>"
+        return None, {}, "Usage: /mcp list-resources <server>"
     if cmd == "list-resource-templates" and len(parts) == 3:
         return "mcp_list_resource_templates", {"server": parts[2]}, None
     if cmd == "list-resource-templates":
-        return None, {}, "用法: /mcp list-resource-templates <server>"
+        return None, {}, "Usage: /mcp list-resource-templates <server>"
     if cmd == "list-prompts" and len(parts) == 3:
         return "mcp_list_prompts", {"server": parts[2]}, None
     if cmd == "list-prompts":
-        return None, {}, "用法: /mcp list-prompts <server>"
+        return None, {}, "Usage: /mcp list-prompts <server>"
     if cmd == "list-disabled-tools":
         if len(parts) == 2:
             return "mcp_list_disabled_tools", {}, None
         if len(parts) == 3:
             return "mcp_list_disabled_tools", {"server": parts[2]}, None
-        return None, {}, "用法: /mcp list-disabled-tools [server]"
+        return None, {}, "Usage: /mcp list-disabled-tools [server]"
 
     if cmd == "disable-tools" and len(parts) >= 4:
         server = parts[2]
@@ -77,11 +77,11 @@ def parse_mcp_shortcut_command(
             return (
                 None,
                 {},
-                "缺少 tools 参数，请使用逗号分隔，例如: /mcp disable-tools playwright browser_click,browser_type",
+                "Missing 'tools' parameter. Use comma-separated values, for example: /mcp disable-tools playwright browser_click,browser_type",
             )
         return "mcp_disable_tools", {"server": server, "tools": tools}, None
     if cmd == "disable-tools":
-        return None, {}, "用法: /mcp disable-tools <server> <tool1,tool2>"
+        return None, {}, "Usage: /mcp disable-tools <server> <tool1,tool2>"
 
     if cmd == "enable-tools" and len(parts) >= 4:
         server = parts[2]
@@ -91,14 +91,14 @@ def parse_mcp_shortcut_command(
             return (
                 None,
                 {},
-                "缺少 tools 参数，请使用逗号分隔，例如: /mcp enable-tools playwright browser_click,browser_type",
+                "Missing 'tools' parameter. Use comma-separated values, for example: /mcp enable-tools playwright browser_click,browser_type",
             )
         return "mcp_enable_tools", {"server": server, "tools": tools}, None
     if cmd == "enable-tools":
-        return None, {}, "用法: /mcp enable-tools <server> <tool1,tool2>"
+        return None, {}, "Usage: /mcp enable-tools <server> <tool1,tool2>"
 
     return None, {}, (
-        "无效 MCP 快捷命令。可用示例："
+        "Invalid MCP shortcut command. Available examples: "
         "/mcp status, /mcp status-refresh, /mcp reload-config, "
         "/mcp reconnect <server>, /mcp server-info <server>, "
         "/mcp list-tools <server>, /mcp list-resources <server>, "
@@ -127,7 +127,7 @@ def print_mcp_shortcut_result(
     print(f"Command: {tool_name}")
     if not result.get("success", False):
         print("Status : FAILED")
-        print(f"Error  : {result.get('error', '未知错误')}")
+        print(f"Error  : {result.get('error', 'Unknown error')}")
         print("==========================\n")
         return
 

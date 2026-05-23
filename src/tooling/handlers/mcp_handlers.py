@@ -354,8 +354,7 @@ def dispatch_mcp_tool(agent: Any, action: str, params: Dict[str, Any]) -> Option
                 ("401" in err_l)
                 or ("unauthorized" in err_l)
                 or ("invalid token" in err_l)
-                or ("token 无效" in err_l)
-                or ("token 验证失败" in err_l)
+                or ("token verification failed" in err_l)
             )
             if auth_like:
                 agent._mcp_pending_user_input[str(server)] = {
