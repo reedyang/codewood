@@ -20,8 +20,7 @@ def _handle_batch(agent: Any, params: Dict[str, Any]) -> Dict[str, Any]:
         results.append({"action": sub_action, "result": sub_result})
 
         if (not sub_result.get("success", True)) and (
-            "用户取消" in sub_result.get("error", "")
-            or "user cancelled" in str(sub_result.get("error", "")).lower()
+            "user cancelled" in str(sub_result.get("error", "")).lower()
         ):
             return {"success": False, "error": "User cancelled operation", "results": results}
 

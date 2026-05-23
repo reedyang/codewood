@@ -46,10 +46,10 @@ def _redact_text(text: Any, *, max_len: int = 2000) -> str:
         return ""
     s = str(text)
     # Common direct identifiers / secrets.
-    s = re.sub(r"(?i)\b[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}\b", "{E}<email>{/E}", s)
-    s = re.sub(r"(?i)\b(?:\d{1,3}\.){3}\d{1,3}\b", "{E}<ip>{/E}", s)
-    s = re.sub(r"(?i)\b(glpat-[A-Za-z0-9\-_]+)\b", "<token:redacted>", s)
-    s = re.sub(r"(?i)\b(bearer)\s+[A-Za-z0-9\-_\.=:+/]+\b", r"\1 <token:redacted>", s)
+    s = re.sub(r"(; i)\b[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}\b", "{E}<email>{/E}", s)
+    s = re.sub(r"(; i)\b(; :\d{1,3}\.){3}\d{1,3}\b", "{E}<ip>{/E}", s)
+    s = re.sub(r"(; i)\b(glpat-[A-Za-z0-9\-_]+)\b", "<token:redacted>", s)
+    s = re.sub(r"(; i)\b(bearer)\s+[A-Za-z0-9\-_\.=:+/]+\b", r"\1 <token:redacted>", s)
     # Keep logs readable and bounded.
     if len(s) > max(64, int(max_len)):
         s = s[: max(64, int(max_len))] + "...<truncated>"
@@ -191,7 +191,7 @@ def _parse_content_length(header_blob: bytes) -> int:
         if line.lower().startswith("content-length:"):
             raw = line.split(":", 1)[1].strip()
             return int(raw)
-    raise McpError("MCP 响应缺少 Content-Length 头")
+    raise McpError("MCP response is missing the Content-Length header")
 
 
 @dataclass
@@ -311,17 +311,17 @@ class McpServerClient:
         if self.process is not None and self.process.poll() is None:
             return
         if "url" in self.config:
-            raise McpError("当前客户端实例仅支持 stdio 配置；检测到 url 配置，请改由 McpUrlClient 处理")
+            raise McpError("Current client instance only supports stdio configuration; detected url configuration, please use McpUrlClient instead")
         command = self.config.get("command")
         if not command:
-            raise McpError("MCP server 缺少 command")
+            raise McpError("MCP server is missing 'command'")
         command_str = str(command).strip()
         resolved_command = self._resolve_command(command_str)
         if not Path(resolved_command).is_absolute() and shutil.which(command_str) is None:
-            raise McpError(f"未找到可执行文件: {command_str}")
+            raise McpError(f"Executable not found: {command_str}")
         args = self.config.get("args", [])
         if not isinstance(args, list):
-            raise McpError("MCP server args 必须是数组")
+            raise McpError("MCP server args must be an array")
         fallback_argv = [resolved_command, *self._normalize_npx_args(args)]
         spawn_argv = fallback_argv
         if self._handshake_debug_enabled():
@@ -506,7 +506,7 @@ class McpServerClient:
 
     def _write_message(self, payload: Any) -> None:
         if self.process is None or self.process.stdin is None:
-            raise McpError("MCP server 未启动")
+            raise McpError("MCP server is not started")
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         if self.wire_mode == "line":
             self.process.stdin.write(body + b"\n")
@@ -541,13 +541,13 @@ class McpServerClient:
                 err_tail = self._tail_stderr()
                 suffix = f"；stderr: {err_tail}" if err_tail else ""
                 code = self.process.returncode if self.process is not None else "unknown"
-                raise McpError(f"MCP server 已退出(method={method}, code={code}){suffix}")
+                raise McpError(f"MCP server exited (method={method}, code={code}){suffix}")
             try:
                 self._write_message(req)
             except OSError as e:
                 err_tail = self._tail_stderr()
                 suffix = f"；stderr: {err_tail}" if err_tail else ""
-                raise McpError(f"MCP 写入失败(method={method}, id={req_id}): {e}{suffix}")
+                raise McpError(f"MCP write failed (method={method}, id={req_id}): {e}{suffix}")
             deadline = time.time() + max(0.2, timeout_s)
             stream_chunks: List[str] = []
             while True:
@@ -555,11 +555,11 @@ class McpServerClient:
                 if left <= 0:
                     err_tail = self._tail_stderr()
                     suffix = f"；stderr: {err_tail}" if err_tail else ""
-                    raise McpError(f"MCP 请求超时(method={method}, id={req_id}){suffix}")
+                    raise McpError(f"MCP request timed out (method={method}, id={req_id}){suffix}")
                 if self.process is not None and self.process.poll() is not None:
                     err_tail = self._tail_stderr()
                     suffix = f"；stderr: {err_tail}" if err_tail else ""
-                    raise McpError(f"MCP server 已退出(method={method}, code={self.process.returncode}){suffix}")
+                    raise McpError(f"MCP server exited (method={method}, code={self.process.returncode}){suffix}")
                 try:
                     msg = self.response_queue.get(timeout=min(0.5, left))
                 except queue.Empty:
@@ -669,14 +669,14 @@ class McpServerClient:
                 err_tail = self._tail_stderr()
                 suffix = f"；stderr: {err_tail}" if err_tail else ""
                 code = self.process.returncode if self.process is not None else "unknown"
-                raise McpError(f"MCP server 已退出(method=batch, code={code}){suffix}")
+                raise McpError(f"MCP server exited (method=batch, code={code}){suffix}")
 
             try:
                 self._write_message(reqs)  # type: ignore[arg-type]
             except OSError as e:
                 err_tail = self._tail_stderr()
                 suffix = f"；stderr: {err_tail}" if err_tail else ""
-                raise McpError(f"MCP 写入失败(method=batch): {e}{suffix}")
+                raise McpError(f"MCP write failed (method=batch): {e}{suffix}")
 
             deadline = time.time() + max(0.2, timeout_s)
             pending = set(id_to_idx.keys())
@@ -686,11 +686,11 @@ class McpServerClient:
                 if left <= 0:
                     err_tail = self._tail_stderr()
                     suffix = f"；stderr: {err_tail}" if err_tail else ""
-                    raise McpError(f"MCP 批量请求超时(pending={len(pending)}){suffix}")
+                    raise McpError(f"MCP batch request timed out (pending={len(pending)}){suffix}")
                 if self.process is not None and self.process.poll() is not None:
                     err_tail = self._tail_stderr()
                     suffix = f"；stderr: {err_tail}" if err_tail else ""
-                    raise McpError(f"MCP server 已退出(method=batch, code={self.process.returncode}){suffix}")
+                    raise McpError(f"MCP server exited (method=batch, code={self.process.returncode}){suffix}")
                 try:
                     msg = self.response_queue.get(timeout=min(0.5, left))
                 except queue.Empty:
@@ -766,7 +766,7 @@ class McpServerClient:
                         break
                     except Exception as e:
                         last_error = str(e)
-                        is_exit = "MCP server 已退出" in last_error or "MCP 写入失败" in last_error
+                        is_exit = "MCP server exited" in last_error or "MCP write failed" in last_error
                         if is_exit:
                             # Recreate process only when process is actually gone/broken.
                             self._shutdown_unlocked()
@@ -781,7 +781,7 @@ class McpServerClient:
             if last_error is None:
                 break
         if last_error is not None:
-            raise McpError(f"initialize 失败（协议回退后仍失败）: {last_error}")
+            raise McpError(f"initialize failed (still failed after protocol fallback): {last_error}")
         # Best-effort initialized notification.
         try:
             with self.lock:
@@ -999,10 +999,10 @@ class McpUrlClient:
         s = str(raw or "").strip()
         if not s:
             return ""
-        m = re.search(r"(?i)\bauthorization\s*:\s*bearer\s+(.+)$", s)
+        m = re.search(r"(; i)\bauthorization\s*:\s*bearer\s+(.+)$", s)
         if m:
             return str(m.group(1)).strip()
-        m = re.search(r"(?i)\bbearer\s+(.+)$", s)
+        m = re.search(r"(; i)\bbearer\s+(.+)$", s)
         if m:
             return str(m.group(1)).strip()
         return s
@@ -1015,19 +1015,19 @@ class McpUrlClient:
                 return False
         except Exception:
             return False
-        print("\n检测到 MCP 返回 401 且未提供可用 challenge。")
+        print("\nDetected MCP returned 401 without an available challenge.")
         print(f"server={self.name} url={mcp_url}")
-        print("请先在浏览器完成该 provider 登录，然后粘贴：")
+        print("Please complete provider login in your browser first, then paste:")
         print("- Authorization: Bearer <token>")
-        print("- 或直接粘贴 <token>")
+        print("- Or directly paste <token>")
         # Do not echo token back to terminal output.
-        raw = getpass.getpass("请输入 token（回车取消）: ").strip()
+        raw = getpass.getpass("Enter token (press Enter to cancel): ").strip()
         token = self._extract_bearer_token(raw)
         if not token:
             return False
         fp = self._token_fp(token)
         if fp and fp in self._manual_rejected_token_fps:
-            print("该 token 之前已验证失败，请更换新的 token。")
+            print("This token was previously verified as failed. Please provide a new token.")
             return False
         self.oauth_token = {
             "access_token": token,
@@ -1181,12 +1181,12 @@ class McpUrlClient:
             except Exception as e:
                 last_err = str(e)
                 continue
-        raise McpError(f"OAuth 资源元数据发现失败: {last_err or 'unknown'}")
+        raise McpError(f"OAuth resource metadata discovery failed: {last_err or 'unknown'}")
 
     def _oauth_discover_authorization_server_metadata(self, issuer: str, timeout_s: float) -> Dict[str, Any]:
         iu = urllib.parse.urlsplit(str(issuer or "").strip())
         if not iu.scheme or not iu.netloc:
-            raise McpError("OAuth authorization server URL 无效")
+            raise McpError("OAuth authorization server URL is invalid")
         base = urllib.parse.urlunsplit((iu.scheme, iu.netloc, "", "", ""))
         path = str(iu.path or "").strip("/")
         candidates: List[str] = []
@@ -1214,7 +1214,7 @@ class McpUrlClient:
             except Exception as e:
                 last_err = str(e)
                 continue
-        raise McpError(f"OAuth authorization server metadata 发现失败: {last_err or 'unknown'}")
+        raise McpError(f"OAuth authorization server metadata discovery failed: {last_err or 'unknown'}")
 
     @staticmethod
     def _pkce_challenge(verifier: str) -> str:
@@ -1307,16 +1307,16 @@ class McpUrlClient:
         if isinstance(auth_servers, str):
             auth_servers = [auth_servers]
         if not isinstance(auth_servers, list) or not auth_servers:
-            raise McpError("OAuth 资源元数据缺少 authorization_servers")
+            raise McpError("OAuth resource metadata is missing authorization_servers")
         auth_server = str(oauth.get("authorization_server", "") or "").strip() or str(auth_servers[0]).strip()
         as_md = self._oauth_discover_authorization_server_metadata(auth_server, timeout_s=min(10.0, timeout_s))
         authorization_endpoint = str(as_md.get("authorization_endpoint", "")).strip()
         token_endpoint = str(as_md.get("token_endpoint", "")).strip()
         methods = as_md.get("code_challenge_methods_supported", [])
         if not authorization_endpoint or not token_endpoint:
-            raise McpError("OAuth metadata 缺少 authorization_endpoint/token_endpoint")
+            raise McpError("OAuth metadata is missing authorization_endpoint/token_endpoint")
         if not isinstance(methods, list) or "S256" not in [str(x) for x in methods]:
-            raise McpError("Authorization Server 不支持 PKCE S256，MCP 客户端拒绝继续")
+            raise McpError("Authorization Server does not support PKCE S256; MCP client refuses to continue")
 
         client_id = str(oauth.get("client_id", "")).strip()
         client_secret = str(oauth.get("client_secret", "")).strip()
@@ -1379,12 +1379,12 @@ class McpUrlClient:
             if not client_id:
                 reg_ep = str(as_md.get("registration_endpoint", "")).strip()
                 if not reg_ep:
-                    raise McpError("缺少 OAuth client_id，且 authorization server 未提供 registration_endpoint")
+                    raise McpError("Missing OAuth client_id, and authorization server did not provide registration_endpoint")
                 reg = self._oauth_dynamic_register(reg_ep, redirect_uri=redirect_uri, timeout_s=min(10.0, timeout_s))
                 client_id = str(reg.get("client_id", "")).strip()
                 client_secret = str(reg.get("client_secret", "")).strip()
                 if not client_id:
-                    raise McpError("OAuth 动态注册失败：返回缺少 client_id")
+                    raise McpError("OAuth dynamic registration failed: missing client_id in response")
             verifier = base64.urlsafe_b64encode(secrets.token_bytes(32)).decode("ascii").rstrip("=")
             challenge_s256 = self._pkce_challenge(verifier)
             state = secrets.token_urlsafe(16)
@@ -1409,14 +1409,14 @@ class McpUrlClient:
                 )
             )
             if oauth.get("open_browser", True) is False:
-                print(f"\n请在浏览器中完成 OAuth 授权：\n{auth_url}\n")
+                print(f"\nPlease complete OAuth authorization in your browser:\n{auth_url}\n")
             else:
                 try:
                     webbrowser.open(auth_url)
-                    print("\n已尝试打开浏览器进行 OAuth 授权。如未自动打开，请手动访问以下链接：")
+                    print("\nTried to open the browser for OAuth authorization. If it did not open automatically, visit this link manually:")
                     print(auth_url)
                 except Exception:
-                    print("\n请在浏览器中完成 OAuth 授权：")
+                    print("\nPlease complete OAuth authorization in your browser:")
                     print(auth_url)
             t = threading.Thread(target=srv.serve_forever, daemon=True)
             t.start()
@@ -1426,14 +1426,14 @@ class McpUrlClient:
             except Exception:
                 pass
             if not ok:
-                raise McpError("OAuth 授权超时，未收到回调 code")
+                raise McpError("OAuth authorization timed out: callback code was not received")
             if callback_box.get("error"):
-                raise McpError(f"OAuth 授权失败: {callback_box.get('error')}")
+                raise McpError(f"OAuth authorization failed: {callback_box.get('error')}")
             code = str(callback_box.get("code", "")).strip()
             if not code:
-                raise McpError("OAuth 回调缺少 code")
+                raise McpError("OAuth callback is missing code")
             if str(callback_box.get("state", "")).strip() != state:
-                raise McpError("OAuth state 校验失败")
+                raise McpError("OAuth state validation failed")
             token_data = self._oauth_exchange_token(
                 token_endpoint,
                 {
@@ -1450,7 +1450,7 @@ class McpUrlClient:
             )
             at = str(token_data.get("access_token", "")).strip()
             if not at:
-                raise McpError("OAuth token 响应缺少 access_token")
+                raise McpError("OAuth token response is missing access_token")
             self.oauth_token = {
                 "access_token": at,
                 "refresh_token": str(token_data.get("refresh_token", "") or ""),
@@ -1532,16 +1532,16 @@ class McpUrlClient:
     def _legacy_sse_read_event(self, timeout_s: float) -> Tuple[str, str]:
         stream = self._legacy_sse_stream
         if stream is None:
-            raise McpError("SSE stream 未建立")
+            raise McpError("SSE stream is not established")
         event_name = ""
         data_lines: List[str] = []
         deadline = time.time() + max(0.5, float(timeout_s))
         while True:
             if time.time() >= deadline:
-                raise McpError("SSE 读取超时")
+                raise McpError("SSE read timed out")
             line_b = stream.readline()
             if not line_b:
-                raise McpError("SSE stream 已断开")
+                raise McpError("SSE stream disconnected")
             line = line_b.decode("utf-8", errors="replace").rstrip("\r\n")
             if line == "":
                 return event_name, "\n".join(data_lines).strip()
@@ -1557,7 +1557,7 @@ class McpUrlClient:
         self._reset_legacy_sse_connection()
         url = str(self.config.get("url", "")).strip()
         if not url:
-            raise McpError("URL MCP server 缺少 url 配置")
+            raise McpError("URL MCP server is missing url configuration")
         sse_headers = self._base_headers()
         sse_headers.pop("Content-Type", None)
         sse_headers["Accept"] = "text/event-stream"
@@ -1598,7 +1598,7 @@ class McpUrlClient:
     ) -> Dict[str, Any]:
         url = str(self.config.get("url", "")).strip()
         if not url:
-            raise McpError("URL MCP server 缺少 url 配置")
+            raise McpError("URL MCP server is missing url configuration")
         # Best-effort refresh existing OAuth token before request.
         try:
             self._ensure_oauth_token(timeout_s=min(10.0, timeout_s))
@@ -1725,7 +1725,7 @@ class McpUrlClient:
                         detail = ""
                     if int(getattr(e, "code", 0) or 0) == 404 and "session" in detail.lower():
                         self._reset_legacy_sse_connection()
-                        raise McpError(f"URL MCP HTTP错误: {e.code} {e.reason}；{detail}")
+                        raise McpError(f"URL MCP HTTP error: {e.code} {e.reason}; {detail}")
                     raise
 
                 if data is None:
@@ -1853,13 +1853,13 @@ class McpUrlClient:
                     # Provider-specific/manual fallback when challenge is absent.
                     if self._manual_auth_fallback_enabled(url):
                         if self._is_current_manual_token_rejected():
-                            raise McpError("手动提供的 token 已验证失败，请更换 token 后重试")
+                            raise McpError("Manually provided token was already verified as failed. Please replace it and retry")
                         if self._manual_token_prompt_and_store(url):
                             try:
                                 return self._post_jsonrpc(method, params, timeout_s=timeout_s, allow_oauth_retry=False)
                             except Exception:
                                 self._mark_current_manual_token_rejected()
-                                raise McpError("手动提供的 token 无效或权限不足，请更换 token 后重试")
+                                raise McpError("Manually provided token is invalid or lacks permission. Please replace it and retry")
                 except Exception as auth_e:
                     self._debug_log(f"oauth_flow_failed {repr(auth_e)}")
             # Scope step-up flow for runtime insufficient_scope challenges.
@@ -1884,15 +1884,15 @@ class McpUrlClient:
                     ensure_ascii=False,
                 )
             )
-            raise McpError(f"URL MCP HTTP错误: {e.code} {e.reason}" + (f"；{detail}" if detail else ""))
+            raise McpError(f"URL MCP HTTP error: {e.code} {e.reason}" + (f"; {detail}" if detail else ""))
         except Exception as e:
             if self._is_legacy_sse_transport() and self._is_session_lost_error(e):
                 self._reset_legacy_sse_connection()
             self._debug_log(f"transport_error {repr(e)}")
-            raise McpError(f"URL MCP请求失败: {e}")
+            raise McpError(f"URL MCP request failed: {e}")
 
         if data is None and not raw:
-            raise McpError("URL MCP返回空响应")
+            raise McpError("URL MCP returned empty response")
         if data is None:
             try:
                 data = json.loads(raw)
@@ -1920,7 +1920,7 @@ class McpUrlClient:
                 if data is None:
                     sample = self._redact_text(raw[:1200].replace("\n", "\\n").replace("\r", "\\r"))
                     self._debug_log(f"parse_error sample={sample}")
-                    raise McpError(f"URL MCP响应非JSON: {e}；sample={sample}")
+                    raise McpError(f"URL MCP response is not JSON: {e}; sample={sample}")
         if isinstance(data, list):
             # pick matching id entry if server returned batch
             for item in data:
@@ -1928,7 +1928,7 @@ class McpUrlClient:
                     data = item
                     break
         if not isinstance(data, dict):
-            raise McpError("URL MCP响应格式无效")
+            raise McpError("URL MCP response format is invalid")
         if "error" in data:
             raise McpError(str(data.get("error")))
         result = data.get("result", {})
@@ -1954,7 +1954,7 @@ class McpUrlClient:
     ) -> None:
         url = str(self.config.get("url", "")).strip()
         if not url:
-            raise McpError("URL MCP server 缺少 url 配置")
+            raise McpError("URL MCP server is missing url configuration")
         if self._is_legacy_sse_transport():
             target_url = self._legacy_sse_message_url.strip() or self._ensure_legacy_sse_connection(timeout_s=timeout_s)
             return self._post_jsonrpc_response_to_url(
@@ -2090,7 +2090,7 @@ class McpUrlClient:
                     self._reset_legacy_sse_connection()
                 # Legacy SSE servers may reject array POST; fallback to sequential.
                 if int(getattr(e, "code", 0) or 0) not in (400, 404, 405):
-                    raise McpError(f"URL MCP HTTP错误: {e.code} {e.reason}" + (f"；{detail}" if detail else ""))
+                    raise McpError(f"URL MCP HTTP error: {e.code} {e.reason}" + (f"; {detail}" if detail else ""))
             except Exception:
                 # fallback to sequential mode below
                 pass
@@ -2109,7 +2109,7 @@ class McpUrlClient:
             return results
         url = str(self.config.get("url", "")).strip()
         if not url:
-            raise McpError("URL MCP server 缺少 url 配置")
+            raise McpError("URL MCP server is missing url configuration")
         try:
             self._ensure_oauth_token(timeout_s=min(10.0, timeout_s))
         except Exception:
@@ -2163,7 +2163,7 @@ class McpUrlClient:
                     )
                 if self._manual_auth_fallback_enabled(url):
                     if self._is_current_manual_token_rejected():
-                        raise McpError("手动提供的 token 已验证失败，请更换 token 后重试")
+                        raise McpError("Manually provided token was already verified as failed. Please replace it and retry")
                     if self._manual_token_prompt_and_store(url):
                         try:
                             return self._post_jsonrpc_batch(
@@ -2174,7 +2174,7 @@ class McpUrlClient:
                             )
                         except Exception:
                             self._mark_current_manual_token_rejected()
-                            raise McpError("手动提供的 token 无效或权限不足，请更换 token 后重试")
+                            raise McpError("Manually provided token is invalid or lacks permission. Please replace it and retry")
             if allow_oauth_retry and int(getattr(e, "code", 0) or 0) == 403:
                 wa = str(headers_map.get("WWW-Authenticate", "") or "")
                 if self._is_insufficient_scope_challenge(wa):
@@ -2186,15 +2186,15 @@ class McpUrlClient:
                         allow_partial_failure=allow_partial_failure,
                         allow_oauth_retry=False,
                     )
-            raise McpError(f"URL MCP HTTP错误: {e.code} {e.reason}" + (f"；{detail}" if detail else ""))
+            raise McpError(f"URL MCP HTTP error: {e.code} {e.reason}" + (f"; {detail}" if detail else ""))
         except Exception as e:
-            raise McpError(f"URL MCP请求失败: {e}")
+            raise McpError(f"URL MCP request failed: {e}")
         if not raw:
-            raise McpError("URL MCP返回空响应")
+            raise McpError("URL MCP returned empty response")
         try:
             data = json.loads(raw)
         except Exception as e:
-            raise McpError(f"URL MCP响应非JSON: {e}")
+            raise McpError(f"URL MCP response is not JSON: {e}")
         items = data if isinstance(data, list) else [data]
         results: List[Optional[Dict[str, Any]]] = [None] * len(calls)
         for it in items:
@@ -2215,7 +2215,7 @@ class McpUrlClient:
             results[idx] = {"ok": True, "result": r} if allow_partial_failure else r
         missing = [i for i, r in enumerate(results) if r is None]
         if missing:
-            raise McpError(f"URL MCP batch 响应缺失: {missing}")
+            raise McpError(f"URL MCP batch response missing: {missing}")
         if allow_partial_failure:
             return [r if isinstance(r, dict) else {"ok": False, "error": "missing"} for r in results]
         return [r if isinstance(r, dict) else {} for r in results]
@@ -2251,7 +2251,7 @@ class McpUrlClient:
                     self.initialized = True
                     return
                 continue
-        raise McpError(f"URL MCP initialize失败: {last_error or 'unknown'}")
+        raise McpError(f"URL MCP initialize failed: {last_error or 'unknown'}")
 
     def list_tools(self, timeout_s: float = 8.0) -> List[Dict[str, Any]]:
         with self.lock:
@@ -2548,7 +2548,7 @@ class McpManager:
         """
         srv = str(server or "").strip()
         if not srv:
-            raise McpError("缺少 server")
+            raise McpError("Missing server")
 
         from_cache = False
         if use_cache and srv in self._tools_cache:
@@ -2578,7 +2578,7 @@ class McpManager:
     def disable_tools(self, server: str, tool_names: List[str]) -> List[str]:
         srv = str(server or "").strip()
         if not srv:
-            raise McpError("缺少 server")
+            raise McpError("Missing server")
         self._server_conf(srv)
         norm = sorted({str(x).strip() for x in tool_names if str(x).strip()})
         if not norm:
@@ -2593,7 +2593,7 @@ class McpManager:
     def enable_tools(self, server: str, tool_names: List[str]) -> List[str]:
         srv = str(server or "").strip()
         if not srv:
-            raise McpError("缺少 server")
+            raise McpError("Missing server")
         self._server_conf(srv)
         norm = {str(x).strip() for x in tool_names if str(x).strip()}
         with self._policy_lock:
@@ -2729,7 +2729,7 @@ class McpManager:
                     "skipped",
                     last_error="skip_preload=true",
                     failure_type="",
-                    suggestion="该 server 已配置 skip_preload=true；如需自动加载请改为 false。",
+                    suggestion="This server is configured with skip_preload=true; set it to false if you need automatic preload.",
                 )
                 skipped.append(s)
                 continue
@@ -2827,59 +2827,59 @@ class McpManager:
         if code in (-32601, -32602, -32600):
             return (
                 "unsupported",
-                "MCP 返回 error.code 表示当前方法/参数在该 server 上不可用；请核对 capability 与方法参数，必要时升级或切换 server。",
+                "MCP returned error.code, indicating the current method/arguments are unavailable on this server; verify capabilities and method arguments, and upgrade or switch server if needed.",
             )
         if code is not None and -32099 <= code <= -32000:
             return (
                 "connect_failed",
-                "MCP 返回 server error（-320xx）；请检查 server 运行状态、连接配置与日志后重试。",
+                "MCP returned server error (-320xx); check server status, connection config, and logs, then retry.",
             )
         if code == -32700:
             return (
                 "connect_failed",
-                "MCP 返回 parse error（-32700）；请检查传输链路与请求格式是否完整。",
+                "MCP returned parse error (-32700); check whether transport and request format are complete.",
             )
         # Layer 2: fallback to keyword-based heuristics.
         # Capability/method unsupported cases should be surfaced explicitly
         # instead of falling through to generic connect_failed.
         unsupported_markers = (
             "method not found",
-            "未支持该 server 请求方法",
+            "this server request method is not supported",
             "not implemented",
             "unsupported",
-            "不支持",
+            "unsupported",
             "unknown method",
             "unknown tool",
             "unknown prompt",
             "-32601",
-            "resources/list 失败",
-            "resources/templates/list 失败",
-            "prompts/list 失败",
+            "resources/list failed",
+            "resources/templates/list failed",
+            "prompts/list failed",
         )
         if any(m in e for m in unsupported_markers):
             return (
                 "unsupported",
-                "该 MCP server/客户端组合暂不支持当前能力或方法；请核对 server capability、工具名/方法名，必要时升级 server 或切换支持该能力的 server。",
+                "This MCP server/client combination does not currently support this capability or method; verify server capabilities and tool/method names, and upgrade or switch to a supporting server if needed.",
             )
         if "session not found" in e or "invalid session" in e or "unknown session" in e:
             return (
                 "connect_failed",
-                "URL MCP 会话失效：已建议自动重连；请重试当前操作，或执行 mcp_reconnect 刷新会话。",
+                "URL MCP session expired: automatic reconnect has been recommended; retry the operation or run mcp_reconnect to refresh the session.",
             )
-        if "url" in conf or "暂不支持 url" in e:
+        if "url" in conf or "url is not currently supported" in e:
             return (
                 "connect_failed",
-                "URL MCP 连接/鉴权失败：请检查 url 可达性、headers/token 配置，或临时设置 skip_preload=true。",
+                "URL MCP connection/authentication failed: check URL reachability and headers/token config, or temporarily set skip_preload=true.",
             )
         if "winerror 2" in e or "cannot find the file specified" in e or "no such file or directory" in e:
             cmd = str(conf.get("command", "")).strip() or "<unknown>"
             return (
                 "missing_dependency",
-                f"未找到可执行文件 `{cmd}`；请安装依赖并确保 PATH 可见，或在 mcp.json 设置绝对路径。",
+                f"Executable `{cmd}` was not found; install dependencies and ensure PATH visibility, or set an absolute path in mcp.json.",
             )
         return (
             "connect_failed",
-            "连接/握手失败：可调大 timeout、执行 mcp_reconnect，或在 mcp.json 设置 skip_preload=true 跳过启动预加载。",
+            "Connection/handshake failed: increase timeout, run mcp_reconnect, or set skip_preload=true in mcp.json to skip startup preload.",
         )
 
     def _log(self, level: str, message: str) -> None:
@@ -2896,10 +2896,10 @@ class McpManager:
     def _server_conf(self, server: str) -> Dict[str, Any]:
         servers = self.mcp_config.get("mcpServers", {})
         if not isinstance(servers, dict) or server not in servers:
-            raise McpError(f"未配置 MCP server: {server}")
+            raise McpError(f"MCP server is not configured: {server}")
         conf = servers[server]
         if not isinstance(conf, dict):
-            raise McpError(f"MCP server 配置无效: {server}")
+            raise McpError(f"MCP server configuration is invalid: {server}")
         return conf
 
     def _effective_timeout(self, server: str, requested_timeout: float) -> float:
@@ -2947,7 +2947,7 @@ class McpManager:
             # Safe default fallback for bidirectional elicitation (form mode only).
             mode = str(payload.get("mode", "form") or "form").strip().lower()
             if mode not in ("", "form"):
-                raise McpError(f"不支持的 elicitation mode: {mode}")
+                raise McpError(f"Unsupported elicitation mode: {mode}")
             requested = payload.get("requestedSchema")
             if not isinstance(requested, dict):
                 requested = {}
@@ -2962,16 +2962,16 @@ class McpManager:
                 "action": "accept",
                 "content": content,
             }
-        raise McpError(f"客户端未支持该 server 请求方法: {method_name}")
+        raise McpError(f"Client does not support this server request method: {method_name}")
 
     def register_client_method_handler(
         self, method: str, handler: Callable[[str, Dict[str, Any]], Dict[str, Any]]
     ) -> None:
         key = str(method or "").strip()
         if not key:
-            raise McpError("method 不能为空")
+            raise McpError("method cannot be empty")
         if not callable(handler):
-            raise McpError("handler 必须可调用")
+            raise McpError("handler must be callable")
         self._client_method_handlers[key] = handler
 
     def _client(self, server: str) -> Any:
@@ -3055,9 +3055,9 @@ class McpManager:
                 "loading",
                 last_error="cache_miss",
                 failure_type="connect_failed",
-                suggestion="缓存未就绪；请先查看 mcp_status，或用 use_cache=false 主动拉取。",
+                suggestion="Cache is not ready; check mcp_status first, or fetch actively with use_cache=false.",
             )
-            raise McpError("缓存未命中（use_cache=true），已跳过实时连接")
+            raise McpError("Cache miss (use_cache=true); skipped live connection")
         self._mark_op(server, +1)
         self._set_status(server, "loading")
         timeout_s = self._effective_timeout(server, timeout_s)
@@ -3110,20 +3110,20 @@ class McpManager:
             self._log("INFO", f"list_tools success server={server}, source=cli_schemas, tool_count={len(visible_tools)}")
             self._mark_op(server, -1)
             return visible_tools, False
-        ft, sugg = self._classify_failure(server, last_error or "tools/list 失败")
+        ft, sugg = self._classify_failure(server, last_error or "tools/list failed")
         self._set_status(
             server,
             "failed",
-            last_error=last_error or "tools/list 失败",
+            last_error=last_error or "tools/list failed",
             failure_type=ft,
             suggestion=sugg,
         )
         self._mark_op(server, -1)
-        raise McpError(last_error or "tools/list 失败")
+        raise McpError(last_error or "tools/list failed")
 
     def call_tool(self, server: str, tool_name: str, arguments: Dict[str, Any], timeout_s: float = 20.0) -> Dict[str, Any]:
         if self.is_tool_disabled(str(server), str(tool_name)):
-            raise McpError(f"MCP tool 已被禁用（server={server}, tool={tool_name}）")
+            raise McpError(f"MCP tool is disabled (server={server}, tool={tool_name})")
         # Refresh cache on first tool call if absent; failure is non-fatal.
         if server not in self._tools_cache:
             try:
@@ -3145,7 +3145,7 @@ class McpManager:
                         errs = _validate_json_schema_like(schema, arguments if isinstance(arguments, dict) else {})
                         if errs:
                             raise McpError(
-                                "tool arguments schema 校验失败: " + "; ".join(errs[:8])
+                                "tool arguments schema validation failed: " + "; ".join(errs[:8])
                             )
                     break
         except McpError:
@@ -3174,7 +3174,7 @@ class McpManager:
         allow_partial_failure: bool = False,
     ) -> List[Dict[str, Any]]:
         if not isinstance(calls, list) or not calls:
-            raise McpError("calls 必须为非空数组")
+            raise McpError("calls must be a non-empty array")
         # Ensure tools cache exists for local validation.
         if server not in self._tools_cache:
             try:
@@ -3191,22 +3191,22 @@ class McpManager:
         normalized: List[Dict[str, Any]] = []
         for idx, c in enumerate(calls):
             if not isinstance(c, dict):
-                raise McpError(f"calls[{idx}] 必须为 object")
+                raise McpError(f"calls[{idx}] must be an object")
             tool_name = str(c.get("tool", "")).strip()
             if not tool_name:
-                raise McpError(f"calls[{idx}].tool 不能为空")
+                raise McpError(f"calls[{idx}].tool cannot be empty")
             if self.is_tool_disabled(str(server), tool_name):
-                raise McpError(f"calls[{idx}].tool 已被禁用（server={server}, tool={tool_name}）")
+                raise McpError(f"calls[{idx}].tool is disabled (server={server}, tool={tool_name})")
             args = c.get("arguments", {})
             if not isinstance(args, dict):
-                raise McpError(f"calls[{idx}].arguments 必须为 object")
+                raise McpError(f"calls[{idx}].arguments must be an object")
             desc = tools_map.get(tool_name)
             if isinstance(desc, dict):
                 schema = _extract_tool_schema(desc)
                 if isinstance(schema, dict):
                     errs = _validate_json_schema_like(schema, args, path=f"calls[{idx}].arguments")
                     if errs:
-                        raise McpError("tool arguments schema 校验失败: " + "; ".join(errs[:8]))
+                        raise McpError("tool arguments schema validation failed: " + "; ".join(errs[:8]))
             normalized.append({"tool": tool_name, "arguments": args})
         self._set_status(server, "loading")
         timeout_s = self._effective_timeout(server, timeout_s)
@@ -3232,7 +3232,7 @@ class McpManager:
             resources = cached.get("resources", [])
             return resources if isinstance(resources, list) else [], True
         if use_cache and server not in self._resources_cache:
-            raise McpError("resources 缓存未命中（use_cache=true），已跳过实时连接")
+            raise McpError("resources cache miss (use_cache=true); skipped live connection")
         self._mark_op(server, +1)
         timeout_s = self._effective_timeout(server, timeout_s)
         last_error: Optional[str] = None
@@ -3258,12 +3258,12 @@ class McpManager:
                         pass
                     self._clients.pop(server, None)
         self._mark_op(server, -1)
-        raise McpError(last_error or "resources/list 失败")
+        raise McpError(last_error or "resources/list failed")
 
     def read_resource(self, server: str, uri: str, timeout_s: float = 20.0) -> Dict[str, Any]:
         uri_s = str(uri or "").strip()
         if not uri_s:
-            raise McpError("缺少资源 URI")
+            raise McpError("Missing resource URI")
         timeout_s = self._effective_timeout(server, timeout_s)
         try:
             return self._client(server).read_resource(uri_s, timeout_s=timeout_s)
@@ -3279,7 +3279,7 @@ class McpManager:
             templates = cached.get("templates", [])
             return templates if isinstance(templates, list) else [], True
         if use_cache and server not in self._resource_templates_cache:
-            raise McpError("resource templates 缓存未命中（use_cache=true），已跳过实时连接")
+            raise McpError("resource templates cache miss (use_cache=true); skipped live connection")
         self._mark_op(server, +1)
         timeout_s = self._effective_timeout(server, timeout_s)
         last_error: Optional[str] = None
@@ -3305,7 +3305,7 @@ class McpManager:
                         pass
                     self._clients.pop(server, None)
         self._mark_op(server, -1)
-        raise McpError(last_error or "resources/templates/list 失败")
+        raise McpError(last_error or "resources/templates/list failed")
 
     def list_prompts(self, server: str, timeout_s: float = 8.0, use_cache: bool = True) -> Tuple[List[Dict[str, Any]], bool]:
         if use_cache and server in self._prompts_cache:
@@ -3313,7 +3313,7 @@ class McpManager:
             prompts = cached.get("prompts", [])
             return prompts if isinstance(prompts, list) else [], True
         if use_cache and server not in self._prompts_cache:
-            raise McpError("prompts 缓存未命中（use_cache=true），已跳过实时连接")
+            raise McpError("prompts cache miss (use_cache=true); skipped live connection")
         self._mark_op(server, +1)
         timeout_s = self._effective_timeout(server, timeout_s)
         last_error: Optional[str] = None
@@ -3339,14 +3339,14 @@ class McpManager:
                         pass
                     self._clients.pop(server, None)
         self._mark_op(server, -1)
-        raise McpError(last_error or "prompts/list 失败")
+        raise McpError(last_error or "prompts/list failed")
 
     def get_prompt(self, server: str, prompt_name: str, arguments: Dict[str, Any], timeout_s: float = 20.0) -> Dict[str, Any]:
         name = str(prompt_name or "").strip()
         if not name:
-            raise McpError("缺少 prompt 名称")
+            raise McpError("Missing prompt name")
         if not isinstance(arguments, dict):
-            raise McpError("prompt arguments 必须为 object")
+            raise McpError("prompt arguments must be an object")
         timeout_s = self._effective_timeout(server, timeout_s)
         try:
             return self._client(server).get_prompt(name, arguments, timeout_s=timeout_s)
@@ -3356,7 +3356,7 @@ class McpManager:
 
     def sampling_create_message(self, server: str, params: Dict[str, Any], timeout_s: float = 30.0) -> Dict[str, Any]:
         if not isinstance(params, dict):
-            raise McpError("sampling params 必须为 object")
+            raise McpError("sampling params must be an object")
         timeout_s = self._effective_timeout(server, timeout_s)
         try:
             return self._client(server).sampling_create_message(params, timeout_s=timeout_s)
@@ -3366,7 +3366,7 @@ class McpManager:
 
     def completion_complete(self, server: str, params: Dict[str, Any], timeout_s: float = 20.0) -> Dict[str, Any]:
         if not isinstance(params, dict):
-            raise McpError("completion params 必须为 object")
+            raise McpError("completion params must be an object")
         timeout_s = self._effective_timeout(server, timeout_s)
         try:
             return self._client(server).completion_complete(params, timeout_s=timeout_s)
@@ -3403,7 +3403,7 @@ class McpManager:
                     "skipped",
                     last_error="skip_preload=true",
                     failure_type="",
-                    suggestion="该 server 已配置 skip_preload=true；如需预加载请改为 false。",
+                    suggestion="This server is configured with skip_preload=true; set it to false if you need preload.",
                 )
                 self._log("INFO", f"preload skip server={server} reason=skip_preload")
                 return
@@ -3509,7 +3509,7 @@ class McpManager:
                         "failed",
                         last_error=f"loading_hard_timeout>{int(hard_loading_timeout_s)}s",
                         failure_type="connect_failed",
-                        suggestion="加载长时间未完成，已自动回收状态；请执行 mcp_reconnect 或 mcp_status_refresh(force=true) 重试。",
+                        suggestion="Loading took too long and state was auto-reclaimed; run mcp_reconnect or mcp_status_refresh(force=true) and retry.",
                     )
                     self._force_reset_active_ops(name)
                 elif since > 0 and active_ops <= 0 and elapsed > no_active_threshold_s:
@@ -3518,7 +3518,7 @@ class McpManager:
                         "failed",
                         last_error="loading_state_stuck_without_active_op",
                         failure_type="connect_failed",
-                        suggestion="检测到无活跃加载任务但状态仍为 loading；请执行 mcp_status_refresh(force=true) 或 mcp_reconnect。",
+                        suggestion="Detected no active loading tasks while state is still loading; run mcp_status_refresh(force=true) or mcp_reconnect.",
                     )
                 elif since > 0 and elapsed > stale_threshold_s:
                     self._set_status(
@@ -3526,7 +3526,7 @@ class McpManager:
                         "failed",
                         last_error=f"loading_timeout>{int(stale_threshold_s)}s",
                         failure_type="connect_failed",
-                        suggestion="加载超时；请执行 mcp_reconnect 或 mcp_status_refresh(force=true) 重试。",
+                        suggestion="Loading timed out; run mcp_reconnect or mcp_status_refresh(force=true) and retry.",
                     )
         with self._status_lock:
             items = {k: dict(v) for k, v in self._status.items()}
@@ -3620,7 +3620,7 @@ class McpManager:
                     "skipped",
                     last_error="skip_preload=true",
                     failure_type="",
-                    suggestion="该 server 已配置 skip_preload=true；如需刷新请改为 false。",
+                    suggestion="This server is configured with skip_preload=true; set it to false if you need refresh.",
                 )
                 continue
             if force:
@@ -3637,7 +3637,7 @@ class McpManager:
 
     def cached_tools_for_prompt(self) -> str:
         if not self._tools_cache:
-            return "尚无已缓存的 MCP tools（需先执行 mcp_list_tools）。"
+            return "No cached MCP tools yet (run mcp_list_tools first)."
         lines: List[str] = []
         for server, info in self._tools_cache.items():
             tools_raw = info.get("tools", [])
@@ -3686,7 +3686,7 @@ class McpManager:
 
     def cached_resources_for_prompt(self) -> str:
         if not self._resources_cache:
-            return "尚无已缓存的 MCP resources（需先执行 mcp_list_resources）。"
+            return "No cached MCP resources yet (run mcp_list_resources first)."
         lines: List[str] = []
         for server, info in self._resources_cache.items():
             resources = info.get("resources", [])
@@ -3713,7 +3713,7 @@ class McpManager:
 
     def cached_prompts_for_prompt(self) -> str:
         if not self._prompts_cache:
-            return "尚无已缓存的 MCP prompts（需先执行 mcp_list_prompts）。"
+            return "No cached MCP prompts yet (run mcp_list_prompts first)."
         lines: List[str] = []
         for server, info in self._prompts_cache.items():
             prompts = info.get("prompts", [])

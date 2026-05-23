@@ -125,13 +125,13 @@ def guard_git_clone_precheck(work_directory: Path, shell_cmd: str, shell_force: 
             "needs_user_input": True,
             "input_type": "supplement",
             "question": (
-                "检测到当前目录一级子目录里已有疑似目标 repo。"
-                "请先确认并切换到现有 repo，再继续任务。"
+                "A potential target repo already exists in a first-level subdirectory of the current directory. "
+                "Please verify and switch to the existing repo before continuing."
             ),
             "error": (
-                f"已阻止直接 clone `{repo_url}`。当前目录 `{wd}` 的一级子目录匹配到: "
+                f"Direct clone of `{repo_url}` was blocked. Matching first-level subdirectories under `{wd}`: "
                 + ", ".join(candidates)
-                + "。请优先复用现有 repo；仅在你确认不存在可用副本时，才用 force=true 再次执行 clone。"
+                + ". Please reuse the existing repo first; only rerun clone with force=true after confirming no usable copy exists."
             ),
         }
 
@@ -144,11 +144,11 @@ def guard_git_clone_precheck(work_directory: Path, shell_cmd: str, shell_force: 
             "blocked_by_guard": True,
             "needs_user_input": True,
             "input_type": "supplement",
-            "question": "请先确认当前目录一级子目录中是否已有目标 repo；确认后再决定是否 clone。",
+            "question": "Please confirm whether a target repo already exists in first-level subdirectories before deciding to clone.",
             "error": (
-                f"已阻止未确认的 git clone（repo={repo_url}）。"
-                f"当前目录 `{wd}` 不是目标 repo；已检查一级子目录: {top_dirs_preview}。"
-                "如需继续 clone，请在明确确认后使用 force=true 重新执行。"
+                f"Unconfirmed git clone was blocked (repo={repo_url}). "
+                f"Current directory `{wd}` is not the target repo; checked first-level subdirectories: {top_dirs_preview}. "
+                "To continue cloning, explicitly confirm and rerun with force=true."
             ),
         }
     return None

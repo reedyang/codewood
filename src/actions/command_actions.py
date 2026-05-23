@@ -207,7 +207,7 @@ def _enforce_windows_powershell_command_prefix(command: str) -> Dict[str, Any]:
     if not m:
         return {
             "ok": False,
-            "error": 'Windows 上调用 PowerShell 必须使用: powershell -ExecutionPolicy Bypass -Command "<command>"',
+            "error": 'On Windows, PowerShell must be called as: powershell -ExecutionPolicy Bypass -Command "<command>"',
         }
     # Normalize executable token to `powershell` while preserving the command payload.
     payload = m.group(1).strip()
@@ -223,7 +223,7 @@ def action_shell_command(
 ) -> dict:
     """Run a shell command; capture stdout/stderr for AI context while echoing to the terminal."""
     if not command.strip():
-        return {"success": False, "error": "命令不能为空"}
+        return {"success": False, "error": "Command cannot be empty"}
     manual_confirm_from_ai = bool(getattr(agent, "_manual_confirm_required_shell_once", False))
     if manual_confirm_from_ai:
         agent._manual_confirm_required_shell_once = False
@@ -231,7 +231,7 @@ def action_shell_command(
     command = tune_7z_output_for_piped_terminal(command)
     enforce_res = _enforce_windows_powershell_command_prefix(command)
     if not enforce_res.get("ok", False):
-        return {"success": False, "error": str(enforce_res.get("error", "PowerShell 命令格式不符合要求"))}
+        return {"success": False, "error": str(enforce_res.get("error", "PowerShell command format is invalid"))}
     command = str(enforce_res.get("command") or command)
     policy = agent._get_path_policy()
     decision = policy.can_run_shell_in_workdir(
@@ -258,9 +258,9 @@ def action_shell_command(
         or ((not confirmed) and (not in_allowlist))
     )
     if should_prompt_confirm:
-        prompt_text = f"⚠️ 确认执行系统命令: {command} ?"
+        prompt_text = f"⚠️ Confirm executing system command: {command} ?"
         if force_manual_confirm_by_policy:
-            prompt_text = f"⚠️ AI 判定需手动确认，继续执行前请确认: {command} ?"
+            prompt_text = f"⚠️ AI requires manual confirmation. Please confirm before continuing: {command} ?"
         ok = agent._prompt_confirm_yes_no_maybe_always(
             prompt_text,
             offer_always=agent._shell_confirm_should_offer_always(command),
@@ -268,7 +268,7 @@ def action_shell_command(
             shell_command=command,
         )
         if not ok:
-            return {"success": False, "error": "用户取消了操作"}
+            return {"success": False, "error": "Operation cancelled by user"}
 
     import subprocess
 
@@ -528,15 +528,15 @@ def action_shell_command(
                 return {
                     "success": True,
                     "message": (
-                        f"命令执行成功；已自动删除临时脚本 «{removed}»。"
-                        "请勿再对该文件执行 delete。"
+                        f"Command executed successfully; temporary script '«{removed}»' was auto-deleted."
+                        " Please do not run delete on this file again."
                     ),
                     "auto_removed_ephemeral_script": removed,
                     **base_out,
                 }
             if interactive:
-                return {"success": True, "message": "命令执行成功（交互模式）", **base_out}
-            return {"success": True, "message": "命令执行成功", **base_out}
+                return {"success": True, "message": "Command executed successfully (interactive mode)", **base_out}
+            return {"success": True, "message": "Command executed successfully", **base_out}
 
         combo = f"{out}\n{err}"
         cmd_l = command.lower()
@@ -547,17 +547,17 @@ def action_shell_command(
                 "success": True,
                 "cancelled": True,
                 "terminal_state": "user_cancelled",
-                "message": "安装已由用户取消，流程结束（不应自动重试）。",
+                "message": "Installation was cancelled by the user. Flow ended (should not auto-retry).",
                 **base_out,
             }
         return {
             "success": False,
-            "error": f"命令执行失败，退出码: {return_code}",
+            "error": f"Command execution failed, exit code: {return_code}",
             **base_out,
         }
 
     except Exception as e:
-        return {"success": False, "error": f"系统命令执行异常: {str(e)}"}
+        return {"success": False, "error": f"System command execution error: {str(e)}"}
     finally:
         _reset_work_directory_to_startup_initial(agent)
 
@@ -566,7 +566,7 @@ def action_project_context_search(agent: Any, params: Dict[str, Any]) -> dict:
     if not agent._project_context_tool_allowed():
         return {
             "success": False,
-            "error": "Default workspace 不支持 project_context_search。请切换到非 Default workspace 后再使用。",
+            "error": "project_context_search is not supported in the Default workspace. Please switch to a non-Default workspace and try again.",
         }
 
     query = str(params.get("query") or "").strip()
@@ -588,10 +588,10 @@ def action_project_context_search(agent: Any, params: Dict[str, Any]) -> dict:
     agent._bind_project_index_workspace()
     if status_only:
         st = agent._project_context_index.status()
-        st["message"] = "project context index 状态"
+        st["message"] = "Project context index status"
         return st
     if not query:
-        return {"success": False, "error": "project_context_search 缺少 query 参数"}
+        return {"success": False, "error": "Missing required parameter: query for project_context_search"}
 
     if force_rebuild:
         idx_res = agent._project_context_index.refresh_index(force=True)
@@ -1033,7 +1033,7 @@ def ensure_absolute_script_for_shell_cwd(agent: Any, command: str) -> str:
         return command
     new_cmd = rewrite_shell_command_script_arg_to_abs(agent, command, invoked.resolve())
     if new_cmd != command:
-        print("ℹ️ shell cwd 为工作目录，已将 workspace 内脚本展开为绝对路径执行。")
+        print("ℹ️ Shell cwd is the work directory; workspace script path has been expanded to an absolute path.")
     return new_cmd
 
 
@@ -1058,7 +1058,7 @@ def tune_7z_output_for_piped_terminal(command: str) -> str:
         tuned += " -bse2"
         appended.append("-bse2")
     if appended:
-        print(f"ℹ️ 已为 7z 命令启用兼容输出参数: {' '.join(appended)}")
+        print(f"ℹ️ Enabled compatibility output flags for 7z command: {' '.join(appended)}")
     return tuned
 
 
@@ -1130,10 +1130,10 @@ def try_remove_ephemeral_script_after_shell(agent: Any, command: str) -> Optiona
             invoked.unlink()
             agent._ephemeral_script_paths.discard(key)
             agent._ai_created_path_keys.discard(key)
-            print(f"🗑️ 已自动删除本会话创建的临时脚本: {name}")
+            print(f"🗑️ Auto-deleted temporary script created in this session: {name}")
             return name
     except OSError as e:
-        print(f"⚠️ 自动删除临时脚本失败 ({invoked}): {e}")
+        print(f"⚠️ Failed to auto-delete temporary script ({invoked}): {e}")
     return None
 
 
@@ -1169,7 +1169,7 @@ def append_shell_merge_output_path(stdout_text: str, return_code: int, merge_pat
     path = Path(merge_path)
     if not path.is_file():
         return stdout_text
-    marker = "【附加输出（shell merge file）】"
+    marker = "[Additional output (shell merge file)]"
     if marker in (stdout_text or ""):
         return stdout_text
     try:

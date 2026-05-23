@@ -37,7 +37,7 @@ def load_freedom_script_review_cache(agent: Any) -> None:
                 str(k): v for k, v in ent.items() if isinstance(v, dict)
             }
     except Exception as e:
-        print(f"⚠️ 读取 freedom_script_review_cache.json 失败: {e}")
+        print(f"⚠️ Failed to read freedom_script_review_cache.json: {e}")
 
 
 def save_freedom_script_review_cache(agent: Any) -> bool:
@@ -50,7 +50,7 @@ def save_freedom_script_review_cache(agent: Any) -> bool:
         p.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         return True
     except Exception as e:
-        print(f"⚠️ 写入 freedom_script_review_cache.json 失败: {e}")
+        print(f"⚠️ Failed to write freedom_script_review_cache.json: {e}")
         return False
 
 
@@ -86,7 +86,7 @@ def freedom_try_cached_user_script_review(
     skip = bool(rec.get("skip_confirm"))
     reason = rec.get("reason") if isinstance(rec.get("reason"), str) else ""
     if not reason:
-        reason = "（缓存无说明）"
+        reason = "(no cache reason provided)"
     return (skip, reason)
 
 
@@ -185,7 +185,7 @@ def prompt_confirm_yes_no_maybe_always(
     ):
         return True
     if offer_always:
-        line = f"{prompt_core} (y/n/a，a=将本条加入免确认列表): "
+        line = f"{prompt_core} (y/n/a, a=add this entry to skip-confirm list): "
     else:
         line = f"{prompt_core} (y/n): "
     raw = input(line).strip().lower()
@@ -193,8 +193,8 @@ def prompt_confirm_yes_no_maybe_always(
         if kind == "shell" and shell_command is not None:
             add_shell_command_allowlist(agent, shell_command)
         print(
-            f"ℹ️ 已写入 {confirm_allowlist_path(agent)}。"
-            "可使用 /always_confirm-reset 清空列表。"
+            f"ℹ️ Saved to {confirm_allowlist_path(agent)}. "
+            "Use /always_confirm-reset to clear the list."
         )
         return True
     return raw in ("y", "yes")
@@ -203,7 +203,7 @@ def prompt_confirm_yes_no_maybe_always(
 def parse_reversibility_response(text: str) -> Tuple[bool, str]:
     """Parse model JSON; on failure treat as irreversible (still require confirm)."""
     if not text or not isinstance(text, str):
-        return False, "空响应"
+        return False, "Empty response"
     s = text.strip()
     fence = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", s, re.DOTALL)
     if fence:
@@ -227,11 +227,11 @@ def parse_reversibility_response(text: str) -> Tuple[bool, str]:
                                 r = r.strip().lower() in ("true", "1", "yes", "是")
                             reason = str(obj.get("reason", "")).strip()[:200]
                             ok = bool(r)
-                            return ok, (reason or ("安全" if ok else "不安全"))
+                            return ok, (reason or ("safe" if ok else "unsafe"))
                     except json.JSONDecodeError:
                         pass
                     break
-    return False, "无法解析安全性判定"
+    return False, "Unable to parse safety classification"
 
 
 def parse_combined_freedom_response(
@@ -239,7 +239,7 @@ def parse_combined_freedom_response(
 ) -> Tuple[bool, bool, Optional[bool], str]:
     """Parse one-shot freedom JSON: safe_auto, reversible, manipulation (optional), reason."""
     if not text or not isinstance(text, str):
-        return False, False, True, "空响应"
+        return False, False, True, "Empty response"
     s = text.strip()
     if s.startswith("❌"):
         return False, False, True, s[:120]
@@ -284,12 +284,12 @@ def parse_combined_freedom_response(
                                 bool(sa),
                                 bool(rev),
                                 manip,
-                                reason or "已判定",
+                                reason or "classified",
                             )
                     except json.JSONDecodeError:
                         pass
                     break
-    return False, False, True, "无法解析合并审查结果"
+    return False, False, True, "Unable to parse combined review result"
 
 
 def freedom_script_quick_deny(content: str) -> bool:
@@ -354,7 +354,7 @@ def combined_review_on_model_failure(content: str, detail: str) -> Tuple[bool, s
     hit, tok = freedom_script_prompt_injection(content)
     msg = detail
     if hit:
-        msg = f"{detail}；关键词兜底(manipulation): {tok}"
+        msg = f"{detail}; keyword fallback (manipulation): {tok}"
     return False, msg, True
 
 
@@ -385,17 +385,17 @@ def ai_assess_ephemeral_script_combined(
         freedom_combined_review=True,
     )
     if not isinstance(raw, str):
-        return combined_review_on_model_failure(content, "模型返回类型异常")
+        return combined_review_on_model_failure(content, "Model returned an invalid type")
     if raw.strip().startswith("❌"):
         return combined_review_on_model_failure(content, raw.strip()[:120])
     safe_auto, reversible, manip, reason = parse_combined_freedom_response(raw)
-    if "无法解析" in reason:
+    if "Unable to parse" in reason:
         return combined_review_on_model_failure(content, reason)
     if manip is None:
         hit, tok = freedom_script_prompt_injection(content)
         manip = hit
         if hit:
-            reason = f"{reason}；关键词兜底(manipulation): {tok}"
+            reason = f"{reason}; keyword fallback (manipulation): {tok}"
     skip = (not manip) and (safe_auto or ((not safe_auto) and reversible))
     return skip, reason, bool(manip)
 
@@ -406,7 +406,7 @@ def ai_assess_reversible(agent: Any, command: Dict[str, Any]) -> Tuple[bool, str
         payload, context="", stream=False, minimal_classifier=True
     )
     if not isinstance(raw, str):
-        return False, "模型返回类型异常"
+        return False, "Model returned an invalid type"
     if raw.strip().startswith("❌"):
         return False, raw.strip()[:120]
     return parse_reversibility_response(raw)
@@ -431,13 +431,13 @@ def freedom_auto_confirm(agent: Any, command: Dict[str, Any]) -> bool:
         # If user selected "always" before, skip AI reversibility review entirely.
         load_confirm_allowlist(agent)
         if shell_command_in_allowlist(agent, s):
-            _print_with_auto_hide_tracking(agent, "🦅 自由模式：命中免确认列表，跳过 AI 审核并直接执行。")
+            _print_with_auto_hide_tracking(agent, "🦅 Freedom mode: matched skip-confirm list, skipped AI review and executed directly.")
             return True
 
         if re.search(
             r"(?i)(?:^|[\s;&|])(?:py(?:thon)?(?:\d(?:\.\d)?)?|pythonw)\s+-\s*c\s+", s
         ):
-            _print_with_auto_hide_tracking(agent, "🦅 自由模式：工作目录内联 Python（-c），跳过确认。")
+            _print_with_auto_hide_tracking(agent, "🦅 Freedom mode: inline Python (-c) in work directory, confirmation skipped.")
             agent._manual_confirm_required_shell_once = False
             return True
 
@@ -448,7 +448,7 @@ def freedom_auto_confirm(agent: Any, command: Dict[str, Any]) -> bool:
             if expected:
                 actual = shell_script_hash(agent, sp)
                 if actual and actual == expected:
-                    _print_with_auto_hide_tracking(agent, "🦅 自由模式：命中免确认脚本哈希校验，跳过 AI 审核并直接执行。")
+                    _print_with_auto_hide_tracking(agent, "🦅 Freedom mode: script hash matched skip-confirm entry, skipped AI review and executed directly.")
                     agent._manual_confirm_required_shell_once = False
                     return True
 
@@ -461,7 +461,7 @@ def freedom_auto_confirm(agent: Any, command: Dict[str, Any]) -> bool:
                 try:
                     body = sp.read_text(encoding="utf-8", errors="replace")
                 except OSError as e:
-                    _print_with_auto_hide_tracking(agent, f"⚠️ 无法读取待审查脚本: {e}")
+                    _print_with_auto_hide_tracking(agent, f"⚠️ Unable to read script for review: {e}")
                     body = ""
                 max_len = 200_000
                 if len(body) > max_len:
@@ -469,15 +469,15 @@ def freedom_auto_confirm(agent: Any, command: Dict[str, Any]) -> bool:
                 if freedom_script_quick_deny(body):
                     _print_with_auto_hide_tracking(
                         agent,
-                        "🦅 自由模式：脚本内容命中高风险启发规则（如注册表/系统配置相关），"
-                        "改由操作安全判定。",
+                        "🦅 Freedom mode: script content matched high-risk heuristics (for example registry/system config related), "
+                        "falling back to operation safety classification.",
                     )
                     reversible, reason = ai_assess_reversible(agent, command)
                     if reversible:
-                        _print_with_auto_hide_tracking(agent, f"🦅 判定为安全，自动跳过确认 — {reason}")
+                        _print_with_auto_hide_tracking(agent, f"🦅 Classified as safe, auto-skipping confirmation - {reason}")
                         agent._manual_confirm_required_shell_once = False
                     else:
-                        _print_with_auto_hide_tracking(agent, f"🦅 判定为不安全或不确定，仍需手动确认 — {reason}")
+                        _print_with_auto_hide_tracking(agent, f"🦅 Classified as unsafe or uncertain, manual confirmation is still required - {reason}")
                         agent._manual_confirm_required_shell_once = True
                     return reversible
                 use_cache = not session_ephemeral
@@ -485,16 +485,16 @@ def freedom_auto_confirm(agent: Any, command: Dict[str, Any]) -> bool:
                     cached = freedom_try_cached_user_script_review(agent, k, body, command)
                     if cached is not None:
                         skip_c, reason_c = cached
-                        tag = "可自动跳过确认" if skip_c else "需手动确认"
+                        tag = "auto-confirm can be skipped" if skip_c else "manual confirmation required"
                         _print_with_auto_hide_tracking(
                             agent,
-                            f"🦅 自由模式：已使用配置文件中的脚本审核缓存（脚本与命令哈希一致），{tag} — {reason_c}"
+                            f"🦅 Freedom mode: used script review cache from config file (script and command hashes match), {tag} - {reason_c}"
                         )
                         agent._manual_confirm_required_shell_once = not bool(skip_c)
                         return skip_c
                 _print_with_auto_hide_tracking(
                     agent,
-                    "🦅 自由模式：正在审查脚本安全、诱导内容…"
+                    "🦅 Freedom mode: reviewing script safety and manipulation content..."
                 )
                 skip, reason, inj_risk = ai_assess_ephemeral_script_combined(
                     agent, sp, body, command
@@ -506,39 +506,39 @@ def freedom_auto_confirm(agent: Any, command: Dict[str, Any]) -> bool:
                 if inj_risk:
                     _print_with_auto_hide_tracking(
                         agent,
-                        "🚫 自由模式：合并审查判定脚本存在审查诱导/提示词注入风险 — "
+                        "🚫 Freedom mode: combined review detected script review-manipulation/prompt-injection risk - "
                         f"{reason}",
                     )
-                    _print_with_auto_hide_tracking(agent, "🚫 建议不要执行该脚本；如必须执行，请先人工审查并手动确认。")
+                    _print_with_auto_hide_tracking(agent, "🚫 Recommended not to execute this script; if execution is required, perform manual review and confirm manually first.")
                     agent._manual_confirm_required_shell_once = True
                     return False
                 if skip:
-                    _print_with_auto_hide_tracking(agent, f"🦅 判定为可自动跳过确认 — {reason}")
+                    _print_with_auto_hide_tracking(agent, f"🦅 Classified as auto-skippable confirmation - {reason}")
                     agent._manual_confirm_required_shell_once = False
                 else:
-                    _print_with_auto_hide_tracking(agent, f"🦅 判定为需手动确认 — {reason}")
+                    _print_with_auto_hide_tracking(agent, f"🦅 Classified as manual confirmation required - {reason}")
                     agent._manual_confirm_required_shell_once = True
                 return skip
 
             if k in agent._ai_created_path_keys:
-                _print_with_auto_hide_tracking(agent, "🦅 自由模式：命令作用于本会话已跟踪的 AI 产出路径，跳过确认。")
+                _print_with_auto_hide_tracking(agent, "🦅 Freedom mode: command targets AI-generated paths tracked in this session, confirmation skipped.")
                 agent._manual_confirm_required_shell_once = False
                 return True
 
-        _print_with_auto_hide_tracking(agent, "🦅 自由模式：正在请 AI 判定操作是否安全…")
+        _print_with_auto_hide_tracking(agent, "🦅 Freedom mode: asking AI to classify whether the operation is safe...")
         reversible, reason = ai_assess_reversible(agent, command)
         if reversible:
-            _print_with_auto_hide_tracking(agent, f"🦅 判定为安全，自动跳过确认 — {reason}")
+            _print_with_auto_hide_tracking(agent, f"🦅 Classified as safe, auto-skipping confirmation - {reason}")
             agent._manual_confirm_required_shell_once = False
         else:
-            _print_with_auto_hide_tracking(agent, f"🦅 判定为不安全或不确定，仍需手动确认 — {reason}")
+            _print_with_auto_hide_tracking(agent, f"🦅 Classified as unsafe or uncertain, manual confirmation is still required - {reason}")
             agent._manual_confirm_required_shell_once = True
         return reversible
 
-    _print_with_auto_hide_tracking(agent, "🦅 自由模式：正在请 AI 判定操作是否安全…")
+    _print_with_auto_hide_tracking(agent, "🦅 Freedom mode: asking AI to classify whether the operation is safe...")
     reversible, reason = ai_assess_reversible(agent, command)
     if reversible:
-        _print_with_auto_hide_tracking(agent, f"🦅 判定为安全，自动跳过确认 — {reason}")
+        _print_with_auto_hide_tracking(agent, f"🦅 Classified as safe, auto-skipping confirmation - {reason}")
     else:
-        _print_with_auto_hide_tracking(agent, f"🦅 判定为不安全或不确定，仍需手动确认 — {reason}")
+        _print_with_auto_hide_tracking(agent, f"🦅 Classified as unsafe or uncertain, manual confirmation is still required - {reason}")
     return reversible

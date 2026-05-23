@@ -9,26 +9,26 @@ from typing import Any, Dict, List, Optional
 
 def action_ffmpeg(agent: Any, source: str, target: str, options: Optional[str] = None) -> Dict[str, Any]:
     if not source or not target:
-        print("⚠️ 缺少 source 或 target 参数")
-        return {"success": False, "error": "缺少 source 或 target 参数"}
+        print("⚠️ Missing 'source' or 'target' parameter")
+        return {"success": False, "error": "Missing 'source' or 'target' parameter"}
     source_path = agent.work_directory / source
     if not source_path.exists():
-        print(f"⚠️ 源文件 '{source}' 不存在")
-        return {"success": False, "error": f"源文件 '{source}' 不存在"}
+        print(f"⚠️ Source file '{source}' does not exist")
+        return {"success": False, "error": f"Source file '{source}' does not exist"}
     ffmpeg_cmd = ["ffmpeg", "-y", "-i", source]
     if options:
         ffmpeg_cmd += options.split()
     ffmpeg_cmd.append(target)
-    print(f"🔄 正在执行 ffmpeg 命令: {' '.join(ffmpeg_cmd)}")
+    print(f"🔄 Running ffmpeg command: {' '.join(ffmpeg_cmd)}")
     try:
         result = subprocess.run(ffmpeg_cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
         if result.returncode == 0:
-            return {"success": True, "message": "媒体文件处理成功"}
-        return {"success": False, "error": f"ffmpeg 执行失败: {result.stderr}"}
+            return {"success": True, "message": "Media file processed successfully"}
+        return {"success": False, "error": f"ffmpeg execution failed: {result.stderr}"}
     except FileNotFoundError:
-        return {"success": False, "error": "未检测到 ffmpeg，请确保已安装并配置好 PATH 环境变量"}
+        return {"success": False, "error": "ffmpeg was not found. Please install it and ensure it is available in PATH."}
     except Exception as e:
-        return {"success": False, "error": f"ffmpeg 执行异常: {str(e)}"}
+        return {"success": False, "error": f"ffmpeg execution error: {str(e)}"}
 
 
 def action_apply_unified_patch(agent: Any, file_path: str, patch: str, confirmed: bool = False) -> Dict[str, Any]:
@@ -36,9 +36,9 @@ def action_apply_unified_patch(agent: Any, file_path: str, patch: str, confirmed
         policy = agent._get_path_policy()
         abs_path = agent._resolve_user_path(str(file_path))
         if not abs_path.exists():
-            return {"success": False, "error": f"文件 '{file_path}' 不存在"}
+            return {"success": False, "error": f"File '{file_path}' does not exist"}
         if not abs_path.is_file():
-            return {"success": False, "error": f"'{file_path}' 不是一个文件"}
+            return {"success": False, "error": f"'{file_path}' is not a file"}
         decision = policy.can_write_path(abs_path, "apply_patch")
         if not decision.get("allowed", False):
             return {"success": False, "error": decision.get("error", "")}
@@ -56,14 +56,14 @@ def action_apply_unified_patch(agent: Any, file_path: str, patch: str, confirmed
             except Exception:
                 continue
         if source is None:
-            return {"success": False, "error": "无法读取文本文件，可能编码不受支持"}
+            return {"success": False, "error": "Unable to read text file; encoding may be unsupported"}
 
         newline = "\r\n" if "\r\n" in source else "\n"
         had_trailing_newline = source.endswith("\n") or source.endswith("\r")
         old_lines = source.splitlines()
         patch_lines = str(patch or "").splitlines()
         if not patch_lines:
-            return {"success": False, "error": "patch 不能为空"}
+            return {"success": False, "error": "Patch content cannot be empty"}
 
         hunks: List[Dict[str, Any]] = []
         i = 0
@@ -77,7 +77,7 @@ def action_apply_unified_patch(agent: Any, file_path: str, patch: str, confirmed
             else:
                 m = re.match(r"^@@(?:\s*-(\d+)(?:,(\d+))?\s+\+(\d+)(?:,(\d+))?)?\s*@@", line)
                 if not m:
-                    return {"success": False, "error": f"非法 hunk 头: {line}"}
+                    return {"success": False, "error": f"Invalid hunk header: {line}"}
                 old_start = int(m.group(1)) if m.group(1) else None
             hunk_lines: List[str] = []
             i += 1
@@ -86,7 +86,7 @@ def action_apply_unified_patch(agent: Any, file_path: str, patch: str, confirmed
                 i += 1
             hunks.append({"old_start": old_start, "lines": hunk_lines})
         if not hunks:
-            return {"success": False, "error": "未发现可应用的 hunk（需要 @@ ... @@ 段）"}
+            return {"success": False, "error": "No applicable hunks found (expected '@@ ... @@' sections)"}
 
         result_lines: List[str] = []
         src_idx = 0
@@ -96,7 +96,7 @@ def action_apply_unified_patch(agent: Any, file_path: str, patch: str, confirmed
             old_start = hunk["old_start"]
             target_idx = src_idx if old_start is None else int(old_start) - 1
             if target_idx < src_idx or target_idx > len(old_lines):
-                return {"success": False, "error": f"hunk 起始行越界: {old_start}"}
+                return {"success": False, "error": f"Hunk start line out of range: {old_start}"}
             if old_start is None:
                 anchor = None
                 for hl in hunk["lines"]:
@@ -110,7 +110,7 @@ def action_apply_unified_patch(agent: Any, file_path: str, patch: str, confirmed
                             found_idx = probe
                             break
                     if found_idx is None:
-                        return {"success": False, "error": "patch 锚点未命中，无法定位 hunk"}
+                        return {"success": False, "error": "Patch anchor not found; unable to locate hunk"}
                     target_idx = found_idx
             result_lines.extend(old_lines[src_idx:target_idx])
             new_target_idx = len(result_lines)
@@ -124,19 +124,19 @@ def action_apply_unified_patch(agent: Any, file_path: str, patch: str, confirmed
                 if hl.startswith("\\ No newline at end of file"):
                     continue
                 if not hl:
-                    return {"success": False, "error": "hunk 行格式无效（缺少前缀）"}
+                    return {"success": False, "error": "Invalid hunk line format (missing prefix)"}
                 prefix = hl[0]
                 text = hl[1:]
                 if prefix == " ":
                     if cur >= len(old_lines) or old_lines[cur] != text:
-                        return {"success": False, "error": f"patch 上下文不匹配（行 {cur + 1}）"}
+                        return {"success": False, "error": f"Patch context mismatch (line {cur + 1})"}
                     result_lines.append(old_lines[cur])
                     hunk_old_fragment.append(old_lines[cur])
                     hunk_new_fragment.append(old_lines[cur])
                     cur += 1
                 elif prefix == "-":
                     if cur >= len(old_lines) or old_lines[cur] != text:
-                        return {"success": False, "error": f"patch 删除行不匹配（行 {cur + 1}）"}
+                        return {"success": False, "error": f"Patch deletion mismatch (line {cur + 1})"}
                     hunk_old_fragment.append(old_lines[cur])
                     has_change = True
                     cur += 1
@@ -145,7 +145,7 @@ def action_apply_unified_patch(agent: Any, file_path: str, patch: str, confirmed
                     hunk_new_fragment.append(text)
                     has_change = True
                 else:
-                    return {"success": False, "error": f"不支持的 hunk 行前缀: {prefix}"}
+                    return {"success": False, "error": f"Unsupported hunk line prefix: {prefix}"}
             src_idx = cur
             if has_change:
                 context_before = old_lines[max(0, target_idx - 2):target_idx]
@@ -169,18 +169,18 @@ def action_apply_unified_patch(agent: Any, file_path: str, patch: str, confirmed
         if had_trailing_newline and len(result_lines) > 0:
             new_text += newline
         if preview_lines:
-            print("变更预览（旧 ││ 新）：")
-            print("   标记: '=' 未改动, '-' 删除, '+' 新增")
+            print("Change preview (old ││ new):")
+            print("   Markers: '=' unchanged, '-' removed, '+' added")
             for ln in preview_lines:
                 print(ln)
         if need_confirm:
             ok = agent._prompt_confirm_yes_no_maybe_always(
-                f"⚠️ 确认对文本文件应用 patch: {abs_path} ?",
+                f"⚠️ Confirm applying patch to text file: {abs_path} ?",
                 offer_always=False,
                 kind="text_file",
             )
             if not ok:
-                return {"success": False, "error": "用户取消了操作"}
+                return {"success": False, "error": "Operation cancelled by user"}
         with open(abs_path, "w", encoding=used_encoding or "utf-8", errors="replace") as f:
             f.write(new_text)
         resolved = abs_path.resolve()
@@ -191,10 +191,10 @@ def action_apply_unified_patch(agent: Any, file_path: str, patch: str, confirmed
             "file": str(resolved),
             "hunk_count": len(hunks),
             "change_preview": preview_lines,
-            "message": f"已成功应用 patch 到 '{resolved.name}'",
+            "message": f"Successfully applied patch to '{resolved.name}'",
         }
     except Exception as e:
-        return {"success": False, "error": f"apply_patch 执行失败: {str(e)}"}
+        return {"success": False, "error": f"apply_patch failed: {str(e)}"}
 
 
 def action_read_image(agent: Any, file_path: str, prompt: str = "") -> Dict[str, Any]:
@@ -213,18 +213,18 @@ def action_read_image(agent: Any, file_path: str, prompt: str = "") -> Dict[str,
             else:
                 abs_path = p1
         if not abs_path.exists():
-            return {"success": False, "error": f"图片文件 '{file_path}' 不存在"}
+            return {"success": False, "error": f"Image file '{file_path}' does not exist"}
         if not abs_path.is_file():
-            return {"success": False, "error": f"'{file_path}' 不是一个文件"}
+            return {"success": False, "error": f"'{file_path}' is not a file"}
         image_exts = [".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp", ".tiff", ".tif"]
         if abs_path.suffix.lower() not in image_exts:
-            return {"success": False, "error": f"不支持的文件格式: {abs_path.suffix}"}
-        image_task_context = f"图片文件路径: {str(abs_path)}"
-        image_user_prompt = prompt if prompt else "请先读取这张图片内容，再继续完成当前任务。"
+            return {"success": False, "error": f"Unsupported file format: {abs_path.suffix}"}
+        image_task_context = f"Image file path: {str(abs_path)}"
+        image_user_prompt = prompt if prompt else "Please read this image first, then continue with the current task."
         analysis = agent.call_ai(image_user_prompt, context=image_task_context, image_path=str(abs_path))
         return {"success": True, "analysis": analysis, "file": str(abs_path)}
     except Exception as e:
-        return {"success": False, "error": f"图片读取失败: {str(e)}"}
+        return {"success": False, "error": f"Image read failed: {str(e)}"}
 
 
 def action_diff(agent: Any, file1: str, file2: str, options: Optional[str] = None) -> Dict[str, Any]:
@@ -232,9 +232,9 @@ def action_diff(agent: Any, file1: str, file2: str, options: Optional[str] = Non
         file1_path = Path(file1)
         file2_path = Path(file2)
         if not file1_path.exists():
-            return {"success": False, "error": f"文件不存在: {file1}"}
+            return {"success": False, "error": f"File does not exist: {file1}"}
         if not file2_path.exists():
-            return {"success": False, "error": f"文件不存在: {file2}"}
+            return {"success": False, "error": f"File does not exist: {file2}"}
         if platform.system() == "Windows":
             if shutil.which("diff.exe"):
                 full_command = f'diff.exe {options} "{file1}" "{file2}"' if options else f'diff.exe "{file1}" "{file2}"'
@@ -267,13 +267,13 @@ def action_diff(agent: Any, file1: str, file2: str, options: Optional[str] = Non
                     "command_type": command_type,
                     "output": stdout.strip() if stdout else "",
                     "has_differences": return_code == 1,
-                    "message": "文件比较完成" + ("，发现差异" if return_code == 1 else "，文件相同"),
+                    "message": "File comparison completed" + (", differences found" if return_code == 1 else ", files are identical"),
                 }
             return {
                 "success": False,
                 "command": full_command,
                 "command_type": command_type,
-                "error": stderr.strip() if stderr else f"fc命令执行失败，退出码: {return_code}",
+                "error": stderr.strip() if stderr else f"fc command failed, exit code: {return_code}",
                 "output": stdout.strip() if stdout else "",
             }
         if return_code in [0, 1]:
@@ -283,14 +283,14 @@ def action_diff(agent: Any, file1: str, file2: str, options: Optional[str] = Non
                 "command_type": command_type,
                 "output": stdout.strip() if stdout else "",
                 "has_differences": return_code == 1,
-                "message": "文件比较完成" + ("，发现差异" if return_code == 1 else "，文件相同"),
+                "message": "File comparison completed" + (", differences found" if return_code == 1 else ", files are identical"),
             }
         return {
             "success": False,
             "command": full_command,
             "command_type": command_type,
-            "error": stderr.strip() if stderr else f"{command_type}命令执行失败，退出码: {return_code}",
+            "error": stderr.strip() if stderr else f"{command_type} command failed, exit code: {return_code}",
             "output": stdout.strip() if stdout else "",
         }
     except Exception as e:
-        return {"success": False, "error": f"文件比较命令执行异常: {str(e)}"}
+        return {"success": False, "error": f"File comparison command error: {str(e)}"}

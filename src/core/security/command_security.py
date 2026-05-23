@@ -37,7 +37,7 @@ def shell_script_hash(agent: Any, script_path: Path) -> Optional[str]:
     try:
         body = script_path.read_text(encoding="utf-8", errors="replace")
     except OSError as e:
-        print(f"⚠️ 无法读取脚本以计算免确认哈希: {e}")
+        print(f"⚠️ Unable to read script to compute allowlist hash: {e}")
         return None
     return salted_sha256(body, salt)
 
@@ -112,7 +112,7 @@ def load_confirm_allowlist(agent: Any) -> None:
                 t = x.strip()
                 agent._allowlist_shell_exes.add(t.lower() if os.name == "nt" else t)
     except Exception as e:
-        print(f"⚠️ 读取 confirm_allowlist.json 失败: {e}")
+        print(f"⚠️ Failed to read confirm_allowlist.json: {e}")
         agent._confirm_allowlist_salt = secrets.token_hex(16)
 
 
@@ -133,7 +133,7 @@ def save_confirm_allowlist(agent: Any) -> bool:
         p.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         return True
     except Exception as e:
-        print(f"⚠️ 写入 confirm_allowlist.json 失败: {e}")
+        print(f"⚠️ Failed to write confirm_allowlist.json: {e}")
         return False
 
 
@@ -175,7 +175,7 @@ def add_shell_command_allowlist(agent: Any, command: str) -> None:
             return
         h = shell_script_hash(agent, sp)
         if not h:
-            print("⚠️ 无法记录该脚本到免确认列表：哈希计算失败。")
+            print("⚠️ Unable to add this script to the skip-confirm list: hash computation failed.")
             return
         agent._allowlist_shell_paths[sk] = h
     else:
@@ -204,11 +204,11 @@ def reset_always_confirm_skip(agent: Any) -> dict:
             p.unlink()
             removed = True
     except OSError as e:
-        print(f"⚠️ 删除 confirm_allowlist.json 失败: {e}")
+        print(f"⚠️ Failed to delete confirm_allowlist.json: {e}")
     return {
         "success": True,
         "message": (
-            "已清空免确认列表，恢复每次询问"
-            f"{'（已删除 confirm_allowlist.json）' if removed else ''}"
+            "Skip-confirm list cleared. Confirmation prompts are now restored for each operation"
+            f"{' (confirm_allowlist.json deleted)' if removed else ''}"
         ),
     }

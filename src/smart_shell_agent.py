@@ -519,7 +519,7 @@ class SmartShellAgent:
             pass
         if validate and self.provider == "ollama":
             try:
-                self._validate_single_model(self.provider, self.model_name, "模型")
+                self._validate_single_model(self.provider, self.model_name, "model")
             except Exception:
                 pass
 
@@ -588,10 +588,10 @@ class SmartShellAgent:
             selectors = self._get_configured_model_selectors()
             if selectors:
                 return (
-                    f"❌ 未找到模型: {selector}\n"
-                    "可选模型:\n  - " + "\n  - ".join(selectors)
+                    f"❌ Model not found: {selector}\n"
+                    "Available models:\n  - " + "\n  - ".join(selectors)
                 )
-            return "❌ 未找到模型配置，请检查 config.json 的 model_providers"
+            return "❌ Model configuration not found. Please check model_providers in config.json."
 
         target = str(choice.get("selector") or "").strip()
         if target.lower() == self._current_model_selector().lower():
@@ -601,12 +601,12 @@ class SmartShellAgent:
                 save_state=True,
             )
             self._refresh_status_context_usage_snapshot()
-            return f"ℹ️ 当前已使用模型: {target}"
+            return f"ℹ️ Current model already in use: {target}"
 
         self._apply_runtime_model_choice(choice, validate=True)
         self._set_active_chat_model(self.provider, self.model_name, save_state=True)
         self._refresh_status_context_usage_snapshot()
-        return f"✅ 已切换模型: {target}"
+        return f"✅ Switched model: {target}"
 
     def _handle_model_builtin_command(self, builtin_line: str) -> bool:
         return handle_model_builtin_command(self, builtin_line)
@@ -665,7 +665,7 @@ class SmartShellAgent:
     @staticmethod
     def _parse_domain_classifier_json(text: str) -> Optional[Dict[str, Any]]:
         raw = str(text or "").strip()
-        if not raw or raw.startswith("❌") or raw.startswith("调用大模型"):
+        if not raw or raw.startswith("❌") or raw.startswith("Error calling LLM"):
             return None
         if raw.startswith("```"):
             raw = re.sub(r"^```(?:json)?\s*", "", raw, flags=re.IGNORECASE)
@@ -873,7 +873,7 @@ class SmartShellAgent:
         hist = all_hist[start:]
         if not hist:
             if not all_hist:
-                print("(当前 Chat 暂无历史消息)")
+                print("(No message history in the current chat)")
             self._show_separator_next_prompt = False
             return
         for idx, msg in enumerate(hist):
@@ -937,7 +937,7 @@ class SmartShellAgent:
                 if tool_plan:
                     tool_name, args = tool_plan
                     if tool_name != "done":
-                        print(f"{_ansi_gray('执行工具:')} {_ansi_bright_blue(self._tool_call_summary(tool_name, args))}")
+                        print(f"{_ansi_gray('Tool call:')} {_ansi_bright_blue(self._tool_call_summary(tool_name, args))}")
             else:
                 print(content)
         self._show_separator_next_prompt = False
@@ -1963,22 +1963,22 @@ class SmartShellAgent:
             if len(t) > 18:
                 t = t[:18]
             if len(t) < 2:
-                return "新会话"
+                return "New Chat"
             return t
 
         try:
             prompt = (
-                "你是聊天标题生成器。仅输出标题文本，不要解释。\n"
-                "任务：根据用户第一条消息生成一个简短标题。\n"
-                "要求：4-18个字符；不要标点结尾；不要出现“Chat/会话/标题/第一条消息”等词。\n"
-                "如果消息非常短，可提炼为简短意图词。\n\n"
+                "You are a chat title generator. Output only the title text with no explanation.\n"
+                "Task: Generate a short title from the user's first message.\n"
+                "Requirements: 4-18 characters; no trailing punctuation; avoid words like 'Chat/session/title/first message'.\n"
+                "If the message is very short, extract a concise intent phrase.\n\n"
                 f"<user_first_message>\n{first_user}\n</user_first_message>"
             )
             title = self.call_ai(prompt, context="", stream=False, session_summary_mode=True)
             t = title if isinstance(title, str) else ""
             t = t.strip().replace("\n", " ")
             t = re.sub(r"\s+", " ", t).strip(" \"'`[](){}")
-            if any(bad in t for bad in ("第一条消息", "标题", "会话", "Chat", "chat")):
+            if any(bad in t for bad in ("first message", "title", "session", "Chat", "chat")):
                 t = ""
             if len(t) > 18:
                 t = t[:18]
@@ -2128,7 +2128,7 @@ class SmartShellAgent:
                         pass
             except Exception:
                 try:
-                    get_logger().exception("经验记忆 MemoryService 初始化失败")
+                    get_logger().exception("Experiential memory MemoryService initialization failed")
                 except Exception:
                     pass
 
@@ -2193,7 +2193,7 @@ class SmartShellAgent:
                                 pass
                     except Exception:
                         try:
-                            get_logger().exception("知识库 KnowledgeService 构造失败")
+                            get_logger().exception("Knowledge base KnowledgeService construction failed")
                         except Exception:
                             pass
                         _mod.KnowledgeService = None  # type: ignore
@@ -2247,7 +2247,7 @@ class SmartShellAgent:
             self._skills_routing_prefix = build_skills_routing_prefix(self.skills)
             self._refresh_input_handler_skill_completions()
         except Exception as e:
-            print(f"⚠️ Skill 热更新失败，继续使用当前已加载版本: {e}")
+            print(f"⚠️ Skill hot reload failed, continuing with the currently loaded version: {e}")
 
     def _load_mcp_config(self) -> Dict[str, Any]:
         """Load MCP configuration from <config_dir>/mcp.json."""
@@ -2258,15 +2258,15 @@ class SmartShellAgent:
             with open(mcp_path, "r", encoding="utf-8", errors="replace") as f:
                 data = json.load(f)
             if not isinstance(data, dict):
-                print("⚠️ mcp.json 格式无效：根对象必须为 JSON object")
+                print("⚠️ Invalid mcp.json format: root object must be a JSON object")
                 return {"mcpServers": {}}
             servers = data.get("mcpServers", {})
             if not isinstance(servers, dict):
-                print("⚠️ mcp.json 格式无效：mcpServers 必须为 object")
+                print("⚠️ Invalid mcp.json format: mcpServers must be an object")
                 return {"mcpServers": {}}
             return {"mcpServers": servers}
         except Exception as e:
-            print(f"⚠️ 读取 mcp.json 失败: {e}")
+            print(f"⚠️ Failed to read mcp.json: {e}")
             return {"mcpServers": {}}
 
     def _get_mcp_config_file_sig(self) -> Tuple[bool, int, int]:
@@ -2301,10 +2301,10 @@ class SmartShellAgent:
             with open(p, "r", encoding="utf-8", errors="replace") as f:
                 data = json.load(f)
             if not isinstance(data, dict):
-                return False, {}, "mcp.json 根对象必须为 JSON object"
+                return False, {}, "mcp.json root object must be a JSON object"
             servers = data.get("mcpServers", {})
             if not isinstance(servers, dict):
-                return False, {}, "mcp.json 的 mcpServers 必须为 object"
+                return False, {}, "mcp.json mcpServers must be an object"
             return True, {"mcpServers": servers}, ""
         except Exception as e:
             return False, {}, str(e)
@@ -2318,12 +2318,12 @@ class SmartShellAgent:
         ok, new_cfg, err = self._load_mcp_config_strict()
         if not ok:
             self._mcp_config_last_failed_file_sig = cur_sig
-            return {"success": False, "changed": False, "error": f"mcp.json 解析失败: {err}"}
+            return {"success": False, "changed": False, "error": f"Failed to parse mcp.json: {err}"}
         self._mcp_config_last_failed_file_sig = None
         new_struct_sig = self._calc_mcp_config_sig(new_cfg)
         if new_struct_sig == self._mcp_config_struct_sig:
             self._mcp_config_file_sig = cur_sig
-            return {"success": True, "changed": False, "message": "MCP 配置未变化"}
+            return {"success": True, "changed": False, "message": "MCP configuration unchanged"}
         summary = self.mcp_manager.apply_config_changes(new_cfg, timeout_s=12.0)
         self.mcp_config = new_cfg
         self._mcp_config_struct_sig = new_struct_sig
@@ -2333,7 +2333,7 @@ class SmartShellAgent:
             "success": True,
             "changed": True,
             "summary": summary,
-            "message": "MCP 配置重载完成",
+            "message": "MCP configuration reloaded",
         }
 
     def _load_tools_spec_from_jsonc(self) -> List[Dict[str, Any]]:
@@ -2558,7 +2558,7 @@ class SmartShellAgent:
         if not entries:
             return ""
         lines: List[str] = [
-            "【强制 MCP 引用】本轮任务必须优先参考并使用以下已指定 MCP 目标（按用户输入顺序）：",
+            "[Forced MCP references] For this task, prioritize referencing and using the following explicitly specified MCP targets (in the order provided by the user):",
         ]
         for e in entries:
             srv = str(e.get("server", "")).strip()
@@ -2573,7 +2573,7 @@ class SmartShellAgent:
                         lines.append(f"  prompt.description: {desc}")
                 except Exception:
                     pass
-        lines.append("若与 AGENTS.md 或通用规则冲突，以这些显式指定 MCP 目标为准（安全/越权硬限制除外）。")
+        lines.append("If AGENTS.md or general rules conflict, these explicitly specified MCP targets take precedence (except hard safety/privilege constraints).")
         return "\n".join(lines) + "\n\n"
 
     def _ensure_knowledge_manager(self) -> bool:
@@ -2590,7 +2590,7 @@ class SmartShellAgent:
             return False
         if not svc.wait_ready(600.0):
             get_logger("smartshell.knowledge").warning(
-                "等待知识库初始化超时（600s），请稍后在 /knowledge sync 重试"
+                "Timed out waiting for knowledge base initialization (600s). Please retry later with /knowledge sync."
             )
             return False
         return svc.is_available()
@@ -2611,7 +2611,7 @@ class SmartShellAgent:
                 json.dump(cfg_data, f, ensure_ascii=False, indent=2)
             return True
         except Exception as e:
-            print(f"⚠️ 保存执行策略到配置失败: {e}")
+            print(f"⚠️ Failed to save execution policy to config: {e}")
             return False
 
     def _save_session_summary_llm_to_config(self) -> bool:
@@ -2632,7 +2632,7 @@ class SmartShellAgent:
                 json.dump(cfg_data, f, ensure_ascii=False, indent=2)
             return True
         except Exception as e:
-            print(f"⚠️ 保存 session_summary_llm 到配置失败: {e}")
+            print(f"⚠️ Failed to save session_summary_llm to config: {e}")
             return False
 
     def _save_memory_enabled_to_config(self) -> bool:
@@ -2651,42 +2651,42 @@ class SmartShellAgent:
                 json.dump(cfg_data, f, ensure_ascii=False, indent=2)
             return True
         except Exception as e:
-            print(f"⚠️ 保存 memory_enabled 到配置失败: {e}")
+            print(f"⚠️ Failed to save memory_enabled to config: {e}")
             return False
 
     def _enable_freedom(self) -> Dict[str, Any]:
         """兼容命令：设置 execution_policy=moderate"""
         if self.execution_policy == "moderate":
-            return {"success": True, "message": "execution_policy 已处于 moderate"}
+            return {"success": True, "message": "execution_policy is already set to moderate"}
         self.execution_policy = "moderate"
         saved = self._save_execution_policy_to_config()
         return {
             "success": True,
-            "message": f"execution_policy 已设置为 moderate{'（已保存配置）' if saved else ''}",
+            "message": f"execution_policy set to moderate{' (config saved)' if saved else ''}",
         }
 
     def _disable_freedom(self) -> Dict[str, Any]:
         """兼容命令：设置 execution_policy=confirmation"""
         if self.execution_policy == "confirmation":
-            return {"success": True, "message": "execution_policy 已处于 confirmation"}
+            return {"success": True, "message": "execution_policy is already set to confirmation"}
         self.execution_policy = "confirmation"
         saved = self._save_execution_policy_to_config()
-        return {"success": True, "message": f"execution_policy 已设置为 confirmation{'（已保存配置）' if saved else ''}"}
+        return {"success": True, "message": f"execution_policy set to confirmation{' (config saved)' if saved else ''}"}
 
     def _set_execution_policy(self, policy: str) -> Dict[str, Any]:
         pol = str(policy or "").strip().lower()
         if pol not in ("unlimited", "moderate", "confirmation"):
             return {
                 "success": False,
-                "error": "无效 execution_policy。可选值: unlimited, moderate, confirmation",
+                "error": "Invalid execution_policy. Allowed values: unlimited, moderate, confirmation",
             }
         if self.execution_policy == pol:
-            return {"success": True, "message": f"execution_policy 已处于 {pol}", "policy": pol}
+            return {"success": True, "message": f"execution_policy is already set to {pol}", "policy": pol}
         self.execution_policy = pol
         saved = self._save_execution_policy_to_config()
         return {
             "success": True,
-            "message": f"execution_policy 已设置为 {pol}{'（已保存配置）' if saved else ''}",
+            "message": f"execution_policy set to {pol}{' (config saved)' if saved else ''}",
             "policy": pol,
         }
 
@@ -2695,26 +2695,26 @@ class SmartShellAgent:
         _pc = "`/execution-policy confirmation`"
         _pu = "`/execution-policy unlimited`"
         pol = str(getattr(self, "execution_policy", "confirmation")).lower()
-        print(f"执行策略 execution_policy：{pol}")
+        print(f"Execution policy: {pol}")
         if pol == "unlimited":
             print(
                 _ansi_red(
-                    "  所有操作直接执行，不做安全性检测与确认。"
-                    f"输入 {_pm} 可切换到 moderate；输入 {_pc} 可切回 confirmation。"
+                    "  All operations execute directly without safety checks or confirmations."
+                    f"Type {_pm} to switch to moderate; type {_pc} to switch back to confirmation."
                 )
             )
-            print(_ansi_red("  注意事项：高风险操作也会直接执行，仅建议在完全可控环境使用。"))
+            print(_ansi_red("  Warning: high-risk operations will also execute directly. Use only in fully controlled environments."))
         elif pol == "moderate":
             print(
                 _ansi_yellow(
-                    "  安全操作在执行前会由 AI 判定，安全则自动跳过 y/n 确认。AI 安全性判定可能会犯错，请谨慎使用。"
-                    f"输入 {_pc} 可切回 confirmation。"
+                    "  Safe operations are evaluated by AI before execution; if judged safe, y/n confirmation is skipped automatically. AI safety judgment may be wrong, so use with caution."
+                    f"Type {_pc} to switch back to confirmation."
                 )
             )
         else:
             print(
-                "  需确认的操作将始终询问 y/n。"
-                f"输入 {_pm} 可切换到 moderate；输入 {_pu} 可切换到 unlimited。"
+                "  Operations requiring confirmation will always ask y/n."
+                f"Type {_pm} to switch to moderate; type {_pu} to switch to unlimited."
             )
 
     def _print_knowledge_status_details(self) -> None:
@@ -2723,8 +2723,8 @@ class SmartShellAgent:
             svc is not None and getattr(svc, "is_available", lambda: False)()
         )
         dep_ready = bool(KNOWLEDGE_AVAILABLE)
-        print("知识库状态详情：")
-        print(f"  feature: 始终启用（依赖可用时加载）")
+        print("Knowledge base status details:")
+        print(f"  feature: always enabled (loaded when dependencies are available)")
         print(f"  runtime_ready: {'yes' if manager_ready else 'no'}")
         print(f"  dependency_ready: {'yes' if dep_ready else 'no'}")
         if dep_ready and manager_ready:
@@ -2739,30 +2739,30 @@ class SmartShellAgent:
                     print(f"  embedding_model: {emb}")
             except Exception as e:
                 print(f"  stats_error: {e}")
-            print("  注意事项：模型仅在用户明确要求检索或参考知识库时调用 knowledge_search；结果可能过时，关键结论请复核原文件。")
+            print("  Note: the model only calls knowledge_search when the user explicitly asks to query/reference the knowledge base; results may be stale, so verify key conclusions against source files.")
         elif dep_ready and not manager_ready:
             if svc is not None and not svc.is_ready():
-                print("  知识库正在后台建立索引，请稍候；详情见 smartshell.log。")
+                print("  Knowledge base indexing is running in the background; please wait. See smartshell.log for details.")
             elif svc is not None and svc.is_ready() and not svc.is_available():
-                print("  知识库初始化失败，请查看 smartshell.log。")
+                print("  Knowledge base initialization failed. Please check smartshell.log.")
             else:
-                print("  当前依赖可用但运行时未就绪。请查看日志、sentence-transformers 与配置目录 workspace/knowledge/。")
+                print("  Dependencies are available but runtime is not ready. Check logs, sentence-transformers, and workspace/knowledge/ under the config directory.")
         else:
             if sys.version_info >= (3, 14):
-                print("  当前环境不满足知识库依赖（例如 Python 3.14 下 ChromaDB 限制）。请使用 Python 3.12/3.13 并安装依赖。")
+                print("  Current environment does not satisfy knowledge base dependencies (for example, ChromaDB limitations on Python 3.14). Please use Python 3.12/3.13 and install dependencies.")
             else:
-                print("  知识库依赖未安装或加载失败。请安装 requirements 中的知识库相关包。")
+                print("  Knowledge base dependencies are not installed or failed to load. Install the knowledge-related packages from requirements.")
 
     def _print_memory_status_details(self) -> None:
         enabled = bool(getattr(self, "memory_enabled", True))
         dep = bool(MEMORY_AVAILABLE)
         ready = bool(self._ensure_memory_service())
-        print("经验记忆状态详情（与知识库分离：内化教训/偏好，非文档库）：")
+        print("Experiential memory status details (separate from knowledge base: internalized lessons/preferences, not a document store):")
         print(f"  feature_enabled: {'yes' if enabled else 'no'}")
         print(f"  dependency_ready: {'yes' if dep else 'no'}")
         print(f"  runtime_ready: {'yes' if ready else 'no'}")
         if not enabled:
-            print("  经验记忆功能已关闭。可使用 /memory enable 重新开启。")
+            print("  Experiential memory is disabled. Use /memory enable to turn it back on.")
             return
         if dep and ready:
             try:
@@ -2774,14 +2774,14 @@ class SmartShellAgent:
             except Exception as e:
                 print(f"  stats_error: {e}")
             print(
-                "  说明：每轮自然语言任务正常结束后会尝试后台自动反思（与上次触发间隔约 45 秒以上）；"
-                "模型若认为有可复用教训才会写入（可能为 0 条）。"
-                "也可手动 memory_search / memory_add 或 /memory remember；勿与 knowledge_search 混淆。"
+                "  Note: after each natural-language task completes normally, background auto-reflection may run (roughly 45+ seconds apart from the previous trigger); "
+                "entries are written only when the model finds reusable lessons (possibly zero entries). "
+                "You can also use memory_search / memory_add or /memory remember manually; do not confuse this with knowledge_search."
             )
         elif dep and not ready:
-            print("  记忆模块正在初始化或失败，请查看 smartshell.log 与配置目录 workspace/memory/。")
+            print("  Memory module is initializing or failed. Check smartshell.log and workspace/memory/ under the config directory.")
         else:
-            print("  经验记忆不可用（初始化失败）；主程序可继续运行。")
+            print("  Experiential memory is unavailable (initialization failed); the main program can continue running.")
 
     def _load_freedom_script_review_cache(self) -> None:
         return execution_policy_service.load_freedom_script_review_cache(self)
@@ -2820,7 +2820,7 @@ class SmartShellAgent:
         return execution_policy_service.freedom_auto_confirm(self, command)
     def _validate_model(self) -> None:
         """验证模型是否可用（仅 ollama 模式）。"""
-        self._validate_single_model(self.provider, self.model_name, "模型")
+        self._validate_single_model(self.provider, self.model_name, "model")
 
     def _validate_single_model(self, provider: str, model_name: str, model_type: str):
         """验证单个模型是否可用"""
@@ -2838,16 +2838,16 @@ class SmartShellAgent:
                 else:
                     available_models.append(str(model))
             if model_name not in available_models:
-                print(f"⚠️ 警告: {model_type} '{model_name}' 不在可用模型列表中")
-                print(f"📋 可用模型: {available_models}")
+                print(f"⚠️ Warning: {model_type} '{model_name}' is not in the available model list")
+                print(f"📋 Available models: {available_models}")
                 if available_models:
-                    print(f"💡 建议使用: {available_models[0]}")
-                print("💡 请检查 config.json 中的 model 配置")
+                    print(f"💡 Suggested model: {available_models[0]}")
+                print("💡 Please check model configuration in config.json")
         except ImportError:
-            print(f"❌ 错误: 未安装 ollama 包，无法验证 {model_type}。请运行: pip install ollama")
+            print(f"❌ Error: 'ollama' package is not installed, cannot validate {model_type}. Please run: pip install ollama")
         except Exception as e:
-            print(f"⚠️ 验证{model_type}时出错: {e}")
-            print(f"💡 请确保 Ollama 服务正在运行")
+            print(f"⚠️ Error validating {model_type}: {e}")
+            print(f"💡 Please ensure the Ollama service is running")
 
     def _build_regular_task_messages(self, user_input: str, context: str = "") -> Tuple[List[Dict[str, Any]], bool]:
         return self.session_memory_service.build_regular_task_messages(user_input, context)
@@ -3030,9 +3030,9 @@ class SmartShellAgent:
         ]
         text = "\n".join(text_parts).lower()
         needles = [
-            "用户取消",
-            "取消了操作",
-            "已由用户取消",
+            "user cancelled",
+            "cancelled operation",
+            "cancelled by user",
             "aborted by user",
             "installation aborted",
             "confirm installation yes(y)/no(n): n",
@@ -3043,9 +3043,9 @@ class SmartShellAgent:
         try:
             if any(self._is_workspace_skill_path(p) for p in paths):
                 self._reload_skills()
-                print("🔄 检测到 workspace/skills 变更，已自动重新加载 skills。")
+                print("🔄 Detected changes in workspace/skills; skills have been auto-reloaded.")
         except Exception as e:
-            print(f"⚠️ 自动重载 skills 失败: {e}")
+            print(f"⚠️ Failed to auto-reload skills: {e}")
 
     def _append_shell_merge_output_path(
         self,
@@ -3102,8 +3102,8 @@ class SmartShellAgent:
         if not cands:
             return ""
         lines: List[str] = [
-            "【首轮 Evidence Block（自动注入）】",
-            "以下候选文件来自 project_context_search，请优先基于这些证据展开 shell 检索与读取，避免盲目全局扫描：",
+            "[First-turn Evidence Block (auto-injected)]",
+            "The following candidate files come from project_context_search. Prioritize shell search/reads based on this evidence to avoid blind global scanning:",
         ]
         for i, c in enumerate(cands[:8], start=1):
             if not isinstance(c, dict):
@@ -3427,9 +3427,9 @@ class SmartShellAgent:
     def _build_step_progress_context(self) -> str:
         """Build concise step progress summary from executed operations."""
         if not self.operation_results:
-            return "【步骤进度】暂无已执行步骤。"
+            return "[Step Progress] No steps have been executed yet."
 
-        lines = ["【步骤进度（按执行顺序）】"]
+        lines = ["[Step Progress (in execution order)]"]
         for i, item in enumerate(self.operation_results, start=1):
             cmd = item.get("command") or {}
             res = item.get("result") or {}
@@ -3503,17 +3503,17 @@ class SmartShellAgent:
             return ""
         output_text = str(result.get("output") or "")
         # Must match marker in _append_shell_merge_output_path (generic bridge output).
-        merge_marker = "【附加输出（shell merge file）】"
+        merge_marker = "[Additional output (shell merge file)]"
         if merge_marker not in output_text and len(output_text) < 4000:
             return ""
         return (
-            "你刚得到的是原始信息输出。下一条回复必须先做“面向用户的结果提炼”，"
-            "再决定是否 done：\n"
-            "- 先给出 1-2 句最终结论（直接回答用户问题）；\n"
-            "- 再给出不超过 3 条关键依据（优先最新来源，并标注时间）；\n"
-            "- 给出时效性/不确定性提示；\n"
-            "- 禁止原样粘贴大段网页正文。\n"
-            "若上述提炼未完成，禁止直接输出 done。"
+            "You just received raw information output. In the next reply, you must first produce a user-facing distilled result, "
+            "then decide whether to output done:\n"
+            "- First provide 1-2 sentence final conclusion (directly answering the user);\n"
+            "- Then provide no more than 3 key supporting points (prefer latest sources and include timestamps);\n"
+            "- Provide timeliness/uncertainty notes;\n"
+            "- Do not paste large chunks of webpage body verbatim.\n"
+            "If the above distillation is incomplete, do not output done directly."
         )
 
     def _infer_selected_skill(self, command: Dict[str, Any], ai_response: str) -> Optional[Dict[str, str]]:
@@ -3685,7 +3685,7 @@ class SmartShellAgent:
                 # 这里不直接写入 HistoryManager，交由上层 run() 统一处理，避免重复
                 return user_input
             except Exception as e:
-                print(f"⚠️ 输入处理器出错，回退到平台特定输入方案: {e}")
+                print(f"⚠️ Input handler error; falling back to platform-specific input mode: {e}")
         
         # 在Windows系统上，优先使用prompt_toolkit以获得更好的中文输入支持
         if platform.system() == "Windows":
@@ -3752,7 +3752,7 @@ class SmartShellAgent:
                 
             except ImportError:
                 # 如果没有prompt_toolkit，回退到标准input
-                print("⚠️ 提示：安装 prompt_toolkit 可获得更好的输入体验：pip install prompt_toolkit")
+                print("⚠️ Tip: install prompt_toolkit for a better input experience: pip install prompt_toolkit")
                 try:
                     print("")
                     print(status_bar_plain)
@@ -3764,7 +3764,7 @@ class SmartShellAgent:
                     raise KeyboardInterrupt
             except Exception as e:
                 # 如果prompt_toolkit出错，回退到标准input
-                print(f"⚠️ prompt_toolkit 出错，回退到标准输入: {e}")
+                print(f"⚠️ prompt_toolkit error; falling back to standard input: {e}")
                 try:
                     print("")
                     print(status_bar_plain)
@@ -3806,7 +3806,7 @@ class SmartShellAgent:
         mode = str(p.get("mode", "form") or "form").strip().lower()
         message = str(p.get("message", "") or "").strip()
         if mode not in ("form", "url"):
-            raise McpError(f"不支持的 elicitation mode: {mode}")
+            raise McpError(f"Unsupported elicitation mode: {mode}")
 
         # Non-interactive fallback for tests/piped execution.
         # SMART_SHELL_AUTO_ACCEPT_ELICITATION=1 can force auto-accept in test runners.
@@ -3835,14 +3835,14 @@ class SmartShellAgent:
                     content[k] = default if default is not None else ""
             return {"action": "accept", "content": content}
 
-        print(f"\n📩 MCP elicitation 请求来自 server={server}")
+        print(f"\n📩 MCP elicitation request from server={server}")
         if message:
-            print(f"说明: {message}")
+            print(f"Description: {message}")
 
         if mode == "url":
             target_url = str(p.get("url", "") or "").strip()
             print(f"URL: {target_url}")
-            consent = input("是否同意继续该 URL 流程？(y=accept / n=decline / Enter=cancel): ").strip().lower()
+            consent = input("Do you agree to continue this URL flow? (y=accept / n=decline / Enter=cancel): ").strip().lower()
             if consent == "y":
                 return {"action": "accept"}
             if consent == "n":
@@ -3857,7 +3857,7 @@ class SmartShellAgent:
         required_set = {str(x) for x in required} if isinstance(required, list) else set()
         content: Dict[str, Any] = {}
         if not isinstance(props, dict) or not props:
-            consent = input("未提供 requestedSchema，是否接受本次请求？(y/n): ").strip().lower()
+            consent = input("No requestedSchema was provided. Accept this request? (y/n): ").strip().lower()
             return {"action": "accept" if consent == "y" else "decline", "content": content}
 
         for key, meta in props.items():
@@ -3878,7 +3878,7 @@ class SmartShellAgent:
                 hint_parts.append(f"default={default}")
             hint = f" ({', '.join(hint_parts)})" if hint_parts else ""
             while True:
-                raw = input(f"请输入 {label}{hint}: ")
+                raw = input(f"Please input {label}{hint}: ")
                 if raw == "" and default is not None:
                     content[k] = default
                     break
@@ -3889,9 +3889,9 @@ class SmartShellAgent:
                     content[k] = self._normalize_elicitation_value(raw, s)
                     break
                 except Exception:
-                    print("输入格式无效，请重试。")
+                    print("Invalid input format, please try again.")
 
-        submit = input("提交本次 elicitation 数据？(y=accept / n=decline / Enter=cancel): ").strip().lower()
+        submit = input("Submit elicitation data now? (y=accept / n=decline / Enter=cancel): ").strip().lower()
         if submit == "y":
             return {"action": "accept", "content": content}
         if submit == "n":
@@ -3915,7 +3915,7 @@ class SmartShellAgent:
         try:
             raw = str(user_input or "").strip()
             if not raw:
-                print("❌ 执行文件失败: 空命令")
+                print("❌ Execution failed: empty command")
                 return False
 
             try:
@@ -3923,7 +3923,7 @@ class SmartShellAgent:
             except ValueError:
                 parts = raw.split()
             if not parts:
-                print("❌ 执行文件失败: 空命令")
+                print("❌ Execution failed: empty command")
                 return False
 
             first = parts[0].strip().strip('"').strip("'")
@@ -3950,6 +3950,6 @@ class SmartShellAgent:
                 self._reset_work_directory_to_startup_initial()
                 
         except Exception as e:
-            print(f"❌ 执行文件失败: {e}")
+            print(f"❌ Execution failed: {e}")
             return False
 
