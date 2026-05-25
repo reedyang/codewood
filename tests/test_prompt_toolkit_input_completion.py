@@ -35,6 +35,35 @@ class _FakeOutput:
         return size
 
 
+class _FakeEvent:
+    def __init__(self):
+        self._handlers = []
+
+    def add_handler(self, handler):
+        self._handlers.append(handler)
+
+    def fire(self, app):
+        for handler in list(self._handlers):
+            handler(app)
+
+
+class _FakeHookApp:
+    def __init__(self, columns: int = 80):
+        self.output = _FakeOutput(columns)
+        self.before_render = _FakeEvent()
+        self.after_render = _FakeEvent()
+        self.current_buffer = _FakeBuffer("draft")
+        self.exit_calls = []
+
+    def exit(self, result=""):
+        self.exit_calls.append(result)
+
+
+class _FakeHookSession:
+    def __init__(self, app: _FakeHookApp):
+        self.app = app
+
+
 class _FakeSessionWithHook:
     def __init__(self, returned_text: str, before_return=None):
         self.returned_text = returned_text
@@ -75,6 +104,53 @@ class _CursorAwareSession:
 
 
 class PromptToolkitInputCompletionTests(unittest.TestCase):
+    def test_resize_hook_uses_initial_columns_snapshot_for_first_shrink(self):
+        app = _FakeHookApp(columns=120)
+        session = _FakeHookSession(app)
+        calls = []
+
+        def _resize_callback(prev_cols: int, new_cols: int) -> bool:
+            calls.append((prev_cols, new_cols))
+            return True
+
+        with patch.object(pti, "_get_system_terminal_columns", return_value=0):
+            pti._attach_blink_after_render_hook(
+                session,
+                status_provider=lambda: "",
+                terminal_resize_callback=_resize_callback,
+            )
+
+        app.output._columns = 100
+        with patch.object(pti, "_get_system_terminal_columns", return_value=0):
+            app.before_render.fire(app)
+
+        self.assertEqual(calls, [(120, 100)])
+        self.assertTrue(bool(getattr(session, "_smart_shell_resize_interrupted", False)))
+        self.assertEqual(app.exit_calls, [""])
+
+    def test_resize_hook_uses_system_width_when_output_width_is_stale_on_expand(self):
+        app = _FakeHookApp(columns=100)
+        session = _FakeHookSession(app)
+        calls = []
+
+        def _resize_callback(prev_cols: int, new_cols: int) -> bool:
+            calls.append((prev_cols, new_cols))
+            return True
+
+        with patch.object(pti, "_get_system_terminal_columns", side_effect=[100, 120]):
+            pti._attach_blink_after_render_hook(
+                session,
+                status_provider=lambda: "",
+                terminal_resize_callback=_resize_callback,
+            )
+            # Keep prompt_toolkit output width stale to emulate occasional lag.
+            app.output._columns = 100
+            app.before_render.fire(app)
+
+        self.assertEqual(calls, [(100, 120)])
+        self.assertTrue(bool(getattr(session, "_smart_shell_resize_interrupted", False)))
+        self.assertEqual(app.exit_calls, [""])
+
     def test_windows_shift_state_detector_returns_false_on_non_windows(self):
         with patch.object(pti.os, "name", "posix"):
             self.assertFalse(pti._is_windows_shift_pressed())
