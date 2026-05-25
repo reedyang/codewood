@@ -36,6 +36,7 @@ class _FakeAgent:
         self._chat_state = {"chats": []}
         self._active_runtime_task_id = ""
         self._active_runtime_task_domains = []
+        self.sync_active_chat_messages_calls = 0
 
     def _reload_skills(self):
         return None
@@ -58,6 +59,9 @@ class _FakeAgent:
         if "software_development" in domains:
             return "\n\n【领域强化：软件开发】\n硬性要求...\n"
         return ""
+
+    def _sync_active_chat_messages(self):
+        self.sync_active_chat_messages_calls += 1
 
     def _build_direct_shell_user_history_content(self, raw_user_command: str) -> str:
         return f"{DIRECT_SHELL_USER_HISTORY_PREFIX}{str(raw_user_command or '').strip()}"
@@ -164,6 +168,18 @@ class _FakeAgent:
 
 
 class SessionMemoryBudgetingTests(unittest.TestCase):
+    def test_refresh_context_usage_snapshot_persists_chat_state_immediately(self):
+        agent = _FakeAgent()
+        agent.conversation_history = [
+            {"role": "user", "content": "请实现功能A"},
+            {"role": "assistant", "content": "收到，我先看下结构"},
+        ]
+        svc = SessionMemoryService(agent)
+
+        svc.refresh_context_usage_snapshot(user_input_hint="继续", context_hint="ctx")
+
+        self.assertGreater(agent.sync_active_chat_messages_calls, 0)
+
     def test_domain_prompt_is_appended_for_specific_domain(self):
         agent = _FakeAgent()
         agent._active_runtime_task_domains = ["software_development"]

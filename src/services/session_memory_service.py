@@ -743,6 +743,14 @@ class SessionMemoryService:
         self.agent._last_context_input_tokens = total
         self.agent._last_context_usage_percent = usage_pct
 
+    def _persist_context_usage_snapshot(self) -> None:
+        try:
+            sync_fn = getattr(self.agent, "_sync_active_chat_messages", None)
+            if callable(sync_fn):
+                sync_fn()
+        except Exception:
+            pass
+
     def _clip_text_to_token_budget(self, text: str, max_tokens: int) -> str:
         s = str(text or "")
         if max_tokens <= 0 or not s:
@@ -989,6 +997,7 @@ class SessionMemoryService:
                 int(budgets.get("context_window") or DEFAULT_CONTEXT_WINDOW),
                 total_input_tokens,
             )
+            self._persist_context_usage_snapshot()
         except Exception:
             # Keep previous snapshot on refresh failure.
             pass
