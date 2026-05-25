@@ -243,7 +243,7 @@ def _print_startup_overview(agent: Any) -> None:
 
 
 def run_agent_loop(agent: Any):
-    """运行 AI Agent 主循环，使用 OpenAI tools 进行多轮自动执行，调用 done 结束。"""
+    """Run the AI Agent main loop with multi-step tool execution until done."""
     from .. import smart_shell_agent as _ssa
     KNOWLEDGE_AVAILABLE = getattr(_ssa, "KNOWLEDGE_AVAILABLE", False)
     self = agent
@@ -255,18 +255,23 @@ def run_agent_loop(agent: Any):
     if not KNOWLEDGE_AVAILABLE:
         if sys.version_info >= (3, 14):
             print(
-                "知识库依赖在当前 Python 版本下不可用；主程序可继续运行。建议使用 Python 3.12 或 3.13 并安装知识库依赖。"
+                "Knowledge base dependencies are unavailable on the current Python version; the main program can continue running. "
+                "Use Python 3.12 or 3.13 and install knowledge base dependencies."
             )
         else:
-            print("知识库依赖未就绪；主程序可继续运行。需要时请安装 requirements 中的知识库相关包。")
+            print(
+                "Knowledge base dependencies are not ready; the main program can continue running. "
+                "Install the knowledge-related packages from requirements when needed."
+            )
     elif KNOWLEDGE_AVAILABLE and self.knowledge_manager is not None:
         svc = self.knowledge_manager
         if svc.is_ready() and not svc.is_available():
             lp = get_log_file_path()
             print(
-                "知识库初始化失败；请查看日志"
+                "Knowledge base initialization failed; please check logs"
                 + (f" ({lp})" if lp else "")
-                + "，并检查 sentence-transformers、网络（首次需下载模型）与配置目录 workspace/knowledge/。"
+                + ", and verify sentence-transformers, network access (first run needs model download), "
+                + "and the config directory workspace/knowledge/."
             )
 
     if self.skills:
@@ -350,9 +355,10 @@ def run_agent_loop(agent: Any):
                 builtin_line = stripped_in[1:].lstrip()
                 if not builtin_line:
                     print(
-                        "ℹ️ 内置命令需以 / 开头，"
-                        "例如 /exit、/help、/clear screen、/knowledge status、/memory status；单独输入 / 无效。"
-                        "不经过 AI 的本机命令与脚本请以 ! 开头，例如 !ls、!git status。"
+                        "ℹ️ Built-in commands must start with /. "
+                        "For example: /exit, /help, /clear screen, /knowledge status, /memory status; "
+                        "a standalone / is invalid. "
+                        "For local commands/scripts executed without AI, use ! prefix, e.g. !ls, !git status."
                     )
                     continue
 
@@ -387,7 +393,7 @@ def run_agent_loop(agent: Any):
                     self._suppress_next_separator = True
                     continue
                 if bl == "clear":
-                    print("用法: /clear <screen|history|context>")
+                    print("Usage: /clear <screen|history|context>")
                     continue
                 if bl == 'clear history':
                     self.history_manager.clear_history()
@@ -397,7 +403,7 @@ def run_agent_loop(agent: Any):
                         self.input_handler.reset_command_history(
                             self.history_manager.get_all_history()
                         )
-                    print("✅ 历史记录已清除")
+                    print("✅ History has been cleared")
                     continue
                 if bl == "clear context":
                     self.conversation_history.clear()
@@ -407,32 +413,35 @@ def run_agent_loop(agent: Any):
                     self._session_summary_llm = ""
                     self._session_summary_rolling = ""
                     self._last_llm_summary_pair_count = 0
-                    print("✅ 已清空 AI 上下文（对话历史与近期操作结果缓存，不影响命令行输入历史）")
+                    print(
+                        "✅ AI context has been cleared "
+                        "(conversation history and recent operation-result cache; command-line input history is unchanged)"
+                    )
                     continue
                 if bl == "knowledge":
-                    print("用法: /knowledge <status|sync|stats|search <query>>")
+                    print("Usage: /knowledge <status|sync|stats|search <query>>")
                     continue
                 if bl == "knowledge status":
                     self._print_knowledge_status_details()
                     continue
 
                 if bl == "memory":
-                    print("用法: /memory <enable|disable|status|stats|list|search <query>|remember <text>|delete <id>>")
+                    print("Usage: /memory <enable|disable|status|stats|list|search <query>|remember <text>|delete <id>>")
                     continue
                 if bl == "memory enable":
                     self.memory_enabled = True
                     ok = self._save_memory_enabled_to_config()
                     print(
-                        "✅ 经验记忆功能已开启"
-                        + ("；已写入 config.json" if ok else "（配置保存失败，仅本次进程生效）")
+                        "✅ Experiential memory is enabled"
+                        + ("; saved to config.json" if ok else " (failed to save config; only effective for this process)")
                     )
                     continue
                 if bl == "memory disable":
                     self.memory_enabled = False
                     ok = self._save_memory_enabled_to_config()
                     print(
-                        "✅ 经验记忆功能已关闭"
-                        + ("；已写入 config.json" if ok else "（配置保存失败，仅本次进程生效）")
+                        "✅ Experiential memory is disabled"
+                        + ("; saved to config.json" if ok else " (failed to save config; only effective for this process)")
                     )
                     continue
                 if bl == "memory status":
@@ -453,12 +462,12 @@ def run_agent_loop(agent: Any):
                             "memory_search", {"query": q, "verbose_print": True}
                         )
                     else:
-                        print("❌ 请提供检索内容")
+                        print("❌ Please provide search content")
                     continue
                 if bl.startswith("memory remember "):
                     text = builtin_line[len("memory remember ") :].strip()
                     if not text:
-                        print("❌ 请提供要记住的内容")
+                        print("❌ Please provide content to remember")
                         continue
                     title = text[:80] + ("…" if len(text) > 80 else "")
                     self.execute_tool_call(
@@ -482,7 +491,7 @@ def run_agent_loop(agent: Any):
                             {"memory_id": mid, "verbose_print": True},
                         )
                     else:
-                        print("❌ 请提供记忆 id")
+                        print("❌ Please provide memory id")
                     continue
 
                 if self._handle_chat_builtin_command(builtin_line):
@@ -498,12 +507,12 @@ def run_agent_loop(agent: Any):
                         self._print_execution_policy_details()
                         continue
                     if not policy:
-                        print("用法: /execution-policy <show|unlimited|moderate|confirmation>")
+                        print("Usage: /execution-policy <show|unlimited|moderate|confirmation>")
                     else:
                         self.execute_tool_call("execution_policy_set", {"policy": policy})
                     continue
                 if bl == "execution-policy":
-                    print("用法: /execution-policy <show|unlimited|moderate|confirmation>")
+                    print("Usage: /execution-policy <show|unlimited|moderate|confirmation>")
                     continue
 
                 if bl.startswith("session-summary "):
@@ -512,39 +521,39 @@ def run_agent_loop(agent: Any):
                         self.session_summary_llm_enabled = True
                         ok = self._save_session_summary_llm_to_config()
                         print(
-                            f"✅ 已开启会话 LLM 摘要（周期性压缩，用于经验记忆检索 query）"
-                            f"{'；已写入 config.json' if ok else '（配置保存失败，仅本次进程生效）'}"
+                            f"✅ Session LLM summary enabled (periodic compression for experiential-memory retrieval query)"
+                            f"{'; saved to config.json' if ok else ' (failed to save config; only effective for this process)'}"
                         )
                         continue
                     if sub in ("off", "disable", "false", "0"):
                         self.session_summary_llm_enabled = False
                         ok = self._save_session_summary_llm_to_config()
                         print(
-                            f"✅ 已关闭会话 LLM 摘要（仍保留滚动摘录 [会话摘录]）"
-                            f"{'；已写入 config.json' if ok else '（配置保存失败，仅本次进程生效）'}"
+                            f"✅ Session LLM summary disabled (rolling excerpts are still kept)"
+                            f"{'; saved to config.json' if ok else ' (failed to save config; only effective for this process)'}"
                         )
                         continue
                     if sub == "show":
                         on = bool(getattr(self, "session_summary_llm_enabled", True))
                         cfg_path = self.config_dir / "config.json"
                         print(
-                            f"会话 LLM 摘要 session_summary_llm：{'开启' if on else '关闭'}\n"
-                            f"  配置项：config.json 中的 \"session_summary_llm\"（布尔）\n"
-                            f"  配置文件：{cfg_path}"
+                            f"Session LLM summary (session_summary_llm): {'on' if on else 'off'}\n"
+                            f"  Config key: \"session_summary_llm\" in config.json (boolean)\n"
+                            f"  Config file: {cfg_path}"
                         )
                         continue
                     print(
-                        "用法: /session-summary <on|off|show>\n"
-                        "  on/off   - 开关周期性 LLM 会话摘要（关闭后仍用廉价滚动摘录）\n"
-                        "  show     - 查看当前开关与配置文件路径"
+                        "Usage: /session-summary <on|off|show>\n"
+                        "  on/off   - toggle periodic LLM session summary (rolling excerpt remains when off)\n"
+                        "  show     - show current switch and config file path"
                     )
                     continue
                 if bl == "session-summary":
                     print(
-                        "用法: /session-summary <on|off|show>\n"
-                        "  /session-summary on     - 开启 LLM 会话摘要\n"
-                        "  /session-summary off    - 关闭（仅滚动摘录）\n"
-                        "  /session-summary show   - 查看状态"
+                        "Usage: /session-summary <on|off|show>\n"
+                        "  /session-summary on     - enable LLM session summary\n"
+                        "  /session-summary off    - disable (rolling excerpt only)\n"
+                        "  /session-summary show   - show status"
                     )
                     continue
 
@@ -565,7 +574,7 @@ def run_agent_loop(agent: Any):
                     if query.strip():
                         self.execute_tool_call("knowledge_search", {"query": query.strip()})
                     else:
-                        print("❌ 请提供搜索查询内容")
+                        print("❌ Please provide search query content")
                     continue
                 if bl == 'help':
 
@@ -574,8 +583,8 @@ def run_agent_loop(agent: Any):
                     continue
 
                 print(
-                    "❌ 未识别的内置命令。请使用 /help 查看列表。"
-                    "在本机直接执行 shell 或脚本请使用 ! 前缀，例如 !git status、!dir。"
+                    "❌ Unrecognized built-in command. Use /help to view the list. "
+                    "For direct local shell/script execution, use ! prefix, e.g. !git status, !dir."
                 )
                 continue
 
@@ -585,8 +594,8 @@ def run_agent_loop(agent: Any):
                 run_direct_shell = stripped_in[1:].lstrip()
                 if not run_direct_shell:
                     print(
-                        "ℹ️ 不经过 AI 直接执行的系统命令或可执行文件需以 ! 开头，"
-                        "例如 !ls、!dir、!ping 127.0.0.1、!git status；单独输入 ! 无效。"
+                        "ℹ️ System commands/executables executed directly (without AI) must start with !, "
+                        "for example !ls, !dir, !ping 127.0.0.1, !git status; a standalone ! is invalid."
                     )
                     continue
 
@@ -638,7 +647,7 @@ def run_agent_loop(agent: Any):
                             cwd=str(execution_cwd),
                             return_code=0 if exec_ok else 1,
                             stdout_text="",
-                            stderr_text="" if exec_ok else "命令执行失败（未捕获到详细输出）\n",
+                            stderr_text="" if exec_ok else "Command execution failed (no detailed output captured)\n",
                         )
                     self._show_separator_next_prompt = not self._is_direct_shell_result_aborted(last_direct)
                     continue
@@ -672,12 +681,12 @@ def run_agent_loop(agent: Any):
                                         new_path = execution_cwd / raw_path
                                 new_path = new_path.resolve()
                                 if not new_path.exists():
-                                    msg = f"❌ 目录 '{path}' 不存在"
+                                    msg = f"❌ Directory '{path}' does not exist"
                                     print(msg)
                                     cd_stderr = f"{msg}\n"
                                     cd_return_code = 1
                                 elif not new_path.is_dir():
-                                    msg = f"❌ '{path}' 不是一个目录"
+                                    msg = f"❌ '{path}' is not a directory"
                                     print(msg)
                                     cd_stderr = f"{msg}\n"
                                     cd_return_code = 1
@@ -688,7 +697,7 @@ def run_agent_loop(agent: Any):
                                     self._save_current_workspace_position()
                                     self._reset_work_directory_to_startup_initial()
                             except Exception as e:
-                                msg = f"❌ 切换目录失败: {e}"
+                                msg = f"❌ Failed to change directory: {e}"
                                 print(msg)
                                 cd_stderr = f"{msg}\n"
                                 cd_return_code = 1
@@ -717,7 +726,7 @@ def run_agent_loop(agent: Any):
                                     execution_cwd,
                                 )
                             except Exception as e:
-                                msg = f"❌ 命令执行异常: {e}"
+                                msg = f"❌ Command execution error: {e}"
                                 print(msg)
                                 self._repaint_direct_shell_command_feedback_if_failed(
                                     ui,
@@ -777,7 +786,7 @@ def run_agent_loop(agent: Any):
                                         stderr_text="",
                                     )
                     except Exception as e:
-                        msg = f"❌ 系统命令执行异常: {e}"
+                        msg = f"❌ System command execution error: {e}"
                         print(msg)
                         self._repaint_direct_shell_command_feedback_if_failed(
                             ui,
@@ -809,7 +818,7 @@ def run_agent_loop(agent: Any):
                         execution_cwd,
                     )
                 except Exception as e:
-                    msg = f"❌ 命令执行异常: {e}"
+                    msg = f"❌ Command execution error: {e}"
                     print(msg)
                     self._repaint_direct_shell_command_feedback_if_failed(
                         ui,
@@ -920,7 +929,7 @@ def run_agent_loop(agent: Any):
                     srv = str(e.get("server", "")).strip()
                     name = str(e.get("name", "")).strip()
                     kind = str(e.get("kind", "")).strip() or "unknown"
-                    print(f"🧩 启用 MCP 引用: /mcp/{srv}/{name} ({kind})")
+                    print(f"🧩 Enabled MCP reference: /mcp/{srv}/{name} ({kind})")
                 forced_mcp_prefix = self._build_forced_mcp_prefix(forced_mcp_entries)
             preloaded_skill_ids: Set[str] = set()
             if forced_skills:
@@ -934,7 +943,7 @@ def run_agent_loop(agent: Any):
                     skill_items.append(f"`{sname}`(skill_id=`{sid}`)")
                     full_prompt, meta = self._build_single_skill_prompt(sid)
                     if full_prompt:
-                        print(f"🧩 启用 Skill: {sname}")
+                        print(f"🧩 Enabled skill: {sname}")
                         full_prompts.append(full_prompt)
                         preloaded_skill_ids.add(self._canonical_skill_id(sid))
                         if not self._active_skill_id:
@@ -1101,7 +1110,7 @@ def run_agent_loop(agent: Any):
                 if self._consume_task_interrupt_requested():
                     raise KeyboardInterrupt
                 if not isinstance(ai_response, str):
-                    print(f"❌ AI返回异常: {ai_response}")
+                    print(f"❌ AI returned invalid response: {ai_response}")
                     break
                 if not user_message_recorded:
                     user_message_recorded = True
@@ -1121,7 +1130,7 @@ def run_agent_loop(agent: Any):
                 if fallback_plan:
                     tool_name, args = fallback_plan
                     if tool_name != "done":
-                        print(f"{_ansi_gray('执行工具:')} {_ansi_bright_blue(self._tool_call_summary(tool_name, args))}")
+                        print(f"{_ansi_gray('Tool call:')} {_ansi_bright_blue(self._tool_call_summary(tool_name, args))}")
                 else:
                     tool_name, args = "", {}
 
@@ -1134,11 +1143,11 @@ def run_agent_loop(agent: Any):
                     misplaced_plan = self._find_tool_plan_anywhere(ai_response)
                     no_tool_rounds += 1
                     if no_tool_rounds >= max_no_tool_rounds:
-                        print("❌ 模型连续未给出可执行 JSON 工具计划，已停止本轮自动执行。")
+                        print("❌ The model repeatedly failed to produce an executable JSON tool plan. Auto-execution has stopped for this round.")
                         break
                     print(
-                        f"⚠️ 未检测到可执行 JSON 工具计划（重试 {no_tool_rounds}/{max_no_tool_rounds}）："
-                        "将继续要求模型输出 {\"tool\":\"...\",\"args\":{...}}。"
+                        f"⚠️ No executable JSON tool plan detected (retry {no_tool_rounds}/{max_no_tool_rounds}): "
+                        "the model will be asked again to output {\"tool\":\"...\",\"args\":{...}}."
                     )
                     if misplaced_plan:
                         m_tool, m_args = misplaced_plan
@@ -1160,7 +1169,7 @@ def run_agent_loop(agent: Any):
                     continue
 
                 if not tool_name:
-                    print("❌ 工具计划缺少名称，结束本轮。")
+                    print("❌ Tool plan is missing tool name. Ending this round.")
                     break
 
                 if (
@@ -1175,7 +1184,7 @@ def run_agent_loop(agent: Any):
                         sorted(changed_files_in_task)
                     )
                     print(
-                        "⚠️ 检测到本任务已修改代码，但尚未完成验证；已拦截 done 并要求先执行最小验证。"
+                        "⚠️ Code changes were detected in this task but verification is incomplete; 'done' was blocked and minimal verification is required first."
                     )
                     next_input = (
                         f"【用户原始需求】\n{original_user_task}\n\n"
@@ -1249,7 +1258,7 @@ def run_agent_loop(agent: Any):
                         )
                         continue
                     if active_sid != canon_sid:
-                        print(f"🧩 即将启用 Skill: {sid}")
+                        print(f"🧩 About to enable skill: {sid}")
                     self._active_skill_full_prompt = full_prompt
                     self._active_skill_id = canon_sid or sid
                     self._active_skill_source = "local" if self._is_local_skill_id(canon_sid or sid) else "mcp"
@@ -1282,7 +1291,7 @@ def run_agent_loop(agent: Any):
                 if selected_skill:
                     skill_key = f"{selected_skill.get('skill_id')}::{selected_skill.get('name')}"
                     if skill_key != last_announced_skill_key:
-                        print(f"🧩 本步使用 Skill: {selected_skill.get('name')} ({selected_skill.get('skill_id')})")
+                        print(f"🧩 Use skill: {selected_skill.get('name')} ({selected_skill.get('skill_id')})")
                         last_announced_skill_key = skill_key
 
                 if self._consume_task_interrupt_requested():
@@ -1314,7 +1323,7 @@ def run_agent_loop(agent: Any):
                     self._last_cancelled_task = str(original_user_task or "").strip()
                     if current_task_id:
                         self._close_chat_task(current_task_id, "cancelled")
-                    print("⏹️ 检测到用户取消，已结束当前任务，不再自动续步。")
+                    print("⏹️ User cancellation detected. The current task has been terminated.")
                     break
 
                 if result.get("finished"):
@@ -1349,7 +1358,7 @@ def run_agent_loop(agent: Any):
                 if bool(result.get("task_changed", False)):
                     new_task = str(result.get("new_task") or "").strip()
                     if not new_task:
-                        print("❌ task_changed 返回缺少 new_task，已停止本轮自动执行。")
+                        print("❌ task_changed returned without new_task. Auto-execution has stopped for this round.")
                         break
                     old_task = original_user_task
                     original_user_task = new_task
@@ -1366,9 +1375,9 @@ def run_agent_loop(agent: Any):
                     verification_done_in_task = False
                     changed_files_in_task = set()
                     verification_evidence_in_task = []
-                    print("🔄 AI判定用户补充信息与原需求无关，已切换为新任务。")
-                    print(f"   旧任务: {old_task}")
-                    print(f"   新任务: {original_user_task}")
+                    print("🔄 AI judged the user supplement unrelated to the original requirement; switched to a new task.")
+                    print(f"   Old task: {old_task}")
+                    print(f"   New task: {original_user_task}")
                     reason = str(result.get("reason") or "").strip()
                     next_input = (
                         f"【用户原始需求】\n{original_user_task}\n\n"
@@ -1378,8 +1387,8 @@ def run_agent_loop(agent: Any):
                     )
                     continue
                 if bool(result.get("needs_user_input", False)) and str(result.get("input_type", "")).strip() == "supplement":
-                    q = str(result.get("question") or "").strip() or "请提供补充信息："
-                    print("🙋 需要你补充信息后才能继续。")
+                    q = str(result.get("question") or "").strip() or "Please provide supplementary information:"
+                    print("🙋 Supplementary information is required before continuing.")
                     print(f"❓ {q}")
                     supplement_text = ""
                     handoff_to_main_loop = False
@@ -1387,11 +1396,11 @@ def run_agent_loop(agent: Any):
                         try:
                             supplement_text = self._get_user_input_with_history().strip()
                         except KeyboardInterrupt:
-                            print("\n⏸️ 已取消补充信息输入，本轮任务暂停。")
+                            print("\n⏸️ Supplementary input cancelled. This task round is paused.")
                             supplement_text = ""
                             break
                         if not supplement_text:
-                            print("⚠️ 未收到补充信息，本轮任务暂停。")
+                            print("⚠️ No supplementary information received. This task round is paused.")
                             break
                         if supplement_text.startswith("/") or supplement_text.startswith("!"):
                             # Route prefixed input back to the main loop so it shares
@@ -1418,7 +1427,7 @@ def run_agent_loop(agent: Any):
                     and (result.get("retryable", True) is False)
                 ):
                     hint = str(result.get("error", "") or "需要用户输入后再继续。")
-                    print(f"⏸️ 已暂停自动续步：{hint}")
+                    print(f"⏸️ Auto-continue paused: {hint}")
                     break
 
                 step_progress = self._build_step_progress_context()
@@ -1456,8 +1465,8 @@ def run_agent_loop(agent: Any):
                 )
             if tool_round >= max_tool_rounds:
                 print(
-                    "⏹️ 已达到本轮自动执行上限（20 步），任务已暂停。"
-                    "请继续提问以续跑，或缩小目标范围后重试。"
+                    "⏹️ Reached the auto-execution limit for this round (20 steps). Task is paused. "
+                    "Ask again to continue, or narrow the task scope and retry."
                 )
             in_task_execution = False
             self._in_task_execution = False
@@ -1508,13 +1517,13 @@ def run_agent_loop(agent: Any):
             self._stop_interrupt_monitor(cancel_task_on_interrupt=True)
             print("")
             try:
-                should_exit = input("是否结束 Smart Shell？(y/n): ").strip().lower() == "y"
+                should_exit = input("Exit Smart Shell? (y/n): ").strip().lower() == "y"
             except KeyboardInterrupt:
                 should_exit = False
 
             if should_exit:
                 self._save_current_workspace_position()
-                print("👋 已退出 Smart Shell，再见！")
+                print("👋 Smart Shell exited. Goodbye!")
                 break
             continue
         except Exception as e:
@@ -1524,5 +1533,5 @@ def run_agent_loop(agent: Any):
                 self._clear_last_thinking_line()
             self._in_task_execution = False
             self._stop_interrupt_monitor(cancel_task_on_interrupt=True)
-            print(f"❌ 发生错误: {str(e)}")
+            print(f"❌ Error occurred: {str(e)}")
 
