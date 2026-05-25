@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 from src.actions.command_actions import action_shell_command
 from src.actions.command_actions import parse_shell_invoked_script_path
+from src.core.security.command_security import shell_command_in_allowlist
 from src.core.security.command_security import shell_executable_allowlist_key
 from src.core.security.command_security import shell_script_allowlist_key
 from src.services.execution_policy_service import freedom_auto_confirm
@@ -31,6 +32,9 @@ class _DummyAgent:
         self.prompt_result = True
         self.allowlist_hit = False
         self.reset_calls = 0
+        self._allowlist_shell_paths = {}
+        self._allowlist_shell_exes = set()
+        self._confirm_allowlist_salt = ""
 
     def _workspace_relative_script_triple(self, p: Path):
         return (self.work_directory / p, self.ai_workspace_dir / p, self.ai_workspace_dir / p)
@@ -42,7 +46,7 @@ class _DummyAgent:
         return None
 
     def _shell_command_in_allowlist(self, _command: str) -> bool:
-        return self.allowlist_hit
+        return self.allowlist_hit or shell_command_in_allowlist(self, _command)
 
     def _prompt_confirm_yes_no_maybe_always(self, _prompt, **kwargs):
         self.prompt_calls.append(kwargs)
@@ -149,6 +153,12 @@ class _FakeCompleted:
 
 
 class ShellCommandExecutionGuardsTests(unittest.TestCase):
+    def _assert_cancelled_error(self, result):
+        self.assertIn(
+            result.get("error"),
+            {"用户取消了操作", "Operation cancelled by user"},
+        )
+
     def test_parse_shell_invoked_script_path_unwraps_powershell(self):
         agent = _DummyAgent()
         tf = tempfile.NamedTemporaryFile(suffix=".py", delete=False)
@@ -385,7 +395,7 @@ class ShellCommandExecutionGuardsTests(unittest.TestCase):
         result = action_shell_command(agent, 'python -c "print(2)"', confirmed=False, interactive=True, input_data=None)
 
         self.assertFalse(result.get("success", True))
-        self.assertEqual(result.get("error"), "用户取消了操作")
+        self._assert_cancelled_error(result)
         self.assertEqual(len(agent.prompt_calls), 1)
         self.assertTrue(bool(agent.prompt_calls[0].get("offer_always", False)))
         self.assertFalse(bool(agent._manual_confirm_required_shell_once))
@@ -420,7 +430,7 @@ class ShellCommandExecutionGuardsTests(unittest.TestCase):
         result = action_shell_command(agent, 'python -c "print(1)"', confirmed=False, interactive=True, input_data=None)
 
         self.assertFalse(result.get("success", True))
-        self.assertEqual(result.get("error"), "用户取消了操作")
+        self._assert_cancelled_error(result)
         self.assertEqual(len(agent.prompt_calls), 1)
         self.assertTrue(bool(agent.prompt_calls[0].get("offer_always", False)))
 
@@ -435,6 +445,62 @@ class ShellCommandExecutionGuardsTests(unittest.TestCase):
         self.assertTrue(result.get("success", False))
         self.assertEqual(len(agent.prompt_calls), 0)
 
+    def test_workspace_read_command_skips_prompt_under_confirmation_policy(self):
+        agent = _DummyAgent()
+        with tempfile.TemporaryDirectory() as td:
+            ws = Path(td).resolve()
+            target = ws / "demo.txt"
+            target.write_text("hello", encoding="utf-8")
+            agent.workspace_root = ws
+            agent.work_directory = ws
+            agent.ai_workspace_dir = ws
+            agent.prompt_result = False
+
+            with patch("subprocess.run", return_value=_FakeCompleted("hello\n")):
+                result = action_shell_command(agent, f'type "{target}"', confirmed=False, interactive=False, input_data=None)
+
+        self.assertTrue(result.get("success", False))
+        self.assertEqual(len(agent.prompt_calls), 0)
+
+    def test_workspace_read_command_skips_prompt_under_moderate_policy(self):
+        agent = _DummyAgent()
+        agent.execution_policy = "moderate"
+        with tempfile.TemporaryDirectory() as td:
+            ws = Path(td).resolve()
+            target = ws / "demo.txt"
+            target.write_text("hello", encoding="utf-8")
+            agent.workspace_root = ws
+            agent.work_directory = ws
+            agent.ai_workspace_dir = ws
+            agent.prompt_result = False
+
+            with patch("subprocess.run", return_value=_FakeCompleted("hello\n")):
+                result = action_shell_command(agent, f'Get-Content "{target}"', confirmed=False, interactive=False, input_data=None)
+
+        self.assertTrue(result.get("success", False))
+        self.assertEqual(len(agent.prompt_calls), 0)
+
+    def test_workspace_read_command_does_not_bypass_when_path_outside_workspace(self):
+        agent = _DummyAgent()
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td).resolve()
+            ws = root / "ws"
+            other = root / "other"
+            ws.mkdir(parents=True, exist_ok=True)
+            other.mkdir(parents=True, exist_ok=True)
+            outside = other / "outside.txt"
+            outside.write_text("x", encoding="utf-8")
+            agent.workspace_root = ws
+            agent.work_directory = ws
+            agent.ai_workspace_dir = ws
+            agent.prompt_result = False
+
+            result = action_shell_command(agent, f'type "{outside}"', confirmed=False, interactive=False, input_data=None)
+
+        self.assertFalse(result.get("success", True))
+        self._assert_cancelled_error(result)
+        self.assertEqual(len(agent.prompt_calls), 1)
+
     def test_manual_confirm_marker_still_requires_prompt_when_confirmed_true(self):
         agent = _DummyAgent()
         agent.allowlist_hit = False
@@ -445,7 +511,7 @@ class ShellCommandExecutionGuardsTests(unittest.TestCase):
         result = action_shell_command(agent, command, confirmed=True, interactive=True, input_data=None)
 
         self.assertFalse(result.get("success", True))
-        self.assertEqual(result.get("error"), "用户取消了操作")
+        self._assert_cancelled_error(result)
         self.assertEqual(len(agent.prompt_calls), 1)
         self.assertTrue(bool(agent.prompt_calls[0].get("offer_always", False)))
 
