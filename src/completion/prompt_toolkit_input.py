@@ -11,6 +11,20 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 _WIN_DRIVE_BANG = re.compile(r"^([A-Za-z]:)(/.*)?$")
+MULTILINE_INDENT = "  "
+VK_SHIFT = 0x10
+VK_LSHIFT = 0xA0
+VK_RSHIFT = 0xA1
+SHIFT_ENTER_KEY_ALIASES: Tuple[Tuple[str, ...], ...] = (
+    # xterm CSI-u: Shift+Enter -> ESC [ 13 ; 2 u
+    ("escape", "[", "1", "3", ";", "2", "u"),
+    # modifyOtherKeys variant seen in some terminals.
+    ("escape", "[", "2", "7", ";", "2", ";", "1", "3", "~"),
+    # Some terminal integrations map Shift+Enter to Esc+Enter.
+    ("escape", "enter"),
+    # tmux/terminal custom mappings may emit SS3 Enter (Esc O M).
+    ("escape", "O", "M"),
+)
 
 from .builtin_slash_commands import slash_builtin_completions
 
@@ -191,6 +205,52 @@ def _sanitize_prompt_pollution(text: str, work_directory: Optional[Path] = None)
         cleaned = re.sub(r"^>+\s*", "", cleaned, count=1)
 
     return cleaned
+
+
+def _normalize_newlines(text: str) -> str:
+    return str(text or "").replace("\r\n", "\n").replace("\r", "\n")
+
+
+def _windows_get_async_key_state(vk_code: int) -> int:
+    if os.name != "nt":
+        return 0
+    try:
+        import ctypes
+
+        return int(ctypes.windll.user32.GetAsyncKeyState(int(vk_code)))
+    except Exception:
+        return 0
+
+
+def _windows_get_key_state(vk_code: int) -> int:
+    if os.name != "nt":
+        return 0
+    try:
+        import ctypes
+
+        return int(ctypes.windll.user32.GetKeyState(int(vk_code)))
+    except Exception:
+        return 0
+
+
+def _is_windows_shift_pressed() -> bool:
+    """
+    Detect Shift modifier from native Windows keyboard state.
+    This allows distinguishing Shift+Enter even when terminal input bytes
+    are the same as plain Enter.
+    """
+    if os.name != "nt":
+        return False
+    for vk in (VK_SHIFT, VK_LSHIFT, VK_RSHIFT):
+        try:
+            async_state = int(_windows_get_async_key_state(vk))
+            key_state = int(_windows_get_key_state(vk))
+        except Exception:
+            async_state = 0
+            key_state = 0
+        if (async_state & 0x8000) != 0 or (key_state & 0x8000) != 0:
+            return True
+    return False
 
 
 class FileCompleter(Completer):
@@ -1065,6 +1125,11 @@ class PromptToolkitInputHandler:
             return _get_output_columns(self.session, default=default)
         return int(default or 80)
 
+    @staticmethod
+    def _multiline_prompt_continuation(*_args: Any) -> str:
+        # Keep all wrapped/continued lines visually aligned with a fixed 2-space indent.
+        return MULTILINE_INDENT
+
     def get_input_with_completion(
         self,
         prompt: str,
@@ -1102,11 +1167,16 @@ class PromptToolkitInputHandler:
                 else:
                     prompt_line = prompt
 
-                user_input = self.session.prompt(prompt_line).strip()
+                user_input = self.session.prompt(
+                    prompt_line,
+                    multiline=True,
+                    prompt_continuation=self._multiline_prompt_continuation,
+                ).strip()
             else:
                 # 回退到标准input
                 user_input = input(prompt).strip()
 
+            user_input = _normalize_newlines(user_input)
             user_input = _sanitize_prompt_pollution(user_input, self.work_directory)
             
             # 保存到历史记录
@@ -1130,6 +1200,39 @@ class PromptToolkitInputHandler:
         Keep completion menu updated while deleting characters.
         """
         kb = KeyBindings()
+
+        def _safe_bind(keys: Tuple[str, ...], handler: Callable[[Any], None], *, eager: bool = False) -> bool:
+            try:
+                kb.add(*keys, eager=eager)(handler)
+                return True
+            except Exception:
+                return False
+
+        def _insert_newline(event) -> None:
+            event.current_buffer.insert_text("\n")
+
+        def _accept_input(event) -> None:
+            if _is_windows_shift_pressed():
+                _insert_newline(event)
+                return
+            event.current_buffer.validate_and_handle()
+
+        def _on_bracketed_paste(event) -> None:
+            pasted = _normalize_newlines(getattr(event, "data", ""))
+            if pasted:
+                event.current_buffer.insert_text(pasted)
+
+        # Enter always submits in multiline mode.
+        # Keep Enter as non-eager so multi-key Shift+Enter sequences (starting with
+        # ESC in some terminals) have a chance to match first.
+        _safe_bind(("enter",), _accept_input, eager=False)
+
+        # Shift+Enter is not a standard VT100 key. We support common terminals that emit
+        # CSI-u/modifyOtherKeys sequences, and keep Ctrl+J as a reliable newline fallback.
+        _safe_bind(("c-j",), _insert_newline, eager=True)
+        for alias in SHIFT_ENTER_KEY_ALIASES:
+            _safe_bind(alias, _insert_newline, eager=True)
+        _safe_bind(("<bracketed-paste>",), _on_bracketed_paste, eager=True)
 
         @kb.add("backspace")
         def _on_backspace(event):

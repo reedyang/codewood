@@ -355,6 +355,20 @@ class PromptSeparatorBehaviorTests(unittest.TestCase):
         self.assertTrue(agent._force_reload_chat_history_from_anchor_once)
         self.assertEqual(agent._chat_history_reload_last_terminal_width, 120)
 
+    def test_rewrite_previous_prompt_as_user_clears_all_multiline_rows_and_indents_continuation(self):
+        agent = self._build_agent()
+        fake_stdout = _FakeStdout()
+        with (
+            patch("src.smart_shell_agent._ansi_gray", side_effect=lambda s: s),
+            patch("src.smart_shell_agent.sys.stdout", fake_stdout),
+            patch.object(agent, "_estimate_rendered_line_count", return_value=2),
+        ):
+            agent._rewrite_previous_prompt_as_user("hello\n你好")
+        out = "".join(fake_stdout.writes)
+        self.assertIn("\x1b[1A\r\x1b[2K\x1b[1A\r\x1b[2K", out)
+        self.assertIn("› hello\n  你好\n", out)
+        self.assertNotIn("› hello\n你好\n", out)
+
 
 if __name__ == "__main__":
     unittest.main()
