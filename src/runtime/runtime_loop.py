@@ -2,9 +2,12 @@
 from __future__ import annotations
 
 import json
+import io
 import os
 import re
+import sys
 import time
+from contextlib import redirect_stderr, redirect_stdout
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
@@ -29,6 +32,44 @@ _CODE_MUTATION_TOOLS = {
     "apply_patch",
 }
 _WORKING_STATUS_MARQUEE_FPS = 10.0
+
+
+class _TeeTextStream:
+    def __init__(self, primary: Any, mirror: io.StringIO) -> None:
+        self._primary = primary
+        self._mirror = mirror
+
+    def write(self, text: str) -> int:
+        chunk = str(text or "")
+        wrote = self._primary.write(chunk)
+        self._mirror.write(chunk)
+        return int(wrote if isinstance(wrote, int) else len(chunk))
+
+    def flush(self) -> None:
+        try:
+            self._primary.flush()
+        except Exception:
+            pass
+        try:
+            self._mirror.flush()
+        except Exception:
+            pass
+
+    def isatty(self) -> bool:
+        fn = getattr(self._primary, "isatty", None)
+        if callable(fn):
+            try:
+                return bool(fn())
+            except Exception:
+                return False
+        return False
+
+    @property
+    def encoding(self) -> str:
+        return str(getattr(self._primary, "encoding", "") or "utf-8")
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._primary, name)
 
 
 def _is_software_development_domain(domains: List[str]) -> bool:
@@ -362,230 +403,246 @@ def run_agent_loop(agent: Any):
                     continue
 
             if builtin_line is not None:
-                handled, should_exit = dispatch_builtin_command(
-                    self,
-                    builtin_line,
-                    os_name=os_name,
-                    wait_for_supplement=False,
-                    consume_unknown=False,
-                )
-                if handled:
-                    if should_exit:
-                        break
-                    continue
-
-                bl = builtin_line.lower()
-                mcp_tool, mcp_args, mcp_err = self._parse_mcp_shortcut_command(builtin_line)
-                if mcp_tool:
-                    mcp_res = self.execute_tool_call(mcp_tool, mcp_args)
-                    self._print_mcp_shortcut_result(mcp_tool, mcp_args, mcp_res if isinstance(mcp_res, dict) else {})
-                    continue
-                if bl == "mcp" or bl.startswith("mcp "):
-                    print(f"❌ {mcp_err}")
-                    continue
-                if bl in ('exit', 'quit'):
-                    self._save_current_workspace_position()
-                    break
-                # clear screen
-                if bl == 'cls' or bl == 'clear screen':
-                    os.system('cls' if os_name == 'nt' else 'clear')
-                    self._suppress_next_separator = True
-                    continue
-                if bl == "clear":
-                    print("Usage: /clear <screen|history|context>")
-                    continue
-                if bl == 'clear history':
-                    self.history_manager.clear_history()
-                    if self.input_handler is not None and hasattr(
-                        self.input_handler, "reset_command_history"
-                    ):
-                        self.input_handler.reset_command_history(
-                            self.history_manager.get_all_history()
+                slash_command = f"/{builtin_line}"
+                slash_out_buf = io.StringIO()
+                slash_stdout = _TeeTextStream(sys.stdout, slash_out_buf)
+                slash_stderr = _TeeTextStream(sys.stderr, slash_out_buf)
+                with redirect_stdout(slash_stdout), redirect_stderr(slash_stderr):
+                    try:
+                        handled, should_exit = dispatch_builtin_command(
+                            self,
+                            builtin_line,
+                            os_name=os_name,
+                            wait_for_supplement=False,
+                            consume_unknown=False,
                         )
-                    print("✅ History has been cleared")
-                    continue
-                if bl == "clear context":
-                    self.conversation_history.clear()
-                    self._sync_active_chat_messages()
-                    self.operation_results.clear()
-                    self._last_auto_removed_ephemeral = None
-                    self._session_summary_llm = ""
-                    self._session_summary_rolling = ""
-                    self._last_llm_summary_pair_count = 0
-                    print(
-                        "✅ AI context has been cleared "
-                        "(conversation history and recent operation-result cache; command-line input history is unchanged)"
-                    )
-                    continue
-                if bl == "knowledge":
-                    print("Usage: /knowledge <status|sync|stats|search <query>>")
-                    continue
-                if bl == "knowledge status":
-                    self._print_knowledge_status_details()
-                    continue
+                        if handled:
+                            if should_exit:
+                                break
+                            continue
 
-                if bl == "memory":
-                    print("Usage: /memory <enable|disable|status|stats|list|search <query>|remember <text>|delete <id>>")
-                    continue
-                if bl == "memory enable":
-                    self.memory_enabled = True
-                    ok = self._save_memory_enabled_to_config()
-                    print(
-                        "✅ Experiential memory is enabled"
-                        + ("; saved to config.json" if ok else " (failed to save config; only effective for this process)")
-                    )
-                    continue
-                if bl == "memory disable":
-                    self.memory_enabled = False
-                    ok = self._save_memory_enabled_to_config()
-                    print(
-                        "✅ Experiential memory is disabled"
-                        + ("; saved to config.json" if ok else " (failed to save config; only effective for this process)")
-                    )
-                    continue
-                if bl == "memory status":
-                    self._print_memory_status_details()
-                    continue
-                if bl == "memory stats":
-                    self.execute_tool_call("memory_stats", {"verbose_print": True})
-                    continue
-                if bl == "memory list":
-                    self.execute_tool_call(
-                        "memory_list", {"limit": 20, "verbose_print": True}
-                    )
-                    continue
-                if bl.startswith("memory search "):
-                    q = builtin_line[len("memory search ") :].strip()
-                    if q:
-                        self.execute_tool_call(
-                            "memory_search", {"query": q, "verbose_print": True}
-                        )
-                    else:
-                        print("❌ Please provide search content")
-                    continue
-                if bl.startswith("memory remember "):
-                    text = builtin_line[len("memory remember ") :].strip()
-                    if not text:
-                        print("❌ Please provide content to remember")
-                        continue
-                    title = text[:80] + ("…" if len(text) > 80 else "")
-                    self.execute_tool_call(
-                        "memory_add",
-                        {
-                            "title": title,
-                            "content": text,
-                            "tier": "episodic",
-                            "memory_type": "preference",
-                            "source": "user_request",
-                            "user_request": text,
-                            "verbose_print": True,
-                        },
-                    )
-                    continue
-                if bl.startswith("memory delete "):
-                    mid = builtin_line[len("memory delete ") :].strip()
-                    if mid:
-                        self.execute_tool_call(
-                            "memory_delete",
-                            {"memory_id": mid, "verbose_print": True},
-                        )
-                    else:
-                        print("❌ Please provide memory id")
-                    continue
+                        bl = builtin_line.lower()
+                        mcp_tool, mcp_args, mcp_err = self._parse_mcp_shortcut_command(builtin_line)
+                        if mcp_tool:
+                            mcp_res = self.execute_tool_call(mcp_tool, mcp_args)
+                            self._print_mcp_shortcut_result(mcp_tool, mcp_args, mcp_res if isinstance(mcp_res, dict) else {})
+                            continue
+                        if bl == "mcp" or bl.startswith("mcp "):
+                            print(f"❌ {mcp_err}")
+                            continue
+                        if bl in ('exit', 'quit'):
+                            self._save_current_workspace_position()
+                            break
+                        # clear screen
+                        if bl == 'cls' or bl == 'clear screen':
+                            os.system('cls' if os_name == 'nt' else 'clear')
+                            self._suppress_next_separator = True
+                            continue
+                        if bl == "clear":
+                            print("Usage: /clear <screen|history|context>")
+                            continue
+                        if bl == 'clear history':
+                            self.history_manager.clear_history()
+                            if self.input_handler is not None and hasattr(
+                                self.input_handler, "reset_command_history"
+                            ):
+                                self.input_handler.reset_command_history(
+                                    self.history_manager.get_all_history()
+                                )
+                            print("✅ History has been cleared")
+                            continue
+                        if bl == "clear context":
+                            self.conversation_history.clear()
+                            self._sync_active_chat_messages()
+                            self.operation_results.clear()
+                            self._last_auto_removed_ephemeral = None
+                            self._session_summary_llm = ""
+                            self._session_summary_rolling = ""
+                            self._last_llm_summary_pair_count = 0
+                            print(
+                                "✅ AI context has been cleared "
+                                "(conversation history and recent operation-result cache; command-line input history is unchanged)"
+                            )
+                            continue
+                        if bl == "knowledge":
+                            print("Usage: /knowledge <status|sync|stats|search <query>>")
+                            continue
+                        if bl == "knowledge status":
+                            self._print_knowledge_status_details()
+                            continue
 
-                if self._handle_chat_builtin_command(builtin_line):
-                    continue
+                        if bl == "memory":
+                            print("Usage: /memory <enable|disable|status|stats|list|search <query>|remember <text>|delete <id>>")
+                            continue
+                        if bl == "memory enable":
+                            self.memory_enabled = True
+                            ok = self._save_memory_enabled_to_config()
+                            print(
+                                "✅ Experiential memory is enabled"
+                                + ("; saved to config.json" if ok else " (failed to save config; only effective for this process)")
+                            )
+                            continue
+                        if bl == "memory disable":
+                            self.memory_enabled = False
+                            ok = self._save_memory_enabled_to_config()
+                            print(
+                                "✅ Experiential memory is disabled"
+                                + ("; saved to config.json" if ok else " (failed to save config; only effective for this process)")
+                            )
+                            continue
+                        if bl == "memory status":
+                            self._print_memory_status_details()
+                            continue
+                        if bl == "memory stats":
+                            self.execute_tool_call("memory_stats", {"verbose_print": True})
+                            continue
+                        if bl == "memory list":
+                            self.execute_tool_call(
+                                "memory_list", {"limit": 20, "verbose_print": True}
+                            )
+                            continue
+                        if bl.startswith("memory search "):
+                            q = builtin_line[len("memory search ") :].strip()
+                            if q:
+                                self.execute_tool_call(
+                                    "memory_search", {"query": q, "verbose_print": True}
+                                )
+                            else:
+                                print("❌ Please provide search content")
+                            continue
+                        if bl.startswith("memory remember "):
+                            text = builtin_line[len("memory remember ") :].strip()
+                            if not text:
+                                print("❌ Please provide content to remember")
+                                continue
+                            title = text[:80] + ("…" if len(text) > 80 else "")
+                            self.execute_tool_call(
+                                "memory_add",
+                                {
+                                    "title": title,
+                                    "content": text,
+                                    "tier": "episodic",
+                                    "memory_type": "preference",
+                                    "source": "user_request",
+                                    "user_request": text,
+                                    "verbose_print": True,
+                                },
+                            )
+                            continue
+                        if bl.startswith("memory delete "):
+                            mid = builtin_line[len("memory delete ") :].strip()
+                            if mid:
+                                self.execute_tool_call(
+                                    "memory_delete",
+                                    {"memory_id": mid, "verbose_print": True},
+                                )
+                            else:
+                                print("❌ Please provide memory id")
+                            continue
 
-                if self._handle_workspace_builtin_command(builtin_line):
-                    continue
+                        if self._handle_chat_builtin_command(builtin_line):
+                            continue
 
-                if bl.startswith("execution-policy "):
-                    policy = ""
-                    policy = bl.split(" ", 1)[1].strip().lower()
-                    if policy == "show":
-                        self._print_execution_policy_details()
-                        continue
-                    if not policy:
-                        print("Usage: /execution-policy <show|unlimited|moderate|confirmation>")
-                    else:
-                        self.execute_tool_call("execution_policy_set", {"policy": policy})
-                    continue
-                if bl == "execution-policy":
-                    print("Usage: /execution-policy <show|unlimited|moderate|confirmation>")
-                    continue
+                        if self._handle_workspace_builtin_command(builtin_line):
+                            continue
 
-                if bl.startswith("session-summary "):
-                    sub = bl[len("session-summary ") :].strip().lower()
-                    if sub in ("on", "enable", "true", "1"):
-                        self.session_summary_llm_enabled = True
-                        ok = self._save_session_summary_llm_to_config()
+                        if bl.startswith("execution-policy "):
+                            policy = ""
+                            policy = bl.split(" ", 1)[1].strip().lower()
+                            if policy == "show":
+                                self._print_execution_policy_details()
+                                continue
+                            if not policy:
+                                print("Usage: /execution-policy <show|unlimited|moderate|confirmation>")
+                            else:
+                                self.execute_tool_call("execution_policy_set", {"policy": policy})
+                            continue
+                        if bl == "execution-policy":
+                            print("Usage: /execution-policy <show|unlimited|moderate|confirmation>")
+                            continue
+
+                        if bl.startswith("session-summary "):
+                            sub = bl[len("session-summary ") :].strip().lower()
+                            if sub in ("on", "enable", "true", "1"):
+                                self.session_summary_llm_enabled = True
+                                ok = self._save_session_summary_llm_to_config()
+                                print(
+                                    f"✅ Session LLM summary enabled (periodic compression for experiential-memory retrieval query)"
+                                    f"{'; saved to config.json' if ok else ' (failed to save config; only effective for this process)'}"
+                                )
+                                continue
+                            if sub in ("off", "disable", "false", "0"):
+                                self.session_summary_llm_enabled = False
+                                ok = self._save_session_summary_llm_to_config()
+                                print(
+                                    f"✅ Session LLM summary disabled (rolling excerpts are still kept)"
+                                    f"{'; saved to config.json' if ok else ' (failed to save config; only effective for this process)'}"
+                                )
+                                continue
+                            if sub == "show":
+                                on = bool(getattr(self, "session_summary_llm_enabled", True))
+                                cfg_path = self.config_dir / "config.json"
+                                print(
+                                    f"Session LLM summary (session_summary_llm): {'on' if on else 'off'}\n"
+                                    f"  Config key: \"session_summary_llm\" in config.json (boolean)\n"
+                                    f"  Config file: {cfg_path}"
+                                )
+                                continue
+                            print(
+                                "Usage: /session-summary <on|off|show>\n"
+                                "  on/off   - toggle periodic LLM session summary (rolling excerpt remains when off)\n"
+                                "  show     - show current switch and config file path"
+                            )
+                            continue
+                        if bl == "session-summary":
+                            print(
+                                "Usage: /session-summary <on|off|show>\n"
+                                "  /session-summary on     - enable LLM session summary\n"
+                                "  /session-summary off    - disable (rolling excerpt only)\n"
+                                "  /session-summary show   - show status"
+                            )
+                            continue
+
+                        if bl == "always_confirm-reset":
+                            self.execute_tool_call("always_confirm_reset", {})
+                            continue
+
+                        if bl == 'knowledge sync':
+                            self.execute_tool_call("knowledge_sync", {})
+                            continue
+
+                        if bl == 'knowledge stats':
+                            self.execute_tool_call("knowledge_stats", {})
+                            continue
+
+                        if bl.startswith('knowledge search '):
+                            query = builtin_line[len('knowledge search ') :]
+                            if query.strip():
+                                self.execute_tool_call("knowledge_search", {"query": query.strip()})
+                            else:
+                                print("❌ Please provide search query content")
+                            continue
+                        if bl == 'help':
+
+                            self._print_main_help()
+
+                            continue
+
                         print(
-                            f"✅ Session LLM summary enabled (periodic compression for experiential-memory retrieval query)"
-                            f"{'; saved to config.json' if ok else ' (failed to save config; only effective for this process)'}"
+                            "❌ Unrecognized built-in command. Use /help to view the list. "
+                            "For direct local shell/script execution, use ! prefix, e.g. !git status, !dir."
                         )
                         continue
-                    if sub in ("off", "disable", "false", "0"):
-                        self.session_summary_llm_enabled = False
-                        ok = self._save_session_summary_llm_to_config()
-                        print(
-                            f"✅ Session LLM summary disabled (rolling excerpts are still kept)"
-                            f"{'; saved to config.json' if ok else ' (failed to save config; only effective for this process)'}"
-                        )
-                        continue
-                    if sub == "show":
-                        on = bool(getattr(self, "session_summary_llm_enabled", True))
-                        cfg_path = self.config_dir / "config.json"
-                        print(
-                            f"Session LLM summary (session_summary_llm): {'on' if on else 'off'}\n"
-                            f"  Config key: \"session_summary_llm\" in config.json (boolean)\n"
-                            f"  Config file: {cfg_path}"
-                        )
-                        continue
-                    print(
-                        "Usage: /session-summary <on|off|show>\n"
-                        "  on/off   - toggle periodic LLM session summary (rolling excerpt remains when off)\n"
-                        "  show     - show current switch and config file path"
-                    )
-                    continue
-                if bl == "session-summary":
-                    print(
-                        "Usage: /session-summary <on|off|show>\n"
-                        "  /session-summary on     - enable LLM session summary\n"
-                        "  /session-summary off    - disable (rolling excerpt only)\n"
-                        "  /session-summary show   - show status"
-                    )
-                    continue
-
-                if bl == "always_confirm-reset":
-                    self.execute_tool_call("always_confirm_reset", {})
-                    continue
-
-                if bl == 'knowledge sync':
-                    self.execute_tool_call("knowledge_sync", {})
-                    continue
-
-                if bl == 'knowledge stats':
-                    self.execute_tool_call("knowledge_stats", {})
-                    continue
-
-                if bl.startswith('knowledge search '):
-                    query = builtin_line[len('knowledge search ') :]
-                    if query.strip():
-                        self.execute_tool_call("knowledge_search", {"query": query.strip()})
-                    else:
-                        print("❌ Please provide search query content")
-                    continue
-                if bl == 'help':
-
-                    self._print_main_help()
-
-                    continue
-
-                print(
-                    "❌ Unrecognized built-in command. Use /help to view the list. "
-                    "For direct local shell/script execution, use ! prefix, e.g. !git status, !dir."
-                )
-                continue
+                    finally:
+                        recorder = getattr(self, "_record_internal_slash_execution_history", None)
+                        if callable(recorder):
+                            try:
+                                recorder(
+                                    raw_user_command=slash_command,
+                                    output_text=slash_out_buf.getvalue(),
+                                )
+                            except Exception:
+                                pass
 
             # Direct local execution without AI: requires leading "!" on all platforms.
             run_direct_shell: Optional[str] = None

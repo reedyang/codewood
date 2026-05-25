@@ -209,6 +209,28 @@ class SessionMemoryService:
 
         return text
 
+    def _is_internal_slash_history_message(self, role: str, content: str) -> bool:
+        norm_role = str(role or "").strip().lower()
+        text = str(content or "")
+        if norm_role == "user":
+            parse_slash_user = getattr(self.agent, "_parse_internal_slash_user_history_content", None)
+            if callable(parse_slash_user):
+                try:
+                    return bool(str(parse_slash_user(text) or "").strip())
+                except Exception:
+                    return False
+            return False
+        if norm_role == "assistant":
+            parse_slash_result = getattr(self.agent, "_parse_internal_slash_result_history_content", None)
+            if callable(parse_slash_result):
+                try:
+                    payload = parse_slash_result(text)
+                except Exception:
+                    payload = None
+                return isinstance(payload, dict)
+            return False
+        return False
+
     def _latest_interruption_context_line(
         self, source_history: Optional[List[Dict[str, Any]]] = None
     ) -> str:
@@ -262,7 +284,10 @@ class SessionMemoryService:
             role = (msg.get("role") or "").strip().lower()
             if role not in ("user", "assistant"):
                 continue
-            c = str(msg.get("content") or "").replace("\n", " ").strip()
+            c_raw = str(msg.get("content") or "")
+            if self._is_internal_slash_history_message(role, c_raw):
+                continue
+            c = c_raw.replace("\n", " ").strip()
             if len(c) > snip:
                 c = c[: max(1, snip - 1)] + "…"
             tag = "U" if role == "user" else "A"
@@ -287,13 +312,21 @@ class SessionMemoryService:
     def maybe_refresh_session_summary_llm(self) -> None:
         if not getattr(self.agent, "session_summary_llm_enabled", True):
             return
-        pairs = len(self.agent.conversation_history) // 2
+        all_hist = list(getattr(self.agent, "conversation_history", None) or [])
+        filtered_hist = [
+            m for m in all_hist
+            if not self._is_internal_slash_history_message(
+                str(m.get("role") or "").strip().lower(),
+                str(m.get("content") or ""),
+            )
+        ]
+        pairs = len(filtered_hist) // 2
         if pairs < SESSION_SUMMARY_LLM_INTERVAL_PAIRS:
             return
         if self.agent._last_llm_summary_pair_count > 0:
             if pairs - self.agent._last_llm_summary_pair_count < SESSION_SUMMARY_LLM_INTERVAL_PAIRS:
                 return
-        hist = self.agent.conversation_history[-SESSION_SUMMARY_LLM_HISTORY_MSGS:]
+        hist = filtered_hist[-SESSION_SUMMARY_LLM_HISTORY_MSGS:]
         lines: List[str] = []
         for msg in hist:
             role = (msg.get("role") or "").strip().lower()
@@ -385,7 +418,10 @@ class SessionMemoryService:
             role = (msg.get("role") or "").strip().lower()
             if role not in ("user", "assistant"):
                 continue
-            content = _clip(str(msg.get("content") or ""), per_msg)
+            raw_content = str(msg.get("content") or "")
+            if self._is_internal_slash_history_message(role, raw_content):
+                continue
+            content = _clip(raw_content, per_msg)
             if not content:
                 continue
             tag = "用户" if role == "user" else "助手"
@@ -647,7 +683,16 @@ class SessionMemoryService:
     def run_memory_reflection_body(self) -> None:
         if not self.agent._ensure_memory_service():
             return
-        hist = self.agent.conversation_history[-6:] if self.agent.conversation_history else []
+        hist_all = self.agent.conversation_history[-12:] if self.agent.conversation_history else []
+        hist: List[Dict[str, Any]] = []
+        for msg in hist_all:
+            role = str(msg.get("role") or "").strip().lower()
+            content = str(msg.get("content") or "")
+            if self._is_internal_slash_history_message(role, content):
+                continue
+            hist.append(msg)
+        if len(hist) > 6:
+            hist = hist[-6:]
         op_tail = self.agent.operation_results[-4:] if self.agent.operation_results else []
         blob = {"recent_chat": hist, "recent_operations": op_tail}
         payload = json.dumps(blob, ensure_ascii=False)[:12000]
@@ -791,10 +836,17 @@ class SessionMemoryService:
                         return root
                     break
         hist = self._domain_filtered_history()
+        parse_slash_user = getattr(self.agent, "_parse_internal_slash_user_history_content", None)
         for msg in hist:
             if str(msg.get("role") or "").strip().lower() != "user":
                 continue
             c = str(msg.get("content") or "").strip()
+            if callable(parse_slash_user):
+                try:
+                    if str(parse_slash_user(c) or "").strip():
+                        continue
+                except Exception:
+                    pass
             if c:
                 return c
         return str(fallback or "").strip()
@@ -880,11 +932,27 @@ class SessionMemoryService:
 
         normalized: List[Dict[str, Any]] = []
         assistant_trimmed = 0
+        parse_slash_user = getattr(self.agent, "_parse_internal_slash_user_history_content", None)
+        parse_slash_result = getattr(self.agent, "_parse_internal_slash_result_history_content", None)
         for msg in hist:
             role = str(msg.get("role") or "").strip().lower()
             if role not in ("user", "assistant"):
                 continue
-            content = self._normalize_history_content_for_model(role, str(msg.get("content") or ""))
+            raw_content = str(msg.get("content") or "")
+            if role == "user" and callable(parse_slash_user):
+                try:
+                    if str(parse_slash_user(raw_content) or "").strip():
+                        continue
+                except Exception:
+                    pass
+            if role == "assistant" and callable(parse_slash_result):
+                try:
+                    slash_payload = parse_slash_result(raw_content)
+                except Exception:
+                    slash_payload = None
+                if isinstance(slash_payload, dict):
+                    continue
+            content = self._normalize_history_content_for_model(role, raw_content)
             if role == "assistant":
                 before = content
                 content = self._clip_text_to_token_budget(content, assistant_clip_tokens)

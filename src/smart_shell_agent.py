@@ -117,6 +117,8 @@ KNOWLEDGE_AVAILABLE = True  # 构造前为「未探测」；单测设为 False �
 DIRECT_SHELL_USER_HISTORY_PREFIX = "[DIRECT_SHELL_USER_COMMAND]"
 DIRECT_SHELL_RESULT_HISTORY_PREFIX = "[DIRECT_SHELL_RESULT]"
 CONVERSATION_INTERRUPTED_HISTORY_PREFIX = "[CONVERSATION_INTERRUPTED]"
+INTERNAL_SLASH_USER_HISTORY_PREFIX = "[INTERNAL_SLASH_USER_COMMAND]"
+INTERNAL_SLASH_RESULT_HISTORY_PREFIX = "[INTERNAL_SLASH_RESULT]"
 
 # 根据操作系统选择合适的输入处理器
 import platform
@@ -982,6 +984,10 @@ class SmartShellAgent:
                         erase_previous=False,
                     )
                     continue
+                slash_cmd = self._parse_internal_slash_user_history_content(content)
+                if slash_cmd:
+                    print(f"{_ansi_gray('›')} {slash_cmd}")
+                    continue
                 print(f"{_ansi_gray('›')} {content}")
             elif role == "assistant":
                 interrupted_event = self._parse_conversation_interrupted_history_content(content)
@@ -1010,6 +1016,12 @@ class SmartShellAgent:
                         self._print_conversation_interrupted_banner()
                     else:
                         self._print_direct_shell_history_separator()
+                    continue
+                slash_result = self._parse_internal_slash_result_history_content(content)
+                if slash_result is not None:
+                    self._print_internal_slash_history_output(
+                        str(slash_result.get("output") or "")
+                    )
                     continue
                 display_response = format_assistant_display_response(content)
                 if display_response:
@@ -1488,6 +1500,74 @@ class SmartShellAgent:
             stdout_text=str(stdout_text or ""),
             stderr_text=str(stderr_text or ""),
             aborted_by_user=bool(aborted_by_user),
+        )
+        self._append_chat_message("user", user_content)
+        self._append_chat_message("assistant", assistant_content)
+
+    def _build_internal_slash_user_history_content(self, raw_user_command: str) -> str:
+        cmd = str(raw_user_command or "").strip()
+        return f"{INTERNAL_SLASH_USER_HISTORY_PREFIX}{cmd}"
+
+    def _parse_internal_slash_user_history_content(self, content: str) -> str:
+        text = str(content or "")
+        if not text.startswith(INTERNAL_SLASH_USER_HISTORY_PREFIX):
+            return ""
+        cmd = text[len(INTERNAL_SLASH_USER_HISTORY_PREFIX):].strip()
+        return cmd
+
+    def _build_internal_slash_result_history_content(
+        self,
+        raw_user_command: str,
+        output_text: str,
+    ) -> str:
+        payload = {
+            "kind": "internal_slash_result",
+            "invoked_by": "user",
+            "raw_user_command": str(raw_user_command or ""),
+            "output": str(output_text or ""),
+            "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        }
+        return f"{INTERNAL_SLASH_RESULT_HISTORY_PREFIX}{json.dumps(payload, ensure_ascii=False)}"
+
+    def _parse_internal_slash_result_history_content(self, content: str) -> Optional[Dict[str, Any]]:
+        text = str(content or "")
+        if not text.startswith(INTERNAL_SLASH_RESULT_HISTORY_PREFIX):
+            return None
+        body = text[len(INTERNAL_SLASH_RESULT_HISTORY_PREFIX):].strip()
+        if not body:
+            return None
+        try:
+            payload = json.loads(body)
+        except Exception:
+            return None
+        if not isinstance(payload, dict):
+            return None
+        if str(payload.get("kind") or "").strip() != "internal_slash_result":
+            return None
+        return payload
+
+    def _print_internal_slash_history_output(self, output_text: str) -> None:
+        out = str(output_text or "")
+        if not out:
+            return
+        try:
+            sys.stdout.write(out)
+            sys.stdout.flush()
+        except Exception:
+            print(out, end="")
+
+    def _record_internal_slash_execution_history(
+        self,
+        raw_user_command: str,
+        output_text: str,
+    ) -> None:
+        raw_cmd = str(raw_user_command or "").strip()
+        if not raw_cmd:
+            return
+        user_content = self._build_internal_slash_user_history_content(raw_cmd)
+        assistant_content = self._build_internal_slash_result_history_content(
+            raw_user_command=raw_cmd,
+            output_text=str(output_text or ""),
         )
         self._append_chat_message("user", user_content)
         self._append_chat_message("assistant", assistant_content)
