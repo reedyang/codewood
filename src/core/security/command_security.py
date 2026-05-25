@@ -1,9 +1,10 @@
 import hashlib
 import json
 import os
+import re
 import secrets
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, List, Optional
 
 
 def confirm_allowlist_path(agent: Any) -> Path:
@@ -138,6 +139,8 @@ def save_confirm_allowlist(agent: Any) -> bool:
 
 
 def shell_command_in_allowlist(agent: Any, command: str) -> bool:
+    if _is_workspace_read_command(agent, command):
+        return True
     sk = shell_script_allowlist_key(agent, command)
     if sk is not None:
         expected = agent._allowlist_shell_paths.get(sk)
@@ -150,6 +153,116 @@ def shell_command_in_allowlist(agent: Any, command: str) -> bool:
         return bool(actual) and actual == expected
     ek = shell_executable_allowlist_key(agent, command)
     return bool(ek) and ek in agent._allowlist_shell_exes
+
+
+def _is_workspace_read_command(agent: Any, command: str) -> bool:
+    from ...actions.command_actions import (
+        _split_shell_like,
+        _strip_wrapping_quotes,
+        _token_exe_base,
+        _unwrap_shell_command_layers,
+    )
+
+    workspace_root = getattr(agent, "workspace_root", None)
+    if not workspace_root:
+        return False
+    try:
+        workspace_root_path = Path(str(workspace_root)).resolve()
+    except OSError:
+        return False
+
+    s = _unwrap_shell_command_layers(str(command or "").strip())
+    if not s:
+        return False
+    # Keep this whitelist strict: no pipelines/redirection/command chaining.
+    if re.search(r"(\|\||&&|[|;<>])", s):
+        return False
+
+    parts = _split_shell_like(s)
+    if not parts:
+        return False
+    exe = _token_exe_base(_strip_wrapping_quotes(parts[0]))
+    read_exes = {"cat", "type", "more", "less", "head", "tail", "get-content", "gc"}
+    if exe not in read_exes:
+        return False
+
+    path_tokens = _extract_read_path_tokens(exe, parts[1:])
+    if not path_tokens:
+        return False
+    for token in path_tokens:
+        path = _resolve_read_path_token(workspace_root_path, token)
+        if path is None:
+            return False
+        try:
+            if not bool(agent._is_path_under(path, workspace_root_path)):
+                return False
+        except Exception:
+            return False
+    return True
+
+
+def _extract_read_path_tokens(exe: str, args: List[str]) -> List[str]:
+    out: List[str] = []
+    i = 0
+    while i < len(args):
+        tok = str(args[i] or "").strip()
+        if not tok:
+            i += 1
+            continue
+        low = tok.lower()
+        if low == "--":
+            out.extend([x for x in args[i + 1 :] if str(x or "").strip()])
+            break
+        if exe in {"get-content", "gc"}:
+            if low in {"-path", "-literalpath", "-lp"} and i + 1 < len(args):
+                out.append(args[i + 1])
+                i += 2
+                continue
+            if low.startswith("-path:") or low.startswith("-literalpath:"):
+                _, _, rhs = tok.partition(":")
+                if rhs.strip():
+                    out.append(rhs.strip())
+                i += 1
+                continue
+            if tok.startswith("-"):
+                i += 1
+                continue
+            out.append(tok)
+            i += 1
+            continue
+        if tok.startswith("-"):
+            if exe in {"head", "tail"} and low in {"-n", "-c", "--lines", "--bytes"} and i + 1 < len(args):
+                i += 2
+                continue
+            i += 1
+            continue
+        if exe == "more" and tok.startswith("/"):
+            i += 1
+            continue
+        out.append(tok)
+        i += 1
+    return out
+
+
+def _resolve_read_path_token(workspace_root: Path, token: str) -> Optional[Path]:
+    cleaned = str(token or "").strip().strip('"').strip("'")
+    if not cleaned:
+        return None
+    # Keep whitelist strict: reject wildcards and shell variables.
+    if any(x in cleaned for x in ("*", "?", "$(", "${", "%", "`")):
+        return None
+    if cleaned.startswith(".\\") or cleaned.startswith("./"):
+        cleaned = cleaned[2:]
+    candidate = Path(cleaned)
+    if candidate.is_absolute():
+        try:
+            return candidate.resolve()
+        except OSError:
+            return candidate
+    try:
+        return (workspace_root / candidate).resolve()
+    except OSError:
+        return workspace_root / candidate
 
 
 def shell_confirm_should_offer_always(agent: Any, command: str) -> bool:
