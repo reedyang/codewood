@@ -49,6 +49,31 @@ class _FakeSessionWithHook:
         return self.returned_text
 
 
+class _FakeBuffer:
+    def __init__(self, text: str):
+        self.text = text
+        self.cursor_position = len(text)
+
+
+class _CursorAwareSession:
+    def __init__(self, returned_text: str):
+        self.returned_text = returned_text
+        self.calls = []
+        self.output = _FakeOutput(80)
+        self.last_cursor_position = None
+
+    def prompt(self, prompt_line: str, **kwargs):
+        self.calls.append((prompt_line, kwargs))
+        default_text = str(kwargs.get("default", "") or "")
+        fake_buffer = _FakeBuffer(default_text)
+        self.app = type("App", (), {"current_buffer": fake_buffer})()
+        pre_run = kwargs.get("pre_run")
+        if callable(pre_run):
+            pre_run()
+        self.last_cursor_position = fake_buffer.cursor_position
+        return self.returned_text
+
+
 class PromptToolkitInputCompletionTests(unittest.TestCase):
     def test_windows_shift_state_detector_returns_false_on_non_windows(self):
         with patch.object(pti.os, "name", "posix"):
@@ -156,6 +181,117 @@ class PromptToolkitInputCompletionTests(unittest.TestCase):
         out = handler.get_input_with_completion("› ")
         self.assertEqual(out, "echo hi")
         self.assertEqual(calls["n"], 1)
+
+    def test_resize_interrupted_prompt_restores_unsent_draft_on_next_prompt(self):
+        handler = pti.PromptToolkitInputHandler.__new__(pti.PromptToolkitInputHandler)
+        interrupted_session = _FakeSessionWithHook("")
+        stable_session = _FakeSession("hello\n你好 world")
+        handler.session = interrupted_session
+        handler.history = []
+        handler.work_directory = Path.cwd()
+        handler._status_bar_text = ""
+        handler._status_bar_fragments = []
+        handler._status_bar_enabled = True
+        handler._pending_prefill_text = ""
+        handler._clear_status_overlay_line_if_possible = lambda: None
+
+        def _simulate_resize_interrupt():
+            interrupted_session._smart_shell_resize_interrupted = True
+            interrupted_session._smart_shell_resize_draft = "hello\r\n你好"
+
+        interrupted_session.before_return = _simulate_resize_interrupt
+
+        out1 = handler.get_input_with_completion("› ")
+        self.assertEqual(out1, "")
+        self.assertEqual(handler._pending_prefill_text, "hello\n你好")
+        self.assertEqual(handler.history, [])
+
+        handler.session = stable_session
+        out2 = handler.get_input_with_completion("› ")
+        self.assertEqual(out2, "hello\n你好 world")
+        self.assertEqual(handler._pending_prefill_text, "")
+        _, kwargs = stable_session.calls[0]
+        self.assertEqual(kwargs.get("default"), "hello\n你好")
+        self.assertEqual(handler.history, ["hello\n你好 world"])
+
+    def test_shell_mode_is_preserved_after_resize_interrupted_reload(self):
+        class _ResolvedPromptSession(_FakeSession):
+            def prompt(self, prompt_line: str, **kwargs):
+                resolved = prompt_line() if callable(prompt_line) else prompt_line
+                self.calls.append((resolved, kwargs))
+                return self.returned_text
+
+        handler = pti.PromptToolkitInputHandler.__new__(pti.PromptToolkitInputHandler)
+        interrupted_session = _FakeSessionWithHook("")
+        stable_session = _ResolvedPromptSession("dir /b")
+        handler.session = interrupted_session
+        handler.history = []
+        handler.work_directory = Path.cwd()
+        handler._status_bar_text = ""
+        handler._status_bar_fragments = []
+        handler._status_bar_enabled = True
+        handler._pending_prefill_text = ""
+        handler._pending_shell_mode_active = False
+        handler._shell_mode_active = False
+        handler._clear_status_overlay_line_if_possible = lambda: None
+
+        def _simulate_shell_resize_interrupt():
+            handler._shell_mode_active = True
+            interrupted_session._smart_shell_resize_interrupted = True
+            interrupted_session._smart_shell_resize_draft = "dir"
+
+        interrupted_session.before_return = _simulate_shell_resize_interrupt
+
+        out1 = handler.get_input_with_completion("› ")
+        self.assertEqual(out1, "")
+        self.assertEqual(handler._pending_prefill_text, "dir")
+        self.assertTrue(handler._pending_shell_mode_active)
+
+        handler.session = stable_session
+        out2 = handler.get_input_with_completion("› ")
+        self.assertEqual(out2, "!dir /b")
+        self.assertFalse(handler._pending_shell_mode_active)
+        prompt_msg, kwargs = stable_session.calls[0]
+        self.assertEqual(
+            prompt_msg,
+            [(f"fg:{pti.SHELL_MODE_COLOR_HEX}", pti.SHELL_MODE_PROMPT)],
+        )
+        self.assertEqual(kwargs.get("default"), "dir")
+        self.assertEqual(handler.history, ["!dir /b"])
+
+    def test_resize_interrupted_prompt_restores_cursor_position_on_next_prompt(self):
+        handler = pti.PromptToolkitInputHandler.__new__(pti.PromptToolkitInputHandler)
+        interrupted_session = _FakeSessionWithHook("")
+        stable_session = _CursorAwareSession("hello world")
+        handler.session = interrupted_session
+        handler.history = []
+        handler.work_directory = Path.cwd()
+        handler._status_bar_text = ""
+        handler._status_bar_fragments = []
+        handler._status_bar_enabled = True
+        handler._pending_prefill_text = ""
+        handler._pending_prefill_cursor_position = 0
+        handler._pending_shell_mode_active = False
+        handler._shell_mode_active = False
+        handler._clear_status_overlay_line_if_possible = lambda: None
+
+        def _simulate_resize_interrupt():
+            interrupted_session._smart_shell_resize_interrupted = True
+            interrupted_session._smart_shell_resize_draft = "hello world"
+            interrupted_session._smart_shell_resize_cursor_position = 5
+
+        interrupted_session.before_return = _simulate_resize_interrupt
+
+        out1 = handler.get_input_with_completion("› ")
+        self.assertEqual(out1, "")
+        self.assertEqual(handler._pending_prefill_text, "hello world")
+        self.assertEqual(handler._pending_prefill_cursor_position, 5)
+
+        handler.session = stable_session
+        out2 = handler.get_input_with_completion("› ")
+        self.assertEqual(out2, "hello world")
+        self.assertEqual(stable_session.last_cursor_position, 5)
+        self.assertEqual(handler._pending_prefill_cursor_position, 0)
 
     def test_shell_mode_prompt_message_is_red_bang_prompt(self):
         handler = pti.PromptToolkitInputHandler.__new__(pti.PromptToolkitInputHandler)
