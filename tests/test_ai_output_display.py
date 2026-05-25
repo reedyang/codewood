@@ -96,7 +96,7 @@ class AiOutputDisplayTests(unittest.TestCase):
             "src.smart_shell_agent._ansi_bright_blue", side_effect=lambda s: f"<BB>{s}</BB>"
         ):
             line = self.agent._format_tool_call_feedback_line("read", {"path": "a.txt"}, failed=False)
-        self.assertTrue(line.startswith("<RGB:197,15,31>•</RGB> Ran "))
+        self.assertTrue(line.startswith("<RGB:19,161,14>•</RGB> Ran "))
         self.assertIn("<BB>read (path=a.txt)</BB>", line)
 
     def test_format_tool_call_feedback_line_switches_bullet_color_when_failed(self):
@@ -104,7 +104,7 @@ class AiOutputDisplayTests(unittest.TestCase):
             "src.smart_shell_agent._ansi_bright_blue", side_effect=lambda s: f"<BB>{s}</BB>"
         ):
             line = self.agent._format_tool_call_feedback_line("read", {"path": "a.txt"}, failed=True)
-        self.assertTrue(line.startswith("<RGB:19,161,14>•</RGB> Ran "))
+        self.assertTrue(line.startswith("<RGB:197,15,31>•</RGB> Ran "))
         self.assertIn("<BB>read (path=a.txt)</BB>", line)
 
 

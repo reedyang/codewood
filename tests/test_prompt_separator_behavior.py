@@ -369,6 +369,42 @@ class PromptSeparatorBehaviorTests(unittest.TestCase):
         self.assertIn("› hello\n  你好\n", out)
         self.assertNotIn("› hello\n你好\n", out)
 
+    def test_chat_history_tool_feedback_marks_failed_from_operation_results(self):
+        agent = self._build_agent()
+        agent.conversation_history = [
+            {"role": "assistant", "content": "{\"tool\":\"read\",\"args\":{\"path\":\"a.txt\"}}"},
+        ]
+        agent.operation_results = [
+            {
+                "command": {"tool": "read", "args": {"path": "a.txt"}},
+                "result": {"success": False},
+            }
+        ]
+        with (
+            patch("builtins.print"),
+            patch.object(agent, "_print_tool_call_feedback") as mock_feedback,
+        ):
+            agent._print_chat_history()
+        mock_feedback.assert_called_once_with("read", {"path": "a.txt"}, failed=True)
+
+    def test_refresh_after_tool_output_keeps_history_anchor_position(self):
+        agent = self._build_agent()
+        agent.conversation_history = [
+            {"role": "user", "content": "u1"},
+            {"role": "assistant", "content": "a1"},
+            {"role": "user", "content": "u2"},
+        ]
+        agent._remember_active_chat_history_first_visible_index(2)
+        with (
+            patch("src.smart_shell_agent.os.system"),
+            patch("src.runtime.runtime_loop._print_startup_overview"),
+            patch.object(agent, "_sync_active_chat_messages") as mock_sync,
+            patch.object(agent, "_print_chat_history") as mock_history,
+        ):
+            agent._refresh_chat_history_after_tool_output()
+        mock_sync.assert_called_once_with()
+        mock_history.assert_called_once_with(start_index=2)
+
 
 if __name__ == "__main__":
     unittest.main()
