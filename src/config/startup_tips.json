@@ -77,6 +77,10 @@
       "highlights": ["/mcp status"]
     },
     {
+      "text": "Press Shift+Enter to insert a newline, and press Enter to send.",
+      "highlights": ["Shift+Enter", "Enter"]
+    },
+    {
       "text": "Use /help to view built-in commands whenever you are unsure.",
       "highlights": ["/help"]
     }
