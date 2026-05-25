@@ -91,6 +91,22 @@ class AiOutputDisplayTests(unittest.TestCase):
         s = self.agent._tool_call_summary("shell", {"command": cmd, "force": True, "input": "x"})
         self.assertEqual(s, "Get-ChildItem -Force")
 
+    def test_format_tool_call_feedback_line_uses_ran_and_default_bullet_color(self):
+        with patch("src.smart_shell_agent._ansi_rgb", side_effect=lambda text, r, g, b: f"<RGB:{r},{g},{b}>{text}</RGB>"), patch(
+            "src.smart_shell_agent._ansi_bright_blue", side_effect=lambda s: f"<BB>{s}</BB>"
+        ):
+            line = self.agent._format_tool_call_feedback_line("read", {"path": "a.txt"}, failed=False)
+        self.assertTrue(line.startswith("<RGB:197,15,31>•</RGB> Ran "))
+        self.assertIn("<BB>read (path=a.txt)</BB>", line)
+
+    def test_format_tool_call_feedback_line_switches_bullet_color_when_failed(self):
+        with patch("src.smart_shell_agent._ansi_rgb", side_effect=lambda text, r, g, b: f"<RGB:{r},{g},{b}>{text}</RGB>"), patch(
+            "src.smart_shell_agent._ansi_bright_blue", side_effect=lambda s: f"<BB>{s}</BB>"
+        ):
+            line = self.agent._format_tool_call_feedback_line("read", {"path": "a.txt"}, failed=True)
+        self.assertTrue(line.startswith("<RGB:19,161,14>•</RGB> Ran "))
+        self.assertIn("<BB>read (path=a.txt)</BB>", line)
+
 
 if __name__ == "__main__":
     unittest.main()

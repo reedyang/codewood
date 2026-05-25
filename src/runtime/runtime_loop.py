@@ -21,7 +21,6 @@ from ..core.console_utils import (
     _ansi_bold,
     _ansi_gray,
     _ansi_cyan,
-    _ansi_bright_blue,
     _WorkingStatusTicker,
     _ansi_yellow,
 )
@@ -1130,7 +1129,7 @@ def run_agent_loop(agent: Any):
                 if fallback_plan:
                     tool_name, args = fallback_plan
                     if tool_name != "done":
-                        print(f"{_ansi_gray('Tool call:')} {_ansi_bright_blue(self._tool_call_summary(tool_name, args))}")
+                        self._print_tool_call_feedback(tool_name, args, failed=False)
                 else:
                     tool_name, args = "", {}
 
@@ -1316,6 +1315,11 @@ def run_agent_loop(agent: Any):
                 if self._consume_task_interrupt_requested():
                     raise KeyboardInterrupt
                 result = self.execute_tool_call(tool_name, args)
+                self._repaint_tool_call_feedback_if_failed(
+                    tool_name,
+                    args,
+                    failed=not bool(result.get("success", True)),
+                )
                 no_tool_rounds = 0
                 self.operation_results.append({
                     "command": pseudo_command,
