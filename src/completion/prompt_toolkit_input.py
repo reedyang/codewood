@@ -7,14 +7,21 @@
 import os
 import re
 import sys
+import unicodedata
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 _WIN_DRIVE_BANG = re.compile(r"^([A-Za-z]:)(/.*)?$")
+_ANSI_SGR_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 MULTILINE_INDENT = "  "
 VK_SHIFT = 0x10
 VK_LSHIFT = 0xA0
 VK_RSHIFT = 0xA1
+SHELL_MODE_PROMPT = "! "
+SHELL_MODE_LABEL = "Shell mode"
+SHELL_MODE_COLOR_HEX = "#e74856"
+SHELL_MODE_COLOR_RGB = (231, 72, 86)
+SHELL_MODE_RIGHT_PADDING = 2
 SHIFT_ENTER_KEY_ALIASES: Tuple[Tuple[str, ...], ...] = (
     # xterm CSI-u: Shift+Enter -> ESC [ 13 ; 2 u
     ("escape", "[", "1", "3", ";", "2", "u"),
@@ -27,6 +34,7 @@ SHIFT_ENTER_KEY_ALIASES: Tuple[Tuple[str, ...], ...] = (
 )
 
 from .builtin_slash_commands import slash_builtin_completions
+from ..core.console_utils import _ansi_gray, _ansi_rgb
 
 try:
     from prompt_toolkit import PromptSession
@@ -209,6 +217,59 @@ def _sanitize_prompt_pollution(text: str, work_directory: Optional[Path] = None)
 
 def _normalize_newlines(text: str) -> str:
     return str(text or "").replace("\r\n", "\n").replace("\r", "\n")
+
+
+def _strip_ansi_sgr(text: str) -> str:
+    return _ANSI_SGR_RE.sub("", str(text or ""))
+
+
+def _display_width(text: str) -> int:
+    s = str(text or "")
+    if not s:
+        return 0
+    try:
+        from wcwidth import wcswidth  # type: ignore
+
+        w = int(wcswidth(s))
+        if w >= 0:
+            return w
+    except Exception:
+        pass
+    width = 0
+    for ch in s:
+        if unicodedata.combining(ch):
+            continue
+        east = unicodedata.east_asian_width(ch)
+        width += 2 if east in ("W", "F") else 1
+    return width
+
+
+def _truncate_to_display_width(text: str, max_width: int) -> str:
+    s = str(text or "")
+    cap = max(0, int(max_width or 0))
+    if cap <= 0 or not s:
+        return ""
+    out: List[str] = []
+    used = 0
+    for ch in s:
+        ch_w = _display_width(ch)
+        if ch_w <= 0:
+            out.append(ch)
+            continue
+        if used + ch_w > cap:
+            break
+        out.append(ch)
+        used += ch_w
+    return "".join(out)
+
+
+def _shell_mode_effective_right_padding() -> int:
+    # On Windows terminals (Windows Terminal / Cursor / VS Code integrated),
+    # the right edge often appears with one extra visual cell. Render one fewer
+    # space so users see exactly two trailing spaces after "Shell mode".
+    if os.name == "nt":
+        return max(0, SHELL_MODE_RIGHT_PADDING - 1)
+    return SHELL_MODE_RIGHT_PADDING
 
 
 def _windows_get_async_key_state(vk_code: int) -> int:
@@ -1023,6 +1084,8 @@ class PromptToolkitInputHandler:
         self._status_bar_text = ""
         self._status_bar_fragments = []
         self._status_bar_enabled = True
+        self._shell_mode_active = False
+        self._prompt_line = ""
         self.renders_prompt_separator_inline = False
         self._terminal_resize_callback = terminal_resize_callback
         self._pt_style = None
@@ -1113,12 +1176,62 @@ class PromptToolkitInputHandler:
                 app = getattr(self.session, "app", None)
                 if app is not None:
                     buf = getattr(app, "current_buffer", None)
-                    if buf is not None and str(getattr(buf, "text", "") or ""):
+                    if (
+                        buf is not None
+                        and str(getattr(buf, "text", "") or "")
+                        and (not bool(getattr(self, "_shell_mode_active", False)))
+                    ):
                         # 输入中隐藏状态栏，清空输入后再显示。
                         return ""
-            return str(self._status_bar_text or "")
+            status_line = str(self._status_bar_text or "")
+            if bool(getattr(self, "_shell_mode_active", False)):
+                status_line = self._compose_shell_mode_status_line(status_line)
+            return status_line
         except Exception:
             return ""
+
+    def _shell_mode_prompt_message(self):
+        if bool(getattr(self, "_shell_mode_active", False)):
+            return [(f"fg:{SHELL_MODE_COLOR_HEX}", SHELL_MODE_PROMPT)]
+        return str(getattr(self, "_prompt_line", "") or "")
+
+    def _compose_shell_mode_status_line(self, base_status_line: str) -> str:
+        base_colored = str(base_status_line or "")
+        base_plain = _strip_ansi_sgr(base_colored)
+        label_plain = SHELL_MODE_LABEL
+        label_colored = _ansi_rgb(label_plain, *SHELL_MODE_COLOR_RGB)
+        right_padding = _shell_mode_effective_right_padding()
+        if self.session is None:
+            return f"{base_colored}  {label_colored}"
+
+        cols = _get_output_columns(self.session, default=80)
+        right_len = _display_width(label_plain)
+        start_col = max(1, int(cols) - right_len - right_padding + 1)
+        left_cap = max(0, start_col - 1)
+        left_len = _display_width(base_plain)
+        if left_len <= left_cap:
+            base_render = base_colored
+        else:
+            # When left area overflows, trim plain text to prevent overlap with the
+            # right-aligned shell-mode marker.
+            base_render = _truncate_to_display_width(base_plain, left_cap)
+        return f"{base_render}\x1b[{start_col}G{label_colored}{' ' * right_padding}"
+
+    @staticmethod
+    def _erase_previous_prompt_line_if_tty() -> None:
+        try:
+            if not hasattr(sys.stdout, "isatty") or not sys.stdout.isatty():
+                return
+            sys.stdout.write("\x1b[1A\r\x1b[2K\r")
+            sys.stdout.flush()
+        except Exception:
+            pass
+
+    @staticmethod
+    def _print_shell_mode_empty_command_hint() -> None:
+        bullet = _ansi_gray("•")
+        example = _ansi_gray("Example: !ls")
+        print(f"{bullet} Prefix a command with ! to run it locally {example}\n")
 
     def get_terminal_columns(self, default: int = 80) -> int:
         if self.session is not None:
@@ -1148,6 +1261,11 @@ class PromptToolkitInputHandler:
         Returns:
             用户输入的文本
         """
+        if not hasattr(self, "_shell_mode_active"):
+            self._shell_mode_active = False
+        if not hasattr(self, "_prompt_line"):
+            self._prompt_line = ""
+
         self._status_bar_text = str(status_bar_text or "")
         self._status_bar_fragments = (
             list(status_bar_fragments)
@@ -1155,6 +1273,7 @@ class PromptToolkitInputHandler:
             else []
         )
         self._status_bar_enabled = bool(show_status_bar)
+        self._shell_mode_active = False
         try:
             if self.session:
                 # Avoid bottom_toolbar (it is pinned to terminal bottom). Render a
@@ -1166,9 +1285,10 @@ class PromptToolkitInputHandler:
                     prompt_line = rest
                 else:
                     prompt_line = prompt
+                self._prompt_line = str(prompt_line or "")
 
                 user_input = self.session.prompt(
-                    prompt_line,
+                    self._shell_mode_prompt_message,
                     multiline=True,
                     prompt_continuation=self._multiline_prompt_continuation,
                 ).strip()
@@ -1178,6 +1298,14 @@ class PromptToolkitInputHandler:
 
             user_input = _normalize_newlines(user_input)
             user_input = _sanitize_prompt_pollution(user_input, self.work_directory)
+            if bool(getattr(self, "_shell_mode_active", False)):
+                shell_text = str(user_input or "").strip()
+                self._shell_mode_active = False
+                if not shell_text:
+                    self._erase_previous_prompt_line_if_tty()
+                    self._print_shell_mode_empty_command_hint()
+                    return ""
+                user_input = f"!{shell_text}"
             
             # 保存到历史记录
             if user_input:
@@ -1217,6 +1345,17 @@ class PromptToolkitInputHandler:
                 return
             event.current_buffer.validate_and_handle()
 
+        def _enter_shell_mode(event) -> None:
+            buf = event.current_buffer
+            if str(getattr(buf, "text", "") or ""):
+                buf.insert_text("!")
+                return
+            self._shell_mode_active = True
+            try:
+                event.app.invalidate()
+            except Exception:
+                pass
+
         def _on_bracketed_paste(event) -> None:
             pasted = _normalize_newlines(getattr(event, "data", ""))
             if pasted:
@@ -1226,6 +1365,7 @@ class PromptToolkitInputHandler:
         # Keep Enter as non-eager so multi-key Shift+Enter sequences (starting with
         # ESC in some terminals) have a chance to match first.
         _safe_bind(("enter",), _accept_input, eager=False)
+        _safe_bind(("!",), _enter_shell_mode, eager=True)
 
         # Shift+Enter is not a standard VT100 key. We support common terminals that emit
         # CSI-u/modifyOtherKeys sequences, and keep Ctrl+J as a reliable newline fallback.
@@ -1237,6 +1377,15 @@ class PromptToolkitInputHandler:
         @kb.add("backspace")
         def _on_backspace(event):
             buf = event.current_buffer
+            if bool(getattr(self, "_shell_mode_active", False)) and not str(
+                getattr(buf, "text", "") or ""
+            ):
+                self._shell_mode_active = False
+                try:
+                    event.app.invalidate()
+                except Exception:
+                    pass
+                return
             buf.delete_before_cursor(count=1)
             # Recompute completions immediately after deletion.
             buf.start_completion(select_first=False)

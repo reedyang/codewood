@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
 
@@ -19,6 +20,32 @@ class _FakeSession:
 
     def prompt(self, prompt_line: str, **kwargs):
         self.calls.append((prompt_line, kwargs))
+        return self.returned_text
+
+
+class _FakeOutput:
+    def __init__(self, columns: int):
+        self._columns = columns
+
+    def get_size(self):
+        class _Size:
+            pass
+        size = _Size()
+        size.columns = self._columns
+        return size
+
+
+class _FakeSessionWithHook:
+    def __init__(self, returned_text: str, before_return=None):
+        self.returned_text = returned_text
+        self.before_return = before_return
+        self.calls = []
+        self.output = _FakeOutput(60)
+
+    def prompt(self, prompt_line: str, **kwargs):
+        self.calls.append((prompt_line, kwargs))
+        if callable(self.before_return):
+            self.before_return()
         return self.returned_text
 
 
@@ -110,6 +137,83 @@ class PromptToolkitInputCompletionTests(unittest.TestCase):
         out = handler.get_input_with_completion("› ")
         self.assertEqual(out, "a\nb\nc")
         self.assertEqual(handler.history[-1], "a\nb\nc")
+
+    def test_shell_mode_prompt_message_is_red_bang_prompt(self):
+        handler = pti.PromptToolkitInputHandler.__new__(pti.PromptToolkitInputHandler)
+        handler._shell_mode_active = True
+        handler._prompt_line = "› "
+        msg = handler._shell_mode_prompt_message()
+        self.assertEqual(msg, [(f"fg:{pti.SHELL_MODE_COLOR_HEX}", pti.SHELL_MODE_PROMPT)])
+
+    def test_shell_mode_status_line_appends_right_label_with_padding(self):
+        handler = pti.PromptToolkitInputHandler.__new__(pti.PromptToolkitInputHandler)
+        handler.session = _FakeSessionWithHook("")
+        rendered = handler._compose_shell_mode_status_line("\x1b[38;2;1;2;3mmodel\x1b[0m workspace")
+        self.assertIn("Shell mode", rendered)
+        self.assertIn("\x1b[38;2;1;2;3m", rendered)
+        self.assertTrue(
+            rendered.endswith(" " * pti._shell_mode_effective_right_padding())
+        )
+    
+    def test_shell_mode_status_line_keeps_label_when_left_text_is_long(self):
+        handler = pti.PromptToolkitInputHandler.__new__(pti.PromptToolkitInputHandler)
+        s = _FakeSessionWithHook("")
+        s.output = _FakeOutput(24)
+        handler.session = s
+        rendered = handler._compose_shell_mode_status_line("  very long left status text with colors")
+        self.assertIn("Shell mode", rendered)
+        plain = pti._strip_ansi_sgr(rendered)
+        self.assertEqual(
+            len(plain) - len(plain.rstrip(" ")),
+            pti._shell_mode_effective_right_padding(),
+        )
+
+    def test_shell_mode_status_line_keeps_label_with_cjk_left_text(self):
+        handler = pti.PromptToolkitInputHandler.__new__(pti.PromptToolkitInputHandler)
+        s = _FakeSessionWithHook("")
+        s.output = _FakeOutput(26)
+        handler.session = s
+        rendered = handler._compose_shell_mode_status_line("  默认工作区 聊天(12%)")
+        self.assertIn("Shell mode", rendered)
+        plain = pti._strip_ansi_sgr(rendered)
+        self.assertEqual(
+            len(plain) - len(plain.rstrip(" ")),
+            pti._shell_mode_effective_right_padding(),
+        )
+
+    def test_shell_mode_submission_prefixes_command_with_bang(self):
+        handler = pti.PromptToolkitInputHandler.__new__(pti.PromptToolkitInputHandler)
+        def _activate_mode():
+            handler._shell_mode_active = True
+        handler.session = _FakeSessionWithHook("git status", before_return=_activate_mode)
+        handler.history = []
+        handler.work_directory = Path.cwd()
+        handler._status_bar_text = ""
+        handler._status_bar_fragments = []
+        handler._status_bar_enabled = True
+        out = handler.get_input_with_completion("› ")
+        self.assertEqual(out, "!git status")
+
+    def test_shell_mode_empty_submit_prints_hint_and_returns_empty(self):
+        handler = pti.PromptToolkitInputHandler.__new__(pti.PromptToolkitInputHandler)
+        def _activate_mode():
+            handler._shell_mode_active = True
+        handler.session = _FakeSessionWithHook("", before_return=_activate_mode)
+        handler.history = []
+        handler.work_directory = Path.cwd()
+        handler._status_bar_text = ""
+        handler._status_bar_fragments = []
+        handler._status_bar_enabled = True
+        with (
+            patch("sys.stdout", new_callable=StringIO) as fake_out,
+            patch.object(handler, "_erase_previous_prompt_line_if_tty") as erase_mock,
+        ):
+            out = handler.get_input_with_completion("› ")
+        self.assertEqual(out, "")
+        erase_mock.assert_called_once()
+        rendered = fake_out.getvalue()
+        self.assertIn("Prefix a command with ! to run it locally", rendered)
+        self.assertIn("Example: !ls", rendered)
 
 
 if __name__ == "__main__":
