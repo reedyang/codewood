@@ -62,6 +62,33 @@ def _is_vscode_terminal() -> bool:
     return str(os.environ.get("TERM_PROGRAM", "") or "").strip().lower() == "vscode"
 
 
+def _get_output_columns_from_obj(output: Any, default: int = 0) -> int:
+    try:
+        if output is not None and hasattr(output, "get_size"):
+            size = output.get_size()
+            cols = int(getattr(size, "columns", 0) or 0)
+            if cols > 0:
+                return cols
+    except Exception:
+        pass
+    return int(default or 0)
+
+
+def _get_system_terminal_columns(default: int = 0) -> int:
+    # Prefer probing real stdout streams to avoid stale width snapshots from
+    # prompt_toolkit output wrappers during rapid terminal resize.
+    for stream in (getattr(sys, "__stdout__", None), getattr(sys, "stdout", None)):
+        try:
+            if stream is None or not hasattr(stream, "fileno"):
+                continue
+            cols = int(os.get_terminal_size(stream.fileno()).columns or 0)
+            if cols > 0:
+                return cols
+        except Exception:
+            continue
+    return int(default or 0)
+
+
 def _attach_blink_after_render_hook(
     session,
     status_provider: Optional[Callable[[], str]] = None,
@@ -78,7 +105,11 @@ def _attach_blink_after_render_hook(
         return
 
     # `desired`: 当前渲染周期希望显示的状态栏文本（空串表示隐藏）
-    state = {"visible": False, "text": "", "desired": "", "last_cols": 0}
+    output = getattr(app, "output", None)
+    initial_cols = _get_system_terminal_columns(default=0)
+    if initial_cols <= 0:
+        initial_cols = _get_output_columns_from_obj(output, default=0)
+    state = {"visible": False, "text": "", "desired": "", "last_cols": max(0, initial_cols)}
 
     def _draw_overlay_line(output, text: str) -> None:
         # 使用保存/恢复光标，仅在提示符下方两行写入状态栏。
@@ -95,43 +126,43 @@ def _attach_blink_after_render_hook(
             state["desired"] = desired
             output = getattr(_app, "output", None)
             try:
-                if output is not None and hasattr(output, "get_size"):
-                    size = output.get_size()
-                    cols = int(getattr(size, "columns", 0) or 0)
-                    if cols > 0:
-                        prev_cols = int(state.get("last_cols", 0) or 0)
-                        if prev_cols > 0 and cols != prev_cols:
-                            should_interrupt = False
-                            if callable(terminal_resize_callback):
-                                try:
-                                    should_interrupt = bool(terminal_resize_callback(prev_cols, cols))
-                                except Exception:
-                                    should_interrupt = False
-                            state["last_cols"] = cols
-                            if should_interrupt:
-                                # Preserve unsent draft so caller can restore it after
-                                # terminal-resize reload.
+                cols = _get_system_terminal_columns(default=0)
+                if cols <= 0:
+                    cols = _get_output_columns_from_obj(output, default=0)
+                if cols > 0:
+                    prev_cols = int(state.get("last_cols", 0) or 0)
+                    if prev_cols > 0 and cols != prev_cols:
+                        should_interrupt = False
+                        if callable(terminal_resize_callback):
+                            try:
+                                should_interrupt = bool(terminal_resize_callback(prev_cols, cols))
+                            except Exception:
+                                should_interrupt = False
+                        state["last_cols"] = cols
+                        if should_interrupt:
+                            # Preserve unsent draft so caller can restore it after
+                            # terminal-resize reload.
+                            draft_text = ""
+                            draft_cursor = 0
+                            try:
+                                buf = getattr(_app, "current_buffer", None)
+                                draft_text = str(getattr(buf, "text", "") or "")
+                                draft_cursor = int(getattr(buf, "cursor_position", 0) or 0)
+                            except Exception:
                                 draft_text = ""
                                 draft_cursor = 0
-                                try:
-                                    buf = getattr(_app, "current_buffer", None)
-                                    draft_text = str(getattr(buf, "text", "") or "")
-                                    draft_cursor = int(getattr(buf, "cursor_position", 0) or 0)
-                                except Exception:
-                                    draft_text = ""
-                                    draft_cursor = 0
-                                try:
-                                    setattr(session, "_smart_shell_resize_draft", draft_text)
-                                    setattr(session, "_smart_shell_resize_cursor_position", draft_cursor)
-                                    setattr(session, "_smart_shell_resize_interrupted", True)
-                                except Exception:
-                                    pass
-                                try:
-                                    _app.exit(result="")
-                                except Exception:
-                                    pass
-                        else:
-                            state["last_cols"] = cols
+                            try:
+                                setattr(session, "_smart_shell_resize_draft", draft_text)
+                                setattr(session, "_smart_shell_resize_cursor_position", draft_cursor)
+                                setattr(session, "_smart_shell_resize_interrupted", True)
+                            except Exception:
+                                pass
+                            try:
+                                _app.exit(result="")
+                            except Exception:
+                                pass
+                    else:
+                        state["last_cols"] = cols
             except Exception:
                 pass
             if (
@@ -196,14 +227,12 @@ def _get_output_columns(session: Any, default: int = 80) -> int:
         if output is None:
             app = getattr(session, "app", None)
             output = getattr(app, "output", None) if app is not None else None
-        if output is not None and hasattr(output, "get_size"):
-            size = output.get_size()
-            cols = int(getattr(size, "columns", 0) or 0)
-            if cols > 0:
-                return cols
+        cols = _get_output_columns_from_obj(output, default=0)
+        if cols > 0:
+            return cols
     except Exception:
         pass
-    return int(default or 80)
+    return _get_system_terminal_columns(default=int(default or 80))
 
 
 def _sanitize_prompt_pollution(text: str, work_directory: Optional[Path] = None) -> str:
