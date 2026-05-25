@@ -415,6 +415,8 @@ def ai_assess_reversible(agent: Any, command: Dict[str, Any]) -> Tuple[bool, str
 def freedom_auto_confirm(agent: Any, command: Dict[str, Any]) -> bool:
     """Return True to skip interactive confirmation (move/delete/shell/text_file/git write)."""
     policy = str(getattr(agent, "execution_policy", "confirmation")).lower()
+    mode_label = "Moderate mode" if policy == "moderate" else ("Unlimited mode" if policy == "unlimited" else "Execution policy")
+    mode_prefix = f"🦅 {mode_label}:"
     if policy == "confirmation":
         return False
     if policy == "unlimited":
@@ -431,13 +433,13 @@ def freedom_auto_confirm(agent: Any, command: Dict[str, Any]) -> bool:
         # If user selected "always" before, skip AI reversibility review entirely.
         load_confirm_allowlist(agent)
         if shell_command_in_allowlist(agent, s):
-            _print_with_auto_hide_tracking(agent, "🦅 Freedom mode: matched skip-confirm list, skipped AI review and executed directly.")
+            _print_with_auto_hide_tracking(agent, f"{mode_prefix} matched skip-confirm list, skipped AI review and executed directly.")
             return True
 
         if re.search(
             r"(?i)(?:^|[\s;&|])(?:py(?:thon)?(?:\d(?:\.\d)?)?|pythonw)\s+-\s*c\s+", s
         ):
-            _print_with_auto_hide_tracking(agent, "🦅 Freedom mode: inline Python (-c) in work directory, confirmation skipped.")
+            _print_with_auto_hide_tracking(agent, f"{mode_prefix} inline Python (-c) in work directory, confirmation skipped.")
             agent._manual_confirm_required_shell_once = False
             return True
 
@@ -448,7 +450,7 @@ def freedom_auto_confirm(agent: Any, command: Dict[str, Any]) -> bool:
             if expected:
                 actual = shell_script_hash(agent, sp)
                 if actual and actual == expected:
-                    _print_with_auto_hide_tracking(agent, "🦅 Freedom mode: script hash matched skip-confirm entry, skipped AI review and executed directly.")
+                    _print_with_auto_hide_tracking(agent, f"{mode_prefix} script hash matched skip-confirm entry, skipped AI review and executed directly.")
                     agent._manual_confirm_required_shell_once = False
                     return True
 
@@ -469,15 +471,15 @@ def freedom_auto_confirm(agent: Any, command: Dict[str, Any]) -> bool:
                 if freedom_script_quick_deny(body):
                     _print_with_auto_hide_tracking(
                         agent,
-                        "🦅 Freedom mode: script content matched high-risk heuristics (for example registry/system config related), "
+                        f"{mode_prefix} script content matched high-risk heuristics (for example registry/system config related), "
                         "falling back to operation safety classification.",
                     )
                     reversible, reason = ai_assess_reversible(agent, command)
                     if reversible:
-                        _print_with_auto_hide_tracking(agent, f"🦅 Classified as safe, auto-skipping confirmation - {reason}")
+                        _print_with_auto_hide_tracking(agent, f"{mode_prefix} classified as safe, auto-skipping confirmation - {reason}")
                         agent._manual_confirm_required_shell_once = False
                     else:
-                        _print_with_auto_hide_tracking(agent, f"🦅 Classified as unsafe or uncertain, manual confirmation is still required - {reason}")
+                        _print_with_auto_hide_tracking(agent, f"{mode_prefix} classified as unsafe or uncertain, manual confirmation is still required - {reason}")
                         agent._manual_confirm_required_shell_once = True
                     return reversible
                 use_cache = not session_ephemeral
@@ -488,13 +490,13 @@ def freedom_auto_confirm(agent: Any, command: Dict[str, Any]) -> bool:
                         tag = "auto-confirm can be skipped" if skip_c else "manual confirmation required"
                         _print_with_auto_hide_tracking(
                             agent,
-                            f"🦅 Freedom mode: used script review cache from config file (script and command hashes match), {tag} - {reason_c}"
+                            f"{mode_prefix} used script review cache from config file (script and command hashes match), {tag} - {reason_c}"
                         )
                         agent._manual_confirm_required_shell_once = not bool(skip_c)
                         return skip_c
                 _print_with_auto_hide_tracking(
                     agent,
-                    "🦅 Freedom mode: reviewing script safety and manipulation content..."
+                    f"{mode_prefix} reviewing script safety and manipulation content..."
                 )
                 skip, reason, inj_risk = ai_assess_ephemeral_script_combined(
                     agent, sp, body, command
@@ -506,39 +508,39 @@ def freedom_auto_confirm(agent: Any, command: Dict[str, Any]) -> bool:
                 if inj_risk:
                     _print_with_auto_hide_tracking(
                         agent,
-                        "🚫 Freedom mode: combined review detected script review-manipulation/prompt-injection risk - "
+                        f"🚫 {mode_label}: combined review detected script review-manipulation/prompt-injection risk - "
                         f"{reason}",
                     )
                     _print_with_auto_hide_tracking(agent, "🚫 Recommended not to execute this script; if execution is required, perform manual review and confirm manually first.")
                     agent._manual_confirm_required_shell_once = True
                     return False
                 if skip:
-                    _print_with_auto_hide_tracking(agent, f"🦅 Classified as auto-skippable confirmation - {reason}")
+                    _print_with_auto_hide_tracking(agent, f"{mode_prefix} classified as auto-skippable confirmation - {reason}")
                     agent._manual_confirm_required_shell_once = False
                 else:
-                    _print_with_auto_hide_tracking(agent, f"🦅 Classified as manual confirmation required - {reason}")
+                    _print_with_auto_hide_tracking(agent, f"{mode_prefix} classified as manual confirmation required - {reason}")
                     agent._manual_confirm_required_shell_once = True
                 return skip
 
             if k in agent._ai_created_path_keys:
-                _print_with_auto_hide_tracking(agent, "🦅 Freedom mode: command targets AI-generated paths tracked in this session, confirmation skipped.")
+                _print_with_auto_hide_tracking(agent, f"{mode_prefix} command targets AI-generated paths tracked in this session, confirmation skipped.")
                 agent._manual_confirm_required_shell_once = False
                 return True
 
-        _print_with_auto_hide_tracking(agent, "🦅 Freedom mode: asking AI to classify whether the operation is safe...")
+        _print_with_auto_hide_tracking(agent, f"{mode_prefix} asking AI to classify whether the operation is safe...")
         reversible, reason = ai_assess_reversible(agent, command)
         if reversible:
-            _print_with_auto_hide_tracking(agent, f"🦅 Classified as safe, auto-skipping confirmation - {reason}")
+            _print_with_auto_hide_tracking(agent, f"{mode_prefix} classified as safe, auto-skipping confirmation - {reason}")
             agent._manual_confirm_required_shell_once = False
         else:
-            _print_with_auto_hide_tracking(agent, f"🦅 Classified as unsafe or uncertain, manual confirmation is still required - {reason}")
+            _print_with_auto_hide_tracking(agent, f"{mode_prefix} classified as unsafe or uncertain, manual confirmation is still required - {reason}")
             agent._manual_confirm_required_shell_once = True
         return reversible
 
-    _print_with_auto_hide_tracking(agent, "🦅 Freedom mode: asking AI to classify whether the operation is safe...")
+    _print_with_auto_hide_tracking(agent, f"{mode_prefix} asking AI to classify whether the operation is safe...")
     reversible, reason = ai_assess_reversible(agent, command)
     if reversible:
-        _print_with_auto_hide_tracking(agent, f"🦅 Classified as safe, auto-skipping confirmation - {reason}")
+        _print_with_auto_hide_tracking(agent, f"{mode_prefix} classified as safe, auto-skipping confirmation - {reason}")
     else:
-        _print_with_auto_hide_tracking(agent, f"🦅 Classified as unsafe or uncertain, manual confirmation is still required - {reason}")
+        _print_with_auto_hide_tracking(agent, f"{mode_prefix} classified as unsafe or uncertain, manual confirmation is still required - {reason}")
     return reversible
