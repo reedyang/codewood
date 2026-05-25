@@ -1172,6 +1172,25 @@ def run_agent_loop(agent: Any):
                     print("❌ Tool plan is missing tool name. Ending this round.")
                     break
 
+                if tool_name == "apply_patch":
+                    patch_path = str(args.get("path") or "").strip() if isinstance(args, dict) else ""
+                    patch_text = args.get("patch") if isinstance(args, dict) else None
+                    if (not patch_path) or (not isinstance(patch_text, str)) or (not patch_text.strip()):
+                        print(
+                            "⚠️ apply_patch plan is missing required `path`/`patch`; "
+                            "requesting the model to resend a valid unified patch call."
+                        )
+                        next_input = (
+                            f"【用户原始需求】\n{original_user_task}\n\n"
+                            "你上一条 apply_patch 工具计划缺少必填参数。\n"
+                            "请只输出一个有效 JSON（不要附加其它文本）：\n"
+                            "{\"tool\":\"apply_patch\",\"args\":{\"path\":\"<file>\",\"patch\":\"@@ ... @@\\n- old\\n+ new\"}}\n"
+                            "要求：`path` 和 `patch` 都必须提供；`patch` 必须是包含至少一个 `@@ ... @@` hunk 的 unified patch 字符串。"
+                        )
+                        no_tool_rounds = 0
+                        is_first_round = False
+                        continue
+
                 if (
                     tool_name == "done"
                     and _is_software_development_domain(
@@ -1305,6 +1324,9 @@ def run_agent_loop(agent: Any):
                 })
                 last_result = result
                 is_first_round = False
+                if tool_name == "apply_patch" and (not bool(result.get("success", False))):
+                    err = str(result.get("error") or result.get("message") or "unknown error").strip()
+                    print(f"❌ apply_patch failed: {err}")
                 hints = _tool_change_and_verification_hints(tool_name, args, result)
                 if bool(hints.get("code_changed", False)):
                     code_changed_in_task = True

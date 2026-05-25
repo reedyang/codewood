@@ -105,7 +105,16 @@ def dispatch_file_shell_tool(agent: Any, action: str, params: Dict[str, Any]) ->
             return agent.action_apply_unified_patch(
                 file_path=file_path, patch=str(patch), confirmed=confirmed
             )
-        return {"success": False, "error": "missing path/patch"}
+        missing = []
+        if not file_path:
+            missing.append("path")
+        if patch is None:
+            missing.append("patch")
+        missing_text = ", ".join(missing) if missing else "path/patch"
+        return {
+            "success": False,
+            "error": f"apply_patch requires both path and patch; missing: {missing_text}",
+        }
 
     if action == "read_image":
         file_path = params.get("path")

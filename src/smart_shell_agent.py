@@ -3316,6 +3316,16 @@ class SmartShellAgent:
     def _tool_call_summary(self, tool_name: str, args: Dict[str, Any]) -> str:
         """Generate one-line tool execution summary."""
         a = args if isinstance(args, dict) else {}
+        if str(tool_name).strip().lower() == "apply_patch":
+            p = str(a.get("path") or "").strip() or "-"
+            patch_v = a.get("patch")
+            if isinstance(patch_v, str):
+                patch_info = f"patch_chars={len(patch_v)}"
+            elif patch_v is None:
+                patch_info = "patch=missing"
+            else:
+                patch_info = f"patch_type={type(patch_v).__name__}"
+            return f"apply_patch (path={p}, {patch_info})"
         if str(tool_name).strip().lower() == "shell":
             cmd = str(a.get("command") or "").strip()
             m = re.match(
