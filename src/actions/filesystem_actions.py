@@ -43,7 +43,6 @@ def action_apply_unified_patch(agent: Any, file_path: str, patch: str, confirmed
         if not decision.get("allowed", False):
             return {"success": False, "error": decision.get("error", "")}
         execution_policy = str(getattr(agent, "execution_policy", "confirmation")).lower()
-        in_ai_workspace = bool(agent._is_path_under(abs_path, agent.ai_workspace_dir))
         in_workspace_root = False
         raw_workspace_root = getattr(agent, "workspace_root", None)
         if raw_workspace_root:
@@ -53,10 +52,10 @@ def action_apply_unified_patch(agent: Any, file_path: str, patch: str, confirmed
                 )
             except Exception:
                 in_workspace_root = False
-        moderate_workspace_text_edit = (
-            execution_policy == "moderate" and in_workspace_root
+        skip_preview_and_confirm = (
+            execution_policy in ("moderate", "unlimited") and in_workspace_root
         )
-        need_confirm = (not confirmed) and (not in_ai_workspace) and (not moderate_workspace_text_edit)
+        need_confirm = not skip_preview_and_confirm
 
         encodings = ["utf-8", "gbk", "gb2312", "utf-16", "latin1"]
         source = None
@@ -182,7 +181,7 @@ def action_apply_unified_patch(agent: Any, file_path: str, patch: str, confirmed
         new_text = newline.join(result_lines)
         if had_trailing_newline and len(result_lines) > 0:
             new_text += newline
-        if preview_lines:
+        if preview_lines and not skip_preview_and_confirm:
             print("Change preview (old ││ new):")
             print("   Markers: '=' unchanged, '-' removed, '+' added")
             for ln in preview_lines:

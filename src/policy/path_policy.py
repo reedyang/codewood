@@ -24,9 +24,18 @@ class PathPolicy:
         return (self.agent.ai_workspace_dir / "skills").resolve()
 
     def resolve_user_path(self, raw_path: str) -> Path:
+        def _relative_base_dir() -> Path:
+            raw_workspace_root = getattr(self.agent, "workspace_root", None)
+            if raw_workspace_root:
+                try:
+                    return Path(str(raw_workspace_root)).resolve()
+                except Exception:
+                    pass
+            return Path(self.agent.work_directory).resolve()
+
         p_raw = (raw_path or "").strip()
         if not p_raw:
-            return self.agent.work_directory
+            return _relative_base_dir()
         norm = p_raw.replace("\\", "/").lstrip("./")
         if norm == "workspace":
             return self.agent.ai_workspace_dir.resolve()
@@ -42,7 +51,7 @@ class PathPolicy:
         p = Path(p_raw)
         if p.is_absolute():
             return p.resolve()
-        return (self.agent.work_directory / p).resolve()
+        return (_relative_base_dir() / p).resolve()
 
     def is_workspace_skill_path(self, path: Path) -> bool:
         try:
