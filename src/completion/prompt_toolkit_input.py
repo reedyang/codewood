@@ -109,6 +109,23 @@ def _attach_blink_after_render_hook(
                                     should_interrupt = False
                             state["last_cols"] = cols
                             if should_interrupt:
+                                # Preserve unsent draft so caller can restore it after
+                                # terminal-resize reload.
+                                draft_text = ""
+                                draft_cursor = 0
+                                try:
+                                    buf = getattr(_app, "current_buffer", None)
+                                    draft_text = str(getattr(buf, "text", "") or "")
+                                    draft_cursor = int(getattr(buf, "cursor_position", 0) or 0)
+                                except Exception:
+                                    draft_text = ""
+                                    draft_cursor = 0
+                                try:
+                                    setattr(session, "_smart_shell_resize_draft", draft_text)
+                                    setattr(session, "_smart_shell_resize_cursor_position", draft_cursor)
+                                    setattr(session, "_smart_shell_resize_interrupted", True)
+                                except Exception:
+                                    pass
                                 try:
                                     _app.exit(result="")
                                 except Exception:
@@ -1086,6 +1103,9 @@ class PromptToolkitInputHandler:
         self._status_bar_enabled = True
         self._shell_mode_active = False
         self._prompt_line = ""
+        self._pending_prefill_text = ""
+        self._pending_prefill_cursor_position = 0
+        self._pending_shell_mode_active = False
         self.renders_prompt_separator_inline = False
         self._terminal_resize_callback = terminal_resize_callback
         self._pt_style = None
@@ -1286,6 +1306,10 @@ class PromptToolkitInputHandler:
             self._shell_mode_active = False
         if not hasattr(self, "_prompt_line"):
             self._prompt_line = ""
+        if not hasattr(self, "_pending_shell_mode_active"):
+            self._pending_shell_mode_active = False
+        if not hasattr(self, "_pending_prefill_cursor_position"):
+            self._pending_prefill_cursor_position = 0
 
         self._status_bar_text = str(status_bar_text or "")
         self._status_bar_fragments = (
@@ -1294,7 +1318,7 @@ class PromptToolkitInputHandler:
             else []
         )
         self._status_bar_enabled = bool(show_status_bar)
-        self._shell_mode_active = False
+        self._shell_mode_active = bool(getattr(self, "_pending_shell_mode_active", False))
         try:
             if self.session:
                 # Avoid bottom_toolbar (it is pinned to terminal bottom). Render a
@@ -1307,13 +1331,56 @@ class PromptToolkitInputHandler:
                 else:
                     prompt_line = prompt
                 self._prompt_line = str(prompt_line or "")
+                prefill_text = str(getattr(self, "_pending_prefill_text", "") or "")
+                prompt_kwargs: Dict[str, Any] = dict(
+                    multiline=True,
+                    prompt_continuation=self._multiline_prompt_continuation,
+                )
+                if prefill_text:
+                    prompt_kwargs["default"] = prefill_text
+                    pending_cursor = int(
+                        getattr(self, "_pending_prefill_cursor_position", 0) or 0
+                    )
+
+                    def _restore_prefill_cursor() -> None:
+                        try:
+                            app = getattr(self.session, "app", None)
+                            if app is None:
+                                return
+                            buf = getattr(app, "current_buffer", None)
+                            if buf is None:
+                                return
+                            max_pos = len(str(getattr(buf, "text", "") or ""))
+                            cursor = max(0, min(pending_cursor, max_pos))
+                            buf.cursor_position = cursor
+                        except Exception:
+                            pass
+
+                    prompt_kwargs["pre_run"] = _restore_prefill_cursor
 
                 user_input = self.session.prompt(
                     self._shell_mode_prompt_message,
-                    multiline=True,
-                    prompt_continuation=self._multiline_prompt_continuation,
+                    **prompt_kwargs,
                 ).strip()
                 self._clear_status_overlay_line_if_possible()
+                if bool(getattr(self.session, "_smart_shell_resize_interrupted", False)):
+                    draft = str(getattr(self.session, "_smart_shell_resize_draft", "") or "")
+                    draft_cursor = int(
+                        getattr(self.session, "_smart_shell_resize_cursor_position", 0) or 0
+                    )
+                    self._pending_prefill_text = _normalize_newlines(draft)
+                    self._pending_prefill_cursor_position = max(0, draft_cursor)
+                    self._pending_shell_mode_active = bool(getattr(self, "_shell_mode_active", False))
+                    try:
+                        setattr(self.session, "_smart_shell_resize_interrupted", False)
+                        setattr(self.session, "_smart_shell_resize_draft", "")
+                        setattr(self.session, "_smart_shell_resize_cursor_position", 0)
+                    except Exception:
+                        pass
+                    return ""
+                self._pending_prefill_text = ""
+                self._pending_prefill_cursor_position = 0
+                self._pending_shell_mode_active = False
             else:
                 # 回退到标准input
                 user_input = input(prompt).strip()
