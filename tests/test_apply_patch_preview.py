@@ -16,9 +16,12 @@ class _DummyPolicy:
 class _DummyAgent:
     def __init__(self, work_directory: Path) -> None:
         self.work_directory = work_directory
+        self.workspace_root = work_directory
         self.ai_workspace_dir = work_directory
+        self.execution_policy = "confirmation"
         self._ai_created_path_keys = set()
         self.preview_segments_calls: List[List[Dict[str, Any]]] = []
+        self.prompt_calls = 0
 
     def _get_path_policy(self) -> _DummyPolicy:
         return _DummyPolicy()
@@ -30,7 +33,11 @@ class _DummyAgent:
         return p.resolve()
 
     def _is_path_under(self, _path: Path, _root: Path) -> bool:
-        return True
+        try:
+            Path(_path).resolve().relative_to(Path(_root).resolve())
+            return True
+        except Exception:
+            return False
 
     def _format_side_by_side_change_preview_segments(
         self,
@@ -40,6 +47,7 @@ class _DummyAgent:
         return ChangePreviewFormatter.format_side_by_side_segments(segments)
 
     def _prompt_confirm_yes_no_maybe_always(self, _message: str, offer_always: bool = False, kind: str = "") -> bool:
+        self.prompt_calls += 1
         return True
 
     def _ephemeral_path_key(self, resolved: Path) -> str:
@@ -134,6 +142,27 @@ class ApplyPatchPreviewTests(unittest.TestCase):
             add_row_raw = next((r for r in rows if "+    3│" in _strip_ansi(r)), "")
             self.assertTrue(add_row_raw)
             self.assertRegex(add_row_raw, r"\x1b\[90m\+\s+\d+│ \x1b\[0m")
+
+    def test_moderate_mode_workspace_text_patch_skips_confirm(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            workspace_root = root / "workspace"
+            ai_workspace = root / "ai_workspace"
+            workspace_root.mkdir(parents=True, exist_ok=True)
+            ai_workspace.mkdir(parents=True, exist_ok=True)
+            target = workspace_root / "demo.txt"
+            target.write_text("hello\n", encoding="utf-8")
+            agent = _DummyAgent(workspace_root)
+            agent.ai_workspace_dir = ai_workspace
+            agent.workspace_root = workspace_root
+            agent.execution_policy = "moderate"
+
+            patch = "@@ -1,1 +1,1 @@\n-hello\n+hello_mod\n"
+            result = action_apply_unified_patch(agent, str(target), patch, confirmed=False)
+
+            self.assertTrue(result.get("success"), result.get("error"))
+            self.assertEqual(agent.prompt_calls, 0)
+            self.assertEqual(target.read_text(encoding="utf-8"), "hello_mod\n")
 
 
 if __name__ == "__main__":

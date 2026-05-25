@@ -893,8 +893,6 @@ class SmartShellAgent:
         self._reload_chat_history_from_anchor_on_resize()
 
     def _print_chat_history(self, start_index: int = 0) -> None:
-        title = f"===== Chat: [{self.active_chat_name}] ====="
-        print(f"{_ansi_gray(title)}\n")
         all_hist = list(self.conversation_history or [])
         start = max(0, min(int(start_index or 0), len(all_hist)))
         self._remember_active_chat_history_first_visible_index(start)
