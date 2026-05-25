@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
@@ -14,7 +15,7 @@ from ..config.startup_tips import (
     get_random_startup_tip_entry,
 )
 from ..core.assistant_output_highlighter import format_assistant_display_response
-from ..core.logging.app_logging import get_log_file_path
+from ..core.logging.app_logging import get_log_file_path, get_logger
 from ..controllers.builtin_command_router import dispatch_builtin_command
 from ..core.console_utils import (
     _ansi_bold,
@@ -112,6 +113,14 @@ def _build_minimal_verification_command(changed_files: List[str]) -> str:
         joined = " ".join(f'"{f}"' for f in py_files)
         return f"python -m py_compile {joined}"
     return "请先执行最小验证（相关测试、编译或静态检查）"
+
+
+def _emit_flow_log(message: str) -> None:
+    msg = f"[Flow] {message}"
+    try:
+        get_logger("smartshell.runtime.flow").info(msg)
+    except Exception:
+        pass
 
 
 def _sanitize_prompt_pollution(text: str, work_directory: Any) -> str:
@@ -862,6 +871,10 @@ def run_agent_loop(agent: Any):
             # Natural-language turn: rewrite prompt line as chat-style user line.
             in_task_execution = True
             self._in_task_execution = True
+            turn_send_started_at = time.perf_counter()
+            _emit_flow_log(
+                f"用户回车发送: chars={len(task_user_input)}, active_chat={getattr(self, 'active_chat_id', '')}"
+            )
             self._start_interrupt_monitor(cancel_task_on_interrupt=True)
             self._consume_task_interrupt_requested()
             self._rewrite_previous_prompt_as_user(raw_user_input.strip())
@@ -874,7 +887,16 @@ def run_agent_loop(agent: Any):
             last_result = None
             self._last_auto_removed_ephemeral = None
             original_user_task = task_user_input
+            domain_classify_started_at = time.perf_counter()
+            _emit_flow_log("任务领域分类开始")
             domain_info = self._classify_task_domains(original_user_task)
+            domain_elapsed_ms = int((time.perf_counter() - domain_classify_started_at) * 1000)
+            _emit_flow_log(
+                "任务领域分类结束: "
+                f"primary={domain_info.get('primary_domain', 'general_other')}, "
+                f"domains={list(domain_info.get('domains') or ['general_other'])}, "
+                f"elapsed_ms={domain_elapsed_ms}"
+            )
             current_task_id = self._start_chat_task(
                 root_user_input=original_user_task,
                 domains=list(domain_info.get("domains") or []),
@@ -969,6 +991,8 @@ def run_agent_loop(agent: Any):
             )
             first_round_evidence = ""
             if self._project_context_feature_enabled():
+                project_context_started_at = time.perf_counter()
+                _emit_flow_log("首轮项目上下文检索准备开始")
                 ev_args = {
                     "query": original_user_task,
                     "max_files": 8,
@@ -984,11 +1008,22 @@ def run_agent_loop(agent: Any):
                     }
                 )
                 first_round_evidence = self._render_evidence_block_from_project_context_result(ev_res)
+                project_context_elapsed_ms = int((time.perf_counter() - project_context_started_at) * 1000)
+                _emit_flow_log(
+                    "首轮项目上下文检索准备结束: "
+                    f"success={bool(ev_res.get('success', False))}, "
+                    f"matches={int(ev_res.get('total_matches', 0) or 0)}, "
+                    f"elapsed_ms={project_context_elapsed_ms}"
+                )
+            else:
+                _emit_flow_log("首轮项目上下文检索准备结束: skipped(feature_disabled)")
             next_input = (
                 f"{forced_mcp_prefix}{forced_skill_prefix}{original_user_task}"
                 f"{first_round_contract}"
                 f"{(chr(10) + chr(10) + first_round_evidence) if first_round_evidence else ''}"
             )
+            ready_to_send_elapsed_ms = int((time.perf_counter() - turn_send_started_at) * 1000)
+            _emit_flow_log(f"首轮请求准备完成，开始真正发送: elapsed_ms={ready_to_send_elapsed_ms}")
             is_first_round = True
             last_announced_skill_key: Optional[str] = None
             max_tool_rounds = int(getattr(self, "max_tool_rounds", 20) or 20)
