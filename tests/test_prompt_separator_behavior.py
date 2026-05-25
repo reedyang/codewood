@@ -275,6 +275,32 @@ class PromptSeparatorBehaviorTests(unittest.TestCase):
         mock_sep.assert_not_called()
         mock_banner.assert_called_once_with()
 
+    def test_chat_history_replays_internal_slash_command_and_output(self):
+        agent = self._build_agent()
+        agent.active_chat_name = "Demo Chat"
+        agent.conversation_history = [
+            {
+                "role": "user",
+                "content": agent._build_internal_slash_user_history_content("/chat reload"),
+            },
+            {
+                "role": "assistant",
+                "content": agent._build_internal_slash_result_history_content(
+                    raw_user_command="/chat reload",
+                    output_text="line-1\nline-2\n",
+                ),
+            },
+        ]
+        with (
+            patch("src.smart_shell_agent._ansi_gray", side_effect=lambda s: s),
+            patch.object(agent, "_print_internal_slash_history_output") as mock_slash_out,
+            patch("builtins.print") as mock_print,
+        ):
+            agent._print_chat_history()
+        joined = "\n".join(str(call.args[0]) for call in mock_print.call_args_list if call.args)
+        self.assertIn("› /chat reload", joined)
+        mock_slash_out.assert_called_once_with("line-1\nline-2\n")
+
     def test_resize_reload_uses_recorded_history_anchor(self):
         agent = self._build_agent()
         agent.conversation_history = [

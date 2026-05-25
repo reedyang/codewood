@@ -10,6 +10,8 @@ from src.services.session_memory_service import SessionMemoryService
 DIRECT_SHELL_USER_HISTORY_PREFIX = "[DIRECT_SHELL_USER_COMMAND]"
 DIRECT_SHELL_RESULT_HISTORY_PREFIX = "[DIRECT_SHELL_RESULT]"
 CONVERSATION_INTERRUPTED_HISTORY_PREFIX = "[CONVERSATION_INTERRUPTED]"
+INTERNAL_SLASH_USER_HISTORY_PREFIX = "[INTERNAL_SLASH_USER_COMMAND]"
+INTERNAL_SLASH_RESULT_HISTORY_PREFIX = "[INTERNAL_SLASH_RESULT]"
 
 
 class _FakeAgent:
@@ -166,6 +168,37 @@ class _FakeAgent:
             return None
         return payload if isinstance(payload, dict) and str(payload.get("kind") or "") == "conversation_interrupted" else None
 
+    def _build_internal_slash_user_history_content(self, raw_user_command: str) -> str:
+        return f"{INTERNAL_SLASH_USER_HISTORY_PREFIX}{str(raw_user_command or '').strip()}"
+
+    def _parse_internal_slash_user_history_content(self, content: str) -> str:
+        text = str(content or "")
+        if not text.startswith(INTERNAL_SLASH_USER_HISTORY_PREFIX):
+            return ""
+        return text[len(INTERNAL_SLASH_USER_HISTORY_PREFIX):].strip()
+
+    def _build_internal_slash_result_history_content(self, raw_user_command: str, output_text: str) -> str:
+        payload = {
+            "kind": "internal_slash_result",
+            "invoked_by": "user",
+            "raw_user_command": str(raw_user_command or ""),
+            "output": str(output_text or ""),
+        }
+        return f"{INTERNAL_SLASH_RESULT_HISTORY_PREFIX}{json.dumps(payload, ensure_ascii=False)}"
+
+    def _parse_internal_slash_result_history_content(self, content: str):
+        text = str(content or "")
+        if not text.startswith(INTERNAL_SLASH_RESULT_HISTORY_PREFIX):
+            return None
+        body = text[len(INTERNAL_SLASH_RESULT_HISTORY_PREFIX):].strip()
+        if not body:
+            return None
+        try:
+            payload = json.loads(body)
+        except Exception:
+            return None
+        return payload if isinstance(payload, dict) and str(payload.get("kind") or "") == "internal_slash_result" else None
+
 
 class SessionMemoryBudgetingTests(unittest.TestCase):
     def test_refresh_context_usage_snapshot_persists_chat_state_immediately(self):
@@ -309,6 +342,27 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
         history_joined = "\n".join(str(m.get("content") or "") for m in messages[1:-1])
         self.assertIn("[会话中断事件]", history_joined)
         self.assertIn("最近一次任务执行被用户中断（ESC）", str(messages[-1]["content"]))
+
+    def test_internal_slash_history_is_excluded_from_model_context_and_requirement(self):
+        agent = _FakeAgent()
+        agent.conversation_history = [
+            {"role": "user", "content": agent._build_internal_slash_user_history_content("/chat reload")},
+            {
+                "role": "assistant",
+                "content": agent._build_internal_slash_result_history_content(
+                    "/chat reload",
+                    "reloaded\n",
+                ),
+            },
+            {"role": "user", "content": "最初需求：修复构建"},
+            {"role": "assistant", "content": "收到"},
+        ]
+        svc = SessionMemoryService(agent)
+        messages, _ = svc.build_regular_task_messages("继续执行")
+        history_joined = "\n".join(str(m.get("content") or "") for m in messages[1:-1])
+        self.assertNotIn("/chat reload", history_joined)
+        self.assertNotIn("reloaded", history_joined)
+        self.assertIn("用户原始需求: 最初需求：修复构建", str(messages[-1]["content"]))
 
     def test_original_requirement_falls_back_to_current_input(self):
         agent = _FakeAgent()
