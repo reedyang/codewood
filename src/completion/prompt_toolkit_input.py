@@ -1195,6 +1195,27 @@ class PromptToolkitInputHandler:
             return [(f"fg:{SHELL_MODE_COLOR_HEX}", SHELL_MODE_PROMPT)]
         return str(getattr(self, "_prompt_line", "") or "")
 
+    def _clear_status_overlay_line_if_possible(self) -> None:
+        try:
+            if not bool(getattr(self, "_status_bar_enabled", False)):
+                return
+            output = None
+            if self.session is not None:
+                app = getattr(self.session, "app", None)
+                if app is not None:
+                    output = getattr(app, "output", None)
+                if output is None:
+                    output = getattr(self.session, "output", None)
+            if output is not None and hasattr(output, "write_raw") and hasattr(output, "flush"):
+                output.write_raw("\x1b7\x1b[2B\r\x1b[2K\x1b8")
+                output.flush()
+                return
+            if hasattr(sys.stdout, "isatty") and sys.stdout.isatty():
+                sys.stdout.write("\x1b7\x1b[2B\r\x1b[2K\x1b8")
+                sys.stdout.flush()
+        except Exception:
+            pass
+
     def _compose_shell_mode_status_line(self, base_status_line: str) -> str:
         base_colored = str(base_status_line or "")
         base_plain = _strip_ansi_sgr(base_colored)
@@ -1292,6 +1313,7 @@ class PromptToolkitInputHandler:
                     multiline=True,
                     prompt_continuation=self._multiline_prompt_continuation,
                 ).strip()
+                self._clear_status_overlay_line_if_possible()
             else:
                 # 回退到标准input
                 user_input = input(prompt).strip()

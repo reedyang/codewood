@@ -114,6 +114,7 @@ class PromptToolkitInputCompletionTests(unittest.TestCase):
         handler._status_bar_text = ""
         handler._status_bar_fragments = []
         handler._status_bar_enabled = True
+        handler._clear_status_overlay_line_if_possible = lambda: None
 
         out = handler.get_input_with_completion("› ")
         self.assertEqual(out, "line1\nline2")
@@ -133,10 +134,28 @@ class PromptToolkitInputCompletionTests(unittest.TestCase):
         handler._status_bar_text = ""
         handler._status_bar_fragments = []
         handler._status_bar_enabled = True
+        handler._clear_status_overlay_line_if_possible = lambda: None
 
         out = handler.get_input_with_completion("› ")
         self.assertEqual(out, "a\nb\nc")
         self.assertEqual(handler.history[-1], "a\nb\nc")
+
+    def test_get_input_clears_overlay_after_prompt_submit(self):
+        handler = pti.PromptToolkitInputHandler.__new__(pti.PromptToolkitInputHandler)
+        handler.session = _FakeSession("echo hi")
+        handler.history = []
+        handler.work_directory = Path.cwd()
+        handler._status_bar_text = ""
+        handler._status_bar_fragments = []
+        handler._status_bar_enabled = True
+        calls = {"n": 0}
+        def _clear():
+            calls["n"] += 1
+        handler._clear_status_overlay_line_if_possible = _clear
+
+        out = handler.get_input_with_completion("› ")
+        self.assertEqual(out, "echo hi")
+        self.assertEqual(calls["n"], 1)
 
     def test_shell_mode_prompt_message_is_red_bang_prompt(self):
         handler = pti.PromptToolkitInputHandler.__new__(pti.PromptToolkitInputHandler)
