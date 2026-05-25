@@ -1326,6 +1326,10 @@ def run_agent_loop(agent: Any):
                     "result": result,
                     "timestamp": datetime.now().isoformat()
                 })
+                try:
+                    self._refresh_chat_history_after_tool_output()
+                except Exception:
+                    pass
                 last_result = result
                 is_first_round = False
                 if tool_name == "apply_patch" and (not bool(result.get("success", False))):

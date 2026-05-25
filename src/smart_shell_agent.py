@@ -892,11 +892,66 @@ class SmartShellAgent:
             return
         self._reload_chat_history_from_anchor_on_resize()
 
+    @staticmethod
+    def _tool_call_history_match_key(tool_name: str, args: Dict[str, Any]) -> str:
+        tname = str(tool_name or "").strip()
+        a = args if isinstance(args, dict) else {}
+        try:
+            payload = {"tool": tname, "args": a}
+            return json.dumps(payload, ensure_ascii=False, sort_keys=True)
+        except Exception:
+            return tname
+
+    def _consume_tool_call_failed_state_from_operation_results(
+        self,
+        operation_results: List[Dict[str, Any]],
+        cursor: int,
+        tool_name: str,
+        args: Dict[str, Any],
+    ) -> Tuple[bool, int]:
+        items = operation_results if isinstance(operation_results, list) else []
+        idx = max(0, int(cursor or 0))
+        target_tool = str(tool_name or "").strip()
+        target_key = self._tool_call_history_match_key(target_tool, args)
+        while idx < len(items):
+            item = items[idx]
+            idx += 1
+            if not isinstance(item, dict):
+                continue
+            cmd = item.get("command")
+            if not isinstance(cmd, dict):
+                continue
+            op_tool = str(cmd.get("tool") or cmd.get("action") or "").strip()
+            if not op_tool or op_tool != target_tool:
+                continue
+            op_args = cmd.get("args")
+            if not isinstance(op_args, dict):
+                op_args = {}
+            op_key = self._tool_call_history_match_key(op_tool, op_args)
+            if op_key != target_key:
+                continue
+            res = item.get("result")
+            if not isinstance(res, dict):
+                res = {}
+            return (not bool(res.get("success", True))), idx
+        return False, cursor
+
+    def _refresh_chat_history_after_tool_output(self) -> None:
+        start = self._get_active_chat_history_first_visible_index()
+        self._remember_active_chat_history_first_visible_index(start)
+        try:
+            self._sync_active_chat_messages()
+        except Exception:
+            pass
+        self._reload_chat_history_from_anchor_on_resize()
+
     def _print_chat_history(self, start_index: int = 0) -> None:
         all_hist = list(self.conversation_history or [])
         start = max(0, min(int(start_index or 0), len(all_hist)))
         self._remember_active_chat_history_first_visible_index(start)
         hist = all_hist[start:]
+        operation_results = list(getattr(self, "operation_results", None) or [])
+        tool_result_cursor = 0
         if not hist:
             if not all_hist:
                 print("(No message history in the current chat)")
@@ -963,7 +1018,13 @@ class SmartShellAgent:
                 if tool_plan:
                     tool_name, args = tool_plan
                     if tool_name != "done":
-                        self._print_tool_call_feedback(tool_name, args, failed=False)
+                        failed, tool_result_cursor = self._consume_tool_call_failed_state_from_operation_results(
+                            operation_results,
+                            tool_result_cursor,
+                            tool_name,
+                            args,
+                        )
+                        self._print_tool_call_feedback(tool_name, args, failed=failed)
             else:
                 print(content)
         self._show_separator_next_prompt = False
