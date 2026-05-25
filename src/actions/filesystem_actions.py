@@ -42,7 +42,21 @@ def action_apply_unified_patch(agent: Any, file_path: str, patch: str, confirmed
         decision = policy.can_write_path(abs_path, "apply_patch")
         if not decision.get("allowed", False):
             return {"success": False, "error": decision.get("error", "")}
-        need_confirm = (not confirmed) and (not agent._is_path_under(abs_path, agent.ai_workspace_dir))
+        execution_policy = str(getattr(agent, "execution_policy", "confirmation")).lower()
+        in_ai_workspace = bool(agent._is_path_under(abs_path, agent.ai_workspace_dir))
+        in_workspace_root = False
+        raw_workspace_root = getattr(agent, "workspace_root", None)
+        if raw_workspace_root:
+            try:
+                in_workspace_root = bool(
+                    agent._is_path_under(abs_path, Path(str(raw_workspace_root)))
+                )
+            except Exception:
+                in_workspace_root = False
+        moderate_workspace_text_edit = (
+            execution_policy == "moderate" and in_workspace_root
+        )
+        need_confirm = (not confirmed) and (not in_ai_workspace) and (not moderate_workspace_text_edit)
 
         encodings = ["utf-8", "gbk", "gb2312", "utf-16", "latin1"]
         source = None
