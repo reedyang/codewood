@@ -963,7 +963,7 @@ class SmartShellAgent:
                 if tool_plan:
                     tool_name, args = tool_plan
                     if tool_name != "done":
-                        print(f"{_ansi_gray('Tool call:')} {_ansi_bright_blue(self._tool_call_summary(tool_name, args))}")
+                        self._print_tool_call_feedback(tool_name, args, failed=False)
             else:
                 print(content)
         self._show_separator_next_prompt = False
@@ -1217,6 +1217,46 @@ class SmartShellAgent:
             self._erase_last_user_input_line()
         line = self._format_direct_shell_command_feedback_line(command, failed=failed)
         print(line)
+
+    def _print_tool_call_feedback(
+        self,
+        tool_name: str,
+        args: Dict[str, Any],
+        failed: bool = False,
+    ) -> None:
+        line = self._format_tool_call_feedback_line(tool_name, args, failed=failed)
+        print(line)
+
+    def _format_tool_call_feedback_line(
+        self,
+        tool_name: str,
+        args: Dict[str, Any],
+        failed: bool = False,
+    ) -> str:
+        summary = self._tool_call_summary(tool_name, args)
+        bullet = _ansi_rgb("•", 197, 15, 31) if bool(failed) else _ansi_rgb("•", 19, 161, 14)
+        return f"{bullet} Ran {_ansi_bright_blue(summary)}"
+
+    def _repaint_tool_call_feedback_if_failed(
+        self,
+        tool_name: str,
+        args: Dict[str, Any],
+        failed: bool,
+    ) -> None:
+        if not bool(failed):
+            return
+        if not hasattr(sys.stdout, "isatty") or not sys.stdout.isatty():
+            self._print_tool_call_feedback(tool_name, args, failed=True)
+            return
+        try:
+            line = self._format_tool_call_feedback_line(tool_name, args, failed=True)
+            # Best-effort: repaint previous "Ran ..." line in failure color.
+            sys.stdout.write("\x1b7")
+            sys.stdout.write(f"\x1b[1A\r\x1b[2K{line}")
+            sys.stdout.write("\x1b8")
+            sys.stdout.flush()
+        except Exception:
+            self._print_tool_call_feedback(tool_name, args, failed=True)
 
     def _format_direct_shell_command_feedback_line(self, command: str, failed: bool = False) -> str:
         cmd = str(command or "").replace("\r", " ").replace("\n", " ").strip()
