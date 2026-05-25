@@ -988,13 +988,24 @@ class SmartShellAgent:
             return
         if not hasattr(sys.stdout, "isatty") or not sys.stdout.isatty():
             return
+        normalized = txt.replace("\r\n", "\n").replace("\r", "\n")
+        raw_lines = normalized.split("\n")
+        if not raw_lines:
+            raw_lines = [normalized]
+        # Chat-style echo keeps continuation lines indented by 2 spaces.
+        echo_lines = [raw_lines[0]]
+        if len(raw_lines) > 1:
+            echo_lines.extend([f"  {line}" for line in raw_lines[1:]])
+        echo_body = "\n".join(echo_lines)
+        # Prompt line includes "› " prefix on the first visual line.
+        display_probe = f"› {echo_body}"
+        line_count = max(1, int(self._estimate_rendered_line_count(display_probe)))
         try:
-            # Current cursor is on line after Enter:
-            #   <cwd>...
-            #   <cursor here>
-            # Move up once and clear prompt line.
-            sys.stdout.write("\x1b[1A\r\x1b[2K")
-            sys.stdout.write(f"{_ansi_gray('›')} {txt}\n")
+            # Current cursor is on line after Enter. Clear all prompt input rows
+            # (multi-line input may have consumed multiple rows), then redraw once.
+            for _ in range(line_count):
+                sys.stdout.write("\x1b[1A\r\x1b[2K")
+            sys.stdout.write(f"{_ansi_gray('›')} {echo_body}\n")
             sys.stdout.flush()
         except Exception:
             pass
