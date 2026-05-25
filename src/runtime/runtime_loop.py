@@ -991,30 +991,73 @@ def run_agent_loop(agent: Any):
             )
             first_round_evidence = ""
             if self._project_context_feature_enabled():
-                project_context_started_at = time.perf_counter()
-                _emit_flow_log("首轮项目上下文检索准备开始")
-                ev_args = {
-                    "query": original_user_task,
-                    "max_files": 8,
-                    "refresh": False,
-                    "refresh_async": True,
-                }
-                ev_res = self.execute_tool_call("project_context_search", ev_args)
-                self.operation_results.append(
-                    {
-                        "command": {"action": "project_context_search", "params": ev_args},
-                        "result": ev_res,
-                        "timestamp": datetime.now().isoformat(),
+                project_context_ready = False
+                project_context_files_total = 0
+                project_context_inflight = False
+                project_context_skip_reason = "unknown"
+                try:
+                    project_context_inflight = bool(
+                        getattr(self, "_project_context_refresh_inflight", False)
+                    )
+                    if project_context_inflight:
+                        project_context_ready = False
+                        project_context_skip_reason = "refresh_inflight"
+                    else:
+                        idx = getattr(self, "_project_context_index", None)
+                        files_map = getattr(idx, "files", None) if idx is not None else None
+                        project_context_files_total = (
+                            len(files_map) if isinstance(files_map, dict) else 0
+                        )
+                        project_context_ready = project_context_files_total > 0
+                        project_context_skip_reason = (
+                            "ready" if project_context_ready else "index_empty"
+                        )
+                except Exception as e:
+                    project_context_ready = False
+                    project_context_skip_reason = f"status_check_failed:{type(e).__name__}"
+
+                if project_context_ready:
+                    project_context_started_at = time.perf_counter()
+                    _emit_flow_log(
+                        "首轮项目上下文检索准备开始: "
+                        f"files_total={project_context_files_total}"
+                    )
+                    ev_args = {
+                        "query": original_user_task,
+                        "max_files": 8,
+                        "refresh": False,
+                        "refresh_async": True,
                     }
-                )
-                first_round_evidence = self._render_evidence_block_from_project_context_result(ev_res)
-                project_context_elapsed_ms = int((time.perf_counter() - project_context_started_at) * 1000)
-                _emit_flow_log(
-                    "首轮项目上下文检索准备结束: "
-                    f"success={bool(ev_res.get('success', False))}, "
-                    f"matches={int(ev_res.get('total_matches', 0) or 0)}, "
-                    f"elapsed_ms={project_context_elapsed_ms}"
-                )
+                    ev_res = self.execute_tool_call("project_context_search", ev_args)
+                    self.operation_results.append(
+                        {
+                            "command": {"action": "project_context_search", "params": ev_args},
+                            "result": ev_res,
+                            "timestamp": datetime.now().isoformat(),
+                        }
+                    )
+                    first_round_evidence = self._render_evidence_block_from_project_context_result(ev_res)
+                    project_context_elapsed_ms = int((time.perf_counter() - project_context_started_at) * 1000)
+                    _emit_flow_log(
+                        "首轮项目上下文检索准备结束: "
+                        f"success={bool(ev_res.get('success', False))}, "
+                        f"matches={int(ev_res.get('total_matches', 0) or 0)}, "
+                        f"elapsed_ms={project_context_elapsed_ms}"
+                    )
+                else:
+                    try:
+                        self._schedule_project_context_refresh_background(
+                            force=False,
+                            reason="first-round-evidence-not-ready",
+                        )
+                    except Exception:
+                        pass
+                    _emit_flow_log(
+                        "首轮项目上下文检索准备结束: "
+                        f"skipped(not_ready:{project_context_skip_reason}), "
+                        f"files_total={project_context_files_total}, "
+                        f"refresh_inflight={project_context_inflight}"
+                    )
             else:
                 _emit_flow_log("首轮项目上下文检索准备结束: skipped(feature_disabled)")
             next_input = (

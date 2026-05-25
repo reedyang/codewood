@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import threading
 import time
@@ -173,24 +174,30 @@ class ProjectContextIndex:
             encoding="utf-8",
         )
 
-    def _iter_code_files(self) -> List[Path]:
+    def _iter_code_files(self, deadline_ts: Optional[float] = None) -> Tuple[List[Path], bool]:
         out: List[Path] = []
         root = self.workspace_root
         if not root.is_dir():
-            return out
-        for p in root.rglob("*"):
-            if not p.is_file():
-                continue
-            try:
-                rel_parts = p.relative_to(root).parts
-            except Exception:
-                continue
-            if any(part.lower() in _DEFAULT_EXCLUDE_DIRS for part in rel_parts[:-1]):
-                continue
-            if p.suffix.lower() not in _DEFAULT_CODE_EXTS:
-                continue
-            out.append(p)
-        return out
+            return out, False
+        timed_out = False
+        root_s = str(root)
+        for dirpath, dirnames, filenames in os.walk(root_s, topdown=True, followlinks=False):
+            if deadline_ts is not None and _now_ts() >= deadline_ts:
+                timed_out = True
+                break
+            # Prune excluded directories before descending to keep traversal cheap.
+            dirnames[:] = [d for d in dirnames if str(d or "").lower() not in _DEFAULT_EXCLUDE_DIRS]
+            for fn in filenames:
+                if deadline_ts is not None and _now_ts() >= deadline_ts:
+                    timed_out = True
+                    break
+                p = Path(dirpath) / str(fn)
+                if p.suffix.lower() not in _DEFAULT_CODE_EXTS:
+                    continue
+                out.append(p)
+            if timed_out:
+                break
+        return out, timed_out
 
     def _parse_file(self, p: Path, rel: str, st_mtime_ns: int, st_size: int) -> _FileEntry:
         text = ""
@@ -270,14 +277,14 @@ class ProjectContextIndex:
             if not root.is_dir():
                 return {"success": False, "error": f"workspace 不存在: {root}"}
 
-            scanned = self._iter_code_files()
+            scanned, discovery_timed_out = self._iter_code_files(deadline_ts=deadline)
             base_files = self.files
             next_files: Dict[str, _FileEntry] = dict(base_files)
             seen_rel: Set[str] = set()
             added = 0
             updated = 0
             unchanged = 0
-            timed_out = False
+            timed_out = bool(discovery_timed_out)
             processed = 0
 
             for p in scanned:

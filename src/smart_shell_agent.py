@@ -318,11 +318,25 @@ class SmartShellAgent:
             self._project_context_refresh_inflight = True
         target_root = Path(self.work_directory)
         target_storage = Path(self.ai_workspace_dir) / "knowledge_db"
+        reason_text = str(reason or "background")
+        pc_logger = get_logger("smartshell.project_context")
+        started_at = datetime.now()
+        try:
+            pc_logger.info(
+                "项目上下文后台刷新已调度: reason=%s force=%s workspace=%s storage=%s",
+                reason_text,
+                bool(force),
+                str(target_root),
+                str(target_storage),
+            )
+        except Exception:
+            pass
 
         def _run() -> None:
+            refresh_result: Dict[str, Any] = {}
             try:
                 index.bind_workspace(target_root, storage_dir=target_storage)
-                index.refresh_index(
+                refresh_result = index.refresh_index(
                     force=bool(force),
                     timeout_ms=(None if force else 2000),
                 )
@@ -331,11 +345,25 @@ class SmartShellAgent:
             finally:
                 with gate:
                     self._project_context_refresh_inflight = False
+                try:
+                    elapsed_ms = int((datetime.now() - started_at).total_seconds() * 1000)
+                    pc_logger.info(
+                        "项目上下文后台刷新完成: reason=%s force=%s elapsed_ms=%s timed_out=%s files_total=%s scanned=%s processed=%s",
+                        reason_text,
+                        bool(force),
+                        elapsed_ms,
+                        bool(refresh_result.get("timed_out", False)),
+                        int(refresh_result.get("files_total", 0) or 0),
+                        int(refresh_result.get("scanned", 0) or 0),
+                        int(refresh_result.get("processed", 0) or 0),
+                    )
+                except Exception:
+                    pass
 
         threading.Thread(
             target=_run,
             daemon=True,
-            name=f"smartshell-project-context-refresh:{reason or 'background'}",
+            name=f"smartshell-project-context-refresh:{reason_text}",
         ).start()
         return True
 
