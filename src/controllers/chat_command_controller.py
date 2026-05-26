@@ -50,6 +50,40 @@ def _print_startup_overview_safe(agent: Any) -> None:
         pass
 
 
+def _reload_chat_from_top(agent: Any, chat_id: str) -> None:
+    reload_chat_id = str(chat_id or "").strip()
+    if not reload_chat_id:
+        print("❌ There is no active chat to reload")
+        return
+    agent._load_chat_state()
+    reload_result = agent._activate_chat(
+        reload_chat_id,
+        announce=False,
+        clear_screen=False,
+        print_history=False,
+    )
+    if reload_result:
+        print(reload_result)
+        return
+    try:
+        remember = getattr(agent, "_remember_active_chat_history_first_visible_index", None)
+        if callable(remember):
+            remember(0)
+    except Exception:
+        pass
+    resize_reload = getattr(agent, "_reload_chat_history_from_anchor_on_resize", None)
+    if callable(resize_reload):
+        resize_reload()
+        return
+    # Fallback: keep historical UX order when shared reload helper is unavailable.
+    _clear_terminal_screen()
+    _print_startup_overview_safe(agent)
+    try:
+        agent._print_chat_history(start_index=0)
+    except Exception:
+        agent._print_chat_history()
+
+
 def handle_chat_builtin_command(agent: Any, builtin_line: str) -> bool:
     raw = str(builtin_line or "").strip()
     if not raw.lower().startswith("chat"):
@@ -67,36 +101,7 @@ def handle_chat_builtin_command(agent: Any, builtin_line: str) -> bool:
         return True
     if sub == "reload":
         current_chat_id = str(getattr(agent, "active_chat_id", "") or "").strip()
-        if not current_chat_id:
-            print("❌ There is no active chat to reload")
-            return True
-        agent._load_chat_state()
-        reload_result = agent._activate_chat(
-            current_chat_id,
-            announce=False,
-            clear_screen=False,
-            print_history=False,
-        )
-        if reload_result:
-            print(reload_result)
-            return True
-        try:
-            remember = getattr(agent, "_remember_active_chat_history_first_visible_index", None)
-            if callable(remember):
-                remember(0)
-        except Exception:
-            pass
-        resize_reload = getattr(agent, "_reload_chat_history_from_anchor_on_resize", None)
-        if callable(resize_reload):
-            resize_reload()
-            return True
-        # Fallback: keep historical UX order when shared reload helper is unavailable.
-        _clear_terminal_screen()
-        _print_startup_overview_safe(agent)
-        try:
-            agent._print_chat_history(start_index=0)
-        except Exception:
-            agent._print_chat_history()
+        _reload_chat_from_top(agent, current_chat_id)
         return True
     if sub == "new":
         name = " ".join(parts[2:]).strip() if len(parts) > 2 else "New Chat"
@@ -118,7 +123,7 @@ def handle_chat_builtin_command(agent: Any, builtin_line: str) -> bool:
                 print(f"❌ Chat not found: {selector}")
                 return True
             cid = str(target.get("id") or "")
-        print(agent._activate_chat(cid, announce=True, clear_screen=False, print_history=True))
+        _reload_chat_from_top(agent, cid)
         return True
     if sub == "rename":
         if len(parts) < 4:
@@ -175,7 +180,6 @@ def handle_chat_builtin_command(agent: Any, builtin_line: str) -> bool:
         print(f"✅ Deleted chat: {target.get('name')} ({target.get('id')})")
         if tid == agent.active_chat_id and next_id:
             agent._activate_chat(next_id, announce=False, clear_screen=False, print_history=True)
-            print(f"✅ Switched to chat: [{agent.active_chat_name}]")
         return True
     print(f"❌ Unrecognized chat subcommand: {sub}\n{chat_usage()}")
     return True

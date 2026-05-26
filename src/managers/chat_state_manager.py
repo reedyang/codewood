@@ -524,6 +524,13 @@ class ChatStateManager:
                 refresh_usage()
         except Exception:
             pass
+        try:
+            svc = getattr(self._agent, "session_memory_service", None)
+            schedule_refresh = getattr(svc, "schedule_context_usage_refresh_async", None)
+            if callable(schedule_refresh):
+                schedule_refresh(context_hint="chat activated")
+        except Exception:
+            pass
         if clear_screen:
             os.system("cls" if os.name == "nt" else "clear")
         if print_history:

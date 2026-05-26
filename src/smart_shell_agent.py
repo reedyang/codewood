@@ -1945,6 +1945,8 @@ class SmartShellAgent:
         normalized = re.sub(r"\s+", " ", normalized)
         if normalized in {"/chat reload", "/clear context", "/clear screen"}:
             return False
+        if normalized == "/chat switch" or normalized.startswith("/chat switch "):
+            return False
         return True
 
     def _record_internal_slash_execution_history(
