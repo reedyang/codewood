@@ -1085,7 +1085,6 @@ class SmartShellAgent:
                         out_text, err_text = self._extract_model_shell_replay_output(model_tool_result)
                         if out_text or err_text:
                             self._print_direct_shell_history_output(out_text, err_text)
-                            self._print_direct_shell_history_separator()
                     continue
                 display_response = format_assistant_display_response(content)
                 if display_response:
@@ -1115,7 +1114,6 @@ class SmartShellAgent:
                             out_text, err_text = self._extract_model_shell_replay_output(tool_result)
                             if out_text or err_text:
                                 self._print_direct_shell_history_output(out_text, err_text)
-                                self._print_direct_shell_history_separator()
             else:
                 print(content)
         self._show_separator_next_prompt = False
