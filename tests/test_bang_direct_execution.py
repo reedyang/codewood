@@ -79,9 +79,11 @@ class BangDirectExecutionTests(unittest.TestCase):
             self.agent._print_direct_shell_command_feedback("git status")
 
         out = buf.getvalue()
+        ansi_re = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+        out_plain = ansi_re.sub("", out)
         self.assertIn("\x1b[1A\r\x1b[2K\r", out)
         self.assertIn("You ran ", out)
-        self.assertIn("git status", out)
+        self.assertIn("git status", out_plain)
         self.assertIn("•", out)
         self.assertIn("\x1b[", out)
 

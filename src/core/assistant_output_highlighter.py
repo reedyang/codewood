@@ -186,6 +186,8 @@ def _looks_like_shell_command_line(text: str) -> bool:
     if not first:
         return False
     token = first.group(0).strip("\"'")
+    if token.startswith("!") and len(token) > 1:
+        token = token[1:]
     lower = token.lower()
     if _contains_cjk(token):
         return False
@@ -232,6 +234,8 @@ def _looks_like_shell_command_line(text: str) -> bool:
         return True
     if lower in command_names:
         return True
+    if _looks_like_powershell_cmdlet(token):
+        return True
     return False
 
 
@@ -248,6 +252,65 @@ def _contains_cjk(text: str) -> bool:
     return False
 
 
+def _looks_like_powershell_cmdlet(token: str) -> bool:
+    t = str(token or "").strip()
+    if not re.fullmatch(r"[A-Za-z]+-[A-Za-z][A-Za-z0-9]*", t):
+        return False
+    verb, noun = t.split("-", 1)
+    approved_verbs = {
+        "add",
+        "clear",
+        "close",
+        "compare",
+        "connect",
+        "convert",
+        "copy",
+        "disable",
+        "disconnect",
+        "enable",
+        "enter",
+        "exit",
+        "export",
+        "find",
+        "format",
+        "get",
+        "import",
+        "invoke",
+        "join",
+        "measure",
+        "move",
+        "new",
+        "open",
+        "out",
+        "pop",
+        "push",
+        "read",
+        "receive",
+        "remove",
+        "rename",
+        "reset",
+        "resize",
+        "search",
+        "select",
+        "send",
+        "set",
+        "show",
+        "sort",
+        "split",
+        "start",
+        "stop",
+        "switch",
+        "test",
+        "trace",
+        "update",
+        "use",
+        "wait",
+        "where",
+        "write",
+    }
+    return verb.lower() in approved_verbs and noun.isalnum()
+
+
 def _highlight_shell_command_line(text: str) -> str:
     if not text:
         return text
@@ -256,6 +319,10 @@ def _highlight_shell_command_line(text: str) -> str:
     out: List[str] = []
     first_token_seen = False
     prev_plain = ""
+    in_command_string = False
+    command_quote = ""
+    command_first_token_seen = False
+    command_prev_plain = ""
     for part in parts:
         if not part or part.isspace():
             out.append(part)
@@ -263,38 +330,94 @@ def _highlight_shell_command_line(text: str) -> str:
         token = part
         plain = token.strip("\"'")
         lower = plain.lower()
-        if not first_token_seen:
-            out.append(_ansi_bright_blue(token))
-            first_token_seen = True
+        if in_command_string:
+            ended = token.endswith(command_quote)
+            inner = token[:-1] if ended else token
+            if inner:
+                colored_inner, command_first_token_seen, command_prev_plain = _highlight_shell_token(
+                    inner,
+                    command_first_token_seen,
+                    command_prev_plain,
+                )
+                out.append(colored_inner)
+            if ended:
+                out.append(command_quote)
+                in_command_string = False
+                command_quote = ""
             prev_plain = lower
             continue
-        if token.startswith(("--", "-")) and not token.startswith(("http://", "https://")):
-            out.append(_ansi_yellow(token))
-            prev_plain = lower
-            continue
-        if prev_plain == "-m":
-            out.append(_ansi_bright_blue(token))
-            prev_plain = lower
-            continue
-        if lower in {"install", "run", "start", "stop", "check", "list", "show", "create", "delete", "remove", "update", "switch", "clone", "pull", "push", "build", "test", "verify"}:
-            out.append(_ansi_bright_blue(token))
-            prev_plain = lower
-            continue
-        if token.startswith(('"', "'")) and token.endswith(('"', "'")) and len(token) >= 2:
-            inner = token[1:-1]
-            if _looks_like_path_or_url(inner):
-                out.append(token[0] + _ansi_cyan(inner) + token[-1])
-            else:
-                out.append(_ansi_green(token))
-            prev_plain = lower
-            continue
-        if _looks_like_path_or_url(plain) or _looks_like_env_var(plain):
-            out.append(_ansi_cyan(token))
-            prev_plain = lower
-            continue
-        out.append(token)
-        prev_plain = lower
+        if prev_plain == "-command":
+            if token[:1] in {'"', "'"}:
+                quote = token[0]
+                body = token[1:]
+                ended = body.endswith(quote)
+                inner = body[:-1] if ended else body
+                out.append(quote)
+                command_first_token_seen = False
+                command_prev_plain = ""
+                if inner:
+                    colored_inner, command_first_token_seen, command_prev_plain = _highlight_shell_token(
+                        inner,
+                        command_first_token_seen,
+                        command_prev_plain,
+                    )
+                    out.append(colored_inner)
+                if ended:
+                    out.append(quote)
+                else:
+                    in_command_string = True
+                    command_quote = quote
+                prev_plain = lower
+                continue
+        colored, first_token_seen, prev_plain = _highlight_shell_token(
+            token,
+            first_token_seen,
+            prev_plain,
+        )
+        out.append(colored)
     return "".join(out)
+
+
+def _highlight_shell_token(token: str, first_token_seen: bool, prev_plain: str) -> Tuple[str, bool, str]:
+    plain = str(token or "").strip("\"'")
+    lower = plain.lower()
+    if not first_token_seen:
+        if token.startswith("!") and len(token) > 1:
+            return "!" + _ansi_bright_blue(token[1:]), True, lower
+        return _ansi_bright_blue(token), True, lower
+    if token.startswith(("--", "-")) and not token.startswith(("http://", "https://")):
+        return _ansi_yellow(token), first_token_seen, lower
+    if prev_plain == "-m":
+        return _ansi_bright_blue(token), first_token_seen, lower
+    if lower in {
+        "install",
+        "run",
+        "start",
+        "stop",
+        "check",
+        "list",
+        "show",
+        "create",
+        "delete",
+        "remove",
+        "update",
+        "switch",
+        "clone",
+        "pull",
+        "push",
+        "build",
+        "test",
+        "verify",
+    }:
+        return _ansi_bright_blue(token), first_token_seen, lower
+    if token.startswith(('"', "'")) and token.endswith(('"', "'")) and len(token) >= 2:
+        inner = token[1:-1]
+        if _looks_like_path_or_url(inner):
+            return token[0] + _ansi_cyan(inner) + token[-1], first_token_seen, lower
+        return _ansi_green(token), first_token_seen, lower
+    if _looks_like_path_or_url(plain) or _looks_like_env_var(plain):
+        return _ansi_cyan(token), first_token_seen, lower
+    return token, first_token_seen, lower
 
 
 def _looks_like_path_or_url(text: str) -> bool:
