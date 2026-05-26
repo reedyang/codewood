@@ -116,6 +116,7 @@ KNOWLEDGE_AVAILABLE = True  # 构造前为「未探测」；单测设为 False �
 
 DIRECT_SHELL_USER_HISTORY_PREFIX = "[DIRECT_SHELL_USER_COMMAND]"
 DIRECT_SHELL_RESULT_HISTORY_PREFIX = "[DIRECT_SHELL_RESULT]"
+MODEL_TOOL_RESULT_HISTORY_PREFIX = "[MODEL_TOOL_RESULT]"
 CONVERSATION_INTERRUPTED_HISTORY_PREFIX = "[CONVERSATION_INTERRUPTED]"
 INTERNAL_SLASH_USER_HISTORY_PREFIX = "[INTERNAL_SLASH_USER_COMMAND]"
 INTERNAL_SLASH_RESULT_HISTORY_PREFIX = "[INTERNAL_SLASH_RESULT]"
@@ -911,6 +912,21 @@ class SmartShellAgent:
         tool_name: str,
         args: Dict[str, Any],
     ) -> Tuple[bool, int]:
+        result, idx = self._consume_tool_call_result_from_operation_results(
+            operation_results,
+            cursor,
+            tool_name,
+            args,
+        )
+        return (not bool(result.get("success", True))), idx
+
+    def _consume_tool_call_result_from_operation_results(
+        self,
+        operation_results: List[Dict[str, Any]],
+        cursor: int,
+        tool_name: str,
+        args: Dict[str, Any],
+    ) -> Tuple[Dict[str, Any], int]:
         items = operation_results if isinstance(operation_results, list) else []
         idx = max(0, int(cursor or 0))
         target_tool = str(tool_name or "").strip()
@@ -935,8 +951,35 @@ class SmartShellAgent:
             res = item.get("result")
             if not isinstance(res, dict):
                 res = {}
-            return (not bool(res.get("success", True))), idx
-        return False, cursor
+            return res, idx
+        return {}, cursor
+
+    def _extract_model_shell_replay_output(self, shell_result: Any) -> Tuple[str, str]:
+        payload = shell_result if isinstance(shell_result, dict) else {}
+        out_text = str(payload.get("display_output") or "")
+        err_text = str(payload.get("display_stderr") or "")
+        if not out_text and not err_text:
+            out_text = str(payload.get("output") or "")
+            err_text = str(payload.get("stderr") or "")
+        return out_text, err_text
+
+    def _model_tool_result_matches_plan(
+        self,
+        tool_name: str,
+        args: Dict[str, Any],
+        payload: Any,
+    ) -> bool:
+        if not isinstance(payload, dict):
+            return False
+        p_tool = str(payload.get("tool") or "").strip()
+        if not p_tool:
+            return False
+        p_args = payload.get("args")
+        if not isinstance(p_args, dict):
+            p_args = {}
+        target_key = self._tool_call_history_match_key(str(tool_name or "").strip(), args if isinstance(args, dict) else {})
+        payload_key = self._tool_call_history_match_key(p_tool, p_args)
+        return target_key == payload_key
 
     def _refresh_chat_history_after_tool_output(self) -> None:
         start = self._get_active_chat_history_first_visible_index()
@@ -1023,6 +1066,21 @@ class SmartShellAgent:
                         str(slash_result.get("output") or "")
                     )
                     continue
+                model_tool_result = self._parse_model_tool_result_history_content(content)
+                if model_tool_result is not None:
+                    model_tool = str(model_tool_result.get("tool") or "").strip()
+                    model_args = model_tool_result.get("args")
+                    if not isinstance(model_args, dict):
+                        model_args = {}
+                    failed = not bool(model_tool_result.get("success", True))
+                    if model_tool:
+                        self._print_tool_call_feedback(model_tool, model_args, failed=failed)
+                    if model_tool == "shell":
+                        out_text, err_text = self._extract_model_shell_replay_output(model_tool_result)
+                        if out_text or err_text:
+                            self._print_direct_shell_history_output(out_text, err_text)
+                            self._print_direct_shell_history_separator()
+                    continue
                 display_response = format_assistant_display_response(content)
                 if display_response:
                     print(f"{_ansi_gray('•')} {display_response}")
@@ -1030,13 +1088,28 @@ class SmartShellAgent:
                 if tool_plan:
                     tool_name, args = tool_plan
                     if tool_name != "done":
-                        failed, tool_result_cursor = self._consume_tool_call_failed_state_from_operation_results(
+                        if tool_name == "shell" and (idx + 1) < len(hist):
+                            nxt = hist[idx + 1]
+                            nxt_role = str(nxt.get("role") or "").strip().lower()
+                            if nxt_role == "assistant":
+                                nxt_payload = self._parse_model_tool_result_history_content(
+                                    str(nxt.get("content") or "")
+                                )
+                                if self._model_tool_result_matches_plan(tool_name, args, nxt_payload):
+                                    continue
+                        tool_result, tool_result_cursor = self._consume_tool_call_result_from_operation_results(
                             operation_results,
                             tool_result_cursor,
                             tool_name,
                             args,
                         )
+                        failed = not bool(tool_result.get("success", True))
                         self._print_tool_call_feedback(tool_name, args, failed=failed)
+                        if tool_name == "shell":
+                            out_text, err_text = self._extract_model_shell_replay_output(tool_result)
+                            if out_text or err_text:
+                                self._print_direct_shell_history_output(out_text, err_text)
+                                self._print_direct_shell_history_separator()
             else:
                 print(content)
         self._show_separator_next_prompt = False
@@ -1315,6 +1388,7 @@ class SmartShellAgent:
         tool_name: str,
         args: Dict[str, Any],
         failed: bool,
+        up_lines: int = 1,
     ) -> None:
         if not bool(failed):
             return
@@ -1322,10 +1396,11 @@ class SmartShellAgent:
             self._print_tool_call_feedback(tool_name, args, failed=True)
             return
         try:
+            offset = max(1, int(up_lines or 1))
             line = self._format_tool_call_feedback_line(tool_name, args, failed=True)
             # Best-effort: repaint previous "Ran ..." line in failure color.
             sys.stdout.write("\x1b7")
-            sys.stdout.write(f"\x1b[1A\r\x1b[2K{line}")
+            sys.stdout.write(f"\x1b[{offset}A\r\x1b[2K{line}")
             sys.stdout.write("\x1b8")
             sys.stdout.flush()
         except Exception:
@@ -1414,6 +1489,63 @@ class SmartShellAgent:
             return None
         return payload
 
+    def _build_model_tool_result_history_content(
+        self,
+        tool_name: str,
+        args: Dict[str, Any],
+        result: Dict[str, Any],
+    ) -> str:
+        t = str(tool_name or "").strip()
+        a = args if isinstance(args, dict) else {}
+        r = result if isinstance(result, dict) else {}
+        payload = {
+            "kind": "model_tool_result",
+            "tool": t,
+            "args": a,
+            "success": bool(r.get("success", True)),
+            "return_code": r.get("return_code"),
+            "output": str(r.get("output") or ""),
+            "stderr": str(r.get("stderr") or ""),
+            "display_output": str(r.get("display_output") or ""),
+            "display_stderr": str(r.get("display_stderr") or ""),
+            "display_rendered_lines": int(r.get("display_rendered_lines") or 0),
+            "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        }
+        return f"{MODEL_TOOL_RESULT_HISTORY_PREFIX}{json.dumps(payload, ensure_ascii=False)}"
+
+    def _parse_model_tool_result_history_content(self, content: str) -> Optional[Dict[str, Any]]:
+        text = str(content or "")
+        if not text.startswith(MODEL_TOOL_RESULT_HISTORY_PREFIX):
+            return None
+        body = text[len(MODEL_TOOL_RESULT_HISTORY_PREFIX):].strip()
+        if not body:
+            return None
+        try:
+            payload = json.loads(body)
+        except Exception:
+            return None
+        if not isinstance(payload, dict):
+            return None
+        if str(payload.get("kind") or "").strip() != "model_tool_result":
+            return None
+        return payload
+
+    def _record_model_tool_execution_history(
+        self,
+        tool_name: str,
+        args: Dict[str, Any],
+        result: Dict[str, Any],
+    ) -> None:
+        t = str(tool_name or "").strip().lower()
+        if t != "shell":
+            return
+        content = self._build_model_tool_result_history_content(
+            tool_name=str(tool_name or "").strip(),
+            args=args if isinstance(args, dict) else {},
+            result=result if isinstance(result, dict) else {},
+        )
+        self._append_chat_message("assistant", content)
+
     def _build_conversation_interrupted_history_content(
         self,
         interrupted_kind: str = "task",
@@ -1464,7 +1596,7 @@ class SmartShellAgent:
         stdout_text: str,
         stderr_text: str,
         force_first_line_continuation: bool = False,
-    ) -> None:
+    ) -> int:
         shared_state: Dict[str, Any] = {"first_line_emitted": bool(force_first_line_continuation)}
         out_stream, err_stream = self._create_direct_shell_output_streams(shared_state)
         out = str(stdout_text or "")
@@ -1475,6 +1607,10 @@ class SmartShellAgent:
         if err:
             err_stream.write(err)
             err_stream.flush()
+        try:
+            return max(0, int(shared_state.get("rendered_line_count", 0) or 0))
+        except Exception:
+            return 0
 
     def _record_direct_shell_execution_history(
         self,

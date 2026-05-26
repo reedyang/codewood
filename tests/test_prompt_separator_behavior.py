@@ -413,6 +413,67 @@ class PromptSeparatorBehaviorTests(unittest.TestCase):
             agent._print_chat_history()
         mock_feedback.assert_called_once_with("read", {"path": "a.txt"}, failed=True)
 
+    def test_chat_history_replays_model_shell_output_using_direct_shell_renderer(self):
+        agent = self._build_agent()
+        agent.conversation_history = [
+            {
+                "role": "assistant",
+                "content": "{\"tool\":\"shell\",\"args\":{\"command\":\"echo hi\"}}",
+            },
+        ]
+        agent.operation_results = [
+            {
+                "command": {"tool": "shell", "args": {"command": "echo hi"}},
+                "result": {
+                    "success": True,
+                    "display_output": "  └ hi\n",
+                    "display_stderr": "",
+                },
+            }
+        ]
+        with (
+            patch("builtins.print"),
+            patch.object(agent, "_print_tool_call_feedback") as mock_feedback,
+            patch.object(agent, "_print_direct_shell_history_output") as mock_shell_output,
+            patch.object(agent, "_print_direct_shell_history_separator") as mock_sep,
+        ):
+            agent._print_chat_history()
+        mock_feedback.assert_called_once_with("shell", {"command": "echo hi"}, failed=False)
+        mock_shell_output.assert_called_once_with("  └ hi\n", "")
+        mock_sep.assert_called_once_with()
+
+    def test_chat_history_model_shell_result_replays_failed_output_without_operation_results(self):
+        agent = self._build_agent()
+        agent.conversation_history = [
+            {
+                "role": "assistant",
+                "content": "{\"tool\":\"shell\",\"args\":{\"command\":\"test\"}}",
+            },
+            {
+                "role": "assistant",
+                "content": agent._build_model_tool_result_history_content(
+                    "shell",
+                    {"command": "test"},
+                    {
+                        "success": False,
+                        "display_output": "'test' is not recognized\n",
+                        "display_stderr": "",
+                    },
+                ),
+            },
+        ]
+        agent.operation_results = []
+        with (
+            patch("builtins.print"),
+            patch.object(agent, "_print_tool_call_feedback") as mock_feedback,
+            patch.object(agent, "_print_direct_shell_history_output") as mock_shell_output,
+            patch.object(agent, "_print_direct_shell_history_separator") as mock_sep,
+        ):
+            agent._print_chat_history()
+        mock_feedback.assert_called_once_with("shell", {"command": "test"}, failed=True)
+        mock_shell_output.assert_called_once_with("'test' is not recognized\n", "")
+        mock_sep.assert_called_once_with()
+
     def test_refresh_after_tool_output_keeps_history_anchor_position(self):
         agent = self._build_agent()
         agent.conversation_history = [

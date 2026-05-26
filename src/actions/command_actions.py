@@ -460,8 +460,6 @@ def action_shell_command(
             displayed_err = _build_tail_output_for_display(err, sys.stderr, err_tail_limit)
             displayed_out_plain = _strip_console_color_controls(displayed_out)
             displayed_err_plain = _strip_console_color_controls(displayed_err)
-            displayed_out = _gray_shell_display_text(displayed_out)
-            displayed_err = _gray_shell_display_text(displayed_err)
             should_replay_out = True
             should_replay_err = True
             if interactive:
@@ -473,12 +471,29 @@ def action_shell_command(
                 if displayed_err and (_count_output_lines(err) <= err_tail_limit) and (displayed_err == err):
                     should_replay_err = False
             last_rendered_chunk = ""
-            if displayed_out and should_replay_out:
-                _safe_console_write(displayed_out, sys.stdout, append_newline=False)
-                last_rendered_chunk = displayed_out_plain
-            if displayed_err and should_replay_err:
-                _safe_console_write(displayed_err, sys.stderr, append_newline=False)
-                last_rendered_chunk = displayed_err_plain
+            replay_out_text = displayed_out_plain if (displayed_out and should_replay_out) else ""
+            replay_err_text = displayed_err_plain if (displayed_err and should_replay_err) else ""
+            replay_rendered_lines = 0
+            if replay_out_text or replay_err_text:
+                replay_direct = getattr(agent, "_print_direct_shell_history_output", None)
+                if callable(replay_direct):
+                    try:
+                        replay_rendered_lines = max(
+                            0,
+                            int(replay_direct(replay_out_text, replay_err_text) or 0),
+                        )
+                    except Exception:
+                        replay_rendered_lines = 0
+                else:
+                    if replay_out_text:
+                        _safe_console_write(_gray_shell_display_text(replay_out_text), sys.stdout, append_newline=False)
+                    if replay_err_text:
+                        _safe_console_write(_gray_shell_display_text(replay_err_text), sys.stderr, append_newline=False)
+                    replay_rendered_lines = max(
+                        0,
+                        _count_output_lines(replay_out_text) + _count_output_lines(replay_err_text),
+                    )
+                last_rendered_chunk = replay_err_text if replay_err_text else replay_out_text
             if (not last_rendered_chunk) and interactive:
                 if (not should_replay_err) and err:
                     last_rendered_chunk = err
@@ -489,12 +504,12 @@ def action_shell_command(
             # caused by mixing "正在思考..." into the output's last visual line.
             if last_rendered_chunk and not str(last_rendered_chunk).endswith("\n"):
                 _safe_console_write("\n", sys.stdout, append_newline=False)
-                if displayed_err:
-                    displayed_err = str(displayed_err) + "\n"
+                if replay_err_text:
+                    replay_err_text = str(replay_err_text) + "\n"
                 else:
-                    displayed_out = str(displayed_out) + "\n"
+                    replay_out_text = str(replay_out_text) + "\n"
             try:
-                agent._register_shell_output_for_auto_hide(displayed_out, displayed_err)
+                agent._last_shell_output_visible_lines = 0
             except Exception:
                 pass
             if aborted_by_user:
@@ -509,6 +524,9 @@ def action_shell_command(
                 "stderr": err,
                 "return_code": return_code,
                 "interactive": interactive,
+                "display_output": replay_out_text,
+                "display_stderr": replay_err_text,
+                "display_rendered_lines": int(replay_rendered_lines),
             }
         finally:
             _stop_status_ticker()

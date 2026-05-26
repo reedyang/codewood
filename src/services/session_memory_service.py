@@ -227,7 +227,16 @@ class SessionMemoryService:
                     payload = parse_slash_result(text)
                 except Exception:
                     payload = None
-                return isinstance(payload, dict)
+                if isinstance(payload, dict):
+                    return True
+            parse_model_tool_result = getattr(self.agent, "_parse_model_tool_result_history_content", None)
+            if callable(parse_model_tool_result):
+                try:
+                    model_payload = parse_model_tool_result(text)
+                except Exception:
+                    model_payload = None
+                if isinstance(model_payload, dict):
+                    return True
             return False
         return False
 
