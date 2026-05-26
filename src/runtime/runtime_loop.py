@@ -1245,9 +1245,8 @@ def run_agent_loop(agent: Any):
                         pass
                     display_response = format_assistant_display_response(ai_response)
                     if display_response:
-                        sys.stdout.write(f"{_ansi_gray('•')} {display_response}")
-                        if not display_response.endswith("\n"):
-                            sys.stdout.write("\n")
+                        rendered = self._format_assistant_chat_display_message(display_response)
+                        sys.stdout.write(f"{rendered}\n")
                         sys.stdout.flush()
 
                 fallback_plan = self._parse_tool_plan_from_response(ai_response)
