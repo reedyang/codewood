@@ -218,6 +218,25 @@ class AiOutputDisplayTests(unittest.TestCase):
         self.assertGreaterEqual(len(rows), 2)
         self.assertTrue(rows[1].startswith("<G>  │ </G>"))
 
+    def test_format_direct_shell_command_feedback_line_preserves_color_after_wrap_prefix_reset(self):
+        with (
+            patch.object(self.agent, "_terminal_columns_for_line_estimate", return_value=22),
+            patch("src.smart_shell_agent._ansi_rgb", side_effect=lambda text, r, g, b: text),
+            patch("src.smart_shell_agent._ansi_gray", side_effect=lambda s: f"\x1b[90m{s}\x1b[0m"),
+            patch(
+                "src.smart_shell_agent.highlight_assistant_display_line",
+                side_effect=lambda s: f"\x1b[32m{s}\x1b[0m",
+            ),
+        ):
+            line = self.agent._format_direct_shell_command_feedback_line(
+                "abcdefghijklmnopqrstuvwxyz",
+                failed=False,
+            )
+        rows = line.splitlines()
+        self.assertGreaterEqual(len(rows), 2)
+        self.assertTrue(rows[1].startswith("\x1b[90m  │ \x1b[0m"))
+        self.assertIn("\x1b[32m", rows[1])
+
     def test_repaint_tool_call_feedback_if_failed_uses_configured_up_lines(self):
         class _FakeStdout:
             def __init__(self):
