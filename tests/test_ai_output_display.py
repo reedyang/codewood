@@ -153,6 +153,31 @@ class AiOutputDisplayTests(unittest.TestCase):
         self.assertTrue(line.startswith("<RGB:19,161,14>•</RGB> You ran "))
         self.assertIn("<H>git status</H>", line)
 
+    def test_format_tool_call_feedback_line_wraps_long_command_with_gray_pipe_prefix(self):
+        with (
+            patch.object(self.agent, "_tool_call_summary", return_value="abcdefghijklmnopqrstuvwxyz"),
+            patch.object(self.agent, "_terminal_columns_for_line_estimate", return_value=16),
+            patch("src.smart_shell_agent._ansi_rgb", side_effect=lambda text, r, g, b: f"<RGB:{r},{g},{b}>{text}</RGB>"),
+            patch("src.smart_shell_agent._ansi_gray", side_effect=lambda s: f"<G>{s}</G>"),
+            patch("src.smart_shell_agent.highlight_assistant_display_line", side_effect=lambda s: s),
+        ):
+            line = self.agent._format_tool_call_feedback_line("read", {"path": "a.txt"}, failed=False)
+        rows = line.splitlines()
+        self.assertGreaterEqual(len(rows), 2)
+        self.assertTrue(rows[1].startswith("<G>  │ </G>"))
+
+    def test_format_direct_shell_command_feedback_line_wraps_long_command_with_gray_pipe_prefix(self):
+        with (
+            patch.object(self.agent, "_terminal_columns_for_line_estimate", return_value=18),
+            patch("src.smart_shell_agent._ansi_rgb", side_effect=lambda text, r, g, b: f"<RGB:{r},{g},{b}>{text}</RGB>"),
+            patch("src.smart_shell_agent._ansi_gray", side_effect=lambda s: f"<G>{s}</G>"),
+            patch("src.smart_shell_agent.highlight_assistant_display_line", side_effect=lambda s: s),
+        ):
+            line = self.agent._format_direct_shell_command_feedback_line("git status --short --branch --untracked-files", failed=False)
+        rows = line.splitlines()
+        self.assertGreaterEqual(len(rows), 2)
+        self.assertTrue(rows[1].startswith("<G>  │ </G>"))
+
     def test_repaint_tool_call_feedback_if_failed_uses_configured_up_lines(self):
         class _FakeStdout:
             def __init__(self):
@@ -181,6 +206,23 @@ class AiOutputDisplayTests(unittest.TestCase):
             )
         out = "".join(fake_stdout.writes)
         self.assertIn("\x1b[3A\r\x1b[2KFAILED-LINE", out)
+
+    def test_repaint_tool_call_feedback_if_failed_non_tty_does_not_print_duplicate_line(self):
+        class _FakeStdout:
+            def isatty(self):
+                return False
+
+        with (
+            patch("src.smart_shell_agent.sys.stdout", _FakeStdout()),
+            patch.object(self.agent, "_print_tool_call_feedback") as print_feedback,
+        ):
+            self.agent._repaint_tool_call_feedback_if_failed(
+                "shell",
+                {"command": "echo fail"},
+                failed=True,
+                up_lines=1,
+            )
+        print_feedback.assert_not_called()
 
 
 if __name__ == "__main__":
