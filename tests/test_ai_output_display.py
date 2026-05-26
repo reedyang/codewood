@@ -75,21 +75,25 @@ class AiOutputDisplayTests(unittest.TestCase):
             "src.core.assistant_output_highlighter._ansi_yellow", side_effect=lambda s: f"<Y>{s}</Y>"
         ), patch("src.core.assistant_output_highlighter._ansi_green", side_effect=lambda s: f"<G>{s}</G>"), patch(
             "src.core.assistant_output_highlighter._ansi_cyan", side_effect=lambda s: f"<C>{s}</C>"
+        ), patch(
+            "src.core.assistant_output_highlighter._ansi_ps_command", side_effect=lambda s: f"<PSC>{s}</PSC>"
+        ), patch(
+            "src.core.assistant_output_highlighter._ansi_ps_parameter", side_effect=lambda s: f"<PSP>{s}</PSP>"
         ), patch("src.core.assistant_output_highlighter._ansi_gray", side_effect=lambda s: f"<GR>{s}</GR>"):
             out = aoh.format_assistant_display_response(text)
 
-        self.assertIn("<BB>powershell</BB>", out)
-        self.assertIn("<Y>-File</Y>", out)
+        self.assertIn("<PSC>powershell</PSC>", out)
+        self.assertIn("<PSP>-File</PSP>", out)
         self.assertIn("<C>.\\scripts\\stop-gateway.ps1</C>", out)
         self.assertIn("<BB>.\\.venv\\Scripts\\python</BB>", out)
         self.assertIn("<Y>-m</Y>", out)
         self.assertIn("<BB>pip</BB>", out)
         self.assertIn("<BB>install</BB>", out)
-        self.assertIn("<G>\"litellm[proxy]==1.83.14\"</G>", out)
-        self.assertIn("<BB>Get-Content</BB>", out)
-        self.assertIn("<Y>-Path</Y>", out)
+        self.assertIn("\"<G>litellm[proxy]==1.83.14</G>\"", out)
+        self.assertIn("<PSC>Get-Content</PSC>", out)
+        self.assertIn("<PSP>-Path</PSP>", out)
         self.assertIn("<C>smart_shell_agent.py</C>", out)
-        self.assertIn("<Y>-Raw</Y>", out)
+        self.assertIn("<PSP>-Raw</PSP>", out)
 
     def test_highlight_parenthesized_powershell_cmdlet_line(self):
         text = '(Get-Content -Path helloworld.py) -replace "print(\\"Hello\\")", "print(\\"Hi\\")"'
@@ -97,23 +101,51 @@ class AiOutputDisplayTests(unittest.TestCase):
             "src.core.assistant_output_highlighter._ansi_yellow", side_effect=lambda s: f"<Y>{s}</Y>"
         ), patch("src.core.assistant_output_highlighter._ansi_cyan", side_effect=lambda s: f"<C>{s}</C>"), patch(
             "src.core.assistant_output_highlighter._ansi_green", side_effect=lambda s: f"<G>{s}</G>"
+        ), patch(
+            "src.core.assistant_output_highlighter._ansi_ps_command", side_effect=lambda s: f"<PSC>{s}</PSC>"
+        ), patch(
+            "src.core.assistant_output_highlighter._ansi_ps_parameter", side_effect=lambda s: f"<PSP>{s}</PSP>"
+        ), patch(
+            "src.core.assistant_output_highlighter._ansi_ps_operator", side_effect=lambda s: f"<PSO>{s}</PSO>"
         ):
             out = aoh.highlight_assistant_display_line(text)
 
-        self.assertIn("<BB>(Get-Content</BB>", out)
-        self.assertIn("<Y>-Path</Y>", out)
+        self.assertIn("<PSC>(Get-Content</PSC>", out)
+        self.assertIn("<PSP>-Path</PSP>", out)
         self.assertIn("<C>helloworld.py)</C>", out)
-        self.assertIn("<Y>-replace</Y>", out)
+        self.assertIn("<PSO>-replace</PSO>", out)
+
+    def test_highlight_quoted_path_with_trailing_parenthesis_keeps_replace_as_operator(self):
+        text = "(Get-Content -Path 'helloworld.py') -replace 'a', 'b'"
+        with patch("src.core.assistant_output_highlighter._ansi_cyan", side_effect=lambda s: f"<C>{s}</C>"), patch(
+            "src.core.assistant_output_highlighter._ansi_green", side_effect=lambda s: f"<G>{s}</G>"
+        ), patch(
+            "src.core.assistant_output_highlighter._ansi_ps_command", side_effect=lambda s: f"<PSC>{s}</PSC>"
+        ), patch(
+            "src.core.assistant_output_highlighter._ansi_ps_parameter", side_effect=lambda s: f"<PSP>{s}</PSP>"
+        ), patch(
+            "src.core.assistant_output_highlighter._ansi_ps_operator", side_effect=lambda s: f"<PSO>{s}</PSO>"
+        ):
+            out = aoh.highlight_assistant_display_line(text)
+
+        self.assertIn("<PSO>-replace</PSO>", out)
+        self.assertNotIn("<G>-replace</G>", out)
 
     def test_highlight_shell_pipeline_colors_pipe_and_following_cmdlet(self):
         text = "Get-Content -Path a.txt | Set-Content -Path b.txt"
         with patch("src.core.assistant_output_highlighter._ansi_bright_blue", side_effect=lambda s: f"<BB>{s}</BB>"), patch(
             "src.core.assistant_output_highlighter._ansi_yellow", side_effect=lambda s: f"<Y>{s}</Y>"
+        ), patch(
+            "src.core.assistant_output_highlighter._ansi_ps_command", side_effect=lambda s: f"<PSC>{s}</PSC>"
+        ), patch(
+            "src.core.assistant_output_highlighter._ansi_ps_parameter", side_effect=lambda s: f"<PSP>{s}</PSP>"
+        ), patch(
+            "src.core.assistant_output_highlighter._ansi_ps_pipe", side_effect=lambda s: f"<PSPIPE>{s}</PSPIPE>"
         ), patch("src.core.assistant_output_highlighter._ansi_cyan", side_effect=lambda s: f"<C>{s}</C>"):
             out = aoh.highlight_assistant_display_line(text)
-        self.assertIn("<BB>Get-Content</BB>", out)
-        self.assertIn("<Y>|</Y>", out)
-        self.assertIn("<BB>Set-Content</BB>", out)
+        self.assertIn("<PSC>Get-Content</PSC>", out)
+        self.assertIn("<PSPIPE>|</PSPIPE>", out)
+        self.assertIn("<PSC>Set-Content</PSC>", out)
 
     def test_chinese_narrative_with_inline_flags_is_not_treated_as_shell_command_line(self):
         text = (
@@ -137,16 +169,20 @@ class AiOutputDisplayTests(unittest.TestCase):
             "src.core.assistant_output_highlighter._ansi_yellow", side_effect=lambda s: f"<Y>{s}</Y>"
         ), patch("src.core.assistant_output_highlighter._ansi_cyan", side_effect=lambda s: f"<C>{s}</C>"), patch(
             "src.core.assistant_output_highlighter._ansi_green", side_effect=lambda s: f"<G>{s}</G>"
+        ), patch(
+            "src.core.assistant_output_highlighter._ansi_ps_command", side_effect=lambda s: f"<PSC>{s}</PSC>"
+        ), patch(
+            "src.core.assistant_output_highlighter._ansi_ps_parameter", side_effect=lambda s: f"<PSP>{s}</PSP>"
         ):
             out = aoh.highlight_assistant_display_line(text)
 
-        self.assertIn("!<BB>powershell</BB>", out)
-        self.assertIn("<Y>-ExecutionPolicy</Y>", out)
-        self.assertIn("<Y>-Command</Y>", out)
-        self.assertIn('"<BB>Get-Content</BB>', out)
-        self.assertIn("<Y>-Path</Y>", out)
+        self.assertIn("!<PSC>powershell</PSC>", out)
+        self.assertIn("<PSP>-ExecutionPolicy</PSP>", out)
+        self.assertIn("<PSP>-Command</PSP>", out)
+        self.assertIn('"<PSC>Get-Content</PSC>', out)
+        self.assertIn("<PSP>-Path</PSP>", out)
         self.assertIn("<C>smart_shell_agent.py</C>", out)
-        self.assertIn("<Y>-Raw</Y>", out)
+        self.assertIn("<PSP>-Raw</PSP>", out)
 
     def test_tool_call_summary_for_powershell_shell_only_shows_command(self):
         cmd = 'powershell -ExecutionPolicy Bypass -Command "Get-ChildItem -Force"'
