@@ -14,6 +14,9 @@ class _FakeChatAgent:
         self.load_chat_state_calls = 0
         self.activate_calls = []
         self.activate_result = ""
+        self._chat_state_lock = _NoopLock()
+        self._chat_target = {"id": "chat-3", "name": "Other Chat"}
+        self.print_chat_history_calls = []
 
     def _load_chat_state(self):
         self.load_chat_state_calls += 1
@@ -34,6 +37,20 @@ class _FakeChatAgent:
             }
         )
         return self.activate_result
+
+    def _resolve_chat_selector(self, _selector: str):
+        return self._chat_target
+
+    def _print_chat_history(self, start_index=None):
+        self.print_chat_history_calls.append(start_index)
+
+
+class _NoopLock:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
 
 
 class ChatCommandControllerTests(unittest.TestCase):
@@ -61,7 +78,7 @@ class ChatCommandControllerTests(unittest.TestCase):
                     "chat_id": "chat-2",
                     "announce": False,
                     "clear_screen": False,
-                    "print_history": True,
+                    "print_history": False,
                 }
             ],
         )
@@ -84,6 +101,32 @@ class ChatCommandControllerTests(unittest.TestCase):
     def test_reload_is_in_slash_completions(self):
         out = slash_builtin_completions("/chat re")
         self.assertIn("/chat reload", out)
+
+    def test_switch_does_not_print_switched_to_chat_message(self):
+        agent = _FakeChatAgent()
+        buf = io.StringIO()
+        with (
+            patch("src.controllers.chat_command_controller._clear_terminal_screen") as mock_clear,
+            patch("src.controllers.chat_command_controller._print_startup_overview_safe") as mock_startup,
+            redirect_stdout(buf),
+        ):
+            handled = handle_chat_builtin_command(agent, "chat switch chat-3")
+        self.assertTrue(handled)
+        mock_clear.assert_called_once_with()
+        mock_startup.assert_called_once_with(agent)
+        self.assertEqual(agent.load_chat_state_calls, 1)
+        self.assertEqual(
+            agent.activate_calls,
+            [
+                {
+                    "chat_id": "chat-3",
+                    "announce": False,
+                    "clear_screen": False,
+                    "print_history": False,
+                }
+            ],
+        )
+        self.assertEqual(buf.getvalue(), "")
 
 
 if __name__ == "__main__":

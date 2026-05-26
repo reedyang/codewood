@@ -29,6 +29,7 @@ class _FakeAgent:
         self._active_runtime_task_id = ""
         self._active_runtime_task_domains = []
         self.remembered_history_anchor_indexes = []
+        self.session_memory_service = None
 
     def _apply_chat_model_from_entry(self, chat, persist_if_missing=False):
         self.applied_chat_model_calls += 1
@@ -59,6 +60,19 @@ class ChatStateModelPersistenceTests(unittest.TestCase):
     def test_activate_chat_backfills_missing_model_and_calls_apply(self):
         with tempfile.TemporaryDirectory() as td:
             agent = _FakeAgent(Path(td))
+            schedule_calls = []
+
+            class _FakeSessionMemoryService:
+                def schedule_context_usage_refresh_async(self, user_input_hint="", context_hint=""):
+                    schedule_calls.append(
+                        {
+                            "user_input_hint": str(user_input_hint or ""),
+                            "context_hint": str(context_hint or ""),
+                        }
+                    )
+                    return True
+
+            agent.session_memory_service = _FakeSessionMemoryService()
             manager = ChatStateManager(agent, "chats.json")
             agent._chat_state = {
                 "version": 1,
@@ -83,6 +97,8 @@ class ChatStateModelPersistenceTests(unittest.TestCase):
             self.assertEqual(msg, "")
             self.assertEqual(agent.applied_chat_model_calls, 1)
             self.assertEqual(agent.refresh_status_usage_calls, 1)
+            self.assertEqual(len(schedule_calls), 1)
+            self.assertEqual(schedule_calls[0]["context_hint"], "chat activated")
             self.assertEqual(agent._last_context_usage_percent, 44)
             self.assertEqual(agent._last_context_input_tokens, 1234)
             self.assertEqual(agent._last_context_window, 64000)

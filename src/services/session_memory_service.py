@@ -85,6 +85,21 @@ class SessionMemoryService:
         if r == "user":
             self.agent._maybe_schedule_auto_chat_name()
 
+    def _is_builtin_slash_user_message(self, role: str, content: str) -> bool:
+        norm_role = str(role or "").strip().lower()
+        if norm_role != "user":
+            return False
+        raw = str(content or "")
+        parse_slash_user = getattr(self.agent, "_parse_internal_slash_user_history_content", None)
+        cmd = ""
+        if callable(parse_slash_user):
+            try:
+                cmd = str(parse_slash_user(raw) or "").strip()
+            except Exception:
+                cmd = ""
+        text = cmd if cmd else raw
+        return str(text or "").strip().startswith("/")
+
     def _domain_filtered_history(self) -> List[Dict[str, Any]]:
         hist = list(getattr(self.agent, "conversation_history", None) or [])
         try:
@@ -96,14 +111,10 @@ class SessionMemoryService:
         chat_messages = chat.get("messages")
         if not isinstance(chat_messages, list) or not chat_messages:
             return hist
-        current_domains = list(getattr(self.agent, "_active_runtime_task_domains", None) or [])
-        cur_set = {str(x).strip() for x in current_domains if str(x).strip()}
-        if not cur_set:
-            return hist
         tasks = chat.get("tasks")
         if not isinstance(tasks, list):
             return hist
-        matched_task_ids: Set[str] = set()
+        task_domains_by_id: Dict[str, Set[str]] = {}
         for t in tasks:
             if not isinstance(t, dict):
                 continue
@@ -114,6 +125,36 @@ class SessionMemoryService:
             if not isinstance(domains, list):
                 continue
             dset = {str(x).strip() for x in domains if str(x).strip()}
+            if dset:
+                task_domains_by_id[tid] = dset
+
+        # Use the domain classification of the last valid message that can enter model context
+        # (slash built-in commands are ignored as non-context messages).
+        anchor_domains: Set[str] = set()
+        for m in reversed(chat_messages):
+            if not isinstance(m, dict):
+                continue
+            role = str(m.get("role") or "").strip().lower()
+            if role not in ("user", "assistant"):
+                continue
+            if self._is_builtin_slash_user_message(role, str(m.get("content") or "")):
+                continue
+            tid = str(m.get("task_id") or "").strip()
+            if not tid:
+                continue
+            dset = task_domains_by_id.get(tid)
+            if dset:
+                anchor_domains = set(dset)
+                break
+
+        cur_set = set(anchor_domains)
+        if not cur_set:
+            current_domains = list(getattr(self.agent, "_active_runtime_task_domains", None) or [])
+            cur_set = {str(x).strip() for x in current_domains if str(x).strip()}
+        if not cur_set:
+            return hist
+        matched_task_ids: Set[str] = set()
+        for tid, dset in task_domains_by_id.items():
             if dset & cur_set:
                 matched_task_ids.add(tid)
         if not matched_task_ids:
@@ -853,17 +894,12 @@ class SessionMemoryService:
                         return root
                     break
         hist = self._domain_filtered_history()
-        parse_slash_user = getattr(self.agent, "_parse_internal_slash_user_history_content", None)
         for msg in hist:
             if str(msg.get("role") or "").strip().lower() != "user":
                 continue
             c = str(msg.get("content") or "").strip()
-            if callable(parse_slash_user):
-                try:
-                    if str(parse_slash_user(c) or "").strip():
-                        continue
-                except Exception:
-                    pass
+            if self._is_builtin_slash_user_message("user", c):
+                continue
             if c:
                 return c
         return str(fallback or "").strip()
@@ -949,7 +985,6 @@ class SessionMemoryService:
 
         normalized: List[Dict[str, Any]] = []
         assistant_trimmed = 0
-        parse_slash_user = getattr(self.agent, "_parse_internal_slash_user_history_content", None)
         parse_slash_result = getattr(self.agent, "_parse_internal_slash_result_history_content", None)
         parse_worked_summary = getattr(self.agent, "_parse_task_worked_summary_history_content", None)
         for msg in hist:
@@ -957,12 +992,8 @@ class SessionMemoryService:
             if role not in ("user", "assistant"):
                 continue
             raw_content = str(msg.get("content") or "")
-            if role == "user" and callable(parse_slash_user):
-                try:
-                    if str(parse_slash_user(raw_content) or "").strip():
-                        continue
-                except Exception:
-                    pass
+            if role == "user" and self._is_builtin_slash_user_message(role, raw_content):
+                continue
             if role == "assistant" and callable(parse_slash_result):
                 try:
                     slash_payload = parse_slash_result(raw_content)

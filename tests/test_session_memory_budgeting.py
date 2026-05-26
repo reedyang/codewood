@@ -242,7 +242,7 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
         system_content = str(messages[0].get("content") or "")
         self.assertIn("【领域强化：软件开发】", system_content)
 
-    def test_domain_filtered_history_collects_all_matching_tasks(self):
+    def test_domain_filtered_history_collects_all_matching_tasks_from_last_context_message_domain(self):
         agent = _FakeAgent()
         agent._active_runtime_task_id = "task-a"
         agent._active_runtime_task_domains = ["software_development"]
@@ -256,11 +256,11 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
                         {"id": "task-c", "domains": ["visual_design"]},
                     ],
                     "messages": [
+                        {"role": "user", "content": "C1", "task_id": "task-c"},
                         {"role": "user", "content": "A1", "task_id": "task-a"},
                         {"role": "assistant", "content": "A2", "task_id": "task-a"},
                         {"role": "user", "content": "B1", "task_id": "task-b"},
                         {"role": "assistant", "content": "B2", "task_id": "task-b"},
-                        {"role": "user", "content": "C1", "task_id": "task-c"},
                     ],
                 }
             ]
@@ -272,6 +272,34 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
         self.assertIn("A1", joined)
         self.assertIn("B1", joined)
         self.assertNotIn("C1", joined)
+
+    def test_domain_filtered_history_ignores_slash_builtin_when_resolving_anchor_domain(self):
+        agent = _FakeAgent()
+        agent._active_runtime_task_id = "task-c"
+        agent._active_runtime_task_domains = ["visual_design"]
+        agent._chat_state = {
+            "chats": [
+                {
+                    "id": "chat-1",
+                    "tasks": [
+                        {"id": "task-a", "domains": ["software_development"]},
+                        {"id": "task-c", "domains": ["visual_design"]},
+                    ],
+                    "messages": [
+                        {"role": "user", "content": "A1", "task_id": "task-a"},
+                        {"role": "assistant", "content": "A2", "task_id": "task-a"},
+                        {"role": "user", "content": "/chat list", "task_id": "task-c"},
+                    ],
+                }
+            ]
+        }
+        agent.conversation_history = list(agent._chat_state["chats"][0]["messages"])
+        svc = SessionMemoryService(agent)
+        filtered = svc._domain_filtered_history()
+        joined = " | ".join(str(x.get("content") or "") for x in filtered)
+        self.assertIn("A1", joined)
+        self.assertIn("A2", joined)
+        self.assertNotIn("/chat list", joined)
 
     def test_context_window_budget_prefers_recent_history(self):
         agent = _FakeAgent()
@@ -383,6 +411,20 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
         history_joined = "\n".join(str(m.get("content") or "") for m in messages[1:-1])
         self.assertNotIn("/chat reload", history_joined)
         self.assertNotIn("reloaded", history_joined)
+        self.assertIn("用户原始需求: 最初需求：修复构建", str(messages[-1]["content"]))
+
+    def test_raw_slash_builtin_user_message_is_excluded_from_model_context_and_requirement(self):
+        agent = _FakeAgent()
+        agent.conversation_history = [
+            {"role": "user", "content": "/chat reload"},
+            {"role": "assistant", "content": "reloaded"},
+            {"role": "user", "content": "最初需求：修复构建"},
+            {"role": "assistant", "content": "收到"},
+        ]
+        svc = SessionMemoryService(agent)
+        messages, _ = svc.build_regular_task_messages("继续执行")
+        history_joined = "\n".join(str(m.get("content") or "") for m in messages[1:-1])
+        self.assertNotIn("/chat reload", history_joined)
         self.assertIn("用户原始需求: 最初需求：修复构建", str(messages[-1]["content"]))
 
     def test_task_worked_summary_history_is_excluded_from_model_context(self):
