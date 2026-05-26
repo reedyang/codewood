@@ -399,6 +399,26 @@ class ChatStateManager:
             chat["updated_at"] = self._now_text()
             self.save_chat_state()
 
+    def clear_chat_context_and_tasks(self, chat_id: str) -> bool:
+        cid = str(chat_id or "").strip()
+        if not cid:
+            return False
+        with self._agent._chat_state_lock:
+            chat = self.find_chat_by_id(cid)
+            if not chat:
+                return False
+            chat["messages"] = []
+            chat["tasks"] = []
+            chat["active_task_id"] = ""
+            chat["context_usage_percent"] = 0
+            chat["context_input_tokens"] = 0
+            chat["context_window"] = int(
+                getattr(self._agent, "_last_context_window", 0) or 0
+            )
+            chat["updated_at"] = self._now_text()
+            self.save_chat_state()
+            return True
+
     def start_task(
         self,
         chat_id: str,

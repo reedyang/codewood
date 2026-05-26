@@ -59,14 +59,8 @@ def dispatch_builtin_command(
         return True, False
 
     if bl == "clear context":
-        agent.conversation_history.clear()
-        agent._sync_active_chat_messages()
-        agent.operation_results.clear()
-        agent._last_auto_removed_ephemeral = None
-        agent._session_summary_llm = ""
-        agent._session_summary_rolling = ""
-        agent._last_llm_summary_pair_count = 0
-        print("AI context cleared.")
+        agent._clear_active_chat_context_and_tasks()
+        print("AI context and recorded tasks cleared.")
         return True, False
 
     if agent._handle_model_builtin_command(builtin_line):
