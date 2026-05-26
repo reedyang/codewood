@@ -286,6 +286,60 @@ class ChatStateModelPersistenceTests(unittest.TestCase):
             self.assertEqual(agent.active_chat_id, "chat-1")
             self.assertEqual(agent._chat_state.get("version"), 2)
 
+    def test_clear_chat_context_and_tasks_clears_messages_and_task_records(self):
+        with tempfile.TemporaryDirectory() as td:
+            agent = _FakeAgent(Path(td))
+            manager = ChatStateManager(agent, "chats.json")
+            agent._chat_state = {
+                "version": 2,
+                "active": "chat-1",
+                "chats": [
+                    {
+                        "id": "chat-1",
+                        "name": "Demo",
+                        "name_source": "manual",
+                        "created_at": "",
+                        "updated_at": "",
+                        "model_provider": "openai",
+                        "model_name": "gpt-4.1",
+                        "tasks": [
+                            {
+                                "id": "task-1",
+                                "status": "open",
+                                "root_user_input": "hello",
+                                "domains": ["general_other"],
+                                "domain_scores": {},
+                                "classifier": {},
+                                "created_at": "",
+                                "updated_at": "",
+                                "closed_at": "",
+                                "switched_from_task_id": "",
+                            }
+                        ],
+                        "active_task_id": "task-1",
+                        "messages": [
+                            {"role": "user", "content": "hello", "task_id": "task-1", "created_at": ""}
+                        ],
+                        "context_usage_percent": 52,
+                        "context_input_tokens": 123,
+                        "context_window": 64000,
+                    }
+                ],
+            }
+            save_calls = []
+            manager.save_chat_state = lambda: save_calls.append("saved")
+
+            ok = manager.clear_chat_context_and_tasks("chat-1")
+
+            self.assertTrue(ok)
+            chat = manager.find_chat_by_id("chat-1")
+            self.assertEqual(chat.get("messages"), [])
+            self.assertEqual(chat.get("tasks"), [])
+            self.assertEqual(chat.get("active_task_id"), "")
+            self.assertEqual(chat.get("context_usage_percent"), 0)
+            self.assertEqual(chat.get("context_input_tokens"), 0)
+            self.assertEqual(save_calls, ["saved"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -666,6 +666,17 @@ class SmartShellAgent:
     def _sync_active_chat_messages(self) -> None:
         self._chat_state_manager.sync_active_chat_messages()
 
+    def _clear_active_chat_context_and_tasks(self) -> None:
+        self.conversation_history.clear()
+        self.operation_results.clear()
+        self._last_auto_removed_ephemeral = None
+        self._session_summary_llm = ""
+        self._session_summary_rolling = ""
+        self._last_llm_summary_pair_count = 0
+        self._active_runtime_task_id = ""
+        self._active_runtime_task_domains = []
+        self._chat_state_manager.clear_chat_context_and_tasks(self.active_chat_id)
+
     def _start_chat_task(
         self,
         root_user_input: str,

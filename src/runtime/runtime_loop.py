@@ -555,16 +555,10 @@ def run_agent_loop(agent: Any):
                             print("✅ History has been cleared")
                             continue
                         if bl == "clear context":
-                            self.conversation_history.clear()
-                            self._sync_active_chat_messages()
-                            self.operation_results.clear()
-                            self._last_auto_removed_ephemeral = None
-                            self._session_summary_llm = ""
-                            self._session_summary_rolling = ""
-                            self._last_llm_summary_pair_count = 0
+                            self._clear_active_chat_context_and_tasks()
                             print(
                                 "✅ AI context has been cleared "
-                                "(conversation history and recent operation-result cache; command-line input history is unchanged)"
+                                "(conversation history, recorded tasks, and recent operation-result cache; command-line input history is unchanged)"
                             )
                             continue
                         if bl == "knowledge":
