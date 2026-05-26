@@ -473,6 +473,8 @@ def action_shell_command(
             last_rendered_chunk = ""
             replay_out_text = displayed_out_plain if (displayed_out and should_replay_out) else ""
             replay_err_text = displayed_err_plain if (displayed_err and should_replay_err) else ""
+            if (not replay_out_text) and (not replay_err_text) and int(return_code) == 0 and (not aborted_by_user):
+                replay_out_text = "(no output)\n"
             replay_rendered_lines = 0
             if replay_out_text or replay_err_text:
                 replay_direct = getattr(agent, "_print_direct_shell_history_output", None)

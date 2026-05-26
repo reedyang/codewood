@@ -1483,6 +1483,38 @@ class SmartShellAgent:
             chunks.append("".join(current))
         return chunks or [""]
 
+    @classmethod
+    def _wrap_ansi_text_by_display_width(cls, text: str, max_width: int) -> List[str]:
+        raw = str(text or "")
+        if not raw:
+            return [""]
+        limit = max(1, int(max_width or 1))
+        chunks: List[str] = []
+        current: List[str] = []
+        current_w = 0
+        i = 0
+        n = len(raw)
+        while i < n:
+            if raw[i] == "\x1b":
+                m = ANSI_ESCAPE_RE.match(raw, i)
+                if m:
+                    current.append(m.group(0))
+                    i = m.end()
+                    continue
+            ch = raw[i]
+            ch_w = cls._feedback_char_display_width(ch)
+            if current and (current_w + ch_w > limit):
+                chunks.append("".join(current))
+                current = []
+                current_w = 0
+                continue
+            current.append(ch)
+            current_w += ch_w
+            i += 1
+        if current:
+            chunks.append("".join(current))
+        return chunks or [""]
+
     def _format_wrapped_command_feedback_line(self, lead_prefix: str, command_text: str) -> str:
         lead = str(lead_prefix or "")
         cmd = str(command_text or "").replace("\r", " ").replace("\n", " ").strip()
@@ -1490,14 +1522,15 @@ class SmartShellAgent:
         cont_prefix = _ansi_gray("  │ ")
         first_line_width = max(1, cols - self._feedback_text_display_width(lead))
         cont_line_width = max(1, cols - self._feedback_text_display_width("  │ "))
-        chunks = self._wrap_feedback_text_by_display_width(cmd, first_line_width)
+        highlighted_cmd = highlight_assistant_display_line(cmd)
+        chunks = self._wrap_ansi_text_by_display_width(highlighted_cmd, first_line_width)
         if not chunks:
             return lead
-        rendered = [f"{lead}{highlight_assistant_display_line(chunks[0])}"]
+        rendered = [f"{lead}{chunks[0]}"]
         for part in chunks[1:]:
-            wrapped = self._wrap_feedback_text_by_display_width(part, cont_line_width)
+            wrapped = self._wrap_ansi_text_by_display_width(part, cont_line_width)
             for seg in wrapped:
-                rendered.append(f"{cont_prefix}{highlight_assistant_display_line(seg)}")
+                rendered.append(f"{cont_prefix}{seg}")
         return "\n".join(rendered)
 
     def _repaint_tool_call_feedback_if_failed(
@@ -3782,8 +3815,6 @@ class SmartShellAgent:
                         summary = summary.replace("''", "'")
                 if not summary:
                     summary = cmd
-                if len(summary) > 160:
-                    summary = summary[:160] + "..."
                 return summary
         for k in (
             "skill_id",
@@ -3803,7 +3834,7 @@ class SmartShellAgent:
             v = a.get(k)
             if isinstance(v, str) and v.strip():
                 vv = v.strip().replace("\n", " ")
-                if len(vv) > 120:
+                if k != "command" and len(vv) > 120:
                     vv = vv[:120] + "..."
                 return f"{tool_name} ({k}={vv})"
         if a:

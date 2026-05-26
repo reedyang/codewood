@@ -91,6 +91,30 @@ class AiOutputDisplayTests(unittest.TestCase):
         self.assertIn("<C>smart_shell_agent.py</C>", out)
         self.assertIn("<Y>-Raw</Y>", out)
 
+    def test_highlight_parenthesized_powershell_cmdlet_line(self):
+        text = '(Get-Content -Path helloworld.py) -replace "print(\\"Hello\\")", "print(\\"Hi\\")"'
+        with patch("src.core.assistant_output_highlighter._ansi_bright_blue", side_effect=lambda s: f"<BB>{s}</BB>"), patch(
+            "src.core.assistant_output_highlighter._ansi_yellow", side_effect=lambda s: f"<Y>{s}</Y>"
+        ), patch("src.core.assistant_output_highlighter._ansi_cyan", side_effect=lambda s: f"<C>{s}</C>"), patch(
+            "src.core.assistant_output_highlighter._ansi_green", side_effect=lambda s: f"<G>{s}</G>"
+        ):
+            out = aoh.highlight_assistant_display_line(text)
+
+        self.assertIn("<BB>(Get-Content</BB>", out)
+        self.assertIn("<Y>-Path</Y>", out)
+        self.assertIn("<C>helloworld.py)</C>", out)
+        self.assertIn("<Y>-replace</Y>", out)
+
+    def test_highlight_shell_pipeline_colors_pipe_and_following_cmdlet(self):
+        text = "Get-Content -Path a.txt | Set-Content -Path b.txt"
+        with patch("src.core.assistant_output_highlighter._ansi_bright_blue", side_effect=lambda s: f"<BB>{s}</BB>"), patch(
+            "src.core.assistant_output_highlighter._ansi_yellow", side_effect=lambda s: f"<Y>{s}</Y>"
+        ), patch("src.core.assistant_output_highlighter._ansi_cyan", side_effect=lambda s: f"<C>{s}</C>"):
+            out = aoh.highlight_assistant_display_line(text)
+        self.assertIn("<BB>Get-Content</BB>", out)
+        self.assertIn("<Y>|</Y>", out)
+        self.assertIn("<BB>Set-Content</BB>", out)
+
     def test_chinese_narrative_with_inline_flags_is_not_treated_as_shell_command_line(self):
         text = (
             "- 已使用 PowerShell `Get-Content -Path smart_shell_agent.py -Raw` 读取文件。\n"
@@ -178,6 +202,22 @@ class AiOutputDisplayTests(unittest.TestCase):
         self.assertGreaterEqual(len(rows), 2)
         self.assertTrue(rows[1].startswith("<G>  │ </G>"))
 
+    def test_format_direct_shell_command_feedback_line_highlights_once_before_wrapping(self):
+        with (
+            patch.object(self.agent, "_terminal_columns_for_line_estimate", return_value=16),
+            patch("src.smart_shell_agent._ansi_rgb", side_effect=lambda text, r, g, b: f"<RGB:{r},{g},{b}>{text}</RGB>"),
+            patch("src.smart_shell_agent._ansi_gray", side_effect=lambda s: f"<G>{s}</G>"),
+            patch("src.smart_shell_agent.highlight_assistant_display_line", side_effect=lambda s: s) as mock_hl,
+        ):
+            line = self.agent._format_direct_shell_command_feedback_line(
+                "Get-Content -Path helloworld.py -replace 'print(\\\"Hello\\\")'",
+                failed=False,
+            )
+        self.assertEqual(mock_hl.call_count, 1)
+        rows = line.splitlines()
+        self.assertGreaterEqual(len(rows), 2)
+        self.assertTrue(rows[1].startswith("<G>  │ </G>"))
+
     def test_repaint_tool_call_feedback_if_failed_uses_configured_up_lines(self):
         class _FakeStdout:
             def __init__(self):
@@ -223,6 +263,13 @@ class AiOutputDisplayTests(unittest.TestCase):
                 up_lines=1,
             )
         print_feedback.assert_not_called()
+
+    def test_tool_call_summary_for_powershell_shell_is_not_truncated(self):
+        long_payload = "(Get-Content -Path helloworld.py) -replace 'a','b' " + ("x" * 220)
+        cmd = f'powershell -ExecutionPolicy Bypass -Command "{long_payload}"'
+        s = self.agent._tool_call_summary("shell", {"command": cmd})
+        self.assertEqual(s, long_payload)
+        self.assertNotIn("...", s)
 
 
 if __name__ == "__main__":
