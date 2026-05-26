@@ -122,6 +122,43 @@ class ChatStateModelPersistenceTests(unittest.TestCase):
             self.assertEqual(msg, "")
             self.assertEqual(agent.remembered_history_anchor_indexes, [2])
 
+    def test_activate_chat_reload_same_chat_keeps_operation_results(self):
+        with tempfile.TemporaryDirectory() as td:
+            agent = _FakeAgent(Path(td))
+            manager = ChatStateManager(agent, "chats.json")
+            agent.active_chat_id = "chat-1"
+            agent.operation_results = [
+                {
+                    "command": {"tool": "shell", "args": {"command": "test"}},
+                    "result": {"success": False, "error": "Command execution failed, exit code: 1"},
+                }
+            ]
+            agent._chat_state = {
+                "version": 2,
+                "active": "chat-1",
+                "chats": [
+                    {
+                        "id": "chat-1",
+                        "name": "Current",
+                        "name_source": "manual",
+                        "created_at": "",
+                        "updated_at": "",
+                        "model_provider": "openai",
+                        "model_name": "gpt-4.1",
+                        "tasks": [],
+                        "active_task_id": "",
+                        "messages": [],
+                        "context_usage_percent": 0,
+                        "context_input_tokens": 0,
+                        "context_window": 0,
+                    }
+                ],
+            }
+            msg = manager.activate_chat("chat-1", announce=False, clear_screen=False, print_history=False)
+            self.assertEqual(msg, "")
+            self.assertEqual(len(agent.operation_results), 1)
+            self.assertFalse(bool(agent.operation_results[0].get("result", {}).get("success", True)))
+
     def test_compact_keeps_repeated_identical_user_turns(self):
         with tempfile.TemporaryDirectory() as td:
             agent = _FakeAgent(Path(td))

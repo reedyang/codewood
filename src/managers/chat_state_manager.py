@@ -458,6 +458,8 @@ class ChatStateManager:
         persist: bool = True,
     ) -> str:
         with self._agent._chat_state_lock:
+            prev_active_chat_id = str(getattr(self._agent, "active_chat_id", "") or "").strip()
+            prev_operation_results = list(getattr(self._agent, "operation_results", None) or [])
             chat = self.find_chat_by_id(chat_id)
             if not chat:
                 return f"❌ Chat not found: {chat_id}"
@@ -465,7 +467,12 @@ class ChatStateManager:
             self._agent.active_chat_id = chat_id
             self._agent.active_chat_name = str(chat.get("name") or "New Chat")
             self._agent.conversation_history = list(chat.get("messages") or [])
-            self._agent.operation_results = []
+            # Keep in-memory tool outcomes when reloading the same chat so
+            # history replay can preserve failed/success visual markers.
+            if chat_id == prev_active_chat_id:
+                self._agent.operation_results = prev_operation_results
+            else:
+                self._agent.operation_results = []
             self._agent._session_summary_llm = ""
             self._agent._session_summary_rolling = ""
             self._agent._last_llm_summary_pair_count = 0
