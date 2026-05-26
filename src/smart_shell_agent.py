@@ -1437,7 +1437,68 @@ class SmartShellAgent:
     ) -> str:
         summary = self._tool_call_summary(tool_name, args)
         bullet = _ansi_rgb("•", 197, 15, 31) if bool(failed) else _ansi_rgb("•", 19, 161, 14)
-        return f"{bullet} Ran {highlight_assistant_display_line(summary)}"
+        return self._format_wrapped_command_feedback_line(
+            f"{bullet} Ran ",
+            summary,
+        )
+
+    @staticmethod
+    def _feedback_char_display_width(ch: str) -> int:
+        if not ch:
+            return 0
+        if unicodedata.combining(ch):
+            return 0
+        cat = unicodedata.category(ch)
+        if cat in ("Cc", "Cf"):
+            return 0
+        return 2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1
+
+    @classmethod
+    def _feedback_text_display_width(cls, text: str) -> int:
+        total = 0
+        clean = ANSI_ESCAPE_RE.sub("", str(text or ""))
+        for ch in clean:
+            total += cls._feedback_char_display_width(ch)
+        return total
+
+    @classmethod
+    def _wrap_feedback_text_by_display_width(cls, text: str, max_width: int) -> List[str]:
+        raw = str(text or "")
+        if not raw:
+            return [""]
+        limit = max(1, int(max_width or 1))
+        chunks: List[str] = []
+        current: List[str] = []
+        current_w = 0
+        for ch in raw:
+            ch_w = cls._feedback_char_display_width(ch)
+            if current and (current_w + ch_w > limit):
+                chunks.append("".join(current))
+                current = [ch]
+                current_w = ch_w
+            else:
+                current.append(ch)
+                current_w += ch_w
+        if current:
+            chunks.append("".join(current))
+        return chunks or [""]
+
+    def _format_wrapped_command_feedback_line(self, lead_prefix: str, command_text: str) -> str:
+        lead = str(lead_prefix or "")
+        cmd = str(command_text or "").replace("\r", " ").replace("\n", " ").strip()
+        cols = max(8, int(self._terminal_columns_for_line_estimate() or 80))
+        cont_prefix = _ansi_gray("  │ ")
+        first_line_width = max(1, cols - self._feedback_text_display_width(lead))
+        cont_line_width = max(1, cols - self._feedback_text_display_width("  │ "))
+        chunks = self._wrap_feedback_text_by_display_width(cmd, first_line_width)
+        if not chunks:
+            return lead
+        rendered = [f"{lead}{highlight_assistant_display_line(chunks[0])}"]
+        for part in chunks[1:]:
+            wrapped = self._wrap_feedback_text_by_display_width(part, cont_line_width)
+            for seg in wrapped:
+                rendered.append(f"{cont_prefix}{highlight_assistant_display_line(seg)}")
+        return "\n".join(rendered)
 
     def _repaint_tool_call_feedback_if_failed(
         self,
@@ -1449,23 +1510,27 @@ class SmartShellAgent:
         if not bool(failed):
             return
         if not hasattr(sys.stdout, "isatty") or not sys.stdout.isatty():
-            self._print_tool_call_feedback(tool_name, args, failed=True)
             return
         try:
-            offset = max(1, int(up_lines or 1))
             line = self._format_tool_call_feedback_line(tool_name, args, failed=True)
+            line_rows = max(1, int(self._estimate_rendered_line_count(line) or 1))
+            offset = max(1, int(up_lines or 1) + (line_rows - 1))
             # Best-effort: repaint previous "Ran ..." line in failure color.
             sys.stdout.write("\x1b7")
             sys.stdout.write(f"\x1b[{offset}A\r\x1b[2K{line}")
             sys.stdout.write("\x1b8")
             sys.stdout.flush()
         except Exception:
-            self._print_tool_call_feedback(tool_name, args, failed=True)
+            # Avoid duplicate feedback lines when repaint fails.
+            pass
 
     def _format_direct_shell_command_feedback_line(self, command: str, failed: bool = False) -> str:
         cmd = str(command or "").replace("\r", " ").replace("\n", " ").strip()
         bullet = _ansi_rgb("•", 197, 15, 31) if bool(failed) else _ansi_rgb("•", 19, 161, 14)
-        return f"{bullet} You ran {highlight_assistant_display_line(cmd)}"
+        return self._format_wrapped_command_feedback_line(
+            f"{bullet} You ran ",
+            cmd,
+        )
 
     def _repaint_direct_shell_command_feedback_if_failed(
         self,
@@ -1481,10 +1546,11 @@ class SmartShellAgent:
         try:
             rendered = max(0, int(rendered_output_lines or 0))
             at_line_start = bool(cursor_at_line_start)
-            offset = rendered + (1 if at_line_start else 0)
+            line = self._format_direct_shell_command_feedback_line(command, failed=True)
+            line_rows = max(1, int(self._estimate_rendered_line_count(line) or 1))
+            offset = rendered + (1 if at_line_start else 0) + (line_rows - 1)
             if offset <= 0:
                 offset = 1
-            line = self._format_direct_shell_command_feedback_line(command, failed=True)
             # Save current cursor, repaint command feedback line in red, restore cursor.
             sys.stdout.write("\x1b7")
             sys.stdout.write(f"\x1b[{offset}A\r\x1b[2K{line}")
