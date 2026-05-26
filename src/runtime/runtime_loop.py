@@ -560,6 +560,10 @@ def run_agent_loop(agent: Any):
                                 "✅ AI context has been cleared "
                                 "(conversation history, recorded tasks, and recent operation-result cache; command-line input history is unchanged)"
                             )
+                            try:
+                                self._handle_chat_builtin_command("chat reload")
+                            except Exception:
+                                pass
                             continue
                         if bl == "knowledge":
                             print("Usage: /knowledge <status|sync|stats|search <query>>")

@@ -61,6 +61,10 @@ def dispatch_builtin_command(
     if bl == "clear context":
         agent._clear_active_chat_context_and_tasks()
         print("AI context and recorded tasks cleared.")
+        try:
+            agent._handle_chat_builtin_command("chat reload")
+        except Exception:
+            pass
         return True, False
 
     if agent._handle_model_builtin_command(builtin_line):
