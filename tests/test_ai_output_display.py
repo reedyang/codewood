@@ -86,6 +86,22 @@ class AiOutputDisplayTests(unittest.TestCase):
         self.assertIn("<BB>install</BB>", out)
         self.assertIn("<G>\"litellm[proxy]==1.83.14\"</G>", out)
 
+    def test_chinese_narrative_with_inline_flags_is_not_treated_as_shell_command_line(self):
+        text = (
+            "- 已使用 PowerShell `Get-Content -Path smart_shell_agent.py -Raw` 读取文件。\n"
+            "- 命令在 Windows 环境下通过 `powershell -ExecutionPolicy Bypass` 执行。"
+        )
+        with patch("src.core.assistant_output_highlighter._ansi_bright_blue", side_effect=lambda s: f"<BB>{s}</BB>"), patch(
+            "src.core.assistant_output_highlighter._ansi_cyan", side_effect=lambda s: f"<C>{s}</C>"
+        ):
+            out = aoh.format_assistant_display_response(text)
+
+        self.assertIn("<BB>- </BB>", out)
+        self.assertNotIn("<BB>已使用</BB>", out)
+        self.assertNotIn("<BB>命令在</BB>", out)
+        self.assertIn("<C>`Get-Content -Path smart_shell_agent.py -Raw`</C>", out)
+        self.assertIn("<C>`powershell -ExecutionPolicy Bypass`</C>", out)
+
     def test_tool_call_summary_for_powershell_shell_only_shows_command(self):
         cmd = 'powershell -ExecutionPolicy Bypass -Command "Get-ChildItem -Force"'
         s = self.agent._tool_call_summary("shell", {"command": cmd, "force": True, "input": "x"})

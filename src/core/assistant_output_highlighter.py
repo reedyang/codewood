@@ -187,6 +187,8 @@ def _looks_like_shell_command_line(text: str) -> bool:
         return False
     token = first.group(0).strip("\"'")
     lower = token.lower()
+    if _contains_cjk(token):
+        return False
     command_names = (
         "powershell",
         "pwsh",
@@ -220,6 +222,8 @@ def _looks_like_shell_command_line(text: str) -> bool:
         "start",
         "stop",
     )
+    if re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", token):
+        return True
     if lower.startswith((".", "/", "~")):
         return True
     if re.match(r"^[A-Za-z]:[\\/]", token):
@@ -228,10 +232,19 @@ def _looks_like_shell_command_line(text: str) -> bool:
         return True
     if lower in command_names:
         return True
-    if " -m " in f" {s} ":
-        return True
-    if re.search(r"\s-[A-Za-z][A-Za-z0-9-]*\b", s):
-        return True
+    return False
+
+
+def _contains_cjk(text: str) -> bool:
+    for ch in str(text or ""):
+        code = ord(ch)
+        if (
+            0x4E00 <= code <= 0x9FFF
+            or 0x3400 <= code <= 0x4DBF
+            or 0x3040 <= code <= 0x30FF
+            or 0xAC00 <= code <= 0xD7AF
+        ):
+            return True
     return False
 
 
