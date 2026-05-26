@@ -666,6 +666,9 @@ class SmartShellAgent:
     def _sync_active_chat_messages(self) -> None:
         self._chat_state_manager.sync_active_chat_messages()
 
+    def _persist_active_chat_usage_snapshot(self) -> None:
+        self._chat_state_manager.persist_active_chat_usage_snapshot()
+
     def _clear_active_chat_context_and_tasks(self) -> None:
         self.conversation_history.clear()
         self.operation_results.clear()
@@ -675,7 +678,13 @@ class SmartShellAgent:
         self._last_llm_summary_pair_count = 0
         self._active_runtime_task_id = ""
         self._active_runtime_task_domains = []
+        self._last_context_usage_percent = 0
+        self._last_context_input_tokens = 0
         self._chat_state_manager.clear_chat_context_and_tasks(self.active_chat_id)
+        try:
+            self._persist_active_chat_usage_snapshot()
+        except Exception:
+            pass
 
     def _start_chat_task(
         self,
@@ -696,6 +705,23 @@ class SmartShellAgent:
             self._active_runtime_task_id = task_id
         dvals = [str(x).strip() for x in (domains or []) if str(x).strip()]
         self._active_runtime_task_domains = dvals if dvals else ["general_other"]
+        try:
+            self._refresh_status_context_usage_snapshot(
+                user_input_hint=str(root_user_input or ""),
+                context_hint="task started",
+            )
+        except Exception:
+            pass
+        try:
+            svc = getattr(self, "session_memory_service", None)
+            schedule_refresh = getattr(svc, "schedule_context_usage_refresh_async", None)
+            if callable(schedule_refresh):
+                schedule_refresh(
+                    user_input_hint=str(root_user_input or ""),
+                    context_hint="task started",
+                )
+        except Exception:
+            pass
         return task_id
 
     def _close_chat_task(self, task_id: str, status: str) -> bool:

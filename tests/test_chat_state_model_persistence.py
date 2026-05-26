@@ -356,6 +356,51 @@ class ChatStateModelPersistenceTests(unittest.TestCase):
             self.assertEqual(chat.get("context_input_tokens"), 0)
             self.assertEqual(save_calls, ["saved"])
 
+    def test_persist_active_chat_usage_snapshot_writes_usage_to_file_immediately(self):
+        with tempfile.TemporaryDirectory() as td:
+            workspace = Path(td)
+            agent = _FakeAgent(workspace)
+            manager = ChatStateManager(agent, "chats.json")
+            agent._chat_state = {
+                "version": 2,
+                "active": "chat-1",
+                "chats": [
+                    {
+                        "id": "chat-1",
+                        "name": "Demo",
+                        "name_source": "manual",
+                        "created_at": "",
+                        "updated_at": "",
+                        "model_provider": "openai",
+                        "model_name": "gpt-4.1",
+                        "tasks": [],
+                        "active_task_id": "",
+                        "messages": [],
+                        "context_usage_percent": 0,
+                        "context_input_tokens": 0,
+                        "context_window": 0,
+                    }
+                ],
+            }
+            agent.active_chat_id = "chat-1"
+            agent._last_context_usage_percent = 67
+            agent._last_context_input_tokens = 4321
+            agent._last_context_window = 128000
+
+            manager.persist_active_chat_usage_snapshot()
+
+            chat = manager.find_chat_by_id("chat-1")
+            self.assertIsNotNone(chat)
+            self.assertEqual(chat.get("context_usage_percent"), 67)
+            self.assertEqual(chat.get("context_input_tokens"), 4321)
+            self.assertEqual(chat.get("context_window"), 128000)
+
+            payload = json.loads((workspace / "chats.json").read_text(encoding="utf-8"))
+            saved_chat = payload["chats"][0]
+            self.assertEqual(saved_chat.get("context_usage_percent"), 67)
+            self.assertEqual(saved_chat.get("context_input_tokens"), 4321)
+            self.assertEqual(saved_chat.get("context_window"), 128000)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -554,6 +554,90 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
         third = svc.schedule_context_usage_refresh_async()
         self.assertTrue(third)
 
+    def test_refresh_context_usage_snapshot_skips_when_expected_chat_mismatch(self):
+        agent = _FakeAgent()
+        agent.active_chat_id = "chat-2"
+        agent._last_context_usage_percent = 12
+        agent._last_context_input_tokens = 111
+        svc = SessionMemoryService(agent)
+
+        svc.refresh_context_usage_snapshot(
+            user_input_hint="new",
+            context_hint="ctx",
+            expected_chat_id="chat-1",
+        )
+
+        self.assertEqual(agent._last_context_usage_percent, 12)
+        self.assertEqual(agent._last_context_input_tokens, 111)
+
+    def test_refresh_context_usage_snapshot_uses_composed_prompt_snapshot(self):
+        agent = _FakeAgent()
+        agent.params = {"context_window": 100000}
+        agent.system_prompt = "MUTATED-" + ("X" * 6000)
+        compose_calls = {"n": 0}
+
+        def _compose(include_tools=True):
+            _ = include_tools
+            compose_calls["n"] += 1
+            return "STABLE_PROMPT"
+
+        agent._compose_system_prompt_snapshot = _compose
+        svc = SessionMemoryService(agent)
+
+        svc.refresh_context_usage_snapshot(user_input_hint="继续", context_hint="ctx")
+        first = int(getattr(agent, "_last_context_input_tokens", 0) or 0)
+
+        # Mutate global system_prompt again; refresh should stay stable because it uses composed snapshot.
+        agent.system_prompt = "MUTATED-2-" + ("Y" * 8000)
+        svc.refresh_context_usage_snapshot(user_input_hint="继续", context_hint="ctx")
+        second = int(getattr(agent, "_last_context_input_tokens", 0) or 0)
+
+        self.assertGreaterEqual(compose_calls["n"], 2)
+        self.assertEqual(first, second)
+
+    def test_refresh_context_usage_snapshot_skips_when_state_key_mismatch(self):
+        agent = _FakeAgent()
+        agent.active_chat_id = "chat-1"
+        agent._last_context_usage_percent = 9
+        agent._last_context_input_tokens = 999
+        svc = SessionMemoryService(agent)
+
+        stale_key = svc._context_usage_state_key()
+        agent.conversation_history.append({"role": "user", "content": "state changed"})
+
+        svc.refresh_context_usage_snapshot(
+            user_input_hint="继续",
+            context_hint="ctx",
+            expected_chat_id="chat-1",
+            expected_state_key=stale_key,
+        )
+
+        self.assertEqual(agent._last_context_usage_percent, 9)
+        self.assertEqual(agent._last_context_input_tokens, 999)
+
+    def test_schedule_context_usage_refresh_async_captures_chat_id_at_schedule_time(self):
+        agent = _FakeAgent()
+        agent.active_chat_id = "chat-1"
+        svc = SessionMemoryService(agent)
+        calls = []
+        entered = threading.Event()
+        release = threading.Event()
+
+        def _slow_refresh(*_args, **kwargs):
+            calls.append(dict(kwargs))
+            entered.set()
+            release.wait(timeout=1.0)
+
+        svc.refresh_context_usage_snapshot = _slow_refresh  # type: ignore[assignment]
+        scheduled = svc.schedule_context_usage_refresh_async()
+        self.assertTrue(scheduled)
+        self.assertTrue(entered.wait(timeout=0.5))
+        agent.active_chat_id = "chat-2"
+        release.set()
+        time.sleep(0.05)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0].get("expected_chat_id"), "chat-1")
+
     def test_logs_budget_and_keeps_hard_anchors(self):
         agent = _FakeAgent()
         agent.operation_results = [{"ok": True, "detail": "tool done", "blob": "x" * 400}]
