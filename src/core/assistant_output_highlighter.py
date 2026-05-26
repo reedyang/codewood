@@ -186,8 +186,12 @@ def _looks_like_shell_command_line(text: str) -> bool:
     if not first:
         return False
     token = first.group(0).strip("\"'")
+    token = re.sub(r"^[\(\[\{]+", "", token)
+    token = re.sub(r"[\)\]\},;]+$", "", token)
     if token.startswith("!") and len(token) > 1:
         token = token[1:]
+    if not token:
+        return False
     lower = token.lower()
     if _contains_cjk(token):
         return False
@@ -323,6 +327,8 @@ def _highlight_shell_command_line(text: str) -> str:
     command_quote = ""
     command_first_token_seen = False
     command_prev_plain = ""
+    in_quoted_string = False
+    quoted_char = ""
     for part in parts:
         if not part or part.isspace():
             out.append(part)
@@ -344,6 +350,17 @@ def _highlight_shell_command_line(text: str) -> str:
                 out.append(command_quote)
                 in_command_string = False
                 command_quote = ""
+            prev_plain = lower
+            continue
+        if in_quoted_string:
+            ended = token.endswith(quoted_char)
+            if ended:
+                inner = token[:-1]
+                out.append(_ansi_green(inner) + quoted_char)
+                in_quoted_string = False
+                quoted_char = ""
+            else:
+                out.append(_ansi_green(token))
             prev_plain = lower
             continue
         if prev_plain == "-command":
@@ -369,6 +386,13 @@ def _highlight_shell_command_line(text: str) -> str:
                     command_quote = quote
                 prev_plain = lower
                 continue
+        if token[:1] in {'"', "'"} and len(token) > 1 and not token.endswith(token[0]):
+            quoted_char = token[0]
+            out.append(quoted_char + _ansi_green(token[1:]))
+            in_quoted_string = True
+            first_token_seen = True
+            prev_plain = lower
+            continue
         colored, first_token_seen, prev_plain = _highlight_shell_token(
             token,
             first_token_seen,
@@ -381,6 +405,8 @@ def _highlight_shell_command_line(text: str) -> str:
 def _highlight_shell_token(token: str, first_token_seen: bool, prev_plain: str) -> Tuple[str, bool, str]:
     plain = str(token or "").strip("\"'")
     lower = plain.lower()
+    if token in {"|", "||", "&&", ";"}:
+        return _ansi_yellow(token), False, lower
     if not first_token_seen:
         if token.startswith("!") and len(token) > 1:
             return "!" + _ansi_bright_blue(token[1:]), True, lower
@@ -388,6 +414,8 @@ def _highlight_shell_token(token: str, first_token_seen: bool, prev_plain: str) 
     if token.startswith(("--", "-")) and not token.startswith(("http://", "https://")):
         return _ansi_yellow(token), first_token_seen, lower
     if prev_plain == "-m":
+        return _ansi_bright_blue(token), first_token_seen, lower
+    if _looks_like_powershell_cmdlet(plain):
         return _ansi_bright_blue(token), first_token_seen, lower
     if lower in {
         "install",
@@ -424,17 +452,20 @@ def _looks_like_path_or_url(text: str) -> bool:
     s = str(text or "")
     if not s:
         return False
-    if re.match(r"https?://", s, flags=re.IGNORECASE):
+    s_check = s.lstrip("([{").rstrip(")]},;")
+    if not s_check:
+        s_check = s
+    if re.match(r"https?://", s_check, flags=re.IGNORECASE):
         return True
-    if any(ch in s for ch in ("[", "]", "=", "*", "?")) and not re.search(r"[\\/]", s):
+    if any(ch in s_check for ch in ("[", "]", "=", "*", "?")) and not re.search(r"[\\/]", s_check):
         return False
-    if s.startswith((".", "/", "~")):
+    if s_check.startswith((".", "/", "~")):
         return True
-    if re.match(r"^[A-Za-z]:[\\/]", s):
+    if re.match(r"^[A-Za-z]:[\\/]", s_check):
         return True
-    if re.search(r"[\\/]", s):
+    if re.search(r"[\\/]", s_check):
         return True
-    if re.search(r"\.[A-Za-z0-9]{1,8}$", s):
+    if re.search(r"\.[A-Za-z0-9]{1,8}$", s_check):
         return True
     return False
 

@@ -577,6 +577,25 @@ class ShellCommandExecutionGuardsTests(unittest.TestCase):
         self.assertEqual(agent.auto_hide_register_calls, 0)
         popen_mock.assert_not_called()
 
+    def test_non_interactive_mode_prints_no_output_marker_when_stdout_stderr_empty(self):
+        agent = _DummyAgent()
+        command = 'python -c "pass"'
+        writes = []
+
+        def _capture_write(text, _stream, append_newline=False):
+            writes.append(str(text))
+            return None
+
+        with patch("subprocess.run", return_value=_FakeCompleted("", "")), patch(
+            "src.actions.command_actions._safe_console_write",
+            side_effect=_capture_write,
+        ), patch("subprocess.Popen") as popen_mock:
+            result = action_shell_command(agent, command, confirmed=False, interactive=False, input_data=None)
+
+        self.assertTrue(result.get("success", False))
+        self.assertIn("(no output)", "".join(writes))
+        popen_mock.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()
