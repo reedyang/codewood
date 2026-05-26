@@ -312,6 +312,23 @@ def _format_startup_directory(workspace_dir: Any) -> str:
     return f"~{os.sep}{rel_text}"
 
 
+def _try_record_user_task_message(agent: Any, user_task: str, already_recorded: bool) -> bool:
+    """Best-effort: persist the user task before waiting for model response."""
+    if bool(already_recorded):
+        return True
+    text = str(user_task or "").strip()
+    if not text:
+        return False
+    try:
+        append_fn = getattr(agent, "_append_chat_message", None)
+        if callable(append_fn):
+            append_fn("user", text)
+            return True
+    except Exception:
+        return False
+    return False
+
+
 def _print_startup_overview(agent: Any) -> None:
     model_name = str(getattr(agent, "model_name", "") or "")
     workspace_name = str(getattr(agent, "workspace_name", "") or "")
@@ -452,6 +469,8 @@ def run_agent_loop(agent: Any):
         in_task_execution = False
         self._in_task_execution = False
         current_task_id = ""
+        original_user_task = ""
+        user_message_recorded = False
         pre_task_status_ticker: Optional[_WorkingStatusTicker] = None
         try:
             self._refresh_input_handler_skill_completions()
@@ -1055,6 +1074,9 @@ def run_agent_loop(agent: Any):
             last_result = None
             self._last_auto_removed_ephemeral = None
             original_user_task = task_user_input
+            user_message_recorded = _try_record_user_task_message(
+                self, original_user_task, already_recorded=user_message_recorded
+            )
             domain_classify_started_at = time.perf_counter()
             _emit_flow_log("任务领域分类开始")
             domain_info = self._classify_task_domains(original_user_task)
@@ -1241,7 +1263,6 @@ def run_agent_loop(agent: Any):
             max_no_tool_rounds = 3
             no_tool_rounds = 0
             tool_round = 0
-            user_message_recorded = False
             while tool_round < max_tool_rounds:
                 if self._consume_task_interrupt_requested():
                     raise KeyboardInterrupt
@@ -1699,6 +1720,20 @@ def run_agent_loop(agent: Any):
                 self._in_task_execution = False
                 self._stop_interrupt_monitor(cancel_task_on_interrupt=True)
                 self._consume_task_interrupt_requested()
+                pending_user_task = str(original_user_task or "").strip()
+                if not pending_user_task:
+                    try:
+                        pending_user_task = str(locals().get("task_user_input", "") or "").strip()
+                    except Exception:
+                        pending_user_task = ""
+                if not pending_user_task:
+                    try:
+                        pending_user_task = str(locals().get("raw_user_input", "") or "").strip()
+                    except Exception:
+                        pending_user_task = ""
+                user_message_recorded = _try_record_user_task_message(
+                    self, pending_user_task, already_recorded=user_message_recorded
+                )
                 self._force_current_input_as_requirement_once = True
                 if current_task_id:
                     self._close_chat_task(current_task_id, "cancelled")

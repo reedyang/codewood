@@ -43,6 +43,14 @@ class _FakeStdout:
         return None
 
 
+class _NoopLock:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+
 class PromptSeparatorBehaviorTests(unittest.TestCase):
     def _build_agent(self) -> SmartShellAgent:
         agent = SmartShellAgent.__new__(SmartShellAgent)
@@ -344,6 +352,37 @@ class PromptSeparatorBehaviorTests(unittest.TestCase):
                 output_text="listed\n",
             )
         self.assertEqual(mock_append.call_count, 2)
+
+    def test_auto_chat_name_ignores_internal_slash_user_history(self):
+        agent = self._build_agent()
+        agent.active_chat_name = "New Chat"
+        chat = {
+            "id": "chat-1",
+            "name": "New Chat",
+            "name_source": "default",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": agent._build_internal_slash_user_history_content("/chat new"),
+                },
+                {
+                    "role": "assistant",
+                    "content": agent._build_internal_slash_result_history_content(
+                        raw_user_command="/chat new",
+                        output_text="created\n",
+                    ),
+                },
+            ],
+        }
+        agent._chat_state_lock = _NoopLock()
+        agent._find_chat_by_id = lambda chat_id: chat if str(chat_id) == "chat-1" else None
+        agent._save_chat_state = lambda: None
+        with patch.object(agent, "call_ai", return_value="INTERNAL_SLASH_USE") as mock_call_ai:
+            agent._maybe_schedule_auto_chat_name()
+        mock_call_ai.assert_not_called()
+        self.assertEqual(chat.get("name"), "New Chat")
+        self.assertEqual(chat.get("name_source"), "default")
+        self.assertEqual(agent.active_chat_name, "New Chat")
 
     def test_chat_history_replays_task_worked_summary_line(self):
         agent = self._build_agent()

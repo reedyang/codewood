@@ -3,6 +3,7 @@ import types
 import unittest
 import subprocess
 import re
+import os
 import threading
 import time
 from io import StringIO
@@ -184,6 +185,58 @@ class BangDirectExecutionTests(unittest.TestCase):
             self.agent._request_task_interrupt(cancel_task=False)
         mock_terminate.assert_called_once_with()
         self.assertFalse(self.agent._task_interrupt_requested)
+
+    def test_consume_conversation_interrupted_banner_recent_returns_true_when_fresh(self):
+        self.agent._conversation_interrupt_banner_recent = True
+        self.agent._conversation_interrupt_banner_recent_at = 100.0
+        with patch("src.smart_shell_agent.time.monotonic", return_value=102.0):
+            self.assertTrue(self.agent._consume_conversation_interrupted_banner_recent())
+        self.assertFalse(bool(getattr(self.agent, "_conversation_interrupt_banner_recent", True)))
+        self.assertEqual(float(getattr(self.agent, "_conversation_interrupt_banner_recent_at", -1.0)), 0.0)
+
+    def test_consume_conversation_interrupted_banner_recent_ignores_stale_marker(self):
+        self.agent._conversation_interrupt_banner_recent = True
+        self.agent._conversation_interrupt_banner_recent_at = 100.0
+        with patch("src.smart_shell_agent.time.monotonic", return_value=120.0):
+            self.assertFalse(self.agent._consume_conversation_interrupted_banner_recent())
+        self.assertFalse(bool(getattr(self.agent, "_conversation_interrupt_banner_recent", True)))
+        self.assertEqual(float(getattr(self.agent, "_conversation_interrupt_banner_recent_at", -1.0)), 0.0)
+
+    def test_poll_windows_escape_pressed_prefers_msvcrt_buffer(self):
+        fake_msvcrt = types.SimpleNamespace(
+            kbhit=lambda: True,
+            getch=lambda: b"\x1b",
+        )
+        with (
+            patch.object(os, "name", "nt"),
+            patch.dict(sys.modules, {"msvcrt": fake_msvcrt}),
+            patch.object(
+                self.agent,
+                "_poll_windows_escape_pressed_async_fallback",
+                return_value=False,
+            ) as mock_async_fallback,
+        ):
+            self.assertTrue(self.agent._poll_windows_escape_pressed())
+        mock_async_fallback.assert_not_called()
+
+    def test_poll_windows_escape_pressed_async_fallback_detects_press_edge_once(self):
+        state_values = [0x8000, 0x8000, 0x0000]
+
+        def _get_async_key_state(_vk):
+            return state_values.pop(0) if state_values else 0
+
+        fake_user32 = types.SimpleNamespace(
+            GetAsyncKeyState=_get_async_key_state,
+            GetForegroundWindow=lambda: 100,
+        )
+        fake_kernel32 = types.SimpleNamespace(GetConsoleWindow=lambda: 100)
+        fake_ctypes = types.SimpleNamespace(
+            windll=types.SimpleNamespace(user32=fake_user32, kernel32=fake_kernel32)
+        )
+        with patch.object(os, "name", "nt"), patch.dict(sys.modules, {"ctypes": fake_ctypes}):
+            self.assertTrue(self.agent._poll_windows_escape_pressed_async_fallback())
+            self.assertFalse(self.agent._poll_windows_escape_pressed_async_fallback())
+            self.assertFalse(self.agent._poll_windows_escape_pressed_async_fallback())
 
     def test_is_direct_shell_result_aborted_supports_legacy_stdout_marker(self):
         self.assertTrue(

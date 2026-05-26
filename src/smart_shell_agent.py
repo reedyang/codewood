@@ -3,6 +3,7 @@ import sys
 import json
 import re
 import shlex
+import time
 import threading
 import importlib
 import warnings
@@ -188,6 +189,7 @@ CHAT_STATE_FILE = "chats.json"
 ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 ANSI_OSC_RE = re.compile(r"\x1b\][^\a\x1b]*(?:\a|\x1b\\)")
 DIRECT_SHELL_WORKING_STATUS_MARQUEE_FPS = 10.0
+CONVERSATION_INTERRUPT_BANNER_RECENT_WINDOW_SECONDS = 5.0
 INPUT_PROMPT = "› "
 TASK_DOMAIN_VALUES = frozenset(
     {
@@ -1395,6 +1397,7 @@ class SmartShellAgent:
         print("")
         try:
             self._conversation_interrupt_banner_recent = True
+            self._conversation_interrupt_banner_recent_at = float(time.monotonic())
         except Exception:
             pass
         return 3
@@ -1402,8 +1405,18 @@ class SmartShellAgent:
     def _consume_conversation_interrupted_banner_recent(self) -> bool:
         try:
             recent = bool(getattr(self, "_conversation_interrupt_banner_recent", False))
+            recent_at = float(getattr(self, "_conversation_interrupt_banner_recent_at", 0.0) or 0.0)
+            fresh = False
+            if recent:
+                if recent_at <= 0.0:
+                    fresh = True
+                else:
+                    fresh = (float(time.monotonic()) - recent_at) <= float(
+                        CONVERSATION_INTERRUPT_BANNER_RECENT_WINDOW_SECONDS
+                    )
             self._conversation_interrupt_banner_recent = False
-            return recent
+            self._conversation_interrupt_banner_recent_at = 0.0
+            return bool(fresh)
         except Exception:
             return False
 
@@ -2337,6 +2350,89 @@ class SmartShellAgent:
             self._task_interrupt_requested = False
             return wanted
 
+    def _poll_windows_escape_pressed_async_fallback(self) -> bool:
+        """Fallback ESC polling for terminals where msvcrt.kbhit() is unreliable."""
+        if os.name != "nt":
+            return False
+        state = getattr(self, "_interrupt_async_escape_state", None)
+        if not isinstance(state, dict):
+            state = {
+                "ready": False,
+                "get_async_key_state": None,
+                "get_foreground_window": None,
+                "console_hwnd": 0,
+                "esc_down": False,
+            }
+            try:
+                import ctypes
+
+                user32 = ctypes.windll.user32
+                kernel32 = ctypes.windll.kernel32
+                get_async_key_state = getattr(user32, "GetAsyncKeyState", None)
+                get_foreground_window = getattr(user32, "GetForegroundWindow", None)
+                get_console_window = getattr(kernel32, "GetConsoleWindow", None)
+                console_hwnd = int(get_console_window() or 0) if callable(get_console_window) else 0
+                if callable(get_async_key_state) and callable(get_foreground_window) and console_hwnd:
+                    state.update(
+                        {
+                            "ready": True,
+                            "get_async_key_state": get_async_key_state,
+                            "get_foreground_window": get_foreground_window,
+                            "console_hwnd": console_hwnd,
+                        }
+                    )
+            except Exception:
+                pass
+            self._interrupt_async_escape_state = state
+        if not bool(state.get("ready", False)):
+            return False
+        try:
+            get_foreground_window = state.get("get_foreground_window")
+            if callable(get_foreground_window):
+                fg_hwnd = int(get_foreground_window() or 0)
+                if fg_hwnd and fg_hwnd != int(state.get("console_hwnd") or 0):
+                    state["esc_down"] = False
+                    return False
+            get_async_key_state = state.get("get_async_key_state")
+            if not callable(get_async_key_state):
+                return False
+            # VK_ESCAPE=0x1B; high bit means currently down.
+            cur = int(get_async_key_state(0x1B) or 0)
+            is_down = bool(cur & 0x8000)
+            was_down = bool(state.get("esc_down", False))
+            state["esc_down"] = is_down
+            return bool(is_down and not was_down)
+        except Exception:
+            return False
+
+    def _poll_windows_escape_pressed(self) -> bool:
+        """Primary + fallback ESC polling used by the background interrupt monitor."""
+        if os.name != "nt":
+            return False
+        msvcrt = None
+        try:
+            import msvcrt as _msvcrt
+
+            msvcrt = _msvcrt
+        except Exception:
+            msvcrt = None
+        if msvcrt is not None:
+            try:
+                if msvcrt.kbhit():
+                    ch = msvcrt.getch()
+                    if ch in (b"\x00", b"\xe0"):
+                        try:
+                            if msvcrt.kbhit():
+                                _ = msvcrt.getch()
+                        except Exception:
+                            pass
+                        return False
+                    if ch == b"\x1b":
+                        return True
+            except Exception:
+                pass
+        return self._poll_windows_escape_pressed_async_fallback()
+
     def _start_interrupt_monitor(self, cancel_task_on_interrupt: bool = False) -> None:
         if os.name != "nt":
             return
@@ -2356,28 +2452,15 @@ class SmartShellAgent:
             self._interrupt_monitor_stop_event = stop_event
 
             def _monitor() -> None:
-                try:
-                    import msvcrt
-                except Exception:
-                    return
                 while not stop_event.wait(0.03):
                     try:
-                        if not msvcrt.kbhit():
+                        if not self._poll_windows_escape_pressed():
                             continue
-                        ch = msvcrt.getch()
-                        if ch in (b"\x00", b"\xe0"):
-                            try:
-                                if msvcrt.kbhit():
-                                    _ = msvcrt.getch()
-                            except Exception:
-                                pass
-                            continue
-                        if ch == b"\x1b":
-                            with lock:
-                                should_cancel_task = bool(
-                                    int(getattr(self, "_interrupt_monitor_cancel_task_refs", 0) or 0) > 0
-                                )
-                            self._request_task_interrupt(source="esc", cancel_task=should_cancel_task)
+                        with lock:
+                            should_cancel_task = bool(
+                                int(getattr(self, "_interrupt_monitor_cancel_task_refs", 0) or 0) > 0
+                            )
+                        self._request_task_interrupt(source="esc", cancel_task=should_cancel_task)
                     except Exception:
                         continue
 
@@ -2585,9 +2668,23 @@ class SmartShellAgent:
             chat_id = str(chat.get("id") or "")
             msgs = list(chat.get("messages") or [])
             first_user = ""
+            parse_slash_user = getattr(self, "_parse_internal_slash_user_history_content", None)
             for m in msgs:
                 if str(m.get("role") or "").strip().lower() == "user":
-                    first_user = str(m.get("content") or "").strip()
+                    raw_user = str(m.get("content") or "").strip()
+                    if not raw_user:
+                        continue
+                    parsed_slash_cmd = ""
+                    if callable(parse_slash_user):
+                        try:
+                            parsed_slash_cmd = str(parse_slash_user(raw_user) or "").strip()
+                        except Exception:
+                            parsed_slash_cmd = ""
+                    candidate = parsed_slash_cmd if parsed_slash_cmd else raw_user
+                    # Built-in slash commands and their internal history should not drive chat auto naming.
+                    if candidate.startswith("/"):
+                        continue
+                    first_user = candidate
                     break
             if not first_user:
                 return
