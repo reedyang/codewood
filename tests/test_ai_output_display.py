@@ -180,7 +180,7 @@ class AiOutputDisplayTests(unittest.TestCase):
     def test_format_tool_call_feedback_line_wraps_long_command_with_gray_pipe_prefix(self):
         with (
             patch.object(self.agent, "_tool_call_summary", return_value="abcdefghijklmnopqrstuvwxyz"),
-            patch.object(self.agent, "_terminal_columns_for_line_estimate", return_value=16),
+            patch.object(self.agent, "_terminal_columns_for_command_feedback", return_value=16),
             patch("src.smart_shell_agent._ansi_rgb", side_effect=lambda text, r, g, b: f"<RGB:{r},{g},{b}>{text}</RGB>"),
             patch("src.smart_shell_agent._ansi_gray", side_effect=lambda s: f"<G>{s}</G>"),
             patch("src.smart_shell_agent.highlight_assistant_display_line", side_effect=lambda s: s),
@@ -192,7 +192,7 @@ class AiOutputDisplayTests(unittest.TestCase):
 
     def test_format_direct_shell_command_feedback_line_wraps_long_command_with_gray_pipe_prefix(self):
         with (
-            patch.object(self.agent, "_terminal_columns_for_line_estimate", return_value=18),
+            patch.object(self.agent, "_terminal_columns_for_command_feedback", return_value=18),
             patch("src.smart_shell_agent._ansi_rgb", side_effect=lambda text, r, g, b: f"<RGB:{r},{g},{b}>{text}</RGB>"),
             patch("src.smart_shell_agent._ansi_gray", side_effect=lambda s: f"<G>{s}</G>"),
             patch("src.smart_shell_agent.highlight_assistant_display_line", side_effect=lambda s: s),
@@ -202,9 +202,22 @@ class AiOutputDisplayTests(unittest.TestCase):
         self.assertGreaterEqual(len(rows), 2)
         self.assertTrue(rows[1].startswith("<G>  │ </G>"))
 
+    def test_format_direct_shell_command_feedback_line_rewraps_tail_with_continuation_width(self):
+        with (
+            patch.object(self.agent, "_terminal_columns_for_command_feedback", return_value=20),
+            patch("src.smart_shell_agent._ansi_rgb", side_effect=lambda text, r, g, b: text),
+            patch("src.smart_shell_agent._ansi_gray", side_effect=lambda s: s),
+            patch("src.smart_shell_agent.highlight_assistant_display_line", side_effect=lambda s: s),
+        ):
+            line = self.agent._format_direct_shell_command_feedback_line("x" * 26, failed=False)
+        rows = line.splitlines()
+        self.assertEqual(len(rows), 2)
+        self.assertTrue(rows[1].startswith("  │ "))
+        self.assertEqual(len(rows[1]) - len("  │ "), 16)
+
     def test_format_direct_shell_command_feedback_line_highlights_once_before_wrapping(self):
         with (
-            patch.object(self.agent, "_terminal_columns_for_line_estimate", return_value=16),
+            patch.object(self.agent, "_terminal_columns_for_command_feedback", return_value=16),
             patch("src.smart_shell_agent._ansi_rgb", side_effect=lambda text, r, g, b: f"<RGB:{r},{g},{b}>{text}</RGB>"),
             patch("src.smart_shell_agent._ansi_gray", side_effect=lambda s: f"<G>{s}</G>"),
             patch("src.smart_shell_agent.highlight_assistant_display_line", side_effect=lambda s: s) as mock_hl,
@@ -220,7 +233,7 @@ class AiOutputDisplayTests(unittest.TestCase):
 
     def test_format_direct_shell_command_feedback_line_preserves_color_after_wrap_prefix_reset(self):
         with (
-            patch.object(self.agent, "_terminal_columns_for_line_estimate", return_value=22),
+            patch.object(self.agent, "_terminal_columns_for_command_feedback", return_value=22),
             patch("src.smart_shell_agent._ansi_rgb", side_effect=lambda text, r, g, b: text),
             patch("src.smart_shell_agent._ansi_gray", side_effect=lambda s: f"\x1b[90m{s}\x1b[0m"),
             patch(
@@ -312,6 +325,34 @@ class AiOutputDisplayTests(unittest.TestCase):
         s = self.agent._tool_call_summary("shell", {"command": cmd})
         self.assertEqual(s, long_payload)
         self.assertNotIn("...", s)
+
+    def test_feedback_width_ignores_osc_hyperlink_control_sequences(self):
+        osc_link = "\x1b]8;;https://example.com\x07abc\x1b]8;;\x07"
+        self.assertEqual(self.agent._feedback_text_display_width(osc_link), 3)
+        chunks = self.agent._wrap_ansi_text_by_display_width(osc_link, 3)
+        self.assertEqual(len(chunks), 1)
+
+    def test_format_direct_shell_feedback_prefers_real_terminal_width_over_stale_input_handler_width(self):
+        class _InputHandlerCols80:
+            def __init__(self):
+                self.session = object()
+
+            def get_terminal_columns(self, default=80):
+                return 80
+
+        class _Sz:
+            def __init__(self, columns):
+                self.columns = columns
+
+        self.agent.input_handler = _InputHandlerCols80()
+        with (
+            patch("src.smart_shell_agent.os.get_terminal_size", side_effect=[_Sz(120), _Sz(120)]),
+            patch("src.smart_shell_agent._ansi_rgb", side_effect=lambda text, r, g, b: text),
+            patch("src.smart_shell_agent._ansi_gray", side_effect=lambda s: s),
+            patch("src.smart_shell_agent.highlight_assistant_display_line", side_effect=lambda s: s),
+        ):
+            line = self.agent._format_direct_shell_command_feedback_line("x" * 90, failed=False)
+        self.assertNotIn("\n", line)
 
 
 if __name__ == "__main__":

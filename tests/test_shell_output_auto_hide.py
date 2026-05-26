@@ -31,6 +31,16 @@ class _FakeInputHandler:
         return 40
 
 
+class _FakePromptToolkitInputHandler:
+    def __init__(self, session=None):
+        self.session = session
+
+    def get_terminal_columns(self, default=80):
+        # Mirrors prompt_toolkit handler behavior: when session is unavailable,
+        # return a fallback default width (usually 80).
+        return int(default or 80)
+
+
 class ShellOutputAutoHideTests(unittest.TestCase):
     def setUp(self):
         self.agent = SmartShellAgent.__new__(SmartShellAgent)
@@ -69,8 +79,28 @@ class ShellOutputAutoHideTests(unittest.TestCase):
         self.assertEqual(self.agent._last_shell_output_visible_lines, 0)
         self.assertEqual(fake_stdout.writes.count("\x1b[1A\r\x1b[2K"), 4)
 
-    def test_terminal_columns_for_line_estimate_prefers_real_terminal_size(self):
+    def test_terminal_columns_for_line_estimate_prefers_input_handler_width(self):
         self.agent.input_handler = _FakeInputHandler()
+
+        class _Sz:
+            def __init__(self, columns):
+                self.columns = columns
+
+        with patch("src.smart_shell_agent.os.get_terminal_size", side_effect=[_Sz(120)]):
+            cols = self.agent._terminal_columns_for_line_estimate()
+        self.assertEqual(cols, 40)
+
+    def test_terminal_columns_for_line_estimate_falls_back_to_real_terminal_size(self):
+        class _Sz:
+            def __init__(self, columns):
+                self.columns = columns
+
+        with patch("src.smart_shell_agent.os.get_terminal_size", side_effect=[_Sz(120)]):
+            cols = self.agent._terminal_columns_for_line_estimate()
+        self.assertEqual(cols, 120)
+
+    def test_terminal_columns_for_line_estimate_ignores_inactive_prompt_toolkit_session_fallback(self):
+        self.agent.input_handler = _FakePromptToolkitInputHandler(session=None)
 
         class _Sz:
             def __init__(self, columns):

@@ -1211,8 +1211,21 @@ class SmartShellAgent:
 
     def _terminal_columns_for_line_estimate(self) -> int:
         width = 80
-        # Keep consistent with command output rendering path: prefer real stream
-        # terminal size over input-handler cached columns to avoid over-clear.
+        # Keep wrap behavior aligned with prompt_toolkit's live output viewport
+        # only when the prompt session is active. When session is inactive,
+        # some input handlers return fallback width (often 80), which causes
+        # premature wraps and large right-side whitespace.
+        ih = getattr(self, "input_handler", None)
+        try:
+            if ih is not None and hasattr(ih, "get_terminal_columns"):
+                has_session_attr = hasattr(ih, "session")
+                session_active = bool(getattr(ih, "session", None)) if has_session_attr else True
+                if session_active:
+                    cols0 = int(ih.get_terminal_columns(default=0) or 0)
+                    if cols0 > 0:
+                        return cols0
+        except Exception:
+            pass
         try:
             cols1 = int(os.get_terminal_size(sys.__stdout__.fileno()).columns or 0)
             if cols1 > 0:
@@ -1225,18 +1238,10 @@ class SmartShellAgent:
                 return cols2
         except Exception:
             pass
-        ih = getattr(self, "input_handler", None)
         try:
-            if ih is not None and hasattr(ih, "get_terminal_columns"):
-                cols3 = int(ih.get_terminal_columns(default=80) or 0)
-                if cols3 > 0:
-                    return cols3
-        except Exception:
-            pass
-        try:
-            cols4 = int(shutil.get_terminal_size(fallback=(80, 24)).columns or 80)
-            if cols4 > 0:
-                width = cols4
+            cols3 = int(shutil.get_terminal_size(fallback=(80, 24)).columns or 80)
+            if cols3 > 0:
+                width = cols3
         except Exception:
             pass
         return max(1, int(width))
@@ -1443,7 +1448,7 @@ class SmartShellAgent:
     @classmethod
     def _feedback_text_display_width(cls, text: str) -> int:
         total = 0
-        clean = ANSI_ESCAPE_RE.sub("", str(text or ""))
+        clean = cls._strip_console_color_controls(str(text or ""))
         for ch in clean:
             total += cls._feedback_char_display_width(ch)
         return total
@@ -1485,6 +1490,8 @@ class SmartShellAgent:
         while i < n:
             if raw[i] == "\x1b":
                 m = ANSI_ESCAPE_RE.match(raw, i)
+                if not m:
+                    m = ANSI_OSC_RE.match(raw, i)
                 if m:
                     seq = m.group(0)
                     current.append(seq)
@@ -1551,20 +1558,56 @@ class SmartShellAgent:
     def _format_assistant_chat_display_message(self, assistant_text: str) -> str:
         return self._format_chat_message_with_wrap("•", assistant_text, colored_text=True)
 
+    def _terminal_columns_for_command_feedback(self) -> int:
+        width = 0
+        try:
+            cols1 = int(os.get_terminal_size(sys.__stdout__.fileno()).columns or 0)
+            if cols1 > 0:
+                width = cols1
+        except Exception:
+            pass
+        try:
+            cols2 = int(os.get_terminal_size(sys.stdout.fileno()).columns or 0)
+            if cols2 > 0:
+                width = cols2 if width <= 0 else max(width, cols2)
+        except Exception:
+            pass
+        if width <= 0:
+            try:
+                cols3 = int(shutil.get_terminal_size(fallback=(80, 24)).columns or 80)
+                if cols3 > 0:
+                    width = cols3
+            except Exception:
+                pass
+        if width <= 0:
+            ih = getattr(self, "input_handler", None)
+            try:
+                if ih is not None and hasattr(ih, "get_terminal_columns"):
+                    cols4 = int(ih.get_terminal_columns(default=80) or 0)
+                    if cols4 > 0:
+                        width = cols4
+            except Exception:
+                pass
+        return max(1, int(width or 80))
+
     def _format_wrapped_command_feedback_line(self, lead_prefix: str, command_text: str) -> str:
         lead = str(lead_prefix or "")
         cmd = str(command_text or "").replace("\r", " ").replace("\n", " ").strip()
-        cols = max(8, int(self._terminal_columns_for_line_estimate() or 80))
+        cols = max(8, int(self._terminal_columns_for_command_feedback() or 80))
         cont_prefix = _ansi_gray("  │ ")
         first_line_width = max(1, cols - self._feedback_text_display_width(lead))
         cont_line_width = max(1, cols - self._feedback_text_display_width("  │ "))
         highlighted_cmd = highlight_assistant_display_line(cmd)
-        chunks = self._wrap_ansi_text_by_display_width(highlighted_cmd, first_line_width)
-        if not chunks:
+        first_chunks = self._wrap_ansi_text_by_display_width(highlighted_cmd, first_line_width)
+        if not first_chunks:
             return lead
-        rendered = [f"{lead}{chunks[0]}"]
-        for part in chunks[1:]:
-            wrapped = self._wrap_ansi_text_by_display_width(part, cont_line_width)
+        rendered = [f"{lead}{first_chunks[0]}"]
+        if len(first_chunks) > 1:
+            # Re-wrap the full tail using continuation width. If we keep wrapping
+            # tail chunks individually, they remain constrained by first-line width
+            # and leave large right-side whitespace on continuation rows.
+            tail = "".join(first_chunks[1:])
+            wrapped = self._wrap_ansi_text_by_display_width(tail, cont_line_width)
             for seg in wrapped:
                 rendered.append(f"{cont_prefix}{seg}")
         return "\n".join(rendered)
