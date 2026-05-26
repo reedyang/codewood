@@ -237,6 +237,29 @@ class AiOutputDisplayTests(unittest.TestCase):
         self.assertTrue(rows[1].startswith("\x1b[90m  │ \x1b[0m"))
         self.assertIn("\x1b[32m", rows[1])
 
+    def test_format_user_chat_display_message_wraps_by_window_width_and_indents_continuation(self):
+        with (
+            patch.object(self.agent, "_terminal_columns_for_line_estimate", return_value=8),
+            patch("src.smart_shell_agent._ansi_gray", side_effect=lambda s: s),
+        ):
+            rendered = self.agent._format_user_chat_display_message("1234567890")
+        rows = rendered.splitlines()
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(rows[0], "› 123456")
+        self.assertEqual(rows[1], "  7890")
+
+    def test_format_assistant_chat_display_message_keeps_ansi_color_after_wrap(self):
+        with (
+            patch.object(self.agent, "_terminal_columns_for_line_estimate", return_value=10),
+            patch("src.smart_shell_agent._ansi_gray", side_effect=lambda s: s),
+        ):
+            rendered = self.agent._format_assistant_chat_display_message("\x1b[32mabcdefghijk\x1b[0m")
+        rows = rendered.splitlines()
+        self.assertEqual(len(rows), 2)
+        self.assertTrue(rows[0].startswith("• "))
+        self.assertTrue(rows[1].startswith("  "))
+        self.assertIn("\x1b[32m", rows[1])
+
     def test_repaint_tool_call_feedback_if_failed_uses_configured_up_lines(self):
         class _FakeStdout:
             def __init__(self):

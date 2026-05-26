@@ -1029,9 +1029,9 @@ class SmartShellAgent:
                     continue
                 slash_cmd = self._parse_internal_slash_user_history_content(content)
                 if slash_cmd:
-                    print(f"{_ansi_gray('›')} {slash_cmd}")
+                    print(self._format_user_chat_display_message(slash_cmd))
                     continue
-                print(f"{_ansi_gray('›')} {content}")
+                print(self._format_user_chat_display_message(content))
             elif role == "assistant":
                 interrupted_event = self._parse_conversation_interrupted_history_content(content)
                 if interrupted_event is not None:
@@ -1091,7 +1091,7 @@ class SmartShellAgent:
                     continue
                 display_response = format_assistant_display_response(content)
                 if display_response:
-                    print(f"{_ansi_gray('•')} {display_response}")
+                    print(self._format_assistant_chat_display_message(display_response))
                 tool_plan = self._find_tool_plan_anywhere(content)
                 if tool_plan:
                     tool_name, args = tool_plan
@@ -1188,24 +1188,15 @@ class SmartShellAgent:
             return
         if not hasattr(sys.stdout, "isatty") or not sys.stdout.isatty():
             return
-        normalized = txt.replace("\r\n", "\n").replace("\r", "\n")
-        raw_lines = normalized.split("\n")
-        if not raw_lines:
-            raw_lines = [normalized]
-        # Chat-style echo keeps continuation lines indented by 2 spaces.
-        echo_lines = [raw_lines[0]]
-        if len(raw_lines) > 1:
-            echo_lines.extend([f"  {line}" for line in raw_lines[1:]])
-        echo_body = "\n".join(echo_lines)
-        # Prompt line includes "› " prefix on the first visual line.
-        display_probe = f"› {echo_body}"
+        rendered = self._format_user_chat_display_message(txt)
+        display_probe = rendered
         line_count = max(1, int(self._estimate_rendered_line_count(display_probe)))
         try:
             # Current cursor is on line after Enter. Clear all prompt input rows
             # (multi-line input may have consumed multiple rows), then redraw once.
             for _ in range(line_count):
                 sys.stdout.write("\x1b[1A\r\x1b[2K")
-            sys.stdout.write(f"{_ansi_gray('›')} {echo_body}\n")
+            sys.stdout.write(f"{rendered}\n")
             sys.stdout.flush()
         except Exception:
             pass
@@ -1522,6 +1513,47 @@ class SmartShellAgent:
         if current:
             chunks.append("".join(current))
         return chunks or [""]
+
+    def _format_chat_message_with_wrap(
+        self,
+        marker_symbol: str,
+        message_text: str,
+        *,
+        colored_text: bool = False,
+    ) -> str:
+        marker = str(marker_symbol or "").strip() or "•"
+        raw = str(message_text or "")
+        normalized = raw.replace("\r\n", "\n").replace("\r", "\n")
+        logical_lines = normalized.split("\n") if normalized else [""]
+        first_prefix_plain = f"{marker} "
+        first_prefix_ansi = f"{_ansi_gray(marker)} "
+        cont_prefix_plain = "  "
+        cols = max(8, int(self._terminal_columns_for_line_estimate() or 80))
+        first_line_width = max(1, cols - self._feedback_text_display_width(first_prefix_plain))
+        cont_line_width = max(1, cols - self._feedback_text_display_width(cont_prefix_plain))
+
+        rendered: List[str] = []
+        for idx, logical_line in enumerate(logical_lines):
+            is_first_logical_line = idx == 0
+            line_prefix = first_prefix_ansi if is_first_logical_line else cont_prefix_plain
+            max_width = first_line_width if is_first_logical_line else cont_line_width
+            if colored_text:
+                chunks = self._wrap_ansi_text_by_display_width(logical_line, max_width)
+            else:
+                chunks = self._wrap_feedback_text_by_display_width(logical_line, max_width)
+            if not chunks:
+                chunks = [""]
+            rendered.append(f"{line_prefix}{chunks[0]}")
+            if len(chunks) > 1:
+                for seg in chunks[1:]:
+                    rendered.append(f"{cont_prefix_plain}{seg}")
+        return "\n".join(rendered)
+
+    def _format_user_chat_display_message(self, user_text: str) -> str:
+        return self._format_chat_message_with_wrap("›", user_text, colored_text=False)
+
+    def _format_assistant_chat_display_message(self, assistant_text: str) -> str:
+        return self._format_chat_message_with_wrap("•", assistant_text, colored_text=True)
 
     def _format_wrapped_command_feedback_line(self, lead_prefix: str, command_text: str) -> str:
         lead = str(lead_prefix or "")
