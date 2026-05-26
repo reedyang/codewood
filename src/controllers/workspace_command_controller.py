@@ -205,6 +205,7 @@ def workspace_switch_command(agent: Any, selector: str) -> str:
     agent._save_current_workspace_position()
     agent._apply_workspace_entry(entry, agent.work_directory)
     agent._refresh_workspace_runtime()
+    agent._save_current_workspace_position()
     return (
         f"✅ Switched to workspace: {agent.workspace_name}\n"
         f"  current directory: {agent.work_directory}"
