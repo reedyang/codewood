@@ -68,7 +68,8 @@ class AiOutputDisplayTests(unittest.TestCase):
     def test_format_assistant_display_response_highlights_shell_command_lines(self):
         text = (
             "powershell -File .\\scripts\\stop-gateway.ps1\n"
-            ".\\.venv\\Scripts\\python -m pip install \"litellm[proxy]==1.83.14\""
+            ".\\.venv\\Scripts\\python -m pip install \"litellm[proxy]==1.83.14\"\n"
+            "Get-Content -Path smart_shell_agent.py -Raw"
         )
         with patch("src.core.assistant_output_highlighter._ansi_bright_blue", side_effect=lambda s: f"<BB>{s}</BB>"), patch(
             "src.core.assistant_output_highlighter._ansi_yellow", side_effect=lambda s: f"<Y>{s}</Y>"
@@ -85,6 +86,10 @@ class AiOutputDisplayTests(unittest.TestCase):
         self.assertIn("<BB>pip</BB>", out)
         self.assertIn("<BB>install</BB>", out)
         self.assertIn("<G>\"litellm[proxy]==1.83.14\"</G>", out)
+        self.assertIn("<BB>Get-Content</BB>", out)
+        self.assertIn("<Y>-Path</Y>", out)
+        self.assertIn("<C>smart_shell_agent.py</C>", out)
+        self.assertIn("<Y>-Raw</Y>", out)
 
     def test_chinese_narrative_with_inline_flags_is_not_treated_as_shell_command_line(self):
         text = (
@@ -102,6 +107,23 @@ class AiOutputDisplayTests(unittest.TestCase):
         self.assertIn("<C>`Get-Content -Path smart_shell_agent.py -Raw`</C>", out)
         self.assertIn("<C>`powershell -ExecutionPolicy Bypass`</C>", out)
 
+    def test_bang_prefixed_powershell_command_with_inner_command_string_is_highlighted(self):
+        text = '!powershell -ExecutionPolicy Bypass -Command "Get-Content -Path smart_shell_agent.py -Raw"'
+        with patch("src.core.assistant_output_highlighter._ansi_bright_blue", side_effect=lambda s: f"<BB>{s}</BB>"), patch(
+            "src.core.assistant_output_highlighter._ansi_yellow", side_effect=lambda s: f"<Y>{s}</Y>"
+        ), patch("src.core.assistant_output_highlighter._ansi_cyan", side_effect=lambda s: f"<C>{s}</C>"), patch(
+            "src.core.assistant_output_highlighter._ansi_green", side_effect=lambda s: f"<G>{s}</G>"
+        ):
+            out = aoh.highlight_assistant_display_line(text)
+
+        self.assertIn("!<BB>powershell</BB>", out)
+        self.assertIn("<Y>-ExecutionPolicy</Y>", out)
+        self.assertIn("<Y>-Command</Y>", out)
+        self.assertIn('"<BB>Get-Content</BB>', out)
+        self.assertIn("<Y>-Path</Y>", out)
+        self.assertIn("<C>smart_shell_agent.py</C>", out)
+        self.assertIn("<Y>-Raw</Y>", out)
+
     def test_tool_call_summary_for_powershell_shell_only_shows_command(self):
         cmd = 'powershell -ExecutionPolicy Bypass -Command "Get-ChildItem -Force"'
         s = self.agent._tool_call_summary("shell", {"command": cmd, "force": True, "input": "x"})
@@ -109,19 +131,27 @@ class AiOutputDisplayTests(unittest.TestCase):
 
     def test_format_tool_call_feedback_line_uses_ran_and_default_bullet_color(self):
         with patch("src.smart_shell_agent._ansi_rgb", side_effect=lambda text, r, g, b: f"<RGB:{r},{g},{b}>{text}</RGB>"), patch(
-            "src.smart_shell_agent._ansi_bright_blue", side_effect=lambda s: f"<BB>{s}</BB>"
+            "src.smart_shell_agent.highlight_assistant_display_line", side_effect=lambda s: f"<H>{s}</H>"
         ):
             line = self.agent._format_tool_call_feedback_line("read", {"path": "a.txt"}, failed=False)
         self.assertTrue(line.startswith("<RGB:19,161,14>•</RGB> Ran "))
-        self.assertIn("<BB>read (path=a.txt)</BB>", line)
+        self.assertIn("<H>read (path=a.txt)</H>", line)
 
     def test_format_tool_call_feedback_line_switches_bullet_color_when_failed(self):
         with patch("src.smart_shell_agent._ansi_rgb", side_effect=lambda text, r, g, b: f"<RGB:{r},{g},{b}>{text}</RGB>"), patch(
-            "src.smart_shell_agent._ansi_bright_blue", side_effect=lambda s: f"<BB>{s}</BB>"
+            "src.smart_shell_agent.highlight_assistant_display_line", side_effect=lambda s: f"<H>{s}</H>"
         ):
             line = self.agent._format_tool_call_feedback_line("read", {"path": "a.txt"}, failed=True)
         self.assertTrue(line.startswith("<RGB:197,15,31>•</RGB> Ran "))
-        self.assertIn("<BB>read (path=a.txt)</BB>", line)
+        self.assertIn("<H>read (path=a.txt)</H>", line)
+
+    def test_format_direct_shell_command_feedback_line_uses_shared_highlighter(self):
+        with patch("src.smart_shell_agent._ansi_rgb", side_effect=lambda text, r, g, b: f"<RGB:{r},{g},{b}>{text}</RGB>"), patch(
+            "src.smart_shell_agent.highlight_assistant_display_line", side_effect=lambda s: f"<H>{s}</H>"
+        ):
+            line = self.agent._format_direct_shell_command_feedback_line("git status", failed=False)
+        self.assertTrue(line.startswith("<RGB:19,161,14>•</RGB> You ran "))
+        self.assertIn("<H>git status</H>", line)
 
     def test_repaint_tool_call_feedback_if_failed_uses_configured_up_lines(self):
         class _FakeStdout:

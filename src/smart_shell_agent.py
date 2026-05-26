@@ -37,6 +37,7 @@ from .core.config.config_env import resolve_string_values_in_data
 from .core.config.model_providers import parse_configured_models
 from .core.assistant_output_highlighter import (
     format_assistant_display_response,
+    highlight_assistant_display_line,
     normalize_display_text,
     strip_tool_json_blocks_for_display,
 )
@@ -53,13 +54,11 @@ from .policy.path_policy import PathPolicy
 from .core.console_utils import (
     _WorkingStatusTicker,
     _ansi_blue,
-    _ansi_cyan,
     _ansi_gray,
     _ansi_red,
     _ansi_yellow,
     _ansi_green,
     _ansi_rgb,
-    _ansi_bright_blue,
 )
 from .controllers.builtin_command_router import dispatch_builtin_command
 from .controllers.workspace_command_controller import (
@@ -1381,7 +1380,7 @@ class SmartShellAgent:
     ) -> str:
         summary = self._tool_call_summary(tool_name, args)
         bullet = _ansi_rgb("•", 197, 15, 31) if bool(failed) else _ansi_rgb("•", 19, 161, 14)
-        return f"{bullet} Ran {_ansi_bright_blue(summary)}"
+        return f"{bullet} Ran {highlight_assistant_display_line(summary)}"
 
     def _repaint_tool_call_feedback_if_failed(
         self,
@@ -1409,7 +1408,7 @@ class SmartShellAgent:
     def _format_direct_shell_command_feedback_line(self, command: str, failed: bool = False) -> str:
         cmd = str(command or "").replace("\r", " ").replace("\n", " ").strip()
         bullet = _ansi_rgb("•", 197, 15, 31) if bool(failed) else _ansi_rgb("•", 19, 161, 14)
-        return f"{bullet} You ran {_ansi_cyan(cmd)}"
+        return f"{bullet} You ran {highlight_assistant_display_line(cmd)}"
 
     def _repaint_direct_shell_command_feedback_if_failed(
         self,
