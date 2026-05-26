@@ -38,16 +38,16 @@ def dispatch_builtin_command(
             print("Exiting Smart Shell.")
         return True, True
 
-    if bl in ("cls", "clear screen"):
+    if bl == "clear screen":
         os.system("cls" if os_name == "nt" else "clear")
         agent._suppress_next_separator = True
         return True, False
 
     if bl == "clear":
-        print("Usage: /clear <screen|history|context>")
+        print("Usage: /clear <screen|input history|context>")
         return True, False
 
-    if bl == "clear history":
+    if bl == "clear input history":
         agent.history_manager.clear_history()
         if agent.input_handler is not None and hasattr(
             agent.input_handler, "reset_command_history"
