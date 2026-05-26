@@ -46,6 +46,27 @@ class SessionMemoryService:
         self._context_usage_refresh_inflight = False
         self._start_token_counter_warmup()
 
+    def _context_usage_state_key(self) -> str:
+        chat_id = str(getattr(self.agent, "active_chat_id", "") or "").strip()
+        task_id = str(getattr(self.agent, "_active_runtime_task_id", "") or "").strip()
+        hist = list(getattr(self.agent, "conversation_history", None) or [])
+        size = len(hist)
+        last_role = ""
+        last_content = ""
+        last_task_id = ""
+        if hist:
+            try:
+                last = hist[-1] if isinstance(hist[-1], dict) else {}
+            except Exception:
+                last = {}
+            if isinstance(last, dict):
+                last_role = str(last.get("role") or "").strip().lower()
+                last_content = str(last.get("content") or "")
+                if len(last_content) > 120:
+                    last_content = last_content[-120:]
+                last_task_id = str(last.get("task_id") or "").strip()
+        return f"{chat_id}|{task_id}|{size}|{last_role}|{last_task_id}|{last_content}"
+
     def _start_token_counter_warmup(self) -> None:
         with self._token_counter_lock:
             if self._token_counter_warmup_started:
@@ -847,9 +868,17 @@ class SessionMemoryService:
         self.agent._last_context_usage_percent = usage_pct
 
     def _persist_context_usage_snapshot(self) -> None:
+        persisted = False
+        try:
+            persist_fn = getattr(self.agent, "_persist_active_chat_usage_snapshot", None)
+            if callable(persist_fn):
+                persist_fn()
+                persisted = True
+        except Exception:
+            persisted = False
         try:
             sync_fn = getattr(self.agent, "_sync_active_chat_messages", None)
-            if callable(sync_fn):
+            if callable(sync_fn) and not persisted:
                 sync_fn()
         except Exception:
             pass
@@ -1072,12 +1101,24 @@ class SessionMemoryService:
         }
         return working, stats
 
-    def refresh_context_usage_snapshot(self, user_input_hint: str = "", context_hint: str = "") -> None:
+    def refresh_context_usage_snapshot(
+        self,
+        user_input_hint: str = "",
+        context_hint: str = "",
+        expected_chat_id: str = "",
+        expected_state_key: str = "",
+    ) -> None:
         """
         Refresh status-bar usage percentage from current chat/model state
         without invoking memory retrieval or LLM calls.
         """
         try:
+            expected = str(expected_chat_id or "").strip()
+            if expected:
+                current = str(getattr(self.agent, "active_chat_id", "") or "").strip()
+                if current != expected:
+                    return
+            expected_key = str(expected_state_key or "").strip() or self._context_usage_state_key()
             budgets = self._context_token_budgets()
             filtered_history = self._domain_filtered_history()
             history_messages, _stats = self._build_history_messages_by_budget(
@@ -1090,9 +1131,17 @@ class SessionMemoryService:
                 self._estimate_message_tokens(str(m.get("role") or ""), str(m.get("content") or ""))
                 for m in history_messages
             )
+            compose_prompt = getattr(self.agent, "_compose_system_prompt_snapshot", None)
+            if callable(compose_prompt):
+                try:
+                    system_prompt_snapshot = str(compose_prompt(include_tools=True) or "")
+                except Exception:
+                    system_prompt_snapshot = str(getattr(self.agent, "system_prompt", "") or "")
+            else:
+                system_prompt_snapshot = str(getattr(self.agent, "system_prompt", "") or "")
             sys_text = (
                 f"{str(getattr(self.agent, '_skills_routing_prefix', '') or '')}"
-                f"{str(getattr(self.agent, 'system_prompt', '') or '')}\n"
+                f"{system_prompt_snapshot}\n"
                 f"{self._domain_prompt_append()}"
                 f"当前 workspace 名称：{str(getattr(self.agent, 'workspace_name', '') or '')}\n"
                 f"当前 chat 名称：{str(getattr(self.agent, 'active_chat_name', '') or '')}\n"
@@ -1117,6 +1166,12 @@ class SessionMemoryService:
                 user_anchor += f"操作上下文: {str(context_hint)}\n"
             user_tokens = self._estimate_message_tokens("user", user_anchor)
             total_input_tokens = int(system_tokens + history_tokens + user_tokens)
+            if expected:
+                current = str(getattr(self.agent, "active_chat_id", "") or "").strip()
+                if current != expected:
+                    return
+            if expected_key and self._context_usage_state_key() != expected_key:
+                return
             self._store_context_usage_snapshot(
                 int(budgets.get("context_window") or DEFAULT_CONTEXT_WINDOW),
                 total_input_tokens,
@@ -1127,11 +1182,18 @@ class SessionMemoryService:
             pass
 
     def schedule_context_usage_refresh_async(
-        self, user_input_hint: str = "", context_hint: str = ""
+        self,
+        user_input_hint: str = "",
+        context_hint: str = "",
+        expected_chat_id: str = "",
     ) -> bool:
         """
         Recompute context usage in background to avoid blocking UI/input loop.
         """
+        target_chat_id = str(expected_chat_id or "").strip()
+        if not target_chat_id:
+            target_chat_id = str(getattr(self.agent, "active_chat_id", "") or "").strip()
+        target_state_key = self._context_usage_state_key()
         with self._context_usage_refresh_lock:
             if self._context_usage_refresh_inflight:
                 return False
@@ -1142,6 +1204,8 @@ class SessionMemoryService:
                 self.refresh_context_usage_snapshot(
                     user_input_hint=user_input_hint,
                     context_hint=context_hint,
+                    expected_chat_id=target_chat_id,
+                    expected_state_key=target_state_key,
                 )
             finally:
                 with self._context_usage_refresh_lock:
