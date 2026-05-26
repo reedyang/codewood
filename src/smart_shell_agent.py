@@ -998,8 +998,6 @@ class SmartShellAgent:
         operation_results = list(getattr(self, "operation_results", None) or [])
         tool_result_cursor = 0
         if not hist:
-            if not all_hist:
-                print("(No message history in the current chat)")
             self._show_separator_next_prompt = False
             return
         for idx, msg in enumerate(hist):
@@ -1887,13 +1885,23 @@ class SmartShellAgent:
         except Exception:
             print(out, end="")
 
+    def _should_record_internal_slash_execution_history(self, raw_user_command: str) -> bool:
+        cmd = str(raw_user_command or "").strip()
+        if not cmd:
+            return False
+        normalized = cmd.lower()
+        normalized = re.sub(r"\s+", " ", normalized)
+        if normalized in {"/chat reload", "/clear context", "/clear screen", "/cls"}:
+            return False
+        return True
+
     def _record_internal_slash_execution_history(
         self,
         raw_user_command: str,
         output_text: str,
     ) -> None:
         raw_cmd = str(raw_user_command or "").strip()
-        if not raw_cmd:
+        if not self._should_record_internal_slash_execution_history(raw_cmd):
             return
         user_content = self._build_internal_slash_user_history_content(raw_cmd)
         assistant_content = self._build_internal_slash_result_history_content(

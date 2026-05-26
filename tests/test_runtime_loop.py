@@ -10,6 +10,7 @@ from src.runtime.runtime_loop import (
     _format_startup_directory,
     _resolve_worked_summary_terminal_width,
     _sanitize_prompt_pollution,
+    _should_record_command_input_history,
     _shell_command_indicates_verification,
     _tool_change_and_verification_hints,
 )
@@ -69,6 +70,15 @@ class RuntimeLoopTests(unittest.TestCase):
     def test_sanitize_prompt_pollution_strips_multiple_fixed_prompts(self):
         cleaned = _sanitize_prompt_pollution("› › !git status", Path("D:/ws"))
         self.assertEqual(cleaned, "!git status")
+
+    def test_should_record_command_input_history_skips_chat_reload(self):
+        self.assertFalse(_should_record_command_input_history("/chat reload"))
+        self.assertFalse(_should_record_command_input_history("/CHAT   reload"))
+
+    def test_should_record_command_input_history_keeps_other_inputs(self):
+        self.assertTrue(_should_record_command_input_history("/chat list"))
+        self.assertTrue(_should_record_command_input_history("!git status"))
+        self.assertFalse(_should_record_command_input_history("   "))
 
     def test_format_worked_for_summary_line_fills_terminal_width(self):
         line = _format_worked_for_summary_line(elapsed_seconds=65, terminal_width=40)
