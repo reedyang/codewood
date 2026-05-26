@@ -158,6 +158,14 @@ def _build_minimal_verification_command(changed_files: List[str]) -> str:
 def _resolve_worked_summary_terminal_width(agent: Any, default: int = 80) -> int:
     width = max(20, int(default or 80))
     try:
+        fn2 = getattr(agent, "_terminal_columns_for_line_estimate", None)
+        if callable(fn2):
+            cols2 = int(fn2() or 0)
+            if cols2 > 0:
+                return max(20, cols2)
+    except Exception:
+        pass
+    try:
         fn = getattr(agent, "_terminal_columns_for_prompt_separator", None)
         if callable(fn):
             cols = int(fn(default=width) or 0)

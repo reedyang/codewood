@@ -1139,7 +1139,7 @@ class SmartShellAgent:
         else:
             elapsed = f"{minutes}m {seconds}s"
         head = f"─ Worked for {elapsed} "
-        width = max(20, int(terminal_width or self._terminal_columns_for_prompt_separator(default=80)))
+        width = max(20, int(terminal_width or self._terminal_columns_for_line_estimate()))
         if len(head) >= width:
             return head[:width]
         return head + ("─" * (width - len(head)))
