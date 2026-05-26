@@ -119,6 +119,7 @@ MODEL_TOOL_RESULT_HISTORY_PREFIX = "[MODEL_TOOL_RESULT]"
 CONVERSATION_INTERRUPTED_HISTORY_PREFIX = "[CONVERSATION_INTERRUPTED]"
 INTERNAL_SLASH_USER_HISTORY_PREFIX = "[INTERNAL_SLASH_USER_COMMAND]"
 INTERNAL_SLASH_RESULT_HISTORY_PREFIX = "[INTERNAL_SLASH_RESULT]"
+TASK_WORKED_SUMMARY_HISTORY_PREFIX = "[TASK_WORKED_SUMMARY]"
 
 # 根据操作系统选择合适的输入处理器
 import platform
@@ -1065,6 +1066,14 @@ class SmartShellAgent:
                         str(slash_result.get("output") or "")
                     )
                     continue
+                worked_summary = self._parse_task_worked_summary_history_content(content)
+                if worked_summary is not None:
+                    try:
+                        elapsed_seconds = int(worked_summary.get("elapsed_seconds") or 0)
+                    except Exception:
+                        elapsed_seconds = 0
+                    self._print_task_worked_summary_line(elapsed_seconds)
+                    continue
                 model_tool_result = self._parse_model_tool_result_history_content(content)
                 if model_tool_result is not None:
                     model_tool = str(model_tool_result.get("tool") or "").strip()
@@ -1121,6 +1130,54 @@ class SmartShellAgent:
         except Exception:
             print(_ansi_gray("-" * width))
         print("")
+
+    def _format_task_worked_summary_line(self, elapsed_seconds: int, terminal_width: Optional[int] = None) -> str:
+        total = max(0, int(elapsed_seconds or 0))
+        minutes, seconds = divmod(total, 60)
+        if minutes <= 0:
+            elapsed = f"{seconds}s"
+        else:
+            elapsed = f"{minutes}m {seconds}s"
+        head = f"─ Worked for {elapsed} "
+        width = max(20, int(terminal_width or self._terminal_columns_for_prompt_separator(default=80)))
+        if len(head) >= width:
+            return head[:width]
+        return head + ("─" * (width - len(head)))
+
+    def _print_task_worked_summary_line(self, elapsed_seconds: int) -> None:
+        line = self._format_task_worked_summary_line(elapsed_seconds)
+        print("")
+        print(_ansi_gray(line))
+        print("")
+
+    def _build_task_worked_summary_history_content(self, elapsed_seconds: int) -> str:
+        payload = {
+            "kind": "task_worked_summary",
+            "elapsed_seconds": max(0, int(elapsed_seconds or 0)),
+            "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        }
+        return f"{TASK_WORKED_SUMMARY_HISTORY_PREFIX}{json.dumps(payload, ensure_ascii=False)}"
+
+    def _parse_task_worked_summary_history_content(self, content: str) -> Optional[Dict[str, Any]]:
+        text = str(content or "")
+        if not text.startswith(TASK_WORKED_SUMMARY_HISTORY_PREFIX):
+            return None
+        body = text[len(TASK_WORKED_SUMMARY_HISTORY_PREFIX):].strip()
+        if not body:
+            return None
+        try:
+            payload = json.loads(body)
+        except Exception:
+            return None
+        if not isinstance(payload, dict):
+            return None
+        if str(payload.get("kind") or "").strip() != "task_worked_summary":
+            return None
+        return payload
+
+    def _record_task_worked_summary_history(self, elapsed_seconds: int) -> None:
+        content = self._build_task_worked_summary_history_content(elapsed_seconds)
+        self._append_chat_message("assistant", content)
 
     def _rewrite_previous_prompt_as_user(self, user_text: str) -> None:
         """

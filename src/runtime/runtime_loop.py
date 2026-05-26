@@ -155,6 +155,64 @@ def _build_minimal_verification_command(changed_files: List[str]) -> str:
     return "请先执行最小验证（相关测试、编译或静态检查）"
 
 
+def _resolve_worked_summary_terminal_width(agent: Any, default: int = 80) -> int:
+    width = max(20, int(default or 80))
+    try:
+        fn = getattr(agent, "_terminal_columns_for_prompt_separator", None)
+        if callable(fn):
+            cols = int(fn(default=width) or 0)
+            if cols > 0:
+                return max(20, cols)
+    except Exception:
+        pass
+    try:
+        cols2 = int(getattr(os.get_terminal_size(), "columns", 0) or 0)
+        if cols2 > 0:
+            return max(20, cols2)
+    except Exception:
+        pass
+    return width
+
+
+def _format_worked_for_summary_line(elapsed_seconds: int, terminal_width: int) -> str:
+    total = max(0, int(elapsed_seconds or 0))
+    minutes, seconds = divmod(total, 60)
+    if minutes <= 0:
+        elapsed = f"{seconds}s"
+    else:
+        elapsed = f"{minutes}m {seconds}s"
+    head = f"─ Worked for {elapsed} "
+    width = max(20, int(terminal_width or 80))
+    if len(head) >= width:
+        return head[:width]
+    return head + ("─" * (width - len(head)))
+
+
+def _print_worked_for_summary_line(agent: Any, elapsed_seconds: int) -> None:
+    printer = getattr(agent, "_print_task_worked_summary_line", None)
+    if callable(printer):
+        try:
+            printer(int(max(0, int(elapsed_seconds or 0))))
+        except Exception:
+            pass
+    else:
+        width = _resolve_worked_summary_terminal_width(agent, default=80)
+        line = _format_worked_for_summary_line(elapsed_seconds, width)
+        try:
+            sys.stdout.write(f"\n{_ansi_gray(line)}\n\n")
+            sys.stdout.flush()
+        except Exception:
+            print("")
+            print(_ansi_gray(line))
+            print("")
+    recorder = getattr(agent, "_record_task_worked_summary_history", None)
+    if callable(recorder):
+        try:
+            recorder(int(max(0, int(elapsed_seconds or 0))))
+        except Exception:
+            pass
+
+
 def _emit_flow_log(message: str) -> None:
     msg = f"[Flow] {message}"
     try:
@@ -936,6 +994,8 @@ def run_agent_loop(agent: Any):
             # Natural-language turn: rewrite prompt line as chat-style user line.
             in_task_execution = True
             self._in_task_execution = True
+            task_started_at = time.monotonic()
+            worked_summary_emitted = False
             turn_send_started_at = time.perf_counter()
             _emit_flow_log(
                 f"用户回车发送: chars={len(task_user_input)}, active_chat={getattr(self, 'active_chat_id', '')}"
@@ -1425,6 +1485,12 @@ def run_agent_loop(agent: Any):
                     break
 
                 if result.get("finished"):
+                    if (not worked_summary_emitted) and tool_round > 1:
+                        _print_worked_for_summary_line(
+                            self,
+                            int(max(0.0, time.monotonic() - float(task_started_at))),
+                        )
+                        worked_summary_emitted = True
                     if (
                         _is_software_development_domain(
                             list(getattr(self, "_active_runtime_task_domains", None) or [])
@@ -1485,6 +1551,12 @@ def run_agent_loop(agent: Any):
                     )
                     continue
                 if bool(result.get("needs_user_input", False)) and str(result.get("input_type", "")).strip() == "supplement":
+                    if (not worked_summary_emitted) and tool_name == "ask_more_info":
+                        _print_worked_for_summary_line(
+                            self,
+                            int(max(0.0, time.monotonic() - float(task_started_at))),
+                        )
+                        worked_summary_emitted = True
                     q = str(result.get("question") or "").strip() or "Please provide supplementary information:"
                     print("🙋 Supplementary information is required before continuing.")
                     print(f"❓ {q}")

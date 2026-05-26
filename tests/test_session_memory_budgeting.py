@@ -12,6 +12,7 @@ DIRECT_SHELL_RESULT_HISTORY_PREFIX = "[DIRECT_SHELL_RESULT]"
 CONVERSATION_INTERRUPTED_HISTORY_PREFIX = "[CONVERSATION_INTERRUPTED]"
 INTERNAL_SLASH_USER_HISTORY_PREFIX = "[INTERNAL_SLASH_USER_COMMAND]"
 INTERNAL_SLASH_RESULT_HISTORY_PREFIX = "[INTERNAL_SLASH_RESULT]"
+TASK_WORKED_SUMMARY_HISTORY_PREFIX = "[TASK_WORKED_SUMMARY]"
 
 
 class _FakeAgent:
@@ -199,6 +200,26 @@ class _FakeAgent:
             return None
         return payload if isinstance(payload, dict) and str(payload.get("kind") or "") == "internal_slash_result" else None
 
+    def _build_task_worked_summary_history_content(self, elapsed_seconds: int) -> str:
+        payload = {
+            "kind": "task_worked_summary",
+            "elapsed_seconds": max(0, int(elapsed_seconds or 0)),
+        }
+        return f"{TASK_WORKED_SUMMARY_HISTORY_PREFIX}{json.dumps(payload, ensure_ascii=False)}"
+
+    def _parse_task_worked_summary_history_content(self, content: str):
+        text = str(content or "")
+        if not text.startswith(TASK_WORKED_SUMMARY_HISTORY_PREFIX):
+            return None
+        body = text[len(TASK_WORKED_SUMMARY_HISTORY_PREFIX):].strip()
+        if not body:
+            return None
+        try:
+            payload = json.loads(body)
+        except Exception:
+            return None
+        return payload if isinstance(payload, dict) and str(payload.get("kind") or "") == "task_worked_summary" else None
+
 
 class SessionMemoryBudgetingTests(unittest.TestCase):
     def test_refresh_context_usage_snapshot_persists_chat_state_immediately(self):
@@ -363,6 +384,19 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
         self.assertNotIn("/chat reload", history_joined)
         self.assertNotIn("reloaded", history_joined)
         self.assertIn("用户原始需求: 最初需求：修复构建", str(messages[-1]["content"]))
+
+    def test_task_worked_summary_history_is_excluded_from_model_context(self):
+        agent = _FakeAgent()
+        agent.conversation_history = [
+            {"role": "user", "content": "最初需求：修复构建"},
+            {"role": "assistant", "content": "收到"},
+            {"role": "assistant", "content": agent._build_task_worked_summary_history_content(95)},
+        ]
+        svc = SessionMemoryService(agent)
+        messages, _ = svc.build_regular_task_messages("继续执行")
+        history_joined = "\n".join(str(m.get("content") or "") for m in messages[1:-1])
+        self.assertNotIn("TASK_WORKED_SUMMARY", history_joined)
+        self.assertNotIn("Worked for", history_joined)
 
     def test_original_requirement_falls_back_to_current_input(self):
         agent = _FakeAgent()
