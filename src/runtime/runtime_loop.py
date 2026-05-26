@@ -1372,10 +1372,18 @@ def run_agent_loop(agent: Any):
                 if self._consume_task_interrupt_requested():
                     raise KeyboardInterrupt
                 result = self.execute_tool_call(tool_name, args)
+                repaint_up_lines = 1
+                if tool_name == "shell":
+                    try:
+                        rendered_lines = int(result.get("display_rendered_lines", 0) or 0)
+                    except Exception:
+                        rendered_lines = 0
+                    repaint_up_lines = max(1, rendered_lines + 1)
                 self._repaint_tool_call_feedback_if_failed(
                     tool_name,
                     args,
                     failed=not bool(result.get("success", True)),
+                    up_lines=repaint_up_lines,
                 )
                 no_tool_rounds = 0
                 self.operation_results.append({
@@ -1383,10 +1391,13 @@ def run_agent_loop(agent: Any):
                     "result": result,
                     "timestamp": datetime.now().isoformat()
                 })
-                try:
-                    self._refresh_chat_history_after_tool_output()
-                except Exception:
-                    pass
+                if tool_name == "shell":
+                    recorder = getattr(self, "_record_model_tool_execution_history", None)
+                    if callable(recorder):
+                        try:
+                            recorder(tool_name, args, result if isinstance(result, dict) else {})
+                        except Exception:
+                            pass
                 last_result = result
                 is_first_round = False
                 if tool_name == "apply_patch" and (not bool(result.get("success", False))):

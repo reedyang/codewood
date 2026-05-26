@@ -107,6 +107,35 @@ class AiOutputDisplayTests(unittest.TestCase):
         self.assertTrue(line.startswith("<RGB:197,15,31>•</RGB> Ran "))
         self.assertIn("<BB>read (path=a.txt)</BB>", line)
 
+    def test_repaint_tool_call_feedback_if_failed_uses_configured_up_lines(self):
+        class _FakeStdout:
+            def __init__(self):
+                self.writes = []
+
+            def isatty(self):
+                return True
+
+            def write(self, text):
+                self.writes.append(str(text))
+                return len(str(text))
+
+            def flush(self):
+                return None
+
+        fake_stdout = _FakeStdout()
+        with (
+            patch("src.smart_shell_agent.sys.stdout", fake_stdout),
+            patch.object(self.agent, "_format_tool_call_feedback_line", return_value="FAILED-LINE"),
+        ):
+            self.agent._repaint_tool_call_feedback_if_failed(
+                "shell",
+                {"command": "test"},
+                failed=True,
+                up_lines=3,
+            )
+        out = "".join(fake_stdout.writes)
+        self.assertIn("\x1b[3A\r\x1b[2KFAILED-LINE", out)
+
 
 if __name__ == "__main__":
     unittest.main()

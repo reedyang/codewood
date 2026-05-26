@@ -32,6 +32,7 @@ class _DummyAgent:
         self.prompt_result = True
         self.allowlist_hit = False
         self.reset_calls = 0
+        self.auto_hide_register_calls = 0
         self._allowlist_shell_paths = {}
         self._allowlist_shell_exes = set()
         self._confirm_allowlist_salt = ""
@@ -56,6 +57,7 @@ class _DummyAgent:
         return True
 
     def _register_shell_output_for_auto_hide(self, _stdout_text, _stderr_text=""):
+        self.auto_hide_register_calls += 1
         return None
 
     def _shell_execution_cwd(self):
@@ -560,6 +562,19 @@ class ShellCommandExecutionGuardsTests(unittest.TestCase):
         self.assertTrue(result.get("success", False))
         self.assertIn("... omitted", "".join(writes))
         self.assertNotIn("line1\n", "".join(writes))
+        popen_mock.assert_not_called()
+
+    def test_non_interactive_mode_does_not_register_auto_hide_lines(self):
+        agent = _DummyAgent()
+        command = 'python -c "print(1)"'
+
+        with patch("subprocess.run", return_value=_FakeCompleted("line1\nline2\n")), patch(
+            "src.actions.command_actions._dynamic_tail_line_limit", return_value=5
+        ), patch("subprocess.Popen") as popen_mock:
+            result = action_shell_command(agent, command, confirmed=False, interactive=False, input_data=None)
+
+        self.assertTrue(result.get("success", False))
+        self.assertEqual(agent.auto_hide_register_calls, 0)
         popen_mock.assert_not_called()
 
 
