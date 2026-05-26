@@ -518,6 +518,12 @@ class ChatStateManager:
                 pass
             if persist:
                 self.save_chat_state()
+        try:
+            refresh_usage = getattr(self._agent, "_refresh_status_context_usage_snapshot", None)
+            if callable(refresh_usage):
+                refresh_usage()
+        except Exception:
+            pass
         if clear_screen:
             os.system("cls" if os.name == "nt" else "clear")
         if print_history:

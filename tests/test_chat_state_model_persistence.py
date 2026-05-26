@@ -82,7 +82,7 @@ class ChatStateModelPersistenceTests(unittest.TestCase):
             msg = manager.activate_chat("chat-1", announce=False, clear_screen=False, print_history=False)
             self.assertEqual(msg, "")
             self.assertEqual(agent.applied_chat_model_calls, 1)
-            self.assertEqual(agent.refresh_status_usage_calls, 0)
+            self.assertEqual(agent.refresh_status_usage_calls, 1)
             self.assertEqual(agent._last_context_usage_percent, 44)
             self.assertEqual(agent._last_context_input_tokens, 1234)
             self.assertEqual(agent._last_context_window, 64000)
