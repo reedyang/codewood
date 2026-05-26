@@ -4,7 +4,49 @@ import json
 import re
 from typing import Callable, List, Pattern, Tuple
 
-from .console_utils import _ansi_bright_blue, _ansi_cyan, _ansi_gray, _ansi_green, _ansi_yellow
+from .console_utils import _ansi_bright_blue, _ansi_cyan, _ansi_gray, _ansi_green, _ansi_rgb, _ansi_yellow
+
+
+_POWERSHELL_OPERATOR_TOKENS = {
+    "-eq",
+    "-ne",
+    "-gt",
+    "-ge",
+    "-lt",
+    "-le",
+    "-like",
+    "-notlike",
+    "-match",
+    "-notmatch",
+    "-replace",
+    "-contains",
+    "-notcontains",
+    "-in",
+    "-notin",
+    "-and",
+    "-or",
+    "-xor",
+    "-not",
+    "-is",
+    "-isnot",
+    "-as",
+}
+
+
+def _ansi_ps_command(text: str) -> str:
+    return _ansi_rgb(text, 97, 175, 239)
+
+
+def _ansi_ps_parameter(text: str) -> str:
+    return _ansi_rgb(text, 198, 120, 221)
+
+
+def _ansi_ps_operator(text: str) -> str:
+    return _ansi_rgb(text, 224, 108, 117)
+
+
+def _ansi_ps_pipe(text: str) -> str:
+    return _ansi_rgb(text, 97, 175, 239)
 
 
 def strip_tool_json_blocks_for_display(text: str) -> str:
@@ -319,6 +361,7 @@ def _highlight_shell_command_line(text: str) -> str:
     if not text:
         return text
 
+    is_powershell = _looks_like_powershell_command_line(text)
     parts = re.split(r"(\s+)", text)
     out: List[str] = []
     first_token_seen = False
@@ -344,6 +387,7 @@ def _highlight_shell_command_line(text: str) -> str:
                     inner,
                     command_first_token_seen,
                     command_prev_plain,
+                    is_powershell=True,
                 )
                 out.append(colored_inner)
             if ended:
@@ -353,10 +397,15 @@ def _highlight_shell_command_line(text: str) -> str:
             prev_plain = lower
             continue
         if in_quoted_string:
-            ended = token.endswith(quoted_char)
-            if ended:
-                inner = token[:-1]
-                out.append(_ansi_green(inner) + quoted_char)
+            end_idx = _find_unescaped_quote_index(token, quoted_char)
+            if end_idx >= 0:
+                inner = token[:end_idx]
+                tail = token[end_idx + 1 :]
+                if inner:
+                    out.append(_ansi_green(inner))
+                out.append(quoted_char)
+                if tail:
+                    out.append(tail)
                 in_quoted_string = False
                 quoted_char = ""
             else:
@@ -377,6 +426,7 @@ def _highlight_shell_command_line(text: str) -> str:
                         inner,
                         command_first_token_seen,
                         command_prev_plain,
+                        is_powershell=True,
                     )
                     out.append(colored_inner)
                 if ended:
@@ -386,9 +436,21 @@ def _highlight_shell_command_line(text: str) -> str:
                     command_quote = quote
                 prev_plain = lower
                 continue
-        if token[:1] in {'"', "'"} and len(token) > 1 and not token.endswith(token[0]):
-            quoted_char = token[0]
-            out.append(quoted_char + _ansi_green(token[1:]))
+        if token[:1] in {'"', "'"} and len(token) > 1:
+            quoted_char_candidate = token[0]
+            body = token[1:]
+            end_idx = _find_unescaped_quote_index(body, quoted_char_candidate)
+            if end_idx >= 0:
+                inner = body[:end_idx]
+                tail = body[end_idx + 1 :]
+                out.append(quoted_char_candidate + _ansi_green(inner) + quoted_char_candidate)
+                if tail:
+                    out.append(tail)
+                first_token_seen = True
+                prev_plain = lower
+                continue
+            quoted_char = quoted_char_candidate
+            out.append(quoted_char + _ansi_green(body))
             in_quoted_string = True
             first_token_seen = True
             prev_plain = lower
@@ -397,25 +459,42 @@ def _highlight_shell_command_line(text: str) -> str:
             token,
             first_token_seen,
             prev_plain,
+            is_powershell=is_powershell,
         )
         out.append(colored)
     return "".join(out)
 
 
-def _highlight_shell_token(token: str, first_token_seen: bool, prev_plain: str) -> Tuple[str, bool, str]:
+def _highlight_shell_token(
+    token: str,
+    first_token_seen: bool,
+    prev_plain: str,
+    is_powershell: bool = False,
+) -> Tuple[str, bool, str]:
     plain = str(token or "").strip("\"'")
     lower = plain.lower()
     if token in {"|", "||", "&&", ";"}:
+        if is_powershell and token == "|":
+            return _ansi_ps_pipe(token), False, lower
         return _ansi_yellow(token), False, lower
     if not first_token_seen:
         if token.startswith("!") and len(token) > 1:
-            return "!" + _ansi_bright_blue(token[1:]), True, lower
+            colored_first = _ansi_ps_command(token[1:]) if is_powershell else _ansi_bright_blue(token[1:])
+            return "!" + colored_first, True, lower
+        if is_powershell:
+            return _ansi_ps_command(token), True, lower
         return _ansi_bright_blue(token), True, lower
+    if is_powershell and lower in _POWERSHELL_OPERATOR_TOKENS:
+        return _ansi_ps_operator(token), first_token_seen, lower
+    if is_powershell and re.fullmatch(r"-[A-Za-z][A-Za-z0-9_-]*", plain):
+        return _ansi_ps_parameter(token), first_token_seen, lower
     if token.startswith(("--", "-")) and not token.startswith(("http://", "https://")):
         return _ansi_yellow(token), first_token_seen, lower
     if prev_plain == "-m":
         return _ansi_bright_blue(token), first_token_seen, lower
     if _looks_like_powershell_cmdlet(plain):
+        if is_powershell:
+            return _ansi_ps_command(token), first_token_seen, lower
         return _ansi_bright_blue(token), first_token_seen, lower
     if lower in {
         "install",
@@ -446,6 +525,37 @@ def _highlight_shell_token(token: str, first_token_seen: bool, prev_plain: str) 
     if _looks_like_path_or_url(plain) or _looks_like_env_var(plain):
         return _ansi_cyan(token), first_token_seen, lower
     return token, first_token_seen, lower
+
+
+def _looks_like_powershell_command_line(text: str) -> bool:
+    s = str(text or "").strip()
+    if not s:
+        return False
+    if re.search(r"(?i)\b(?:powershell|pwsh)(?:\.exe)?\b", s):
+        return True
+    for raw in re.findall(r'(?:\"[^\"]*\"|\'[^\']*\'|\S+)', s):
+        tok = raw.strip("\"'")
+        tok = re.sub(r"^[\(\[\{]+", "", tok)
+        tok = re.sub(r"[\)\]\},;]+$", "", tok)
+        if _looks_like_powershell_cmdlet(tok):
+            return True
+    return False
+
+
+def _find_unescaped_quote_index(text: str, quote_char: str) -> int:
+    if not text or quote_char not in {'"', "'"}:
+        return -1
+    escaped = False
+    for i, ch in enumerate(text):
+        if escaped:
+            escaped = False
+            continue
+        if ch == "\\":
+            escaped = True
+            continue
+        if ch == quote_char:
+            return i
+    return -1
 
 
 def _looks_like_path_or_url(text: str) -> bool:
