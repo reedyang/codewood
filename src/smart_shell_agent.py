@@ -1932,7 +1932,7 @@ class SmartShellAgent:
             return False
         normalized = cmd.lower()
         normalized = re.sub(r"\s+", " ", normalized)
-        if normalized in {"/chat reload", "/clear context", "/clear screen", "/cls"}:
+        if normalized in {"/chat reload", "/clear context", "/clear screen"}:
             return False
         return True
 
@@ -3974,8 +3974,8 @@ class SmartShellAgent:
         print("=" * 80)
         print("\nBuilt-in commands:")
         print("  /exit, /quit")
-        print("  /cls, /clear screen")
-        print("  /clear history")
+        print("  /clear screen")
+        print("  /clear input history")
         print("  /clear context")
         print("  /help")
         print("  /model [<model_provider>:<name>]")

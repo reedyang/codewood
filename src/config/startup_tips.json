@@ -69,8 +69,8 @@
       "highlights": ["/clear context"]
     },
     {
-      "text": "Use /clear history to clear terminal input history.",
-      "highlights": ["/clear history"]
+      "text": "Use /clear input history to clear terminal input history.",
+      "highlights": ["/clear input history"]
     },
     {
       "text": "Use /mcp status to inspect MCP server health and loading state.",

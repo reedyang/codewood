@@ -310,7 +310,7 @@ class PromptSeparatorBehaviorTests(unittest.TestCase):
             )
         mock_append.assert_not_called()
 
-    def test_record_internal_slash_execution_history_skips_clear_context_and_cls(self):
+    def test_record_internal_slash_execution_history_skips_clear_context_and_clear_screen(self):
         agent = self._build_agent()
         with patch.object(agent, "_append_chat_message") as mock_append:
             agent._record_internal_slash_execution_history(
@@ -318,7 +318,7 @@ class PromptSeparatorBehaviorTests(unittest.TestCase):
                 output_text="should-not-be-recorded\n",
             )
             agent._record_internal_slash_execution_history(
-                raw_user_command="/cls",
+                raw_user_command="/clear screen",
                 output_text="should-not-be-recorded\n",
             )
         mock_append.assert_not_called()

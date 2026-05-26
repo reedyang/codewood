@@ -537,14 +537,14 @@ def run_agent_loop(agent: Any):
                             self._save_current_workspace_position()
                             break
                         # clear screen
-                        if bl == 'cls' or bl == 'clear screen':
+                        if bl == 'clear screen':
                             os.system('cls' if os_name == 'nt' else 'clear')
                             self._suppress_next_separator = True
                             continue
                         if bl == "clear":
-                            print("Usage: /clear <screen|history|context>")
+                            print("Usage: /clear <screen|input history|context>")
                             continue
-                        if bl == 'clear history':
+                        if bl == 'clear input history':
                             self.history_manager.clear_history()
                             if self.input_handler is not None and hasattr(
                                 self.input_handler, "reset_command_history"
