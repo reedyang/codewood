@@ -1492,20 +1492,28 @@ class SmartShellAgent:
         chunks: List[str] = []
         current: List[str] = []
         current_w = 0
+        active_sgr = ""
         i = 0
         n = len(raw)
         while i < n:
             if raw[i] == "\x1b":
                 m = ANSI_ESCAPE_RE.match(raw, i)
                 if m:
-                    current.append(m.group(0))
+                    seq = m.group(0)
+                    current.append(seq)
+                    if seq.endswith("m") and seq.startswith("\x1b["):
+                        codes = seq[2:-1]
+                        if (not codes) or codes == "0":
+                            active_sgr = ""
+                        else:
+                            active_sgr = seq
                     i = m.end()
                     continue
             ch = raw[i]
             ch_w = cls._feedback_char_display_width(ch)
-            if current and (current_w + ch_w > limit):
+            if current_w > 0 and (current_w + ch_w > limit):
                 chunks.append("".join(current))
-                current = []
+                current = [active_sgr] if active_sgr else []
                 current_w = 0
                 continue
             current.append(ch)
