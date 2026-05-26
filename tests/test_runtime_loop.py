@@ -13,6 +13,7 @@ from src.runtime.runtime_loop import (
     _sync_command_input_history,
     _should_record_command_input_history,
     _shell_command_indicates_verification,
+    _try_record_user_task_message,
     _tool_change_and_verification_hints,
 )
 
@@ -173,6 +174,32 @@ class RuntimeLoopTests(unittest.TestCase):
 
         width = _resolve_worked_summary_terminal_width(_Agent(), default=80)
         self.assertEqual(width, 123)
+
+    def test_try_record_user_task_message_records_once_when_not_recorded(self):
+        class _Agent:
+            def __init__(self):
+                self.calls = []
+
+            def _append_chat_message(self, role, content):
+                self.calls.append((role, content))
+
+        agent = _Agent()
+        recorded = _try_record_user_task_message(agent, "  fix build  ", already_recorded=False)
+        self.assertTrue(recorded)
+        self.assertEqual(agent.calls, [("user", "fix build")])
+
+    def test_try_record_user_task_message_skips_when_already_recorded(self):
+        class _Agent:
+            def __init__(self):
+                self.calls = []
+
+            def _append_chat_message(self, role, content):
+                self.calls.append((role, content))
+
+        agent = _Agent()
+        recorded = _try_record_user_task_message(agent, "fix build", already_recorded=True)
+        self.assertTrue(recorded)
+        self.assertEqual(agent.calls, [])
 
 
 if __name__ == "__main__":
