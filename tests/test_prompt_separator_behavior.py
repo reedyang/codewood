@@ -301,6 +301,37 @@ class PromptSeparatorBehaviorTests(unittest.TestCase):
         self.assertIn("› /chat reload", joined)
         mock_slash_out.assert_called_once_with("line-1\nline-2\n")
 
+    def test_record_internal_slash_execution_history_skips_chat_reload(self):
+        agent = self._build_agent()
+        with patch.object(agent, "_append_chat_message") as mock_append:
+            agent._record_internal_slash_execution_history(
+                raw_user_command="/chat reload",
+                output_text="should-not-be-recorded\n",
+            )
+        mock_append.assert_not_called()
+
+    def test_record_internal_slash_execution_history_skips_clear_context_and_cls(self):
+        agent = self._build_agent()
+        with patch.object(agent, "_append_chat_message") as mock_append:
+            agent._record_internal_slash_execution_history(
+                raw_user_command="/clear context",
+                output_text="should-not-be-recorded\n",
+            )
+            agent._record_internal_slash_execution_history(
+                raw_user_command="/cls",
+                output_text="should-not-be-recorded\n",
+            )
+        mock_append.assert_not_called()
+
+    def test_record_internal_slash_execution_history_records_other_commands(self):
+        agent = self._build_agent()
+        with patch.object(agent, "_append_chat_message") as mock_append:
+            agent._record_internal_slash_execution_history(
+                raw_user_command="/chat list",
+                output_text="listed\n",
+            )
+        self.assertEqual(mock_append.call_count, 2)
+
     def test_chat_history_replays_task_worked_summary_line(self):
         agent = self._build_agent()
         agent.active_chat_name = "Demo Chat"

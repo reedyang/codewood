@@ -251,6 +251,20 @@ def _sanitize_prompt_pollution(text: str, work_directory: Any) -> str:
     return cleaned
 
 
+def _should_record_command_input_history(user_input: str) -> bool:
+    text = str(user_input or "").strip()
+    if not text:
+        return False
+    if not text.startswith("/"):
+        return True
+
+    body = text[1:].strip().lower()
+    body = re.sub(r"\s+", " ", body)
+    if body == "chat reload":
+        return False
+    return True
+
+
 def _format_startup_directory(workspace_dir: Any) -> str:
     raw = str(workspace_dir or "")
     if not raw:
@@ -422,8 +436,11 @@ def run_agent_loop(agent: Any):
         
             # 保存到历史记录（非空输入）
             if user_input.strip():
-                self.history_manager.add_entry(user_input)
+                should_record_input_history = _should_record_command_input_history(user_input)
+                if should_record_input_history:
+                    self.history_manager.add_entry(user_input)
                 # 同步输入处理器内存历史（如 prompt_toolkit），确保上下键与持久化去重结果一致。
+                # 即使本次输入被跳过，也要重置以移除输入框会话级临时历史。
                 if self.input_handler is not None and hasattr(
                     self.input_handler, "reset_command_history"
                 ):

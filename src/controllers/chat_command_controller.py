@@ -70,20 +70,33 @@ def handle_chat_builtin_command(agent: Any, builtin_line: str) -> bool:
         if not current_chat_id:
             print("❌ There is no active chat to reload")
             return True
-        # Required UX order:
-        # 1) clear terminal 2) print startup overview 3) reload current chat history.
-        _clear_terminal_screen()
-        _print_startup_overview_safe(agent)
         agent._load_chat_state()
         reload_result = agent._activate_chat(
             current_chat_id,
             announce=False,
             clear_screen=False,
-            print_history=True,
+            print_history=False,
         )
         if reload_result:
             print(reload_result)
             return True
+        try:
+            remember = getattr(agent, "_remember_active_chat_history_first_visible_index", None)
+            if callable(remember):
+                remember(0)
+        except Exception:
+            pass
+        resize_reload = getattr(agent, "_reload_chat_history_from_anchor_on_resize", None)
+        if callable(resize_reload):
+            resize_reload()
+            return True
+        # Fallback: keep historical UX order when shared reload helper is unavailable.
+        _clear_terminal_screen()
+        _print_startup_overview_safe(agent)
+        try:
+            agent._print_chat_history(start_index=0)
+        except Exception:
+            agent._print_chat_history()
         return True
     if sub == "new":
         name = " ".join(parts[2:]).strip() if len(parts) > 2 else "New Chat"
