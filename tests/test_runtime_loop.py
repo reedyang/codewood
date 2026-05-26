@@ -82,7 +82,18 @@ class RuntimeLoopTests(unittest.TestCase):
         self.assertTrue(line.startswith("─ Worked for 59s "))
         self.assertNotIn("m ", line)
 
-    def test_resolve_worked_summary_terminal_width_prefers_agent_width(self):
+    def test_resolve_worked_summary_terminal_width_prefers_line_estimate(self):
+        class _Agent:
+            def _terminal_columns_for_line_estimate(self):
+                return 124
+
+            def _terminal_columns_for_prompt_separator(self, default=80):
+                return 123
+
+        width = _resolve_worked_summary_terminal_width(_Agent(), default=80)
+        self.assertEqual(width, 124)
+
+    def test_resolve_worked_summary_terminal_width_falls_back_to_prompt_separator(self):
         class _Agent:
             def _terminal_columns_for_prompt_separator(self, default=80):
                 return 123
