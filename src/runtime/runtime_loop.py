@@ -265,6 +265,36 @@ def _should_record_command_input_history(user_input: str) -> bool:
     return True
 
 
+def _sync_command_input_history(agent: Any, user_input: str) -> None:
+    """
+    Sync persisted and in-memory command history after each non-empty input.
+    - Normal commands: record with de-duplication (move to latest).
+    - Skipped commands (e.g. /chat reload): if already present in history,
+      bump recency by moving the existing entry to latest position.
+    """
+    text = str(user_input or "").strip()
+    if not text:
+        return
+
+    should_record = _should_record_command_input_history(text)
+    if should_record:
+        agent.history_manager.add_entry(text)
+    else:
+        try:
+            existing = list(agent.history_manager.get_all_history() or [])
+        except Exception:
+            existing = []
+        if text in existing:
+            agent.history_manager.add_entry(text)
+
+    if agent.input_handler is not None and hasattr(
+        agent.input_handler, "reset_command_history"
+    ):
+        agent.input_handler.reset_command_history(
+            agent.history_manager.get_all_history()
+        )
+
+
 def _format_startup_directory(workspace_dir: Any) -> str:
     raw = str(workspace_dir or "")
     if not raw:
@@ -436,17 +466,7 @@ def run_agent_loop(agent: Any):
         
             # 保存到历史记录（非空输入）
             if user_input.strip():
-                should_record_input_history = _should_record_command_input_history(user_input)
-                if should_record_input_history:
-                    self.history_manager.add_entry(user_input)
-                # 同步输入处理器内存历史（如 prompt_toolkit），确保上下键与持久化去重结果一致。
-                # 即使本次输入被跳过，也要重置以移除输入框会话级临时历史。
-                if self.input_handler is not None and hasattr(
-                    self.input_handler, "reset_command_history"
-                ):
-                    self.input_handler.reset_command_history(
-                        self.history_manager.get_all_history()
-                    )
+                _sync_command_input_history(self, user_input)
 
             stripped_in = user_input.strip()
             if not stripped_in:

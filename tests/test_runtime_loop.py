@@ -10,6 +10,7 @@ from src.runtime.runtime_loop import (
     _format_startup_directory,
     _resolve_worked_summary_terminal_width,
     _sanitize_prompt_pollution,
+    _sync_command_input_history,
     _should_record_command_input_history,
     _shell_command_indicates_verification,
     _tool_change_and_verification_hints,
@@ -17,6 +18,29 @@ from src.runtime.runtime_loop import (
 
 
 class RuntimeLoopTests(unittest.TestCase):
+    class _FakeHistoryManager:
+        def __init__(self, entries=None):
+            self.history = list(entries or [])
+
+        def add_entry(self, command: str):
+            c = str(command or "").strip()
+            if not c:
+                return
+            self.history = [x for x in self.history if x != c]
+            self.history.append(c)
+
+        def get_all_history(self):
+            return list(self.history)
+
+    class _FakeInputHandler:
+        def __init__(self):
+            self.calls = 0
+            self.last_entries = None
+
+        def reset_command_history(self, entries):
+            self.calls += 1
+            self.last_entries = list(entries or [])
+
     def test_format_startup_directory_replaces_user_home_with_tilde(self):
         with tempfile.TemporaryDirectory() as td:
             base = Path(td)
@@ -79,6 +103,45 @@ class RuntimeLoopTests(unittest.TestCase):
         self.assertTrue(_should_record_command_input_history("/chat list"))
         self.assertTrue(_should_record_command_input_history("!git status"))
         self.assertFalse(_should_record_command_input_history("   "))
+
+    def test_sync_command_input_history_bumps_skipped_existing_slash_command(self):
+        class _Agent:
+            pass
+
+        agent = _Agent()
+        agent.history_manager = self._FakeHistoryManager(
+            ["/help", "/chat reload", "/model list"]
+        )
+        agent.input_handler = self._FakeInputHandler()
+
+        _sync_command_input_history(agent, "/chat reload")
+
+        self.assertEqual(
+            agent.history_manager.get_all_history(),
+            ["/help", "/model list", "/chat reload"],
+        )
+        self.assertEqual(agent.input_handler.calls, 1)
+        self.assertEqual(
+            agent.input_handler.last_entries,
+            ["/help", "/model list", "/chat reload"],
+        )
+
+    def test_sync_command_input_history_does_not_add_skipped_slash_when_absent(self):
+        class _Agent:
+            pass
+
+        agent = _Agent()
+        agent.history_manager = self._FakeHistoryManager(["/help", "/model list"])
+        agent.input_handler = self._FakeInputHandler()
+
+        _sync_command_input_history(agent, "/chat reload")
+
+        self.assertEqual(
+            agent.history_manager.get_all_history(),
+            ["/help", "/model list"],
+        )
+        self.assertEqual(agent.input_handler.calls, 1)
+        self.assertEqual(agent.input_handler.last_entries, ["/help", "/model list"])
 
     def test_format_worked_for_summary_line_fills_terminal_width(self):
         line = _format_worked_for_summary_line(elapsed_seconds=65, terminal_width=40)
