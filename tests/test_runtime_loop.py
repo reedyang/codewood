@@ -6,7 +6,9 @@ from unittest.mock import patch
 
 from src.runtime.runtime_loop import (
     _build_minimal_verification_command,
+    _format_worked_for_summary_line,
     _format_startup_directory,
+    _resolve_worked_summary_terminal_width,
     _sanitize_prompt_pollution,
     _shell_command_indicates_verification,
     _tool_change_and_verification_hints,
@@ -67,6 +69,26 @@ class RuntimeLoopTests(unittest.TestCase):
     def test_sanitize_prompt_pollution_strips_multiple_fixed_prompts(self):
         cleaned = _sanitize_prompt_pollution("› › !git status", Path("D:/ws"))
         self.assertEqual(cleaned, "!git status")
+
+    def test_format_worked_for_summary_line_fills_terminal_width(self):
+        line = _format_worked_for_summary_line(elapsed_seconds=65, terminal_width=40)
+        self.assertEqual(len(line), 40)
+        self.assertTrue(line.startswith("─ Worked for 1m 5s "))
+        self.assertTrue(line.endswith("─"))
+
+    def test_format_worked_for_summary_line_hides_minutes_when_under_one_minute(self):
+        line = _format_worked_for_summary_line(elapsed_seconds=59, terminal_width=40)
+        self.assertEqual(len(line), 40)
+        self.assertTrue(line.startswith("─ Worked for 59s "))
+        self.assertNotIn("m ", line)
+
+    def test_resolve_worked_summary_terminal_width_prefers_agent_width(self):
+        class _Agent:
+            def _terminal_columns_for_prompt_separator(self, default=80):
+                return 123
+
+        width = _resolve_worked_summary_terminal_width(_Agent(), default=80)
+        self.assertEqual(width, 123)
 
 
 if __name__ == "__main__":

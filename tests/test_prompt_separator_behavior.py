@@ -301,6 +301,22 @@ class PromptSeparatorBehaviorTests(unittest.TestCase):
         self.assertIn("› /chat reload", joined)
         mock_slash_out.assert_called_once_with("line-1\nline-2\n")
 
+    def test_chat_history_replays_task_worked_summary_line(self):
+        agent = self._build_agent()
+        agent.active_chat_name = "Demo Chat"
+        agent.conversation_history = [
+            {
+                "role": "assistant",
+                "content": agent._build_task_worked_summary_history_content(125),
+            },
+        ]
+        with (
+            patch.object(agent, "_print_task_worked_summary_line") as mock_worked,
+            patch("builtins.print"),
+        ):
+            agent._print_chat_history()
+        mock_worked.assert_called_once_with(125)
+
     def test_resize_reload_uses_recorded_history_anchor(self):
         agent = self._build_agent()
         agent.conversation_history = [

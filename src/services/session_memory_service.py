@@ -237,6 +237,14 @@ class SessionMemoryService:
                     model_payload = None
                 if isinstance(model_payload, dict):
                     return True
+            parse_worked_summary = getattr(self.agent, "_parse_task_worked_summary_history_content", None)
+            if callable(parse_worked_summary):
+                try:
+                    worked_payload = parse_worked_summary(text)
+                except Exception:
+                    worked_payload = None
+                if isinstance(worked_payload, dict):
+                    return True
             return False
         return False
 
@@ -943,6 +951,7 @@ class SessionMemoryService:
         assistant_trimmed = 0
         parse_slash_user = getattr(self.agent, "_parse_internal_slash_user_history_content", None)
         parse_slash_result = getattr(self.agent, "_parse_internal_slash_result_history_content", None)
+        parse_worked_summary = getattr(self.agent, "_parse_task_worked_summary_history_content", None)
         for msg in hist:
             role = str(msg.get("role") or "").strip().lower()
             if role not in ("user", "assistant"):
@@ -960,6 +969,13 @@ class SessionMemoryService:
                 except Exception:
                     slash_payload = None
                 if isinstance(slash_payload, dict):
+                    continue
+            if role == "assistant" and callable(parse_worked_summary):
+                try:
+                    worked_payload = parse_worked_summary(raw_content)
+                except Exception:
+                    worked_payload = None
+                if isinstance(worked_payload, dict):
                     continue
             content = self._normalize_history_content_for_model(role, raw_content)
             if role == "assistant":
