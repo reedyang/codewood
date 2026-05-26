@@ -35,7 +35,9 @@ class ConsoleUtilsTests(unittest.TestCase):
 
     def test_format_elapsed_minutes_seconds(self):
         self.assertEqual(_format_elapsed_minutes_seconds(65), "1m 5s")
-        self.assertEqual(_format_elapsed_minutes_seconds(0), "0m 0s")
+        self.assertEqual(_format_elapsed_minutes_seconds(0), "0s")
+        self.assertEqual(_format_elapsed_minutes_seconds(59), "59s")
+        self.assertEqual(_format_elapsed_minutes_seconds(60), "1m 0s")
 
     def test_render_working_status_line_marquee_progression(self):
         class DummyStdout:

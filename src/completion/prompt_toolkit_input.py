@@ -1458,10 +1458,15 @@ class PromptToolkitInputHandler:
             event.current_buffer.insert_text("\n")
 
         def _accept_input(event) -> None:
+            buf = event.current_buffer
+            if not bool(getattr(self, "_shell_mode_active", False)):
+                # Ignore plain Enter on an empty prompt in normal mode.
+                if not str(getattr(buf, "text", "") or "").strip():
+                    return
             if _is_windows_shift_pressed():
                 _insert_newline(event)
                 return
-            event.current_buffer.validate_and_handle()
+            buf.validate_and_handle()
 
         def _enter_shell_mode(event) -> None:
             buf = event.current_buffer

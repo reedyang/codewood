@@ -446,6 +446,40 @@ class PromptToolkitInputCompletionTests(unittest.TestCase):
         self.assertIn("Prefix a command with ! to run it locally", rendered)
         self.assertIn("Example: !ls", rendered)
 
+    def test_enter_on_empty_prompt_in_normal_mode_is_ignored(self):
+        from prompt_toolkit.keys import Keys
+
+        class _Buffer:
+            def __init__(self, text: str):
+                self.text = text
+                self.validate_calls = 0
+
+            def validate_and_handle(self):
+                self.validate_calls += 1
+
+        class _Event:
+            def __init__(self, text: str):
+                self.current_buffer = _Buffer(text)
+
+        handler = pti.PromptToolkitInputHandler.__new__(pti.PromptToolkitInputHandler)
+        handler._shell_mode_active = False
+        kb = handler._create_key_bindings()
+        enter_binding = next(
+            b for b in kb.bindings if tuple(getattr(b, "keys", ())) == (Keys.ControlM,)
+        )
+
+        ev_empty = _Event("")
+        enter_binding.handler(ev_empty)
+        self.assertEqual(ev_empty.current_buffer.validate_calls, 0)
+
+        ev_spaces = _Event("   ")
+        enter_binding.handler(ev_spaces)
+        self.assertEqual(ev_spaces.current_buffer.validate_calls, 0)
+
+        ev_text = _Event("hello")
+        enter_binding.handler(ev_text)
+        self.assertEqual(ev_text.current_buffer.validate_calls, 1)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -177,6 +177,8 @@ def _ansi_rgb(text: str, r: int, g: int, b: int) -> str:
 def _format_elapsed_minutes_seconds(elapsed_seconds: int) -> str:
     total = max(0, int(elapsed_seconds or 0))
     minutes, seconds = divmod(total, 60)
+    if minutes <= 0:
+        return f"{seconds}s"
     return f"{minutes}m {seconds}s"
 
 
