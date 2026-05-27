@@ -97,16 +97,16 @@ class RuntimeLoopTests(unittest.TestCase):
         cleaned = _sanitize_prompt_pollution("› › !git status", Path("D:/ws"))
         self.assertEqual(cleaned, "!git status")
 
-    def test_should_record_command_input_history_skips_chat_reload(self):
-        self.assertFalse(_should_record_command_input_history("/chat reload"))
-        self.assertFalse(_should_record_command_input_history("/CHAT   reload"))
+    def test_should_record_command_input_history_keeps_chat_reload_in_memory_history(self):
+        self.assertTrue(_should_record_command_input_history("/chat reload"))
+        self.assertTrue(_should_record_command_input_history("/CHAT   reload"))
 
     def test_should_record_command_input_history_keeps_other_inputs(self):
         self.assertTrue(_should_record_command_input_history("/chat list"))
         self.assertTrue(_should_record_command_input_history("!git status"))
         self.assertFalse(_should_record_command_input_history("   "))
 
-    def test_sync_command_input_history_bumps_skipped_existing_slash_command(self):
+    def test_sync_command_input_history_records_slash_commands_for_current_session(self):
         class _Agent:
             pass
 
@@ -128,7 +128,7 @@ class RuntimeLoopTests(unittest.TestCase):
             ["/help", "/model list", "/chat reload"],
         )
 
-    def test_sync_command_input_history_does_not_add_skipped_slash_when_absent(self):
+    def test_sync_command_input_history_adds_absent_slash_command(self):
         class _Agent:
             pass
 
@@ -140,10 +140,13 @@ class RuntimeLoopTests(unittest.TestCase):
 
         self.assertEqual(
             agent.history_manager.get_all_history(),
-            ["/help", "/model list"],
+            ["/help", "/model list", "/chat reload"],
         )
         self.assertEqual(agent.input_handler.calls, 1)
-        self.assertEqual(agent.input_handler.last_entries, ["/help", "/model list"])
+        self.assertEqual(
+            agent.input_handler.last_entries,
+            ["/help", "/model list", "/chat reload"],
+        )
 
     def test_format_worked_for_summary_line_fills_terminal_width(self):
         line = _format_worked_for_summary_line(elapsed_seconds=65, terminal_width=40)

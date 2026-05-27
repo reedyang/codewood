@@ -346,12 +346,26 @@ class PromptSeparatorBehaviorTests(unittest.TestCase):
 
     def test_record_internal_slash_execution_history_records_other_commands(self):
         agent = self._build_agent()
-        with patch.object(agent, "_append_chat_message") as mock_append:
-            agent._record_internal_slash_execution_history(
-                raw_user_command="/chat list",
-                output_text="listed\n",
-            )
-        self.assertEqual(mock_append.call_count, 2)
+        agent._record_internal_slash_execution_history(
+            raw_user_command="/chat list",
+            output_text="listed\n",
+        )
+        self.assertEqual(len(agent.conversation_history), 2)
+        self.assertEqual(
+            agent._parse_internal_slash_user_history_content(
+                agent.conversation_history[0]["content"]
+            ),
+            "/chat list",
+        )
+        payload = agent._parse_internal_slash_result_history_content(
+            agent.conversation_history[1]["content"]
+        )
+        self.assertIsNotNone(payload)
+        self.assertEqual(payload.get("output"), "listed\n")
+        self.assertFalse(agent.conversation_history[0].get("persist_to_chat_state", True))
+        self.assertFalse(agent.conversation_history[1].get("persist_to_chat_state", True))
+        self.assertTrue(agent.conversation_history[0].get("exclude_from_model_context"))
+        self.assertTrue(agent.conversation_history[1].get("exclude_from_model_context"))
 
     def test_auto_chat_name_ignores_internal_slash_user_history(self):
         agent = self._build_agent()

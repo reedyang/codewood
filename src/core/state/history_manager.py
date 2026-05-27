@@ -23,6 +23,10 @@ class HistoryManager:
         
         # 加载历史记录
         self.load_history()
+
+    @staticmethod
+    def _is_memory_only_entry(command: str) -> bool:
+        return str(command or "").strip().startswith("/")
     
     def load_history(self):
         """从文件加载历史记录"""
@@ -30,7 +34,13 @@ class HistoryManager:
             if self.history_file.exists():
                 with open(self.history_file, 'r', encoding='utf-8') as f:
                     data = json.load(f)
-                    self.history = data.get('history', [])
+                    raw_history = data.get('history', [])
+                    self.history = [
+                        str(entry)
+                        for entry in raw_history
+                        if str(entry or "").strip()
+                        and not self._is_memory_only_entry(str(entry))
+                    ]
                     # 确保不超过最大记录数
                     if len(self.history) > self.max_entries:
                         self.history = self.history[-self.max_entries:]
@@ -44,7 +54,11 @@ class HistoryManager:
         """保存历史记录到文件"""
         try:
             data = {
-                'history': self.history
+                'history': [
+                    entry
+                    for entry in self.history
+                    if not self._is_memory_only_entry(entry)
+                ]
             }
             with open(self.history_file, 'w', encoding='utf-8') as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
@@ -71,8 +85,10 @@ class HistoryManager:
         if len(self.history) > self.max_entries:
             self.history = self.history[-self.max_entries:]
         
-        # 保存到文件
-        self.save_history()
+        # "/" built-ins stay available to this process through in-memory
+        # history, but are intentionally omitted from history.json.
+        if not self._is_memory_only_entry(cleaned_command):
+            self.save_history()
         
         # 重置当前索引
         self.current_index = -1

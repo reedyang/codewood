@@ -381,6 +381,8 @@ class ChatStateManager:
             for m in list(self._agent.conversation_history):
                 if not isinstance(m, dict):
                     continue
+                if bool(m.get("persist_to_chat_state", True)) is False:
+                    continue
                 role = str(m.get("role") or "").strip().lower()
                 if role not in ("user", "assistant"):
                     continue
