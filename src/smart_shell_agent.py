@@ -1042,11 +1042,34 @@ class SmartShellAgent:
 
     def _extract_model_shell_replay_output(self, shell_result: Any) -> Tuple[str, str]:
         payload = shell_result if isinstance(shell_result, dict) else {}
+        has_raw_output = ("output" in payload) or ("stderr" in payload)
+        if has_raw_output:
+            raw_out = str(payload.get("output") or "")
+            raw_err = str(payload.get("stderr") or "")
+            if raw_out or raw_err:
+                out_limit = command_actions._dynamic_tail_line_limit(sys.stdout)
+                err_limit = command_actions._dynamic_tail_line_limit(sys.stderr)
+                out_text = command_actions._build_tail_output_for_display(
+                    raw_out,
+                    sys.stdout,
+                    out_limit,
+                )
+                err_text = command_actions._build_tail_output_for_display(
+                    raw_err,
+                    sys.stderr,
+                    err_limit,
+                )
+                return (
+                    self._strip_console_color_controls(out_text),
+                    self._strip_console_color_controls(err_text),
+                )
+            display_out = str(payload.get("display_output") or "")
+            display_err = str(payload.get("display_stderr") or "")
+            if not display_out and not display_err and bool(payload.get("success", True)):
+                display_out = "(no output)\n"
+            return display_out, display_err
         out_text = str(payload.get("display_output") or "")
         err_text = str(payload.get("display_stderr") or "")
-        if not out_text and not err_text:
-            out_text = str(payload.get("output") or "")
-            err_text = str(payload.get("stderr") or "")
         return out_text, err_text
 
     def _model_tool_result_matches_plan(
@@ -1892,9 +1915,6 @@ class SmartShellAgent:
             "return_code": r.get("return_code"),
             "output": str(r.get("output") or ""),
             "stderr": str(r.get("stderr") or ""),
-            "display_output": str(r.get("display_output") or ""),
-            "display_stderr": str(r.get("display_stderr") or ""),
-            "display_rendered_lines": int(r.get("display_rendered_lines") or 0),
             "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         }
         return f"{MODEL_TOOL_RESULT_HISTORY_PREFIX}{json.dumps(payload, ensure_ascii=False)}"

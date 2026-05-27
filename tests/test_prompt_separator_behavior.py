@@ -569,8 +569,8 @@ class PromptSeparatorBehaviorTests(unittest.TestCase):
                     {"command": "test"},
                     {
                         "success": False,
-                        "display_output": "'test' is not recognized\n",
-                        "display_stderr": "",
+                        "output": "'test' is not recognized\n",
+                        "stderr": "",
                     },
                 ),
             },
@@ -586,6 +586,79 @@ class PromptSeparatorBehaviorTests(unittest.TestCase):
         mock_feedback.assert_called_once_with("shell", {"command": "test"}, failed=True)
         mock_shell_output.assert_called_once_with("'test' is not recognized\n", "")
         mock_sep.assert_not_called()
+
+    def test_chat_history_model_shell_result_rebuilds_tail_from_full_output(self):
+        agent = self._build_agent()
+        agent.conversation_history = [
+            {
+                "role": "assistant",
+                "content": agent._build_model_tool_result_history_content(
+                    "shell",
+                    {"command": "test"},
+                    {
+                        "success": True,
+                        "output": "line one\nline two\nline three\n",
+                        "stderr": "",
+                        "display_output": "old formatted display\n",
+                        "display_stderr": "",
+                    },
+                ),
+            },
+        ]
+        agent.operation_results = []
+        with (
+            patch("builtins.print"),
+            patch("src.smart_shell_agent.command_actions._dynamic_tail_line_limit", return_value=2),
+            patch.object(agent, "_print_tool_call_feedback") as mock_feedback,
+            patch.object(agent, "_print_direct_shell_history_output") as mock_shell_output,
+        ):
+            agent._print_chat_history()
+        mock_feedback.assert_called_once_with("shell", {"command": "test"}, failed=False)
+        mock_shell_output.assert_called_once()
+        replay_out, replay_err = mock_shell_output.call_args.args
+        self.assertIn("line two\nline three\n", replay_out)
+        self.assertNotIn("line one\n", replay_out)
+        self.assertNotIn("old formatted display", replay_out)
+        self.assertEqual(replay_err, "")
+
+    def test_model_shell_result_history_stores_raw_output_without_display_payload(self):
+        agent = self._build_agent()
+        content = agent._build_model_tool_result_history_content(
+            "shell",
+            {"command": "test"},
+            {
+                "success": True,
+                "output": "full output\n",
+                "stderr": "",
+                "display_output": "old display\n",
+                "display_stderr": "",
+            },
+        )
+        payload = agent._parse_model_tool_result_history_content(content)
+        self.assertIsNotNone(payload)
+        self.assertEqual(payload.get("output"), "full output\n")
+        self.assertNotIn("display_output", payload)
+        self.assertNotIn("display_stderr", payload)
+
+    def test_chat_history_model_shell_result_synthesizes_no_output_on_replay(self):
+        agent = self._build_agent()
+        agent.conversation_history = [
+            {
+                "role": "assistant",
+                "content": agent._build_model_tool_result_history_content(
+                    "shell",
+                    {"command": "true"},
+                    {"success": True, "output": "", "stderr": ""},
+                ),
+            },
+        ]
+        with (
+            patch("builtins.print"),
+            patch.object(agent, "_print_tool_call_feedback"),
+            patch.object(agent, "_print_direct_shell_history_output") as mock_shell_output,
+        ):
+            agent._print_chat_history()
+        mock_shell_output.assert_called_once_with("(no output)\n", "")
 
     def test_refresh_after_tool_output_keeps_history_anchor_position(self):
         agent = self._build_agent()
