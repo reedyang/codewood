@@ -44,6 +44,7 @@ class SessionMemoryService:
         self._token_counter_lock = threading.Lock()
         self._context_usage_refresh_lock = threading.Lock()
         self._context_usage_refresh_inflight = False
+        self._context_usage_refresh_pending: Optional[Dict[str, str]] = None
         self._start_token_counter_warmup()
 
     def _context_usage_state_key(self) -> str:
@@ -1118,7 +1119,7 @@ class SessionMemoryService:
                 current = str(getattr(self.agent, "active_chat_id", "") or "").strip()
                 if current != expected:
                     return
-            expected_key = str(expected_state_key or "").strip() or self._context_usage_state_key()
+            expected_key = str(expected_state_key or "").strip()
             budgets = self._context_token_budgets()
             filtered_history = self._domain_filtered_history()
             history_messages, _stats = self._build_history_messages_by_budget(
@@ -1193,26 +1194,44 @@ class SessionMemoryService:
         target_chat_id = str(expected_chat_id or "").strip()
         if not target_chat_id:
             target_chat_id = str(getattr(self.agent, "active_chat_id", "") or "").strip()
-        target_state_key = self._context_usage_state_key()
+        request_payload = {
+            "user_input_hint": str(user_input_hint or ""),
+            "context_hint": str(context_hint or ""),
+            "expected_chat_id": target_chat_id,
+            "expected_state_key": self._context_usage_state_key(),
+        }
         with self._context_usage_refresh_lock:
             if self._context_usage_refresh_inflight:
+                # Coalesce requests while one refresh is in flight; keep only the latest snapshot intent.
+                self._context_usage_refresh_pending = dict(request_payload)
                 return False
             self._context_usage_refresh_inflight = True
 
-        def _run() -> None:
+        def _run(initial_payload: Dict[str, str]) -> None:
+            payload = dict(initial_payload)
             try:
-                self.refresh_context_usage_snapshot(
-                    user_input_hint=user_input_hint,
-                    context_hint=context_hint,
-                    expected_chat_id=target_chat_id,
-                    expected_state_key=target_state_key,
-                )
+                while True:
+                    self.refresh_context_usage_snapshot(
+                        user_input_hint=str(payload.get("user_input_hint") or ""),
+                        context_hint=str(payload.get("context_hint") or ""),
+                        expected_chat_id=str(payload.get("expected_chat_id") or ""),
+                        expected_state_key=str(payload.get("expected_state_key") or ""),
+                    )
+                    with self._context_usage_refresh_lock:
+                        pending = self._context_usage_refresh_pending
+                        self._context_usage_refresh_pending = None
+                        if not pending:
+                            self._context_usage_refresh_inflight = False
+                            break
+                        payload = dict(pending)
             finally:
                 with self._context_usage_refresh_lock:
                     self._context_usage_refresh_inflight = False
+                    self._context_usage_refresh_pending = None
 
         threading.Thread(
             target=_run,
+            args=(request_payload,),
             daemon=True,
             name="smartshell-context-usage-refresh",
         ).start()
