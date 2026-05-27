@@ -31,6 +31,8 @@ class BangDirectExecutionTests(unittest.TestCase):
         self.agent._interruptible_processes = {}
         self.agent._task_interrupt_requested = False
         self.agent._aborted_process_keys = set()
+        self.agent._last_terminal_block_kind = ""
+        self.agent._terminal_cursor_at_line_start = True
 
     @patch("subprocess.Popen")
     def test_keep_command_with_args_for_python_invocation(self, popen_mock):
@@ -155,6 +157,28 @@ class BangDirectExecutionTests(unittest.TestCase):
         self.assertIn("    command aborted by user\n", out_plain)
         self.assertNotIn("└ command aborted by user", out_plain)
 
+    def test_direct_shell_history_output_after_assistant_starts_on_new_line(self):
+        class _TtyBuffer(StringIO):
+            def isatty(self):
+                return True
+
+            def fileno(self):
+                return 1
+
+        out_buf = _TtyBuffer()
+        out_buf.write("• assistant text")
+        err_buf = _TtyBuffer()
+        self.agent._last_terminal_block_kind = "assistant"
+        self.agent._terminal_cursor_at_line_start = False
+        with patch("src.smart_shell_agent.sys.stdout", out_buf), patch(
+            "src.smart_shell_agent.sys.stderr", err_buf
+        ):
+            self.agent._print_direct_shell_history_output("command output\n", "")
+
+        ansi_re = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+        out_plain = ansi_re.sub("", out_buf.getvalue()).lstrip("\r")
+        self.assertIn("• assistant text\n  └ command output\n", out_plain)
+
     def test_direct_shell_history_output_inside_slash_stream_does_not_emit_clear_line(self):
         class _TtyBuffer(StringIO):
             def isatty(self):
@@ -243,10 +267,10 @@ class BangDirectExecutionTests(unittest.TestCase):
         self.assertEqual(rc, 0)
         ansi_re = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
         out_plain = ansi_re.sub("", out_buf.getvalue()).lstrip("\r")
-        self.assertIn("omitted 4 lines", out_plain)
+        self.assertIn("omitted 5 lines", out_plain)
         self.assertNotIn("line1\n", out_plain)
-        self.assertNotIn("line4\n", out_plain)
-        self.assertIn("line5\n", out_plain)
+        self.assertNotIn("line5\n", out_plain)
+        self.assertIn("line6\n", out_plain)
         self.assertIn("line7\n", out_plain)
         last = getattr(self.agent, "_last_direct_shell_execution", {})
         self.assertIn("line1\n", str(last.get("stdout") or ""))

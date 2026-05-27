@@ -1439,9 +1439,12 @@ def run_agent_loop(agent: Any):
                         pass
                     display_response = format_assistant_display_response(ai_response)
                     if display_response:
+                        self._ensure_terminal_line_start()
                         rendered = self._format_assistant_chat_display_message(display_response)
                         sys.stdout.write(f"{rendered}\n")
                         sys.stdout.flush()
+                        self._last_terminal_block_kind = "assistant"
+                        self._terminal_cursor_at_line_start = True
 
                 fallback_plan = self._parse_tool_plan_from_response(ai_response)
                 if fallback_plan:

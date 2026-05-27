@@ -136,8 +136,7 @@ def _dynamic_tail_line_limit(
     reserved_lines: int = SHELL_OUTPUT_DISPLAY_RESERVED_LINES,
 ) -> int:
     rows = _terminal_rows_for_tail_display(stream)
-    visible_cap = min(max(1, int(rows)), max(1, int(max_tail_lines or 1)))
-    return max(1, visible_cap - max(0, int(reserved_lines or 0)))
+    return min(max(1, int(rows)), max(1, int(max_tail_lines or 1)))
 
 
 def _wrap_line_for_display(line: str, width: int) -> List[str]:
@@ -169,7 +168,23 @@ def _wrap_line_for_display(line: str, width: int) -> List[str]:
     return chunks or [""]
 
 
-def _build_tail_output_for_display(text: str, stream: Any, tail_lines: int = SHELL_OUTPUT_DISPLAY_TAIL_LINES) -> str:
+def _visual_rows_for_display_text(text: str, width: int) -> int:
+    raw = str(text or "")
+    if not raw:
+        return 0
+    normalized = raw.replace("\r\n", "\n").replace("\r", "\n")
+    lines = normalized.split("\n")
+    if lines and lines[-1] == "":
+        lines = lines[:-1]
+    return sum(len(_wrap_line_for_display(line, width)) for line in lines)
+
+
+def _build_tail_output_for_display(
+    text: str,
+    stream: Any,
+    tail_lines: int = SHELL_OUTPUT_DISPLAY_TAIL_LINES,
+    display_indent_width: int = 0,
+) -> str:
     raw = str(text or "")
     if not raw:
         return ""
@@ -178,12 +193,50 @@ def _build_tail_output_for_display(text: str, stream: Any, tail_lines: int = SHE
     lines = normalized.split("\n")
     if trailing_newline and lines and lines[-1] == "":
         lines = lines[:-1]
+    try:
+        stream_indent = int(getattr(stream, "smart_shell_output_indent_width", 0) or 0)
+    except Exception:
+        stream_indent = 0
+    try:
+        extra_indent = int(display_indent_width or 0)
+    except Exception:
+        extra_indent = 0
+    content_width = max(1, _terminal_columns_for_tail_display(stream) - max(0, stream_indent + extra_indent))
     limit = max(1, int(tail_lines or 1))
-    if len(lines) <= limit:
+    line_chunks = [_wrap_line_for_display(line, content_width) for line in lines]
+    total_visual_rows = sum(len(chunks) for chunks in line_chunks)
+    if total_visual_rows <= limit:
         return raw
-    omitted = len(lines) - limit
-    tail = "\n".join(lines[-limit:])
-    if trailing_newline:
+
+    notice_text = f"... omitted {len(lines)} lines ..."
+    notice_rows = max(1, _visual_rows_for_display_text(notice_text, content_width))
+    remaining_rows = max(0, limit - notice_rows)
+    selected_lines: List[str] = []
+    selected_start = len(lines)
+    partial_start_line = False
+    used_rows = 0
+    for idx in range(len(lines) - 1, -1, -1):
+        chunks = line_chunks[idx]
+        chunk_count = len(chunks)
+        if used_rows + chunk_count <= remaining_rows:
+            selected_lines.insert(0, lines[idx])
+            selected_start = idx
+            used_rows += chunk_count
+            continue
+        available = remaining_rows - used_rows
+        if available > 0:
+            selected_lines.insert(0, "\n".join(chunks[-available:]))
+            selected_start = idx
+            partial_start_line = True
+        break
+
+    omitted = selected_start
+    if partial_start_line:
+        omitted += 1
+    if not selected_lines:
+        omitted = len(lines)
+    tail = "\n".join(selected_lines)
+    if tail and trailing_newline:
         tail += "\n"
     return _format_omitted_lines_notice(omitted, stream) + tail
 
@@ -341,6 +394,7 @@ def action_shell_command(
                     bucket: List[str],
                 ) -> None:
                     decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+                    realtime_started = False
                     try:
                         while True:
                             if hasattr(pipe, "read1"):
@@ -355,6 +409,14 @@ def action_shell_command(
                                     bucket.append(text_chunk)
                                 _stop_status_ticker()
                                 if allow_realtime_echo.is_set():
+                                    if not realtime_started:
+                                        realtime_started = True
+                                        ensure_line = getattr(agent, "_ensure_terminal_line_start", None)
+                                        if callable(ensure_line):
+                                            try:
+                                                ensure_line()
+                                            except Exception:
+                                                pass
                                     _safe_console_write(text_chunk, target, append_newline=False)
                         tail = decoder.decode(b"", final=True)
                         if tail:
@@ -362,6 +424,14 @@ def action_shell_command(
                                 bucket.append(tail)
                             _stop_status_ticker()
                             if allow_realtime_echo.is_set():
+                                if not realtime_started:
+                                    realtime_started = True
+                                    ensure_line = getattr(agent, "_ensure_terminal_line_start", None)
+                                    if callable(ensure_line):
+                                        try:
+                                            ensure_line()
+                                        except Exception:
+                                            pass
                                 _safe_console_write(tail, target, append_newline=False)
                     except Exception:
                         pass
@@ -506,6 +576,11 @@ def action_shell_command(
                     replay_err_text = str(replay_err_text) + "\n"
                 else:
                     replay_out_text = str(replay_out_text) + "\n"
+            try:
+                agent._last_terminal_block_kind = "command_output"
+                agent._terminal_cursor_at_line_start = True
+            except Exception:
+                pass
             try:
                 agent._last_shell_output_visible_lines = 0
             except Exception:
@@ -1198,4 +1273,3 @@ def append_shell_merge_output_path(stdout_text: str, return_code: int, merge_pat
     if not head:
         return marker + "\n" + extra
     return head + "\n\n---\n" + marker + "\n" + extra
-
