@@ -109,6 +109,9 @@ def setup_runtime_preferences(agent: Any) -> None:
     agent.session_summary_llm_enabled = True
     agent.memory_fallback_expansion_enabled = True
     agent.project_context_first_round_evidence_enabled = True
+    # Tool gates: default disabled so only core built-in coding tools are available.
+    agent.mcp_tools_enabled = False
+    agent.knowledge_tools_enabled = False
     agent.max_tool_rounds = 20
     agent._resolved_config_data = {}
     try:
@@ -149,6 +152,20 @@ def setup_runtime_preferences(agent: Any) -> None:
                 _pcfr
                 if isinstance(_pcfr, bool)
                 else str(_pcfr).strip().lower() in ("1", "true", "yes", "on")
+            )
+
+            _mcp_tools_enabled = cfg_data.get("mcp_tools_enabled", False)
+            agent.mcp_tools_enabled = (
+                _mcp_tools_enabled
+                if isinstance(_mcp_tools_enabled, bool)
+                else str(_mcp_tools_enabled).strip().lower() in ("1", "true", "yes", "on")
+            )
+
+            _knowledge_tools_enabled = cfg_data.get("knowledge_tools_enabled", False)
+            agent.knowledge_tools_enabled = (
+                _knowledge_tools_enabled
+                if isinstance(_knowledge_tools_enabled, bool)
+                else str(_knowledge_tools_enabled).strip().lower() in ("1", "true", "yes", "on")
             )
 
             _mtr = cfg_data.get("max_tool_rounds", 20)

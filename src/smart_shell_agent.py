@@ -4154,10 +4154,6 @@ class SmartShellAgent:
         self.ai_orchestrator.context.work_directory = str(self.work_directory)
         return self.ai_orchestrator.call(call_ctx=call_ctx)
 
-    def action_ffmpeg(self, source: str, target: str, options: Optional[str] = None) -> Dict[str, Any]:
-        """调用ffmpeg处理媒体文件"""
-        return filesystem_actions.action_ffmpeg(self, source=source, target=target, options=options)
-
     def _ephemeral_path_key(self, path: Path) -> str:
         try:
             resolved = path.resolve()
@@ -4346,10 +4342,6 @@ class SmartShellAgent:
     def action_read_image(self, file_path: str, prompt: str = "") -> dict:
         """读取图片内容，支持多种图片格式"""
         return filesystem_actions.action_read_image(self, file_path=file_path, prompt=prompt)
-
-    def action_diff(self, file1: str, file2: str, options: Optional[str] = None) -> dict:
-        """跨平台文件比较：Windows上优先使用diff.exe，否则使用fc命令；其他平台使用diff命令"""
-        return filesystem_actions.action_diff(self, file1=file1, file2=file2, options=options)
 
     def action_project_context_search(self, params: Dict[str, Any]) -> dict:
         """

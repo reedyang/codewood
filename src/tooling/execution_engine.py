@@ -17,7 +17,7 @@ def _print_with_auto_hide_tracking(agent: Any, text: str) -> None:
 
 
 def execute_tool_call_legacy(agent: Any, tool_name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
-    """执行工具命令，支持批量命令和 cls 命令。"""
+    """执行工具命令（legacy fallback）。"""
     self = agent
     action = (tool_name or "").strip()
     params = arguments if isinstance(arguments, dict) else {}
@@ -62,53 +62,6 @@ def execute_tool_call_legacy(agent: Any, tool_name: str, arguments: Dict[str, An
             "reason": reason or "用户输入与原始需求无关，已切换任务",
             "message": "任务已切换",
         }
-
-    if action == "cls":
-        import os
-        os.system('cls' if os.name == 'nt' else 'clear')
-        return {"success": True, "message": "屏幕已清空"}
-
-    elif action == "batch":
-        commands = params.get("commands", [])
-        results = []
-        all_success = True
-        for subcmd in commands:
-            sub_action = (subcmd.get("tool") or subcmd.get("action") or "").strip()
-            sub_args = subcmd.get("args")
-            if not isinstance(sub_args, dict):
-                sub_args = subcmd.get("params")
-            if not isinstance(sub_args, dict):
-                sub_args = {}
-            sub_result = self.execute_tool_call(sub_action, sub_args)
-            results.append({"action": sub_action, "result": sub_result})
-        
-            # 检查用户是否取消了子命令
-            if not sub_result.get("success", True) and (
-                "用户取消了操作" in sub_result.get("error", "") or 
-                "用户拒绝" in sub_result.get("error", "") or
-                "用户取消" in sub_result.get("error", "")
-            ):
-                # 用户取消了某个子命令，停止执行剩余命令
-                return {"success": False, "error": "用户取消了操作", "results": results}
-        
-            if not sub_result.get("success", True):
-                all_success = False
-        return {"success": all_success, "results": results}
-
-    elif action == "ffmpeg":
-        source = params.get("source")
-        target = params.get("target")
-        options = params.get("options")
-        if source and target:
-            result = self.action_ffmpeg(source, target, options)
-            if result["success"]:
-                print(f"✅ {result['message']}")
-            else:
-                print(f"❌ {result['error']}")
-            return result
-        else:
-            print("❌ 命令缺少参数 source 或 target")
-            return {"success": False, "error": "缺少 source 或 target 参数"}
 
     elif action == "shell":
         shell_cmd = params.get("command")
@@ -249,33 +202,18 @@ def execute_tool_call_legacy(agent: Any, tool_name: str, arguments: Dict[str, An
             print(f"❌ project_context_search 失败: {result.get('error', '')}")
         return result
 
-    elif action == "diff":
-        file1 = params.get("file1")
-        file2 = params.get("file2")
-        options = params.get("options")
-        if file1 and file2:
-            result = self.action_diff(file1, file2, options)
-            if result["success"]:
-                command_type = result.get("command_type", "unknown")
-                print(f"\n🔍 文件比较完成 (使用 {command_type}): {result['command']}")
-                print(f"📊 结果: {result['message']}")
-                if result.get("output"):
-                    print("📤 差异详情:")
-                    print(result["output"])
-            else:
-                print(f"❌ 文件比较失败: {result['error']}")
-                if result.get("output"):
-                    print("📤 输出:")
-                    print(result["output"])
-            return result
-        else:
-            print("❌ diff命令缺少file1或file2参数")
-            return {"success": False, "error": "缺少file1或file2参数"}
-
     # mcp_* tool branches are dispatched by dispatch_mcp_tool above.
 
     elif action == "knowledge_sync":
         """同步知识库"""
+        if not bool(getattr(self, "knowledge_tools_enabled", False)):
+            return {
+                "success": False,
+                "error": (
+                    "tool 'knowledge_sync' is disabled by config "
+                    "(set knowledge_tools_enabled=true in config.json to enable)"
+                ),
+            }
         if not self._ensure_knowledge_manager():
             return {"success": False, "error": "知识库不可用（依赖未安装或初始化失败）"}
         try:
@@ -286,6 +224,14 @@ def execute_tool_call_legacy(agent: Any, tool_name: str, arguments: Dict[str, An
 
     elif action == "knowledge_stats":
         """获取知识库统计信息"""
+        if not bool(getattr(self, "knowledge_tools_enabled", False)):
+            return {
+                "success": False,
+                "error": (
+                    "tool 'knowledge_stats' is disabled by config "
+                    "(set knowledge_tools_enabled=true in config.json to enable)"
+                ),
+            }
         if not self._ensure_knowledge_manager():
             return {"success": False, "error": "知识库不可用（依赖未安装或初始化失败）"}
     
