@@ -1559,18 +1559,47 @@ class SmartShellAgent:
         chunks: List[str] = []
         current: List[str] = []
         current_w = 0
+        last_break_idx: Optional[int] = None
         for ch in raw:
             ch_w = cls._feedback_char_display_width(ch)
             if current and (current_w + ch_w > limit):
-                chunks.append("".join(current))
-                current = [ch]
-                current_w = ch_w
-            else:
-                current.append(ch)
-                current_w += ch_w
+                if last_break_idx is not None and last_break_idx > 0:
+                    chunks.append("".join(current[:last_break_idx]))
+                    current = current[last_break_idx + 1 :]
+                    while current and current[0].isspace():
+                        current = current[1:]
+                    current_w = cls._feedback_text_display_width("".join(current))
+                    last_break_idx = cls._last_visible_space_index(current)
+            current.append(ch)
+            current_w += ch_w
+            if ch.isspace():
+                last_break_idx = len(current) - 1
         if current:
             chunks.append("".join(current))
         return chunks or [""]
+
+    @staticmethod
+    def _last_visible_space_index(parts: List[str]) -> Optional[int]:
+        for idx in range(len(parts) - 1, -1, -1):
+            item = parts[idx]
+            if len(item) == 1 and item.isspace():
+                return idx
+        return None
+
+    @classmethod
+    def _trim_leading_visible_spaces(cls, parts: List[str]) -> List[str]:
+        out = list(parts or [])
+        idx = 0
+        while idx < len(out):
+            item = out[idx]
+            if item.startswith("\x1b"):
+                idx += 1
+                continue
+            if len(item) == 1 and item.isspace():
+                del out[idx]
+                continue
+            break
+        return out
 
     @classmethod
     def _wrap_ansi_text_by_display_width(cls, text: str, max_width: int) -> List[str]:
@@ -1582,6 +1611,7 @@ class SmartShellAgent:
         current: List[str] = []
         current_w = 0
         active_sgr = ""
+        last_break_idx: Optional[int] = None
         i = 0
         n = len(raw)
         while i < n:
@@ -1603,12 +1633,16 @@ class SmartShellAgent:
             ch = raw[i]
             ch_w = cls._feedback_char_display_width(ch)
             if current_w > 0 and (current_w + ch_w > limit):
-                chunks.append("".join(current))
-                current = [active_sgr] if active_sgr else []
-                current_w = 0
-                continue
+                if last_break_idx is not None and last_break_idx > 0:
+                    chunks.append("".join(current[:last_break_idx]))
+                    remainder = cls._trim_leading_visible_spaces(current[last_break_idx + 1 :])
+                    current = ([active_sgr] if active_sgr else []) + remainder
+                    current_w = cls._feedback_text_display_width("".join(remainder))
+                    last_break_idx = cls._last_visible_space_index(current)
             current.append(ch)
             current_w += ch_w
+            if ch.isspace():
+                last_break_idx = len(current) - 1
             i += 1
         if current:
             chunks.append("".join(current))
@@ -2160,6 +2194,10 @@ class SmartShellAgent:
             self._line_start = True
             self._visual_col = 0
             self._active_sgr = ""
+            self._pending_word: List[str] = []
+            self._pending_word_width = 0
+            self._pending_spaces: List[str] = []
+            self._pending_spaces_width = 0
 
         @property
         def encoding(self) -> Optional[str]:
@@ -2209,6 +2247,39 @@ class SmartShellAgent:
             self._visual_col = 2
             self._line_start = False
 
+        def _emit_newline_indent(self, out_parts: List[str]) -> None:
+            out_parts.append("\n  ")
+            if self._active_sgr:
+                out_parts.append(self._active_sgr)
+            self._line_start = False
+            self._visual_col = 2
+
+        def _flush_pending_word(self, out_parts: List[str], term_cols: int) -> None:
+            if not self._pending_word:
+                self._pending_spaces = []
+                self._pending_spaces_width = 0
+                return
+            self._emit_indent_if_needed(out_parts)
+            word_w = int(self._pending_word_width or 0)
+            spaces_w = int(self._pending_spaces_width or 0)
+            if self._pending_spaces and self._visual_col > 2:
+                if self._visual_col + spaces_w + word_w <= term_cols:
+                    out_parts.extend(self._pending_spaces)
+                    self._visual_col += spaces_w
+                else:
+                    self._emit_newline_indent(out_parts)
+            elif self._pending_spaces and self._visual_col <= 2:
+                self._pending_spaces = []
+                self._pending_spaces_width = 0
+            if word_w > 0 and self._visual_col > 2 and self._visual_col + word_w > term_cols:
+                self._emit_newline_indent(out_parts)
+            out_parts.extend(self._pending_word)
+            self._visual_col += word_w
+            self._pending_word = []
+            self._pending_word_width = 0
+            self._pending_spaces = []
+            self._pending_spaces_width = 0
+
         def write(self, text: str) -> int:
             s = str(text or "")
             if not s:
@@ -2226,29 +2297,32 @@ class SmartShellAgent:
                         m = ANSI_OSC_RE.match(s, i)
                     if m:
                         seq = m.group(0)
-                        out_parts.append(seq)
                         if seq.endswith("m") and seq.startswith("\x1b["):
                             codes = seq[2:-1]
                             self._active_sgr = "" if (not codes or codes == "0") else seq
+                        self._pending_word.append(seq)
                         i = m.end()
                         continue
                 ch = s[i]
                 if ch == "\n":
+                    self._flush_pending_word(out_parts, term_cols)
+                    self._pending_spaces = []
+                    self._pending_spaces_width = 0
                     out_parts.append("\n")
                     self._line_start = True
                     self._visual_col = 0
                     i += 1
                     continue
                 ch_w = SmartShellAgent._feedback_char_display_width(ch)
-                if ch_w > 0 and self._visual_col + ch_w > term_cols:
-                    out_parts.append("\n  ")
-                    if self._active_sgr:
-                        out_parts.append(self._active_sgr)
-                    self._line_start = False
-                    self._visual_col = 2
-                out_parts.append(ch)
-                self._visual_col += ch_w
+                if ch.isspace():
+                    self._flush_pending_word(out_parts, term_cols)
+                    self._pending_spaces.append(ch)
+                    self._pending_spaces_width += ch_w
+                else:
+                    self._pending_word.append(ch)
+                    self._pending_word_width += ch_w
                 i += 1
+            self._flush_pending_word(out_parts, term_cols)
             self._base_stream.write("".join(out_parts))
             return len(s)
 
