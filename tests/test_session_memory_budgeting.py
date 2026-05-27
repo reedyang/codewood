@@ -534,21 +534,30 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
     def test_schedule_context_usage_refresh_async_is_non_blocking_and_debounced(self):
         agent = _FakeAgent()
         svc = SessionMemoryService(agent)
+        calls = []
         entered = threading.Event()
+        replayed = threading.Event()
         release = threading.Event()
 
-        def _slow_refresh(*_args, **_kwargs):
-            entered.set()
-            release.wait(timeout=1.0)
+        def _slow_refresh(*_args, **kwargs):
+            calls.append(dict(kwargs))
+            if len(calls) == 1:
+                entered.set()
+                release.wait(timeout=1.0)
+                return
+            replayed.set()
 
         svc.refresh_context_usage_snapshot = _slow_refresh  # type: ignore[assignment]
         first = svc.schedule_context_usage_refresh_async()
         self.assertTrue(first)
         self.assertTrue(entered.wait(timeout=0.5))
-        # Inflight refresh should reject duplicate scheduling.
-        second = svc.schedule_context_usage_refresh_async()
+        # Inflight refresh should reject immediate duplicate scheduling but keep latest request pending.
+        second = svc.schedule_context_usage_refresh_async(user_input_hint="u2", context_hint="ctx2")
         self.assertFalse(second)
         release.set()
+        self.assertTrue(replayed.wait(timeout=0.5))
+        self.assertGreaterEqual(len(calls), 2)
+        self.assertEqual(calls[-1].get("context_hint"), "ctx2")
         # allow worker to exit
         time.sleep(0.05)
         third = svc.schedule_context_usage_refresh_async()
@@ -614,6 +623,22 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
 
         self.assertEqual(agent._last_context_usage_percent, 9)
         self.assertEqual(agent._last_context_input_tokens, 999)
+
+    def test_refresh_context_usage_snapshot_without_expected_state_key_does_not_self_drop(self):
+        agent = _FakeAgent()
+        agent.active_chat_id = "chat-1"
+        agent._last_context_usage_percent = 0
+        agent._last_context_input_tokens = 0
+        svc = SessionMemoryService(agent)
+        calls = {"n": 0}
+
+        def _unstable_state_key() -> str:
+            calls["n"] += 1
+            return f"key-{calls['n']}"
+
+        svc._context_usage_state_key = _unstable_state_key  # type: ignore[assignment]
+        svc.refresh_context_usage_snapshot(user_input_hint="继续", context_hint="ctx")
+        self.assertGreater(int(getattr(agent, "_last_context_input_tokens", 0) or 0), 0)
 
     def test_schedule_context_usage_refresh_async_captures_chat_id_at_schedule_time(self):
         agent = _FakeAgent()

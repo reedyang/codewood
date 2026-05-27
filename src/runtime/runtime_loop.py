@@ -221,6 +221,37 @@ def _print_worked_for_summary_line(agent: Any, elapsed_seconds: int) -> None:
             pass
 
 
+def _refresh_context_usage_after_task_boundary(
+    agent: Any,
+    user_input_hint: str = "",
+    context_hint: str = "",
+) -> None:
+    """
+    Force a context-usage refresh at task boundary moments (done/cancelled/ask_more_info pause),
+    so the status bar reflects the latest in-context task-domain anchor immediately.
+    """
+    try:
+        refresh_fn = getattr(agent, "_refresh_status_context_usage_snapshot", None)
+        if callable(refresh_fn):
+            refresh_fn(
+                user_input_hint=str(user_input_hint or ""),
+                context_hint=str(context_hint or ""),
+            )
+    except Exception:
+        pass
+    try:
+        svc = getattr(agent, "session_memory_service", None)
+        schedule_refresh = getattr(svc, "schedule_context_usage_refresh_async", None)
+        if callable(schedule_refresh):
+            schedule_refresh(
+                user_input_hint=str(user_input_hint or ""),
+                context_hint=str(context_hint or ""),
+                expected_chat_id=str(getattr(agent, "active_chat_id", "") or "").strip(),
+            )
+    except Exception:
+        pass
+
+
 def _emit_flow_log(message: str) -> None:
     msg = f"[Flow] {message}"
     try:
@@ -1544,6 +1575,11 @@ def run_agent_loop(agent: Any):
                     self._last_cancelled_task = str(original_user_task or "").strip()
                     if current_task_id:
                         self._close_chat_task(current_task_id, "cancelled")
+                    _refresh_context_usage_after_task_boundary(
+                        self,
+                        user_input_hint=str(original_user_task or ""),
+                        context_hint="task cancelled",
+                    )
                     print("⏹️ User cancellation detected. The current task has been terminated.")
                     break
 
@@ -1581,6 +1617,11 @@ def run_agent_loop(agent: Any):
                             continue
                     if current_task_id:
                         self._close_chat_task(current_task_id, "done")
+                    _refresh_context_usage_after_task_boundary(
+                        self,
+                        user_input_hint=str(original_user_task or ""),
+                        context_hint="task finished",
+                    )
                     break
                 if bool(result.get("task_changed", False)):
                     new_task = str(result.get("new_task") or "").strip()
@@ -1643,8 +1684,18 @@ def run_agent_loop(agent: Any):
                             break
                         break
                     if handoff_to_main_loop:
+                        _refresh_context_usage_after_task_boundary(
+                            self,
+                            user_input_hint=str(original_user_task or ""),
+                            context_hint="ask_more_info handoff",
+                        )
                         break
                     if not supplement_text:
+                        _refresh_context_usage_after_task_boundary(
+                            self,
+                            user_input_hint=str(original_user_task or ""),
+                            context_hint="ask_more_info paused",
+                        )
                         break
                     next_input = (
                         f"【用户原始需求】\n{original_user_task}\n\n"
@@ -1661,6 +1712,11 @@ def run_agent_loop(agent: Any):
                 ):
                     hint = str(result.get("error", "") or "需要用户输入后再继续。")
                     print(f"⏸️ Auto-continue paused: {hint}")
+                    _refresh_context_usage_after_task_boundary(
+                        self,
+                        user_input_hint=str(original_user_task or ""),
+                        context_hint="task paused needs user input",
+                    )
                     break
 
                 step_progress = self._build_step_progress_context()
@@ -1737,6 +1793,11 @@ def run_agent_loop(agent: Any):
                 self._force_current_input_as_requirement_once = True
                 if current_task_id:
                     self._close_chat_task(current_task_id, "cancelled")
+                _refresh_context_usage_after_task_boundary(
+                    self,
+                    user_input_hint=str(pending_user_task or ""),
+                    context_hint="task cancelled by interrupt",
+                )
                 try:
                     self._last_cancelled_task = str(original_user_task or "").strip()
                 except Exception:

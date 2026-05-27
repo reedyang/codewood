@@ -8,6 +8,7 @@ from src.runtime.runtime_loop import (
     _build_minimal_verification_command,
     _format_worked_for_summary_line,
     _format_startup_directory,
+    _refresh_context_usage_after_task_boundary,
     _resolve_worked_summary_terminal_width,
     _sanitize_prompt_pollution,
     _sync_command_input_history,
@@ -200,6 +201,47 @@ class RuntimeLoopTests(unittest.TestCase):
         recorded = _try_record_user_task_message(agent, "fix build", already_recorded=True)
         self.assertTrue(recorded)
         self.assertEqual(agent.calls, [])
+
+    def test_refresh_context_usage_after_task_boundary_calls_sync_and_async(self):
+        class _Svc:
+            def __init__(self):
+                self.calls = []
+
+            def schedule_context_usage_refresh_async(self, **kwargs):
+                self.calls.append(dict(kwargs))
+                return True
+
+        class _Agent:
+            def __init__(self):
+                self.active_chat_id = "chat-9"
+                self.session_memory_service = _Svc()
+                self.sync_calls = []
+
+            def _refresh_status_context_usage_snapshot(self, **kwargs):
+                self.sync_calls.append(dict(kwargs))
+
+        agent = _Agent()
+        _refresh_context_usage_after_task_boundary(
+            agent,
+            user_input_hint="new task",
+            context_hint="task finished",
+        )
+        self.assertEqual(len(agent.sync_calls), 1)
+        self.assertEqual(agent.sync_calls[0].get("context_hint"), "task finished")
+        self.assertEqual(len(agent.session_memory_service.calls), 1)
+        self.assertEqual(agent.session_memory_service.calls[0].get("expected_chat_id"), "chat-9")
+
+    def test_refresh_context_usage_after_task_boundary_is_best_effort(self):
+        class _Agent:
+            def __init__(self):
+                self.active_chat_id = "chat-1"
+                self.session_memory_service = object()
+
+        _refresh_context_usage_after_task_boundary(
+            _Agent(),
+            user_input_hint="u",
+            context_hint="ask_more_info paused",
+        )
 
 
 if __name__ == "__main__":
