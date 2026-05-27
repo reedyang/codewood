@@ -25,28 +25,128 @@ class SkillHubInstallerTests(unittest.TestCase):
     def setUpClass(cls):
         cls.mod = _load_installer_module()
 
-    def test_install_index_cancel_is_user_abort_terminal(self):
+    def test_install_requires_detail_url(self):
         args = SimpleNamespace(
             confirm="YES",
             detail_url="",
-            query="gmail",
-            max_results=8,
             insecure=False,
             no_verify=False,
             config_dir=tempfile.gettempdir(),
             builtin_skills_root="",
             workspace_skills_root="",
+            on_conflict="abort",
         )
-        cards = [
-            self.mod.SkillCard(name="Gmail", detail_url="https://www.skillhub.club/skills/gmail", snippet="")
-        ]
         captured = io.StringIO()
-        with patch.object(self.mod, "_search", return_value=cards):
-            with patch.object(self.mod, "_prompt_inline", return_value="c"):
+        with patch.object(self.mod, "_search", side_effect=AssertionError("must not search")):
+            with patch("builtins.input", side_effect=AssertionError("must not prompt")):
                 with patch("sys.stdout", new=captured):
                     rc = self.mod.cmd_install(args)
         self.assertEqual(rc, 2)
-        self.assertIn("Installation aborted by user.", captured.getvalue())
+        self.assertIn("Invalid install arguments: provide --detail-url.", captured.getvalue())
+
+    def test_install_detail_url_installs_without_prompt(self):
+        detail_html = """
+        <h2>SKILL.md</h2>
+        ```markdown
+        ---
+        name: demo-two
+        description: demo two
+        ---
+
+        # Demo Two
+        ```
+        """
+        with tempfile.TemporaryDirectory() as td:
+            args = SimpleNamespace(
+                confirm="YES",
+                detail_url="https://www.skillhub.club/skills/demo-two",
+                insecure=False,
+                no_verify=False,
+                config_dir=td,
+                builtin_skills_root="",
+                workspace_skills_root="",
+                on_conflict="abort",
+            )
+            captured = io.StringIO()
+            with patch.object(self.mod, "_search", side_effect=AssertionError("must not search")):
+                with patch.object(self.mod, "_fetch", return_value=detail_html):
+                    with patch("builtins.input", side_effect=AssertionError("must not prompt")):
+                        with patch("sys.stdout", new=captured):
+                            rc = self.mod.cmd_install(args)
+            self.assertEqual(rc, 0)
+            self.assertTrue((Path(td) / "skills" / "demo-two" / "SKILL.md").is_file())
+            self.assertIn("detail_url: https://www.skillhub.club/skills/demo-two", captured.getvalue())
+
+    def test_install_nonstandard_skill_md_normalizes_frontmatter(self):
+        detail_html = """
+        <div class="prose-skill min-w-0 max-w-full overflow-x-auto p-4 sm:p-6">
+          <h1>Demo Raw</h1>
+          <p>Installs a raw skill without frontmatter.</p>
+          <ul><li>Keep this body line.</li></ul>
+        </div>
+        """
+        with tempfile.TemporaryDirectory() as td:
+            args = SimpleNamespace(
+                confirm="YES",
+                detail_url="https://www.skillhub.club/skills/demo-raw",
+                insecure=False,
+                no_verify=False,
+                config_dir=td,
+                builtin_skills_root="",
+                workspace_skills_root="",
+                on_conflict="abort",
+            )
+            captured = io.StringIO()
+            with patch.object(self.mod, "_search", side_effect=AssertionError("must not search")):
+                with patch.object(self.mod, "_fetch", return_value=detail_html):
+                    with patch("builtins.input", side_effect=AssertionError("must not prompt")):
+                        with patch("sys.stdout", new=captured):
+                            rc = self.mod.cmd_install(args)
+            self.assertEqual(rc, 0)
+            skill_md = (Path(td) / "skills" / "demo-raw" / "SKILL.md").read_text(encoding="utf-8")
+            self.assertTrue(skill_md.startswith("---\n"))
+            self.assertIn('name: "Demo Raw"', skill_md)
+            self.assertIn('description: "Installs a raw skill without frontmatter."', skill_md)
+            self.assertIn("# Demo Raw", skill_md)
+            self.assertIn("- Keep this body line.", skill_md)
+            self.assertIn("normalized_frontmatter: yes", captured.getvalue())
+
+    def test_install_config_conflict_aborts_without_prompt(self):
+        detail_html = """
+        <h2>SKILL.md</h2>
+        ```markdown
+        ---
+        name: demo-conflict
+        description: demo conflict
+        ---
+
+        # Demo Conflict
+        ```
+        """
+        with tempfile.TemporaryDirectory() as td:
+            existing = Path(td) / "skills" / "demo-conflict"
+            existing.mkdir(parents=True)
+            (existing / "SKILL.md").write_text(
+                "---\nname: demo-conflict\ndescription: existing\n---\n\n# Existing\n",
+                encoding="utf-8",
+            )
+            args = SimpleNamespace(
+                confirm="YES",
+                detail_url="https://www.skillhub.club/skills/demo-conflict",
+                insecure=False,
+                no_verify=False,
+                config_dir=td,
+                builtin_skills_root="",
+                workspace_skills_root="",
+                on_conflict="abort",
+            )
+            captured = io.StringIO()
+            with patch.object(self.mod, "_fetch", return_value=detail_html):
+                with patch("builtins.input", side_effect=AssertionError("must not prompt")):
+                    with patch("sys.stdout", new=captured):
+                        rc = self.mod.cmd_install(args)
+            self.assertEqual(rc, 3)
+            self.assertIn("Install aborted due to config conflict.", captured.getvalue())
 
     def test_extract_github_link_prefers_repo_url_from_embedded_json(self):
         detail_html = (
