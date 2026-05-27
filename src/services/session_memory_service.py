@@ -107,6 +107,161 @@ class SessionMemoryService:
         if r == "user":
             self.agent._maybe_schedule_auto_chat_name()
 
+    def _is_excluded_user_message_for_model_context(self, msg: Dict[str, Any]) -> bool:
+        if not isinstance(msg, dict):
+            return False
+        role = str(msg.get("role") or "").strip().lower()
+        if role != "user":
+            return False
+        return bool(msg.get("exclude_from_model_context", False))
+
+    def _is_internal_assistant_history_message(self, content: str) -> bool:
+        raw = str(content or "")
+        if not raw:
+            return False
+        parse_slash_result = getattr(self.agent, "_parse_internal_slash_result_history_content", None)
+        if callable(parse_slash_result):
+            try:
+                if isinstance(parse_slash_result(raw), dict):
+                    return True
+            except Exception:
+                pass
+        parse_worked_summary = getattr(self.agent, "_parse_task_worked_summary_history_content", None)
+        if callable(parse_worked_summary):
+            try:
+                if isinstance(parse_worked_summary(raw), dict):
+                    return True
+            except Exception:
+                pass
+        parse_direct_result = getattr(self.agent, "_parse_direct_shell_result_history_content", None)
+        if callable(parse_direct_result):
+            try:
+                if isinstance(parse_direct_result(raw), dict):
+                    return True
+            except Exception:
+                pass
+        parse_interrupted = getattr(self.agent, "_parse_conversation_interrupted_history_content", None)
+        if callable(parse_interrupted):
+            try:
+                if isinstance(parse_interrupted(raw), dict):
+                    return True
+            except Exception:
+                pass
+        return False
+
+    def mark_cancelled_task_unanswered_user_messages(self, task_id: str) -> int:
+        """
+        Mark user messages in a cancelled task that have no later assistant reply in the same task,
+        so they will not enter model context or token budgeting in following rounds.
+        """
+        tid = str(task_id or "").strip()
+        if not tid:
+            return 0
+        hist = list(getattr(self.agent, "conversation_history", None) or [])
+        if not hist:
+            return 0
+        marked_indexes: List[int] = []
+        seen_assistant_after = False
+        for idx in range(len(hist) - 1, -1, -1):
+            msg = hist[idx]
+            if not isinstance(msg, dict):
+                continue
+            if str(msg.get("task_id") or "").strip() != tid:
+                continue
+            role = str(msg.get("role") or "").strip().lower()
+            if role == "assistant":
+                if self._is_internal_assistant_history_message(str(msg.get("content") or "")):
+                    continue
+                seen_assistant_after = True
+                continue
+            if role != "user":
+                continue
+            if self._is_builtin_slash_user_message(role, str(msg.get("content") or "")):
+                continue
+            if seen_assistant_after:
+                continue
+            marked_indexes.append(idx)
+        if not marked_indexes:
+            fallback_idx = self._latest_unanswered_user_message_index_global()
+            if fallback_idx >= 0:
+                marked_indexes.append(fallback_idx)
+            else:
+                return 0
+        marked_count = 0
+        for idx in marked_indexes:
+            try:
+                msg_obj = self.agent.conversation_history[idx]
+            except Exception:
+                continue
+            if not isinstance(msg_obj, dict):
+                continue
+            if bool(msg_obj.get("exclude_from_model_context", False)):
+                continue
+            msg_obj["exclude_from_model_context"] = True
+            marked_count += 1
+        if marked_count > 0:
+            try:
+                self.agent._sync_active_chat_messages()
+            except Exception:
+                pass
+        return marked_count
+
+    def mark_latest_unanswered_user_message_for_cancel(self) -> int:
+        """
+        Fallback marker used when task-id-based marking cannot be applied.
+        Marks the latest unanswered user message globally.
+        """
+        idx = self._latest_unanswered_user_message_index_global()
+        if idx < 0:
+            return 0
+        try:
+            msg_obj = self.agent.conversation_history[idx]
+        except Exception:
+            return 0
+        if not isinstance(msg_obj, dict):
+            return 0
+        if str(msg_obj.get("role") or "").strip().lower() != "user":
+            return 0
+        if bool(msg_obj.get("exclude_from_model_context", False)):
+            return 0
+        msg_obj["exclude_from_model_context"] = True
+        try:
+            self.agent._sync_active_chat_messages()
+        except Exception:
+            pass
+        return 1
+
+    def _latest_unanswered_user_message_index_global(self) -> int:
+        """
+        Fallback selector: find the latest user message that has no later *real* assistant
+        reply in history, ignoring slash/internal bookkeeping entries.
+        """
+        hist = list(getattr(self.agent, "conversation_history", None) or [])
+        if not hist:
+            return -1
+        seen_assistant_after = False
+        for idx in range(len(hist) - 1, -1, -1):
+            msg = hist[idx]
+            if not isinstance(msg, dict):
+                continue
+            role = str(msg.get("role") or "").strip().lower()
+            if role == "assistant":
+                if self._is_internal_assistant_history_message(str(msg.get("content") or "")):
+                    continue
+                seen_assistant_after = True
+                continue
+            if role != "user":
+                continue
+            if self._is_excluded_user_message_for_model_context(msg):
+                continue
+            raw = str(msg.get("content") or "")
+            if self._is_builtin_slash_user_message(role, raw):
+                continue
+            if seen_assistant_after:
+                continue
+            return idx
+        return -1
+
     def _is_builtin_slash_user_message(self, role: str, content: str) -> bool:
         norm_role = str(role or "").strip().lower()
         if norm_role != "user":
@@ -124,18 +279,32 @@ class SessionMemoryService:
 
     def _domain_filtered_history(self) -> List[Dict[str, Any]]:
         hist = list(getattr(self.agent, "conversation_history", None) or [])
+
+        def _context_eligible_messages(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+            out: List[Dict[str, Any]] = []
+            for item in rows:
+                if not isinstance(item, dict):
+                    continue
+                role = str(item.get("role") or "").strip().lower()
+                if role not in ("user", "assistant"):
+                    continue
+                if role == "user" and self._is_excluded_user_message_for_model_context(item):
+                    continue
+                out.append(item)
+            return out
+
         try:
             chat = self.agent._find_chat_by_id(getattr(self.agent, "active_chat_id", ""))
         except Exception:
             chat = None
         if not isinstance(chat, dict):
-            return hist
+            return _context_eligible_messages(hist)
         chat_messages = chat.get("messages")
         if not isinstance(chat_messages, list) or not chat_messages:
-            return hist
+            return _context_eligible_messages(hist)
         tasks = chat.get("tasks")
         if not isinstance(tasks, list):
-            return hist
+            return _context_eligible_messages(chat_messages)
         task_domains_by_id: Dict[str, Set[str]] = {}
         for t in tasks:
             if not isinstance(t, dict):
@@ -159,6 +328,12 @@ class SessionMemoryService:
             role = str(m.get("role") or "").strip().lower()
             if role not in ("user", "assistant"):
                 continue
+            if role == "user" and self._is_excluded_user_message_for_model_context(m):
+                continue
+            if role == "assistant" and self._is_internal_assistant_history_message(
+                str(m.get("content") or "")
+            ):
+                continue
             if self._is_builtin_slash_user_message(role, str(m.get("content") or "")):
                 continue
             tid = str(m.get("task_id") or "").strip()
@@ -170,11 +345,11 @@ class SessionMemoryService:
                 break
 
         cur_set = set(anchor_domains)
-        if not cur_set:
+        if not cur_set and not chat_messages:
             current_domains = list(getattr(self.agent, "_active_runtime_task_domains", None) or [])
             cur_set = {str(x).strip() for x in current_domains if str(x).strip()}
         if not cur_set:
-            return hist
+            return _context_eligible_messages(chat_messages)
         matched_task_ids: Set[str] = set()
         for tid, dset in task_domains_by_id.items():
             if dset & cur_set:
@@ -185,10 +360,12 @@ class SessionMemoryService:
         for m in chat_messages:
             if not isinstance(m, dict):
                 continue
+            if str(m.get("role") or "").strip().lower() == "user" and self._is_excluded_user_message_for_model_context(m):
+                continue
             tid = str(m.get("task_id") or "").strip()
             if tid and tid in matched_task_ids:
                 filtered.append(m)
-        return filtered or hist
+        return filtered or _context_eligible_messages(chat_messages)
 
     def _normalize_history_content_for_model(self, role: str, content: str) -> str:
         text = str(content or "")
@@ -927,6 +1104,8 @@ class SessionMemoryService:
         for msg in hist:
             if str(msg.get("role") or "").strip().lower() != "user":
                 continue
+            if self._is_excluded_user_message_for_model_context(msg):
+                continue
             c = str(msg.get("content") or "").strip()
             if self._is_builtin_slash_user_message("user", c):
                 continue
@@ -1022,6 +1201,8 @@ class SessionMemoryService:
             if role not in ("user", "assistant"):
                 continue
             raw_content = str(msg.get("content") or "")
+            if role == "user" and self._is_excluded_user_message_for_model_context(msg):
+                continue
             if role == "user" and self._is_builtin_slash_user_message(role, raw_content):
                 continue
             if role == "assistant" and callable(parse_slash_result):

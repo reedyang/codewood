@@ -273,6 +273,49 @@ class ChatStateModelPersistenceTests(unittest.TestCase):
             self.assertEqual(agent.active_chat_id, "chat-1")
             self.assertEqual(agent._active_runtime_task_id, "task-1")
 
+    def test_close_task_clears_active_task_id_when_closed(self):
+        with tempfile.TemporaryDirectory() as td:
+            agent = _FakeAgent(Path(td))
+            manager = ChatStateManager(agent, "chats.json")
+            agent._chat_state = {
+                "version": 2,
+                "active": "chat-1",
+                "chats": [
+                    {
+                        "id": "chat-1",
+                        "name": "Main",
+                        "name_source": "manual",
+                        "created_at": "",
+                        "updated_at": "",
+                        "model_provider": "openai",
+                        "model_name": "gpt-4.1",
+                        "tasks": [
+                            {
+                                "id": "task-1",
+                                "status": "open",
+                                "root_user_input": "hello",
+                                "domains": ["general_other"],
+                                "domain_scores": {},
+                                "classifier": {},
+                                "created_at": "",
+                                "updated_at": "",
+                                "closed_at": "",
+                                "switched_from_task_id": "",
+                            }
+                        ],
+                        "active_task_id": "task-1",
+                        "messages": [],
+                        "context_usage_percent": 0,
+                        "context_input_tokens": 0,
+                        "context_window": 0,
+                    }
+                ],
+            }
+            ok = manager.close_task("chat-1", "task-1", "cancelled")
+            chat = manager.find_chat_by_id("chat-1")
+            self.assertTrue(ok)
+            self.assertEqual(chat.get("active_task_id"), "")
+
     def test_load_chat_state_invalid_schema_resets_and_persists_default(self):
         with tempfile.TemporaryDirectory() as td:
             workspace = Path(td)
@@ -400,6 +443,106 @@ class ChatStateModelPersistenceTests(unittest.TestCase):
             self.assertEqual(saved_chat.get("context_usage_percent"), 67)
             self.assertEqual(saved_chat.get("context_input_tokens"), 4321)
             self.assertEqual(saved_chat.get("context_window"), 128000)
+
+    def test_sync_active_chat_messages_persists_exclude_from_model_context_flag(self):
+        with tempfile.TemporaryDirectory() as td:
+            workspace = Path(td)
+            agent = _FakeAgent(workspace)
+            manager = ChatStateManager(agent, "chats.json")
+            agent._chat_state = {
+                "version": 2,
+                "active": "chat-1",
+                "chats": [
+                    {
+                        "id": "chat-1",
+                        "name": "Main",
+                        "name_source": "manual",
+                        "created_at": "",
+                        "updated_at": "",
+                        "model_provider": "openai",
+                        "model_name": "gpt-4.1",
+                        "tasks": [],
+                        "active_task_id": "",
+                        "messages": [],
+                        "context_usage_percent": 0,
+                        "context_input_tokens": 0,
+                        "context_window": 0,
+                    }
+                ],
+            }
+            agent.active_chat_id = "chat-1"
+            agent._active_runtime_task_id = "task-1"
+            agent.conversation_history = [
+                {
+                    "role": "user",
+                    "content": "pending message",
+                    "task_id": "task-1",
+                    "exclude_from_model_context": True,
+                }
+            ]
+
+            manager.sync_active_chat_messages()
+
+            chat = manager.find_chat_by_id("chat-1")
+            self.assertIsNotNone(chat)
+            msgs = list(chat.get("messages") or [])
+            self.assertEqual(len(msgs), 1)
+            self.assertTrue(bool(msgs[0].get("exclude_from_model_context", False)))
+            payload = json.loads((workspace / "chats.json").read_text(encoding="utf-8"))
+            saved_msgs = list((payload.get("chats") or [])[0].get("messages") or [])
+            self.assertEqual(len(saved_msgs), 1)
+            self.assertTrue(bool(saved_msgs[0].get("exclude_from_model_context", False)))
+
+    def test_sync_active_chat_messages_does_not_fallback_to_closed_active_task(self):
+        with tempfile.TemporaryDirectory() as td:
+            workspace = Path(td)
+            agent = _FakeAgent(workspace)
+            manager = ChatStateManager(agent, "chats.json")
+            agent._chat_state = {
+                "version": 2,
+                "active": "chat-1",
+                "chats": [
+                    {
+                        "id": "chat-1",
+                        "name": "Main",
+                        "name_source": "manual",
+                        "created_at": "",
+                        "updated_at": "",
+                        "model_provider": "openai",
+                        "model_name": "gpt-4.1",
+                        "tasks": [
+                            {
+                                "id": "task-1",
+                                "status": "cancelled",
+                                "root_user_input": "old",
+                                "domains": ["general_other"],
+                                "domain_scores": {},
+                                "classifier": {},
+                                "created_at": "",
+                                "updated_at": "",
+                                "closed_at": "",
+                                "switched_from_task_id": "",
+                            }
+                        ],
+                        "active_task_id": "task-1",
+                        "messages": [],
+                        "context_usage_percent": 0,
+                        "context_input_tokens": 0,
+                        "context_window": 0,
+                    }
+                ],
+            }
+            agent.active_chat_id = "chat-1"
+            agent._active_runtime_task_id = ""
+            agent.conversation_history = [{"role": "user", "content": "direct shell", "task_id": ""}]
+
+            manager.sync_active_chat_messages()
+
+            chat = manager.find_chat_by_id("chat-1")
+            msgs = list(chat.get("messages") or [])
+            self.assertEqual(chat.get("active_task_id"), "")
+            self.assertEqual(len(msgs), 1)
+            self.assertEqual(msgs[0].get("task_id"), "")
 
 
 if __name__ == "__main__":

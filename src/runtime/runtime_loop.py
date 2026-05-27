@@ -1105,9 +1105,6 @@ def run_agent_loop(agent: Any):
             last_result = None
             self._last_auto_removed_ephemeral = None
             original_user_task = task_user_input
-            user_message_recorded = _try_record_user_task_message(
-                self, original_user_task, already_recorded=user_message_recorded
-            )
             domain_classify_started_at = time.perf_counter()
             _emit_flow_log("任务领域分类开始")
             domain_info = self._classify_task_domains(original_user_task)
@@ -1122,6 +1119,9 @@ def run_agent_loop(agent: Any):
                 root_user_input=original_user_task,
                 domains=list(domain_info.get("domains") or []),
                 classifier=domain_info,
+            )
+            user_message_recorded = _try_record_user_task_message(
+                self, original_user_task, already_recorded=user_message_recorded
             )
             code_changed_in_task = False
             verification_done_in_task = False

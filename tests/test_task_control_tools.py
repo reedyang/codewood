@@ -108,6 +108,40 @@ class TaskControlToolTests(unittest.TestCase):
         self.assertEqual(len(self.agent.session_memory_service.calls), 1)
         self.assertEqual(self.agent.session_memory_service.calls[0]["context_hint"], "task started")
 
+    def test_start_chat_task_clears_active_task_id_when_creation_fails(self):
+        class _FakeChatStateManager:
+            def start_task(
+                self,
+                chat_id,
+                root_user_input,
+                domains,
+                classifier=None,
+                switched_from_task_id="",
+            ):
+                _ = (chat_id, root_user_input, domains, classifier, switched_from_task_id)
+                return ""
+
+        class _FakeSessionMemoryService:
+            def schedule_context_usage_refresh_async(self, user_input_hint="", context_hint=""):
+                _ = (user_input_hint, context_hint)
+                return True
+
+        self.agent.active_chat_id = "chat-1"
+        self.agent._chat_state_manager = _FakeChatStateManager()
+        self.agent._active_runtime_task_id = "task-old"
+        self.agent._active_runtime_task_domains = []
+        self.agent.session_memory_service = _FakeSessionMemoryService()
+        self.agent._refresh_status_context_usage_snapshot = lambda user_input_hint="", context_hint="": None
+
+        task_id = self.agent._start_chat_task(
+            root_user_input="new task input",
+            domains=["data_analysis"],
+            classifier={"primary_domain": "data_analysis", "domains": ["data_analysis"]},
+        )
+
+        self.assertEqual(task_id, "")
+        self.assertEqual(self.agent._active_runtime_task_id, "")
+
     def test_clear_active_chat_context_resets_usage_and_persists(self):
         class _FakeChatStateManager:
             def __init__(self):
@@ -142,6 +176,218 @@ class TaskControlToolTests(unittest.TestCase):
         self.assertEqual(self.agent._last_context_input_tokens, 0)
         self.assertEqual(self.agent._chat_state_manager.cleared, ["chat-1"])
         self.assertEqual(persisted["n"], 1)
+
+    def test_close_chat_task_cancelled_marks_unanswered_user_messages(self):
+        class _FakeChatStateManager:
+            def __init__(self):
+                self.calls = []
+
+            def close_task(self, chat_id, task_id, status):
+                self.calls.append((str(chat_id or ""), str(task_id or ""), str(status or "")))
+                return True
+
+        class _FakeSessionMemoryService:
+            def __init__(self):
+                self.marked = []
+
+            def mark_cancelled_task_unanswered_user_messages(self, task_id):
+                self.marked.append(str(task_id or ""))
+                return 1
+
+        self.agent.active_chat_id = "chat-1"
+        self.agent._chat_state_manager = _FakeChatStateManager()
+        self.agent.session_memory_service = _FakeSessionMemoryService()
+
+        ok = self.agent._close_chat_task("task-9", "cancelled")
+
+        self.assertTrue(ok)
+        self.assertEqual(self.agent._chat_state_manager.calls, [("chat-1", "task-9", "cancelled")])
+        self.assertEqual(self.agent.session_memory_service.marked, ["task-9"])
+
+    def test_close_chat_task_cancelled_clears_matching_runtime_task(self):
+        class _FakeChatStateManager:
+            def close_task(self, chat_id, task_id, status):
+                _ = (chat_id, task_id, status)
+                return True
+
+        class _FakeSessionMemoryService:
+            def mark_cancelled_task_unanswered_user_messages(self, task_id):
+                _ = task_id
+                return 0
+
+            def mark_latest_unanswered_user_message_for_cancel(self):
+                return 0
+
+        self.agent.active_chat_id = "chat-1"
+        self.agent._chat_state_manager = _FakeChatStateManager()
+        self.agent.session_memory_service = _FakeSessionMemoryService()
+        self.agent._active_runtime_task_id = "task-9"
+        self.agent._active_runtime_task_domains = ["visual_design"]
+
+        ok = self.agent._close_chat_task("task-9", "cancelled")
+
+        self.assertTrue(ok)
+        self.assertEqual(self.agent._active_runtime_task_id, "")
+        self.assertEqual(self.agent._active_runtime_task_domains, [])
+
+    def test_direct_shell_history_starts_classified_task(self):
+        classify_calls = []
+        start_calls = []
+        close_calls = []
+        appended = []
+        refresh_calls = []
+        self.agent._active_runtime_task_id = "task-old"
+
+        class _FakeSessionMemoryService:
+            def __init__(self):
+                self.calls = []
+
+            def schedule_context_usage_refresh_async(self, **kwargs):
+                self.calls.append(dict(kwargs))
+                return True
+
+        def _classify(user_input):
+            classify_calls.append(str(user_input or ""))
+            return {
+                "primary_domain": "software_development",
+                "domains": ["software_development"],
+                "confidence": 0.9,
+            }
+
+        def _start_chat_task(root_user_input, domains, classifier=None, switched_from_task_id=""):
+            start_calls.append(
+                {
+                    "root_user_input": str(root_user_input or ""),
+                    "domains": list(domains or []),
+                    "classifier": dict(classifier or {}),
+                    "switched_from_task_id": str(switched_from_task_id or ""),
+                }
+            )
+            self.agent._active_runtime_task_id = "task-direct"
+            return "task-direct"
+
+        def _append_chat_message(role, content):
+            appended.append(
+                {
+                    "role": str(role or ""),
+                    "content": str(content or ""),
+                    "task_id": str(self.agent._active_runtime_task_id or ""),
+                }
+            )
+
+        def _close_chat_task(task_id, status):
+            close_calls.append((str(task_id or ""), str(status or "")))
+            if str(task_id or "") == "task-direct":
+                self.agent._active_runtime_task_id = ""
+            return True
+
+        self.agent._classify_task_domains = _classify
+        self.agent._start_chat_task = _start_chat_task
+        self.agent._append_chat_message = _append_chat_message
+        self.agent._close_chat_task = _close_chat_task
+        self.agent.active_chat_id = "chat-1"
+        self.agent.session_memory_service = _FakeSessionMemoryService()
+        self.agent._refresh_status_context_usage_snapshot = (
+            lambda user_input_hint="", context_hint="": refresh_calls.append(
+                {
+                    "user_input_hint": str(user_input_hint or ""),
+                    "context_hint": str(context_hint or ""),
+                }
+            )
+        )
+
+        self.agent._record_direct_shell_execution_history(
+            raw_user_command="powershell -Command Get-ChildItem",
+            executed_command="powershell -Command Get-ChildItem",
+            cwd="D:/ws",
+            return_code=1,
+            stdout_text="",
+            stderr_text="boom",
+        )
+
+        self.assertEqual(classify_calls, ["powershell -Command Get-ChildItem"])
+        self.assertEqual(start_calls[0]["domains"], ["software_development"])
+        self.assertEqual(len(appended), 2)
+        self.assertTrue(appended[0]["content"].startswith("[DIRECT_SHELL_USER_COMMAND]"))
+        self.assertTrue(appended[1]["content"].startswith("[DIRECT_SHELL_RESULT]"))
+        self.assertEqual([x["task_id"] for x in appended], ["task-direct", "task-direct"])
+        self.assertEqual(close_calls, [("task-direct", "done")])
+        self.assertEqual(
+            refresh_calls,
+            [
+                {
+                    "user_input_hint": "powershell -Command Get-ChildItem",
+                    "context_hint": "direct shell completed",
+                }
+            ],
+        )
+        self.assertEqual(
+            self.agent.session_memory_service.calls,
+            [
+                {
+                    "user_input_hint": "powershell -Command Get-ChildItem",
+                    "context_hint": "direct shell completed",
+                    "expected_chat_id": "chat-1",
+                }
+            ],
+        )
+
+    def test_close_chat_task_cancelled_fallback_marks_latest_when_task_mark_misses(self):
+        class _FakeChatStateManager:
+            def __init__(self):
+                self.calls = []
+
+            def close_task(self, chat_id, task_id, status):
+                self.calls.append((str(chat_id or ""), str(task_id or ""), str(status or "")))
+                return False
+
+        class _FakeSessionMemoryService:
+            def __init__(self):
+                self.marked = []
+                self.fallback_calls = 0
+
+            def mark_cancelled_task_unanswered_user_messages(self, task_id):
+                self.marked.append(str(task_id or ""))
+                return 0
+
+            def mark_latest_unanswered_user_message_for_cancel(self):
+                self.fallback_calls += 1
+                return 1
+
+        self.agent.active_chat_id = "chat-1"
+        self.agent._chat_state_manager = _FakeChatStateManager()
+        self.agent.session_memory_service = _FakeSessionMemoryService()
+
+        ok = self.agent._close_chat_task("task-9", "cancelled")
+
+        self.assertFalse(ok)
+        self.assertEqual(self.agent._chat_state_manager.calls, [("chat-1", "task-9", "cancelled")])
+        self.assertEqual(self.agent.session_memory_service.marked, ["task-9"])
+        self.assertEqual(self.agent.session_memory_service.fallback_calls, 1)
+
+    def test_record_task_interrupted_history_marks_latest_unanswered_user_first(self):
+        class _FakeSessionMemoryService:
+            def __init__(self):
+                self.mark_calls = 0
+
+            def mark_latest_unanswered_user_message_for_cancel(self):
+                self.mark_calls += 1
+                return 1
+
+        appended = []
+        self.agent.session_memory_service = _FakeSessionMemoryService()
+        self.agent._append_chat_message = lambda role, content: appended.append((role, content))
+
+        self.agent._record_conversation_interrupted_history(
+            interrupted_kind="task",
+            reason="user_interrupt",
+            detail="pending task",
+        )
+
+        self.assertEqual(self.agent.session_memory_service.mark_calls, 1)
+        self.assertEqual(len(appended), 1)
+        self.assertEqual(appended[0][0], "assistant")
+        self.assertIn("[CONVERSATION_INTERRUPTED]", appended[0][1])
 
 
 if __name__ == "__main__":
