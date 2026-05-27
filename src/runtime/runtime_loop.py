@@ -95,6 +95,20 @@ def _estimate_visible_lines(agent: Any, text: str) -> int:
     return max(0, len(parts))
 
 
+def _stop_pre_task_status_ticker_for_console_output(
+    agent: Any,
+    pre_task_status_ticker: Optional[_WorkingStatusTicker],
+) -> None:
+    if pre_task_status_ticker is None:
+        return None
+    pre_task_status_ticker.stop()
+    try:
+        agent._clear_last_thinking_line()
+    except Exception:
+        pass
+    return None
+
+
 def _shell_command_indicates_verification(command: str) -> bool:
     c = str(command or "").strip().lower()
     if not c:
@@ -1222,6 +1236,10 @@ def run_agent_loop(agent: Any):
             forced_skill_prefix = ""
             forced_mcp_prefix = ""
             if forced_mcp_entries:
+                pre_task_status_ticker = _stop_pre_task_status_ticker_for_console_output(
+                    self,
+                    pre_task_status_ticker,
+                )
                 for e in forced_mcp_entries:
                     srv = str(e.get("server", "")).strip()
                     name = str(e.get("name", "")).strip()
@@ -1240,6 +1258,10 @@ def run_agent_loop(agent: Any):
                     skill_items.append(f"`{sname}`(skill_id=`{sid}`)")
                     full_prompt, meta = self._build_single_skill_prompt(sid)
                     if full_prompt:
+                        pre_task_status_ticker = _stop_pre_task_status_ticker_for_console_output(
+                            self,
+                            pre_task_status_ticker,
+                        )
                         print(f"🧩 Enabled skill: {sname}")
                         full_prompts.append(full_prompt)
                         preloaded_skill_ids.add(self._canonical_skill_id(sid))
