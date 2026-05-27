@@ -84,26 +84,133 @@ content
         self.assertTrue(txt.startswith("---"))
         self.assertIn("name: gmail", txt)
 
-    def test_install_index_cancel_is_user_abort_terminal(self):
+    def test_install_requires_detail_url(self):
         args = SimpleNamespace(
             confirm="YES",
             detail_url="",
-            query="gmail",
-            max_results=8,
             insecure=False,
             no_verify=False,
             config_dir=tempfile.gettempdir(),
             builtin_skills_root="",
             workspace_skills_root="",
+            on_conflict="abort",
         )
-        cards = [self.mod.SkillCard(name="Gmail", detail_url="https://clawhub.ai/skills/gmail", snippet="")]
         captured = io.StringIO()
-        with patch.object(self.mod, "_search", return_value=cards):
-            with patch.object(self.mod, "_prompt_inline", return_value="C"):
+        with patch.object(self.mod, "_search", side_effect=AssertionError("must not search")):
+            with patch("builtins.input", side_effect=AssertionError("must not prompt")):
                 with patch("sys.stdout", new=captured):
                     rc = self.mod.cmd_install(args)
         self.assertEqual(rc, 2)
-        self.assertIn("Installation aborted by user.", captured.getvalue())
+        self.assertIn("Invalid install arguments: provide --detail-url.", captured.getvalue())
+
+    def test_install_detail_url_installs_without_prompt(self):
+        detail_html = """
+## SKILL.md
+---
+name: gmail
+description: gmail integration
+---
+
+# Gmail
+content
+
+### Files
+"""
+        with tempfile.TemporaryDirectory() as td:
+            args = SimpleNamespace(
+                confirm="YES",
+                detail_url="https://clawhub.ai/skills/gmail",
+                insecure=False,
+                no_verify=False,
+                config_dir=td,
+                builtin_skills_root="",
+                workspace_skills_root="",
+                on_conflict="abort",
+            )
+            captured = io.StringIO()
+            with patch.object(self.mod, "_search", side_effect=AssertionError("must not search")):
+                with patch.object(self.mod, "_fetch_text", return_value=detail_html):
+                    with patch("builtins.input", side_effect=AssertionError("must not prompt")):
+                        with patch("sys.stdout", new=captured):
+                            rc = self.mod.cmd_install(args)
+            self.assertEqual(rc, 0)
+            self.assertTrue((Path(td) / "skills" / "gmail" / "SKILL.md").is_file())
+            self.assertIn("detail_url: https://clawhub.ai/skills/gmail", captured.getvalue())
+
+    def test_install_nonstandard_skill_md_normalizes_frontmatter(self):
+        detail_html = """
+## SKILL.md
+# Demo Raw
+
+Installs a raw skill without frontmatter.
+
+- Keep this body line.
+
+### Files
+"""
+        with tempfile.TemporaryDirectory() as td:
+            args = SimpleNamespace(
+                confirm="YES",
+                detail_url="https://clawhub.ai/skills/demo-raw",
+                insecure=False,
+                no_verify=False,
+                config_dir=td,
+                builtin_skills_root="",
+                workspace_skills_root="",
+                on_conflict="abort",
+            )
+            captured = io.StringIO()
+            with patch.object(self.mod, "_search", side_effect=AssertionError("must not search")):
+                with patch.object(self.mod, "_fetch_text", return_value=detail_html):
+                    with patch("builtins.input", side_effect=AssertionError("must not prompt")):
+                        with patch("sys.stdout", new=captured):
+                            rc = self.mod.cmd_install(args)
+            self.assertEqual(rc, 0)
+            skill_md = (Path(td) / "skills" / "demo-raw" / "SKILL.md").read_text(encoding="utf-8")
+            self.assertTrue(skill_md.startswith("---\n"))
+            self.assertIn('name: "Demo Raw"', skill_md)
+            self.assertIn('description: "Installs a raw skill without frontmatter."', skill_md)
+            self.assertIn("# Demo Raw", skill_md)
+            self.assertIn("- Keep this body line.", skill_md)
+            self.assertIn("normalized_frontmatter: yes", captured.getvalue())
+
+    def test_install_config_conflict_aborts_without_prompt(self):
+        detail_html = """
+## SKILL.md
+---
+name: demo-conflict
+description: demo conflict
+---
+
+# Demo Conflict
+content
+
+### Files
+"""
+        with tempfile.TemporaryDirectory() as td:
+            existing = Path(td) / "skills" / "demo-conflict"
+            existing.mkdir(parents=True)
+            (existing / "SKILL.md").write_text(
+                "---\nname: demo-conflict\ndescription: existing\n---\n\n# Existing\n",
+                encoding="utf-8",
+            )
+            args = SimpleNamespace(
+                confirm="YES",
+                detail_url="https://clawhub.ai/skills/demo-conflict",
+                insecure=False,
+                no_verify=False,
+                config_dir=td,
+                builtin_skills_root="",
+                workspace_skills_root="",
+                on_conflict="abort",
+            )
+            captured = io.StringIO()
+            with patch.object(self.mod, "_fetch_text", return_value=detail_html):
+                with patch("builtins.input", side_effect=AssertionError("must not prompt")):
+                    with patch("sys.stdout", new=captured):
+                        rc = self.mod.cmd_install(args)
+            self.assertEqual(rc, 3)
+            self.assertIn("Install aborted due to config conflict.", captured.getvalue())
 
 
 if __name__ == "__main__":
