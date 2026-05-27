@@ -14,6 +14,7 @@ from src.runtime.runtime_loop import (
     _sync_command_input_history,
     _should_record_command_input_history,
     _shell_command_indicates_verification,
+    _stop_pre_task_status_ticker_for_console_output,
     _try_record_user_task_message,
     _tool_change_and_verification_hints,
 )
@@ -105,6 +106,30 @@ class RuntimeLoopTests(unittest.TestCase):
         self.assertTrue(_should_record_command_input_history("/chat list"))
         self.assertTrue(_should_record_command_input_history("!git status"))
         self.assertFalse(_should_record_command_input_history("   "))
+
+    def test_stop_pre_task_status_ticker_for_console_output_clears_line(self):
+        class _Agent:
+            def __init__(self):
+                self.clear_calls = 0
+
+            def _clear_last_thinking_line(self):
+                self.clear_calls += 1
+
+        class _Ticker:
+            def __init__(self):
+                self.stop_calls = 0
+
+            def stop(self):
+                self.stop_calls += 1
+
+        agent = _Agent()
+        ticker = _Ticker()
+
+        result = _stop_pre_task_status_ticker_for_console_output(agent, ticker)
+
+        self.assertIsNone(result)
+        self.assertEqual(ticker.stop_calls, 1)
+        self.assertEqual(agent.clear_calls, 1)
 
     def test_sync_command_input_history_records_slash_commands_for_current_session(self):
         class _Agent:
