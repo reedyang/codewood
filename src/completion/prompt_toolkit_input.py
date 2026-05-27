@@ -1470,7 +1470,19 @@ class PromptToolkitInputHandler:
 
         def _enter_shell_mode(event) -> None:
             buf = event.current_buffer
-            if str(getattr(buf, "text", "") or ""):
+            text = str(getattr(buf, "text", "") or "")
+            if text:
+                # If "!" is inserted at the very beginning of an existing draft,
+                # treat it as switching into Shell mode instead of inserting a literal
+                # leading bang (which would otherwise become "!!<cmd>" on submit).
+                cursor_pos = int(getattr(buf, "cursor_position", len(text)) or 0)
+                if cursor_pos <= 0:
+                    self._shell_mode_active = True
+                    try:
+                        event.app.invalidate()
+                    except Exception:
+                        pass
+                    return
                 buf.insert_text("!")
                 return
             self._shell_mode_active = True
