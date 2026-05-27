@@ -98,6 +98,14 @@ def _format_omitted_lines_notice(omitted_lines: int, stream: Any) -> str:
 
 def _terminal_columns_for_tail_display(stream: Any) -> int:
     try:
+        fn = getattr(stream, "smart_shell_terminal_columns", None)
+        if callable(fn):
+            cols = int(fn() or 0)
+            if cols > 0:
+                return cols
+    except Exception:
+        pass
+    try:
         if stream is not None and hasattr(stream, "fileno"):
             cols = int(os.get_terminal_size(stream.fileno()).columns or 0)
             if cols > 0:

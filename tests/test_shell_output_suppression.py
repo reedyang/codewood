@@ -6,6 +6,7 @@ from src.actions.command_actions import (
     _build_tail_output_for_display,
     _count_output_lines,
     _dynamic_tail_line_limit,
+    _terminal_columns_for_tail_display,
 )
 
 
@@ -17,6 +18,11 @@ class _FakeTty:
 class _FakePipe:
     def isatty(self):
         return False
+
+
+class _FakeSmartWidthStream:
+    def smart_shell_terminal_columns(self):
+        return 42
 
 
 class ShellOutputSuppressionTests(unittest.TestCase):
@@ -32,6 +38,13 @@ class ShellOutputSuppressionTests(unittest.TestCase):
         self.assertEqual(_count_output_lines("a\r\nb\r\n"), 2)
         self.assertEqual(_count_output_lines("a\nb\nc"), 3)
         self.assertEqual(_count_output_lines(""), 0)
+
+    def test_tail_display_width_prefers_wrapped_stream_columns(self):
+        with (
+            patch("src.actions.command_actions.os.get_terminal_size", return_value=type("Sz", (), {"columns": 80})()),
+            patch("src.actions.command_actions.shutil.get_terminal_size", return_value=type("Sz", (), {"columns": 80})()),
+        ):
+            self.assertEqual(_terminal_columns_for_tail_display(_FakeSmartWidthStream()), 42)
 
     def test_build_tail_output_keeps_full_output_when_not_exceeding_limit(self):
         text = "line1\nline2\n"

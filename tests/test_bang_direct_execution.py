@@ -200,6 +200,32 @@ class BangDirectExecutionTests(unittest.TestCase):
         out_plain = ansi_re.sub("", out_buf.getvalue()).lstrip("\r")
         self.assertEqual(out_plain, "    └ At Line:1 char:41\n")
 
+    def test_direct_shell_history_output_inside_slash_stream_reserves_outer_indent_width(self):
+        class _TtyBuffer(StringIO):
+            def isatty(self):
+                return True
+
+            def fileno(self):
+                return 1
+
+        out_buf = _TtyBuffer()
+        err_buf = _TtyBuffer()
+        slash_out = self.agent._build_internal_slash_output_stream(out_buf, terminal_columns=24)
+        slash_err = self.agent._build_internal_slash_output_stream(err_buf, terminal_columns=24)
+        with (
+            patch("src.smart_shell_agent.sys.stdout", slash_out),
+            patch("src.smart_shell_agent.sys.stderr", slash_err),
+            patch("src.smart_shell_agent.os.get_terminal_size", return_value=types.SimpleNamespace(columns=80)),
+            patch("src.smart_shell_agent.shutil.get_terminal_size", return_value=types.SimpleNamespace(columns=80)),
+        ):
+            self.agent._print_direct_shell_history_output("12345678901234567890\n", "")
+
+        ansi_re = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+        out_plain = ansi_re.sub("", out_buf.getvalue()).lstrip("\r")
+        rows = out_plain.splitlines()
+        self.assertEqual(rows, ["    └ 123456789012345678", "      90"])
+        self.assertTrue(all(len(row) <= 24 for row in rows))
+
     @patch("subprocess.Popen")
     def test_run_direct_shell_wraps_interrupt_monitor_and_process_registration(self, popen_mock):
         proc = types.SimpleNamespace(

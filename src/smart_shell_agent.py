@@ -2532,6 +2532,14 @@ class SmartShellAgent:
 
         def _terminal_columns(self) -> int:
             try:
+                fn = getattr(self._base_stream, "smart_shell_terminal_columns", None)
+                if callable(fn):
+                    cols0 = int(fn() or 0)
+                    if cols0 > 0:
+                        return cols0
+            except Exception:
+                pass
+            try:
                 if hasattr(self._base_stream, "fileno"):
                     cols = int(os.get_terminal_size(self._base_stream.fileno()).columns or 0)
                     if cols > 0:
@@ -2587,7 +2595,11 @@ class SmartShellAgent:
                         cb()
                     except Exception:
                         pass
-            term_cols = max(8, int(self._terminal_columns() or 80))
+            try:
+                outer_indent = int(getattr(self._base_stream, "smart_shell_output_indent_width", 0) or 0)
+            except Exception:
+                outer_indent = 0
+            term_cols = max(8, int(self._terminal_columns() or 80) - max(0, outer_indent))
             out_parts: List[str] = []
             for ch in s:
                 if self._line_start:
