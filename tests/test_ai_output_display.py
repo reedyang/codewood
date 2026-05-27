@@ -215,7 +215,7 @@ class AiOutputDisplayTests(unittest.TestCase):
 
     def test_format_tool_call_feedback_line_wraps_long_command_with_gray_pipe_prefix(self):
         with (
-            patch.object(self.agent, "_tool_call_summary", return_value="abcdefghijklmnopqrstuvwxyz"),
+            patch.object(self.agent, "_tool_call_summary", return_value="abcdef ghijkl mnopqrstuvwxyz"),
             patch.object(self.agent, "_terminal_columns_for_command_feedback", return_value=16),
             patch("src.smart_shell_agent._ansi_rgb", side_effect=lambda text, r, g, b: f"<RGB:{r},{g},{b}>{text}</RGB>"),
             patch("src.smart_shell_agent._ansi_gray", side_effect=lambda s: f"<G>{s}</G>"),
@@ -245,11 +245,14 @@ class AiOutputDisplayTests(unittest.TestCase):
             patch("src.smart_shell_agent._ansi_gray", side_effect=lambda s: s),
             patch("src.smart_shell_agent.highlight_assistant_display_line", side_effect=lambda s: s),
         ):
-            line = self.agent._format_direct_shell_command_feedback_line("x" * 26, failed=False)
+            line = self.agent._format_direct_shell_command_feedback_line(
+                "alpha beta gamma delta",
+                failed=False,
+            )
         rows = line.splitlines()
-        self.assertEqual(len(rows), 2)
+        self.assertGreaterEqual(len(rows), 2)
         self.assertTrue(rows[1].startswith("  │ "))
-        self.assertEqual(len(rows[1]) - len("  │ "), 16)
+        self.assertLessEqual(len(rows[1]) - len("  │ "), 16)
 
     def test_format_direct_shell_command_feedback_line_highlights_once_before_wrapping(self):
         with (
@@ -278,7 +281,7 @@ class AiOutputDisplayTests(unittest.TestCase):
             ),
         ):
             line = self.agent._format_direct_shell_command_feedback_line(
-                "abcdefghijklmnopqrstuvwxyz",
+                "abcdefghij klmnopqrst uvwxyz",
                 failed=False,
             )
         rows = line.splitlines()
@@ -291,7 +294,7 @@ class AiOutputDisplayTests(unittest.TestCase):
             patch.object(self.agent, "_terminal_columns_for_line_estimate", return_value=8),
             patch("src.smart_shell_agent._ansi_gray", side_effect=lambda s: s),
         ):
-            rendered = self.agent._format_user_chat_display_message("1234567890")
+            rendered = self.agent._format_user_chat_display_message("123456 7890")
         rows = rendered.splitlines()
         self.assertEqual(len(rows), 2)
         self.assertEqual(rows[0], "› 123456")
@@ -302,16 +305,24 @@ class AiOutputDisplayTests(unittest.TestCase):
             patch.object(self.agent, "_terminal_columns_for_line_estimate", return_value=8),
             patch("src.smart_shell_agent._ansi_gray", side_effect=lambda s: s),
         ):
-            rendered = self.agent._format_user_chat_display_message("/abcdefghi")
+            rendered = self.agent._format_user_chat_display_message("/abcde fghi")
         rows = rendered.splitlines()
         self.assertEqual(rows, ["› /abcde", "  fghi"])
+
+    def test_format_slash_command_display_does_not_split_single_word(self):
+        with (
+            patch.object(self.agent, "_terminal_columns_for_line_estimate", return_value=8),
+            patch("src.smart_shell_agent._ansi_gray", side_effect=lambda s: s),
+        ):
+            rendered = self.agent._format_user_chat_display_message("/abcdefghij")
+        self.assertEqual(rendered.splitlines(), ["› /abcdefghij"])
 
     def test_format_assistant_chat_display_message_keeps_ansi_color_after_wrap(self):
         with (
             patch.object(self.agent, "_terminal_columns_for_line_estimate", return_value=10),
             patch("src.smart_shell_agent._ansi_gray", side_effect=lambda s: s),
         ):
-            rendered = self.agent._format_assistant_chat_display_message("\x1b[32mabcdefghijk\x1b[0m")
+            rendered = self.agent._format_assistant_chat_display_message("\x1b[32mabcdef ghijk\x1b[0m")
         rows = rendered.splitlines()
         self.assertEqual(len(rows), 2)
         self.assertTrue(rows[0].startswith("• "))
@@ -320,8 +331,13 @@ class AiOutputDisplayTests(unittest.TestCase):
 
     def test_format_internal_slash_output_indents_logical_and_wrapped_lines(self):
         with patch.object(self.agent, "_terminal_columns_for_line_estimate", return_value=8):
-            rendered = self.agent._format_internal_slash_output("1234567890\nabc")
-        self.assertEqual(rendered.splitlines(), ["  123456", "  7890", "  abc"])
+            rendered = self.agent._format_internal_slash_output("alpha beta\nabc")
+        self.assertEqual(rendered.splitlines(), ["  alpha", "  beta", "  abc"])
+
+    def test_format_internal_slash_output_does_not_split_single_word(self):
+        with patch.object(self.agent, "_terminal_columns_for_line_estimate", return_value=8):
+            rendered = self.agent._format_internal_slash_output("abcdefghij")
+        self.assertEqual(rendered.splitlines(), ["  abcdefghij"])
 
     def test_print_internal_slash_history_output_uses_indented_formatter(self):
         class _FakeStdout:
@@ -340,8 +356,8 @@ class AiOutputDisplayTests(unittest.TestCase):
             patch("src.smart_shell_agent.sys.stdout", fake_stdout),
             patch.object(self.agent, "_terminal_columns_for_line_estimate", return_value=8),
         ):
-            self.agent._print_internal_slash_history_output("1234567890\n")
-        self.assertEqual("".join(fake_stdout.writes), "  123456\n  7890\n")
+            self.agent._print_internal_slash_history_output("alpha beta\n")
+        self.assertEqual("".join(fake_stdout.writes), "  alpha\n  beta\n")
 
     def test_internal_slash_output_stream_indents_auto_wraps(self):
         class _FakeStdout:
@@ -366,8 +382,8 @@ class AiOutputDisplayTests(unittest.TestCase):
         fake_stdout = _FakeStdout()
         stream = self.agent._build_internal_slash_output_stream(fake_stdout)
         with patch("src.smart_shell_agent.shutil.get_terminal_size", return_value=_Sz()):
-            stream.write("1234567890\nabc")
-        self.assertEqual("".join(fake_stdout.writes), "  123456\n  7890\n  abc")
+            stream.write("alpha beta\nabc")
+        self.assertEqual("".join(fake_stdout.writes), "  alpha\n  beta\n  abc")
 
     def test_repaint_tool_call_feedback_if_failed_uses_configured_up_lines(self):
         class _FakeStdout:
