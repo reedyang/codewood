@@ -275,6 +275,8 @@ class SmartShellAgent:
             create_prompt_toolkit_input_handler=globals().get("create_prompt_toolkit_input_handler"),
         )
         bootstrap.setup_runtime_services(self)
+        self._last_terminal_block_kind = ""
+        self._terminal_cursor_at_line_start = True
 
     def _resolve_path_lenient(self, path: Path) -> Path:
         try:
@@ -1053,11 +1055,13 @@ class SmartShellAgent:
                     raw_out,
                     sys.stdout,
                     out_limit,
+                    display_indent_width=4,
                 )
                 err_text = command_actions._build_tail_output_for_display(
                     raw_err,
                     sys.stderr,
                     err_limit,
+                    display_indent_width=4,
                 )
                 return (
                     self._strip_console_color_controls(out_text),
@@ -1083,6 +1087,7 @@ class SmartShellAgent:
                 raw_out,
                 sys.stdout,
                 out_limit,
+                display_indent_width=4,
             )
             out_text = self._strip_console_color_controls(out_text)
         if raw_err:
@@ -1091,6 +1096,7 @@ class SmartShellAgent:
                 raw_err,
                 sys.stderr,
                 err_limit,
+                display_indent_width=4,
             )
             err_text = self._strip_console_color_controls(err_text)
         return out_text, err_text
@@ -1221,7 +1227,14 @@ class SmartShellAgent:
                     continue
                 display_response = format_assistant_display_response(content)
                 if display_response:
+                    self._ensure_terminal_line_start()
                     print(self._format_assistant_chat_display_message(display_response))
+                    try:
+                        sys.stdout.flush()
+                    except Exception:
+                        pass
+                    self._last_terminal_block_kind = "assistant"
+                    self._terminal_cursor_at_line_start = True
                 tool_plan = self._find_tool_plan_anywhere(content)
                 if tool_plan:
                     tool_name, args = tool_plan
@@ -1583,6 +1596,8 @@ class SmartShellAgent:
             self._erase_last_user_input_line()
         line = self._format_direct_shell_command_feedback_line(command, failed=failed)
         print(line)
+        self._last_terminal_block_kind = "feedback"
+        self._terminal_cursor_at_line_start = True
 
     def _print_tool_call_feedback(
         self,
@@ -1590,8 +1605,24 @@ class SmartShellAgent:
         args: Dict[str, Any],
         failed: bool = False,
     ) -> None:
+        self._ensure_terminal_line_start()
         line = self._format_tool_call_feedback_line(tool_name, args, failed=failed)
         print(line)
+        self._last_terminal_block_kind = "feedback"
+        self._terminal_cursor_at_line_start = True
+
+    def _ensure_terminal_line_start(self) -> None:
+        if bool(getattr(self, "_terminal_cursor_at_line_start", True)):
+            return
+        try:
+            sys.stdout.write("\n")
+            sys.stdout.flush()
+        except Exception:
+            try:
+                print("")
+            except Exception:
+                pass
+        self._terminal_cursor_at_line_start = True
 
     def _format_tool_call_feedback_line(
         self,
@@ -2112,6 +2143,7 @@ class SmartShellAgent:
         stderr_text: str,
         force_first_line_continuation: bool = False,
     ) -> int:
+        self._ensure_terminal_line_start()
         shared_state: Dict[str, Any] = {
             "first_line_emitted": bool(force_first_line_continuation),
             "_suppress_first_write_clear": True,
@@ -2126,9 +2158,12 @@ class SmartShellAgent:
             err_stream.write(err)
             err_stream.flush()
         try:
-            return max(0, int(shared_state.get("rendered_line_count", 0) or 0))
+            rendered = max(0, int(shared_state.get("rendered_line_count", 0) or 0))
         except Exception:
-            return 0
+            rendered = 0
+        self._last_terminal_block_kind = "command_output"
+        self._terminal_cursor_at_line_start = bool(shared_state.get("cursor_at_line_start", True))
+        return rendered
 
     def _record_direct_shell_execution_history(
         self,
@@ -3056,6 +3091,7 @@ class SmartShellAgent:
                     stdout_text,
                     sys.stdout,
                     out_tail_limit,
+                    display_indent_width=4,
                 )
                 displayed_stdout = command_actions._strip_console_color_controls(displayed_stdout)
             if stderr_text:
@@ -3064,6 +3100,7 @@ class SmartShellAgent:
                     stderr_text,
                     sys.stderr,
                     err_tail_limit,
+                    display_indent_width=4,
                 )
                 displayed_stderr = command_actions._strip_console_color_controls(displayed_stderr)
             if displayed_stdout or displayed_stderr:

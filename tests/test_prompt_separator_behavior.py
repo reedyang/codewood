@@ -1,3 +1,4 @@
+import re
 import sys
 import types
 import unittest
@@ -67,6 +68,8 @@ class PromptSeparatorBehaviorTests(unittest.TestCase):
         agent.active_chat_name = "Demo Chat"
         agent.input_handler = _FakeInputHandler()
         agent.history_manager = _FakeHistoryManager()
+        agent._last_terminal_block_kind = ""
+        agent._terminal_cursor_at_line_start = True
         return agent
 
     def test_separator_is_rendered_only_when_requested(self):
@@ -208,8 +211,9 @@ class PromptSeparatorBehaviorTests(unittest.TestCase):
             agent._print_chat_history()
         mock_shell_output.assert_called_once()
         replay_out, replay_err = mock_shell_output.call_args.args
-        self.assertIn("omitted 2 lines", replay_out)
-        self.assertIn("line three\nline four\n", replay_out)
+        self.assertIn("omitted 3 lines", replay_out)
+        self.assertIn("line four\n", replay_out)
+        self.assertNotIn("line three\n", replay_out)
         self.assertNotIn("line one\n", replay_out)
         self.assertEqual(replay_err, "")
 
@@ -622,6 +626,59 @@ class PromptSeparatorBehaviorTests(unittest.TestCase):
         mock_shell_output.assert_called_once_with("'test' is not recognized\n", "")
         mock_sep.assert_not_called()
 
+    def test_chat_history_assistant_after_shell_output_starts_on_new_line(self):
+        agent = self._build_agent()
+        agent.conversation_history = [
+            {
+                "role": "assistant",
+                "content": agent._build_model_tool_result_history_content(
+                    "shell",
+                    {"command": "test"},
+                    {
+                        "success": True,
+                        "output": "partial",
+                        "stderr": "",
+                    },
+                ),
+            },
+            {
+                "role": "assistant",
+                "content": "final answer",
+            },
+        ]
+
+        class _TtyBuffer:
+            def __init__(self):
+                self.parts = []
+
+            def isatty(self):
+                return True
+
+            def fileno(self):
+                return 1
+
+            def write(self, text):
+                self.parts.append(str(text))
+                return len(str(text))
+
+            def flush(self):
+                return None
+
+            def getvalue(self):
+                return "".join(self.parts)
+
+        out_buf = _TtyBuffer()
+        err_buf = _TtyBuffer()
+        with (
+            patch("src.smart_shell_agent.sys.stdout", out_buf),
+            patch("src.smart_shell_agent.sys.stderr", err_buf),
+        ):
+            agent._print_chat_history()
+
+        ansi_re = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+        out_plain = ansi_re.sub("", out_buf.getvalue()).lstrip("\r")
+        self.assertIn("  └ partial\n• final answer\n", out_plain)
+
     def test_chat_history_model_shell_result_rebuilds_tail_from_full_output(self):
         agent = self._build_agent()
         agent.conversation_history = [
@@ -651,7 +708,9 @@ class PromptSeparatorBehaviorTests(unittest.TestCase):
         mock_feedback.assert_called_once_with("shell", {"command": "test"}, failed=False)
         mock_shell_output.assert_called_once()
         replay_out, replay_err = mock_shell_output.call_args.args
-        self.assertIn("line two\nline three\n", replay_out)
+        self.assertIn("omitted 2 lines", replay_out)
+        self.assertIn("line three\n", replay_out)
+        self.assertNotIn("line two\n", replay_out)
         self.assertNotIn("line one\n", replay_out)
         self.assertNotIn("old formatted display", replay_out)
         self.assertEqual(replay_err, "")
