@@ -1583,20 +1583,26 @@ class SmartShellAgent:
         current: List[str] = []
         current_w = 0
         last_break_idx: Optional[int] = None
+        last_break_drops_char = False
         for ch in raw:
             ch_w = cls._feedback_char_display_width(ch)
             if current and (current_w + ch_w > limit):
                 if last_break_idx is not None and last_break_idx > 0:
-                    chunks.append("".join(current[:last_break_idx]))
+                    break_end = last_break_idx if last_break_drops_char else last_break_idx + 1
+                    chunks.append("".join(current[:break_end]))
                     current = current[last_break_idx + 1 :]
                     while current and current[0].isspace():
                         current = current[1:]
                     current_w = cls._feedback_text_display_width("".join(current))
-                    last_break_idx = cls._last_visible_space_index(current)
+                    last_break_idx, last_break_drops_char = cls._last_visible_break_index(current)
             current.append(ch)
             current_w += ch_w
             if ch.isspace():
                 last_break_idx = len(current) - 1
+                last_break_drops_char = True
+            elif cls._is_feedback_soft_break_after_char(ch):
+                last_break_idx = len(current) - 1
+                last_break_drops_char = False
         if current:
             chunks.append("".join(current))
         return chunks or [""]
@@ -1608,6 +1614,29 @@ class SmartShellAgent:
             if len(item) == 1 and item.isspace():
                 return idx
         return None
+
+    @staticmethod
+    def _is_feedback_soft_break_after_char(ch: str) -> bool:
+        if not ch or ch.isspace():
+            return False
+        if unicodedata.east_asian_width(ch) in ("W", "F"):
+            return True
+        cat = unicodedata.category(ch)
+        if cat.startswith("P") or cat.startswith("S"):
+            return True
+        return ch in "\\/|_-+=:;,.()[]{}<>\"'"
+
+    @classmethod
+    def _last_visible_break_index(cls, parts: List[str]) -> Tuple[Optional[int], bool]:
+        for idx in range(len(parts) - 1, -1, -1):
+            item = parts[idx]
+            if len(item) != 1:
+                continue
+            if item.isspace():
+                return idx, True
+            if cls._is_feedback_soft_break_after_char(item):
+                return idx, False
+        return None, False
 
     @classmethod
     def _trim_leading_visible_spaces(cls, parts: List[str]) -> List[str]:
@@ -1635,6 +1664,7 @@ class SmartShellAgent:
         current_w = 0
         active_sgr = ""
         last_break_idx: Optional[int] = None
+        last_break_drops_char = False
         i = 0
         n = len(raw)
         while i < n:
@@ -1657,15 +1687,20 @@ class SmartShellAgent:
             ch_w = cls._feedback_char_display_width(ch)
             if current_w > 0 and (current_w + ch_w > limit):
                 if last_break_idx is not None and last_break_idx > 0:
-                    chunks.append("".join(current[:last_break_idx]))
+                    break_end = last_break_idx if last_break_drops_char else last_break_idx + 1
+                    chunks.append("".join(current[:break_end]))
                     remainder = cls._trim_leading_visible_spaces(current[last_break_idx + 1 :])
                     current = ([active_sgr] if active_sgr else []) + remainder
                     current_w = cls._feedback_text_display_width("".join(remainder))
-                    last_break_idx = cls._last_visible_space_index(current)
+                    last_break_idx, last_break_drops_char = cls._last_visible_break_index(current)
             current.append(ch)
             current_w += ch_w
             if ch.isspace():
                 last_break_idx = len(current) - 1
+                last_break_drops_char = True
+            elif cls._is_feedback_soft_break_after_char(ch):
+                last_break_idx = len(current) - 1
+                last_break_drops_char = False
             i += 1
         if current:
             chunks.append("".join(current))

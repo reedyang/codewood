@@ -270,6 +270,25 @@ class AiOutputDisplayTests(unittest.TestCase):
         self.assertGreaterEqual(len(rows), 2)
         self.assertTrue(rows[1].startswith("<G>  │ </G>"))
 
+    def test_format_direct_shell_command_feedback_line_prefixes_cjk_soft_wraps(self):
+        command = (
+            "powershell -ExecutionPolicy Bypass -Command "
+            '\\"(Get-Content helloworld.py) -replace \\"print(\\"Hello\\")\\",'
+            '\\"print(\\"爱丽丝开始感到非常厌倦，坐在河岸上和她的姐姐一起，却没有事可做\\")\\""'
+        )
+        with (
+            patch.object(self.agent, "_terminal_columns_for_command_feedback", return_value=42),
+            patch("src.smart_shell_agent._ansi_rgb", side_effect=lambda text, r, g, b: text),
+            patch("src.smart_shell_agent._ansi_gray", side_effect=lambda s: s),
+            patch("src.smart_shell_agent.highlight_assistant_display_line", side_effect=lambda s: s),
+        ):
+            line = self.agent._format_direct_shell_command_feedback_line(command, failed=False)
+        rows = line.splitlines()
+        self.assertGreaterEqual(len(rows), 4)
+        for row in rows[1:]:
+            self.assertTrue(row.startswith("  │ "), row)
+            self.assertLessEqual(self.agent._feedback_text_display_width(row), 42, row)
+
     def test_format_direct_shell_command_feedback_line_preserves_color_after_wrap_prefix_reset(self):
         with (
             patch.object(self.agent, "_terminal_columns_for_command_feedback", return_value=22),
