@@ -480,6 +480,82 @@ class PromptToolkitInputCompletionTests(unittest.TestCase):
         enter_binding.handler(ev_text)
         self.assertEqual(ev_text.current_buffer.validate_calls, 1)
 
+    def test_bang_at_line_start_switches_to_shell_mode_for_existing_text(self):
+        class _Buffer:
+            def __init__(self, text: str, cursor_position: int):
+                self.text = text
+                self.cursor_position = cursor_position
+
+            def insert_text(self, text: str):
+                left = self.text[: self.cursor_position]
+                right = self.text[self.cursor_position :]
+                self.text = f"{left}{text}{right}"
+                self.cursor_position += len(text)
+
+        class _App:
+            def __init__(self):
+                self.invalidate_calls = 0
+
+            def invalidate(self):
+                self.invalidate_calls += 1
+
+        class _Event:
+            def __init__(self, text: str, cursor_position: int):
+                self.current_buffer = _Buffer(text, cursor_position)
+                self.app = _App()
+
+        handler = pti.PromptToolkitInputHandler.__new__(pti.PromptToolkitInputHandler)
+        handler._shell_mode_active = False
+        kb = handler._create_key_bindings()
+        bang_binding = next(
+            b for b in kb.bindings if tuple(getattr(b, "keys", ())) == ("!",)
+        )
+
+        ev = _Event("git status", 0)
+        bang_binding.handler(ev)
+
+        self.assertTrue(handler._shell_mode_active)
+        self.assertEqual(ev.current_buffer.text, "git status")
+        self.assertEqual(ev.app.invalidate_calls, 1)
+
+    def test_bang_inside_existing_text_inserts_literal_bang(self):
+        class _Buffer:
+            def __init__(self, text: str, cursor_position: int):
+                self.text = text
+                self.cursor_position = cursor_position
+
+            def insert_text(self, text: str):
+                left = self.text[: self.cursor_position]
+                right = self.text[self.cursor_position :]
+                self.text = f"{left}{text}{right}"
+                self.cursor_position += len(text)
+
+        class _App:
+            def __init__(self):
+                self.invalidate_calls = 0
+
+            def invalidate(self):
+                self.invalidate_calls += 1
+
+        class _Event:
+            def __init__(self, text: str, cursor_position: int):
+                self.current_buffer = _Buffer(text, cursor_position)
+                self.app = _App()
+
+        handler = pti.PromptToolkitInputHandler.__new__(pti.PromptToolkitInputHandler)
+        handler._shell_mode_active = False
+        kb = handler._create_key_bindings()
+        bang_binding = next(
+            b for b in kb.bindings if tuple(getattr(b, "keys", ())) == ("!",)
+        )
+
+        ev = _Event("git status", 3)
+        bang_binding.handler(ev)
+
+        self.assertFalse(handler._shell_mode_active)
+        self.assertEqual(ev.current_buffer.text, "git! status")
+        self.assertEqual(ev.app.invalidate_calls, 0)
+
 
 if __name__ == "__main__":
     unittest.main()
