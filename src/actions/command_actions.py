@@ -179,14 +179,10 @@ def _build_tail_output_for_display(text: str, stream: Any, tail_lines: int = SHE
     if trailing_newline and lines and lines[-1] == "":
         lines = lines[:-1]
     limit = max(1, int(tail_lines or 1))
-    width = _terminal_columns_for_tail_display(stream)
-    rendered_lines: List[str] = []
-    for line in lines:
-        rendered_lines.extend(_wrap_line_for_display(line, width))
-    if len(rendered_lines) <= limit:
+    if len(lines) <= limit:
         return raw
-    omitted = len(rendered_lines) - limit
-    tail = "\n".join(rendered_lines[-limit:])
+    omitted = len(lines) - limit
+    tail = "\n".join(lines[-limit:])
     if trailing_newline:
         tail += "\n"
     return _format_omitted_lines_notice(omitted, stream) + tail
@@ -1202,5 +1198,4 @@ def append_shell_merge_output_path(stdout_text: str, return_code: int, merge_pat
     if not head:
         return marker + "\n" + extra
     return head + "\n\n---\n" + marker + "\n" + extra
-
 

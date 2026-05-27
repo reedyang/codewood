@@ -1072,6 +1072,29 @@ class SmartShellAgent:
         err_text = str(payload.get("display_stderr") or "")
         return out_text, err_text
 
+    def _extract_direct_shell_replay_output(self, stdout_text: str, stderr_text: str) -> Tuple[str, str]:
+        raw_out = str(stdout_text or "")
+        raw_err = str(stderr_text or "")
+        out_text = ""
+        err_text = ""
+        if raw_out:
+            out_limit = command_actions._dynamic_tail_line_limit(sys.stdout)
+            out_text = command_actions._build_tail_output_for_display(
+                raw_out,
+                sys.stdout,
+                out_limit,
+            )
+            out_text = self._strip_console_color_controls(out_text)
+        if raw_err:
+            err_limit = command_actions._dynamic_tail_line_limit(sys.stderr)
+            err_text = command_actions._build_tail_output_for_display(
+                raw_err,
+                sys.stderr,
+                err_limit,
+            )
+            err_text = self._strip_console_color_controls(err_text)
+        return out_text, err_text
+
     def _model_tool_result_matches_plan(
         self,
         tool_name: str,
@@ -1153,6 +1176,7 @@ class SmartShellAgent:
                         merged = out_text + err_text
                         out_text = self._normalize_aborted_direct_shell_stdout_for_history(merged)
                         err_text = ""
+                    out_text, err_text = self._extract_direct_shell_replay_output(out_text, err_text)
                     force_continuation = False
                     if aborted_result:
                         head = out_text.lstrip("\r\n").lower()
@@ -2922,7 +2946,7 @@ class SmartShellAgent:
     def _stream_direct_shell_pipe_to_prefixed_output(
         self,
         pipe: Any,
-        target_stream: Any,
+        target_stream: Optional[Any],
         capture_chunks: Optional[List[str]] = None,
     ) -> None:
         import codecs
@@ -2937,14 +2961,16 @@ class SmartShellAgent:
                 if text_chunk:
                     if isinstance(capture_chunks, list):
                         capture_chunks.append(text_chunk)
-                    target_stream.write(text_chunk)
-                    target_stream.flush()
+                    if target_stream is not None:
+                        target_stream.write(text_chunk)
+                        target_stream.flush()
             tail = decoder.decode(b"", final=True)
             if tail:
                 if isinstance(capture_chunks, list):
                     capture_chunks.append(tail)
-                target_stream.write(tail)
-                target_stream.flush()
+                if target_stream is not None:
+                    target_stream.write(tail)
+                    target_stream.flush()
         except Exception:
             pass
         finally:
@@ -2981,7 +3007,6 @@ class SmartShellAgent:
         }
         stdout_chunks: List[str] = []
         stderr_chunks: List[str] = []
-        out_stream, _ = self._create_direct_shell_output_streams(stream_state)
         status_ticker = _WorkingStatusTicker(
             sys.stdout,
             fps=DIRECT_SHELL_WORKING_STATUS_MARQUEE_FPS,
@@ -3007,7 +3032,7 @@ class SmartShellAgent:
             if stdout_pipe is not None and hasattr(stdout_pipe, "read"):
                 t_out = threading.Thread(
                     target=self._stream_direct_shell_pipe_to_prefixed_output,
-                    args=(stdout_pipe, out_stream, stdout_chunks),
+                    args=(stdout_pipe, None, stdout_chunks),
                     daemon=True,
                 )
                 t_out.start()
@@ -3015,20 +3040,58 @@ class SmartShellAgent:
             if t_out is not None:
                 t_out.join()
             aborted_by_user = bool(self._consume_process_aborted(process))
+            stdout_text = "".join(stdout_chunks)
+            stderr_text = "".join(stderr_chunks)
             if aborted_by_user:
-                need_leading_newline = not bool(stream_state.get("cursor_at_line_start", True))
+                need_leading_newline = bool(stdout_text) and not stdout_text.endswith(("\n", "\r"))
                 abort_notice = "command aborted by user\n"
+                stdout_text += ("\n" if need_leading_newline else "") + abort_notice
+                stdout_chunks.append(("\n" if need_leading_newline else "") + abort_notice)
+            _stop_status_ticker()
+            displayed_stdout = ""
+            displayed_stderr = ""
+            if stdout_text:
+                out_tail_limit = command_actions._dynamic_tail_line_limit(sys.stdout)
+                displayed_stdout = command_actions._build_tail_output_for_display(
+                    stdout_text,
+                    sys.stdout,
+                    out_tail_limit,
+                )
+                displayed_stdout = command_actions._strip_console_color_controls(displayed_stdout)
+            if stderr_text:
+                err_tail_limit = command_actions._dynamic_tail_line_limit(sys.stderr)
+                displayed_stderr = command_actions._build_tail_output_for_display(
+                    stderr_text,
+                    sys.stderr,
+                    err_tail_limit,
+                )
+                displayed_stderr = command_actions._strip_console_color_controls(displayed_stderr)
+            if displayed_stdout or displayed_stderr:
+                force_abort_continuation = bool(
+                    aborted_by_user
+                    and displayed_stdout.strip() == "command aborted by user"
+                    and not displayed_stderr
+                )
                 try:
-                    if need_leading_newline:
-                        out_stream.write("\n")
-                    # Keep abort notice aligned with normal continuation output
-                    # (four-space indent), not as a new first output line.
-                    stream_state["first_line_emitted"] = True
-                    out_stream.write(abort_notice)
-                    out_stream.flush()
+                    rendered = int(
+                        self._print_direct_shell_history_output(
+                            displayed_stdout,
+                            displayed_stderr,
+                            force_first_line_continuation=force_abort_continuation,
+                        )
+                        or 0
+                    )
+                    stream_state["rendered_line_count"] = max(
+                        0,
+                        int(stream_state.get("rendered_line_count", 0) or 0) + rendered,
+                    )
+                    last_displayed_chunk = displayed_stderr if displayed_stderr else displayed_stdout
+                    stream_state["cursor_at_line_start"] = not bool(
+                        last_displayed_chunk and not str(last_displayed_chunk).endswith("\n")
+                    )
                 except Exception:
                     pass
-                stdout_chunks.append(("\n" if need_leading_newline else "") + abort_notice)
+            if aborted_by_user:
                 banner_lines = 0
                 try:
                     banner_lines = int(self._print_conversation_interrupted_banner() or 0)
@@ -3047,8 +3110,8 @@ class SmartShellAgent:
                     "executed_command": str(command or ""),
                     "cwd": str(cwd or ""),
                     "return_code": int(return_code),
-                    "stdout": "".join(stdout_chunks),
-                    "stderr": "".join(stderr_chunks),
+                    "stdout": stdout_text,
+                    "stderr": stderr_text,
                     "aborted_by_user": bool(aborted_by_user),
                     "rendered_output_lines": int(stream_state.get("rendered_line_count", 0) or 0),
                     "cursor_at_line_start": bool(stream_state.get("cursor_at_line_start", True)),
