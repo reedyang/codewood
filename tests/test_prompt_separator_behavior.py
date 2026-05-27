@@ -178,6 +178,41 @@ class PromptSeparatorBehaviorTests(unittest.TestCase):
         self.assertEqual(mock_sep.call_count, 2)
         self.assertFalse(agent._show_separator_next_prompt)
 
+    def test_chat_history_direct_shell_result_rebuilds_tail_from_full_output(self):
+        agent = self._build_agent()
+        agent.active_chat_name = "Demo Chat"
+        agent.conversation_history = [
+            {
+                "role": "user",
+                "content": agent._build_direct_shell_user_history_content("echo many"),
+            },
+            {
+                "role": "assistant",
+                "content": agent._build_direct_shell_result_history_content(
+                    "!echo many",
+                    "echo many",
+                    "D:/ws",
+                    0,
+                    "line one\nline two\nline three\nline four\n",
+                    "",
+                ),
+            },
+        ]
+        with (
+            patch("src.smart_shell_agent.command_actions._dynamic_tail_line_limit", return_value=2),
+            patch.object(agent, "_print_direct_shell_command_feedback"),
+            patch.object(agent, "_print_direct_shell_history_output") as mock_shell_output,
+            patch.object(agent, "_print_direct_shell_history_separator"),
+            patch("builtins.print"),
+        ):
+            agent._print_chat_history()
+        mock_shell_output.assert_called_once()
+        replay_out, replay_err = mock_shell_output.call_args.args
+        self.assertIn("omitted 2 lines", replay_out)
+        self.assertIn("line three\nline four\n", replay_out)
+        self.assertNotIn("line one\n", replay_out)
+        self.assertEqual(replay_err, "")
+
     def test_chat_history_aborted_direct_shell_output_does_not_print_separator(self):
         agent = self._build_agent()
         agent.active_chat_name = "Demo Chat"

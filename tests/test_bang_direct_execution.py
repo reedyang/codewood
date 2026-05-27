@@ -200,6 +200,58 @@ class BangDirectExecutionTests(unittest.TestCase):
         mock_unregister.assert_called_once_with(proc)
         self.assertEqual(popen_mock.call_args.kwargs.get("stderr"), subprocess.STDOUT)
 
+    @patch("subprocess.Popen")
+    def test_run_direct_shell_displays_tail_but_keeps_full_stdout_in_history(self, popen_mock):
+        class _FakePipe:
+            def __init__(self, chunks):
+                self._chunks = list(chunks)
+
+            def read(self, _n):
+                if self._chunks:
+                    return self._chunks.pop(0)
+                return b""
+
+            def close(self):
+                return None
+
+        proc = types.SimpleNamespace(
+            wait=lambda: 0,
+            poll=lambda: None,
+            pid=23456,
+            stdout=_FakePipe([("\n".join(f"line{i}" for i in range(1, 8)) + "\n").encode()]),
+            stderr=None,
+        )
+        popen_mock.return_value = proc
+
+        class _TtyBuffer(StringIO):
+            def isatty(self):
+                return True
+
+            def fileno(self):
+                return 1
+
+        out_buf = _TtyBuffer()
+        err_buf = _TtyBuffer()
+        with (
+            patch("src.smart_shell_agent.sys.stdout", out_buf),
+            patch("src.smart_shell_agent.sys.stderr", err_buf),
+            patch("src.actions.command_actions._dynamic_tail_line_limit", return_value=3),
+            patch("src.actions.command_actions._terminal_columns_for_tail_display", return_value=120),
+        ):
+            rc = self.agent._run_direct_shell_with_prefixed_output("echo hi", Path.cwd())
+
+        self.assertEqual(rc, 0)
+        ansi_re = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+        out_plain = ansi_re.sub("", out_buf.getvalue()).lstrip("\r")
+        self.assertIn("omitted 4 lines", out_plain)
+        self.assertNotIn("line1\n", out_plain)
+        self.assertNotIn("line4\n", out_plain)
+        self.assertIn("line5\n", out_plain)
+        self.assertIn("line7\n", out_plain)
+        last = getattr(self.agent, "_last_direct_shell_execution", {})
+        self.assertIn("line1\n", str(last.get("stdout") or ""))
+        self.assertIn("line7\n", str(last.get("stdout") or ""))
+
     def test_non_task_interrupt_does_not_set_task_interrupt_flag(self):
         self.agent._task_interrupt_requested = False
         with patch.object(self.agent, "_terminate_interruptible_processes") as mock_terminate:
