@@ -297,6 +297,15 @@ class AiOutputDisplayTests(unittest.TestCase):
         self.assertEqual(rows[0], "› 123456")
         self.assertEqual(rows[1], "  7890")
 
+    def test_format_slash_command_display_wraps_with_two_space_continuation(self):
+        with (
+            patch.object(self.agent, "_terminal_columns_for_line_estimate", return_value=8),
+            patch("src.smart_shell_agent._ansi_gray", side_effect=lambda s: s),
+        ):
+            rendered = self.agent._format_user_chat_display_message("/abcdefghi")
+        rows = rendered.splitlines()
+        self.assertEqual(rows, ["› /abcde", "  fghi"])
+
     def test_format_assistant_chat_display_message_keeps_ansi_color_after_wrap(self):
         with (
             patch.object(self.agent, "_terminal_columns_for_line_estimate", return_value=10),
@@ -308,6 +317,57 @@ class AiOutputDisplayTests(unittest.TestCase):
         self.assertTrue(rows[0].startswith("• "))
         self.assertTrue(rows[1].startswith("  "))
         self.assertIn("\x1b[32m", rows[1])
+
+    def test_format_internal_slash_output_indents_logical_and_wrapped_lines(self):
+        with patch.object(self.agent, "_terminal_columns_for_line_estimate", return_value=8):
+            rendered = self.agent._format_internal_slash_output("1234567890\nabc")
+        self.assertEqual(rendered.splitlines(), ["  123456", "  7890", "  abc"])
+
+    def test_print_internal_slash_history_output_uses_indented_formatter(self):
+        class _FakeStdout:
+            def __init__(self):
+                self.writes = []
+
+            def write(self, text):
+                self.writes.append(str(text))
+                return len(str(text))
+
+            def flush(self):
+                return None
+
+        fake_stdout = _FakeStdout()
+        with (
+            patch("src.smart_shell_agent.sys.stdout", fake_stdout),
+            patch.object(self.agent, "_terminal_columns_for_line_estimate", return_value=8),
+        ):
+            self.agent._print_internal_slash_history_output("1234567890\n")
+        self.assertEqual("".join(fake_stdout.writes), "  123456\n  7890\n")
+
+    def test_internal_slash_output_stream_indents_auto_wraps(self):
+        class _FakeStdout:
+            encoding = "utf-8"
+
+            def __init__(self):
+                self.writes = []
+
+            def write(self, text):
+                self.writes.append(str(text))
+                return len(str(text))
+
+            def flush(self):
+                return None
+
+            def isatty(self):
+                return True
+
+        class _Sz:
+            columns = 8
+
+        fake_stdout = _FakeStdout()
+        stream = self.agent._build_internal_slash_output_stream(fake_stdout)
+        with patch("src.smart_shell_agent.shutil.get_terminal_size", return_value=_Sz()):
+            stream.write("1234567890\nabc")
+        self.assertEqual("".join(fake_stdout.writes), "  123456\n  7890\n  abc")
 
     def test_repaint_tool_call_feedback_if_failed_uses_configured_up_lines(self):
         class _FakeStdout:
