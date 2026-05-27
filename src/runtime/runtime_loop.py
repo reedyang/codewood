@@ -5,8 +5,10 @@ import json
 import io
 import os
 import re
+import shutil
 import sys
 import time
+import unicodedata
 from contextlib import redirect_stderr, redirect_stdout
 from datetime import datetime
 from pathlib import Path
@@ -328,6 +330,81 @@ def _format_startup_directory(workspace_dir: Any) -> str:
     return f"~{os.sep}{rel_text}"
 
 
+def _startup_text_display_width(text: str) -> int:
+    width = 0
+    for ch in str(text or ""):
+        if unicodedata.combining(ch):
+            continue
+        cat = unicodedata.category(ch)
+        if cat in ("Cc", "Cf"):
+            continue
+        width += 2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1
+    return width
+
+
+def _truncate_startup_text(text: str, max_width: int) -> str:
+    raw = str(text or "")
+    limit = max(0, int(max_width or 0))
+    if _startup_text_display_width(raw) <= limit:
+        return raw
+    if limit <= 0:
+        return ""
+    suffix = "…"
+    suffix_w = _startup_text_display_width(suffix)
+    if limit <= suffix_w:
+        return suffix
+    out: List[str] = []
+    used = 0
+    body_limit = limit - suffix_w
+    for ch in raw:
+        ch_w = _startup_text_display_width(ch)
+        if used + ch_w > body_limit:
+            break
+        out.append(ch)
+        used += ch_w
+    return "".join(out) + suffix
+
+
+def _pad_startup_text(text: str, target_width: int) -> str:
+    pad = max(0, int(target_width or 0) - _startup_text_display_width(text))
+    return " " * pad
+
+
+def _startup_terminal_columns(default: int = 80) -> int:
+    width = 0
+    stream = sys.stdout
+    try:
+        fn = getattr(stream, "smart_shell_terminal_columns", None)
+        if callable(fn):
+            width = int(fn() or 0)
+    except Exception:
+        width = 0
+    if width <= 0:
+        try:
+            if hasattr(stream, "fileno"):
+                width = int(os.get_terminal_size(stream.fileno()).columns or 0)
+        except Exception:
+            width = 0
+    if width <= 0:
+        try:
+            width = int(os.get_terminal_size(sys.__stdout__.fileno()).columns or 0)
+        except Exception:
+            width = 0
+    if width <= 0:
+        try:
+            width = int(shutil.get_terminal_size(fallback=(int(default or 80), 24)).columns or 0)
+        except Exception:
+            width = 0
+    return max(1, int(width or default or 80))
+
+
+def _startup_output_prefix_width() -> int:
+    try:
+        return max(0, int(getattr(sys.stdout, "smart_shell_output_indent_width", 0) or 0))
+    except Exception:
+        return 0
+
+
 def _try_record_user_task_message(agent: Any, user_task: str, already_recorded: bool) -> bool:
     """Best-effort: persist the user task before waiting for model response."""
     if bool(already_recorded):
@@ -357,56 +434,66 @@ def _print_startup_overview(agent: Any) -> None:
     line3 = f"workspace: {workspace_name}"
     line4 = f"directory: {workspace_dir}"
 
-    width = max(len(line1), len(line2), len(line3), len(line4)) + 2
+    term_cols = _startup_terminal_columns(default=80)
+    prefix_width = _startup_output_prefix_width()
+    # Leave one spare column so terminals that auto-wrap at the right edge do
+    # not push the closing border onto a new line when slash output adds indent.
+    max_box_width = max(4, term_cols - prefix_width - 1)
+    desired_inner_width = (
+        max(
+            _startup_text_display_width(line1),
+            _startup_text_display_width(line2),
+            _startup_text_display_width(line3),
+            _startup_text_display_width(line4),
+        )
+        + 2
+    )
+    width = max(2, min(desired_inner_width, max_box_width - 2))
+    content_width = max(1, width - 1)
+    line1_fit = _truncate_startup_text(line1, content_width)
+    line2_fit = _truncate_startup_text(line2, content_width)
+    line3_fit = _truncate_startup_text(line3, content_width)
+    line4_fit = _truncate_startup_text(line4, content_width)
+
     top = "╭" + ("─" * width) + "╮"
-    mid1 = "│ " + line1.ljust(width - 1) + "│"
     mid2 = "│" + (" " * width) + "│"
-    mid3 = "│ " + line2.ljust(width - 1) + "│"
-    mid4 = "│ " + line3.ljust(width - 1) + "│"
-    mid5 = "│ " + line4.ljust(width - 1) + "│"
     bottom = "╰" + ("─" * width) + "╯"
 
     print(_ansi_gray(top))
     # Header line: use terminal default foreground for main text, prefix gray.
-    print(
-        _ansi_gray("│ ")
-        + _ansi_gray(">_ ")
-        + app_name
-        + _ansi_gray(f" ({version})")
-        + _ansi_gray(" " * max(0, width - 1 - len(line1)))
-        + _ansi_gray("│")
-    )
+    if line1_fit == line1:
+        line1_rendered = _ansi_gray(">_ ") + app_name + _ansi_gray(f" ({version})")
+    else:
+        line1_rendered = line1_fit
+    print(_ansi_gray("│ ") + line1_rendered + _ansi_gray(_pad_startup_text(line1_fit, content_width)) + _ansi_gray("│"))
     print(_ansi_gray(mid2))
     # model line
     prefix_model = "model:     "
-    print(
-        _ansi_gray("│ ")
-        + _ansi_gray(prefix_model)
-        + model_name
-        + _ansi_gray("  ")
-        + _ansi_cyan("/model")
-        + _ansi_gray(" to change")
-        + _ansi_gray(" " * max(0, width - 1 - len(line2)))
-        + _ansi_gray("│")
-    )
+    if line2_fit == line2:
+        line2_rendered = (
+            _ansi_gray(prefix_model)
+            + model_name
+            + _ansi_gray("  ")
+            + _ansi_cyan("/model")
+            + _ansi_gray(" to change")
+        )
+    else:
+        line2_rendered = line2_fit
+    print(_ansi_gray("│ ") + line2_rendered + _ansi_gray(_pad_startup_text(line2_fit, content_width)) + _ansi_gray("│"))
     # workspace line
     prefix_workspace = "workspace: "
-    print(
-        _ansi_gray("│ ")
-        + _ansi_gray(prefix_workspace)
-        + workspace_name
-        + _ansi_gray(" " * max(0, width - 1 - len(line3)))
-        + _ansi_gray("│")
-    )
+    if line3_fit == line3:
+        line3_rendered = _ansi_gray(prefix_workspace) + workspace_name
+    else:
+        line3_rendered = line3_fit
+    print(_ansi_gray("│ ") + line3_rendered + _ansi_gray(_pad_startup_text(line3_fit, content_width)) + _ansi_gray("│"))
     # directory line
     prefix_directory = "directory: "
-    print(
-        _ansi_gray("│ ")
-        + _ansi_gray(prefix_directory)
-        + workspace_dir
-        + _ansi_gray(" " * max(0, width - 1 - len(line4)))
-        + _ansi_gray("│")
-    )
+    if line4_fit == line4:
+        line4_rendered = _ansi_gray(prefix_directory) + workspace_dir
+    else:
+        line4_rendered = line4_fit
+    print(_ansi_gray("│ ") + line4_rendered + _ansi_gray(_pad_startup_text(line4_fit, content_width)) + _ansi_gray("│"))
     print(_ansi_gray(bottom))
     startup_chat_warning = str(getattr(agent, "_startup_chat_state_warning", "") or "").strip()
     if startup_chat_warning:
@@ -544,8 +631,18 @@ def run_agent_loop(agent: Any):
                 slash_command = f"/{builtin_line}"
                 slash_out_buf = io.StringIO()
                 self._rewrite_previous_prompt_as_user(slash_command)
-                slash_stdout_primary = self._build_internal_slash_output_stream(sys.stdout)
-                slash_stderr_primary = self._build_internal_slash_output_stream(sys.stderr)
+                try:
+                    slash_terminal_columns = max(
+                        1, int(self._terminal_columns_for_prompt_separator(default=80) or 80)
+                    )
+                except Exception:
+                    slash_terminal_columns = 80
+                slash_stdout_primary = self._build_internal_slash_output_stream(
+                    sys.stdout, terminal_columns=slash_terminal_columns
+                )
+                slash_stderr_primary = self._build_internal_slash_output_stream(
+                    sys.stderr, terminal_columns=slash_terminal_columns
+                )
                 slash_stdout = _TeeTextStream(slash_stdout_primary, slash_out_buf)
                 slash_stderr = _TeeTextStream(slash_stderr_primary, slash_out_buf)
                 with redirect_stdout(slash_stdout), redirect_stderr(slash_stderr):

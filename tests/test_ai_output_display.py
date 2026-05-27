@@ -289,6 +289,48 @@ class AiOutputDisplayTests(unittest.TestCase):
             self.assertTrue(row.startswith("  │ "), row)
             self.assertLessEqual(self.agent._feedback_text_display_width(row), 42, row)
 
+    def test_direct_shell_feedback_inside_slash_reload_uses_captured_columns(self):
+        class _FakeStdout:
+            encoding = "utf-8"
+
+            def __init__(self):
+                self.writes = []
+
+            def write(self, text):
+                self.writes.append(str(text))
+                return len(str(text))
+
+            def flush(self):
+                return None
+
+            def isatty(self):
+                return True
+
+        command = (
+            "!powershell -ExecutionPolicy Bypass -Command "
+            '\\"(Get-Content helloworld.py) -replace \\"print(\\"Hello, world!\\")\\", '
+            '\\"print(\\"爱丽丝开始感到非常厌倦，坐在河岸上和她的姐姐一起，'
+            '却没有事可做；她瞥一两次偷看姐姐在读的书，但书里没有图片也没有对话\\")\\" '
+            '| Set-Content helloworld.py\\"'
+        )
+        fake_stdout = _FakeStdout()
+        stream = self.agent._build_internal_slash_output_stream(fake_stdout, terminal_columns=42)
+        with (
+            patch("src.smart_shell_agent.sys.stdout", stream),
+            patch("src.smart_shell_agent.shutil.get_terminal_size", return_value=types.SimpleNamespace(columns=80)),
+            patch("src.smart_shell_agent._ansi_rgb", side_effect=lambda text, r, g, b: text),
+            patch("src.smart_shell_agent._ansi_gray", side_effect=lambda s: s),
+            patch("src.smart_shell_agent.highlight_assistant_display_line", side_effect=lambda s: s),
+        ):
+            print(self.agent._format_direct_shell_command_feedback_line(command, failed=False))
+
+        rows = [line for line in "".join(fake_stdout.writes).splitlines() if line.strip()]
+        self.assertGreaterEqual(len(rows), 4)
+        self.assertTrue(rows[0].startswith("  • You ran "))
+        for row in rows[1:]:
+            self.assertTrue(row.startswith("    │ "), row)
+            self.assertLessEqual(self.agent._feedback_text_display_width(row), 42, row)
+
     def test_format_direct_shell_command_feedback_line_preserves_color_after_wrap_prefix_reset(self):
         with (
             patch.object(self.agent, "_terminal_columns_for_command_feedback", return_value=22),
@@ -403,6 +445,122 @@ class AiOutputDisplayTests(unittest.TestCase):
         with patch("src.smart_shell_agent.shutil.get_terminal_size", return_value=_Sz()):
             stream.write("alpha beta\nabc")
         self.assertEqual("".join(fake_stdout.writes), "  alpha\n  beta\n  abc")
+
+    def test_startup_overview_inside_slash_stream_stays_within_terminal_width(self):
+        from src.runtime.runtime_loop import _print_startup_overview
+
+        class _FakeStdout:
+            encoding = "utf-8"
+
+            def __init__(self):
+                self.writes = []
+
+            def write(self, text):
+                self.writes.append(str(text))
+                return len(str(text))
+
+            def flush(self):
+                return None
+
+            def isatty(self):
+                return True
+
+        class _Sz:
+            columns = 43
+
+        class _Agent:
+            model_name = "gpt-oss-120b"
+            workspace_name = "Test"
+            workspace_root = r"D:\tmp\test"
+            _startup_chat_state_warning = ""
+
+        fake_stdout = _FakeStdout()
+        stream = self.agent._build_internal_slash_output_stream(fake_stdout, terminal_columns=_Sz.columns)
+        identity = lambda s: s
+        with (
+            patch("src.smart_shell_agent.shutil.get_terminal_size", return_value=types.SimpleNamespace(columns=80)),
+            patch("src.runtime.runtime_loop.sys.stdout", stream),
+            patch("src.runtime.runtime_loop.get_app_name", return_value="Smart Shell"),
+            patch("src.runtime.runtime_loop.get_app_display_version", return_value="v0.1.0"),
+            patch("src.runtime.runtime_loop.get_random_startup_tip_entry", return_value={"text": "", "highlights": []}),
+            patch("src.runtime.runtime_loop._ansi_gray", side_effect=identity),
+            patch("src.runtime.runtime_loop._ansi_cyan", side_effect=identity),
+            patch("src.runtime.runtime_loop._ansi_bold", side_effect=identity),
+        ):
+            _print_startup_overview(_Agent())
+        out = "".join(fake_stdout.writes)
+        box_lines = [
+            line
+            for line in out.splitlines()
+            if line.startswith("  ╭") or line.startswith("  │") or line.startswith("  ╰")
+        ]
+        self.assertGreaterEqual(len(box_lines), 6)
+        self.assertTrue(all(len(line) <= _Sz.columns for line in box_lines))
+        self.assertNotIn("  │", box_lines)
+
+    def test_slash_reload_full_width_lines_reserve_output_indent(self):
+        class _FakeStdout:
+            encoding = "utf-8"
+
+            def __init__(self):
+                self.writes = []
+
+            def write(self, text):
+                self.writes.append(str(text))
+                return len(str(text))
+
+            def flush(self):
+                return None
+
+            def isatty(self):
+                return True
+
+        class _Sz:
+            columns = 43
+
+        fake_stdout = _FakeStdout()
+        stream = self.agent._build_internal_slash_output_stream(fake_stdout, terminal_columns=_Sz.columns)
+        with (
+            patch("src.smart_shell_agent.sys.stdout", stream),
+            patch("src.smart_shell_agent.shutil.get_terminal_size", return_value=types.SimpleNamespace(columns=80)),
+            patch("src.smart_shell_agent._ansi_gray", side_effect=lambda s: s),
+        ):
+            self.agent._print_direct_shell_history_separator()
+            self.agent._print_task_worked_summary_line(14)
+
+        rendered_lines = [line for line in "".join(fake_stdout.writes).splitlines() if line.strip()]
+        self.assertTrue(rendered_lines)
+        self.assertTrue(all(len(line) <= _Sz.columns for line in rendered_lines))
+        self.assertTrue(any("Worked for 14s" in line for line in rendered_lines))
+
+    def test_slash_reload_text_wrap_uses_captured_columns_over_stale_stdout_width(self):
+        class _FakeStdout:
+            encoding = "utf-8"
+
+            def __init__(self):
+                self.writes = []
+
+            def write(self, text):
+                self.writes.append(str(text))
+                return len(str(text))
+
+            def flush(self):
+                return None
+
+            def isatty(self):
+                return True
+
+        fake_stdout = _FakeStdout()
+        stream = self.agent._build_internal_slash_output_stream(fake_stdout, terminal_columns=20)
+        with (
+            patch("src.smart_shell_agent.sys.stdout", stream),
+            patch("src.smart_shell_agent.shutil.get_terminal_size", return_value=types.SimpleNamespace(columns=80)),
+            patch("src.smart_shell_agent._ansi_gray", side_effect=lambda s: s),
+        ):
+            print(self.agent._format_user_chat_display_message("alpha beta gamma delta"))
+
+        rows = [line for line in "".join(fake_stdout.writes).splitlines() if line.strip()]
+        self.assertEqual(rows, ["  › alpha beta", "    gamma delta"])
 
     def test_repaint_tool_call_feedback_if_failed_uses_configured_up_lines(self):
         class _FakeStdout:
