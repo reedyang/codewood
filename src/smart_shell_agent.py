@@ -2075,8 +2075,28 @@ class SmartShellAgent:
             raw_user_command=raw_cmd,
             output_text=str(output_text or ""),
         )
-        self._append_chat_message("user", user_content)
-        self._append_chat_message("assistant", assistant_content)
+        created_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        task_id = str(getattr(self, "_active_runtime_task_id", "") or "").strip()
+        transient_base = {
+            "task_id": task_id,
+            "created_at": created_at,
+            "exclude_from_model_context": True,
+            "persist_to_chat_state": False,
+        }
+        self.conversation_history.append(
+            {
+                **transient_base,
+                "role": "user",
+                "content": user_content,
+            }
+        )
+        self.conversation_history.append(
+            {
+                **transient_base,
+                "role": "assistant",
+                "content": assistant_content,
+            }
+        )
 
     def _is_direct_shell_result_aborted(self, result: Any) -> bool:
         if not isinstance(result, dict):

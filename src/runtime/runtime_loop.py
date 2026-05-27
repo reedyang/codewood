@@ -286,13 +286,6 @@ def _should_record_command_input_history(user_input: str) -> bool:
     text = str(user_input or "").strip()
     if not text:
         return False
-    if not text.startswith("/"):
-        return True
-
-    body = text[1:].strip().lower()
-    body = re.sub(r"\s+", " ", body)
-    if body == "chat reload":
-        return False
     return True
 
 
@@ -300,23 +293,15 @@ def _sync_command_input_history(agent: Any, user_input: str) -> None:
     """
     Sync persisted and in-memory command history after each non-empty input.
     - Normal commands: record with de-duplication (move to latest).
-    - Skipped commands (e.g. /chat reload): if already present in history,
-      bump recency by moving the existing entry to latest position.
+    - Slash built-ins: keep in process memory for arrow-key recall; HistoryManager
+      omits them from disk persistence.
     """
     text = str(user_input or "").strip()
     if not text:
         return
 
-    should_record = _should_record_command_input_history(text)
-    if should_record:
+    if _should_record_command_input_history(text):
         agent.history_manager.add_entry(text)
-    else:
-        try:
-            existing = list(agent.history_manager.get_all_history() or [])
-        except Exception:
-            existing = []
-        if text in existing:
-            agent.history_manager.add_entry(text)
 
     if agent.input_handler is not None and hasattr(
         agent.input_handler, "reset_command_history"
