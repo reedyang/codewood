@@ -106,12 +106,15 @@ class ChatStateManager:
         content = str(raw.get("content") or "")
         task_id = str(raw.get("task_id") or "").strip() or fallback_task_id
         created_at = str(raw.get("created_at") or "").strip() or self._now_text()
-        return {
+        out = {
             "role": role,
             "content": content,
             "task_id": task_id,
             "created_at": created_at,
         }
+        if bool(raw.get("exclude_from_model_context", False)):
+            out["exclude_from_model_context"] = True
+        return out
 
     def _validate_task(self, raw: Dict[str, Any]) -> Dict[str, Any]:
         tid = str(raw.get("id") or "").strip()
@@ -367,10 +370,13 @@ class ChatStateManager:
             chat = self.find_chat_by_id(self._agent.active_chat_id)
             if not chat:
                 return
-            fallback_task_id = (
-                str(getattr(self._agent, "_active_runtime_task_id", "") or "").strip()
-                or str(chat.get("active_task_id") or "").strip()
-            )
+            runtime_task_id = str(getattr(self._agent, "_active_runtime_task_id", "") or "").strip()
+            chat_active_task_id = str(chat.get("active_task_id") or "").strip()
+            fallback_task_id = runtime_task_id or chat_active_task_id
+            if fallback_task_id:
+                task = self._find_task_by_id(chat, fallback_task_id)
+                if not isinstance(task, dict) or str(task.get("status") or "").strip().lower() != TASK_STATUS_OPEN:
+                    fallback_task_id = ""
             msgs = []
             for m in list(self._agent.conversation_history):
                 if not isinstance(m, dict):
@@ -384,6 +390,8 @@ class ChatStateManager:
                     "task_id": str(m.get("task_id") or "").strip() or fallback_task_id,
                     "created_at": str(m.get("created_at") or "").strip() or self._now_text(),
                 }
+                if bool(m.get("exclude_from_model_context", False)):
+                    entry["exclude_from_model_context"] = True
                 msgs.append(entry)
             chat["messages"] = msgs
             chat["active_task_id"] = fallback_task_id
@@ -482,6 +490,8 @@ class ChatStateManager:
             task["updated_at"] = self._now_text()
             if want != TASK_STATUS_OPEN:
                 task["closed_at"] = self._now_text()
+                if str(chat.get("active_task_id") or "").strip() == str(task_id or "").strip():
+                    chat["active_task_id"] = ""
             chat["updated_at"] = self._now_text()
             self.save_chat_state()
             return True

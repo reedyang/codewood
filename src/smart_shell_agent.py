@@ -703,8 +703,7 @@ class SmartShellAgent:
             switched_from_task_id=switched_from_task_id,
         )
         task_id = str(tid or "").strip()
-        if task_id:
-            self._active_runtime_task_id = task_id
+        self._active_runtime_task_id = task_id
         dvals = [str(x).strip() for x in (domains or []) if str(x).strip()]
         self._active_runtime_task_domains = dvals if dvals else ["general_other"]
         try:
@@ -728,9 +727,57 @@ class SmartShellAgent:
 
     def _close_chat_task(self, task_id: str, status: str) -> bool:
         tid = str(task_id or "").strip()
-        if not tid:
-            return False
-        return bool(self._chat_state_manager.close_task(self.active_chat_id, tid, status))
+        closed = False
+        if tid:
+            closed = bool(self._chat_state_manager.close_task(self.active_chat_id, tid, status))
+        if closed and str(status or "").strip().lower() != "open":
+            if str(getattr(self, "_active_runtime_task_id", "") or "").strip() == tid:
+                self._active_runtime_task_id = ""
+                self._active_runtime_task_domains = []
+        if str(status or "").strip().lower() == "cancelled":
+            try:
+                svc = getattr(self, "session_memory_service", None)
+                marked = 0
+                mark_fn = getattr(svc, "mark_cancelled_task_unanswered_user_messages", None)
+                if callable(mark_fn) and tid:
+                    marked = int(mark_fn(tid) or 0)
+                # Fallback: even if task close failed / task_id mismatched / task_id missing,
+                # still exclude the latest unanswered user message from model context.
+                if marked <= 0:
+                    mark_latest = getattr(svc, "mark_latest_unanswered_user_message_for_cancel", None)
+                    if callable(mark_latest):
+                        mark_latest()
+            except Exception:
+                pass
+        return closed
+
+    def _refresh_context_usage_after_task_boundary(
+        self,
+        user_input_hint: str = "",
+        context_hint: str = "",
+    ) -> None:
+        """
+        Best-effort status/persistence refresh for task boundary events that happen
+        outside the main runtime loop, such as direct shell execution.
+        """
+        try:
+            self._refresh_status_context_usage_snapshot(
+                user_input_hint=str(user_input_hint or ""),
+                context_hint=str(context_hint or ""),
+            )
+        except Exception:
+            pass
+        try:
+            svc = getattr(self, "session_memory_service", None)
+            schedule_refresh = getattr(svc, "schedule_context_usage_refresh_async", None)
+            if callable(schedule_refresh):
+                schedule_refresh(
+                    user_input_hint=str(user_input_hint or ""),
+                    context_hint=str(context_hint or ""),
+                    expected_chat_id=str(getattr(self, "active_chat_id", "") or "").strip(),
+                )
+        except Exception:
+            pass
 
     @staticmethod
     def _parse_domain_classifier_json(text: str) -> Optional[Dict[str, Any]]:
@@ -1868,6 +1915,14 @@ class SmartShellAgent:
         reason: str = "user_interrupt",
         detail: str = "",
     ) -> None:
+        if str(interrupted_kind or "").strip().lower() == "task":
+            try:
+                svc = getattr(self, "session_memory_service", None)
+                mark_latest = getattr(svc, "mark_latest_unanswered_user_message_for_cancel", None)
+                if callable(mark_latest):
+                    mark_latest()
+            except Exception:
+                pass
         assistant_content = self._build_conversation_interrupted_history_content(
             interrupted_kind=interrupted_kind,
             reason=reason,
@@ -1909,6 +1964,16 @@ class SmartShellAgent:
         raw_cmd = str(raw_user_command or "").strip()
         if not raw_cmd:
             return
+        direct_task_id = ""
+        try:
+            domain_info = self._classify_task_domains(raw_cmd)
+            direct_task_id = self._start_chat_task(
+                root_user_input=raw_cmd,
+                domains=list(domain_info.get("domains") or []),
+                classifier=domain_info,
+            )
+        except Exception:
+            direct_task_id = ""
         executed = str(executed_command or "").strip() or raw_cmd
         cwd_text = str(cwd or "").strip()
         user_content = self._build_direct_shell_user_history_content(raw_cmd)
@@ -1923,6 +1988,15 @@ class SmartShellAgent:
         )
         self._append_chat_message("user", user_content)
         self._append_chat_message("assistant", assistant_content)
+        if direct_task_id:
+            try:
+                self._close_chat_task(direct_task_id, "done")
+            except Exception:
+                pass
+        self._refresh_context_usage_after_task_boundary(
+            user_input_hint=raw_cmd,
+            context_hint="direct shell completed",
+        )
 
     def _build_internal_slash_user_history_content(self, raw_user_command: str) -> str:
         cmd = str(raw_user_command or "").strip()
@@ -3768,6 +3842,8 @@ class SmartShellAgent:
             "cancelled operation",
             "cancelled by user",
             "aborted by user",
+            "用户取消",
+            "用户取消了操作",
             "installation aborted",
             "confirm installation yes(y)/no(n): n",
         ]
