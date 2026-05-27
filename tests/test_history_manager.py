@@ -27,7 +27,7 @@ class HistoryManagerTests(unittest.TestCase):
                 data = json.load(f)
             self.assertEqual(data.get("history"), ["test", "build"])
 
-    def test_slash_entries_remain_in_memory_without_persisting(self):
+    def test_slash_entries_persist_to_history_file(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             manager = HistoryManager(config_dir=tmpdir, max_entries=50)
             manager.add_entry("build")
@@ -37,16 +37,16 @@ class HistoryManagerTests(unittest.TestCase):
 
             with open(manager.history_file, "r", encoding="utf-8") as f:
                 data = json.load(f)
-            self.assertEqual(data.get("history"), ["build"])
+            self.assertEqual(data.get("history"), ["build", "/chat list"])
 
             manager.add_entry("test")
             self.assertEqual(manager.get_all_history(), ["build", "/chat list", "test"])
             with open(manager.history_file, "r", encoding="utf-8") as f:
                 data = json.load(f)
-            self.assertEqual(data.get("history"), ["build", "test"])
+            self.assertEqual(data.get("history"), ["build", "/chat list", "test"])
 
             reloaded = HistoryManager(config_dir=tmpdir, max_entries=50)
-            self.assertEqual(reloaded.get_all_history(), ["build", "test"])
+            self.assertEqual(reloaded.get_all_history(), ["build", "/chat list", "test"])
 
 
 if __name__ == "__main__":

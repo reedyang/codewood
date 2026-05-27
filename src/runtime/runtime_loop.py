@@ -293,8 +293,8 @@ def _sync_command_input_history(agent: Any, user_input: str) -> None:
     """
     Sync persisted and in-memory command history after each non-empty input.
     - Normal commands: record with de-duplication (move to latest).
-    - Slash built-ins: keep in process memory for arrow-key recall; HistoryManager
-      omits them from disk persistence.
+    - Slash built-ins: record the same way so reload and future sessions keep
+      the user's full input history.
     """
     text = str(user_input or "").strip()
     if not text:
