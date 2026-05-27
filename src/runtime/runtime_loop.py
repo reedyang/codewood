@@ -1279,6 +1279,13 @@ def run_agent_loop(agent: Any):
                     )
                 if full_prompts:
                     self._active_skill_full_prompt = "\n".join(full_prompts)
+            mcp_tool_selection_constraint = ""
+            if bool(getattr(self, "mcp_tools_enabled", False)):
+                mcp_tool_selection_constraint = (
+                    "【MCP 工具选择补充约束】\n"
+                    "- 用户若请求“指定 MCP server 的信息/详情”，首个查询工具必须是 mcp_server_info。\n"
+                    "- mcp_status/mcp_status_refresh 仅用于全局 MCP 状态总览，不可替代指定 server 的详情查询。\n\n"
+                )
             first_round_contract = (
                 "\n\n【首轮回复硬性要求（必须遵守）】\n"
                 "1) 对于需要两步及以上完成的任务，先简要说明“将要完成哪些事情”，紧随其后再输出任务编排：Step 1..N，并为每步标注状态（pending/in_progress/completed/failed）。\n"
@@ -1295,10 +1302,8 @@ def run_agent_loop(agent: Any):
                 "7) 若你已输出 Step 1..N 且含「检索/搜索」与后续「分析、再跑脚本、再请求其它 skill」等，禁止在仅完成靠前步骤且仍有 pending 时 {\"tool\":\"done\"}；须继续直至各步完成或显式说明改计划原因。\n\n"
                 "8) 只要调用了网络检索相关的工具、命令、脚本或 skill（网页搜索、联网抓取、在线查询等），调用 done 前必须先输出一次检索结果总结（关键信息、来源要点、与用户问题的对应关系）；禁止检索后直接 done。\n\n"
                 "9) 若上一任务已被用户取消，而本轮用户输入是新任务，禁止主动恢复或重做被取消任务；仅当用户明确要求“继续/重做”时才可恢复。\n\n"
-                "【MCP 工具选择补充约束】\n"
-                "- 用户若请求“指定 MCP server 的信息/详情”，首个查询工具必须是 mcp_server_info。\n"
-                "- mcp_status/mcp_status_refresh 仅用于全局 MCP 状态总览，不可替代指定 server 的详情查询。\n\n"
-                "【知识库 knowledge_search 约束】\n"
+                + mcp_tool_selection_constraint
+                + "【知识库 knowledge_search 约束】\n"
                 "- 禁止：用户未明确要求检索知识库或参考知识库（本地文档库）信息时，不得调用 knowledge_search。\n"
                 "- 必须：用户明确要求「检索知识库」「在知识库里查」「参考知识库中的资料/内容」或清晰等价表述时，"
                 "必须先调用 knowledge_search 取得相关片段，再作答或继续其他工具；禁止未检索却声称已依据知识库。\n"

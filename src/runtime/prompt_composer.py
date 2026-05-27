@@ -136,7 +136,37 @@ def load_tools_spec_from_jsonc(agent: Any) -> List[Dict[str, Any]]:
         parsed = json.loads(clean)
         if not isinstance(parsed, list):
             raise ValueError("tools.jsonc root must be array")
-        return [x for x in parsed if isinstance(x, dict)]
+        specs = [x for x in parsed if isinstance(x, dict)]
+
+        if not bool(getattr(agent, "mcp_tools_enabled", False)):
+            disabled_mcp_tools = {
+                "mcp_server_info",
+                "mcp_disable_tools",
+                "mcp_enable_tools",
+                "mcp_list_disabled_tools",
+                "mcp_sampling_create_message",
+                "mcp_completion_complete",
+            }
+            specs = [
+                x
+                for x in specs
+                if str((x.get("function", {}) or {}).get("name", "")).strip()
+                not in disabled_mcp_tools
+            ]
+
+        if not bool(getattr(agent, "knowledge_tools_enabled", False)):
+            disabled_knowledge_tools = {
+                "knowledge_sync",
+                "knowledge_stats",
+            }
+            specs = [
+                x
+                for x in specs
+                if str((x.get("function", {}) or {}).get("name", "")).strip()
+                not in disabled_knowledge_tools
+            ]
+
+        return specs
     except Exception as e:
         print(f"⚠️ tools.jsonc 加载失败: {e}")
         return []

@@ -1,34 +1,6 @@
-﻿import platform
 import re
-import shutil
-import subprocess
-import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional
-
-
-def action_ffmpeg(agent: Any, source: str, target: str, options: Optional[str] = None) -> Dict[str, Any]:
-    if not source or not target:
-        print("⚠️ Missing 'source' or 'target' parameter")
-        return {"success": False, "error": "Missing 'source' or 'target' parameter"}
-    source_path = agent.work_directory / source
-    if not source_path.exists():
-        print(f"⚠️ Source file '{source}' does not exist")
-        return {"success": False, "error": f"Source file '{source}' does not exist"}
-    ffmpeg_cmd = ["ffmpeg", "-y", "-i", source]
-    if options:
-        ffmpeg_cmd += options.split()
-    ffmpeg_cmd.append(target)
-    print(f"🔄 Running ffmpeg command: {' '.join(ffmpeg_cmd)}")
-    try:
-        result = subprocess.run(ffmpeg_cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
-        if result.returncode == 0:
-            return {"success": True, "message": "Media file processed successfully"}
-        return {"success": False, "error": f"ffmpeg execution failed: {result.stderr}"}
-    except FileNotFoundError:
-        return {"success": False, "error": "ffmpeg was not found. Please install it and ensure it is available in PATH."}
-    except Exception as e:
-        return {"success": False, "error": f"ffmpeg execution error: {str(e)}"}
 
 
 def action_apply_unified_patch(agent: Any, file_path: str, patch: str, confirmed: bool = False) -> Dict[str, Any]:
@@ -239,71 +211,3 @@ def action_read_image(agent: Any, file_path: str, prompt: str = "") -> Dict[str,
     except Exception as e:
         return {"success": False, "error": f"Image read failed: {str(e)}"}
 
-
-def action_diff(agent: Any, file1: str, file2: str, options: Optional[str] = None) -> Dict[str, Any]:
-    try:
-        file1_path = Path(file1)
-        file2_path = Path(file2)
-        if not file1_path.exists():
-            return {"success": False, "error": f"File does not exist: {file1}"}
-        if not file2_path.exists():
-            return {"success": False, "error": f"File does not exist: {file2}"}
-        if platform.system() == "Windows":
-            if shutil.which("diff.exe"):
-                full_command = f'diff.exe {options} "{file1}" "{file2}"' if options else f'diff.exe "{file1}" "{file2}"'
-                command_type = "diff.exe"
-            else:
-                full_command = f'cmd /c fc {options} "{file1}" "{file2}"' if options else f'cmd /c fc "{file1}" "{file2}"'
-                command_type = "fc"
-        else:
-            full_command = f'diff {options} "{file1}" "{file2}"' if options else f'diff "{file1}" "{file2}"'
-            command_type = "diff"
-
-        process = subprocess.Popen(
-            full_command,
-            shell=True,
-            stdin=sys.stdin,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            cwd=str(agent.work_directory),
-        )
-        stdout, stderr = process.communicate()
-        return_code = process.returncode
-        if command_type == "fc":
-            if return_code in [0, 1]:
-                return {
-                    "success": True,
-                    "command": full_command,
-                    "command_type": command_type,
-                    "output": stdout.strip() if stdout else "",
-                    "has_differences": return_code == 1,
-                    "message": "File comparison completed" + (", differences found" if return_code == 1 else ", files are identical"),
-                }
-            return {
-                "success": False,
-                "command": full_command,
-                "command_type": command_type,
-                "error": stderr.strip() if stderr else f"fc command failed, exit code: {return_code}",
-                "output": stdout.strip() if stdout else "",
-            }
-        if return_code in [0, 1]:
-            return {
-                "success": True,
-                "command": full_command,
-                "command_type": command_type,
-                "output": stdout.strip() if stdout else "",
-                "has_differences": return_code == 1,
-                "message": "File comparison completed" + (", differences found" if return_code == 1 else ", files are identical"),
-            }
-        return {
-            "success": False,
-            "command": full_command,
-            "command_type": command_type,
-            "error": stderr.strip() if stderr else f"{command_type} command failed, exit code: {return_code}",
-            "output": stdout.strip() if stdout else "",
-        }
-    except Exception as e:
-        return {"success": False, "error": f"File comparison command error: {str(e)}"}

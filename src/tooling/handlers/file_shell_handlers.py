@@ -6,14 +6,6 @@ from ...core.security.git_guard import guard_git_clone_precheck
 
 
 def dispatch_file_shell_tool(agent: Any, action: str, params: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    if action == "ffmpeg":
-        source = params.get("source")
-        target = params.get("target")
-        options = params.get("options")
-        if source and target:
-            return agent.action_ffmpeg(source, target, options)
-        return {"success": False, "error": "missing source/target"}
-
     if action == "shell":
         shell_cmd = params.get("command")
         if not shell_cmd:
@@ -125,13 +117,5 @@ def dispatch_file_shell_tool(agent: Any, action: str, params: Dict[str, Any]) ->
 
     if action == "project_context_search":
         return agent.action_project_context_search(params if isinstance(params, dict) else {})
-
-    if action == "diff":
-        file1 = params.get("file1")
-        file2 = params.get("file2")
-        options = params.get("options")
-        if file1 and file2:
-            return agent.action_diff(file1, file2, options)
-        return {"success": False, "error": "missing file1/file2"}
 
     return None
