@@ -70,11 +70,6 @@ class _SSLContextAdapter(requests.adapters.HTTPAdapter):
         return super().init_poolmanager(connections, maxsize, block=block, **pool_kwargs)
 
 
-def _prompt_inline(prompt: str) -> str:
-    # Use Python's native inline prompt path for best TTY compatibility.
-    return input(prompt)
-
-
 def _fetch(url: str, timeout_sec: int = 20, verify_ssl: bool = True) -> str:
     request_timeout = (min(timeout_sec, 4), timeout_sec)
     if not verify_ssl:
@@ -130,6 +125,19 @@ def _parse_frontmatter_name(skill_md_text: str) -> str:
     return m.group(1).strip().strip('"').strip("'")
 
 
+def _parse_frontmatter_description(skill_md_text: str) -> str:
+    if not skill_md_text.startswith("---"):
+        return ""
+    parts = skill_md_text.split("---", 2)
+    if len(parts) < 3:
+        return ""
+    raw = parts[1]
+    m = re.search(r"^\s*description\s*:\s*(.+?)\s*$", raw, flags=re.IGNORECASE | re.MULTILINE)
+    if not m:
+        return ""
+    return m.group(1).strip().strip('"').strip("'")
+
+
 def _has_frontmatter(skill_md_text: str) -> bool:
     text = (skill_md_text or "").lstrip("\ufeff")
     if not text.startswith("---"):
@@ -149,6 +157,54 @@ def _parse_heading_name(skill_md_text: str) -> str:
         return ""
     name = m.group(1).strip()
     return re.sub(r"\s+", " ", name)
+
+
+def _strip_frontmatter(skill_md_text: str) -> str:
+    text = (skill_md_text or "").lstrip("\ufeff").strip()
+    if not text.startswith("---"):
+        return text
+    parts = text.split("---", 2)
+    if len(parts) < 3:
+        return text
+    return parts[2].strip()
+
+
+def _first_content_sentence(markdown_text: str) -> str:
+    for raw in (markdown_text or "").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or line.startswith("```") or line.startswith("---"):
+            continue
+        line = re.sub(r"^[-*]\s+", "", line).strip()
+        if line:
+            return re.sub(r"\s+", " ", line)[:180]
+    return ""
+
+
+def _yaml_double_quote(value: str) -> str:
+    return '"' + (value or "").replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def _standardize_skill_md(skill_md_text: str, skill_name: str) -> Tuple[str, bool]:
+    if _has_frontmatter(skill_md_text):
+        return skill_md_text if skill_md_text.endswith("\n") else skill_md_text + "\n", False
+
+    body = _strip_frontmatter(skill_md_text)
+    name = _parse_frontmatter_name(skill_md_text) or _parse_heading_name(body) or skill_name
+    name = re.sub(r"\s+", " ", (name or "skillhub-skill").strip())
+    description = _parse_frontmatter_description(skill_md_text) or _first_content_sentence(body)
+    if not description:
+        description = f"Skill installed from SkillHub: {name}."
+    if not body:
+        body = f"# {name}"
+
+    normalized = (
+        "---\n"
+        f"name: {_yaml_double_quote(name)}\n"
+        f"description: {_yaml_double_quote(description)}\n"
+        "---\n\n"
+        f"{body.strip()}\n"
+    )
+    return normalized, True
 
 
 def _scan_skills_root(root: Path, source: str) -> List[LoadedSkill]:
@@ -815,57 +871,9 @@ def cmd_install(args: argparse.Namespace) -> int:
         urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
     detail_url = args.detail_url.strip() if args.detail_url else ""
-    selected_repo_url = ""
-    query = (args.query or "").strip()
     if not detail_url:
-        if not query:
-            print("Invalid install arguments: provide --detail-url or --query.")
-            return 2
-        if _is_skillhub_detail_url(query):
-            detail_url = query
-        else:
-            try:
-                cards = _search(
-                    query=query,
-                    page=1,
-                    verify_ssl=verify_ssl,
-                    scan_pages=1,
-                    deep_match=False,
-                    max_detail_fetch=0,
-                    max_results=max(1, min(args.max_results, 30)),
-                )
-            except RuntimeError as exc:
-                print(f"Install aborted: search failed: {exc}")
-                return 1
-            if not cards:
-                print(f"Install aborted: no skill found for query: {query}")
-                return 1
-
-            print("Interactive selection required.", flush=True)
-            print(f"query: {query}", flush=True)
-            print(f"count: {len(cards)}", flush=True)
-            for i, c in enumerate(cards, 1):
-                print(f"{i}. {c.name}", flush=True)
-                print(f"   detail_url: {c.detail_url}", flush=True)
-                if c.snippet:
-                    print(f"   snippet: {c.snippet}", flush=True)
-            try:
-                picked = _prompt_inline(f"Type index to install (1-{len(cards)}) or \"c\" to Cancel: ").strip()
-            except EOFError:
-                print("Installation aborted: no interactive index received.")
-                return 2
-            if picked.lower() == "c":
-                print("Installation aborted by user.")
-                return 2
-            if not picked.isdigit():
-                print("Installation aborted: invalid index input.")
-                return 2
-            idx = int(picked)
-            if idx < 1 or idx > len(cards):
-                print("Installation aborted: index out of range.")
-                return 2
-            detail_url = cards[idx - 1].detail_url
-            selected_repo_url = cards[idx - 1].repo_url
+        print("Invalid install arguments: provide --detail-url.")
+        return 2
 
     parsed = urlparse(detail_url)
     if parsed.scheme not in ("http", "https") or parsed.netloc != "www.skillhub.club":
@@ -888,7 +896,7 @@ def cmd_install(args: argparse.Namespace) -> int:
         print(f"Install aborted: {exc}")
         return 1
 
-    github_url = selected_repo_url or _extract_github_link(detail_html)
+    github_url = _extract_github_link(detail_html)
     skill_md = _fetch_github_skill_md(github_url) or _extract_skill_md(detail_html) or _extract_skill_md_from_prose_html(detail_html)
     if not skill_md:
         print("Install aborted: failed to extract source SKILL.md exactly.")
@@ -899,52 +907,35 @@ def cmd_install(args: argparse.Namespace) -> int:
         # Final fallback: use URL tail segment to avoid losing installability.
         skill_name = parsed.path.rstrip("/").split("/")[-1]
     skill_id = _slugify(skill_name)
-    needs_conversion = not _has_frontmatter(skill_md)
+    skill_md, converted_frontmatter = _standardize_skill_md(skill_md, skill_name)
 
-    if needs_conversion:
-        print("Install aborted: source SKILL.md is not standard frontmatter format (requires name and description).")
-        return 1
-
-    print("Interactive confirmation required.", flush=True)
+    print("Confirmation accepted from --confirm YES.", flush=True)
     print(f"detail_url: {detail_url}", flush=True)
     print(f"detected_skill_name: {skill_name}", flush=True)
-    try:
-        typed = _prompt_inline("Confirm installation Yes(y)/No(n): ").strip().lower()
-    except EOFError:
-        print("Installation aborted: no interactive confirmation received.")
-        return 2
-    if typed not in ("y", "n"):
-        print("Installation aborted: invalid confirmation input (use y/n).")
-        return 2
-    if typed != "y":
-        print("Installation aborted by user.")
-        return 2
+    if converted_frontmatter:
+        print("normalized_frontmatter: yes", flush=True)
 
     target_dir = config_skills_root / skill_id
     def _resolve_dir_conflict(paths: List[Path]) -> int:
-        while True:
-            try:
-                choice = _prompt_inline("Conflict resolution required. Choose overwrite(o)/rename(r)/cancel(c): ").strip().lower()
-            except EOFError:
-                print("Install aborted: no conflict resolution input received.")
-                return 3
-            if choice in ("c", "cancel"):
-                print("Installation aborted by user.")
-                return 3
-            if choice in ("o", "overwrite"):
-                for p in paths:
-                    if p.exists() and p.is_dir():
-                        shutil.rmtree(p, ignore_errors=False)
-                return 0
-            if choice in ("r", "rename"):
-                suffix = datetime.now().strftime("%Y%m%d-%H%M%S")
-                for p in paths:
-                    if p.exists() and p.is_dir():
-                        dst = p.with_name(f"{p.name}-backup-{suffix}")
-                        p.rename(dst)
-                        print(f"Renamed existing skill dir: {p} -> {dst}")
-                return 0
-            print("Invalid choice. Please type o/r/c.")
+        choice = (getattr(args, "on_conflict", "abort") or "abort").strip().lower()
+        if choice == "abort":
+            print("Install aborted due to config conflict. Re-run with --on-conflict overwrite or --on-conflict rename to resolve.")
+            return 3
+        if choice == "overwrite":
+            for p in paths:
+                if p.exists() and p.is_dir():
+                    shutil.rmtree(p, ignore_errors=False)
+            return 0
+        if choice == "rename":
+            suffix = datetime.now().strftime("%Y%m%d-%H%M%S")
+            for p in paths:
+                if p.exists() and p.is_dir():
+                    dst = p.with_name(f"{p.name}-backup-{suffix}")
+                    p.rename(dst)
+                    print(f"Renamed existing skill dir: {p} -> {dst}")
+            return 0
+        print("Install aborted: invalid --on-conflict value (use abort/overwrite/rename).")
+        return 3
 
     loaded = _collect_loaded_skills(config_dir=config_dir, builtin_root=builtin_root, workspace_root=workspace_root)
     conflicts = _detect_conflicts(loaded, new_skill_id=skill_id, new_skill_name=skill_name)
@@ -956,7 +947,7 @@ def cmd_install(args: argparse.Namespace) -> int:
         for c in conflicts:
             print(f"- source={c.source} skill_id={c.skill_id} skill_name={c.skill_name} path={c.path}")
         print("")
-        # Only config-side conflicts can be handled interactively.
+        # Only config-side conflicts can be resolved by this installer.
         non_config_conflicts = [c for c in conflicts if c.source != "config"]
         if non_config_conflicts:
             print("Install aborted due to non-config conflict (builtin/workspace cannot be auto-resolved).")
@@ -1069,12 +1060,16 @@ def build_parser() -> argparse.ArgumentParser:
     p_search.add_argument("--no-verify", action="store_true", help="Alias of --insecure for TLS verification")
     p_search.set_defaults(func=cmd_search)
 
-    p_install = sub.add_parser("install", help="Install one skill from SkillHub (detail URL or query)")
+    p_install = sub.add_parser("install", help="Install one skill from SkillHub by detail URL")
     p_install.add_argument("--detail-url", default="", help="Skill detail URL on skillhub.club")
-    p_install.add_argument("--query", default="", help="Search query for interactive index selection")
-    p_install.add_argument("--max-results", type=int, default=8, help="Max candidates for interactive selection (1-30)")
     p_install.add_argument("--config-dir", required=True, help="Host config directory (contains skills/)")
     p_install.add_argument("--confirm", default="", help='Must be exactly "YES" to continue')
+    p_install.add_argument(
+        "--on-conflict",
+        choices=("abort", "overwrite", "rename"),
+        default="abort",
+        help="How to handle config skill directory conflicts without prompting",
+    )
     p_install.add_argument("--insecure", action="store_true", help="Disable TLS verification for HTTPS")
     p_install.add_argument("--no-verify", action="store_true", help="Alias of --insecure for TLS verification")
     p_install.add_argument("--builtin-skills-root", default="", help="Optional override builtin skills root")
