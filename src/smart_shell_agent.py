@@ -1655,6 +1655,27 @@ class SmartShellAgent:
     def _format_assistant_chat_display_message(self, assistant_text: str) -> str:
         return self._format_chat_message_with_wrap("•", assistant_text, colored_text=True)
 
+    def _format_internal_slash_output(self, output_text: str) -> str:
+        raw = str(output_text or "")
+        if not raw:
+            return ""
+        normalized = raw.replace("\r\n", "\n").replace("\r", "\n")
+        cols = max(8, int(self._terminal_columns_for_line_estimate() or 80))
+        prefix = "  "
+        max_width = max(1, cols - self._feedback_text_display_width(prefix))
+        rendered: List[str] = []
+        for logical_line in normalized.splitlines(keepends=True):
+            has_newline = logical_line.endswith("\n")
+            content = logical_line[:-1] if has_newline else logical_line
+            chunks = self._wrap_ansi_text_by_display_width(content, max_width) or [""]
+            for idx, chunk in enumerate(chunks):
+                if idx > 0:
+                    rendered.append("\n")
+                rendered.append(f"{prefix}{chunk}")
+            if has_newline:
+                rendered.append("\n")
+        return "".join(rendered)
+
     def _terminal_columns_for_command_feedback(self) -> int:
         width = 0
         try:
@@ -2041,7 +2062,7 @@ class SmartShellAgent:
         return payload
 
     def _print_internal_slash_history_output(self, output_text: str) -> None:
-        out = str(output_text or "")
+        out = self._format_internal_slash_output(str(output_text or ""))
         if not out:
             return
         try:
@@ -2132,6 +2153,104 @@ class SmartShellAgent:
                 merged += "\n"
             merged += "command aborted by user\n"
         return merged
+
+    class _InternalSlashOutputStream:
+        def __init__(self, base_stream: Any) -> None:
+            self._base_stream = base_stream
+            self._line_start = True
+            self._visual_col = 0
+            self._active_sgr = ""
+
+        @property
+        def encoding(self) -> Optional[str]:
+            try:
+                return getattr(self._base_stream, "encoding", None)
+            except Exception:
+                return None
+
+        def fileno(self) -> int:
+            return self._base_stream.fileno()
+
+        def isatty(self) -> bool:
+            try:
+                return bool(self._base_stream.isatty())
+            except Exception:
+                return False
+
+        def flush(self) -> None:
+            try:
+                self._base_stream.flush()
+            except Exception:
+                pass
+
+        def writable(self) -> bool:
+            return True
+
+        def _terminal_columns(self) -> int:
+            try:
+                if hasattr(self._base_stream, "fileno"):
+                    cols = int(os.get_terminal_size(self._base_stream.fileno()).columns or 0)
+                    if cols > 0:
+                        return cols
+            except Exception:
+                pass
+            try:
+                cols = int(shutil.get_terminal_size(fallback=(80, 24)).columns or 80)
+                if cols > 0:
+                    return cols
+            except Exception:
+                pass
+            return 80
+
+        def _emit_indent_if_needed(self, out_parts: List[str]) -> None:
+            if not self._line_start:
+                return
+            out_parts.append("  ")
+            self._visual_col = 2
+            self._line_start = False
+
+        def write(self, text: str) -> int:
+            s = str(text or "")
+            if not s:
+                return 0
+            s = s.replace("\r\n", "\n").replace("\r", "\n")
+            term_cols = max(8, int(self._terminal_columns() or 80))
+            out_parts: List[str] = []
+            i = 0
+            n = len(s)
+            while i < n:
+                self._emit_indent_if_needed(out_parts)
+                if s[i] == "\x1b":
+                    m = ANSI_ESCAPE_RE.match(s, i)
+                    if not m:
+                        m = ANSI_OSC_RE.match(s, i)
+                    if m:
+                        seq = m.group(0)
+                        out_parts.append(seq)
+                        if seq.endswith("m") and seq.startswith("\x1b["):
+                            codes = seq[2:-1]
+                            self._active_sgr = "" if (not codes or codes == "0") else seq
+                        i = m.end()
+                        continue
+                ch = s[i]
+                if ch == "\n":
+                    out_parts.append("\n")
+                    self._line_start = True
+                    self._visual_col = 0
+                    i += 1
+                    continue
+                ch_w = SmartShellAgent._feedback_char_display_width(ch)
+                if ch_w > 0 and self._visual_col + ch_w > term_cols:
+                    out_parts.append("\n  ")
+                    if self._active_sgr:
+                        out_parts.append(self._active_sgr)
+                    self._line_start = False
+                    self._visual_col = 2
+                out_parts.append(ch)
+                self._visual_col += ch_w
+                i += 1
+            self._base_stream.write("".join(out_parts))
+            return len(s)
 
     class _DirectShellOutputStream:
         def __init__(self, base_stream: Any, shared_state: Dict[str, Any]) -> None:
@@ -2268,6 +2387,9 @@ class SmartShellAgent:
     ) -> Any:
         state = shared_state if isinstance(shared_state, dict) else {"first_line_emitted": False}
         return SmartShellAgent._DirectShellOutputStream(base_stream, state)
+
+    def _build_internal_slash_output_stream(self, base_stream: Any) -> Any:
+        return SmartShellAgent._InternalSlashOutputStream(base_stream)
 
     def _create_direct_shell_output_streams(
         self, shared_state: Optional[Dict[str, Any]] = None

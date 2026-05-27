@@ -543,8 +543,11 @@ def run_agent_loop(agent: Any):
             if builtin_line is not None:
                 slash_command = f"/{builtin_line}"
                 slash_out_buf = io.StringIO()
-                slash_stdout = _TeeTextStream(sys.stdout, slash_out_buf)
-                slash_stderr = _TeeTextStream(sys.stderr, slash_out_buf)
+                self._rewrite_previous_prompt_as_user(slash_command)
+                slash_stdout_primary = self._build_internal_slash_output_stream(sys.stdout)
+                slash_stderr_primary = self._build_internal_slash_output_stream(sys.stderr)
+                slash_stdout = _TeeTextStream(slash_stdout_primary, slash_out_buf)
+                slash_stderr = _TeeTextStream(slash_stderr_primary, slash_out_buf)
                 with redirect_stdout(slash_stdout), redirect_stderr(slash_stderr):
                     try:
                         handled, should_exit = dispatch_builtin_command(
