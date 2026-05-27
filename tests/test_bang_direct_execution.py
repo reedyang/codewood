@@ -155,6 +155,27 @@ class BangDirectExecutionTests(unittest.TestCase):
         self.assertIn("    command aborted by user\n", out_plain)
         self.assertNotIn("└ command aborted by user", out_plain)
 
+    def test_direct_shell_history_output_inside_slash_stream_does_not_emit_clear_line(self):
+        class _TtyBuffer(StringIO):
+            def isatty(self):
+                return True
+
+            def fileno(self):
+                return 1
+
+        out_buf = _TtyBuffer()
+        err_buf = _TtyBuffer()
+        slash_out = self.agent._build_internal_slash_output_stream(out_buf, terminal_columns=80)
+        slash_err = self.agent._build_internal_slash_output_stream(err_buf, terminal_columns=80)
+        with patch("src.smart_shell_agent.sys.stdout", slash_out), patch(
+            "src.smart_shell_agent.sys.stderr", slash_err
+        ):
+            self.agent._print_direct_shell_history_output("At Line:1 char:41\n", "")
+
+        ansi_re = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+        out_plain = ansi_re.sub("", out_buf.getvalue()).lstrip("\r")
+        self.assertEqual(out_plain, "    └ At Line:1 char:41\n")
+
     @patch("subprocess.Popen")
     def test_run_direct_shell_wraps_interrupt_monitor_and_process_registration(self, popen_mock):
         proc = types.SimpleNamespace(

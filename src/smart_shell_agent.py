@@ -2088,7 +2088,10 @@ class SmartShellAgent:
         stderr_text: str,
         force_first_line_continuation: bool = False,
     ) -> int:
-        shared_state: Dict[str, Any] = {"first_line_emitted": bool(force_first_line_continuation)}
+        shared_state: Dict[str, Any] = {
+            "first_line_emitted": bool(force_first_line_continuation),
+            "_suppress_first_write_clear": True,
+        }
         out_stream, err_stream = self._create_direct_shell_output_streams(shared_state)
         out = str(stdout_text or "")
         err = str(stderr_text or "")
@@ -2364,8 +2367,13 @@ class SmartShellAgent:
         def _flush_pending_word(self, out_parts: List[str], term_cols: int) -> None:
             if not self._pending_word:
                 return
-            self._emit_indent_if_needed(out_parts)
             word_w = int(self._pending_word_width or 0)
+            if word_w <= 0 and not self._pending_spaces:
+                out_parts.extend(self._pending_word)
+                self._pending_word = []
+                self._pending_word_width = 0
+                return
+            self._emit_indent_if_needed(out_parts)
             spaces_w = int(self._pending_spaces_width or 0)
             if self._pending_spaces and self._visual_col > 2:
                 if self._visual_col + spaces_w + word_w <= term_cols:
@@ -2395,7 +2403,6 @@ class SmartShellAgent:
             i = 0
             n = len(s)
             while i < n:
-                self._emit_indent_if_needed(out_parts)
                 if s[i] == "\x1b":
                     m = ANSI_ESCAPE_RE.match(s, i)
                     if not m:
@@ -2408,6 +2415,7 @@ class SmartShellAgent:
                         self._pending_word.append(seq)
                         i = m.end()
                         continue
+                self._emit_indent_if_needed(out_parts)
                 ch = s[i]
                 if ch == "\n":
                     self._flush_pending_word(out_parts, term_cols)
@@ -2499,11 +2507,19 @@ class SmartShellAgent:
                 return 0
             if not bool(self._shared_state.get("_first_write_cleared_ticker_line", False)):
                 self._shared_state["_first_write_cleared_ticker_line"] = True
+                suppress_clear = bool(self._shared_state.get("_suppress_first_write_clear", False))
                 try:
-                    self._base_stream.write("\r\x1b[2K")
-                    self._base_stream.flush()
+                    suppress_clear = suppress_clear or bool(
+                        int(getattr(self._base_stream, "smart_shell_output_indent_width", 0) or 0)
+                    )
                 except Exception:
                     pass
+                if not suppress_clear:
+                    try:
+                        self._base_stream.write("\r\x1b[2K")
+                        self._base_stream.flush()
+                    except Exception:
+                        pass
             if not bool(self._shared_state.get("_first_text_emitted_notified", False)):
                 self._shared_state["_first_text_emitted_notified"] = True
                 cb = self._shared_state.get("on_text_emitted")
@@ -2582,6 +2598,7 @@ class SmartShellAgent:
             state.setdefault("cursor_at_line_start", True)
             state.setdefault("_first_write_cleared_ticker_line", False)
             state.setdefault("_first_text_emitted_notified", False)
+            state.setdefault("_suppress_first_write_clear", False)
         else:
             state = {
                 "first_line_emitted": False,
@@ -2589,6 +2606,7 @@ class SmartShellAgent:
                 "cursor_at_line_start": True,
                 "_first_write_cleared_ticker_line": False,
                 "_first_text_emitted_notified": False,
+                "_suppress_first_write_clear": False,
             }
         out_stream = self._build_direct_shell_output_stream(sys.stdout, state)
         err_stream = self._build_direct_shell_output_stream(sys.stderr, state)
@@ -2958,6 +2976,7 @@ class SmartShellAgent:
             "cursor_at_line_start": True,
             "_first_write_cleared_ticker_line": False,
             "_first_text_emitted_notified": False,
+            "_suppress_first_write_clear": False,
             "on_text_emitted": _stop_status_ticker,
         }
         stdout_chunks: List[str] = []
