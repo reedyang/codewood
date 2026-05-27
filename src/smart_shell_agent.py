@@ -1320,6 +1320,20 @@ class SmartShellAgent:
 
     def _terminal_columns_for_line_estimate(self) -> int:
         width = 80
+        output_indent_width = 0
+        stdout_stream = sys.stdout
+        try:
+            output_indent_width = max(0, int(getattr(stdout_stream, "smart_shell_output_indent_width", 0) or 0))
+        except Exception:
+            output_indent_width = 0
+        try:
+            fn = getattr(stdout_stream, "smart_shell_terminal_columns", None)
+            if callable(fn):
+                cols = int(fn() or 0)
+                if cols > 0:
+                    return max(1, cols - output_indent_width - (1 if output_indent_width else 0))
+        except Exception:
+            pass
         # Keep wrap behavior aligned with prompt_toolkit's live output viewport
         # only when the prompt session is active. When session is inactive,
         # some input handlers return fallback width (often 80), which causes
@@ -1338,13 +1352,13 @@ class SmartShellAgent:
         try:
             cols1 = int(os.get_terminal_size(sys.__stdout__.fileno()).columns or 0)
             if cols1 > 0:
-                return cols1
+                return max(1, cols1 - output_indent_width - (1 if output_indent_width else 0))
         except Exception:
             pass
         try:
             cols2 = int(os.get_terminal_size(sys.stdout.fileno()).columns or 0)
             if cols2 > 0:
-                return cols2
+                return max(1, cols2 - output_indent_width - (1 if output_indent_width else 0))
         except Exception:
             pass
         try:
@@ -1353,7 +1367,7 @@ class SmartShellAgent:
                 width = cols3
         except Exception:
             pass
-        return max(1, int(width))
+        return max(1, int(width) - output_indent_width - (1 if output_indent_width else 0))
 
     def _estimate_rendered_line_count(self, text: str) -> int:
         raw = str(text or "")
@@ -1425,6 +1439,20 @@ class SmartShellAgent:
 
     def _terminal_columns_for_prompt_separator(self, default: int = 80) -> int:
         width = max(1, int(default or 80))
+        output_indent_width = 0
+        stdout_stream = sys.stdout
+        try:
+            output_indent_width = max(0, int(getattr(stdout_stream, "smart_shell_output_indent_width", 0) or 0))
+        except Exception:
+            output_indent_width = 0
+        try:
+            fn = getattr(stdout_stream, "smart_shell_terminal_columns", None)
+            if callable(fn):
+                cols0 = int(fn() or 0)
+                if cols0 > 0:
+                    return max(1, cols0 - output_indent_width - (1 if output_indent_width else 0))
+        except Exception:
+            pass
         width_from_input_handler = False
         ih = getattr(self, "input_handler", None)
         try:
@@ -1455,7 +1483,7 @@ class SmartShellAgent:
                     width = int(shutil.get_terminal_size(fallback=(width, 24)).columns or width)
                 except Exception:
                     width = max(1, int(default or 80))
-        return max(1, int(width))
+        return max(1, int(width) - output_indent_width - (1 if output_indent_width else 0))
 
     def _print_conversation_interrupted_banner(self) -> int:
         msg = "■ Conversation interrupted - tell the model what to do differently. Something went wrong?"
@@ -1770,6 +1798,20 @@ class SmartShellAgent:
 
     def _terminal_columns_for_command_feedback(self) -> int:
         width = 0
+        output_indent_width = 0
+        stdout_stream = sys.stdout
+        try:
+            output_indent_width = max(0, int(getattr(stdout_stream, "smart_shell_output_indent_width", 0) or 0))
+        except Exception:
+            output_indent_width = 0
+        try:
+            fn = getattr(stdout_stream, "smart_shell_terminal_columns", None)
+            if callable(fn):
+                cols0 = int(fn() or 0)
+                if cols0 > 0:
+                    return max(1, cols0 - output_indent_width - (1 if output_indent_width else 0))
+        except Exception:
+            pass
         try:
             cols1 = int(os.get_terminal_size(sys.__stdout__.fileno()).columns or 0)
             if cols1 > 0:
@@ -1798,7 +1840,7 @@ class SmartShellAgent:
                         width = cols4
             except Exception:
                 pass
-        return max(1, int(width or 80))
+        return max(1, int(width or 80) - output_indent_width - (1 if output_indent_width else 0))
 
     def _format_wrapped_command_feedback_line(self, lead_prefix: str, command_text: str) -> str:
         lead = str(lead_prefix or "")
@@ -2244,8 +2286,13 @@ class SmartShellAgent:
         return merged
 
     class _InternalSlashOutputStream:
-        def __init__(self, base_stream: Any) -> None:
+        def __init__(self, base_stream: Any, terminal_columns: Optional[int] = None) -> None:
             self._base_stream = base_stream
+            try:
+                self._terminal_columns_override = max(0, int(terminal_columns or 0))
+            except Exception:
+                self._terminal_columns_override = 0
+            self.smart_shell_output_indent_width = 2
             self._line_start = True
             self._visual_col = 0
             self._active_sgr = ""
@@ -2280,6 +2327,8 @@ class SmartShellAgent:
             return True
 
         def _terminal_columns(self) -> int:
+            if self._terminal_columns_override > 0:
+                return self._terminal_columns_override
             try:
                 if hasattr(self._base_stream, "fileno"):
                     cols = int(os.get_terminal_size(self._base_stream.fileno()).columns or 0)
@@ -2294,6 +2343,9 @@ class SmartShellAgent:
             except Exception:
                 pass
             return 80
+
+        def smart_shell_terminal_columns(self) -> int:
+            return self._terminal_columns()
 
         def _emit_indent_if_needed(self, out_parts: List[str]) -> None:
             if not self._line_start:
@@ -2311,8 +2363,6 @@ class SmartShellAgent:
 
         def _flush_pending_word(self, out_parts: List[str], term_cols: int) -> None:
             if not self._pending_word:
-                self._pending_spaces = []
-                self._pending_spaces_width = 0
                 return
             self._emit_indent_if_needed(out_parts)
             word_w = int(self._pending_word_width or 0)
@@ -2324,8 +2374,8 @@ class SmartShellAgent:
                 else:
                     self._emit_newline_indent(out_parts)
             elif self._pending_spaces and self._visual_col <= 2:
-                self._pending_spaces = []
-                self._pending_spaces_width = 0
+                out_parts.extend(self._pending_spaces)
+                self._visual_col += spaces_w
             if word_w > 0 and self._visual_col > 2 and self._visual_col + word_w > term_cols:
                 self._emit_newline_indent(out_parts)
             out_parts.extend(self._pending_word)
@@ -2517,8 +2567,10 @@ class SmartShellAgent:
         state = shared_state if isinstance(shared_state, dict) else {"first_line_emitted": False}
         return SmartShellAgent._DirectShellOutputStream(base_stream, state)
 
-    def _build_internal_slash_output_stream(self, base_stream: Any) -> Any:
-        return SmartShellAgent._InternalSlashOutputStream(base_stream)
+    def _build_internal_slash_output_stream(
+        self, base_stream: Any, terminal_columns: Optional[int] = None
+    ) -> Any:
+        return SmartShellAgent._InternalSlashOutputStream(base_stream, terminal_columns)
 
     def _create_direct_shell_output_streams(
         self, shared_state: Optional[Dict[str, Any]] = None
