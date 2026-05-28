@@ -111,7 +111,7 @@ class AgentMcpActionsE2ETests(unittest.TestCase):
         agent_module.TAB_COMPLETION_AVAILABLE = False
         sink = io.StringIO()
         with contextlib.redirect_stdout(sink), contextlib.redirect_stderr(sink):
-            return agent_module.SmartShellAgent(
+            return agent_module.Agent(
                 provider="openai",
                 model_name="dummy",
                 params={},

@@ -13,7 +13,7 @@ from src.completion.slash_dynamic_completions import (
     build_slash_dynamic_rules,
 )
 from src.completion.builtin_slash_commands import slash_builtin_completions
-from src.agent import SmartShellAgent
+from src.agent import Agent
 
 
 class _FakeMcpManager:
@@ -58,7 +58,7 @@ class _FakeMcpManager:
 
 class McpReferenceFormatTests(unittest.TestCase):
     def setUp(self):
-        self.agent = SmartShellAgent.__new__(SmartShellAgent)
+        self.agent = Agent.__new__(Agent)
         self.agent.mcp_manager = _FakeMcpManager()
 
     def test_mcp_server_commands_use_mcp_prefix(self):

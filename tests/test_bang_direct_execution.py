@@ -15,12 +15,12 @@ if "ollama" not in sys.modules:
     fake_ollama = types.SimpleNamespace(list=lambda: {"models": []})
     sys.modules["ollama"] = fake_ollama
 
-from src.agent import SmartShellAgent
+from src.agent import Agent
 
 
 class BangDirectExecutionTests(unittest.TestCase):
     def setUp(self):
-        self.agent = SmartShellAgent.__new__(SmartShellAgent)
+        self.agent = Agent.__new__(Agent)
         self.agent.work_directory = Path(".")
         self.agent.workspace_root = Path.cwd()
         self.agent.startup_initial_directory = Path.cwd()
@@ -123,7 +123,7 @@ class BangDirectExecutionTests(unittest.TestCase):
 
         out_buf = _TtyBuffer()
         with patch("src.agent.sys.stdout", out_buf), patch(
-            "src.agent.SmartShellAgent._DirectShellOutputStream._terminal_columns",
+            "src.agent.Agent._DirectShellOutputStream._terminal_columns",
             return_value=10,
         ):
             out_stream, _ = self.agent._create_direct_shell_output_streams()
