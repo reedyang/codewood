@@ -10,12 +10,12 @@ if "ollama" not in sys.modules:
     fake_ollama = types.SimpleNamespace(list=lambda: {"models": []})
     sys.modules["ollama"] = fake_ollama
 
-from src.agent import SmartShellAgent
+from src.agent import Agent
 
 
 class AiOutputDisplayTests(unittest.TestCase):
     def setUp(self):
-        self.agent = SmartShellAgent.__new__(SmartShellAgent)
+        self.agent = Agent.__new__(Agent)
 
     def test_strip_tool_json_fence_keeps_narrative(self):
         text = (

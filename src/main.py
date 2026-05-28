@@ -249,12 +249,12 @@ def main():
     params = model_config.get("params", {})
 
     # 配置就绪后再加载重型 agent 模块，缩短「启动」到「模型信息」之间的等待
-    from src.agent import SmartShellAgent
+    from src.agent import Agent
 
     if provider == "openai" and params:
         agent = None
         try:
-            agent = SmartShellAgent(
+            agent = Agent(
                 model_name=model_name,
                 work_directory=work_directory,
                 provider="openai",
@@ -275,10 +275,10 @@ def main():
                 except Exception:
                     pass
     elif provider == "ollama" and params:
-        # ollama：不在此处 import ollama（未使用 ollama 的配置不会加载该包）；校验在 SmartShellAgent 后台线程中完成
+        # ollama：不在此处 import ollama（未使用 ollama 的配置不会加载该包）；校验在 Agent 后台线程中完成
         agent = None
         try:
-            agent = SmartShellAgent(
+            agent = Agent(
                 model_name=model_name,
                 work_directory=work_directory,
                 provider="ollama",

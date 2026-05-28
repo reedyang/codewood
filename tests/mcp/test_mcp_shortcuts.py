@@ -7,14 +7,14 @@ if "ollama" not in sys.modules:
     fake_ollama = types.SimpleNamespace(list=lambda: {"models": []})
     sys.modules["ollama"] = fake_ollama
 
-from src.agent import SmartShellAgent
+from src.agent import Agent
 from src.completion.builtin_slash_commands import SLASH_BUILTIN_COMMANDS
 
 
 class McpShortcutCommandTests(unittest.TestCase):
     def setUp(self):
         # Bypass heavy __init__; parser method is pure.
-        self.agent = SmartShellAgent.__new__(SmartShellAgent)
+        self.agent = Agent.__new__(Agent)
 
     def test_parse_all_valid_mcp_shortcuts(self):
         cases = {

@@ -7,12 +7,12 @@ if "ollama" not in sys.modules:
     fake_ollama = types.SimpleNamespace(list=lambda: {"models": []})
     sys.modules["ollama"] = fake_ollama
 
-from src.agent import SmartShellAgent
+from src.agent import Agent
 
 
 class ToolToggleGuardsTests(unittest.TestCase):
     def setUp(self):
-        self.agent = SmartShellAgent.__new__(SmartShellAgent)
+        self.agent = Agent.__new__(Agent)
         self.agent.skills = []
 
     def test_mcp_management_tools_blocked_by_default(self):

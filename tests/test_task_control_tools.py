@@ -7,13 +7,13 @@ if "ollama" not in sys.modules:
     fake_ollama = types.SimpleNamespace(list=lambda: {"models": []})
     sys.modules["ollama"] = fake_ollama
 
-from src.agent import SmartShellAgent
+from src.agent import Agent
 
 
 class TaskControlToolTests(unittest.TestCase):
     def setUp(self):
         # Bypass heavy init; these tool branches are pure.
-        self.agent = SmartShellAgent.__new__(SmartShellAgent)
+        self.agent = Agent.__new__(Agent)
         self.agent.skills = []
 
     def test_ask_more_info_returns_need_user_input_payload(self):

@@ -214,7 +214,7 @@ DOMAIN_PROMPT_FILE_MAP: Dict[str, str] = {
 }
 
 
-class SmartShellAgent:
+class Agent:
     def __init__(self, model_name: str = "gemma3:4b", work_directory: Optional[str] = None, provider: str = "ollama", openai_conf: Optional[dict] = None, params: Optional[dict] = None, model_config: Optional[dict] = None, config_dir: Optional[str] = None, builtin_skills_dir: Optional[str] = None):
         """
         初始化Smart Shell
@@ -2480,7 +2480,7 @@ class SmartShellAgent:
                     self._visual_col = 0
                     i += 1
                     continue
-                ch_w = SmartShellAgent._feedback_char_display_width(ch)
+                ch_w = Agent._feedback_char_display_width(ch)
                 if ch.isspace():
                     self._flush_pending_word(out_parts, term_cols)
                     self._pending_spaces.append(ch)
@@ -2564,7 +2564,7 @@ class SmartShellAgent:
             s = str(text or "")
             if not s:
                 return 0
-            s = SmartShellAgent._strip_console_color_controls(s)
+            s = Agent._strip_console_color_controls(s)
             if not s:
                 return 0
             if not bool(self._shared_state.get("_first_write_cleared_ticker_line", False)):
@@ -2647,12 +2647,12 @@ class SmartShellAgent:
         self, base_stream: Any, shared_state: Optional[Dict[str, Any]] = None
     ) -> Any:
         state = shared_state if isinstance(shared_state, dict) else {"first_line_emitted": False}
-        return SmartShellAgent._DirectShellOutputStream(base_stream, state)
+        return Agent._DirectShellOutputStream(base_stream, state)
 
     def _build_internal_slash_output_stream(
         self, base_stream: Any, terminal_columns: Optional[int] = None
     ) -> Any:
-        return SmartShellAgent._InternalSlashOutputStream(base_stream, terminal_columns)
+        return Agent._InternalSlashOutputStream(base_stream, terminal_columns)
 
     def _create_direct_shell_output_streams(
         self, shared_state: Optional[Dict[str, Any]] = None

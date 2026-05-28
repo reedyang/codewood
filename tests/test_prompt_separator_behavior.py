@@ -9,7 +9,7 @@ if "ollama" not in sys.modules:
     fake_ollama = types.SimpleNamespace(list=lambda: {"models": []})
     sys.modules["ollama"] = fake_ollama
 
-from src.agent import SmartShellAgent
+from src.agent import Agent
 
 
 class _FakeHistoryManager:
@@ -53,8 +53,8 @@ class _NoopLock:
 
 
 class PromptSeparatorBehaviorTests(unittest.TestCase):
-    def _build_agent(self) -> SmartShellAgent:
-        agent = SmartShellAgent.__new__(SmartShellAgent)
+    def _build_agent(self) -> Agent:
+        agent = Agent.__new__(Agent)
         agent._startup_prompt_pending = False
         agent._suppress_next_separator = False
         agent._show_separator_next_prompt = False

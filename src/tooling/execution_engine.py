@@ -1,4 +1,4 @@
-"""Legacy tool execution engine extracted from SmartShellAgent._execute_tool_call_legacy."""
+"""Legacy tool execution engine extracted from Agent._execute_tool_call_legacy."""
 from __future__ import annotations
 
 from typing import Any, Dict

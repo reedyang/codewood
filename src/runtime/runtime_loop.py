@@ -1,4 +1,4 @@
-"""Runtime main loop extracted from SmartShellAgent.run."""
+"""Runtime main loop extracted from Agent.run."""
 from __future__ import annotations
 
 import json

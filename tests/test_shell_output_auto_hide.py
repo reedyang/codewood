@@ -8,7 +8,7 @@ if "ollama" not in sys.modules:
     fake_ollama = types.SimpleNamespace(list=lambda: {"models": []})
     sys.modules["ollama"] = fake_ollama
 
-from src.agent import SmartShellAgent
+from src.agent import Agent
 
 
 class _FakeStdout:
@@ -43,7 +43,7 @@ class _FakePromptToolkitInputHandler:
 
 class ShellOutputAutoHideTests(unittest.TestCase):
     def setUp(self):
-        self.agent = SmartShellAgent.__new__(SmartShellAgent)
+        self.agent = Agent.__new__(Agent)
         self.agent._last_shell_output_visible_lines = 0
 
     def test_estimate_rendered_line_count_wraps_by_terminal_width(self):
