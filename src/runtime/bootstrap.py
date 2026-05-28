@@ -112,7 +112,8 @@ def setup_runtime_preferences(agent: Any) -> None:
     # Tool gates: default disabled so only core built-in coding tools are available.
     agent.mcp_tools_enabled = False
     agent.knowledge_tools_enabled = False
-    agent.max_tool_rounds = 20
+    # None means unlimited auto-execution rounds for a single task.
+    agent.max_tool_rounds = None
     agent._resolved_config_data = {}
     try:
         cfg_path = agent.config_dir / "config.json"
@@ -168,15 +169,16 @@ def setup_runtime_preferences(agent: Any) -> None:
                 else str(_knowledge_tools_enabled).strip().lower() in ("1", "true", "yes", "on")
             )
 
-            _mtr = cfg_data.get("max_tool_rounds", 20)
-            try:
-                agent.max_tool_rounds = int(_mtr)
-            except Exception:
-                agent.max_tool_rounds = 20
-            if agent.max_tool_rounds < 1:
-                agent.max_tool_rounds = 1
-            if agent.max_tool_rounds > 200:
-                agent.max_tool_rounds = 200
+            _mtr = cfg_data.get("max_tool_rounds", None)
+            if _mtr is None:
+                agent.max_tool_rounds = None
+            else:
+                try:
+                    parsed_rounds = int(_mtr)
+                except Exception:
+                    parsed_rounds = None
+                # Keep backward compatibility for explicit positive values.
+                agent.max_tool_rounds = parsed_rounds if parsed_rounds and parsed_rounds > 0 else None
     except Exception as e:
         print(f"⚠️ 读取 config.json 失败（执行策略 / session_summary_llm 等使用默认值）: {e}")
 
