@@ -27,7 +27,7 @@ This document describes the current lightweight project-context retrieval implem
   - Implements `action_project_context_search(agent, params)`.
   - Enforces workspace gating, parameter normalization, refresh policy, and search invocation.
 
-- `src/smart_shell_agent.py`
+- `src/agent.py`
   - Provides feature/tool gating helpers.
   - Binds the project index to the active work directory and workspace storage.
   - Schedules background refresh threads.
@@ -314,3 +314,4 @@ When the index is empty or refresh is in flight, Smart Shell skips evidence inje
 - A stale or partial index is acceptable because the model is still expected to verify candidates with shell reads/searches before editing.
 - Timeout handling favors preserving the previous index over applying a partially discovered deletion set.
 - The current implementation is local and deterministic; future work can add richer language parsers, call graph edges, test affinity, or semantic ranking without changing the public tool shape.
+

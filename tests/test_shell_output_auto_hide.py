@@ -8,7 +8,7 @@ if "ollama" not in sys.modules:
     fake_ollama = types.SimpleNamespace(list=lambda: {"models": []})
     sys.modules["ollama"] = fake_ollama
 
-from src.smart_shell_agent import SmartShellAgent
+from src.agent import SmartShellAgent
 
 
 class _FakeStdout:
@@ -66,7 +66,7 @@ class ShellOutputAutoHideTests(unittest.TestCase):
     def test_hide_previous_shell_output_clears_exact_count(self):
         fake_stdout = _FakeStdout()
         self.agent._last_shell_output_visible_lines = 2
-        with patch("src.smart_shell_agent.sys.stdout", fake_stdout):
+        with patch("src.agent.sys.stdout", fake_stdout):
             self.agent._hide_previous_shell_output_if_needed()
         self.assertEqual(self.agent._last_shell_output_visible_lines, 0)
         self.assertEqual(fake_stdout.writes.count("\x1b[1A\r\x1b[2K"), 2)
@@ -74,7 +74,7 @@ class ShellOutputAutoHideTests(unittest.TestCase):
     def test_hide_previous_shell_output_honors_safety_buffer(self):
         fake_stdout = _FakeStdout()
         self.agent._last_shell_output_visible_lines = 2
-        with patch("src.smart_shell_agent.sys.stdout", fake_stdout):
+        with patch("src.agent.sys.stdout", fake_stdout):
             self.agent._hide_previous_shell_output_if_needed(safety_buffer_lines=2)
         self.assertEqual(self.agent._last_shell_output_visible_lines, 0)
         self.assertEqual(fake_stdout.writes.count("\x1b[1A\r\x1b[2K"), 4)
@@ -86,7 +86,7 @@ class ShellOutputAutoHideTests(unittest.TestCase):
             def __init__(self, columns):
                 self.columns = columns
 
-        with patch("src.smart_shell_agent.os.get_terminal_size", side_effect=[_Sz(120)]):
+        with patch("src.agent.os.get_terminal_size", side_effect=[_Sz(120)]):
             cols = self.agent._terminal_columns_for_line_estimate()
         self.assertEqual(cols, 40)
 
@@ -95,7 +95,7 @@ class ShellOutputAutoHideTests(unittest.TestCase):
             def __init__(self, columns):
                 self.columns = columns
 
-        with patch("src.smart_shell_agent.os.get_terminal_size", side_effect=[_Sz(120)]):
+        with patch("src.agent.os.get_terminal_size", side_effect=[_Sz(120)]):
             cols = self.agent._terminal_columns_for_line_estimate()
         self.assertEqual(cols, 120)
 
@@ -106,10 +106,11 @@ class ShellOutputAutoHideTests(unittest.TestCase):
             def __init__(self, columns):
                 self.columns = columns
 
-        with patch("src.smart_shell_agent.os.get_terminal_size", side_effect=[_Sz(120)]):
+        with patch("src.agent.os.get_terminal_size", side_effect=[_Sz(120)]):
             cols = self.agent._terminal_columns_for_line_estimate()
         self.assertEqual(cols, 120)
 
 
 if __name__ == "__main__":
     unittest.main()
+

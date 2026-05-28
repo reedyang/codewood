@@ -9,7 +9,7 @@ if "ollama" not in sys.modules:
     fake_ollama = types.SimpleNamespace(list=lambda: {"models": []})
     sys.modules["ollama"] = fake_ollama
 
-from src.smart_shell_agent import SmartShellAgent
+from src.agent import SmartShellAgent
 
 
 class _FakeHistoryManager:
@@ -99,8 +99,8 @@ class PromptSeparatorBehaviorTests(unittest.TestCase):
         agent.input_handler = _FakeInputHandlerWithColumns()
         fake_stdout = _FakeStdout()
         with (
-            patch("src.smart_shell_agent._ansi_gray", side_effect=lambda s: s),
-            patch("src.smart_shell_agent.sys.stdout", fake_stdout),
+            patch("src.agent._ansi_gray", side_effect=lambda s: s),
+            patch("src.agent.sys.stdout", fake_stdout),
         ):
             agent._print_prompt_separator()
         out = "".join(fake_stdout.writes)
@@ -127,7 +127,7 @@ class PromptSeparatorBehaviorTests(unittest.TestCase):
             },
         ]
         with (
-            patch("src.smart_shell_agent._ansi_gray", side_effect=lambda s: s),
+            patch("src.agent._ansi_gray", side_effect=lambda s: s),
             patch.object(agent, "_print_direct_shell_command_feedback"),
             patch.object(agent, "_print_direct_shell_history_output"),
             patch.object(agent, "_print_direct_shell_history_separator") as mock_sep,
@@ -171,7 +171,7 @@ class PromptSeparatorBehaviorTests(unittest.TestCase):
             {"role": "assistant", "content": "普通回复"},
         ]
         with (
-            patch("src.smart_shell_agent._ansi_gray", side_effect=lambda s: s),
+            patch("src.agent._ansi_gray", side_effect=lambda s: s),
             patch.object(agent, "_print_direct_shell_command_feedback"),
             patch.object(agent, "_print_direct_shell_history_output"),
             patch.object(agent, "_print_direct_shell_history_separator") as mock_sep,
@@ -202,7 +202,7 @@ class PromptSeparatorBehaviorTests(unittest.TestCase):
             },
         ]
         with (
-            patch("src.smart_shell_agent.command_actions._dynamic_tail_line_limit", return_value=2),
+            patch("src.agent.command_actions._dynamic_tail_line_limit", return_value=2),
             patch.object(agent, "_print_direct_shell_command_feedback"),
             patch.object(agent, "_print_direct_shell_history_output") as mock_shell_output,
             patch.object(agent, "_print_direct_shell_history_separator"),
@@ -239,7 +239,7 @@ class PromptSeparatorBehaviorTests(unittest.TestCase):
             },
         ]
         with (
-            patch("src.smart_shell_agent._ansi_gray", side_effect=lambda s: s),
+            patch("src.agent._ansi_gray", side_effect=lambda s: s),
             patch.object(agent, "_print_direct_shell_command_feedback"),
             patch.object(agent, "_print_direct_shell_history_output"),
             patch.object(agent, "_print_direct_shell_history_separator") as mock_sep,
@@ -275,7 +275,7 @@ class PromptSeparatorBehaviorTests(unittest.TestCase):
             },
         ]
         with (
-            patch("src.smart_shell_agent._ansi_gray", side_effect=lambda s: s),
+            patch("src.agent._ansi_gray", side_effect=lambda s: s),
             patch.object(agent, "_print_direct_shell_command_feedback"),
             patch.object(agent, "_print_direct_shell_history_separator") as mock_sep,
             patch.object(agent, "_print_conversation_interrupted_banner") as mock_banner,
@@ -313,7 +313,7 @@ class PromptSeparatorBehaviorTests(unittest.TestCase):
             },
         ]
         with (
-            patch("src.smart_shell_agent._ansi_gray", side_effect=lambda s: s),
+            patch("src.agent._ansi_gray", side_effect=lambda s: s),
             patch.object(agent, "_print_direct_shell_history_separator") as mock_sep,
             patch.object(agent, "_print_conversation_interrupted_banner") as mock_banner,
             patch("builtins.print"),
@@ -339,7 +339,7 @@ class PromptSeparatorBehaviorTests(unittest.TestCase):
             },
         ]
         with (
-            patch("src.smart_shell_agent._ansi_gray", side_effect=lambda s: s),
+            patch("src.agent._ansi_gray", side_effect=lambda s: s),
             patch.object(agent, "_print_internal_slash_history_output") as mock_slash_out,
             patch("builtins.print") as mock_print,
         ):
@@ -466,7 +466,7 @@ class PromptSeparatorBehaviorTests(unittest.TestCase):
             patch.object(agent, "_status_bar_render_data", return_value=([], "status")),
             patch.object(agent, "_terminal_columns_for_prompt_separator", side_effect=lambda default=80: next(widths)),
             patch.object(agent, "_print_chat_history") as mock_history,
-            patch("src.smart_shell_agent.os.system"),
+            patch("src.agent.os.system"),
             patch("src.runtime.runtime_loop._print_startup_overview"),
         ):
             agent._chat_history_reload_last_terminal_width = 80
@@ -504,7 +504,7 @@ class PromptSeparatorBehaviorTests(unittest.TestCase):
         agent.input_handler = _InputHandlerCols100()
         with (
             patch.object(agent, "_status_bar_render_data", return_value=([], "status")),
-            patch("src.smart_shell_agent.os.get_terminal_size", return_value=types.SimpleNamespace(columns=80)),
+            patch("src.agent.os.get_terminal_size", return_value=types.SimpleNamespace(columns=80)),
             patch.object(agent, "_reload_chat_history_from_anchor_on_resize") as mock_reload,
         ):
             agent._chat_history_reload_last_terminal_width = 80
@@ -537,8 +537,8 @@ class PromptSeparatorBehaviorTests(unittest.TestCase):
         agent = self._build_agent()
         fake_stdout = _FakeStdout()
         with (
-            patch("src.smart_shell_agent._ansi_gray", side_effect=lambda s: s),
-            patch("src.smart_shell_agent.sys.stdout", fake_stdout),
+            patch("src.agent._ansi_gray", side_effect=lambda s: s),
+            patch("src.agent.sys.stdout", fake_stdout),
             patch.object(agent, "_estimate_rendered_line_count", return_value=2),
         ):
             agent._rewrite_previous_prompt_as_user("hello\n你好")
@@ -670,8 +670,8 @@ class PromptSeparatorBehaviorTests(unittest.TestCase):
         out_buf = _TtyBuffer()
         err_buf = _TtyBuffer()
         with (
-            patch("src.smart_shell_agent.sys.stdout", out_buf),
-            patch("src.smart_shell_agent.sys.stderr", err_buf),
+            patch("src.agent.sys.stdout", out_buf),
+            patch("src.agent.sys.stderr", err_buf),
         ):
             agent._print_chat_history()
 
@@ -700,7 +700,7 @@ class PromptSeparatorBehaviorTests(unittest.TestCase):
         agent.operation_results = []
         with (
             patch("builtins.print"),
-            patch("src.smart_shell_agent.command_actions._dynamic_tail_line_limit", return_value=2),
+            patch("src.agent.command_actions._dynamic_tail_line_limit", return_value=2),
             patch.object(agent, "_print_tool_call_feedback") as mock_feedback,
             patch.object(agent, "_print_direct_shell_history_output") as mock_shell_output,
         ):
@@ -763,7 +763,7 @@ class PromptSeparatorBehaviorTests(unittest.TestCase):
         ]
         agent._remember_active_chat_history_first_visible_index(2)
         with (
-            patch("src.smart_shell_agent.os.system"),
+            patch("src.agent.os.system"),
             patch("src.runtime.runtime_loop._print_startup_overview"),
             patch.object(agent, "_sync_active_chat_messages") as mock_sync,
             patch.object(agent, "_print_chat_history") as mock_history,
@@ -775,3 +775,4 @@ class PromptSeparatorBehaviorTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+

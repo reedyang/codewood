@@ -1,4 +1,4 @@
-# REPL: user input starting with "/" is dispatched as built-in or shell (see smart_shell_agent.run).
+# REPL: user input starting with "/" is dispatched as built-in or shell (see agent.run).
 # English command names only (no Chinese aliases). Keep in sync with built-in branches there.
 
 from __future__ import annotations
@@ -117,3 +117,4 @@ def slash_builtin_completions(
     if not pl.startswith("/model "):
         out.sort(key=str.lower)
     return out
+

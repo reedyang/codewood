@@ -7,7 +7,7 @@ if "ollama" not in sys.modules:
     fake_ollama = types.SimpleNamespace(list=lambda: {"models": []})
     sys.modules["ollama"] = fake_ollama
 
-from src.smart_shell_agent import SmartShellAgent
+from src.agent import SmartShellAgent
 from src.completion.slash_dynamic_completions import build_slash_dynamic_rules
 
 
@@ -58,3 +58,4 @@ class SkillReferenceFormatTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
