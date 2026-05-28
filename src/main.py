@@ -7,9 +7,9 @@ Usage:
 """
 
 import sys
-import json
 import os
 from pathlib import Path
+from types import SimpleNamespace
 
 # Add the project root to Python path so the src package imports consistently
 # whether this file is launched as a script or imported by tests.
@@ -17,7 +17,72 @@ current_dir = Path(__file__).resolve().parent
 project_root = current_dir.parent
 sys.path.insert(0, str(project_root))
 from src.core.config.config_env import resolve_string_values_in_data
+from src.core.config.config_jsonc import (
+    CONFIG_JSONC_FILENAME,
+    load_config_jsonc,
+    save_config_jsonc,
+)
 from src.core.config.model_providers import parse_configured_models
+from src.core.console_utils import _ansi_red
+
+
+DEFAULT_USER_CONFIG_TEMPLATE = {
+    "model_providers": [
+        {
+            "provider": "openai",
+            "params": {
+                "api_key": "<YOUR API KEY>",
+                "base_url": "https://api.openai.com/v1",
+                "models": [
+                    {
+                        "name": "<YOUR MODEL NAME>",
+                        "context_window": 131072,
+                    }
+                ],
+            },
+        }
+    ],
+    "execution_policy": "moderate",
+    "project_context_first_round_evidence": True,
+    "max_tool_rounds": None,
+    "memory_enabled": False,
+    "mcp_tools_enabled": False,
+}
+
+
+def _create_user_config_template(user_home: Path) -> Path:
+    """Create ~/.smartshell/config.jsonc with a starter template and return the file path."""
+    config_path = user_home / ".smartshell" / CONFIG_JSONC_FILENAME
+    save_config_jsonc(config_path, DEFAULT_USER_CONFIG_TEMPLATE)
+    return config_path
+
+
+def _print_model_settings_update_notice(config_path: str | Path) -> None:
+    normalized_path = str(Path(str(config_path)).expanduser())
+    print(_ansi_red(f"Please update the model settings in: {normalized_path}"))
+
+
+def _print_startup_basic_overview(
+    model_name: str = "(not configured)",
+    workspace_name: str = "Default",
+    workspace_dir: str | None = None,
+) -> None:
+    """Reuse the exact runtime startup overview renderer for consistent style/colors."""
+    try:
+        from src.runtime.runtime_loop import _print_startup_overview
+
+        _print_startup_overview(
+            SimpleNamespace(
+                model_name=str(model_name or "").strip() or "(not configured)",
+                workspace_name=str(workspace_name or "").strip() or "Default",
+                workspace_root=str(workspace_dir or "").strip() or str(Path.cwd()),
+                _startup_chat_state_warning="",
+            )
+        )
+    except Exception:
+        # Best-effort fallback: avoid crashing early startup reminder paths.
+        print("Smart Shell")
+        print("")
 
 
 def _extract_model_runtime_config(config: dict):
@@ -56,6 +121,58 @@ def _extract_model_runtime_config(config: dict):
     return provider, model_name, model_config, None
 
 
+def _validate_template_placeholder_values(
+    provider: str,
+    model_name: str,
+    model_config: dict,
+) -> str | None:
+    """Ensure runtime config does not keep template placeholder values."""
+    template_provider = ""
+    template_api_key = ""
+    template_model_name = ""
+    try:
+        providers = DEFAULT_USER_CONFIG_TEMPLATE.get("model_providers")
+        if isinstance(providers, list) and providers:
+            first_provider = providers[0]
+            if isinstance(first_provider, dict):
+                template_provider = str(first_provider.get("provider") or "").strip()
+                template_params = first_provider.get("params", {})
+                if isinstance(template_params, dict):
+                    template_api_key = str(template_params.get("api_key") or "").strip()
+                    parsed_models = parse_configured_models(template_params)
+                    if parsed_models:
+                        template_model_name = str(parsed_models[0].get("name") or "").strip()
+    except Exception:
+        return None
+
+    issues = []
+    runtime_params = model_config.get("params", {}) if isinstance(model_config, dict) else {}
+    runtime_api_key = str(runtime_params.get("api_key") or "").strip()
+    runtime_provider = str(provider or "").strip()
+    runtime_model_name = str(model_name or "").strip()
+
+    provider_matches_template = (
+        (not template_provider)
+        or runtime_provider.lower() == template_provider.lower()
+    )
+    if (
+        template_api_key
+        and runtime_api_key
+        and runtime_api_key == template_api_key
+        and provider_matches_template
+    ):
+        issues.append(
+            f"api_key is still the template value ({template_api_key})."
+        )
+    if template_model_name and runtime_model_name and runtime_model_name == template_model_name:
+        issues.append(
+            f"model name is still the template value ({template_model_name})."
+        )
+    if not issues:
+        return None
+    return "template_placeholder_values_in_use"
+
+
 def _set_windows_console_title():
     """Set a Unicode console title on Windows without relying on batch encoding."""
     if sys.platform != "win32":
@@ -76,10 +193,10 @@ def main():
     config = None
     config_path = None
     
-    # 优先查找用户主目录下的.smartshell/config.json
+    # 优先查找用户主目录下的.smartshell/config.jsonc
     user_home = str(Path.home())
-    user_config = os.path.join(user_home, ".smartshell/config.json")
-    local_config = os.path.join(project_root, ".smartshell/config.json")
+    user_config = os.path.join(user_home, ".smartshell", CONFIG_JSONC_FILENAME)
+    local_config = os.path.join(str(project_root), ".smartshell", CONFIG_JSONC_FILENAME)
     
     config_dir = None  # 配置文件目录，用于历史记录保存
     # Built-in Agent Skills live at the project root, outside src/.
@@ -94,11 +211,10 @@ def main():
     
     if config_path:
         try:
-            with open(config_path, "r", encoding="utf-8") as f:
-                config = json.load(f)
+            config = load_config_jsonc(Path(config_path))
             config = resolve_string_values_in_data(config)
         except Exception as e:
-            print(f"⚠️ Failed to read config file: {e}")
+            print(_ansi_red(f"Failed to read config file: {e}"))
             config = None
 
     if config_dir:
@@ -107,12 +223,31 @@ def main():
         get_logger().info("Smart Shell started, config_dir=%s", config_dir)
     
     if not config:
-        # 默认配置
-        print("📋 Config file not found")
+        _print_startup_basic_overview()
+        if not config_path:
+            try:
+                created_path = _create_user_config_template(Path.home())
+                print(_ansi_red("Config file not found. Created template successfully."))
+                _print_model_settings_update_notice(created_path)
+            except Exception as e:
+                print(_ansi_red(f"Config file not found, and failed to create template: {e}"))
+                _print_model_settings_update_notice(Path.home() / ".smartshell" / CONFIG_JSONC_FILENAME)
+        else:
+            _print_model_settings_update_notice(config_path)
         return 1
     provider, model_name, model_config, config_error = _extract_model_runtime_config(config)
     if config_error:
-        print(config_error)
+        _print_startup_basic_overview()
+        _print_model_settings_update_notice(config_path or (Path.home() / ".smartshell" / CONFIG_JSONC_FILENAME))
+        return 1
+    template_value_error = _validate_template_placeholder_values(
+        provider=provider,
+        model_name=model_name,
+        model_config=model_config,
+    )
+    if template_value_error:
+        _print_startup_basic_overview(model_name=model_name)
+        _print_model_settings_update_notice(config_path or (Path.home() / ".smartshell" / CONFIG_JSONC_FILENAME))
         return 1
 
     params = model_config.get("params", {})

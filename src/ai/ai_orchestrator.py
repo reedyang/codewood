@@ -52,7 +52,7 @@ class AIOrchestrator:
                 )
 
             if not provider or not model_name:
-                return "❌ Error: model is not configured correctly. Please check the model settings in config.json."
+                return "❌ Error: model is not configured correctly. Please check the model settings in config.jsonc."
 
             internal_mode = any(
                 (

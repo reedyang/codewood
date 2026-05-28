@@ -23,7 +23,7 @@ def dispatch_mcp_tool(agent: Any, action: str, params: Dict[str, Any]) -> Option
             "success": False,
             "error": (
                 f"tool '{action}' is disabled by config "
-                "(set mcp_tools_enabled=true in config.json to enable)"
+                "(set mcp_tools_enabled=true in config.jsonc to enable)"
             ),
         }
 

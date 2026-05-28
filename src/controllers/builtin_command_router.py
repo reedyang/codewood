@@ -103,7 +103,7 @@ def dispatch_builtin_command(
         ok = agent._save_memory_enabled_to_config()
         print(
             "Memory enabled" + (
-                "; saved to config.json" if ok else " (failed to persist; session-only)"
+                "; saved to config.jsonc" if ok else " (failed to persist; session-only)"
             )
         )
         return True, False
@@ -113,7 +113,7 @@ def dispatch_builtin_command(
         ok = agent._save_memory_enabled_to_config()
         print(
             "Memory disabled" + (
-                "; saved to config.json" if ok else " (failed to persist; session-only)"
+                "; saved to config.jsonc" if ok else " (failed to persist; session-only)"
             )
         )
         return True, False

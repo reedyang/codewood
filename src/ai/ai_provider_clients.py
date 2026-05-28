@@ -254,7 +254,7 @@ def call_ai_with_provider(
             memory_query_expansion_mode=context.memory_query_expansion_mode,
             domain_classifier_mode=context.domain_classifier_mode,
             append_history=append_history,
-            api_key_error_msg="❌ Error: OpenAI API key is not configured. Please set api_key in config.json model.params.",
+            api_key_error_msg="❌ Error: OpenAI API key is not configured. Please set api_key in config.jsonc model.params.",
             default_base_url="https://api.openai.com/v1",
         )
     if context.provider == "ollama":

@@ -94,14 +94,15 @@ class AgentMcpActionsE2ETests(unittest.TestCase):
         self.temp_dir.cleanup()
 
     def _write_config(self, payload: dict) -> None:
-        (self.config_dir / "config.json").write_text(
+        (self.config_dir / "config.jsonc").write_text(
             json.dumps(
                 {
                     "execution_policy": "confirmation",
                     "mcp_tools_enabled": True,
                 },
                 ensure_ascii=False,
-            ),
+            )
+            + "\n",
             encoding="utf-8",
         )
         (self.config_dir / "mcp.json").write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")

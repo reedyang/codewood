@@ -1,4 +1,3 @@
-import json
 import threading
 from pathlib import Path
 from typing import Any, Optional
@@ -6,6 +5,7 @@ from typing import Any, Optional
 from ..ai.ai_orchestrator import AIOrchestrator, AgentAIContext
 from ..core.logging.app_logging import setup_app_logging
 from ..core.config.config_env import resolve_string_values_in_data
+from ..core.config.config_jsonc import CONFIG_JSONC_FILENAME, load_config_jsonc
 from ..core.state.history_manager import HistoryManager
 from ..integrations.mcp import McpManager
 from ..policy.path_policy import PathPolicy
@@ -70,9 +70,9 @@ def resolve_config_dir(config_dir: Optional[str]) -> Path:
 
     current_config_dir = Path(".smartshell")
     user_config_dir = Path.home() / ".smartshell"
-    if (user_config_dir / "config.json").exists():
+    if (user_config_dir / CONFIG_JSONC_FILENAME).exists():
         return user_config_dir
-    if (current_config_dir / "config.json").exists():
+    if (current_config_dir / CONFIG_JSONC_FILENAME).exists():
         return current_config_dir
     return user_config_dir
 
@@ -112,10 +112,9 @@ def setup_runtime_preferences(agent: Any) -> None:
     agent.max_tool_rounds = None
     agent._resolved_config_data = {}
     try:
-        cfg_path = agent.config_dir / "config.json"
+        cfg_path = agent.config_dir / CONFIG_JSONC_FILENAME
         if cfg_path.exists():
-            with open(cfg_path, "r", encoding="utf-8") as f:
-                cfg_data = resolve_string_values_in_data(json.load(f))
+            cfg_data = resolve_string_values_in_data(load_config_jsonc(cfg_path))
             if isinstance(cfg_data, dict):
                 agent._resolved_config_data = dict(cfg_data)
             pol = str(cfg_data.get("execution_policy", "confirmation")).strip().lower()
@@ -169,7 +168,7 @@ def setup_runtime_preferences(agent: Any) -> None:
                 # Keep backward compatibility for explicit positive values.
                 agent.max_tool_rounds = parsed_rounds if parsed_rounds and parsed_rounds > 0 else None
     except Exception as e:
-        print(f"⚠️ 读取 config.json 失败（执行策略 / session_summary_llm 等使用默认值）: {e}")
+        print(f"⚠️ 读取 {CONFIG_JSONC_FILENAME} 失败（执行策略 / session_summary_llm 等使用默认值）: {e}")
 
 
 def setup_policy_caches(agent: Any) -> None:
