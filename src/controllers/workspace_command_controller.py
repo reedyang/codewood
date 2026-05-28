@@ -8,7 +8,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 def _default_workspace_id() -> str:
     try:
-        from .. import smart_shell_agent as _ssa
+        from .. import agent as _ssa
 
         return str(getattr(_ssa, "DEFAULT_WORKSPACE_ID", "default"))
     except Exception:
@@ -425,3 +425,4 @@ def handle_workspace_builtin_command(agent: Any, builtin_line: str) -> bool:
 
     print(f"❌ Invalid workspace subcommand: {parts[1]}\n{workspace_usage()}")
     return True
+

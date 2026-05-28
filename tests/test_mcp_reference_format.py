@@ -13,7 +13,7 @@ from src.completion.slash_dynamic_completions import (
     build_slash_dynamic_rules,
 )
 from src.completion.builtin_slash_commands import slash_builtin_completions
-from src.smart_shell_agent import SmartShellAgent
+from src.agent import SmartShellAgent
 
 
 class _FakeMcpManager:
@@ -137,3 +137,4 @@ class McpReferenceFormatTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+

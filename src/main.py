@@ -249,7 +249,7 @@ def main():
     params = model_config.get("params", {})
 
     # 配置就绪后再加载重型 agent 模块，缩短「启动」到「模型信息」之间的等待
-    from src.smart_shell_agent import SmartShellAgent
+    from src.agent import SmartShellAgent
 
     if provider == "openai" and params:
         agent = None
@@ -307,3 +307,4 @@ def main():
 
 if __name__ == "__main__":
     sys.exit(main()) 
+

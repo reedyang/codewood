@@ -140,7 +140,7 @@ Hosts should:
 In this repository:
 
 - Loader: `src/skills_loader.py`
-- Merge / `model_context_file_env` handling for subprocess `shell`: `src/smart_shell_agent.py` (resolves env name from the matched skill’s `SKILL.md` frontmatter via `src/skills_loader.py`)
+- Merge / `model_context_file_env` handling for subprocess `shell`: `src/agent.py` (resolves env name from the matched skill’s `SKILL.md` frontmatter via `src/skills_loader.py`)
 - Tool-facing description: `src/tools_prompt.md`
 
 Other products can implement the same **principles** without copying implementation details.
@@ -172,7 +172,7 @@ To improve large-repo navigation without changing existing skill execution flow,
 
 **Current Smart Shell implementation note:**
 
-- Context Pack is prepended in `src/smart_shell_agent.py` (`_build_single_skill_prompt`) for both local and MCP skill paths.
+- Context Pack is prepended in `src/agent.py` (`_build_single_skill_prompt`) for both local and MCP skill paths.
 - For long `SKILL.md`, Smart Shell injects `Context Pack + first N sections` first, then allows on-demand expansion via `request_skill_prompt` arguments (`section` or `full=true`).
 - Skill merge priority in runtime is: `builtin -> config_dir -> workspace` (higher layer overrides lower layer by `skill_id`).
 
@@ -183,3 +183,4 @@ To improve large-repo navigation without changing existing skill execution flow,
 - Introduced to capture host–skill boundaries and portability expectations for Agent Skills in Smart Shell and compatible agents.
 - Added multi-skill orchestration principle: prefer stdin/pipes, avoid avoidable intermediate files.
 - Documented **host–skill boundary** for `SKILL.md`: no `done`/other-skill/MCP orchestration inside individual skills; those rules belong in host prompts.
+

@@ -12,7 +12,7 @@ import importlib
 import sys
 
 from .config.app_info import get_app_version
-from .smart_shell_agent import SmartShellAgent
+from .agent import SmartShellAgent
 
 _LEGACY_MODULE_ALIASES = {
     "ai_provider_clients": ".ai.ai_provider_clients",
@@ -39,3 +39,4 @@ for _legacy_name, _new_module in _LEGACY_MODULE_ALIASES.items():
 __version__ = get_app_version()
 __author__ = "AI Assistant"
 __all__ = ["SmartShellAgent"] 
+

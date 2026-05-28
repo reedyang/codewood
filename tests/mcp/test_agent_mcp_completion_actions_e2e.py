@@ -17,7 +17,7 @@ if "ollama" not in sys.modules:
     fake_ollama = types.SimpleNamespace(list=lambda: {"models": []})
     sys.modules["ollama"] = fake_ollama
 
-import src.smart_shell_agent as smart_shell_agent_module
+import src.agent as agent_module
 
 
 def _get_free_port() -> int:
@@ -108,10 +108,10 @@ class AgentMcpCompletionActionsE2ETests(unittest.TestCase):
         (self.config_dir / "mcp.jsonc").write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
 
     def _build_agent(self):
-        smart_shell_agent_module.TAB_COMPLETION_AVAILABLE = False
+        agent_module.TAB_COMPLETION_AVAILABLE = False
         sink = io.StringIO()
         with contextlib.redirect_stdout(sink), contextlib.redirect_stderr(sink):
-            return smart_shell_agent_module.SmartShellAgent(
+            return agent_module.SmartShellAgent(
                 provider="openai",
                 model_name="dummy",
                 params={},
@@ -167,3 +167,4 @@ class AgentMcpCompletionActionsE2ETests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
