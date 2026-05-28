@@ -1,10 +1,10 @@
 @echo off
 setlocal
-title Smart Shell
 
 set "SCRIPT_DIR=%~dp0"
 set "ROOT_DIR=%SCRIPT_DIR%.."
 set "ENTRY=%SCRIPT_DIR%..\src\main.py"
+set "APP_INFO=%SCRIPT_DIR%..\src\config\app_info.py"
 set "VENV_DIR=%ROOT_DIR%\.venv-windows"
 set "VENV_PYTHON=%VENV_DIR%\Scripts\python.exe"
 set "REQ_FILE=%ROOT_DIR%\requirements.txt"
@@ -34,6 +34,7 @@ if not exist "%VENV_DIR%\Scripts\activate.bat" (
         exit /b 1
     )
 ) else (
+    call :set_title_from_app_info
     "%VENV_PYTHON%" "%ENTRY%" %*
     exit /b %ERRORLEVEL%
 )
@@ -50,5 +51,14 @@ if errorlevel 1 (
     exit /b 1
 )
 
+call :set_title_from_app_info
 "%VENV_PYTHON%" "%ENTRY%" %*
 exit /b %ERRORLEVEL%
+
+:set_title_from_app_info
+set "APP_NAME="
+for /f "usebackq delims=" %%I in (`"%VENV_PYTHON%" -c "import runpy;d=runpy.run_path(r'%APP_INFO%');f=d.get('get_app_name');print(f() if callable(f) else '')" 2^>nul`) do (
+    set "APP_NAME=%%I"
+)
+if defined APP_NAME title %APP_NAME%
+exit /b 0
