@@ -10,8 +10,44 @@ import src.main as main_module
 
 
 class MainStartupConfigTests(unittest.TestCase):
+    @staticmethod
+    def _template_data():
+        return {
+            "model_providers": [
+                {
+                    "provider": "openai",
+                    "params": {
+                        "api_key": "<YOUR API KEY>",
+                        "base_url": "https://api.openai.com/v1",
+                        "models": [
+                            {
+                                "name": "<YOUR MODEL NAME>",
+                                "context_window": 131072,
+                            }
+                        ],
+                    },
+                }
+            ],
+            "execution_policy": "moderate",
+            "project_context_first_round_evidence": True,
+            "max_tool_rounds": None,
+            "memory_enabled": False,
+            "mcp_tools_enabled": False,
+        }
+
+    @classmethod
+    def _write_template_file(cls, project_dir: Path) -> Path:
+        template_path = project_dir / "config" / "config.template.jsonc"
+        template_path.parent.mkdir(parents=True, exist_ok=True)
+        template_path.write_text(
+            json.dumps(cls._template_data(), ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        return template_path
+
     def test_creates_user_config_template_when_no_config_exists(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as td_home, tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as td_project:
+            self._write_template_file(Path(td_project))
             with patch.object(main_module, "project_root", Path(td_project)), patch(
                 "src.main.Path.home", return_value=Path(td_home)
             ), patch("src.core.logging.app_logging.setup_app_logging"), patch(
@@ -25,7 +61,7 @@ class MainStartupConfigTests(unittest.TestCase):
                 created = Path(td_home) / ".smartshell" / "config.jsonc"
                 self.assertTrue(created.exists())
                 got = json.loads(created.read_text(encoding="utf-8").strip())
-                self.assertEqual(got, main_module.DEFAULT_USER_CONFIG_TEMPLATE)
+                self.assertEqual(got, self._template_data())
                 out = buf.getvalue()
                 self.assertLess(out.find("╭"), out.find("Config file not found. Created template successfully."))
                 self.assertIn("Config file not found. Created template successfully.", out)
@@ -34,6 +70,7 @@ class MainStartupConfigTests(unittest.TestCase):
 
     def test_invalid_model_config_prints_english_reminder(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as td_home, tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as td_project:
+            self._write_template_file(Path(td_project))
             user_cfg_dir = Path(td_home) / ".smartshell"
             user_cfg_dir.mkdir(parents=True, exist_ok=True)
             cfg_path = user_cfg_dir / "config.jsonc"
@@ -58,11 +95,12 @@ class MainStartupConfigTests(unittest.TestCase):
 
     def test_template_placeholder_values_are_rejected(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as td_home, tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as td_project:
+            self._write_template_file(Path(td_project))
             user_cfg_dir = Path(td_home) / ".smartshell"
             user_cfg_dir.mkdir(parents=True, exist_ok=True)
             cfg_path = user_cfg_dir / "config.jsonc"
             cfg_path.write_text(
-                json.dumps(main_module.DEFAULT_USER_CONFIG_TEMPLATE) + "\n",
+                json.dumps(self._template_data()) + "\n",
                 encoding="utf-8",
             )
 
