@@ -23,7 +23,7 @@
     "type": "function",
     "function": {
       "name": "apply_patch",
-      "description": "对指定文本文件应用 unified patch（包含 @@ hunk 语法）。",
+      "description": "对指定文本文件应用标准 unified diff（patch/git apply 格式，包含 ---/+++ 与 @@ hunk）。",
       "parameters": {
         "type": "object",
         "properties": {
@@ -32,7 +32,7 @@
           },
           "patch": {
             "type": "string",
-            "description": "unified patch 文本（至少包含一个 @@ ... @@ hunk）。"
+            "description": "优先使用标准 patch/git apply unified diff（含 ---/+++ 与至少一个 @@ ... @@ hunk）。"
           }
         },
         "required": ["path", "patch"]

@@ -1512,14 +1512,14 @@ def run_agent_loop(agent: Any):
                     if (not patch_path) or (not isinstance(patch_text, str)) or (not patch_text.strip()):
                         print(
                             "⚠️ apply_patch plan is missing required `path`/`patch`; "
-                            "requesting the model to resend a valid unified patch call."
+                            "requesting the model to resend a valid patch/git-apply unified diff call."
                         )
                         next_input = (
                             f"【用户原始需求】\n{original_user_task}\n\n"
                             "你上一条 apply_patch 工具计划缺少必填参数。\n"
                             "请只输出一个有效 JSON（不要附加其它文本）：\n"
-                            "{\"tool\":\"apply_patch\",\"args\":{\"path\":\"<file>\",\"patch\":\"@@ ... @@\\n- old\\n+ new\"}}\n"
-                            "要求：`path` 和 `patch` 都必须提供；`patch` 必须是包含至少一个 `@@ ... @@` hunk 的 unified patch 字符串。"
+                            "{\"tool\":\"apply_patch\",\"args\":{\"path\":\"<file>\",\"patch\":\"--- a/<file>\\n+++ b/<file>\\n@@ ... @@\\n- old\\n+ new\"}}\n"
+                            "要求：`path` 和 `patch` 都必须提供；`patch` 优先使用标准 patch/git apply unified diff（包含 ---/+++ 与至少一个 `@@ ... @@` hunk）。"
                         )
                         no_tool_rounds = 0
                         is_first_round = False
