@@ -25,6 +25,7 @@ from src.core.config.config_jsonc import (
 from src.config.app_info import get_app_config_dirname, get_app_name
 from src.core.config.model_providers import parse_configured_models
 from src.core.console_utils import _ansi_red
+from src.core.console_title import restore_app_console_title
 
 CONFIG_TEMPLATE_RELATIVE_PATH = Path("src/config") / "config.template.jsonc"
 
@@ -170,21 +171,9 @@ def _validate_template_placeholder_values(
     return "template_placeholder_values_in_use"
 
 
-def _set_windows_console_title():
-    """Set a Unicode console title on Windows without relying on batch encoding."""
-    if sys.platform != "win32":
-        return
-    try:
-        import ctypes
-
-        ctypes.windll.kernel32.SetConsoleTitleW(get_app_name())
-    except Exception:
-        pass
-
-
 def main():
     """Main function."""
-    _set_windows_console_title()
+    restore_app_console_title()
 
     work_directory = None
     config = None
