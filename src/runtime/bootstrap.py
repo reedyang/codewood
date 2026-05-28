@@ -237,7 +237,7 @@ def setup_prompt_and_mcp(agent: Any) -> None:
     )
     agent.mcp_manager.preload_all_async(timeout_s=12.0, force=False)
 
-    agent._mcp_config_path = agent.config_dir / "mcp.json"
+    agent._mcp_config_path = agent.config_dir / "mcp.jsonc"
     agent._mcp_config_file_sig = agent._get_mcp_config_file_sig()
     agent._mcp_config_struct_sig = agent._calc_mcp_config_sig(agent.mcp_config)
     agent._mcp_config_last_failed_file_sig = None

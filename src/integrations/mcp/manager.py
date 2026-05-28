@@ -2875,11 +2875,11 @@ class McpManager:
             cmd = str(conf.get("command", "")).strip() or "<unknown>"
             return (
                 "missing_dependency",
-                f"Executable `{cmd}` was not found; install dependencies and ensure PATH visibility, or set an absolute path in mcp.json.",
+                f"Executable `{cmd}` was not found; install dependencies and ensure PATH visibility, or set an absolute path in mcp.jsonc.",
             )
         return (
             "connect_failed",
-            "Connection/handshake failed: increase timeout, run mcp_reconnect, or set skip_preload=true in mcp.json to skip startup preload.",
+            "Connection/handshake failed: increase timeout, run mcp_reconnect, or set skip_preload=true in mcp.jsonc to skip startup preload.",
         )
 
     def _log(self, level: str, message: str) -> None:

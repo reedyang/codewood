@@ -133,7 +133,7 @@
     "type": "function",
     "function": {
       "name": "mcp_reload_config",
-      "description": "手动重载 mcp.json 配置并按增量规则热更新 MCP（新增/变更/删除）。",
+      "description": "手动重载 mcp.jsonc 配置并按增量规则热更新 MCP（新增/变更/删除）。",
       "parameters": {
         "type": "object",
         "properties": {}

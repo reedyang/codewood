@@ -15,7 +15,7 @@ def build_mcp_system_append(agent: Any) -> str:
     """Build MCP section appended to system prompt (with redacted env values)."""
     servers = (agent.mcp_config or {}).get("mcpServers", {})
     if not isinstance(servers, dict) or not servers:
-        return "\n\n## MCP 配置\n未检测到可用 MCP server（config 目录下无 mcp.json 或配置为空）。"
+        return "\n\n## MCP 配置\n未检测到可用 MCP server（config 目录下无 mcp.jsonc 或配置为空）。"
     status_servers: Dict[str, Any] = {}
     try:
         status_servers = (
@@ -31,7 +31,7 @@ def build_mcp_system_append(agent: Any) -> str:
         "",
         "",
         "## MCP 配置",
-        "已从 config 目录下的 mcp.json 加载 MCP servers。调用前请优先选择最匹配的 server。",
+        "已从 config 目录下的 mcp.jsonc 加载 MCP servers。调用前请优先选择最匹配的 server。",
         "仅可引用“已加载”server 的工具能力；未加载 server 禁止在自然语言中当作可用能力引用。",
         "决策约束：当“已加载 + 已缓存 tools”中存在可覆盖用户意图的工具时，必须优先走 mcp_call_tool，"
         "不得先创建临时脚本或调用 shell 模拟实现（除非工具调用已明确失败且无等价 MCP 工具）。",
