@@ -5,7 +5,7 @@ title Smart Shell
 set "SCRIPT_DIR=%~dp0"
 set "ROOT_DIR=%SCRIPT_DIR%.."
 set "ENTRY=%SCRIPT_DIR%..\src\main.py"
-set "VENV_DIR=%ROOT_DIR%\.venv"
+set "VENV_DIR=%ROOT_DIR%\.venv-windows"
 set "VENV_PYTHON=%VENV_DIR%\Scripts\python.exe"
 set "REQ_FILE=%ROOT_DIR%\requirements.txt"
 set "PY_BOOTSTRAP="
