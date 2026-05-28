@@ -67,9 +67,7 @@ def _normalize_apply_patch_text(raw_patch: str, file_path: str) -> tuple[str, Li
     normalized = "\n".join(normalized_lines)
     if patch_text.endswith("\n"):
         normalized += "\n"
-    warnings.append(
-        "Accepted legacy '*** Begin Patch' Add File format by converting it to unified diff hunks."
-    )
+
     return normalized, warnings
 
 

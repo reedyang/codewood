@@ -49,6 +49,22 @@ class AiOutputDisplayTests(unittest.TestCase):
         out = aoh.strip_tool_json_blocks_for_display(text)
         self.assertEqual(out, "Step 2 [in_progress]: 继续读取文件。")
 
+    def test_strip_tool_json_fence_with_patch_text_containing_fence_markers(self):
+        text = (
+            "Step 1 [in_progress]: 应用补丁。\n\n"
+            "```json\n"
+            "{\n"
+            '  "tool": "apply_patch",\n'
+            '  "args": {\n'
+            '    "path": "prompts.md",\n'
+            '    "patch": "--- a/prompts.md\\\\n+++ b/prompts.md\\\\n@@\\\\n- old\\\\n+ ```json\\\\n{\\\\\\"x\\\\\\":1}\\\\n```\\\\n"\n'
+            "  }\n"
+            "}\n"
+            "```\n"
+        )
+        out = aoh.strip_tool_json_blocks_for_display(text)
+        self.assertEqual(out, "Step 1 [in_progress]: 应用补丁。")
+
     def test_format_assistant_display_response_highlights_key_tokens(self):
         text = (
             "1. Check https://127.0.0.1:4001 and OPENWEBUI_API_KEY\n"
