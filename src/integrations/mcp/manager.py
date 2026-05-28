@@ -22,9 +22,21 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+from ...config.app_info import (
+    get_app_client_model_name,
+    get_app_client_name,
+    get_app_env_var,
+    get_app_slug_kebab,
+    get_app_slug_snake,
+    get_app_version,
+)
+
 
 class McpError(Exception):
     pass
+
+
+_MCP_LOGGER_NAME = f"{get_app_slug_snake()}.mcp"
 
 
 _SENSITIVE_KEY_PARTS: Tuple[str, ...] = (
@@ -216,7 +228,7 @@ class McpServerClient:
 
     def _handshake_debug_enabled(self) -> bool:
         """Enable handshake debug by env or per-server config."""
-        env_flag = str(os.environ.get("SMART_SHELL_MCP_HANDSHAKE_DEBUG", "")).strip().lower()
+        env_flag = str(os.environ.get(get_app_env_var("MCP_HANDSHAKE_DEBUG"), "")).strip().lower()
         if env_flag in ("1", "true", "yes", "on"):
             return True
         return bool(self.config.get("debug_handshake", False))
@@ -236,7 +248,7 @@ class McpServerClient:
             return
         try:
             summary = self._safe_msg_summary(msg)
-            logging.getLogger("smart_shell.mcp").info(
+            logging.getLogger(_MCP_LOGGER_NAME).info(
                 f"[HSDBG] server={self.name} event={event} summary={json.dumps(summary, ensure_ascii=False)}"
             )
         except Exception:
@@ -256,7 +268,7 @@ class McpServerClient:
             sample = _redact_text(sample, max_len=160)
             has_len = b"content-length:" in payload.lower()
             has_sep = (b"\r\n\r\n" in payload) or (b"\n\n" in payload)
-            logging.getLogger("smart_shell.mcp").info(
+            logging.getLogger(_MCP_LOGGER_NAME).info(
                 f"[HSDBG] server={self.name} event=raw_stdout note={note} bytes={len(payload)} has_len={has_len} has_sep={has_sep} sample={sample}"
             )
         except Exception:
@@ -327,7 +339,7 @@ class McpServerClient:
         if self._handshake_debug_enabled():
             try:
                 exec_path = str(spawn_argv[0]) if spawn_argv else ""
-                logging.getLogger("smart_shell.mcp").info(
+                logging.getLogger(_MCP_LOGGER_NAME).info(
                     f"[HSDBG] server={self.name} event=spawn argv={{\"spawn_exec\": {json.dumps(exec_path, ensure_ascii=False)}, \"arg_count\": {max(0, len(spawn_argv) - 1)}}}"
                 )
             except Exception:
@@ -493,7 +505,7 @@ class McpServerClient:
                 try:
                     tail = self._tail_stderr(6)
                     if tail:
-                        logging.getLogger("smart_shell.mcp").info(
+                        logging.getLogger(_MCP_LOGGER_NAME).info(
                             f"[HSDBG] server={self.name} event=stderr_tail tail={json.dumps(_redact_text(tail), ensure_ascii=False)}"
                         )
                 except Exception:
@@ -756,7 +768,7 @@ class McpServerClient:
                             "initialize",
                             {
                                 "protocolVersion": pv,
-                                "clientInfo": {"name": "smart-shell", "version": "0.1.0"},
+                                "clientInfo": {"name": get_app_client_name(), "version": get_app_version()},
                                 "capabilities": {"elicitation": {"form": {}}},
                             },
                             timeout_s=min(left, per_try_floor),
@@ -928,7 +940,7 @@ class McpUrlClient:
     _legacy_sse_message_url: str = ""
 
     def _debug_enabled(self) -> bool:
-        env_flag = str(os.environ.get("SMART_SHELL_MCP_HANDSHAKE_DEBUG", "")).strip().lower()
+        env_flag = str(os.environ.get(get_app_env_var("MCP_HANDSHAKE_DEBUG"), "")).strip().lower()
         if env_flag in ("1", "true", "yes", "on"):
             return True
         return bool(self.config.get("debug_handshake", False))
@@ -937,7 +949,7 @@ class McpUrlClient:
         if not self._debug_enabled():
             return
         try:
-            logging.getLogger("smart_shell.mcp").info(
+            logging.getLogger(_MCP_LOGGER_NAME).info(
                 f"[HSDBG-URL] server={self.name} {_redact_text(message, max_len=3000)}"
             )
         except Exception:
@@ -1248,7 +1260,7 @@ class McpUrlClient:
         timeout_s: float,
     ) -> Dict[str, Any]:
         payload = {
-            "client_name": f"smart-shell-{self.name}",
+            "client_name": f"{get_app_slug_kebab()}-{self.name}",
             "redirect_uris": [redirect_uri],
             "grant_types": ["authorization_code", "refresh_token"],
             "response_types": ["code"],
@@ -2231,7 +2243,7 @@ class McpUrlClient:
                     "initialize",
                     {
                         "protocolVersion": pv,
-                        "clientInfo": {"name": "smart-shell", "version": "0.1.0"},
+                        "clientInfo": {"name": get_app_client_name(), "version": get_app_version()},
                         "capabilities": {"elicitation": {"form": {}}},
                     },
                     timeout_s=timeout_s,
@@ -2613,7 +2625,7 @@ class McpManager:
             logs_dir.mkdir(parents=True, exist_ok=True)
         except Exception:
             pass
-        logger = logging.getLogger("smart_shell.mcp")
+        logger = logging.getLogger(_MCP_LOGGER_NAME)
         logger.setLevel(logging.INFO)
         logger.propagate = False
         if not logger.handlers:
@@ -2938,7 +2950,7 @@ class McpManager:
                     elif isinstance(content, str):
                         last_text = content
             return {
-                "model": "smart-shell-client",
+                "model": get_app_client_model_name(),
                 "role": "assistant",
                 "content": {"type": "text", "text": f"[client-sampled maxTokens={max_tokens}] {last_text}".strip()},
                 "stopReason": "endTurn",

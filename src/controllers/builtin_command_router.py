@@ -3,6 +3,8 @@
 import os
 from typing import Any, Tuple
 
+from ..config.app_info import get_app_name
+
 
 def dispatch_builtin_command(
     agent: Any,
@@ -35,7 +37,7 @@ def dispatch_builtin_command(
     if bl in ("exit", "quit"):
         agent._save_current_workspace_position()
         if wait_for_supplement:
-            print("Exiting Smart Shell.")
+            print(f"Exiting {get_app_name()}.")
         return True, True
 
     if bl == "clear screen":

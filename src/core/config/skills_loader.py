@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 import yaml
+from ...config.app_info import get_app_name
 
 
 def _parse_model_context_file_env_from_meta(meta: Optional[dict]) -> Optional[str]:
@@ -293,7 +294,7 @@ def build_skills_routing_prefix(skills: List[SkillRecord]) -> str:
             "",
             "---",
             "",
-            "（以下为 Smart Shell 通用能力说明；完整技能正文在文档后部的「Agent Skills（详细内容）」。）",
+            f"（以下为 {get_app_name()} 通用能力说明；完整技能正文在文档后部的「Agent Skills（详细内容）」。）",
             "",
         ]
     )

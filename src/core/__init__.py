@@ -1,2 +1,1 @@
-"""Core shared modules for Smart Shell."""
-
+"""Core shared modules for the application."""

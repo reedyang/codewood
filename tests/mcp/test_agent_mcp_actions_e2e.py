@@ -9,10 +9,9 @@ import tempfile
 import time
 import types
 import unittest
-import urllib.request
 from pathlib import Path
-
-
+import urllib.request
+from src.config.app_info import get_app_slug_snake
 if "ollama" not in sys.modules:
     fake_ollama = types.SimpleNamespace(list=lambda: {"models": []})
     sys.modules["ollama"] = fake_ollama
@@ -75,7 +74,7 @@ class AgentMcpActionsE2ETests(unittest.TestCase):
                     p.kill()
                 except Exception:
                     pass
-        logger = logging.getLogger("smart_shell.mcp")
+        logger = logging.getLogger(f"{get_app_slug_snake()}.mcp")
         for handler in list(logger.handlers):
             try:
                 handler.close()

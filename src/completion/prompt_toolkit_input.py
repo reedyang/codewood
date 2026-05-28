@@ -11,6 +11,8 @@ import unicodedata
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+from ..config.app_info import get_app_runtime_attr_name
+
 _WIN_DRIVE_BANG = re.compile(r"^([A-Za-z]:)(/.*)?$")
 _ANSI_SGR_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 MULTILINE_INDENT = "  "
@@ -32,6 +34,9 @@ SHIFT_ENTER_KEY_ALIASES: Tuple[Tuple[str, ...], ...] = (
     # tmux/terminal custom mappings may emit SS3 Enter (Esc O M).
     ("escape", "O", "M"),
 )
+_RESIZE_ATTR_DRAFT = get_app_runtime_attr_name("resize_draft", leading_underscore=True)
+_RESIZE_ATTR_CURSOR = get_app_runtime_attr_name("resize_cursor_position", leading_underscore=True)
+_RESIZE_ATTR_INTERRUPTED = get_app_runtime_attr_name("resize_interrupted", leading_underscore=True)
 
 from .builtin_slash_commands import slash_builtin_completions
 from ..core.console_utils import _ansi_gray, _ansi_rgb
@@ -152,9 +157,9 @@ def _attach_blink_after_render_hook(
                                 draft_text = ""
                                 draft_cursor = 0
                             try:
-                                setattr(session, "_smart_shell_resize_draft", draft_text)
-                                setattr(session, "_smart_shell_resize_cursor_position", draft_cursor)
-                                setattr(session, "_smart_shell_resize_interrupted", True)
+                                setattr(session, _RESIZE_ATTR_DRAFT, draft_text)
+                                setattr(session, _RESIZE_ATTR_CURSOR, draft_cursor)
+                                setattr(session, _RESIZE_ATTR_INTERRUPTED, True)
                             except Exception:
                                 pass
                             try:
@@ -1392,18 +1397,18 @@ class PromptToolkitInputHandler:
                     **prompt_kwargs,
                 ).strip()
                 self._clear_status_overlay_line_if_possible()
-                if bool(getattr(self.session, "_smart_shell_resize_interrupted", False)):
-                    draft = str(getattr(self.session, "_smart_shell_resize_draft", "") or "")
+                if bool(getattr(self.session, _RESIZE_ATTR_INTERRUPTED, False)):
+                    draft = str(getattr(self.session, _RESIZE_ATTR_DRAFT, "") or "")
                     draft_cursor = int(
-                        getattr(self.session, "_smart_shell_resize_cursor_position", 0) or 0
+                        getattr(self.session, _RESIZE_ATTR_CURSOR, 0) or 0
                     )
                     self._pending_prefill_text = _normalize_newlines(draft)
                     self._pending_prefill_cursor_position = max(0, draft_cursor)
                     self._pending_shell_mode_active = bool(getattr(self, "_shell_mode_active", False))
                     try:
-                        setattr(self.session, "_smart_shell_resize_interrupted", False)
-                        setattr(self.session, "_smart_shell_resize_draft", "")
-                        setattr(self.session, "_smart_shell_resize_cursor_position", 0)
+                        setattr(self.session, _RESIZE_ATTR_INTERRUPTED, False)
+                        setattr(self.session, _RESIZE_ATTR_DRAFT, "")
+                        setattr(self.session, _RESIZE_ATTR_CURSOR, 0)
                     except Exception:
                         pass
                     return ""

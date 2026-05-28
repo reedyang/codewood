@@ -5,6 +5,7 @@ import threading
 import time
 from unittest.mock import MagicMock, patch
 
+from src.config.app_info import get_app_config_dirname, get_app_slug_kebab
 from src.services.session_memory_service import SessionMemoryService
 
 DIRECT_SHELL_USER_HISTORY_PREFIX = "[DIRECT_SHELL_USER_COMMAND]"
@@ -17,6 +18,8 @@ TASK_WORKED_SUMMARY_HISTORY_PREFIX = "[TASK_WORKED_SUMMARY]"
 
 class _FakeAgent:
     def __init__(self):
+        config_dirname = get_app_config_dirname()
+        app_slug_kebab = get_app_slug_kebab()
         self.conversation_history = []
         self.operation_results = []
         self._session_summary_llm = ""
@@ -25,12 +28,12 @@ class _FakeAgent:
         self._last_llm_summary_pair_count = 0
         self._skills_routing_prefix = ""
         self._active_skill_full_prompt = ""
-        self._self_repo_root = Path("D:/SourceCode/opensource/smart-shell")
-        self.config_dir = Path("D:/Users/fake/.smartshell")
+        self._self_repo_root = Path(f"D:/SourceCode/opensource/{app_slug_kebab}")
+        self.config_dir = Path(f"D:/Users/fake/{config_dirname}")
         self.workspace_name = "Default"
         self.active_chat_name = "New Chat"
-        self.ai_workspace_dir = Path("D:/Users/fake/.smartshell/workspace/default")
-        self.work_directory = Path("D:/SourceCode/opensource/smart-shell")
+        self.ai_workspace_dir = Path(f"D:/Users/fake/{config_dirname}/workspace/default")
+        self.work_directory = Path(f"D:/SourceCode/opensource/{app_slug_kebab}")
         self.system_prompt = ""
         self.params = {"context_window": 800}
         self._force_current_input_as_requirement_once = False
@@ -898,7 +901,7 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
         messages, _ = svc.build_regular_task_messages("继续推进", context="ctx-" + ("q" * 1200))
         system_content = str(messages[0].get("content") or "")
         self.assertIn("[SYSTEM_PROMPT_END_MARK]", system_content)
-        self.assertIn(f"当前 smart-shell 根目录（绝对路径）：{agent._self_repo_root}", system_content)
+        self.assertIn(f"当前 {get_app_slug_kebab()} 根目录（绝对路径）：{agent._self_repo_root}", system_content)
         self.assertIn(f"当前 config 目录（绝对路径）：{agent.config_dir}", system_content)
         self.assertIn("当前 workspace 名称：Default", system_content)
         self.assertIn(f"当前 workspace 目录（绝对路径）：{agent.ai_workspace_dir}", system_content)

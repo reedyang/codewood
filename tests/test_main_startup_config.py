@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import src.main as main_module
+from src.config.app_info import get_app_config_dirname
 
 
 class MainStartupConfigTests(unittest.TestCase):
@@ -58,7 +59,7 @@ class MainStartupConfigTests(unittest.TestCase):
                     code = main_module.main()
 
                 self.assertEqual(code, 1)
-                created = Path(td_home) / ".smartshell" / "config.jsonc"
+                created = Path(td_home) / get_app_config_dirname() / "config.jsonc"
                 self.assertTrue(created.exists())
                 got = json.loads(created.read_text(encoding="utf-8").strip())
                 self.assertEqual(got, self._template_data())
@@ -71,7 +72,7 @@ class MainStartupConfigTests(unittest.TestCase):
     def test_invalid_model_config_prints_english_reminder(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as td_home, tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as td_project:
             self._write_template_file(Path(td_project))
-            user_cfg_dir = Path(td_home) / ".smartshell"
+            user_cfg_dir = Path(td_home) / get_app_config_dirname()
             user_cfg_dir.mkdir(parents=True, exist_ok=True)
             cfg_path = user_cfg_dir / "config.jsonc"
             cfg_path.write_text(json.dumps({"execution_policy": "moderate"}) + "\n", encoding="utf-8")
@@ -96,7 +97,7 @@ class MainStartupConfigTests(unittest.TestCase):
     def test_template_placeholder_values_are_rejected(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as td_home, tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as td_project:
             self._write_template_file(Path(td_project))
-            user_cfg_dir = Path(td_home) / ".smartshell"
+            user_cfg_dir = Path(td_home) / get_app_config_dirname()
             user_cfg_dir.mkdir(parents=True, exist_ok=True)
             cfg_path = user_cfg_dir / "config.jsonc"
             cfg_path.write_text(

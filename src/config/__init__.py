@@ -1,6 +1,23 @@
 """Configuration package."""
 
-from .app_info import APP_INFO, get_app_display_version, get_app_name, get_app_version
+from .app_info import (
+    APP_INFO,
+    get_app_client_model_name,
+    get_app_client_name,
+    get_app_config_dirname,
+    get_app_description,
+    get_app_display_version,
+    get_app_env_prefix,
+    get_app_env_var,
+    get_app_log_filename,
+    get_app_logger_root,
+    get_app_name,
+    get_app_runtime_attr_name,
+    get_app_slug_compact,
+    get_app_slug_kebab,
+    get_app_slug_snake,
+    get_app_version,
+)
 from .startup_tips import (
     DEFAULT_STARTUP_TIP,
     DEFAULT_STARTUP_TIP_ENTRY,
@@ -14,9 +31,21 @@ from .startup_tips import (
 
 __all__ = [
     "APP_INFO",
+    "get_app_description",
     "get_app_name",
     "get_app_version",
     "get_app_display_version",
+    "get_app_slug_kebab",
+    "get_app_slug_snake",
+    "get_app_slug_compact",
+    "get_app_config_dirname",
+    "get_app_logger_root",
+    "get_app_runtime_attr_name",
+    "get_app_log_filename",
+    "get_app_env_prefix",
+    "get_app_env_var",
+    "get_app_client_name",
+    "get_app_client_model_name",
     "DEFAULT_STARTUP_TIP",
     "DEFAULT_STARTUP_TIP_ENTRY",
     "startup_tips_config_path",

@@ -4,6 +4,8 @@ import os
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+from ..config.app_info import get_app_config_dirname
+
 
 class WorkspaceStateManager:
     """Encapsulates workspace state read/write and selection logic."""
@@ -39,7 +41,8 @@ class WorkspaceStateManager:
             return self._agent._resolve_path_lenient(self._agent.config_dir / "workspace")
         raw = entry.get("root") or entry.get("path") or entry.get("storage") or ""
         root = self._agent._resolve_path_lenient(Path(str(raw)).expanduser())
-        if root.name.casefold() == ".smartshell":
+        config_dirname = get_app_config_dirname()
+        if root.name.casefold() == config_dirname.casefold():
             return root.parent
         return root
 
@@ -52,7 +55,7 @@ class WorkspaceStateManager:
         storage = entry.get("storage")
         if storage:
             return self._agent._resolve_path_lenient(Path(str(storage)).expanduser())
-        return self.workspace_root_path(entry) / ".smartshell"
+        return self.workspace_root_path(entry) / get_app_config_dirname()
 
     def workspace_current_dir_path(self, entry: Dict[str, Any]) -> Optional[Path]:
         raw = entry.get("current_dir")
@@ -91,7 +94,7 @@ class WorkspaceStateManager:
                 storage_path = self._agent._resolve_path_lenient(Path(str(raw_entry.get("storage"))))
                 root_path = (
                     storage_path.parent
-                    if storage_path.name.casefold() == ".smartshell"
+                    if storage_path.name.casefold() == get_app_config_dirname().casefold()
                     else storage_path
                 )
             elif root_raw:
@@ -108,7 +111,7 @@ class WorkspaceStateManager:
                 "name": name,
                 "kind": "custom",
                 "root": str(root_path),
-                "storage": str(root_path / ".smartshell"),
+                "storage": str(root_path / get_app_config_dirname()),
             }
             if raw_entry.get("current_dir"):
                 entry["current_dir"] = str(
@@ -204,7 +207,11 @@ class WorkspaceStateManager:
                     "kind": getattr(self._agent, "workspace_kind", "custom"),
                     "root": str(getattr(self._agent, "workspace_root", self._agent.work_directory)),
                     "storage": str(
-                        getattr(self._agent, "ai_workspace_dir", self._agent.work_directory / ".smartshell")
+                        getattr(
+                            self._agent,
+                            "ai_workspace_dir",
+                            self._agent.work_directory / get_app_config_dirname(),
+                        )
                     ),
                 }
             workspaces[workspace_id] = entry

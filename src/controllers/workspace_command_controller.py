@@ -5,6 +5,8 @@ import shlex
 import shutil
 from typing import Any, Dict, List, Optional, Set, Tuple
 
+from ..config.app_info import get_app_config_dirname, get_app_name
+
 
 def _default_workspace_id() -> str:
     try:
@@ -63,6 +65,8 @@ def parse_workspace_command_args(
 
 
 def workspace_usage() -> str:
+    config_dirname = get_app_config_dirname()
+    app_name = get_app_name()
     return (
         "Usage:\n"
         "  /workspace list\n"
@@ -72,8 +76,8 @@ def workspace_usage() -> str:
         "  /workspace update <name|id|path> [--name <name>] [--path <path>]\n"
         "  /workspace rename <name|id|path> <new name>\n"
         "  /workspace delete <name|id|path> [--remove-files]\n"
-        "    --remove-files: Deletes .smartshell/ under this custom workspace root, "
-        "including Smart Shell data such as history, temp, skills, memory, and project_context_db; "
+        f"    --remove-files: Deletes {config_dirname}/ under this custom workspace root, "
+        f"including {app_name} data such as history, temp, skills, memory, and project_context_db; "
         "it will not delete the workspace root or other project files."
     )
 
@@ -93,8 +97,9 @@ def workspace_subcommand_usage(_agent: Any, subcommand: str) -> str:
     if usage:
         detail = ""
         if str(subcommand or "").strip().lower() == "delete":
+            config_dirname = get_app_config_dirname()
             detail = (
-                "\nNote: --remove-files deletes .smartshell/ under this custom workspace root "
+                f"\nNote: --remove-files deletes {config_dirname}/ under this custom workspace root "
                 "and all of its files and subdirectories; it will not delete the workspace root or other project files."
             )
         return f"Usage: {usage}{detail}"
@@ -102,11 +107,13 @@ def workspace_subcommand_usage(_agent: Any, subcommand: str) -> str:
 
 
 def print_workspace_help(_agent: Any) -> None:
+    config_dirname = get_app_config_dirname()
+    app_name = get_app_name()
     print(workspace_usage())
     print("Notes:")
     print("  - The default workspace is always named Default, and its data directory remains workspace/ next to config.jsonc")
-    print("  - Smart Shell data for custom workspaces is stored under that workspace's .smartshell/")
-    print("  - /workspace delete removes registry entries by default; with --remove-files it deletes that custom workspace's .smartshell/ and all contents, but not the workspace root or other project files.")
+    print(f"  - {app_name} data for custom workspaces is stored under that workspace's {config_dirname}/")
+    print(f"  - /workspace delete removes registry entries by default; with --remove-files it deletes that custom workspace's {config_dirname}/ and all contents, but not the workspace root or other project files.")
     print("  - Use quotes when a path or name contains spaces")
 
 
@@ -167,7 +174,7 @@ def workspace_create_command(agent: Any, arg_text: str) -> str:
         return f"❌ This directory is already a workspace: {existing.get('name')} ({existing.get('id')})"
     try:
         root.mkdir(parents=True, exist_ok=True)
-        storage = root / ".smartshell"
+        storage = root / get_app_config_dirname()
         storage.mkdir(parents=True, exist_ok=True)
     except OSError as e:
         return f"❌ Failed to create workspace directory: {e}"
@@ -248,7 +255,7 @@ def workspace_update_command(agent: Any, arg_text: str) -> str:
         duplicate = agent._workspace_entry_by_root(new_root, ignore_id=workspace_id)
         if duplicate:
             return f"❌ Target directory is already a workspace: {duplicate.get('name')} ({duplicate.get('id')})"
-        new_storage = new_root / ".smartshell"
+        new_storage = new_root / get_app_config_dirname()
         if active_workspace:
             agent._shutdown_mcp_runtime()
             agent._shutdown_workspace_services(wait=True)
@@ -327,7 +334,7 @@ def workspace_delete_command(agent: Any, arg_text: str) -> str:
     if remove_files and storage.exists():
         confirm = (
             input(
-                f"Confirm deletion of workspace data directory '{storage}'? Only .smartshell will be deleted, not the workspace root. (y/n): "
+                f"Confirm deletion of workspace data directory '{storage}'? Only {get_app_config_dirname()} will be deleted, not the workspace root. (y/n): "
             )
             .strip()
             .lower()

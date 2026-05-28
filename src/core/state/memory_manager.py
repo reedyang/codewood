@@ -20,8 +20,9 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple, Callable
 
 import yaml
+from ...config.app_info import get_app_logger_root, get_app_name
 
-_mem_log = logging.getLogger("smartshell.memory")
+_mem_log = logging.getLogger(f"{get_app_logger_root()}.memory")
 
 # 无重型依赖，默认可用；仅当初始化抛错时 MemoryService 会标记不可用
 MEMORY_AVAILABLE = True
@@ -29,7 +30,7 @@ MEMORY_AVAILABLE = True
 MANIFEST_VERSION = 1
 INDEX_HEADER = (
     "# 经验记忆索引\n\n"
-    "本文件由 Smart Shell 根据 `manifest.json` 自动生成，可阅读、勿手改结构行。\n\n"
+    f"本文件由 {get_app_name()} 根据 `manifest.json` 自动生成，可阅读、勿手改结构行。\n\n"
 )
 
 
@@ -585,7 +586,7 @@ class MemoryService:
         self._closed = threading.Event()
         self._worker = threading.Thread(
             target=self._worker_loop,
-            name="smartshell-memory",
+            name=f"{get_app_logger_root()}-memory",
             daemon=True,
         )
         self._worker.start()

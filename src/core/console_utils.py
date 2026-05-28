@@ -4,6 +4,8 @@ import threading
 import time
 from typing import Any, List, Optional, Tuple
 
+from ..config.app_info import get_app_logger_root
+
 
 def _decode_subprocess_output(data: Optional[bytes]) -> str:
     """
@@ -292,7 +294,7 @@ class _WorkingStatusTicker:
         self._render_frame(elapsed_seconds=0, frame=0)
         self._thread = threading.Thread(
             target=self._run,
-            name="smartshell-working-status",
+            name=f"{get_app_logger_root()}-working-status",
             daemon=True,
         )
         self._thread.start()

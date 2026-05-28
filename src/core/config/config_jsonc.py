@@ -1,4 +1,4 @@
-"""Utilities for reading/writing Smart Shell JSONC config files."""
+"""Utilities for reading/writing application JSONC config files."""
 
 from __future__ import annotations
 

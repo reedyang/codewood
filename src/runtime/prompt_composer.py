@@ -3,6 +3,7 @@ import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from ..config.app_info import get_app_config_dirname
 from ..core.config.skills_loader import _list_bundled_script_paths
 
 
@@ -182,10 +183,11 @@ def build_agents_md_system_append(agent: Any) -> str:
     except Exception:
         pass
     try:
+        config_dirname = get_app_config_dirname()
         candidates.append(
             (
-                "workspace/.smartshell",
-                Path(agent.ai_workspace_dir) / ".smartshell" / "AGENTS.md",
+                f"workspace/{config_dirname}",
+                Path(agent.ai_workspace_dir) / config_dirname / "AGENTS.md",
             )
         )
     except Exception:
@@ -253,7 +255,7 @@ def build_runtime_cache_prompt_append(agent: Any, default_workspace_id: str) -> 
     if ws_id == default_workspace_id:
         cache_root = (ws_root / ".cache").resolve()
     else:
-        cache_root = (ws_root / ".smartshell" / ".cache").resolve()
+        cache_root = (ws_root / get_app_config_dirname() / ".cache").resolve()
     return (
         "\n\n## Runtime Cache Directory Hint\n"
         "- 通用缓存根目录（workspace 级）: "
@@ -391,7 +393,7 @@ def default_skill_cache_dir(
     if ws_id == default_workspace_id:
         base = ws_root / ".cache"
     else:
-        base = ws_root / ".smartshell" / ".cache"
+        base = ws_root / get_app_config_dirname() / ".cache"
     return (base / sid).resolve()
 
 

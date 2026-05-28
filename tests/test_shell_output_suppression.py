@@ -1,6 +1,7 @@
 import unittest
 from unittest.mock import patch
 
+from src.config.app_info import get_app_runtime_attr_name
 from src.actions.command_actions import (
     SHELL_OUTPUT_DISPLAY_TAIL_LINES,
     _build_tail_output_for_display,
@@ -21,8 +22,8 @@ class _FakePipe:
 
 
 class _FakeSmartWidthStream:
-    def smart_shell_terminal_columns(self):
-        return 42
+    def __init__(self):
+        setattr(self, get_app_runtime_attr_name("terminal_columns"), lambda: 42)
 
 
 class ShellOutputSuppressionTests(unittest.TestCase):

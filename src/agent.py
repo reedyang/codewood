@@ -105,6 +105,13 @@ from .completion.slash_dynamic_completions import (
 )
 from .actions import filesystem_actions
 from .actions import command_actions
+from .config.app_info import (
+    get_app_env_var,
+    get_app_log_filename,
+    get_app_logger_root,
+    get_app_name,
+    get_app_runtime_attr_name,
+)
 from .runtime import bootstrap
 from .services import execution_policy_service
 from .runtime import prompt_composer
@@ -121,6 +128,8 @@ CONVERSATION_INTERRUPTED_HISTORY_PREFIX = "[CONVERSATION_INTERRUPTED]"
 INTERNAL_SLASH_USER_HISTORY_PREFIX = "[INTERNAL_SLASH_USER_COMMAND]"
 INTERNAL_SLASH_RESULT_HISTORY_PREFIX = "[INTERNAL_SLASH_RESULT]"
 TASK_WORKED_SUMMARY_HISTORY_PREFIX = "[TASK_WORKED_SUMMARY]"
+_STREAM_ATTR_TERMINAL_COLUMNS = get_app_runtime_attr_name("terminal_columns")
+_STREAM_ATTR_OUTPUT_INDENT_WIDTH = get_app_runtime_attr_name("output_indent_width")
 
 # 根据操作系统选择合适的输入处理器
 import platform
@@ -217,7 +226,7 @@ DOMAIN_PROMPT_FILE_MAP: Dict[str, str] = {
 class Agent:
     def __init__(self, model_name: str = "gemma3:4b", work_directory: Optional[str] = None, provider: str = "ollama", openai_conf: Optional[dict] = None, params: Optional[dict] = None, model_config: Optional[dict] = None, config_dir: Optional[str] = None, builtin_skills_dir: Optional[str] = None):
         """
-        初始化Smart Shell
+        初始化应用 Agent
         Args:
             model_name: 模型名称（兼容旧格式）
             work_directory: 工作目录
@@ -324,7 +333,7 @@ class Agent:
         target_root = Path(self.work_directory)
         target_storage = Path(self.ai_workspace_dir) / "project_context_db"
         reason_text = str(reason or "background")
-        pc_logger = get_logger("smartshell.project_context")
+        pc_logger = get_logger(f"{get_app_logger_root()}.project_context")
         started_at = datetime.now()
         try:
             pc_logger.info(
@@ -368,7 +377,7 @@ class Agent:
         threading.Thread(
             target=_run,
             daemon=True,
-            name=f"smartshell-project-context-refresh:{reason_text}",
+            name=f"{get_app_logger_root()}-project-context-refresh:{reason_text}",
         ).start()
         return True
 
@@ -1355,11 +1364,11 @@ class Agent:
         output_indent_width = 0
         stdout_stream = sys.stdout
         try:
-            output_indent_width = max(0, int(getattr(stdout_stream, "smart_shell_output_indent_width", 0) or 0))
+            output_indent_width = max(0, int(getattr(stdout_stream, _STREAM_ATTR_OUTPUT_INDENT_WIDTH, 0) or 0))
         except Exception:
             output_indent_width = 0
         try:
-            fn = getattr(stdout_stream, "smart_shell_terminal_columns", None)
+            fn = getattr(stdout_stream, _STREAM_ATTR_TERMINAL_COLUMNS, None)
             if callable(fn):
                 cols = int(fn() or 0)
                 if cols > 0:
@@ -1474,11 +1483,11 @@ class Agent:
         output_indent_width = 0
         stdout_stream = sys.stdout
         try:
-            output_indent_width = max(0, int(getattr(stdout_stream, "smart_shell_output_indent_width", 0) or 0))
+            output_indent_width = max(0, int(getattr(stdout_stream, _STREAM_ATTR_OUTPUT_INDENT_WIDTH, 0) or 0))
         except Exception:
             output_indent_width = 0
         try:
-            fn = getattr(stdout_stream, "smart_shell_terminal_columns", None)
+            fn = getattr(stdout_stream, _STREAM_ATTR_TERMINAL_COLUMNS, None)
             if callable(fn):
                 cols0 = int(fn() or 0)
                 if cols0 > 0:
@@ -1851,11 +1860,11 @@ class Agent:
         output_indent_width = 0
         stdout_stream = sys.stdout
         try:
-            output_indent_width = max(0, int(getattr(stdout_stream, "smart_shell_output_indent_width", 0) or 0))
+            output_indent_width = max(0, int(getattr(stdout_stream, _STREAM_ATTR_OUTPUT_INDENT_WIDTH, 0) or 0))
         except Exception:
             output_indent_width = 0
         try:
-            fn = getattr(stdout_stream, "smart_shell_terminal_columns", None)
+            fn = getattr(stdout_stream, _STREAM_ATTR_TERMINAL_COLUMNS, None)
             if callable(fn):
                 cols0 = int(fn() or 0)
                 if cols0 > 0:
@@ -2349,7 +2358,8 @@ class Agent:
                 self._terminal_columns_override = max(0, int(terminal_columns or 0))
             except Exception:
                 self._terminal_columns_override = 0
-            self.smart_shell_output_indent_width = 2
+            setattr(self, _STREAM_ATTR_OUTPUT_INDENT_WIDTH, 2)
+            setattr(self, _STREAM_ATTR_TERMINAL_COLUMNS, self._terminal_columns)
             self._line_start = True
             self._visual_col = 0
             self._active_sgr = ""
@@ -2400,9 +2410,6 @@ class Agent:
             except Exception:
                 pass
             return 80
-
-        def smart_shell_terminal_columns(self) -> int:
-            return self._terminal_columns()
 
         def _emit_indent_if_needed(self, out_parts: List[str]) -> None:
             if not self._line_start:
@@ -2527,7 +2534,7 @@ class Agent:
 
         def _terminal_columns(self) -> int:
             try:
-                fn = getattr(self._base_stream, "smart_shell_terminal_columns", None)
+                fn = getattr(self._base_stream, _STREAM_ATTR_TERMINAL_COLUMNS, None)
                 if callable(fn):
                     cols0 = int(fn() or 0)
                     if cols0 > 0:
@@ -2572,7 +2579,7 @@ class Agent:
                 suppress_clear = bool(self._shared_state.get("_suppress_first_write_clear", False))
                 try:
                     suppress_clear = suppress_clear or bool(
-                        int(getattr(self._base_stream, "smart_shell_output_indent_width", 0) or 0)
+                        int(getattr(self._base_stream, _STREAM_ATTR_OUTPUT_INDENT_WIDTH, 0) or 0)
                     )
                 except Exception:
                     pass
@@ -2591,7 +2598,7 @@ class Agent:
                     except Exception:
                         pass
             try:
-                outer_indent = int(getattr(self._base_stream, "smart_shell_output_indent_width", 0) or 0)
+                outer_indent = int(getattr(self._base_stream, _STREAM_ATTR_OUTPUT_INDENT_WIDTH, 0) or 0)
             except Exception:
                 outer_indent = 0
             term_cols = max(8, int(self._terminal_columns() or 80) - max(0, outer_indent))
@@ -2947,7 +2954,7 @@ class Agent:
 
             th = threading.Thread(
                 target=_monitor,
-                name="smartshell-esc-interrupt-monitor",
+                name=f"{get_app_logger_root()}-esc-interrupt-monitor",
                 daemon=True,
             )
             self._interrupt_monitor_thread = th
@@ -3380,7 +3387,7 @@ class Agent:
                 except Exception:
                     pass
 
-        threading.Thread(target=_run, daemon=True, name="smartshell-memory-init").start()
+        threading.Thread(target=_run, daemon=True, name=f"{get_app_logger_root()}-memory-init").start()
 
     def _ensure_memory_service(self) -> bool:
         if not bool(getattr(self, "memory_enabled", True)):
@@ -3418,7 +3425,7 @@ class Agent:
 
         threading.Thread(
             target=_run,
-            name="smartshell-ollama-validate",
+            name=f"{get_app_logger_root()}-ollama-validate",
             daemon=True,
         ).start()
 
@@ -3910,7 +3917,10 @@ class Agent:
                 "You can also use memory_search / memory_add or /memory remember manually."
             )
         elif dep and not ready:
-            print("  Memory module is initializing or failed. Check smartshell.log and workspace/memory/ under the config directory.")
+            print(
+                "  Memory module is initializing or failed. "
+                f"Check {get_app_log_filename()} and workspace/memory/ under the config directory."
+            )
         else:
             print("  Experiential memory is unavailable (initialization failed); the main program can continue running.")
 
@@ -4496,7 +4506,7 @@ class Agent:
         print_mcp_shortcut_result(tool_name, args, result)
 
     def _print_main_help(self) -> None:
-        print("\nSmart Shell Help")
+        print(f"\n{get_app_name()} Help")
         print("=" * 80)
         print("\nBuilt-in commands:")
         print("  /exit, /quit")
@@ -4940,9 +4950,9 @@ class Agent:
             raise McpError(f"Unsupported elicitation mode: {mode}")
 
         # Non-interactive fallback for tests/piped execution.
-        # SMART_SHELL_AUTO_ACCEPT_ELICITATION=1 can force auto-accept in test runners.
+        # <APP_ENV_PREFIX>_AUTO_ACCEPT_ELICITATION=1 can force auto-accept in test runners.
         auto_accept_elicitation = str(
-            os.environ.get("SMART_SHELL_AUTO_ACCEPT_ELICITATION", "")
+            os.environ.get(get_app_env_var("AUTO_ACCEPT_ELICITATION"), "")
         ).strip().lower() in ("1", "true", "yes", "on")
         stdin_is_tty = False
         try:

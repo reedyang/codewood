@@ -4,8 +4,13 @@ from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
 
+from src.config.app_info import get_app_runtime_attr_name
 from src.completion import prompt_toolkit_input as pti
 from src.completion.prompt_toolkit_input import FileCompleter
+
+_RESIZE_ATTR_DRAFT = get_app_runtime_attr_name("resize_draft", leading_underscore=True)
+_RESIZE_ATTR_CURSOR = get_app_runtime_attr_name("resize_cursor_position", leading_underscore=True)
+_RESIZE_ATTR_INTERRUPTED = get_app_runtime_attr_name("resize_interrupted", leading_underscore=True)
 
 
 class _Doc:
@@ -125,7 +130,7 @@ class PromptToolkitInputCompletionTests(unittest.TestCase):
             app.before_render.fire(app)
 
         self.assertEqual(calls, [(120, 100)])
-        self.assertTrue(bool(getattr(session, "_smart_shell_resize_interrupted", False)))
+        self.assertTrue(bool(getattr(session, _RESIZE_ATTR_INTERRUPTED, False)))
         self.assertEqual(app.exit_calls, [""])
 
     def test_resize_hook_uses_system_width_when_output_width_is_stale_on_expand(self):
@@ -148,7 +153,7 @@ class PromptToolkitInputCompletionTests(unittest.TestCase):
             app.before_render.fire(app)
 
         self.assertEqual(calls, [(100, 120)])
-        self.assertTrue(bool(getattr(session, "_smart_shell_resize_interrupted", False)))
+        self.assertTrue(bool(getattr(session, _RESIZE_ATTR_INTERRUPTED, False)))
         self.assertEqual(app.exit_calls, [""])
 
     def test_windows_shift_state_detector_returns_false_on_non_windows(self):
@@ -272,8 +277,8 @@ class PromptToolkitInputCompletionTests(unittest.TestCase):
         handler._clear_status_overlay_line_if_possible = lambda: None
 
         def _simulate_resize_interrupt():
-            interrupted_session._smart_shell_resize_interrupted = True
-            interrupted_session._smart_shell_resize_draft = "hello\r\n你好"
+            setattr(interrupted_session, _RESIZE_ATTR_INTERRUPTED, True)
+            setattr(interrupted_session, _RESIZE_ATTR_DRAFT, "hello\r\n你好")
 
         interrupted_session.before_return = _simulate_resize_interrupt
 
@@ -313,8 +318,8 @@ class PromptToolkitInputCompletionTests(unittest.TestCase):
 
         def _simulate_shell_resize_interrupt():
             handler._shell_mode_active = True
-            interrupted_session._smart_shell_resize_interrupted = True
-            interrupted_session._smart_shell_resize_draft = "dir"
+            setattr(interrupted_session, _RESIZE_ATTR_INTERRUPTED, True)
+            setattr(interrupted_session, _RESIZE_ATTR_DRAFT, "dir")
 
         interrupted_session.before_return = _simulate_shell_resize_interrupt
 
@@ -352,9 +357,9 @@ class PromptToolkitInputCompletionTests(unittest.TestCase):
         handler._clear_status_overlay_line_if_possible = lambda: None
 
         def _simulate_resize_interrupt():
-            interrupted_session._smart_shell_resize_interrupted = True
-            interrupted_session._smart_shell_resize_draft = "hello world"
-            interrupted_session._smart_shell_resize_cursor_position = 5
+            setattr(interrupted_session, _RESIZE_ATTR_INTERRUPTED, True)
+            setattr(interrupted_session, _RESIZE_ATTR_DRAFT, "hello world")
+            setattr(interrupted_session, _RESIZE_ATTR_CURSOR, 5)
 
         interrupted_session.before_return = _simulate_resize_interrupt
 
