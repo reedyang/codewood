@@ -783,10 +783,18 @@
     "type": "function",
     "function": {
       "name": "done",
-      "description": "标记当前用户任务已完成。",
+      "description": "标记当前用户任务已完成。若本轮修改了文件，args.reviewed_files 应列出已复查文件清单。",
       "parameters": {
         "type": "object",
-        "properties": {}
+        "properties": {
+          "reviewed_files": {
+            "type": "array",
+            "description": "可选。已复查文件路径列表。software_development 场景下若有代码改动，需覆盖本轮所有已修改文件。",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
       }
     }
   }

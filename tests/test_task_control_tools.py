@@ -42,6 +42,15 @@ class TaskControlToolTests(unittest.TestCase):
         self.assertEqual(result.get("new_task"), "Generate release notes")
         self.assertEqual(result.get("reason"), "user changed request")
 
+    def test_done_accepts_reviewed_files_metadata(self):
+        result = self.agent.execute_tool_call(
+            "done",
+            {"reviewed_files": ["src/a.py", " docs/b.md ", ""]},
+        )
+        self.assertTrue(result.get("success"))
+        self.assertTrue(result.get("finished"))
+        self.assertEqual(result.get("reviewed_files"), ["src/a.py", "docs/b.md"])
+
     def test_cancel_detection_does_not_scan_success_output_text(self):
         result = {
             "success": True,
