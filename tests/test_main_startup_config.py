@@ -37,7 +37,7 @@ class MainStartupConfigTests(unittest.TestCase):
 
     @classmethod
     def _write_template_file(cls, project_dir: Path) -> Path:
-        template_path = project_dir / "config" / "config.template.jsonc"
+        template_path = project_dir / "src/config" / "config.template.jsonc"
         template_path.parent.mkdir(parents=True, exist_ok=True)
         template_path.write_text(
             json.dumps(cls._template_data(), ensure_ascii=False, indent=2) + "\n",

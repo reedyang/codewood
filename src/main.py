@@ -25,7 +25,7 @@ from src.core.config.config_jsonc import (
 from src.core.config.model_providers import parse_configured_models
 from src.core.console_utils import _ansi_red
 
-CONFIG_TEMPLATE_RELATIVE_PATH = Path("config") / "config.template.jsonc"
+CONFIG_TEMPLATE_RELATIVE_PATH = Path("src/config") / "config.template.jsonc"
 
 
 def _get_user_config_template_path() -> Path:
@@ -34,7 +34,7 @@ def _get_user_config_template_path() -> Path:
 
 
 def _load_user_config_template() -> dict:
-    """Load startup template content from config/config.template.jsonc."""
+    """Load startup template content from src/config/config.template.jsonc."""
     template_path = _get_user_config_template_path()
     data = load_config_jsonc(template_path)
     return data if isinstance(data, dict) else {}
