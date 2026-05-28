@@ -164,7 +164,7 @@ smart-shell/
 {
   "model_providers": [
     {
-      "provider": "openwebui",
+      "provider": "openai",
       "params": {
         "api_key": "${HAPPYCODING_API_KEY}",
         "base_url": "https://happycoding.corp.zoom.com/api/v1",
@@ -194,7 +194,7 @@ smart-shell/
 
 **配置说明**:
 - `model_providers`: 多模型提供方列表；启动时默认使用第一个 provider
-- `model_providers[i].provider`: 支持 `ollama`、`openai`、`openwebui`
+- `model_providers[i].provider`: 支持 `ollama`、`openai`
 - `model_providers[i].params.models`: 模型列表；默认使用第一个模型。每项支持两种写法：
   - 字符串：`"gpt-oss-120b"`（使用默认 `context_window=128000`）
   - 对象：`{"name":"gpt-oss-120b","context_window":"128K"}`（可为数字，或带 `k/K` 后缀的字符串）

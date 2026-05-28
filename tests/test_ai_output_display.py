@@ -67,7 +67,7 @@ class AiOutputDisplayTests(unittest.TestCase):
 
     def test_format_assistant_display_response_highlights_key_tokens(self):
         text = (
-            "1. Check https://127.0.0.1:4001 and OPENWEBUI_API_KEY\n"
+            "1. Check https://127.0.0.1:4001 and OPENAI_API_KEY\n"
             "./scripts/start-gateway.ps1 # Windows wrapper"
         )
         with patch("src.core.assistant_output_highlighter._ansi_bright_blue", side_effect=lambda s: f"<BB>{s}</BB>"), patch(
@@ -77,7 +77,7 @@ class AiOutputDisplayTests(unittest.TestCase):
 
         self.assertIn("<BB>1. </BB>", out)
         self.assertIn("<C>https://127.0.0.1:4001</C>", out)
-        self.assertIn("<C>OPENWEBUI_API_KEY</C>", out)
+        self.assertIn("<C>OPENAI_API_KEY</C>", out)
         self.assertIn("<BB>./scripts/start-gateway.ps1</BB>", out)
         self.assertIn("<G> # Windows wrapper</G>", out)
 

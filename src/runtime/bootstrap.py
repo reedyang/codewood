@@ -200,7 +200,6 @@ def setup_model_ai_stack(
     model_name: str,
     provider: str,
     openai_conf: Optional[dict],
-    openwebui_conf: Optional[dict],
     params: Optional[dict],
     model_config: Optional[dict],
     ollama_importer: Any,
@@ -215,7 +214,6 @@ def setup_model_ai_stack(
         agent.params = params or {}
 
     agent.openai_conf = agent.params if agent.provider == "openai" else openai_conf
-    agent.openwebui_conf = agent.params if agent.provider == "openwebui" else openwebui_conf
 
     agent.path_policy = PathPolicy(agent)
     agent.session_memory_service = SessionMemoryService(agent)
@@ -225,7 +223,6 @@ def setup_model_ai_stack(
             model_name=agent.model_name,
             model_params=agent.params,
             openai_conf=agent.openai_conf,
-            openwebui_conf=agent.openwebui_conf,
             work_directory=str(agent.work_directory),
             history_writer=agent._append_chat_message,
             regular_message_builder=agent._build_regular_task_messages,

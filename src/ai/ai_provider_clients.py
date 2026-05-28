@@ -28,7 +28,6 @@ class ProviderCallContext:
     model_name: str
     model_params: Optional[Dict[str, Any]]
     openai_conf: Optional[Dict[str, Any]]
-    openwebui_conf: Optional[Dict[str, Any]]
     messages: List[Dict[str, Any]]
     stream: bool
     return_message: bool
@@ -68,29 +67,19 @@ def prepare_image_input(
 def _stream_openai_like_response(
     resp: Any,
     append_history: Callable[[str], None],
-    decode_unicode: bool = False,
 ):
     def gen():
         buffer = ""
         first_chunk = True
-        iter_kwargs = {"decode_unicode": True} if decode_unicode else {}
-        for line in resp.iter_lines(**iter_kwargs):
+        for line in resp.iter_lines():
             if not line:
                 continue
-            if decode_unicode:
-                if not isinstance(line, str) or not line.startswith("data: "):
-                    continue
-                data = line[6:]
-                if data.strip() == "[DONE]":
-                    break
-                data_str = data
-            else:
-                if not isinstance(line, (bytes, bytearray)) or not line.startswith(b"data: "):
-                    continue
-                data = line[6:]
-                if data.strip() == b"[DONE]":
-                    break
-                data_str = data.decode("utf-8", errors="replace")
+            if not isinstance(line, (bytes, bytearray)) or not line.startswith(b"data: "):
+                continue
+            data = line[6:]
+            if data.strip() == b"[DONE]":
+                break
+            data_str = data.decode("utf-8", errors="replace")
             try:
                 delta = json.loads(data_str)["choices"][0]["delta"].get("content", "")
                 if delta:
@@ -123,7 +112,6 @@ def _call_with_openai_compatible(
     append_history: Callable[[str], None],
     api_key_error_msg: str,
     default_base_url: str,
-    stream_decode_unicode: bool,
 ):
     import requests
 
@@ -163,7 +151,6 @@ def _call_with_openai_compatible(
         return _stream_openai_like_response(
             resp=resp,
             append_history=append_history,
-            decode_unicode=stream_decode_unicode,
         )
 
     data = resp.json()
@@ -269,25 +256,6 @@ def call_ai_with_provider(
             append_history=append_history,
             api_key_error_msg="❌ Error: OpenAI API key is not configured. Please set api_key in config.json model.params.",
             default_base_url="https://api.openai.com/v1",
-            stream_decode_unicode=False,
-        )
-    if context.provider == "openwebui" and context.openwebui_conf:
-        return _call_with_openai_compatible(
-            model_name=context.model_name,
-            conf=context.openwebui_conf,
-            messages=context.messages,
-            stream=context.stream,
-            return_message=context.return_message,
-            image_data=context.image_data,
-            image_user_idx=context.image_user_idx,
-            image_user_text=context.image_user_text,
-            session_summary_mode=context.session_summary_mode,
-            memory_query_expansion_mode=context.memory_query_expansion_mode,
-            domain_classifier_mode=context.domain_classifier_mode,
-            append_history=append_history,
-            api_key_error_msg="❌ Error: OpenWebUI API key is not configured. Please set api_key in config.json model.params.",
-            default_base_url="http://localhost:8080/v1",
-            stream_decode_unicode=True,
         )
     if context.provider == "ollama":
         context_window = parse_context_window(
@@ -309,4 +277,4 @@ def call_ai_with_provider(
             ollama_importer=ollama_importer,
             context_window=context_window,
         )
-    return f"❌ Error: unsupported model provider '{context.provider}'. Supported providers: ollama, openai, openwebui"
+    return f"❌ Error: unsupported model provider '{context.provider}'. Supported providers: ollama, openai"

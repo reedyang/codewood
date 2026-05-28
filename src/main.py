@@ -143,29 +143,6 @@ def main():
                     agent.shutdown(wait=False)
                 except Exception:
                     pass
-    elif provider == "openwebui" and params:
-        agent = None
-        try:
-            agent = SmartShellAgent(
-                model_name=model_name,
-                work_directory=work_directory,
-                provider="openwebui",
-                params=params,
-                model_config=model_config,
-                config_dir=config_dir,
-                builtin_skills_dir=builtin_skills_dir,
-            )
-            agent.run()
-            return 0
-        except Exception as e:
-            print(f"❌ OpenWebUI API mode runtime error: {str(e)}")
-            return 1
-        finally:
-            if agent is not None:
-                try:
-                    agent.shutdown(wait=False)
-                except Exception:
-                    pass
     elif provider == "ollama" and params:
         # ollama：不在此处 import ollama（未使用 ollama 的配置不会加载该包）；校验在 SmartShellAgent 后台线程中完成
         agent = None
