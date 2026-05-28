@@ -36,7 +36,6 @@ class ProviderContextWindowTests(unittest.TestCase):
                         "base_url": "https://example.com/v1",
                         "context_window": "64k",
                     },
-                    openwebui_conf=None,
                     messages=[{"role": "user", "content": "hi"}],
                     stream=False,
                     return_message=False,
@@ -45,6 +44,7 @@ class ProviderContextWindowTests(unittest.TestCase):
                     image_user_text="",
                     session_summary_mode=False,
                     memory_query_expansion_mode=False,
+                    domain_classifier_mode=False,
                 ),
                 append_history=lambda _s: None,
                 ollama_importer=lambda: None,
@@ -53,15 +53,14 @@ class ProviderContextWindowTests(unittest.TestCase):
         headers = mock_post.call_args.kwargs.get("headers", {})
         self.assertEqual(headers.get("X-Context-Window"), "64000")
 
-    def test_openwebui_invalid_context_window_uses_default_header(self):
+    def test_openai_invalid_context_window_uses_default_header(self):
         with patch("requests.post", return_value=_FakeResponse()) as mock_post:
             out = call_ai_with_provider(
                 context=ProviderCallContext(
-                    provider="openwebui",
+                    provider="openai",
                     model_name="gpt-oss-120b",
                     model_params={"context_window": "bad"},
-                    openai_conf=None,
-                    openwebui_conf={
+                    openai_conf={
                         "api_key": "k",
                         "base_url": "https://example.com/v1",
                         "context_window": "bad",
@@ -74,6 +73,7 @@ class ProviderContextWindowTests(unittest.TestCase):
                     image_user_text="",
                     session_summary_mode=False,
                     memory_query_expansion_mode=False,
+                    domain_classifier_mode=False,
                 ),
                 append_history=lambda _s: None,
                 ollama_importer=lambda: None,
@@ -90,7 +90,6 @@ class ProviderContextWindowTests(unittest.TestCase):
                 model_name="qwen2.5:14b",
                 model_params={"context_window": "96K"},
                 openai_conf=None,
-                openwebui_conf=None,
                 messages=[{"role": "user", "content": "hi"}],
                 stream=False,
                 return_message=False,
@@ -99,6 +98,7 @@ class ProviderContextWindowTests(unittest.TestCase):
                 image_user_text="",
                 session_summary_mode=False,
                 memory_query_expansion_mode=False,
+                domain_classifier_mode=False,
             ),
             append_history=lambda _s: None,
             ollama_importer=lambda: fake_ollama,
@@ -114,7 +114,6 @@ class ProviderContextWindowTests(unittest.TestCase):
                 model_name="qwen2.5:14b",
                 model_params={"context_window": 128000},
                 openai_conf=None,
-                openwebui_conf=None,
                 messages=[{"role": "user", "content": "hi"}],
                 stream=True,
                 return_message=False,
@@ -123,6 +122,7 @@ class ProviderContextWindowTests(unittest.TestCase):
                 image_user_text="",
                 session_summary_mode=True,
                 memory_query_expansion_mode=False,
+                domain_classifier_mode=False,
             ),
             append_history=lambda _s: None,
             ollama_importer=lambda: fake_ollama,

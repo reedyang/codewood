@@ -16,7 +16,6 @@ class AgentAIContext:
     model_name: str
     model_params: Optional[Dict[str, Any]]
     openai_conf: Optional[Dict[str, Any]]
-    openwebui_conf: Optional[Dict[str, Any]]
     work_directory: str
     history_writer: Callable[[str, str], None]
     regular_message_builder: Callable[[str, str], Tuple[List[Dict[str, Any]], bool]]
@@ -90,7 +89,6 @@ class AIOrchestrator:
                 model_name=model_name,
                 model_params=self.context.model_params,
                 openai_conf=self.context.openai_conf,
-                openwebui_conf=self.context.openwebui_conf,
                 messages=messages,
                 stream=call_ctx.stream,
                 return_message=call_ctx.return_message,

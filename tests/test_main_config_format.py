@@ -9,7 +9,7 @@ class MainConfigFormatTests(unittest.TestCase):
             {
                 "model_providers": [
                     {
-                        "provider": "openwebui",
+                        "provider": "openai",
                         "params": {
                             "api_key": "k1",
                             "base_url": "https://example.com/v1",
@@ -24,9 +24,9 @@ class MainConfigFormatTests(unittest.TestCase):
             }
         )
         self.assertIsNone(error)
-        self.assertEqual(provider, "openwebui")
+        self.assertEqual(provider, "openai")
         self.assertEqual(model_name, "gpt-oss-120b")
-        self.assertEqual(model_config["provider"], "openwebui")
+        self.assertEqual(model_config["provider"], "openai")
         self.assertEqual(model_config["params"]["models"][0], "gpt-oss-120b")
         self.assertEqual(model_config["params"]["model"], "gpt-oss-120b")
         self.assertEqual(model_config["params"]["context_window"], 128000)
@@ -36,7 +36,7 @@ class MainConfigFormatTests(unittest.TestCase):
             {
                 "model_providers": [
                     {
-                        "provider": "openwebui",
+                        "provider": "openai",
                         "params": {
                             "models": [
                                 {"name": "gpt-oss-120b", "context_window": 64000},
@@ -48,7 +48,7 @@ class MainConfigFormatTests(unittest.TestCase):
             }
         )
         self.assertIsNone(error)
-        self.assertEqual(provider, "openwebui")
+        self.assertEqual(provider, "openai")
         self.assertEqual(model_name, "gpt-oss-120b")
         self.assertEqual(model_config["params"]["models"], ["gpt-oss-120b", "gpt-4o-mini"])
         self.assertEqual(model_config["params"]["context_window"], 64000)
@@ -58,7 +58,7 @@ class MainConfigFormatTests(unittest.TestCase):
             {
                 "model_providers": [
                     {
-                        "provider": "openwebui",
+                        "provider": "openai",
                         "params": {
                             "models": [
                                 {"name": "gpt-oss-120b", "context_window": "128K"},
@@ -76,7 +76,7 @@ class MainConfigFormatTests(unittest.TestCase):
             {
                 "model_providers": [
                     {
-                        "provider": "openwebui",
+                        "provider": "openai",
                         "params": {
                             "models": [
                                 {"name": "gpt-oss-120b", "context_window": "bad-value"},
@@ -101,7 +101,7 @@ class MainConfigFormatTests(unittest.TestCase):
             {
                 "model_providers": [
                     {
-                        "provider": "openwebui",
+                        "provider": "openai",
                         "params": {"models": []},
                     }
                 ]

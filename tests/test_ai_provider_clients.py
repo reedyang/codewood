@@ -9,15 +9,15 @@ class ResolveEnvPlaceholderTests(unittest.TestCase):
         self.assertEqual(resolve_env_placeholder("abc123"), "abc123")
 
     def test_resolve_env_placeholder_string(self):
-        old = os.environ.get("OPENWEBUI_API_KEY")
-        os.environ["OPENWEBUI_API_KEY"] = "env-secret"
+        old = os.environ.get("OPENAI_API_KEY")
+        os.environ["OPENAI_API_KEY"] = "env-secret"
         try:
-            self.assertEqual(resolve_env_placeholder("${OPENWEBUI_API_KEY}"), "env-secret")
+            self.assertEqual(resolve_env_placeholder("${OPENAI_API_KEY}"), "env-secret")
         finally:
             if old is None:
-                os.environ.pop("OPENWEBUI_API_KEY", None)
+                os.environ.pop("OPENAI_API_KEY", None)
             else:
-                os.environ["OPENWEBUI_API_KEY"] = old
+                os.environ["OPENAI_API_KEY"] = old
 
     def test_missing_env_name_returns_empty_string(self):
         self.assertEqual(resolve_env_placeholder("${NOT_EXISTS_FOR_TEST}"), "")
@@ -25,42 +25,42 @@ class ResolveEnvPlaceholderTests(unittest.TestCase):
 
 class ResolveStringValuesInDataTests(unittest.TestCase):
     def test_resolve_all_string_params_recursively(self):
-        old_key = os.environ.get("OPENWEBUI_API_KEY")
-        old_base = os.environ.get("OPENWEBUI_BASE_URL")
-        os.environ["OPENWEBUI_API_KEY"] = "token-1"
-        os.environ["OPENWEBUI_BASE_URL"] = "http://localhost:8080/v1"
+        old_key = os.environ.get("OPENAI_API_KEY")
+        old_base = os.environ.get("OPENAI_BASE_URL")
+        os.environ["OPENAI_API_KEY"] = "token-1"
+        os.environ["OPENAI_BASE_URL"] = "https://example.com/v1"
         try:
             raw = {
-                "api_key": "${OPENWEBUI_API_KEY}",
-                "base_url": "${OPENWEBUI_BASE_URL}",
+                "api_key": "${OPENAI_API_KEY}",
+                "base_url": "${OPENAI_BASE_URL}",
                 "model": "gpt-4o-mini",
                 "nested": {
-                    "headers": ["Bearer ${OPENWEBUI_API_KEY}", "${OPENWEBUI_API_KEY}"],
+                    "headers": ["Bearer ${OPENAI_API_KEY}", "${OPENAI_API_KEY}"],
                     "timeout": 120,
                 },
             }
             got = resolve_string_values_in_data(raw)
             self.assertEqual(got["api_key"], "token-1")
-            self.assertEqual(got["base_url"], "http://localhost:8080/v1")
+            self.assertEqual(got["base_url"], "https://example.com/v1")
             self.assertEqual(got["model"], "gpt-4o-mini")
-            self.assertEqual(got["nested"]["headers"][0], "Bearer ${OPENWEBUI_API_KEY}")
+            self.assertEqual(got["nested"]["headers"][0], "Bearer ${OPENAI_API_KEY}")
             self.assertEqual(got["nested"]["headers"][1], "token-1")
             self.assertEqual(got["nested"]["timeout"], 120)
         finally:
             if old_key is None:
-                os.environ.pop("OPENWEBUI_API_KEY", None)
+                os.environ.pop("OPENAI_API_KEY", None)
             else:
-                os.environ["OPENWEBUI_API_KEY"] = old_key
+                os.environ["OPENAI_API_KEY"] = old_key
             if old_base is None:
-                os.environ.pop("OPENWEBUI_BASE_URL", None)
+                os.environ.pop("OPENAI_BASE_URL", None)
             else:
-                os.environ["OPENWEBUI_BASE_URL"] = old_base
+                os.environ["OPENAI_BASE_URL"] = old_base
 
     def test_resolve_full_config_style_string_fields(self):
         old_provider = os.environ.get("MODEL_PROVIDER")
         old_policy = os.environ.get("EXEC_POLICY")
         old_model = os.environ.get("MODEL_NAME")
-        os.environ["MODEL_PROVIDER"] = "openwebui"
+        os.environ["MODEL_PROVIDER"] = "openai"
         os.environ["EXEC_POLICY"] = "moderate"
         os.environ["MODEL_NAME"] = "gpt-4o-mini"
         try:
@@ -77,7 +77,7 @@ class ResolveStringValuesInDataTests(unittest.TestCase):
             }
             got = resolve_string_values_in_data(raw)
             self.assertEqual(got["execution_policy"], "moderate")
-            self.assertEqual(got["model_providers"][0]["provider"], "openwebui")
+            self.assertEqual(got["model_providers"][0]["provider"], "openai")
             self.assertEqual(got["model_providers"][0]["params"]["models"][0], "gpt-4o-mini")
         finally:
             if old_provider is None:

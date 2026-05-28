@@ -14,7 +14,7 @@ import shutil
 import subprocess
 from datetime import datetime
 
-# call_ai 对 OpenAI/OpenWebUI 使用 verify=False 时 urllib3 会对每条请求发出 InsecureRequestWarning；
+# call_ai 对 OpenAI 使用 verify=False 时 urllib3 会对每条请求发出 InsecureRequestWarning；
 # 进程启动时关闭该类告警，避免打断终端输出（企业内网自签证书场景常见）。
 try:
     import urllib3
@@ -146,7 +146,7 @@ else:
 def _import_ollama_client():
     """
     惰性加载 ollama Python 包；仅在调用方已确认使用 ollama provider 时使用。
-    避免仅配置 openai/openwebui 时启动阶段执行 import ollama。
+    避免仅配置 openai 时启动阶段执行 import ollama。
     """
     return importlib.import_module("ollama")
 
@@ -215,16 +215,15 @@ DOMAIN_PROMPT_FILE_MAP: Dict[str, str] = {
 
 
 class SmartShellAgent:
-    def __init__(self, model_name: str = "gemma3:4b", work_directory: Optional[str] = None, provider: str = "ollama", openai_conf: Optional[dict] = None, openwebui_conf: Optional[dict] = None, params: Optional[dict] = None, model_config: Optional[dict] = None, config_dir: Optional[str] = None, builtin_skills_dir: Optional[str] = None):
+    def __init__(self, model_name: str = "gemma3:4b", work_directory: Optional[str] = None, provider: str = "ollama", openai_conf: Optional[dict] = None, params: Optional[dict] = None, model_config: Optional[dict] = None, config_dir: Optional[str] = None, builtin_skills_dir: Optional[str] = None):
         """
         初始化Smart Shell
         Args:
             model_name: 模型名称（兼容旧格式）
             work_directory: 工作目录
-            provider: 模型服务提供方（兼容旧格式）
-            openai_conf: openai参数（兼容旧格式）
-            openwebui_conf: openwebui参数（兼容旧格式）
-            params: 通用参数（兼容调用）
+            provider: 模型服务提供方
+            openai_conf: openai参数
+            params: 通用参数
             model_config: 模型配置（provider + params）
             config_dir: 配置文件目录（可选）；持久化状态位于该目录下的 workspace/
             builtin_skills_dir: 内建 Agent Skills 根目录；未传则使用项目根目录下的 skills/
@@ -259,7 +258,6 @@ class SmartShellAgent:
             model_name=model_name,
             provider=provider,
             openai_conf=openai_conf,
-            openwebui_conf=openwebui_conf,
             params=params,
             model_config=model_config,
             ollama_importer=_import_ollama_client,
@@ -543,13 +541,11 @@ class SmartShellAgent:
         self.model_name = model_name
         self.params = params
         self.openai_conf = self.params if self.provider == "openai" else None
-        self.openwebui_conf = self.params if self.provider == "openwebui" else None
         try:
             ctx = self.ai_orchestrator.context
             ctx.provider = self.provider
             ctx.model_name = self.model_name
             ctx.openai_conf = self.openai_conf
-            ctx.openwebui_conf = self.openwebui_conf
         except Exception:
             pass
         if validate and self.provider == "ollama":
@@ -4150,7 +4146,6 @@ class SmartShellAgent:
         self.ai_orchestrator.context.model_name = self.model_name
         self.ai_orchestrator.context.model_params = self.params
         self.ai_orchestrator.context.openai_conf = self.openai_conf
-        self.ai_orchestrator.context.openwebui_conf = self.openwebui_conf
         self.ai_orchestrator.context.work_directory = str(self.work_directory)
         return self.ai_orchestrator.call(call_ctx=call_ctx)
 
