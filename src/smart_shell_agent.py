@@ -35,6 +35,11 @@ from .core.config.skills_loader import (
     load_skills_merged,
 )
 from .core.config.config_env import resolve_string_values_in_data
+from .core.config.config_jsonc import (
+    CONFIG_JSONC_FILENAME,
+    load_config_jsonc,
+    save_config_jsonc,
+)
 from .core.config.model_providers import parse_configured_models
 from .core.assistant_output_highlighter import (
     format_assistant_display_response,
@@ -456,10 +461,9 @@ class SmartShellAgent:
             return cached
         cfg_data: Dict[str, Any] = {}
         try:
-            cfg_path = self.config_dir / "config.json"
+            cfg_path = self.config_dir / CONFIG_JSONC_FILENAME
             if cfg_path.exists():
-                with open(cfg_path, "r", encoding="utf-8") as f:
-                    loaded = resolve_string_values_in_data(json.load(f))
+                loaded = resolve_string_values_in_data(load_config_jsonc(cfg_path))
                 if isinstance(loaded, dict):
                     cfg_data = loaded
         except Exception:
@@ -617,7 +621,7 @@ class SmartShellAgent:
                     f"❌ Model not found: {selector}\n"
                     "Available models:\n  - " + "\n  - ".join(selectors)
                 )
-            return "❌ Model configuration not found. Please check model_providers in config.json."
+            return "❌ Model configuration not found. Please check model_providers in config.jsonc."
 
         target = str(choice.get("selector") or "").strip()
         if target.lower() == self._current_model_selector().lower():
@@ -3767,59 +3771,53 @@ class SmartShellAgent:
         return "\n".join(lines) + "\n\n"
 
     def _save_execution_policy_to_config(self) -> bool:
-        """将执行策略保存到 config.json"""
+        """将执行策略保存到 config.jsonc"""
         try:
-            cfg_path = self.config_dir / "config.json"
+            cfg_path = self.config_dir / CONFIG_JSONC_FILENAME
             cfg_data = {}
             if cfg_path.exists():
                 try:
-                    with open(cfg_path, "r", encoding="utf-8") as f:
-                        cfg_data = json.load(f) or {}
+                    cfg_data = load_config_jsonc(cfg_path) or {}
                 except Exception:
                     cfg_data = {}
             cfg_data["execution_policy"] = str(self.execution_policy)
-            with open(cfg_path, "w", encoding="utf-8") as f:
-                json.dump(cfg_data, f, ensure_ascii=False, indent=2)
+            save_config_jsonc(cfg_path, cfg_data)
             return True
         except Exception as e:
             print(f"⚠️ Failed to save execution policy to config: {e}")
             return False
 
     def _save_session_summary_llm_to_config(self) -> bool:
-        """将 session_summary_llm 开关写入 config.json（与 execution_policy 等并存）。"""
+        """将 session_summary_llm 开关写入 config.jsonc（与 execution_policy 等并存）。"""
         try:
-            cfg_path = self.config_dir / "config.json"
+            cfg_path = self.config_dir / CONFIG_JSONC_FILENAME
             cfg_data: Dict[str, Any] = {}
             if cfg_path.exists():
                 try:
-                    with open(cfg_path, "r", encoding="utf-8") as f:
-                        cfg_data = json.load(f) or {}
+                    cfg_data = load_config_jsonc(cfg_path) or {}
                 except Exception:
                     cfg_data = {}
             cfg_data["session_summary_llm"] = bool(
                 getattr(self, "session_summary_llm_enabled", True)
             )
-            with open(cfg_path, "w", encoding="utf-8") as f:
-                json.dump(cfg_data, f, ensure_ascii=False, indent=2)
+            save_config_jsonc(cfg_path, cfg_data)
             return True
         except Exception as e:
             print(f"⚠️ Failed to save session_summary_llm to config: {e}")
             return False
 
     def _save_memory_enabled_to_config(self) -> bool:
-        """将 memory_enabled 开关写入 config.json。"""
+        """将 memory_enabled 开关写入 config.jsonc。"""
         try:
-            cfg_path = self.config_dir / "config.json"
+            cfg_path = self.config_dir / CONFIG_JSONC_FILENAME
             cfg_data: Dict[str, Any] = {}
             if cfg_path.exists():
                 try:
-                    with open(cfg_path, "r", encoding="utf-8") as f:
-                        cfg_data = json.load(f) or {}
+                    cfg_data = load_config_jsonc(cfg_path) or {}
                 except Exception:
                     cfg_data = {}
             cfg_data["memory_enabled"] = bool(getattr(self, "memory_enabled", True))
-            with open(cfg_path, "w", encoding="utf-8") as f:
-                json.dump(cfg_data, f, ensure_ascii=False, indent=2)
+            save_config_jsonc(cfg_path, cfg_data)
             return True
         except Exception as e:
             print(f"⚠️ Failed to save memory_enabled to config: {e}")
@@ -3977,7 +3975,7 @@ class SmartShellAgent:
                 print(f"📋 Available models: {available_models}")
                 if available_models:
                     print(f"💡 Suggested model: {available_models[0]}")
-                print("💡 Please check model configuration in config.json")
+                print("💡 Please check model configuration in config.jsonc")
         except ImportError:
             print(f"❌ Error: 'ollama' package is not installed, cannot validate {model_type}. Please run: pip install ollama")
         except Exception as e:

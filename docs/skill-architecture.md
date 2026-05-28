@@ -36,7 +36,7 @@ When multiple roots exist, the host merges skills by **`skill_id`** (folder name
 | Layer        | Typical path                          | Role                          |
 |-------------|----------------------------------------|-------------------------------|
 | Builtin     | `<app>/skills/`                        | Shipped with the application |
-| User/config | `<config_dir>/skills/` (e.g. next to `config.json`) | Per-user overrides   |
+| User/config | `<config_dir>/skills/` (e.g. next to `config.jsonc`) | Per-user overrides   |
 | Workspace   | `<workspace>/skills/`                  | Project-local skills          |
 
 **Same `skill_id`**: higher-priority layer **replaces** the lower one. This keeps forks and user patches predictable.

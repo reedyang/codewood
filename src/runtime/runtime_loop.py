@@ -19,6 +19,7 @@ from ..config.startup_tips import (
     format_tip_with_highlights,
     get_random_startup_tip_entry,
 )
+from ..core.config.config_jsonc import CONFIG_JSONC_FILENAME
 from ..core.assistant_output_highlighter import format_assistant_display_response
 from ..core.logging.app_logging import get_logger
 from ..controllers.builtin_command_router import dispatch_builtin_command
@@ -749,7 +750,7 @@ def run_agent_loop(agent: Any):
                             ok = self._save_memory_enabled_to_config()
                             print(
                                 "✅ Experiential memory is enabled"
-                                + ("; saved to config.json" if ok else " (failed to save config; only effective for this process)")
+                                + (f"; saved to {CONFIG_JSONC_FILENAME}" if ok else " (failed to save config; only effective for this process)")
                             )
                             continue
                         if bl == "memory disable":
@@ -757,7 +758,7 @@ def run_agent_loop(agent: Any):
                             ok = self._save_memory_enabled_to_config()
                             print(
                                 "✅ Experiential memory is disabled"
-                                + ("; saved to config.json" if ok else " (failed to save config; only effective for this process)")
+                                + (f"; saved to {CONFIG_JSONC_FILENAME}" if ok else " (failed to save config; only effective for this process)")
                             )
                             continue
                         if bl == "memory status":
@@ -838,7 +839,7 @@ def run_agent_loop(agent: Any):
                                 ok = self._save_session_summary_llm_to_config()
                                 print(
                                     f"✅ Session LLM summary enabled (periodic compression for experiential-memory retrieval query)"
-                                    f"{'; saved to config.json' if ok else ' (failed to save config; only effective for this process)'}"
+                                    f"{f'; saved to {CONFIG_JSONC_FILENAME}' if ok else ' (failed to save config; only effective for this process)'}"
                                 )
                                 continue
                             if sub in ("off", "disable", "false", "0"):
@@ -846,15 +847,15 @@ def run_agent_loop(agent: Any):
                                 ok = self._save_session_summary_llm_to_config()
                                 print(
                                     f"✅ Session LLM summary disabled (rolling excerpts are still kept)"
-                                    f"{'; saved to config.json' if ok else ' (failed to save config; only effective for this process)'}"
+                                    f"{f'; saved to {CONFIG_JSONC_FILENAME}' if ok else ' (failed to save config; only effective for this process)'}"
                                 )
                                 continue
                             if sub == "show":
                                 on = bool(getattr(self, "session_summary_llm_enabled", True))
-                                cfg_path = self.config_dir / "config.json"
+                                cfg_path = self.config_dir / CONFIG_JSONC_FILENAME
                                 print(
                                     f"Session LLM summary (session_summary_llm): {'on' if on else 'off'}\n"
-                                    f"  Config key: \"session_summary_llm\" in config.json (boolean)\n"
+                                    f"  Config key: \"session_summary_llm\" in {CONFIG_JSONC_FILENAME} (boolean)\n"
                                     f"  Config file: {cfg_path}"
                                 )
                                 continue

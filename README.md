@@ -13,7 +13,7 @@
 - 📝 **历史记录**: 支持命令历史记录和导航
 - 🔄 **跨平台**: 支持Windows、Linux、macOS
 - 🎯 **统一模型配置**: 使用 `model_providers` 管理多模型提供方，默认选择第一个 provider 的第一个模型
-- 📎 **Agent Skills**: 在 `config.json` 所在目录的 `skills/` 下按 [Anthropic Agent Skills](https://github.com/anthropics/skills/blob/main/README.md) 放置 `SKILL.md`，启动时加载并注入系统提示（架构原则见 **[docs/skill-architecture.md](docs/skill-architecture.md)**，便于在其他 AI 编程工具中复用）
+- 📎 **Agent Skills**: 在 `config.jsonc` 所在目录的 `skills/` 下按 [Anthropic Agent Skills](https://github.com/anthropics/skills/blob/main/README.md) 放置 `SKILL.md`，启动时加载并注入系统提示（架构原则见 **[docs/skill-architecture.md](docs/skill-architecture.md)**，便于在其他 AI 编程工具中复用）
 
 ## 🚀 快速开始
 
@@ -59,7 +59,7 @@ python src/main.py
 
 #### 执行策略（execution_policy）
 
-- 在 `.smartshell/config.json` 中使用 `execution_policy`，可选值：
+- 在 `.smartshell/config.jsonc` 中使用 `execution_policy`，可选值：
   - `confirmation`：所有需确认操作都询问 y/n
   - `moderate`：对需确认操作先做安全性判定，安全则自动执行
   - `unlimited`：不做检测与确认，直接执行
@@ -70,7 +70,7 @@ python src/main.py
 
 在**未开启自由模式**、且仍出现交互确认时，仅对 **`shell`（执行系统命令 / 通过命令行运行脚本）** 在提示中提供 **`a` 或 `always`**：表示**仅将当前这一条**记入免确认列表（`shell_script_paths` / `shell_exe_tokens`；不是全局放行所有命令）。**`script`（workspace 落盘）与 `text_file`（当前目录写文件）仅 y/n**，不提供 `a`。**例外**：`shell` 执行的是**本会话内**由 `script` 命令刚写入的临时脚本（尚未成功执行后自动删除的路径）时，确认提示**只有 y/n**，不提供 `a`，避免把短命临时脚本记入免确认列表。
 
-- **配置文件**：与 `config.json` 同目录下的 **`confirm_allowlist.json`**（`version` 为 2），包含：
+- **配置文件**：与 `config.jsonc` 同目录下的 **`confirm_allowlist.json`**（`version` 为 2），包含：
   - `shell_script_paths`：由 shell 解析出的**脚本文件绝对路径**（忽略参数；同一 `.py` / `.ps1` 等仅记一条）。
   - `shell_exe_tokens`：无脚本文件时的**可执行标识**（如 `git`、`dir`，或某 `.exe` 的解析路径；忽略后续参数）。
   - `script_basenames`：历史遗留字段；若列表中仍有条目，同名 `script` 落盘可免确认。新交互下 `script`/`text_file` 不再通过 `a` 写入此项。
@@ -79,7 +79,7 @@ python src/main.py
 
 #### Agent Skills
 
-与 [anthropics/skills](https://github.com/anthropics/skills/blob/main/README.md) 约定一致：在 **`config.json` 所在目录** 下创建 `skills/` 子目录，每个技能一个文件夹，内含 **`SKILL.md`**（YAML frontmatter 至少包含 `name`、`description`，下方为 Markdown 正文）。
+与 [anthropics/skills](https://github.com/anthropics/skills/blob/main/README.md) 约定一致：在 **`config.jsonc` 所在目录** 下创建 `skills/` 子目录，每个技能一个文件夹，内含 **`SKILL.md`**（YAML frontmatter 至少包含 `name`、`description`，下方为 Markdown 正文）。
 
 - **内建技能来源说明**：项目内建的部分 skills 基于 Anthropic 开源 skills 进行引入并按本项目场景做了适配修改，来源见 [anthropics/skills（skills 目录）](https://github.com/anthropics/skills/tree/main/skills)；另外也集成了一些其他开源 skills，此处不逐一列出。
 - **路径示例**：使用项目内配置时为 `.smartshell/skills/my-skill/SKILL.md`；使用用户主目录配置时为 `~/.smartshell/skills/...`。
@@ -137,7 +137,7 @@ smart-shell/
 ## 🔧 配置
 - 必须配置 `model_providers`
 
-创建 `.smartshell/config.json` 配置文件到用户目录：
+创建 `.smartshell/config.jsonc` 配置文件到用户目录：
 
 ```json
 {
@@ -179,12 +179,12 @@ smart-shell/
 - `context_window`: 仅接受正整数，或形如 `^\d+[kK]?$` 的字符串（`k/K` 表示乘以 1000）；无效值会自动回退到默认 `128000`
 - `model_providers[i].params`: 该 provider 的参数（例如 API 密钥、基础 URL 等）
 - `mcp_tools_enabled`: 是否开启 MCP 管理类工具（默认 `false`）。关闭时不可用：`mcp_server_info`、`mcp_disable_tools`、`mcp_enable_tools`、`mcp_list_disabled_tools`、`mcp_sampling_create_message`、`mcp_completion_complete`
-- `config.json` 中所有字符串配置值都支持环境变量占位符：当值写成 `${ENV_NAME}` 时会在运行时读取对应环境变量
+- `config.jsonc` 中所有字符串配置值都支持环境变量占位符：当值写成 `${ENV_NAME}` 时会在运行时读取对应环境变量
 - 占位符读取后会自动做类型转换：支持 `bool`（`true/false/yes/no/on/off`）、`int`/`float`、`null`、以及 JSON 的 `list/dict`（例如 `"[1,2]"`、`"{\"a\":1}"`）
 
 ### MCP 配置（`mcp.json`）
 
-Smart Shell 会在启动时自动从 **`config.json` 同目录**读取 `mcp.json`（即 `<config_dir>/mcp.json`）。
+Smart Shell 会在启动时自动从 **`config.jsonc` 同目录**读取 `mcp.json`（即 `<config_dir>/mcp.json`）。
 
 - 若存在且格式合法，会加载 `mcpServers` 并注入到系统提示中供 AI 使用。
 - 启动时会在后台线程异步预加载所有 MCP server 的 tools 信息并缓存在内存中（不阻塞交互）。

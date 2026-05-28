@@ -29,7 +29,7 @@ def handle_model_builtin_command(agent: Any, builtin_line: str) -> bool:
             for selector in configured:
                 print(f"  - {selector}")
         else:
-            print("⚠️ model_providers configuration was not found in config.json")
+            print("⚠️ model_providers configuration was not found in config.jsonc")
         print(model_usage())
         return True
 

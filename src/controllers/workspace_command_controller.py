@@ -104,7 +104,7 @@ def workspace_subcommand_usage(_agent: Any, subcommand: str) -> str:
 def print_workspace_help(_agent: Any) -> None:
     print(workspace_usage())
     print("Notes:")
-    print("  - The default workspace is always named Default, and its data directory remains workspace/ next to config.json")
+    print("  - The default workspace is always named Default, and its data directory remains workspace/ next to config.jsonc")
     print("  - Smart Shell data for custom workspaces is stored under that workspace's .smartshell/")
     print("  - /workspace delete removes registry entries by default; with --remove-files it deletes that custom workspace's .smartshell/ and all contents, but not the workspace root or other project files.")
     print("  - Use quotes when a path or name contains spaces")
