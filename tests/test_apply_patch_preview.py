@@ -62,6 +62,69 @@ def _strip_ansi(text: str) -> str:
 
 
 class ApplyPatchPreviewTests(unittest.TestCase):
+    def test_apply_patch_accepts_legacy_begin_add_file_format(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            target = root / "prompts.md"
+            agent = _DummyAgent(root)
+
+            patch = (
+                "*** Begin Patch\n"
+                "*** Add File: prompts.md\n"
+                "+# Prompts 收集\n"
+                "+\n"
+                "+## System Prompt（完整）\n"
+                "*** End Patch\n"
+            )
+            result = action_apply_unified_patch(agent, str(target), patch, confirmed=False)
+
+            self.assertTrue(result.get("success"), result.get("error"))
+            self.assertTrue(target.exists())
+            self.assertEqual(target.read_text(encoding="utf-8"), "# Prompts 收集\n\n## System Prompt（完整）\n")
+            warnings = [str(x) for x in (result.get("warnings") or [])]
+            self.assertTrue(any("legacy '*** Begin Patch' Add File format" in w for w in warnings))
+
+    def test_apply_patch_legacy_repeated_end_patch_warns_but_succeeds(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            target = root / "prompts.md"
+            agent = _DummyAgent(root)
+
+            patch = (
+                "*** Begin Patch\n"
+                "*** Add File: prompts.md\n"
+                "+line1\n"
+                "+line2\n"
+                "*** End Patch\n"
+                "*** End Patch\n"
+            )
+            result = action_apply_unified_patch(agent, str(target), patch, confirmed=False)
+
+            self.assertTrue(result.get("success"), result.get("error"))
+            self.assertEqual(target.read_text(encoding="utf-8"), "line1\nline2\n")
+            warnings = [str(x) for x in (result.get("warnings") or [])]
+            self.assertTrue(any("repeated '*** End Patch'" in w for w in warnings))
+
+    def test_apply_patch_can_create_new_file_from_dev_null_patch(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            target = root / "prompts.md"
+            agent = _DummyAgent(root)
+
+            patch = (
+                "--- /dev/null\n"
+                "+++ b/prompts.md\n"
+                "@@ -0,0 +1,3 @@\n"
+                "+# Prompts 收集\n"
+                "+\n"
+                "+## System Prompt（完整）\n"
+            )
+            result = action_apply_unified_patch(agent, str(target), patch, confirmed=False)
+
+            self.assertTrue(result.get("success"), result.get("error"))
+            self.assertTrue(target.exists())
+            self.assertEqual(target.read_text(encoding="utf-8"), "# Prompts 收集\n\n## System Prompt（完整）\n")
+
     def test_apply_patch_preview_includes_two_context_lines_when_available(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)

@@ -3,13 +3,82 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 
+def _normalize_apply_patch_text(raw_patch: str, file_path: str) -> tuple[str, List[str]]:
+    patch_text = str(raw_patch or "")
+    warnings: List[str] = []
+    if not patch_text.strip():
+        return patch_text, warnings
+
+    lines = patch_text.splitlines()
+    has_begin_marker = any(str(ln).strip() == "*** Begin Patch" for ln in lines)
+    if not has_begin_marker:
+        return patch_text, warnings
+
+    end_patch_count = sum(1 for ln in lines if str(ln).strip() == "*** End Patch")
+    if end_patch_count > 1:
+        warnings.append(
+            f"Detected repeated '*** End Patch' markers ({end_patch_count}); extra markers were ignored."
+        )
+
+    if any(str(ln).startswith("@@") for ln in lines):
+        return patch_text, warnings
+
+    add_file_idx: Optional[int] = None
+    add_file_declared: Optional[str] = None
+    for idx, ln in enumerate(lines):
+        if str(ln).startswith("*** Add File:"):
+            add_file_idx = idx
+            add_file_declared = str(ln)[len("*** Add File:") :].strip()
+            break
+    if add_file_idx is None:
+        return patch_text, warnings
+
+    requested_name = Path(str(file_path or "")).name
+    declared_name = Path(str(add_file_declared or "")).name
+    if requested_name and declared_name and requested_name != declared_name:
+        warnings.append(
+            f"Add-file declaration '{add_file_declared}' does not match requested path '{file_path}'; used requested path."
+        )
+
+    add_lines: List[str] = []
+    for ln in lines[add_file_idx + 1 :]:
+        stripped = str(ln).strip()
+        if stripped == "*** End Patch":
+            continue
+        if str(ln).startswith("*** "):
+            continue
+        if str(ln).startswith("+"):
+            add_lines.append(str(ln))
+            continue
+        if str(ln) == "":
+            warnings.append(
+                "Found a blank line without '+' prefix in Add File patch body; ignored that line."
+            )
+            continue
+        warnings.append(
+            "Found non-addition line in Add File patch body; ignored lines without '+' prefix."
+        )
+
+    if not add_lines:
+        return patch_text, warnings
+
+    normalized_lines = [f"@@ -0,0 +1,{len(add_lines)} @@"]
+    normalized_lines.extend(add_lines)
+    normalized = "\n".join(normalized_lines)
+    if patch_text.endswith("\n"):
+        normalized += "\n"
+    warnings.append(
+        "Accepted legacy '*** Begin Patch' Add File format by converting it to unified diff hunks."
+    )
+    return normalized, warnings
+
+
 def action_apply_unified_patch(agent: Any, file_path: str, patch: str, confirmed: bool = False) -> Dict[str, Any]:
     try:
         policy = agent._get_path_policy()
         abs_path = agent._resolve_user_path(str(file_path))
-        if not abs_path.exists():
-            return {"success": False, "error": f"File '{file_path}' does not exist"}
-        if not abs_path.is_file():
+        file_exists = abs_path.exists()
+        if file_exists and (not abs_path.is_file()):
             return {"success": False, "error": f"'{file_path}' is not a file"}
         decision = policy.can_write_path(abs_path, "apply_patch")
         if not decision.get("allowed", False):
@@ -30,23 +99,33 @@ def action_apply_unified_patch(agent: Any, file_path: str, patch: str, confirmed
         need_confirm = not skip_preview_and_confirm
 
         encodings = ["utf-8", "gbk", "gb2312", "utf-16", "latin1"]
-        source = None
-        used_encoding = None
-        for enc in encodings:
-            try:
-                with open(abs_path, "r", encoding=enc, errors="replace") as f:
-                    source = f.read()
-                used_encoding = enc
-                break
-            except Exception:
-                continue
-        if source is None:
-            return {"success": False, "error": "Unable to read text file; encoding may be unsupported"}
+        source = ""
+        used_encoding = "utf-8"
+        if file_exists:
+            loaded = False
+            for enc in encodings:
+                try:
+                    with open(abs_path, "r", encoding=enc, errors="replace") as f:
+                        source = f.read()
+                    used_encoding = enc
+                    loaded = True
+                    break
+                except Exception:
+                    continue
+            if not loaded:
+                return {"success": False, "error": "Unable to read text file; encoding may be unsupported"}
 
         newline = "\r\n" if "\r\n" in source else "\n"
-        had_trailing_newline = source.endswith("\n") or source.endswith("\r")
+        had_trailing_newline = (
+            (source.endswith("\n") or source.endswith("\r"))
+            if file_exists
+            else str(patch or "").endswith("\n")
+        )
         old_lines = source.splitlines()
-        patch_lines = str(patch or "").splitlines()
+        normalized_patch, patch_warnings = _normalize_apply_patch_text(
+            str(patch or ""), str(file_path or "")
+        )
+        patch_lines = normalized_patch.splitlines()
         if not patch_lines:
             return {"success": False, "error": "Patch content cannot be empty"}
 
@@ -79,7 +158,11 @@ def action_apply_unified_patch(agent: Any, file_path: str, patch: str, confirmed
         preview_segments: List[Dict[str, Any]] = []
         for hunk in hunks:
             old_start = hunk["old_start"]
-            target_idx = src_idx if old_start is None else int(old_start) - 1
+            if old_start is None:
+                target_idx = src_idx
+            else:
+                old_start_no = int(old_start)
+                target_idx = 0 if old_start_no <= 0 else old_start_no - 1
             if target_idx < src_idx or target_idx > len(old_lines):
                 return {"success": False, "error": f"Hunk start line out of range: {old_start}"}
             if old_start is None:
@@ -158,6 +241,11 @@ def action_apply_unified_patch(agent: Any, file_path: str, patch: str, confirmed
             print("   Markers: '=' unchanged, '-' removed, '+' added")
             for ln in preview_lines:
                 print(ln)
+        for warn in patch_warnings:
+            try:
+                print(f"⚠️ {warn}")
+            except Exception:
+                pass
         if need_confirm:
             ok = agent._prompt_confirm_yes_no_maybe_always(
                 f"⚠️ Confirm applying patch to text file: {abs_path} ?",
@@ -166,6 +254,7 @@ def action_apply_unified_patch(agent: Any, file_path: str, patch: str, confirmed
             )
             if not ok:
                 return {"success": False, "error": "Operation cancelled by user"}
+        abs_path.parent.mkdir(parents=True, exist_ok=True)
         with open(abs_path, "w", encoding=used_encoding or "utf-8", errors="replace") as f:
             f.write(new_text)
         resolved = abs_path.resolve()
@@ -176,6 +265,7 @@ def action_apply_unified_patch(agent: Any, file_path: str, patch: str, confirmed
             "file": str(resolved),
             "hunk_count": len(hunks),
             "change_preview": preview_lines,
+            "warnings": patch_warnings,
             "message": f"Successfully applied patch to '{resolved.name}'",
         }
     except Exception as e:
