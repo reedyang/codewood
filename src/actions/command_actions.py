@@ -9,6 +9,7 @@ import unicodedata
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from ..config.app_info import get_app_env_var, get_app_runtime_attr_name
 from ..core.console_utils import (
     _WorkingStatusTicker,
     _ansi_gray,
@@ -21,6 +22,8 @@ SHELL_OUTPUT_DISPLAY_RESERVED_LINES = 3
 SHELL_WORKING_STATUS_MARQUEE_FPS = 10.0
 ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 ANSI_OSC_RE = re.compile(r"\x1b\][^\a\x1b]*(?:\a|\x1b\\)")
+_STREAM_ATTR_TERMINAL_COLUMNS = get_app_runtime_attr_name("terminal_columns")
+_STREAM_ATTR_OUTPUT_INDENT_WIDTH = get_app_runtime_attr_name("output_indent_width")
 
 
 def _resolve_shell_execution_cwd(agent: Any) -> Path:
@@ -98,7 +101,7 @@ def _format_omitted_lines_notice(omitted_lines: int, stream: Any) -> str:
 
 def _terminal_columns_for_tail_display(stream: Any) -> int:
     try:
-        fn = getattr(stream, "smart_shell_terminal_columns", None)
+        fn = getattr(stream, _STREAM_ATTR_TERMINAL_COLUMNS, None)
         if callable(fn):
             cols = int(fn() or 0)
             if cols > 0:
@@ -202,7 +205,7 @@ def _build_tail_output_for_display(
     if trailing_newline and lines and lines[-1] == "":
         lines = lines[:-1]
     try:
-        stream_indent = int(getattr(stream, "smart_shell_output_indent_width", 0) or 0)
+        stream_indent = int(getattr(stream, _STREAM_ATTR_OUTPUT_INDENT_WIDTH, 0) or 0)
     except Exception:
         stream_indent = 0
     try:
@@ -380,7 +383,7 @@ def action_shell_command(
                 allow_realtime_echo = threading.Event()
                 allow_realtime_echo.set()
                 merge_stderr_for_interactive = (
-                    os.environ.get("SMART_SHELL_SEPARATE_STDERR", "").strip().lower()
+                    os.environ.get(get_app_env_var("SEPARATE_STDERR"), "").strip().lower()
                     not in {"1", "true", "yes", "on"}
                 )
 

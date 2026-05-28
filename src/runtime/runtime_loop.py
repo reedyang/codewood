@@ -14,7 +14,12 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 
-from ..config.app_info import get_app_display_version, get_app_name
+from ..config.app_info import (
+    get_app_display_version,
+    get_app_logger_root,
+    get_app_name,
+    get_app_runtime_attr_name,
+)
 from ..config.startup_tips import (
     format_tip_with_highlights,
     get_random_startup_tip_entry,
@@ -35,6 +40,8 @@ _CODE_MUTATION_TOOLS = {
     "apply_patch",
 }
 _WORKING_STATUS_MARQUEE_FPS = 10.0
+_STREAM_ATTR_TERMINAL_COLUMNS = get_app_runtime_attr_name("terminal_columns")
+_STREAM_ATTR_OUTPUT_INDENT_WIDTH = get_app_runtime_attr_name("output_indent_width")
 
 
 class _TeeTextStream:
@@ -324,7 +331,7 @@ def _refresh_context_usage_after_task_boundary(
 def _emit_flow_log(message: str) -> None:
     msg = f"[Flow] {message}"
     try:
-        get_logger("smartshell.runtime.flow").info(msg)
+        get_logger(f"{get_app_logger_root()}.runtime.flow").info(msg)
     except Exception:
         pass
 
@@ -441,7 +448,7 @@ def _startup_terminal_columns(default: int = 80) -> int:
     width = 0
     stream = sys.stdout
     try:
-        fn = getattr(stream, "smart_shell_terminal_columns", None)
+        fn = getattr(stream, _STREAM_ATTR_TERMINAL_COLUMNS, None)
         if callable(fn):
             width = int(fn() or 0)
     except Exception:
@@ -467,7 +474,7 @@ def _startup_terminal_columns(default: int = 80) -> int:
 
 def _startup_output_prefix_width() -> int:
     try:
-        return max(0, int(getattr(sys.stdout, "smart_shell_output_indent_width", 0) or 0))
+        return max(0, int(getattr(sys.stdout, _STREAM_ATTR_OUTPUT_INDENT_WIDTH, 0) or 0))
     except Exception:
         return 0
 
@@ -1945,13 +1952,13 @@ def run_agent_loop(agent: Any):
             self._stop_interrupt_monitor(cancel_task_on_interrupt=True)
             print("")
             try:
-                should_exit = input("Exit Smart Shell? (y/n): ").strip().lower() == "y"
+                should_exit = input(f"Exit {get_app_name()}? (y/n): ").strip().lower() == "y"
             except KeyboardInterrupt:
                 should_exit = False
 
             if should_exit:
                 self._save_current_workspace_position()
-                print("👋 Smart Shell exited. Goodbye!")
+                print(f"👋 {get_app_name()} exited. Goodbye!")
                 break
             continue
         except Exception as e:

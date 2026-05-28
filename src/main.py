@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Smart Shell main entry point.
+Application main entry point.
 
 Usage:
     python src/main.py   # Run with model settings from the config file
@@ -22,6 +22,7 @@ from src.core.config.config_jsonc import (
     load_config_jsonc,
     save_config_jsonc,
 )
+from src.config.app_info import get_app_config_dirname, get_app_name
 from src.core.config.model_providers import parse_configured_models
 from src.core.console_utils import _ansi_red
 
@@ -41,8 +42,8 @@ def _load_user_config_template() -> dict:
 
 
 def _create_user_config_template(user_home: Path) -> Path:
-    """Create ~/.smartshell/config.jsonc with a starter template and return the file path."""
-    config_path = user_home / ".smartshell" / CONFIG_JSONC_FILENAME
+    """Create ~/.<app>/config.jsonc with a starter template and return the file path."""
+    config_path = user_home / get_app_config_dirname() / CONFIG_JSONC_FILENAME
     save_config_jsonc(config_path, _load_user_config_template())
     return config_path
 
@@ -71,7 +72,7 @@ def _print_startup_basic_overview(
         )
     except Exception:
         # Best-effort fallback: avoid crashing early startup reminder paths.
-        print("Smart Shell")
+        print(get_app_name())
         print("")
 
 
@@ -176,7 +177,7 @@ def _set_windows_console_title():
     try:
         import ctypes
 
-        ctypes.windll.kernel32.SetConsoleTitleW(f"Smart Shell")
+        ctypes.windll.kernel32.SetConsoleTitleW(get_app_name())
     except Exception:
         pass
 
@@ -189,10 +190,11 @@ def main():
     config = None
     config_path = None
     
-    # 优先查找用户主目录下的.smartshell/config.jsonc
+    # 优先查找用户主目录下的应用配置目录/config.jsonc
     user_home = str(Path.home())
-    user_config = os.path.join(user_home, ".smartshell", CONFIG_JSONC_FILENAME)
-    local_config = os.path.join(str(project_root), ".smartshell", CONFIG_JSONC_FILENAME)
+    config_dirname = get_app_config_dirname()
+    user_config = os.path.join(user_home, config_dirname, CONFIG_JSONC_FILENAME)
+    local_config = os.path.join(str(project_root), config_dirname, CONFIG_JSONC_FILENAME)
     
     config_dir = None  # 配置文件目录，用于历史记录保存
     # Built-in Agent Skills live at the project root, outside src/.
@@ -216,7 +218,7 @@ def main():
     if config_dir:
         from src.core.logging.app_logging import get_logger, setup_app_logging
         setup_app_logging(Path(config_dir))
-        get_logger().info("Smart Shell started, config_dir=%s", config_dir)
+        get_logger().info("%s started, config_dir=%s", get_app_name(), config_dir)
     
     if not config:
         _print_startup_basic_overview()
@@ -227,14 +229,14 @@ def main():
                 _print_model_settings_update_notice(created_path)
             except Exception as e:
                 print(_ansi_red(f"Config file not found, and failed to create template: {e}"))
-                _print_model_settings_update_notice(Path.home() / ".smartshell" / CONFIG_JSONC_FILENAME)
+                _print_model_settings_update_notice(Path.home() / get_app_config_dirname() / CONFIG_JSONC_FILENAME)
         else:
             _print_model_settings_update_notice(config_path)
         return 1
     provider, model_name, model_config, config_error = _extract_model_runtime_config(config)
     if config_error:
         _print_startup_basic_overview()
-        _print_model_settings_update_notice(config_path or (Path.home() / ".smartshell" / CONFIG_JSONC_FILENAME))
+        _print_model_settings_update_notice(config_path or (Path.home() / get_app_config_dirname() / CONFIG_JSONC_FILENAME))
         return 1
     template_value_error = _validate_template_placeholder_values(
         provider=provider,
@@ -243,7 +245,7 @@ def main():
     )
     if template_value_error:
         _print_startup_basic_overview(model_name=model_name)
-        _print_model_settings_update_notice(config_path or (Path.home() / ".smartshell" / CONFIG_JSONC_FILENAME))
+        _print_model_settings_update_notice(config_path or (Path.home() / get_app_config_dirname() / CONFIG_JSONC_FILENAME))
         return 1
 
     params = model_config.get("params", {})

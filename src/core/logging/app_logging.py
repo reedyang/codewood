@@ -1,5 +1,5 @@
 """
-Smart Shell 主流程日志：默认写入配置目录下 smartshell.log（UTF-8），子 logger 使用 smartshell.* 前缀。
+应用主流程日志：默认写入配置目录下应用日志文件（UTF-8），子 logger 使用应用前缀。
 """
 
 from __future__ import annotations
@@ -8,14 +8,16 @@ import logging
 from pathlib import Path
 from typing import Optional
 
-_LOGGER_NAME = "smartshell"
+from ...config.app_info import get_app_log_filename, get_app_logger_root
+
+_LOGGER_NAME = get_app_logger_root()
 _file_handler_installed = False
 _log_file_path: Optional[Path] = None
 
 
 def setup_app_logging(config_dir: Optional[Path] = None, *, level: int = logging.INFO) -> logging.Logger:
     """
-    配置根 logger「smartshell」：向配置目录写入 smartshell.log。
+    配置根 logger：向配置目录写入应用日志文件。
     可重复调用；同一进程内仅挂载一次文件 Handler。
     """
     global _file_handler_installed, _log_file_path
@@ -33,7 +35,7 @@ def setup_app_logging(config_dir: Optional[Path] = None, *, level: int = logging
         logs_dir = config_dir / "logs"
         logs_dir.mkdir(parents=True, exist_ok=True)
         config_dir.mkdir(parents=True, exist_ok=True)
-        log_path = logs_dir / "smartshell.log"
+        log_path = logs_dir / get_app_log_filename()
         fh = logging.FileHandler(log_path, encoding="utf-8")
         fh.setLevel(level)
         fh.setFormatter(
@@ -52,7 +54,7 @@ def setup_app_logging(config_dir: Optional[Path] = None, *, level: int = logging
 
 
 def get_logger(name: str = _LOGGER_NAME) -> logging.Logger:
-    """获取 logger，常用子模块名：smartshell.knowledge、smartshell.agent。"""
+    """获取 logger，常用子模块名：<app>.knowledge、<app>.agent。"""
     return logging.getLogger(name)
 
 
@@ -63,7 +65,7 @@ def get_log_file_path() -> Optional[Path]:
 
 def shutdown_app_logging_handlers() -> None:
     """
-    关闭 smartshell 已挂载的 Handler（测试在删除临时 config 目录前调用，避免 Windows 下占用 smartshell.log）。
+    关闭应用 logger 已挂载的 Handler（测试在删除临时 config 目录前调用，避免 Windows 下占用日志文件）。
     之后可再次调用 setup_app_logging 重新挂载。
     """
     global _file_handler_installed, _log_file_path

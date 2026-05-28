@@ -20,8 +20,11 @@ import unittest
 from pathlib import Path
 from typing import Iterable
 
+from src.config.app_info import get_app_env_var
+
 
 DEFAULT_EXCLUDED_FILES = ()
+_AUTO_ACCEPT_ELICITATION_ENV = get_app_env_var("AUTO_ACCEPT_ELICITATION")
 
 
 def _has_pytest() -> bool:
@@ -124,8 +127,8 @@ def run_unittest(args: argparse.Namespace, project_root: Path, excluded_rel: set
         return 0
 
     # Prevent interactive prompts from blocking automated test runs.
-    previous_auto_accept = os.environ.get("SMART_SHELL_AUTO_ACCEPT_ELICITATION")
-    os.environ["SMART_SHELL_AUTO_ACCEPT_ELICITATION"] = "1"
+    previous_auto_accept = os.environ.get(_AUTO_ACCEPT_ELICITATION_ENV)
+    os.environ[_AUTO_ACCEPT_ELICITATION_ENV] = "1"
     try:
         runner = unittest.TextTestRunner(
             verbosity=args.verbosity,
@@ -135,9 +138,9 @@ def run_unittest(args: argparse.Namespace, project_root: Path, excluded_rel: set
         result = runner.run(suite)
     finally:
         if previous_auto_accept is None:
-            os.environ.pop("SMART_SHELL_AUTO_ACCEPT_ELICITATION", None)
+            os.environ.pop(_AUTO_ACCEPT_ELICITATION_ENV, None)
         else:
-            os.environ["SMART_SHELL_AUTO_ACCEPT_ELICITATION"] = previous_auto_accept
+            os.environ[_AUTO_ACCEPT_ELICITATION_ENV] = previous_auto_accept
     return 0 if result.wasSuccessful() else 1
 
 
@@ -158,7 +161,7 @@ def run_pytest(args: argparse.Namespace, project_root: Path, excluded_rel: set[s
 
     env = os.environ.copy()
     env.setdefault("PYTHONUNBUFFERED", "1")
-    env.setdefault("SMART_SHELL_AUTO_ACCEPT_ELICITATION", "1")
+    env.setdefault(_AUTO_ACCEPT_ELICITATION_ENV, "1")
     proc = subprocess.run(cmd, cwd=str(project_root), env=env)
     return int(proc.returncode)
 

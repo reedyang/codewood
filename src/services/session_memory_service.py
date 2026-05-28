@@ -5,6 +5,7 @@ import time
 from datetime import datetime
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
+from ..config.app_info import get_app_logger_root, get_app_slug_kebab
 from ..core.config.model_providers import DEFAULT_CONTEXT_WINDOW, parse_context_window
 from ..core.logging.app_logging import get_logger
 
@@ -88,7 +89,7 @@ class SessionMemoryService:
         threading.Thread(
             target=_run,
             daemon=True,
-            name="smartshell-token-counter-warmup",
+            name=f"{get_app_logger_root()}-token-counter-warmup",
         ).start()
 
     def append_chat_message(self, role: str, content: str) -> None:
@@ -935,7 +936,7 @@ class SessionMemoryService:
                 except Exception:
                     pass
 
-        threading.Thread(target=_run, daemon=True, name="smartshell-memory-reflect").start()
+        threading.Thread(target=_run, daemon=True, name=f"{get_app_logger_root()}-memory-reflect").start()
 
     def run_memory_reflection_body(self) -> None:
         if not self.agent._ensure_memory_service():
@@ -1414,7 +1415,7 @@ class SessionMemoryService:
             target=_run,
             args=(request_payload,),
             daemon=True,
-            name="smartshell-context-usage-refresh",
+            name=f"{get_app_logger_root()}-context-usage-refresh",
         ).start()
         return True
 
@@ -1445,7 +1446,7 @@ class SessionMemoryService:
         # Key runtime metadata is intentionally non-clippable.
         runtime_tail_raw = (
             f"当前操作系统信息：{os_info}\n当前日期时间：{date_time}\n"
-            f"当前 smart-shell 根目录（绝对路径）：{self.agent._self_repo_root}\n"
+            f"当前 {get_app_slug_kebab()} 根目录（绝对路径）：{self.agent._self_repo_root}\n"
             f"当前 config 目录（绝对路径）：{self.agent.config_dir}\n"
             f"当前 workspace 名称：{self.agent.workspace_name}\n"
             f"当前 chat 名称（弱提示，仅会话标签，不代表本轮任务目标）：{self.agent.active_chat_name}\n"

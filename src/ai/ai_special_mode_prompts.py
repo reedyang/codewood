@@ -2,9 +2,11 @@ import os
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
+from ..config.app_info import get_app_name, get_app_slug_kebab
+
 
 FREEDOM_COMBINED_REVIEW_SYSTEM_PROMPT = (
-    "You review a script BEFORE it runs (Smart Shell freedom mode) and output ONE classification. "
+    f"You review a script BEFORE it runs ({get_app_name()} freedom mode) and output ONE classification. "
     "Evaluate three independent flags: "
     "(1) safe_auto — script unlikely to harm files outside allowed dirs or change system config; "
     "(2) reversible — the shell operation can be undone without permanent loss of unique user data; "
@@ -28,7 +30,7 @@ FREEDOM_COMBINED_REVIEW_SYSTEM_PROMPT = (
 )
 
 MINIMAL_CLASSIFIER_SYSTEM_PROMPT = (
-    "You classify smart-shell JSON commands for reversibility. "
+    f"You classify {get_app_slug_kebab()} JSON commands for reversibility. "
     "Reply with ONLY one JSON object (no markdown code fence): "
     '{"reversible": true or false, "reason": "brief"}. '
     "reversible=true only if the user can undo without permanent data loss, or the operation is read-only. "
@@ -56,7 +58,7 @@ MEMORY_QUERY_EXPANSION_SYSTEM_PROMPT = (
 )
 
 REFLECTION_SYSTEM_PROMPT = (
-    "You are Smart Shell's experiential-memory reflection module (completely separate from the knowledge base/library: the knowledge base stores documents, you only write internalized lessons).\n"
+    f"You are {get_app_name()}'s experiential-memory reflection module (completely separate from the knowledge base/library: the knowledge base stores documents, you only write internalized lessons).\n"
     "The user message is a JSON string containing recent_chat and recent_operations.\n"
     "Output exactly one JSON object without markdown code fences:\n"
     '{"memories":[{"title":"...","content":"...","tier":"episodic|working|durable",'

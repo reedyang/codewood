@@ -1,2 +1,1 @@
-"""Long-lived services used by the Smart Shell agent."""
-
+"""Long-lived services used by the application agent."""

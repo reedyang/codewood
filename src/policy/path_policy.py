@@ -2,6 +2,8 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, Optional
 import tempfile
 
+from ..config.app_info import get_app_name, get_app_slug_kebab
+
 
 AI_WORKSPACE_TOP_LEVEL_DIR_NAMES = frozenset({"temp", "skills"})
 AI_WORKSPACE_TOP_LEVEL_DIR_NAMES_FOLD = frozenset(
@@ -59,7 +61,7 @@ class PathPolicy:
         except Exception:
             return False
 
-    def is_smart_shell_protected_path(self, path: Path) -> bool:
+    def is_app_protected_path(self, path: Path) -> bool:
         if self.is_workspace_skill_path(path):
             return False
         if self.is_path_under(path, self.agent.ai_workspace_dir):
@@ -69,8 +71,9 @@ class PathPolicy:
         )
 
     def reject_ai_workspace_root_level_write(self, path: Path) -> Optional[str]:
+        app_name = get_app_name()
         msg = (
-            "禁止在 Smart Shell workspace 根目录直接创建该路径。"
+            f"禁止在 {app_name} workspace 根目录直接创建该路径。"
             "请使用子目录，例如 workspace/temp/…（临时）、workspace/skills/…（技能），"
             "不要直接写入 workspace 根目录。"
         )
@@ -103,7 +106,7 @@ class PathPolicy:
         rej = self.reject_ai_workspace_root_level_write(path)
         if rej:
             return self._deny(rej)
-        if self.is_smart_shell_protected_path(path):
+        if self.is_app_protected_path(path):
             return self._deny(self.blocked_by_self_protection(action).get("error", ""))
         return self._allow()
 
@@ -124,7 +127,7 @@ class PathPolicy:
                 rej = self.reject_ai_workspace_root_level_write(p)
                 if rej:
                     return self._deny(rej)
-        if any(self.is_smart_shell_protected_path(p) for p in paths):
+        if any(self.is_app_protected_path(p) for p in paths):
             return self._deny(self.blocked_by_self_protection(action).get("error", ""))
         return self._allow()
 
@@ -138,7 +141,7 @@ class PathPolicy:
             if not (is_dependency_install or is_ai_workspace_script):
                 return self._deny(
                     (
-                        "已拦截 shell 命令：当前位于 smart-shell 目录内，仅允许依赖安装命令"
+                        f"已拦截 shell 命令：当前位于 {get_app_slug_kebab()} 目录内，仅允许依赖安装命令"
                         "或执行 ai_workspace_dir 下的 AI 临时脚本。"
                     )
                 )
@@ -170,10 +173,11 @@ class PathPolicy:
 
     @staticmethod
     def blocked_by_self_protection(action: str) -> Dict[str, Any]:
+        app_slug_kebab = get_app_slug_kebab()
         return {
             "success": False,
             "error": (
                 f"已拦截操作 '{action}'：运行时保护已启用，"
-                "AI 不可修改 smart-shell 自身（代码/配置）；`workspace/skills` 子目录除外。"
+                f"AI 不可修改 {app_slug_kebab} 自身（代码/配置）；`workspace/skills` 子目录除外。"
             ),
         }

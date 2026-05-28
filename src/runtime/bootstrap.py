@@ -3,6 +3,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from ..ai.ai_orchestrator import AIOrchestrator, AgentAIContext
+from ..config.app_info import get_app_config_dirname, get_app_name, get_app_slug_kebab
 from ..core.logging.app_logging import setup_app_logging
 from ..core.config.config_env import resolve_string_values_in_data
 from ..core.config.config_jsonc import CONFIG_JSONC_FILENAME, load_config_jsonc
@@ -68,8 +69,9 @@ def resolve_config_dir(config_dir: Optional[str]) -> Path:
     if config_dir:
         return Path(config_dir)
 
-    current_config_dir = Path(".smartshell")
-    user_config_dir = Path.home() / ".smartshell"
+    config_dirname = get_app_config_dirname()
+    current_config_dir = Path(config_dirname)
+    user_config_dir = Path.home() / config_dirname
     if (user_config_dir / CONFIG_JSONC_FILENAME).exists():
         return user_config_dir
     if (current_config_dir / CONFIG_JSONC_FILENAME).exists():
@@ -222,7 +224,11 @@ def setup_model_ai_stack(
 def setup_prompt_and_mcp(agent: Any) -> None:
     prompt_path = Path(__file__).resolve().parent.parent / "prompts" / "system_prompt.md"
     with open(prompt_path, "r", encoding="utf-8") as f:
-        agent._base_system_prompt = f.read()
+        agent._base_system_prompt = (
+            f.read()
+            .replace("{{APP_NAME}}", get_app_name())
+            .replace("{{APP_SLUG_KEBAB}}", get_app_slug_kebab())
+        )
 
     agent.mcp_config = agent._load_mcp_config()
     agent.mcp_manager = McpManager(

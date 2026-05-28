@@ -3,13 +3,14 @@ import os
 from pathlib import Path
 from typing import List, Optional
 from datetime import datetime
+from ...config.app_info import get_app_config_dirname, get_app_name
 
 class HistoryManager:
-    def __init__(self, config_dir: str = ".smartshell", max_entries: int = 50):
+    def __init__(self, config_dir: str = get_app_config_dirname(), max_entries: int = 50):
         """
         初始化历史记录管理器
         Args:
-            config_dir: 存放 history.json 的目录（通常为 Smart Shell 配置目录下的 workspace/）
+            config_dir: 存放 history.json 的目录（通常为 {get_app_name()} 配置目录下的 workspace/）
             max_entries: 最大记录数
         """
         self.config_dir = Path(config_dir)

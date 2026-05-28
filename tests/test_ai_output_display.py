@@ -3,6 +3,7 @@ import types
 import unittest
 from unittest.mock import patch
 
+from src.config.app_info import get_app_name
 from src.core import assistant_output_highlighter as aoh
 
 
@@ -496,7 +497,7 @@ class AiOutputDisplayTests(unittest.TestCase):
         with (
             patch("src.agent.shutil.get_terminal_size", return_value=types.SimpleNamespace(columns=80)),
             patch("src.runtime.runtime_loop.sys.stdout", stream),
-            patch("src.runtime.runtime_loop.get_app_name", return_value="Smart Shell"),
+            patch("src.runtime.runtime_loop.get_app_name", return_value=get_app_name()),
             patch("src.runtime.runtime_loop.get_app_display_version", return_value="v0.1.0"),
             patch("src.runtime.runtime_loop.get_random_startup_tip_entry", return_value={"text": "", "highlights": []}),
             patch("src.runtime.runtime_loop._ansi_gray", side_effect=identity),

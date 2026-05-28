@@ -9,6 +9,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
+from ..config.app_info import get_app_config_dirname
+
 
 _DEFAULT_CODE_EXTS: Set[str] = {
     ".py",
@@ -45,7 +47,7 @@ _DEFAULT_EXCLUDE_DIRS: Set[str] = {
     "out",
     ".idea",
     ".vscode",
-    ".smartshell",
+    get_app_config_dirname(),
     "__pycache__",
     ".pytest_cache",
 }

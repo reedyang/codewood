@@ -3,12 +3,12 @@ import logging
 import tempfile
 import unittest
 from pathlib import Path
-
+from src.config.app_info import get_app_slug_snake
 
 def _load_mcp_manager_module():
     repo_root = Path(__file__).resolve().parents[2]
     module_path = repo_root / "agent" / "mcp_manager.py"
-    spec = importlib.util.spec_from_file_location("smart_shell_mcp_manager_failure", str(module_path))
+    spec = importlib.util.spec_from_file_location(f"{get_app_slug_snake()}_mcp_manager_failure", str(module_path))
     if spec is None or spec.loader is None:
         raise RuntimeError("Failed to load mcp_manager module")
     module = importlib.util.module_from_spec(spec)
@@ -36,7 +36,7 @@ class McpFailureClassificationTests(unittest.TestCase):
         )
 
     def tearDown(self):
-        logger = logging.getLogger("smart_shell.mcp")
+        logger = logging.getLogger(f"{get_app_slug_snake()}.mcp")
         for handler in list(logger.handlers):
             try:
                 handler.close()

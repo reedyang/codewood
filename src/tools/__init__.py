@@ -1,1 +1,1 @@
-"""Built-in tool implementations used by Smart Shell agent."""
+"""Built-in tool implementations used by the application agent."""
