@@ -54,38 +54,60 @@ def strip_tool_json_blocks_for_display(text: str) -> str:
     if not isinstance(text, str) or not text:
         return ""
 
-    def _replace_fence(match: re.Match) -> str:
-        body = (match.group(1) or "").strip()
+    def _parse_tool_call_obj(raw: str) -> dict | None:
+        body = str(raw or "").strip()
         if body.startswith("`") and body.endswith("`") and len(body) >= 2:
             body = body[1:-1].strip()
+        if not body:
+            return None
         try:
             obj = json.loads(body)
         except Exception:
-            return match.group(0)
+            return None
         if isinstance(obj, dict) and isinstance((obj.get("tool") or obj.get("action")), str):
-            return ""
-        return match.group(0)
+            return obj
+        return None
 
-    out = re.sub(
-        r"```(?:json)?\s*(.*?)\s*```",
-        _replace_fence,
-        text,
-        flags=re.IGNORECASE | re.DOTALL,
-    )
+    # Parse fenced blocks line-by-line so inline "```" inside JSON string values
+    # (for example patch payloads) won't prematurely terminate the fence.
+    lines = text.splitlines(keepends=True)
+    kept_lines: List[str] = []
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        if not re.match(r"^\s*```(?:json)?\s*$", line, flags=re.IGNORECASE):
+            kept_lines.append(line)
+            i += 1
+            continue
+
+        j = i + 1
+        while j < len(lines) and not re.match(r"^\s*```\s*$", lines[j], flags=re.IGNORECASE):
+            j += 1
+
+        if j < len(lines):
+            block_body = "".join(lines[i + 1 : j])
+            if _parse_tool_call_obj(block_body) is not None:
+                i = j + 1
+                continue
+            kept_lines.extend(lines[i : j + 1])
+            i = j + 1
+            continue
+
+        # Unclosed tail fence: if it's a tool call JSON block, drop it.
+        tail_body = "".join(lines[i + 1 :])
+        if _parse_tool_call_obj(tail_body) is not None:
+            break
+        kept_lines.extend(lines[i:])
+        break
+
+    out = "".join(kept_lines)
     stripped = out.strip()
     if not stripped:
         return ""
 
     unclosed = re.search(r"```(?:json)?\s*(.*)\Z", stripped, flags=re.IGNORECASE | re.DOTALL)
     if unclosed:
-        body = (unclosed.group(1) or "").strip()
-        if body.startswith("`") and body.endswith("`") and len(body) >= 2:
-            body = body[1:-1].strip()
-        try:
-            obj = json.loads(body)
-        except Exception:
-            obj = None
-        if isinstance(obj, dict) and isinstance((obj.get("tool") or obj.get("action")), str):
+        if _parse_tool_call_obj(unclosed.group(1) or "") is not None:
             return stripped[: unclosed.start()].strip()
 
     def _find_trailing_tool_json_span(s: str) -> Tuple[int, int] | None:
@@ -126,13 +148,7 @@ def strip_tool_json_blocks_for_display(text: str) -> str:
             if end == -1 or end != n:
                 continue
             chunk = s[start:end].strip()
-            try:
-                obj = json.loads(chunk)
-            except Exception:
-                continue
-            if not isinstance(obj, dict):
-                continue
-            if isinstance((obj.get("tool") or obj.get("action")), str):
+            if _parse_tool_call_obj(chunk) is not None:
                 return (start, end)
         return None
 
