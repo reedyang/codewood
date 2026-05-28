@@ -20,7 +20,7 @@ from ..config.startup_tips import (
     get_random_startup_tip_entry,
 )
 from ..core.assistant_output_highlighter import format_assistant_display_response
-from ..core.logging.app_logging import get_log_file_path, get_logger
+from ..core.logging.app_logging import get_logger
 from ..controllers.builtin_command_router import dispatch_builtin_command
 from ..core.console_utils import (
     _ansi_bold,
@@ -580,35 +580,10 @@ def _print_startup_overview(agent: Any) -> None:
 
 def run_agent_loop(agent: Any):
     """Run the AI Agent main loop with multi-step tool execution until done."""
-    from .. import smart_shell_agent as _ssa
-    KNOWLEDGE_AVAILABLE = getattr(_ssa, "KNOWLEDGE_AVAILABLE", False)
     self = agent
     import sys
     import os
     os_name = os.name
-
-    # 启动时提示知识库状态（功能始终开启；仅依赖或初始化失败时提示）
-    if not KNOWLEDGE_AVAILABLE:
-        if sys.version_info >= (3, 14):
-            print(
-                "Knowledge base dependencies are unavailable on the current Python version; the main program can continue running. "
-                "Use Python 3.12 or 3.13 and install knowledge base dependencies."
-            )
-        else:
-            print(
-                "Knowledge base dependencies are not ready; the main program can continue running. "
-                "Install the knowledge-related packages from requirements when needed."
-            )
-    elif KNOWLEDGE_AVAILABLE and self.knowledge_manager is not None:
-        svc = self.knowledge_manager
-        if svc.is_ready() and not svc.is_available():
-            lp = get_log_file_path()
-            print(
-                "Knowledge base initialization failed; please check logs"
-                + (f" ({lp})" if lp else "")
-                + ", and verify sentence-transformers, network access (first run needs model download), "
-                + "and the config directory workspace/knowledge/."
-            )
 
     if self.skills:
         _sk_path = self.config_dir / "skills"
@@ -687,7 +662,7 @@ def run_agent_loop(agent: Any):
                 if not builtin_line:
                     print(
                         "ℹ️ Built-in commands must start with /. "
-                        "For example: /exit, /help, /clear screen, /knowledge status, /memory status; "
+                        "For example: /exit, /help, /clear screen, /memory status; "
                         "a standalone / is invalid. "
                         "For local commands/scripts executed without AI, use ! prefix, e.g. !ls, !git status."
                     )
@@ -766,13 +741,6 @@ def run_agent_loop(agent: Any):
                             except Exception:
                                 pass
                             continue
-                        if bl == "knowledge":
-                            print("Usage: /knowledge <status|sync|stats|search <query>>")
-                            continue
-                        if bl == "knowledge status":
-                            self._print_knowledge_status_details()
-                            continue
-
                         if bl == "memory":
                             print("Usage: /memory <enable|disable|status|stats|list|search <query>|remember <text>|delete <id>>")
                             continue
@@ -909,21 +877,6 @@ def run_agent_loop(agent: Any):
                             self.execute_tool_call("always_confirm_reset", {})
                             continue
 
-                        if bl == 'knowledge sync':
-                            self.execute_tool_call("knowledge_sync", {})
-                            continue
-
-                        if bl == 'knowledge stats':
-                            self.execute_tool_call("knowledge_stats", {})
-                            continue
-
-                        if bl.startswith('knowledge search '):
-                            query = builtin_line[len('knowledge search ') :]
-                            if query.strip():
-                                self.execute_tool_call("knowledge_search", {"query": query.strip()})
-                            else:
-                                print("❌ Please provide search query content")
-                            continue
                         if bl == 'help':
 
                             self._print_main_help()
@@ -1353,13 +1306,7 @@ def run_agent_loop(agent: Any):
                 "8) 只要调用了网络检索相关的工具、命令、脚本或 skill（网页搜索、联网抓取、在线查询等），调用 done 前必须先输出一次检索结果总结（关键信息、来源要点、与用户问题的对应关系）；禁止检索后直接 done。\n\n"
                 "9) 若上一任务已被用户取消，而本轮用户输入是新任务，禁止主动恢复或重做被取消任务；仅当用户明确要求“继续/重做”时才可恢复。\n\n"
                 + mcp_tool_selection_constraint
-                + "【知识库 knowledge_search 约束】\n"
-                "- 禁止：用户未明确要求检索知识库或参考知识库（本地文档库）信息时，不得调用 knowledge_search。\n"
-                "- 必须：用户明确要求「检索知识库」「在知识库里查」「参考知识库中的资料/内容」或清晰等价表述时，"
-                "必须先调用 knowledge_search 取得相关片段，再作答或继续其他工具；禁止未检索却声称已依据知识库。\n"
-                "- 判定依据为用户原话语义，不使用固定关键词表做机械匹配。\n\n"
-                "【经验记忆 memory_* 与 knowledge_search 区分】\n"
-                "- knowledge_search：用户明确要求检索/参考「知识库、本地文档库」中的资料时使用。\n"
+                + "【经验记忆 memory_* 使用规则】\n"
                 "- memory_search：若 system 开头【经验记忆】已含作答所需信息，不要为走流程而调用；"
                 "但若任务依赖「仅可能存在于记忆中的实体标识/别名映射」而当前看不出可靠值，必须先 memory_search 再调用下游取数或脚本，禁止臆造标识符。\n"
                 "- memory_add：用户明确要求「记住某事」「以后按某偏好」且属于个人经验而非文档时；"

@@ -109,11 +109,6 @@ from .managers import WorkspaceStateManager, ChatStateManager
 MEMORY_AVAILABLE = False  # type: ignore[misc, assignment]
 MemoryService = None  # type: ignore[misc, assignment]
 
-# knowledge_manager 在后台线程中导入（见 _schedule_knowledge_service_background），避免主线程拉取 Chroma/torch 等。
-# KNOWLEDGE_AVAILABLE / KnowledgeService 由该线程赋到模块上；单测可在构造前设置 KNOWLEDGE_AVAILABLE=False 以跳过。
-KnowledgeService = None  # type: ignore
-KNOWLEDGE_AVAILABLE = True  # 构造前为「未探测」；单测设为 False 可跳过 knowledge 包加载
-
 DIRECT_SHELL_USER_HISTORY_PREFIX = "[DIRECT_SHELL_USER_COMMAND]"
 DIRECT_SHELL_RESULT_HISTORY_PREFIX = "[DIRECT_SHELL_RESULT]"
 MODEL_TOOL_RESULT_HISTORY_PREFIX = "[MODEL_TOOL_RESULT]"
@@ -302,7 +297,7 @@ class SmartShellAgent:
         try:
             self._project_context_index.bind_workspace(
                 self.work_directory,
-                storage_dir=(self.ai_workspace_dir / "knowledge_db"),
+                storage_dir=(self.ai_workspace_dir / "project_context_db"),
             )
         except Exception:
             pass
@@ -322,7 +317,7 @@ class SmartShellAgent:
                 return False
             self._project_context_refresh_inflight = True
         target_root = Path(self.work_directory)
-        target_storage = Path(self.ai_workspace_dir) / "knowledge_db"
+        target_storage = Path(self.ai_workspace_dir) / "project_context_db"
         reason_text = str(reason or "background")
         pc_logger = get_logger("smartshell.project_context")
         started_at = datetime.now()
@@ -3286,14 +3281,7 @@ class SmartShellAgent:
 
     def _shutdown_workspace_services(self, wait: bool = True) -> None:
         self._workspace_runtime_generation = getattr(self, "_workspace_runtime_generation", 0) + 1
-        if wait:
-            knowledge_event = getattr(self, "_knowledge_import_done", None)
-            if knowledge_event is not None:
-                try:
-                    knowledge_event.wait(timeout=120.0)
-                except Exception:
-                    pass
-        for attr in ("knowledge_manager", "memory_service"):
+        for attr in ("memory_service",):
             svc = getattr(self, attr, None)
             setattr(self, attr, None)
             if svc is None:
@@ -3346,8 +3334,6 @@ class SmartShellAgent:
         self.mcp_manager.preload_all_async(timeout_s=12.0, force=False)
         self.system_prompt = self._compose_system_prompt_snapshot(include_tools=False)
         self._reload_skills()
-        self.knowledge_manager = None
-        self._schedule_knowledge_service_background()
         self.memory_service = None
         self._last_memory_reflect_at = 0.0
         self._schedule_memory_service_background()
@@ -3410,60 +3396,6 @@ class SmartShellAgent:
 
     def _schedule_auto_memory_reflect(self) -> None:
         return self.session_memory_service.schedule_auto_memory_reflect()
-
-    def _schedule_knowledge_service_background(self) -> None:
-        """
-        在后台线程中执行 knowledge_manager 的 import 与 KnowledgeService 构造。
-        import 链会加载 ChromaDB、sentence_transformers、PyTorch、langchain 等，若在主线程执行会明显拖慢到提示符的时间。
-        """
-        _mod = sys.modules[__name__]
-        if getattr(_mod, "KNOWLEDGE_AVAILABLE", None) is False:
-            return
-        if os.environ.get("SMARTSHELL_SKIP_KNOWLEDGE", "").strip().lower() in ("1", "true", "yes"):
-            return
-
-        self._knowledge_import_done = threading.Event()
-        workspace_dir = str(self.ai_workspace_dir)
-        generation = getattr(self, "_workspace_runtime_generation", 0)
-
-        def _run() -> None:
-            try:
-                try:
-                    from .core.state.knowledge_manager import KnowledgeService as _KS, KNOWLEDGE_AVAILABLE as _KAV
-                except ImportError:
-                    _mod.KnowledgeService = None  # type: ignore
-                    _mod.KNOWLEDGE_AVAILABLE = False
-                    return
-                _mod.KnowledgeService = _KS
-                _mod.KNOWLEDGE_AVAILABLE = _KAV
-                if _KAV and _KS is not None:
-                    try:
-                        svc = _KS(workspace_dir)
-                        if (
-                            str(self.ai_workspace_dir) == workspace_dir
-                            and getattr(self, "_workspace_runtime_generation", 0) == generation
-                        ):
-                            self.knowledge_manager = svc
-                        else:
-                            try:
-                                svc.shutdown(wait=False)
-                            except Exception:
-                                pass
-                    except Exception:
-                        try:
-                            get_logger().exception("Knowledge base KnowledgeService construction failed")
-                        except Exception:
-                            pass
-                        _mod.KnowledgeService = None  # type: ignore
-                        _mod.KNOWLEDGE_AVAILABLE = False
-            finally:
-                self._knowledge_import_done.set()
-
-        threading.Thread(
-            target=_run,
-            name="smartshell-kb-import",
-            daemon=True,
-        ).start()
 
     def _schedule_model_validation_background(self) -> None:
         """
@@ -3834,25 +3766,6 @@ class SmartShellAgent:
         lines.append("If AGENTS.md or general rules conflict, these explicitly specified MCP targets take precedence (except hard safety/privilege constraints).")
         return "\n".join(lines) + "\n\n"
 
-    def _ensure_knowledge_manager(self) -> bool:
-        """等待知识库服务就绪。依赖不可用或初始化失败时返回 False。"""
-        if not KNOWLEDGE_AVAILABLE:
-            return False
-        # 后台线程可能仍在 import chromadb/torch；先等到赋值完成或确认失败
-        if self.knowledge_manager is None:
-            done = getattr(self, "_knowledge_import_done", None)
-            if done is not None:
-                done.wait(timeout=120.0)
-        svc = self.knowledge_manager
-        if svc is None:
-            return False
-        if not svc.wait_ready(600.0):
-            get_logger("smartshell.knowledge").warning(
-                "Timed out waiting for knowledge base initialization (600s). Please retry later with /knowledge sync."
-            )
-            return False
-        return svc.is_available()
-
     def _save_execution_policy_to_config(self) -> bool:
         """将执行策略保存到 config.json"""
         try:
@@ -3975,47 +3888,11 @@ class SmartShellAgent:
                 f"Type {_pm} to switch to moderate; type {_pu} to switch to unlimited."
             )
 
-    def _print_knowledge_status_details(self) -> None:
-        svc = getattr(self, "knowledge_manager", None)
-        manager_ready = bool(
-            svc is not None and getattr(svc, "is_available", lambda: False)()
-        )
-        dep_ready = bool(KNOWLEDGE_AVAILABLE)
-        print("Knowledge base status details:")
-        print(f"  feature: always enabled (loaded when dependencies are available)")
-        print(f"  runtime_ready: {'yes' if manager_ready else 'no'}")
-        print(f"  dependency_ready: {'yes' if dep_ready else 'no'}")
-        if dep_ready and manager_ready:
-            try:
-                stats = self.knowledge_manager.get_knowledge_stats()  # type: ignore[union-attr]
-                if isinstance(stats, dict):
-                    docs = stats.get("total_documents", stats.get("documents_count", "-"))
-                    chunks = stats.get("total_chunks", stats.get("chunks_count", "-"))
-                    emb = stats.get("embedding_model", "-")
-                    print(f"  documents_count: {docs}")
-                    print(f"  chunks_count: {chunks}")
-                    print(f"  embedding_model: {emb}")
-            except Exception as e:
-                print(f"  stats_error: {e}")
-            print("  Note: the model only calls knowledge_search when the user explicitly asks to query/reference the knowledge base; results may be stale, so verify key conclusions against source files.")
-        elif dep_ready and not manager_ready:
-            if svc is not None and not svc.is_ready():
-                print("  Knowledge base indexing is running in the background; please wait. See smartshell.log for details.")
-            elif svc is not None and svc.is_ready() and not svc.is_available():
-                print("  Knowledge base initialization failed. Please check smartshell.log.")
-            else:
-                print("  Dependencies are available but runtime is not ready. Check logs, sentence-transformers, and workspace/knowledge/ under the config directory.")
-        else:
-            if sys.version_info >= (3, 14):
-                print("  Current environment does not satisfy knowledge base dependencies (for example, ChromaDB limitations on Python 3.14). Please use Python 3.12/3.13 and install dependencies.")
-            else:
-                print("  Knowledge base dependencies are not installed or failed to load. Install the knowledge-related packages from requirements.")
-
     def _print_memory_status_details(self) -> None:
         enabled = bool(getattr(self, "memory_enabled", True))
         dep = bool(MEMORY_AVAILABLE)
         ready = bool(self._ensure_memory_service())
-        print("Experiential memory status details (separate from knowledge base: internalized lessons/preferences, not a document store):")
+        print("Experiential memory status details (internalized lessons/preferences, not a document store):")
         print(f"  feature_enabled: {'yes' if enabled else 'no'}")
         print(f"  dependency_ready: {'yes' if dep else 'no'}")
         print(f"  runtime_ready: {'yes' if ready else 'no'}")
@@ -4034,7 +3911,7 @@ class SmartShellAgent:
             print(
                 "  Note: after each natural-language task completes normally, background auto-reflection may run (roughly 45+ seconds apart from the previous trigger); "
                 "entries are written only when the model finds reusable lessons (possibly zero entries). "
-                "You can also use memory_search / memory_add or /memory remember manually; do not confuse this with knowledge_search."
+                "You can also use memory_search / memory_add or /memory remember manually."
             )
         elif dep and not ready:
             print("  Memory module is initializing or failed. Check smartshell.log and workspace/memory/ under the config directory.")
@@ -4646,8 +4523,7 @@ class SmartShellAgent:
         print("  /mcp list-disabled-tools [server]")
         print("  /mcp disable-tools <server> <tool1,tool2>")
         print("  /mcp enable-tools <server> <tool1,tool2>")
-        print("\nKnowledge and memory:")
-        print("  /knowledge status | sync | stats | search <query>")
+        print("\nMemory:")
         print("  /memory status | enable | disable | stats | list | search <query> | remember <text> | delete <id>")
         print("  /session-summary on|off|show")
         print("  /execution-policy show|unlimited|moderate|confirmation")

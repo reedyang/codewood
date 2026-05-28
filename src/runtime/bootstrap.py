@@ -99,9 +99,6 @@ def setup_workspace_and_history(
     agent._load_chat_state()
     setup_app_logging(agent.config_dir)
 
-    # Knowledge service is lazily imported/started in background threads.
-    agent.knowledge_manager = None
-
 
 def setup_runtime_preferences(agent: Any) -> None:
     agent.execution_policy = "confirmation"
@@ -111,7 +108,6 @@ def setup_runtime_preferences(agent: Any) -> None:
     agent.project_context_first_round_evidence_enabled = True
     # Tool gates: default disabled so only core built-in coding tools are available.
     agent.mcp_tools_enabled = False
-    agent.knowledge_tools_enabled = False
     # None means unlimited auto-execution rounds for a single task.
     agent.max_tool_rounds = None
     agent._resolved_config_data = {}
@@ -160,13 +156,6 @@ def setup_runtime_preferences(agent: Any) -> None:
                 _mcp_tools_enabled
                 if isinstance(_mcp_tools_enabled, bool)
                 else str(_mcp_tools_enabled).strip().lower() in ("1", "true", "yes", "on")
-            )
-
-            _knowledge_tools_enabled = cfg_data.get("knowledge_tools_enabled", False)
-            agent.knowledge_tools_enabled = (
-                _knowledge_tools_enabled
-                if isinstance(_knowledge_tools_enabled, bool)
-                else str(_knowledge_tools_enabled).strip().lower() in ("1", "true", "yes", "on")
             )
 
             _mtr = cfg_data.get("max_tool_rounds", None)
@@ -327,14 +316,13 @@ def setup_runtime_services(agent: Any) -> None:
     agent._project_context_refresh_inflight = False
     agent._project_context_index = ProjectContextIndex(
         workspace_root=agent.work_directory,
-        storage_dir=(agent.ai_workspace_dir / "knowledge_db"),
+        storage_dir=(agent.ai_workspace_dir / "project_context_db"),
     )
     try:
         agent._schedule_project_context_refresh_background(force=False, reason="startup")
     except Exception:
         pass
     agent._schedule_model_validation_background()
-    agent._schedule_knowledge_service_background()
     agent.memory_service = None
     agent._last_memory_reflect_at = 0.0
     agent._schedule_memory_service_background()

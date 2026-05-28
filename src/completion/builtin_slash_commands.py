@@ -26,11 +26,6 @@ SLASH_BUILTIN_COMMANDS: List[str] = [
     "/execution-policy unlimited",
     "/exit",
     "/help",
-    "/knowledge ",
-    "/knowledge search ",
-    "/knowledge stats",
-    "/knowledge status",
-    "/knowledge sync",
     "/mcp ",
     "/mcp disable-tools ",
     "/mcp enable-tools ",
@@ -89,7 +84,7 @@ def slash_builtin_completions(
     delayed_dynamic_groups: Optional[List[Tuple[str, List[str]]]] = None,
 ) -> List[str]:
     """
-    prefix_from_slash: text from the first '/' through the cursor (e.g. '/', '/he', '/knowledge ').
+    prefix_from_slash: text from the first '/' through the cursor (e.g. '/', '/he', '/memory ').
     Returns matching full '/...' commands, sorted, deduplicated.
     """
     if not prefix_from_slash.startswith("/"):

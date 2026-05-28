@@ -1,20 +1,4 @@
 prompt_toolkit>=3.0.0
 pyyaml>=6.0
 requests>=2.25.0
-chromadb>=0.4.0
-# 与 sentence-transformers / chromadb 嵌入链兼容；版本过旧或混装会导致 huggingface_hub 懒加载报错
-huggingface_hub>=0.26.0,<1.0
-transformers>=4.41.0
-langchain>=0.1.0
-langchain-community>=0.0.10
-langchain-text-splitters>=0.2.0
-sentence-transformers>=2.2.0
-unstructured>=0.10.0
-markdown>=3.0.0
-pdfminer.six>=20221105
-docx2txt>=0.8
-pandas>=2.0
-openpyxl>=3.1
-xlrd>=2.0
-msoffcrypto-tool>=5.4.1 
 tiktoken>=0.7.0
