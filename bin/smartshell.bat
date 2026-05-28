@@ -3,7 +3,7 @@ setlocal
 title Smart Shell
 
 set "SCRIPT_DIR=%~dp0"
-set "ENTRY=%SCRIPT_DIR%src\main.py"
+set "ENTRY=%SCRIPT_DIR%..\src\main.py"
 
 where python >nul 2>nul
 if not errorlevel 1 (
