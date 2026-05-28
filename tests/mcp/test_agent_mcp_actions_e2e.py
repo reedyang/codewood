@@ -105,7 +105,7 @@ class AgentMcpActionsE2ETests(unittest.TestCase):
             + "\n",
             encoding="utf-8",
         )
-        (self.config_dir / "mcp.json").write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+        (self.config_dir / "mcp.jsonc").write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
 
     def _build_agent(self):
         smart_shell_agent_module.TAB_COMPLETION_AVAILABLE = False

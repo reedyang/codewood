@@ -3444,23 +3444,22 @@ class SmartShellAgent:
             print(f"⚠️ Skill hot reload failed, continuing with the currently loaded version: {e}")
 
     def _load_mcp_config(self) -> Dict[str, Any]:
-        """Load MCP configuration from <config_dir>/mcp.json."""
-        mcp_path = self.config_dir / "mcp.json"
+        """Load MCP configuration from <config_dir>/mcp.jsonc."""
+        mcp_path = self.config_dir / "mcp.jsonc"
         if not mcp_path.is_file():
             return {"mcpServers": {}}
         try:
-            with open(mcp_path, "r", encoding="utf-8", errors="replace") as f:
-                data = json.load(f)
+            data = load_config_jsonc(mcp_path)
             if not isinstance(data, dict):
-                print("⚠️ Invalid mcp.json format: root object must be a JSON object")
+                print("⚠️ Invalid mcp.jsonc format: root object must be a JSON object")
                 return {"mcpServers": {}}
             servers = data.get("mcpServers", {})
             if not isinstance(servers, dict):
-                print("⚠️ Invalid mcp.json format: mcpServers must be an object")
+                print("⚠️ Invalid mcp.jsonc format: mcpServers must be an object")
                 return {"mcpServers": {}}
             return {"mcpServers": servers}
         except Exception as e:
-            print(f"⚠️ Failed to read mcp.json: {e}")
+            print(f"⚠️ Failed to read mcp.jsonc: {e}")
             return {"mcpServers": {}}
 
     def _get_mcp_config_file_sig(self) -> Tuple[bool, int, int]:
@@ -3492,13 +3491,12 @@ class SmartShellAgent:
         if not p.is_file():
             return True, {"mcpServers": {}}, ""
         try:
-            with open(p, "r", encoding="utf-8", errors="replace") as f:
-                data = json.load(f)
+            data = load_config_jsonc(p)
             if not isinstance(data, dict):
-                return False, {}, "mcp.json root object must be a JSON object"
+                return False, {}, "mcp.jsonc root object must be a JSON object"
             servers = data.get("mcpServers", {})
             if not isinstance(servers, dict):
-                return False, {}, "mcp.json mcpServers must be an object"
+                return False, {}, "mcp.jsonc mcpServers must be an object"
             return True, {"mcpServers": servers}, ""
         except Exception as e:
             return False, {}, str(e)
@@ -3506,13 +3504,13 @@ class SmartShellAgent:
     def _reload_mcp_config_now(self) -> Dict[str, Any]:
         """
         Manual trigger for MCP config reload.
-        Always parse current mcp.json and apply diff against in-memory config.
+        Always parse current mcp.jsonc and apply diff against in-memory config.
         """
         cur_sig = self._get_mcp_config_file_sig()
         ok, new_cfg, err = self._load_mcp_config_strict()
         if not ok:
             self._mcp_config_last_failed_file_sig = cur_sig
-            return {"success": False, "changed": False, "error": f"Failed to parse mcp.json: {err}"}
+            return {"success": False, "changed": False, "error": f"Failed to parse mcp.jsonc: {err}"}
         self._mcp_config_last_failed_file_sig = None
         new_struct_sig = self._calc_mcp_config_sig(new_cfg)
         if new_struct_sig == self._mcp_config_struct_sig:
