@@ -129,7 +129,7 @@ def strip_jsonc_comments(text: str) -> str:
 
 def load_tools_spec_from_jsonc(agent: Any) -> List[Dict[str, Any]]:
     """Load tool specs from tools.jsonc with comment stripping."""
-    path = _src_root() / "config" / "tools.jsonc"
+    path = _src_root() / "tools" / "tools.jsonc"
     try:
         raw = path.read_text(encoding="utf-8")
         clean = strip_jsonc_comments(raw)

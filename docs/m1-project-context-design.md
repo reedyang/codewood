@@ -31,7 +31,7 @@ This document defines the first milestone (M1) to improve large-repo code unders
     - expose tool action `project_context_search`
     - route tool call in `execute_tool_call`
 
-- `src/tools.jsonc`
+- `src/tools/tools.jsonc`
   - New tool schema: `project_context_search`
 
 - `src/tools_prompt.md`
