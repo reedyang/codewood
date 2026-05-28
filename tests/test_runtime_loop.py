@@ -5,6 +5,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 from src.runtime.runtime_loop import (
+    _compute_unreviewed_changed_files,
+    _extract_done_reviewed_files,
     _build_minimal_verification_command,
     _format_worked_for_summary_line,
     _format_startup_directory,
@@ -89,6 +91,23 @@ class RuntimeLoopTests(unittest.TestCase):
             {"success": True},
         )
         self.assertTrue(bool(hints_verify.get("verified")))
+
+    def test_extract_done_reviewed_files_parses_list_and_string(self):
+        self.assertEqual(
+            _extract_done_reviewed_files({"reviewed_files": ["a.py", " b.py ", ""]}),
+            ["a.py", "b.py"],
+        )
+        self.assertEqual(
+            _extract_done_reviewed_files({"reviewed_files": "README.md"}),
+            ["README.md"],
+        )
+        self.assertEqual(_extract_done_reviewed_files({"reviewed_files": 123}), [])
+
+    def test_compute_unreviewed_changed_files_reports_only_missing(self):
+        changed = ["src/A.py", "docs/Guide.md", "README.md"]
+        reviewed = ["src/a.py", "Guide.md"]
+        missing = _compute_unreviewed_changed_files(changed, reviewed)
+        self.assertEqual(missing, ["README.md"])
 
     def test_sanitize_prompt_pollution_strips_fixed_prompt(self):
         cleaned = _sanitize_prompt_pollution("› /help", Path("D:/ws"))

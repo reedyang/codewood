@@ -162,6 +162,58 @@ def _tool_change_and_verification_hints(
     return out
 
 
+def _extract_done_reviewed_files(args: Dict[str, Any]) -> List[str]:
+    if not isinstance(args, dict):
+        return []
+    raw = args.get("reviewed_files")
+    if isinstance(raw, str):
+        item = raw.strip()
+        return [item] if item else []
+    if not isinstance(raw, list):
+        return []
+    out: List[str] = []
+    for x in raw:
+        s = str(x or "").strip()
+        if s:
+            out.append(s)
+    return out
+
+
+def _normalize_review_file_key(path_text: str) -> str:
+    s = str(path_text or "").strip()
+    if not s:
+        return ""
+    s = s.replace("\\", "/")
+    while s.startswith("./"):
+        s = s[2:]
+    s = re.sub(r"/+", "/", s).strip("/")
+    return s.casefold()
+
+
+def _compute_unreviewed_changed_files(
+    changed_files: List[str],
+    reviewed_files: List[str],
+) -> List[str]:
+    reviewed_keys = {_normalize_review_file_key(x) for x in (reviewed_files or [])}
+    reviewed_keys.discard("")
+    reviewed_basenames = {
+        Path(k).name.casefold() for k in reviewed_keys if str(k).strip()
+    }
+    missing: List[str] = []
+    for fp in changed_files or []:
+        raw_fp = str(fp or "").strip()
+        if not raw_fp:
+            continue
+        key = _normalize_review_file_key(raw_fp)
+        base = Path(key).name.casefold() if key else ""
+        if key in reviewed_keys:
+            continue
+        if base and base in reviewed_basenames:
+            continue
+        missing.append(raw_fp)
+    return missing
+
+
 def _build_minimal_verification_command(changed_files: List[str]) -> str:
     files = [str(x or "").strip() for x in (changed_files or []) if str(x or "").strip()]
     py_files = [f for f in files if f.lower().endswith(".py")]
@@ -1223,9 +1275,7 @@ def run_agent_loop(agent: Any):
                 self, original_user_task, already_recorded=user_message_recorded
             )
             code_changed_in_task = False
-            verification_done_in_task = False
             changed_files_in_task: Set[str] = set()
-            verification_evidence_in_task: List[str] = []
             in_task_execution = True
             self._active_skill_full_prompt = ""
             self._active_skill_id = None
@@ -1297,7 +1347,7 @@ def run_agent_loop(agent: Any):
                 "{\"tool\":\"request_skill_prompt\",\"args\":{\"skill_id\":\"...\"}}。\n"
                 "4) 对于需要两步及以上完成的任务，禁止首轮直接只给工具调用 JSON 而不做“事项简述 + 步骤编排”。\n"
                 "5) 若用户问题可被上一条 system 开头的【经验记忆】单独完整回答，"
-                "首轮应直接给出简短自然语言并以 {\"tool\":\"done\",\"args\":{}} 结束，不要输出 Step 编排或 memory_search。\n"
+                "首轮应直接给出简短自然语言并结束（若本轮无文件改动可用 {\"tool\":\"done\",\"args\":{}}）。不要输出 Step 编排或 memory_search。\n"
                 "6) 若任务需要把自然语言指称解析为稳定标识符/映射：先阅读【经验记忆】，仍不足则首轮或次轮使用 memory_search，再执行检索、shell 或 request_skill_prompt；禁止在未核对记忆时先猜标识符再搜网。\n"
                 "7) 若你已输出 Step 1..N 且含「检索/搜索」与后续「分析、再跑脚本、再请求其它 skill」等，禁止在仅完成靠前步骤且仍有 pending 时 {\"tool\":\"done\"}；须继续直至各步完成或显式说明改计划原因。\n\n"
                 "8) 只要调用了网络检索相关的工具、命令、脚本或 skill（网页搜索、联网抓取、在线查询等），调用 done 前必须先输出一次检索结果总结（关键信息、来源要点、与用户问题的对应关系）；禁止检索后直接 done。\n\n"
@@ -1496,7 +1546,7 @@ def run_agent_loop(agent: Any):
                             f"【用户原始需求】\n{original_user_task}\n\n"
                             "你上一条回复没有给出可执行 JSON。\n"
                             "请只输出一个 JSON 对象：{\"tool\":\"工具名\",\"args\":{...}}；"
-                            "任务完成时输出 {\"tool\":\"done\",\"args\":{}}。"
+                            "任务完成时输出 done JSON（若本轮改过文件，args 需包含 reviewed_files 覆盖全部已修改文件）。"
                             "若你判断任务已完成，下一条必须直接输出 done，禁止再调用无关工具。"
                         )
                     is_first_round = False
@@ -1531,24 +1581,28 @@ def run_agent_loop(agent: Any):
                         list(getattr(self, "_active_runtime_task_domains", None) or [])
                     )
                     and code_changed_in_task
-                    and (not verification_done_in_task)
                 ):
-                    suggested_verify = _build_minimal_verification_command(
-                        sorted(changed_files_in_task)
+                    reviewed_files = _extract_done_reviewed_files(args if isinstance(args, dict) else {})
+                    missing_review_files = _compute_unreviewed_changed_files(
+                        sorted(changed_files_in_task),
+                        reviewed_files,
                     )
-                    print(
-                        "⚠️ Code changes were detected in this task but verification is incomplete; 'done' was blocked and minimal verification is required first."
-                    )
-                    next_input = (
-                        f"【用户原始需求】\n{original_user_task}\n\n"
-                        "你已经修改了代码，但还没有验证结果。\n"
-                        "在 software_development 领域，修改后禁止直接 done。\n"
-                        "请先输出一条验证工具调用 JSON；优先执行以下最小验证命令：\n"
-                        f"`{suggested_verify}`\n\n"
-                        "请输出：{\"tool\":\"shell\",\"args\":{\"command\":\"<验证命令>\"}}"
-                    )
-                    no_tool_rounds = 0
-                    continue
+                    if missing_review_files:
+                        missing_text = "\n".join(f"- {x}" for x in missing_review_files)
+                        print(
+                            "⚠️ Code changes were detected in this task but review coverage is incomplete; "
+                            "'done' was blocked and missing files must be reviewed first."
+                        )
+                        next_input = (
+                            f"【用户原始需求】\n{original_user_task}\n\n"
+                            "你已经修改了文件，但 `done.args.reviewed_files` 未覆盖全部已修改文件。\n"
+                            "请先逐一 review 以下漏掉的文件，再继续：\n"
+                            f"{missing_text}\n\n"
+                            "完成 review 后，请输出 done 并补齐 reviewed_files，例如：\n"
+                            "{\"tool\":\"done\",\"args\":{\"reviewed_files\":[\"<file1>\",\"<file2>\"]}}"
+                        )
+                        no_tool_rounds = 0
+                        continue
 
                 if tool_name == "request_skill_prompt":
                     sid = str(args.get("skill_id") or "").strip()
@@ -1688,11 +1742,6 @@ def run_agent_loop(agent: Any):
                         fpp = str(fp or "").strip()
                         if fpp:
                             changed_files_in_task.add(fpp)
-                if bool(hints.get("verified", False)):
-                    verification_done_in_task = True
-                summary = str(hints.get("verification_summary") or "").strip()
-                if summary:
-                    verification_evidence_in_task.append(summary)
 
                 if self._result_indicates_user_cancelled(result):
                     self._force_current_input_as_requirement_once = True
@@ -1715,27 +1764,28 @@ def run_agent_loop(agent: Any):
                         )
                         worked_summary_emitted = True
                     if (
-                        _is_software_development_domain(
+                        tool_name == "done"
+                        and _is_software_development_domain(
                             list(getattr(self, "_active_runtime_task_domains", None) or [])
                         )
                         and code_changed_in_task
                     ):
-                        ai_lower = str(ai_response or "").lower()
-                        has_verify_summary = ("验证" in str(ai_response or "")) or ("verification" in ai_lower)
-                        if not has_verify_summary:
-                            evidence_text = (
-                                "\n".join(f"- {x}" for x in verification_evidence_in_task[-3:])
-                                if verification_evidence_in_task
-                                else "- （暂无可提取验证证据）"
-                            )
+                        reviewed_files = _extract_done_reviewed_files(
+                            args if isinstance(args, dict) else {}
+                        )
+                        missing_review_files = _compute_unreviewed_changed_files(
+                            sorted(changed_files_in_task),
+                            reviewed_files,
+                        )
+                        if missing_review_files:
+                            missing_text = "\n".join(f"- {x}" for x in missing_review_files)
                             next_input = (
                                 f"【用户原始需求】\n{original_user_task}\n\n"
-                                "在 software_development 领域，完成前必须先给验证审核总结，再 done。\n"
-                                "请先给出：修改点、验证命令、验证结果、剩余风险；"
-                                "然后在结尾输出 done JSON。\n"
-                                f"可用验证证据：\n{evidence_text}\n\n"
-                                "请输出自然语言总结，并在最后一行输出："
-                                "{\"tool\":\"done\",\"args\":{}}"
+                                "done 已触发，但 reviewed_files 仍未覆盖全部已修改文件。\n"
+                                "请先补充 review 以下文件：\n"
+                                f"{missing_text}\n\n"
+                                "然后重新输出："
+                                "{\"tool\":\"done\",\"args\":{\"reviewed_files\":[...]}}"
                             )
                             no_tool_rounds = 0
                             continue
@@ -1764,9 +1814,7 @@ def run_agent_loop(agent: Any):
                         switched_from_task_id=str(current_task_id or ""),
                     )
                     code_changed_in_task = False
-                    verification_done_in_task = False
                     changed_files_in_task = set()
-                    verification_evidence_in_task = []
                     print("🔄 AI judged the user supplement unrelated to the original requirement; switched to a new task.")
                     print(f"   Old task: {old_task}")
                     print(f"   New task: {original_user_task}")
@@ -1871,7 +1919,7 @@ def run_agent_loop(agent: Any):
                     f"{step_progress}\n\n"
                     f"【上一条工具执行结果（压缩）】\n{self._compact_result_for_next_input(result)}\n\n"
                     "请继续输出下一条 JSON 工具计划：{\"tool\":\"工具名\",\"args\":{...}}；"
-                    "任务全部完成时输出 {\"tool\":\"done\",\"args\":{}}。"
+                    "任务全部完成时输出 done JSON（若本轮改过文件，args 需包含 reviewed_files 覆盖全部已修改文件）。"
                     "若上一条结果已满足原始需求，下一条必须直接输出 done。"
                     + (f"\n{post_status_rule}" if post_status_rule else "")
                     + (f"\n{post_result_synthesis_rule}" if post_result_synthesis_rule else "")
