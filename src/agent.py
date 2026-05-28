@@ -66,6 +66,7 @@ from .core.console_utils import (
     _ansi_green,
     _ansi_rgb,
 )
+from .core.console_title import restore_app_console_title
 from .controllers.builtin_command_router import dispatch_builtin_command
 from .controllers.workspace_command_controller import (
     handle_workspace_builtin_command,
@@ -3178,6 +3179,7 @@ class Agent:
                 pass
             _stop_status_ticker()
             self._stop_interrupt_monitor(cancel_task_on_interrupt=False)
+            restore_app_console_title()
 
     def _append_chat_message(self, role: str, content: str) -> None:
         self.session_memory_service.append_chat_message(role, content)

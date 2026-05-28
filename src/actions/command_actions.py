@@ -16,6 +16,7 @@ from ..core.console_utils import (
     _decode_subprocess_output,
     _safe_console_write,
 )
+from ..core.console_title import restore_app_console_title
 
 SHELL_OUTPUT_DISPLAY_TAIL_LINES = 30
 SHELL_OUTPUT_DISPLAY_RESERVED_LINES = 3
@@ -662,6 +663,7 @@ def action_shell_command(
         return {"success": False, "error": f"System command execution error: {str(e)}"}
     finally:
         _reset_work_directory_to_startup_initial(agent)
+        restore_app_console_title()
 
 
 def action_project_context_search(agent: Any, params: Dict[str, Any]) -> dict:
