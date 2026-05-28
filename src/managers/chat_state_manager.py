@@ -1,11 +1,12 @@
 import json
 import os
+import secrets
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 
-CHAT_STATE_VERSION = 2
+CHAT_STATE_VERSION = 1
 TASK_STATUS_OPEN = "open"
 TASK_STATUS_DONE = "done"
 TASK_STATUS_CANCELLED = "cancelled"
@@ -30,7 +31,39 @@ class ChatStateManager:
         return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
     def chat_state_path(self) -> Path:
-        return self._agent.ai_workspace_dir / self._chat_state_file
+        return self.chat_records_dir() / self._chat_state_file
+
+    def chat_records_dir(self) -> Path:
+        return self._agent.ai_workspace_dir / "chats"
+
+    def _new_chat_record_filename(self) -> str:
+        while True:
+            name = f"{secrets.token_hex(16)}.json"
+            if name != self._chat_state_file and not (self.chat_records_dir() / name).exists():
+                return name
+
+    def _chat_record_filename_for_chat(self, chat: Dict[str, Any]) -> str:
+        existing = str(chat.get("_record_file") or "").strip()
+        if existing:
+            return existing
+        name = self._new_chat_record_filename()
+        chat["_record_file"] = name
+        return name
+
+    def _resolve_chat_record_path(self, record_file: str) -> Path:
+        name = str(record_file or "").strip()
+        rel = Path(name)
+        if not name or rel.is_absolute() or rel.name != name:
+            raise ValueError("chat record_file must be a file name")
+        if name == self._chat_state_file:
+            raise ValueError("chat record_file cannot be the chat index file")
+        path = (self.chat_records_dir() / rel).resolve()
+        records_dir = self.chat_records_dir().resolve()
+        try:
+            path.relative_to(records_dir)
+        except ValueError as exc:
+            raise ValueError("chat record_file must be under chats directory") from exc
+        return path
 
     def new_chat_entry(self, chat_id: str, name: str = "New Chat") -> Dict[str, Any]:
         now = self._now_text()
@@ -230,10 +263,63 @@ class ChatStateManager:
 
     def save_chat_state(self) -> None:
         try:
-            p = self.chat_state_path()
-            p.parent.mkdir(parents=True, exist_ok=True)
-            with open(p, "w", encoding="utf-8") as f:
-                json.dump(self._agent._chat_state, f, ensure_ascii=False, indent=2)
+            index_path = self.chat_state_path()
+            records_dir = self.chat_records_dir()
+            index_path.parent.mkdir(parents=True, exist_ok=True)
+            records_dir.mkdir(parents=True, exist_ok=True)
+
+            state = self._agent._chat_state if isinstance(self._agent._chat_state, dict) else {}
+            chats = state.get("chats", [])
+            if not isinstance(chats, list):
+                chats = []
+
+            index_chats = []
+            current_record_paths = set()
+            for chat in chats:
+                if not isinstance(chat, dict):
+                    continue
+                cid = str(chat.get("id") or "").strip()
+                if not cid:
+                    continue
+                record_file = self._chat_record_filename_for_chat(chat)
+                record_path = self._resolve_chat_record_path(record_file)
+                current_record_paths.add(record_path.resolve())
+                record_path.parent.mkdir(parents=True, exist_ok=True)
+                record_payload = {
+                    k: v for k, v in chat.items() if not str(k).startswith("_")
+                }
+                with open(record_path, "w", encoding="utf-8") as f:
+                    json.dump(record_payload, f, ensure_ascii=False, indent=2)
+                index_chats.append(
+                    {
+                        "id": cid,
+                        "name": str(chat.get("name") or "New Chat"),
+                        "name_source": str(chat.get("name_source") or "default"),
+                        "created_at": str(chat.get("created_at") or ""),
+                        "updated_at": str(chat.get("updated_at") or ""),
+                        "model_provider": str(chat.get("model_provider") or ""),
+                        "model_name": str(chat.get("model_name") or ""),
+                        "record_file": record_file,
+                    }
+                )
+
+            active = str(state.get("active") or "").strip()
+            index_payload = {
+                "version": CHAT_STATE_VERSION,
+                "active": active,
+                "chats": index_chats,
+            }
+            with open(index_path, "w", encoding="utf-8") as f:
+                json.dump(index_payload, f, ensure_ascii=False, indent=2)
+
+            for stale in records_dir.glob("*.json"):
+                try:
+                    if stale.resolve() == index_path.resolve():
+                        continue
+                    if stale.resolve() not in current_record_paths:
+                        stale.unlink()
+                except Exception:
+                    pass
         except Exception as e:
             print(f"⚠️ Failed to save chat state: {e}")
 
@@ -338,7 +424,26 @@ class ChatStateManager:
             chats_raw = loaded.get("chats")
             if not isinstance(chats_raw, list):
                 raise ValueError("chats must be list")
-            chats = [self._validate_chat_entry(c) for c in chats_raw if isinstance(c, dict)]
+            chats = []
+            for index_entry in chats_raw:
+                if not isinstance(index_entry, dict):
+                    continue
+                cid = str(index_entry.get("id") or "").strip()
+                if not cid:
+                    raise ValueError("chat id required")
+                record_file = str(index_entry.get("record_file") or "").strip()
+                if not record_file:
+                    raise ValueError("chat record_file required")
+                record_path = self._resolve_chat_record_path(record_file)
+                with open(record_path, "r", encoding="utf-8") as f:
+                    chat_raw = json.load(f)
+                if not isinstance(chat_raw, dict):
+                    raise ValueError("chat record root must be object")
+                if str(chat_raw.get("id") or "").strip() != cid:
+                    raise ValueError("chat record id mismatch")
+                chat = self._validate_chat_entry(chat_raw)
+                chat["_record_file"] = record_file
+                chats.append(chat)
             if not chats:
                 raise ValueError("chats empty")
             active = str(loaded.get("active") or "").strip()
