@@ -25,35 +25,25 @@ from src.core.config.config_jsonc import (
 from src.core.config.model_providers import parse_configured_models
 from src.core.console_utils import _ansi_red
 
+CONFIG_TEMPLATE_RELATIVE_PATH = Path("config") / "config.template.jsonc"
 
-DEFAULT_USER_CONFIG_TEMPLATE = {
-    "model_providers": [
-        {
-            "provider": "openai",
-            "params": {
-                "api_key": "<YOUR API KEY>",
-                "base_url": "https://api.openai.com/v1",
-                "models": [
-                    {
-                        "name": "<YOUR MODEL NAME>",
-                        "context_window": 131072,
-                    }
-                ],
-            },
-        }
-    ],
-    "execution_policy": "moderate",
-    "project_context_first_round_evidence": True,
-    "max_tool_rounds": None,
-    "memory_enabled": False,
-    "mcp_tools_enabled": False,
-}
+
+def _get_user_config_template_path() -> Path:
+    """Return repository template path used to generate user config."""
+    return project_root / CONFIG_TEMPLATE_RELATIVE_PATH
+
+
+def _load_user_config_template() -> dict:
+    """Load startup template content from config/config.template.jsonc."""
+    template_path = _get_user_config_template_path()
+    data = load_config_jsonc(template_path)
+    return data if isinstance(data, dict) else {}
 
 
 def _create_user_config_template(user_home: Path) -> Path:
     """Create ~/.smartshell/config.jsonc with a starter template and return the file path."""
     config_path = user_home / ".smartshell" / CONFIG_JSONC_FILENAME
-    save_config_jsonc(config_path, DEFAULT_USER_CONFIG_TEMPLATE)
+    save_config_jsonc(config_path, _load_user_config_template())
     return config_path
 
 
@@ -125,13 +115,19 @@ def _validate_template_placeholder_values(
     provider: str,
     model_name: str,
     model_config: dict,
+    template_config: dict | None = None,
 ) -> str | None:
     """Ensure runtime config does not keep template placeholder values."""
     template_provider = ""
     template_api_key = ""
     template_model_name = ""
     try:
-        providers = DEFAULT_USER_CONFIG_TEMPLATE.get("model_providers")
+        effective_template = (
+            template_config
+            if isinstance(template_config, dict)
+            else _load_user_config_template()
+        )
+        providers = effective_template.get("model_providers")
         if isinstance(providers, list) and providers:
             first_provider = providers[0]
             if isinstance(first_provider, dict):
