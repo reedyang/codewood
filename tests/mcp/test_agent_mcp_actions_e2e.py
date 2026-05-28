@@ -19,8 +19,6 @@ if "ollama" not in sys.modules:
 
 import src.smart_shell_agent as smart_shell_agent_module
 
-smart_shell_agent_module.KNOWLEDGE_AVAILABLE = False
-
 
 def _get_free_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:

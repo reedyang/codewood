@@ -72,7 +72,7 @@ class PathPolicy:
         msg = (
             "禁止在 Smart Shell workspace 根目录直接创建该路径。"
             "请使用子目录，例如 workspace/temp/…（临时）、workspace/skills/…（技能），"
-            "或落在既有顶层目录（knowledge、memory、knowledge_db、logs）之下。"
+            "不要直接写入 workspace 根目录。"
         )
         try:
             r = path.resolve()

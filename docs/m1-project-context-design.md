@@ -80,14 +80,14 @@ For non-Default workspaces, the feature is enabled by default and can be control
 
 The index is stored under the active AI workspace directory:
 
-- `<ai_workspace>/knowledge_db/project_context_index.json`
+- `<ai_workspace>/project_context_db/project_context_index.json`
 
 `ProjectContextIndex` is initialized with:
 
 - `workspace_root = agent.work_directory`
-- `storage_dir = agent.ai_workspace_dir / "knowledge_db"`
+- `storage_dir = agent.ai_workspace_dir / "project_context_db"`
 
-When the active workspace/runtime is refreshed, Smart Shell schedules a background refresh using the current `work_directory` and the current workspace `knowledge_db` directory.
+When the active workspace/runtime is refreshed, Smart Shell schedules a background refresh using the current `work_directory` and the current workspace `project_context_db` directory.
 
 ## Data Model
 

@@ -154,18 +154,6 @@ def load_tools_spec_from_jsonc(agent: Any) -> List[Dict[str, Any]]:
                 not in disabled_mcp_tools
             ]
 
-        if not bool(getattr(agent, "knowledge_tools_enabled", False)):
-            disabled_knowledge_tools = {
-                "knowledge_sync",
-                "knowledge_stats",
-            }
-            specs = [
-                x
-                for x in specs
-                if str((x.get("function", {}) or {}).get("name", "")).strip()
-                not in disabled_knowledge_tools
-            ]
-
         return specs
     except Exception as e:
         print(f"⚠️ tools.jsonc 加载失败: {e}")

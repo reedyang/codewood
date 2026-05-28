@@ -470,7 +470,7 @@ class FileCompleter(Completer):
                 else:
                     return slash_idx, frag
 
-        # Full-line slash built-in command (e.g. "/mcp ", "/knowledge search q")
+        # Full-line slash built-in command (e.g. "/mcp ", "/memory search q")
         stripped = text.lstrip()
         if stripped.startswith("/"):
             slash_idx = len(text) - len(stripped)

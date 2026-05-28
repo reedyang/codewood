@@ -21,12 +21,5 @@ class ToolToggleGuardsTests(unittest.TestCase):
         self.assertFalse(result.get("success", True))
         self.assertIn("mcp_tools_enabled", str(result.get("error", "")))
 
-    def test_knowledge_maintenance_tools_blocked_by_default(self):
-        self.agent.knowledge_tools_enabled = False
-        result = self.agent.execute_tool_call("knowledge_sync", {})
-        self.assertFalse(result.get("success", True))
-        self.assertIn("knowledge_tools_enabled", str(result.get("error", "")))
-
-
 if __name__ == "__main__":
     unittest.main()

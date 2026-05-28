@@ -73,7 +73,7 @@ def workspace_usage() -> str:
         "  /workspace rename <name|id|path> <new name>\n"
         "  /workspace delete <name|id|path> [--remove-files]\n"
         "    --remove-files: Deletes .smartshell/ under this custom workspace root, "
-        "including Smart Shell data such as history, temp, skills, knowledge, and knowledge_db; "
+        "including Smart Shell data such as history, temp, skills, memory, and project_context_db; "
         "it will not delete the workspace root or other project files."
     )
 

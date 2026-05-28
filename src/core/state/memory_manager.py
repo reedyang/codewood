@@ -1,5 +1,5 @@
 """
-经验记忆（与知识库完全分离：知识库 = 图书馆文档；记忆 = 内化经验）。
+经验记忆（内化经验与偏好）。
 
 存储：Markdown 文件 + 每作用域 manifest.json（机器可读）与 INDEX.md（人类可读清单）。
 不使用 Chroma / 嵌入模型，避免首包加载延迟。
@@ -576,7 +576,7 @@ class MemoryManager:
 
 
 class MemoryService:
-    """单线程执行 MemoryManager（与 KnowledgeService 相同线程亲和策略）。"""
+    """单线程执行 MemoryManager。"""
 
     def __init__(self, config_dir: str, embedding_model: str = ""):
         self._config_dir = str(Path(config_dir))

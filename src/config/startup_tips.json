@@ -41,18 +41,6 @@
       "highlights": ["/memory search"]
     },
     {
-      "text": "Use /knowledge status to inspect knowledge service readiness.",
-      "highlights": ["/knowledge status"]
-    },
-    {
-      "text": "Run /knowledge sync after adding docs you want the agent to retrieve.",
-      "highlights": ["/knowledge sync"]
-    },
-    {
-      "text": "Use /knowledge search <query> for targeted document lookup.",
-      "highlights": ["/knowledge search"]
-    },
-    {
       "text": "Use /execution-policy show to inspect current execution confirmation mode.",
       "highlights": ["/execution-policy show"]
     },

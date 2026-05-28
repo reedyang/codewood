@@ -94,10 +94,6 @@ def dispatch_builtin_command(
         agent.execute_tool_call("always_confirm_reset", {})
         return True, False
 
-    if bl == "knowledge status":
-        agent._print_knowledge_status_details()
-        return True, False
-
     if bl == "memory status":
         agent._print_memory_status_details()
         return True, False
