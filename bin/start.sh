@@ -3,10 +3,18 @@
 SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 ROOT_DIR="$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)"
 ENTRY="$ROOT_DIR/src/main.py"
+APP_INFO="$ROOT_DIR/src/config/app_info.py"
 VENV_DIR="$ROOT_DIR/.venv"
 VENV_PYTHON="$VENV_DIR/bin/python"
 REQ_FILE="$ROOT_DIR/requirements.txt"
 PY_BOOTSTRAP=""
+
+set_title_from_app_info() {
+    app_name="$("$VENV_PYTHON" -c "import runpy;d=runpy.run_path(r'$APP_INFO');f=d.get('get_app_name');print(f() if callable(f) else '')" 2>/dev/null)"
+    if [ -n "$app_name" ]; then
+        printf '\033]0;%s\007' "$app_name"
+    fi
+}
 
 if command -v python3 >/dev/null 2>&1; then
     PY_BOOTSTRAP="python3"
@@ -18,6 +26,7 @@ else
 fi
 
 if [ -x "$VENV_PYTHON" ]; then
+    set_title_from_app_info
     exec "$VENV_PYTHON" "$ENTRY" "$@"
 fi
 
@@ -40,4 +49,5 @@ if [ $? -ne 0 ]; then
     exit 1
 fi
 
+set_title_from_app_info
 exec "$VENV_PYTHON" "$ENTRY" "$@"
