@@ -4,7 +4,58 @@ import unittest
 import json
 from pathlib import Path
 
-from src.managers.chat_state_manager import ChatStateManager
+from src.managers.chat_state_manager import CHAT_STATE_VERSION, ChatStateManager
+
+
+def _chat_index_entry(chat):
+    record_file = chat.get("_record_file") or f"0123456789abcdef0123456789abcde{len(str(chat['id'])) % 10}.json"
+    return {
+        "id": chat["id"],
+        "name": chat.get("name", "New Chat"),
+        "name_source": chat.get("name_source", "default"),
+        "created_at": chat.get("created_at", ""),
+        "updated_at": chat.get("updated_at", ""),
+        "model_provider": chat.get("model_provider", ""),
+        "model_name": chat.get("model_name", ""),
+        "record_file": record_file,
+    }
+
+
+def _write_chat_store(workspace: Path, payload):
+    chats_dir = workspace / "chats"
+    chats_dir.mkdir(parents=True, exist_ok=True)
+    chats = [c for c in payload.get("chats", []) if isinstance(c, dict)]
+    index = {
+        "version": CHAT_STATE_VERSION,
+        "active": payload.get("active", ""),
+        "chats": [_chat_index_entry(c) for c in chats],
+    }
+    for chat in chats:
+        record_file = _chat_index_entry(chat)["record_file"]
+        record_payload = {k: v for k, v in chat.items() if not str(k).startswith("_")}
+        (chats_dir / record_file).write_text(
+            json.dumps(record_payload, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+    (chats_dir / "chats.json").write_text(
+        json.dumps(index, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+
+def _read_chat_index(workspace: Path):
+    return json.loads((workspace / "chats" / "chats.json").read_text(encoding="utf-8"))
+
+
+def _read_first_chat_record(workspace: Path):
+    index = _read_chat_index(workspace)
+    record_file = index["chats"][0]["record_file"]
+    return json.loads((workspace / "chats" / record_file).read_text(encoding="utf-8"))
+
+
+def _assert_hash_record_file(testcase, record_file: str):
+    testcase.assertRegex(record_file, r"^[0-9a-f]{32}\.json$")
+    testcase.assertNotEqual(record_file, "chat-1.json")
 
 
 class _FakeAgent:
@@ -224,9 +275,8 @@ class ChatStateModelPersistenceTests(unittest.TestCase):
     def test_load_chat_state_skips_save_when_state_is_clean(self):
         with tempfile.TemporaryDirectory() as td:
             workspace = Path(td)
-            chat_path = workspace / "chats.json"
             payload = {
-                "version": 2,
+                "version": CHAT_STATE_VERSION,
                 "active": "chat-1",
                 "chats": [
                     {
@@ -261,7 +311,7 @@ class ChatStateModelPersistenceTests(unittest.TestCase):
                     }
                 ],
             }
-            chat_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            _write_chat_store(workspace, payload)
 
             agent = _FakeAgent(workspace)
             manager = ChatStateManager(agent, "chats.json")
@@ -319,7 +369,8 @@ class ChatStateModelPersistenceTests(unittest.TestCase):
     def test_load_chat_state_invalid_schema_resets_and_persists_default(self):
         with tempfile.TemporaryDirectory() as td:
             workspace = Path(td)
-            chat_path = workspace / "chats.json"
+            chat_path = workspace / "chats" / "chats.json"
+            chat_path.parent.mkdir(parents=True, exist_ok=True)
             payload = {
                 "version": 1,
                 "active": "chat-1",
@@ -343,7 +394,7 @@ class ChatStateModelPersistenceTests(unittest.TestCase):
             manager.load_chat_state()
             self.assertEqual(save_calls, ["saved"])
             self.assertEqual(agent.active_chat_id, "chat-1")
-            self.assertEqual(agent._chat_state.get("version"), 2)
+            self.assertEqual(agent._chat_state.get("version"), CHAT_STATE_VERSION)
 
     def test_clear_chat_context_and_tasks_clears_messages_and_task_records(self):
         with tempfile.TemporaryDirectory() as td:
@@ -438,8 +489,9 @@ class ChatStateModelPersistenceTests(unittest.TestCase):
             self.assertEqual(chat.get("context_input_tokens"), 4321)
             self.assertEqual(chat.get("context_window"), 128000)
 
-            payload = json.loads((workspace / "chats.json").read_text(encoding="utf-8"))
-            saved_chat = payload["chats"][0]
+            payload = _read_chat_index(workspace)
+            _assert_hash_record_file(self, payload["chats"][0].get("record_file"))
+            saved_chat = _read_first_chat_record(workspace)
             self.assertEqual(saved_chat.get("context_usage_percent"), 67)
             self.assertEqual(saved_chat.get("context_input_tokens"), 4321)
             self.assertEqual(saved_chat.get("context_window"), 128000)
@@ -488,8 +540,9 @@ class ChatStateModelPersistenceTests(unittest.TestCase):
             msgs = list(chat.get("messages") or [])
             self.assertEqual(len(msgs), 1)
             self.assertTrue(bool(msgs[0].get("exclude_from_model_context", False)))
-            payload = json.loads((workspace / "chats.json").read_text(encoding="utf-8"))
-            saved_msgs = list((payload.get("chats") or [])[0].get("messages") or [])
+            payload = _read_chat_index(workspace)
+            _assert_hash_record_file(self, payload["chats"][0].get("record_file"))
+            saved_msgs = list(_read_first_chat_record(workspace).get("messages") or [])
             self.assertEqual(len(saved_msgs), 1)
             self.assertTrue(bool(saved_msgs[0].get("exclude_from_model_context", False)))
 
@@ -538,8 +591,9 @@ class ChatStateModelPersistenceTests(unittest.TestCase):
             self.assertIsNotNone(chat)
             msgs = list(chat.get("messages") or [])
             self.assertEqual([m.get("content") for m in msgs], ["persisted"])
-            payload = json.loads((workspace / "chats.json").read_text(encoding="utf-8"))
-            saved_msgs = list((payload.get("chats") or [])[0].get("messages") or [])
+            payload = _read_chat_index(workspace)
+            _assert_hash_record_file(self, payload["chats"][0].get("record_file"))
+            saved_msgs = list(_read_first_chat_record(workspace).get("messages") or [])
             self.assertEqual([m.get("content") for m in saved_msgs], ["persisted"])
 
     def test_sync_active_chat_messages_does_not_fallback_to_closed_active_task(self):
