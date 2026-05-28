@@ -1402,11 +1402,20 @@ def run_agent_loop(agent: Any):
             _emit_flow_log(f"首轮请求准备完成，开始真正发送: elapsed_ms={ready_to_send_elapsed_ms}")
             is_first_round = True
             last_announced_skill_key: Optional[str] = None
-            max_tool_rounds = int(getattr(self, "max_tool_rounds", 20) or 20)
+            raw_max_tool_rounds = getattr(self, "max_tool_rounds", None)
+            try:
+                parsed_max_tool_rounds = (
+                    int(raw_max_tool_rounds) if raw_max_tool_rounds is not None else None
+                )
+            except Exception:
+                parsed_max_tool_rounds = None
+            max_tool_rounds = (
+                parsed_max_tool_rounds if parsed_max_tool_rounds and parsed_max_tool_rounds > 0 else None
+            )
             max_no_tool_rounds = 3
             no_tool_rounds = 0
             tool_round = 0
-            while tool_round < max_tool_rounds:
+            while max_tool_rounds is None or tool_round < max_tool_rounds:
                 if self._consume_task_interrupt_requested():
                     raise KeyboardInterrupt
                 tool_round += 1
@@ -1867,9 +1876,9 @@ def run_agent_loop(agent: Any):
                     + (f"\n{post_status_rule}" if post_status_rule else "")
                     + (f"\n{post_result_synthesis_rule}" if post_result_synthesis_rule else "")
                 )
-            if tool_round >= max_tool_rounds:
+            if max_tool_rounds is not None and tool_round >= max_tool_rounds:
                 print(
-                    "⏹️ Reached the auto-execution limit for this round (20 steps). Task is paused. "
+                    f"⏹️ Reached the auto-execution limit for this round ({max_tool_rounds} steps). Task is paused. "
                     "Ask again to continue, or narrow the task scope and retry."
                 )
             in_task_execution = False
