@@ -32,7 +32,7 @@ class ModelCommandControllerTests(unittest.TestCase):
             handled = handle_model_builtin_command(agent, "model")
         self.assertTrue(handled)
         out = buf.getvalue()
-        self.assertIn("当前模型: openai:gpt-4.1", out)
+        self.assertIn("Current model: openai:gpt-4.1", out)
         self.assertIn("openai:gpt-4.1", out)
         self.assertIn("ollama:qwen2.5:7b", out)
 
@@ -52,7 +52,7 @@ class ModelCommandControllerTests(unittest.TestCase):
             handled = handle_model_builtin_command(agent, "model invalid_format")
         self.assertTrue(handled)
         self.assertIsNone(agent.last_selector)
-        self.assertIn("模型格式错误", buf.getvalue())
+        self.assertIn("Invalid model format", buf.getvalue())
 
 
 if __name__ == "__main__":
