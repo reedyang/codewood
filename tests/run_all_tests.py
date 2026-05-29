@@ -102,9 +102,29 @@ def _discover_unittest_suite_by_files(
             continue
         module = importlib.util.module_from_spec(spec)
         sys.modules[mod_name] = module
-        spec.loader.exec_module(module)
+        try:
+            spec.loader.exec_module(module)
+        except Exception as exc:
+            def _raise_import_error(path: Path = file_path, error: Exception = exc) -> None:
+                raise ImportError(f"Failed to import test module: {path}") from error
+
+            suite.addTest(unittest.FunctionTestCase(_raise_import_error))
+            continue
         suite.addTests(loader.loadTestsFromModule(module))
     return suite
+
+
+def _discover_pytest_targets(
+    start_dir: Path, pattern: str, project_root: Path, excluded_rel: set[str]
+) -> list[str]:
+    matched = sorted(
+        p
+        for p in start_dir.rglob("*.py")
+        if p.is_file()
+        and fnmatch.fnmatch(p.name, pattern)
+        and not _is_excluded_path(p, project_root, excluded_rel)
+    )
+    return [_normalize_rel(str(p.resolve().relative_to(project_root.resolve()))) for p in matched]
 
 
 def run_unittest(args: argparse.Namespace, project_root: Path, excluded_rel: set[str]) -> int:
@@ -149,11 +169,23 @@ def run_unittest(args: argparse.Namespace, project_root: Path, excluded_rel: set
 
 
 def run_pytest(args: argparse.Namespace, project_root: Path, excluded_rel: set[str]) -> int:
-    cmd = [sys.executable, "-m", "pytest", args.start_dir]
+    start_dir = (project_root / args.start_dir).resolve()
+    if not start_dir.exists() or not start_dir.is_dir():
+        print(f"Start directory does not exist: {start_dir}")
+        return 2
+
+    cmd = [sys.executable, "-m", "pytest"]
+    if args.pattern and args.pattern != "test*.py":
+        targets = _discover_pytest_targets(start_dir, args.pattern, project_root, excluded_rel)
+        if not targets:
+            print("No tests discovered.")
+            return 0
+        cmd.extend(targets)
+    else:
+        cmd.append(args.start_dir)
+
     for rel in sorted(excluded_rel):
         cmd.extend(["--ignore", rel])
-    if args.pattern and args.pattern != "test*.py":
-        cmd.extend(["-k", args.pattern])
     if args.failfast:
         cmd.append("-x")
     if args.verbosity >= 2:
