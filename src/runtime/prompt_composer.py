@@ -1,5 +1,6 @@
-﻿import json
+import json
 import os
+import subprocess
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -10,6 +11,89 @@ from ..core.config.skills_loader import _list_bundled_script_paths
 def _src_root() -> Path:
     """Return absolute src/ root regardless of current module subdirectory."""
     return Path(__file__).resolve().parent.parent
+
+
+_SYSTEM_FILE_SEARCH_NEARBY_RULE_KEY = "{{SYSTEM_FILE_SEARCH_NEARBY_RULE}}"
+_TOOLS_FILE_SEARCH_NEARBY_RULE_KEY = "{{TOOLS_FILE_SEARCH_NEARBY_RULE}}"
+
+_SYSTEM_FILE_SEARCH_NEARBY_RULE_FALLBACK = (
+    "必须先执行检索（如 `Select-String`/`rg`），再按行号分段读取附近内容；禁止一次读取整个文件。"
+)
+_SYSTEM_FILE_SEARCH_NEARBY_RULE_RG_ONLY = (
+    "必须先执行 `rg` 检索，再按行号分段读取附近内容；禁止一次读取整个文件。"
+)
+_TOOLS_FILE_SEARCH_NEARBY_RULE_FALLBACK = (
+    "必须先检索命中位置，再按行号读取附近片段；禁止一次读取整个文件。"
+)
+_TOOLS_FILE_SEARCH_NEARBY_RULE_RG_ONLY = (
+    "必须先用 `rg` 检索命中位置，再按行号读取附近片段；禁止一次读取整个文件。"
+)
+
+
+def _workspace_bin_dir() -> Path:
+    return _src_root().parent / "bin"
+
+
+def _rg_bin_candidates() -> List[Path]:
+    bin_dir = _workspace_bin_dir()
+    if os.name == "nt":
+        names = ("rg.exe", "rg.cmd", "rg.bat", "rg")
+    else:
+        names = ("rg",)
+    return [bin_dir / n for n in names]
+
+
+def _is_usable_rg_executable(candidate: Path) -> bool:
+    try:
+        if not candidate.exists() or not candidate.is_file():
+            return False
+        if os.name != "nt" and not os.access(str(candidate), os.X_OK):
+            return False
+        proc = subprocess.run(
+            [str(candidate), "--version"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+            timeout=2.0,
+        )
+        return int(getattr(proc, "returncode", 1)) == 0
+    except Exception:
+        return False
+
+
+def _usable_workspace_rg_bin_path() -> str:
+    for candidate in _rg_bin_candidates():
+        if _is_usable_rg_executable(candidate):
+            try:
+                return str(candidate.resolve())
+            except Exception:
+                return str(candidate)
+    return ""
+
+
+def has_usable_workspace_rg_bin() -> bool:
+    return bool(_usable_workspace_rg_bin_path())
+
+
+def _rg_prompt_variables() -> Dict[str, str]:
+    if has_usable_workspace_rg_bin():
+        return {
+            _SYSTEM_FILE_SEARCH_NEARBY_RULE_KEY: _SYSTEM_FILE_SEARCH_NEARBY_RULE_RG_ONLY,
+            _TOOLS_FILE_SEARCH_NEARBY_RULE_KEY: _TOOLS_FILE_SEARCH_NEARBY_RULE_RG_ONLY,
+        }
+    return {
+        _SYSTEM_FILE_SEARCH_NEARBY_RULE_KEY: _SYSTEM_FILE_SEARCH_NEARBY_RULE_FALLBACK,
+        _TOOLS_FILE_SEARCH_NEARBY_RULE_KEY: _TOOLS_FILE_SEARCH_NEARBY_RULE_FALLBACK,
+    }
+
+
+def render_workspace_prompt_variables(prompt_text: str) -> str:
+    text = str(prompt_text or "")
+    if not text:
+        return text
+    for key, value in _rg_prompt_variables().items():
+        text = text.replace(key, value)
+    return text
 
 
 def build_mcp_system_append(agent: Any) -> str:
@@ -232,9 +316,10 @@ def compose_system_prompt_snapshot(agent: Any, include_tools: bool) -> str:
         + build_runtime_cache_prompt_append(agent, default_workspace_id="default")
         + build_os_file_ops_prompt_append()
     )
+    snapshot = core
     if include_tools:
-        return core + "\n" + build_tools_prompt_append(agent)
-    return core
+        snapshot = core + "\n" + build_tools_prompt_append(agent)
+    return render_workspace_prompt_variables(snapshot)
 
 
 def build_runtime_cache_prompt_append(agent: Any, default_workspace_id: str) -> str:
@@ -285,6 +370,16 @@ def build_tools_prompt_append(agent: Any) -> str:
 
 def build_os_file_ops_prompt_append() -> str:
     """Inject OS-specific shell policy for file operations."""
+    search_policy_rule = (
+        _TOOLS_FILE_SEARCH_NEARBY_RULE_RG_ONLY
+        if has_usable_workspace_rg_bin()
+        else _TOOLS_FILE_SEARCH_NEARBY_RULE_FALLBACK
+    )
+    search_policy_line = (
+        "- 当需要定位关键词并读取文本附近内容时，"
+        + search_policy_rule
+        + "\n"
+    )
     if os.name == "nt":
         return (
             "\n\n## File Operation Policy (OS-Specific)\n"
@@ -292,17 +387,17 @@ def build_os_file_ops_prompt_append() -> str:
             "- 命令路由优先级：脚本执行规则 > 文本文件操作规则。若命令目标是执行脚本（如 python/py/node/bash/pwsh 调用脚本文件），必须按脚本执行规则处理。\n"
             '- 当前系统为 Windows：仅当命令目标是文本文件操作（读取、检索、创建、编辑、替换）时，才必须使用 `powershell -ExecutionPolicy Bypass -Command "<command>"` 形式执行；运行脚本不属于文本文件操作。\n'
             "- 禁止使用 `type`、`findstr`、`copy`、`move`、`del`、`cmd /c` 等非该前缀方式处理这些文件操作。\n"
-            "- 当需要定位关键词并读取文本附近内容时，必须先检索命中位置，再按行号分段读取附近片段；禁止一次读取整个文件。\n"
-            "- 读取文本文件时，单次读取不得超过 100 行；超过时必须拆分为多次分段读取。\n"
-            '- 脚本执行时禁止使用多余的 PowerShell 包装。允许示例：`python tools/a.py --x 1`、`py scripts/job.py`；禁止示例：`powershell -ExecutionPolicy Bypass -Command "python tools/a.py --x 1"`。\n'
-            "- 在输出命令前必须自检：若命令包含 python/py + 脚本文件，则直接调用 python/py；若命令目标是文本文件操作，则使用 PowerShell 前缀。"
+            + search_policy_line
+            + "- 读取文本文件时，单次读取不得超过 100 行；超过时必须拆分为多次分段读取。\n"
+            + '- 脚本执行时禁止使用多余的 PowerShell 包装。允许示例：`python tools/a.py --x 1`、`py scripts/job.py`；禁止示例：`powershell -ExecutionPolicy Bypass -Command "python tools/a.py --x 1"`。\n'
+            + "- 在输出命令前必须自检：若命令包含 python/py + 脚本文件，则直接调用 python/py；若命令目标是文本文件操作，则使用 PowerShell 前缀。"
         )
     return (
         "\n\n## File Operation Policy (OS-Specific)\n"
         "- 可通过操作系统命令完成的文件操作（读取、检索、创建、编辑、批量替换）必须使用 `shell` 工具执行。\n"
         "- 当前系统为非 Windows：`shell.command` 使用 POSIX shell 规范（优先 `cat`/`sed`/`awk`/`grep`/`find`，需要修改文件时优先 `sed -i` 或重定向）。\n"
-        "- 当需要定位关键词并读取文本附近内容时，必须先检索命中位置，再按行号分段读取附近片段；禁止一次读取整个文件。\n"
-        "- 读取文本文件时，单次读取不得超过 100 行；超过时必须拆分为多次分段读取。\n"
+        + search_policy_line
+        + "- 读取文本文件时，单次读取不得超过 100 行；超过时必须拆分为多次分段读取。\n"
     )
 
 
