@@ -348,6 +348,33 @@ def _shell_command_indicates_verification(command: str) -> bool:
     return any(n in c for n in needles)
 
 
+def _model_tool_result_was_aborted(tool_name: str, result: Any) -> bool:
+    if str(tool_name or "").strip() != "shell":
+        return False
+    if not isinstance(result, dict):
+        return False
+    if bool(result.get("aborted_by_user", False)):
+        return True
+    output_text = str(result.get("output") or "")
+    return "command aborted by user" in output_text.lower()
+
+
+def _reload_chat_history_after_aborted_command(agent: Any) -> None:
+    try:
+        agent._suppress_next_prompt_chat_reload_once = True
+    except Exception:
+        pass
+    reload_fn = getattr(agent, "_reload_chat_history_from_anchor_on_resize", None)
+    if not callable(reload_fn):
+        return
+    try:
+        reload_fn(include_startup_overview=True)
+    except TypeError:
+        reload_fn()
+    except Exception:
+        pass
+
+
 def _tool_change_and_verification_hints(
     tool_name: str,
     args: Dict[str, Any],
@@ -1141,7 +1168,7 @@ def run_agent_loop(agent: Any):
                 if self._is_executable_file(ui):
                     exec_ok = bool(self._execute_file_directly(ui))
                     last_direct = getattr(self, "_last_direct_shell_execution", None)
-                    if not exec_ok:
+                    if (not exec_ok) and (not self._is_direct_shell_result_aborted(last_direct)):
                         rendered_lines = 0
                         cursor_at_line_start = True
                         if isinstance(last_direct, dict):
@@ -1179,7 +1206,10 @@ def run_agent_loop(agent: Any):
                             stdout_text="",
                             stderr_text="" if exec_ok else "Command execution failed (no detailed output captured)\n",
                         )
-                    self._show_separator_next_prompt = not self._is_direct_shell_result_aborted(last_direct)
+                    aborted_direct_result = self._is_direct_shell_result_aborted(last_direct)
+                    self._show_separator_next_prompt = not aborted_direct_result
+                    if aborted_direct_result:
+                        _reload_chat_history_after_aborted_command(self)
                     continue
 
                 user_input_cmd = ui
@@ -1279,7 +1309,7 @@ def run_agent_loop(agent: Any):
                             if return_code is not None:
                                 last_direct = getattr(self, "_last_direct_shell_execution", None)
                                 current_direct_result = last_direct
-                                if int(return_code) != 0:
+                                if int(return_code) != 0 and not self._is_direct_shell_result_aborted(last_direct):
                                     rendered_lines = 0
                                     cursor_at_line_start = True
                                     if isinstance(last_direct, dict):
@@ -1334,9 +1364,12 @@ def run_agent_loop(agent: Any):
                             stdout_text="",
                             stderr_text=f"{msg}\n",
                         )
-                    self._show_separator_next_prompt = not self._is_direct_shell_result_aborted(
+                    aborted_direct_result = self._is_direct_shell_result_aborted(
                         current_direct_result
                     )
+                    self._show_separator_next_prompt = not aborted_direct_result
+                    if aborted_direct_result:
+                        _reload_chat_history_after_aborted_command(self)
                     continue
 
                 # e.g. !git status — not in the small whitelist but still direct shell
@@ -1370,7 +1403,7 @@ def run_agent_loop(agent: Any):
                     self._reset_work_directory_to_startup_initial()
                 if return_code is not None:
                     last_direct = getattr(self, "_last_direct_shell_execution", None)
-                    if int(return_code) != 0:
+                    if int(return_code) != 0 and not self._is_direct_shell_result_aborted(last_direct):
                         rendered_lines = 0
                         cursor_at_line_start = True
                         if isinstance(last_direct, dict):
@@ -1404,7 +1437,10 @@ def run_agent_loop(agent: Any):
                             stdout_text="",
                             stderr_text="",
                         )
-                self._show_separator_next_prompt = not self._is_direct_shell_result_aborted(last_direct)
+                aborted_direct_result = self._is_direct_shell_result_aborted(last_direct)
+                self._show_separator_next_prompt = not aborted_direct_result
+                if aborted_direct_result:
+                    _reload_chat_history_after_aborted_command(self)
                 continue
 
             # Natural-language turn: rewrite prompt line as chat-style user line.
@@ -1892,13 +1928,24 @@ def run_agent_loop(agent: Any):
                         rendered_lines = int(result.get("display_rendered_lines", 0) or 0)
                     except Exception:
                         rendered_lines = 0
-                    repaint_up_lines = max(1, rendered_lines + 1)
+                    try:
+                        interstitial_lines = int(
+                            getattr(self, "_tool_call_feedback_interstitial_lines", 0) or 0
+                        )
+                    except Exception:
+                        interstitial_lines = 0
+                    repaint_up_lines = max(1, rendered_lines + max(0, interstitial_lines) + 1)
+                aborted_tool_result = _model_tool_result_was_aborted(tool_name, result)
                 self._repaint_tool_call_feedback_if_failed(
                     tool_name,
                     args,
-                    failed=not bool(result.get("success", True)),
+                    failed=(not bool(result.get("success", True))) and (not aborted_tool_result),
                     up_lines=repaint_up_lines,
                 )
+                try:
+                    self._tool_call_feedback_interstitial_lines = 0
+                except Exception:
+                    pass
                 no_tool_rounds = 0
                 self.operation_results.append({
                     "command": pseudo_command,
@@ -1912,6 +1959,8 @@ def run_agent_loop(agent: Any):
                             recorder(tool_name, args, result if isinstance(result, dict) else {})
                         except Exception:
                             pass
+                    if aborted_tool_result:
+                        _reload_chat_history_after_aborted_command(self)
                 last_result = result
                 is_first_round = False
                 if tool_name == "apply_patch" and (not bool(result.get("success", False))):

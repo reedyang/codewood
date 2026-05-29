@@ -147,6 +147,17 @@ class _FakePopenMultiLine:
         return 0
 
 
+class _FakePopenResult:
+    def __init__(self, stdout_text: str = "", stderr_text: str = "", return_code: int = 0):
+        self.stdout = _FakePipe([stdout_text.encode("utf-8")]) if stdout_text else _FakePipe([])
+        self.stderr = _FakePipe([stderr_text.encode("utf-8")]) if stderr_text else _FakePipe([])
+        self.stdin = None
+        self._return_code = int(return_code)
+
+    def wait(self):
+        return self._return_code
+
+
 class _FakeCompleted:
     def __init__(self, stdout_text: str, stderr_text: str = "", return_code: int = 0):
         self.returncode = int(return_code)
@@ -406,7 +417,7 @@ class ShellCommandExecutionGuardsTests(unittest.TestCase):
     def test_shell_command_execution_calls_startup_initial_reset(self):
         agent = _DummyAgent()
 
-        with patch("subprocess.run", return_value=_FakeCompleted("ok\n")):
+        with patch("subprocess.Popen", return_value=_FakePopenResult("ok\n")):
             result = action_shell_command(agent, 'python -c "print(1)"', confirmed=False, interactive=False, input_data=None)
 
         self.assertTrue(result.get("success", False))
@@ -417,11 +428,11 @@ class ShellCommandExecutionGuardsTests(unittest.TestCase):
         agent.work_directory = Path.cwd() / "tests"
         agent.workspace_root = Path.cwd()
 
-        with patch("subprocess.run", return_value=_FakeCompleted("ok\n")) as run_mock:
+        with patch("subprocess.Popen", return_value=_FakePopenResult("ok\n")) as popen_mock:
             result = action_shell_command(agent, 'python -c "print(1)"', confirmed=False, interactive=False, input_data=None)
 
         self.assertTrue(result.get("success", False))
-        self.assertEqual(run_mock.call_args.kwargs.get("cwd"), str(agent.workspace_root))
+        self.assertEqual(popen_mock.call_args.kwargs.get("cwd"), str(agent.workspace_root))
 
     def test_moderate_mode_manual_confirm_ignores_allowlist(self):
         agent = _DummyAgent()
@@ -458,7 +469,7 @@ class ShellCommandExecutionGuardsTests(unittest.TestCase):
             agent.workspace_config_dir = ws
             agent.prompt_result = False
 
-            with patch("subprocess.run", return_value=_FakeCompleted("hello\n")):
+            with patch("subprocess.Popen", return_value=_FakePopenResult("hello\n")):
                 result = action_shell_command(agent, f'type "{target}"', confirmed=False, interactive=False, input_data=None)
 
         self.assertTrue(result.get("success", False))
@@ -476,7 +487,7 @@ class ShellCommandExecutionGuardsTests(unittest.TestCase):
             agent.workspace_config_dir = ws
             agent.prompt_result = False
 
-            with patch("subprocess.run", return_value=_FakeCompleted("hello\n")):
+            with patch("subprocess.Popen", return_value=_FakePopenResult("hello\n")):
                 result = action_shell_command(agent, f'Get-Content "{target}"', confirmed=False, interactive=False, input_data=None)
 
         self.assertTrue(result.get("success", False))
@@ -526,20 +537,22 @@ class ShellCommandExecutionGuardsTests(unittest.TestCase):
             writes.append(str(text))
             return None
 
-        with patch("subprocess.run", return_value=_FakeCompleted("stream-line\n")) as run_mock, patch(
+        with patch("subprocess.Popen", return_value=_FakePopenResult("stream-line\n")) as popen_mock, patch(
             "src.actions.command_actions._dynamic_tail_line_limit",
             return_value=2,
         ), patch(
             "src.actions.command_actions._safe_console_write",
             side_effect=_capture_write,
-        ), patch("subprocess.Popen") as popen_mock:
+        ):
             result = action_shell_command(agent, command, confirmed=False, interactive=True, input_data=None)
 
         self.assertTrue(result.get("success", False))
         self.assertEqual(result.get("interactive"), False)
-        self.assertIn("stream-line", "".join(writes))
-        self.assertEqual(run_mock.call_args.kwargs.get("stdin"), subprocess.DEVNULL)
-        popen_mock.assert_not_called()
+        self.assertIn("stream-line", str(result.get("display_output") or ""))
+        self.assertEqual(popen_mock.call_args.kwargs.get("stdin"), subprocess.DEVNULL)
+        self.assertEqual(popen_mock.call_args.kwargs.get("stderr"), subprocess.STDOUT)
+        self.assertNotIn("stderr", result)
+        self.assertNotIn("display_stderr", result)
 
     def test_non_interactive_mode_displays_only_tail_summary(self):
         agent = _DummyAgent()
@@ -551,31 +564,50 @@ class ShellCommandExecutionGuardsTests(unittest.TestCase):
             writes.append(str(text))
             return None
 
-        with patch("subprocess.run", return_value=_FakeCompleted(big_out)), patch(
+        with patch("subprocess.Popen", return_value=_FakePopenResult(big_out)) as popen_mock, patch(
             "src.actions.command_actions._dynamic_tail_line_limit", return_value=5
         ), patch(
             "src.actions.command_actions._safe_console_write",
             side_effect=_capture_write,
-        ), patch("subprocess.Popen") as popen_mock:
+        ):
             result = action_shell_command(agent, command, confirmed=False, interactive=False, input_data=None)
 
         self.assertTrue(result.get("success", False))
         self.assertIn("... omitted", "".join(writes))
         self.assertNotIn("line1\n", "".join(writes))
-        popen_mock.assert_not_called()
+        popen_mock.assert_called_once()
+        self.assertEqual(popen_mock.call_args.kwargs.get("stderr"), subprocess.STDOUT)
+        self.assertNotIn("stderr", result)
+        self.assertNotIn("display_stderr", result)
 
     def test_non_interactive_mode_does_not_register_auto_hide_lines(self):
         agent = _DummyAgent()
         command = 'python -c "print(1)"'
 
-        with patch("subprocess.run", return_value=_FakeCompleted("line1\nline2\n")), patch(
+        with patch("subprocess.Popen", return_value=_FakePopenResult("line1\nline2\n")) as popen_mock, patch(
             "src.actions.command_actions._dynamic_tail_line_limit", return_value=5
-        ), patch("subprocess.Popen") as popen_mock:
+        ):
             result = action_shell_command(agent, command, confirmed=False, interactive=False, input_data=None)
 
         self.assertTrue(result.get("success", False))
         self.assertEqual(agent.auto_hide_register_calls, 0)
-        popen_mock.assert_not_called()
+        popen_mock.assert_called_once()
+
+    def test_non_interactive_abort_counts_banner_lines_for_feedback_repaint(self):
+        agent = _DummyAgent()
+        command = 'python -c "print(1)"'
+        agent._consume_process_aborted = lambda _process: True
+        agent._print_conversation_interrupted_banner = lambda: 2
+
+        with patch("subprocess.Popen", return_value=_FakePopenResult("line1\n", return_code=130)), patch(
+            "src.actions.command_actions._dynamic_tail_line_limit", return_value=5
+        ):
+            result = action_shell_command(agent, command, confirmed=False, interactive=False, input_data=None)
+
+        self.assertFalse(result.get("success", True))
+        self.assertTrue(bool(result.get("aborted_by_user", False)))
+        self.assertEqual(result.get("display_rendered_lines"), 4)
+        self.assertIn("line1\ncommand aborted by user\n", str(result.get("output") or ""))
 
     def test_non_interactive_mode_prints_no_output_marker_when_stdout_stderr_empty(self):
         agent = _DummyAgent()
@@ -586,15 +618,16 @@ class ShellCommandExecutionGuardsTests(unittest.TestCase):
             writes.append(str(text))
             return None
 
-        with patch("subprocess.run", return_value=_FakeCompleted("", "")), patch(
+        with patch("subprocess.Popen", return_value=_FakePopenResult("", "")) as popen_mock, patch(
             "src.actions.command_actions._safe_console_write",
             side_effect=_capture_write,
-        ), patch("subprocess.Popen") as popen_mock:
+        ):
             result = action_shell_command(agent, command, confirmed=False, interactive=False, input_data=None)
 
         self.assertTrue(result.get("success", False))
         self.assertIn("(no output)", "".join(writes))
-        popen_mock.assert_not_called()
+        popen_mock.assert_called_once()
+        self.assertEqual(popen_mock.call_args.kwargs.get("stderr"), subprocess.STDOUT)
 
 
 if __name__ == "__main__":

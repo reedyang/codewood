@@ -12,6 +12,12 @@ from ..core.security import command_security
 def _print_with_auto_hide_tracking(agent: Any, text: str) -> None:
     msg = str(text or "")
     print(msg)
+    tracker = getattr(agent, "_register_tool_call_feedback_interstitial_output", None)
+    if callable(tracker):
+        try:
+            tracker(msg)
+        except Exception:
+            pass
 
 
 def confirm_allowlist_path(agent: Any) -> Path:

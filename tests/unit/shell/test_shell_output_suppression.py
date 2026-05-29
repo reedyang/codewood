@@ -5,6 +5,7 @@ from src.config.app_info import get_app_runtime_attr_name
 from src.actions.command_actions import (
     SHELL_OUTPUT_DISPLAY_TAIL_LINES,
     _build_tail_output_for_display,
+    _build_logical_tail_output_for_live_replay,
     _count_output_lines,
     _dynamic_tail_line_limit,
     _terminal_columns_for_tail_display,
@@ -33,7 +34,11 @@ class ShellOutputSuppressionTests(unittest.TestCase):
 
     def test_dynamic_tail_line_limit_uses_terminal_height(self):
         with patch("src.actions.command_actions._terminal_rows_for_tail_display", return_value=20):
-            self.assertEqual(_dynamic_tail_line_limit(_FakePipe()), 20)
+            self.assertEqual(_dynamic_tail_line_limit(_FakePipe()), 17)
+
+    def test_dynamic_tail_line_limit_keeps_at_least_one_line_after_reserve(self):
+        with patch("src.actions.command_actions._terminal_rows_for_tail_display", return_value=2):
+            self.assertEqual(_dynamic_tail_line_limit(_FakePipe()), 1)
 
     def test_count_output_lines_handles_crlf(self):
         self.assertEqual(_count_output_lines("a\r\nb\r\n"), 2)
@@ -72,6 +77,54 @@ class ShellOutputSuppressionTests(unittest.TestCase):
             out = _build_tail_output_for_display(text, _FakePipe(), 5)
         self.assertIn("omitted 1 lines", out)
         self.assertTrue(out.endswith(("x" * 10) + "\n" + ("x" * 10) + "\n"))
+
+    def test_build_tail_output_can_avoid_partial_start_line_for_live_replay(self):
+        text = "Reply from host: bytes=32\nReply from host: bytes=33\n"
+        with patch("src.actions.command_actions._terminal_columns_for_tail_display", return_value=10):
+            out = _build_tail_output_for_display(
+                text,
+                _FakePipe(),
+                3,
+                allow_partial_start_line=False,
+        )
+        self.assertIn("omitted 1 lines", out)
+        self.assertIn("Reply from host: bytes=33", out)
+        self.assertEqual(out.splitlines()[1], "Reply from host: bytes=33")
+
+    def test_build_logical_tail_output_for_live_replay_prefills_tail_lines(self):
+        text = "\n".join(f"Reply from host: bytes={i}" for i in range(1, 8)) + "\n"
+        out = _build_logical_tail_output_for_live_replay(text, _FakePipe(), 4)
+        self.assertEqual(
+            out,
+            "... omitted 4 lines ...\n"
+            "Reply from host: bytes=5\n"
+            "Reply from host: bytes=6\n"
+            "Reply from host: bytes=7\n",
+        )
+
+    def test_build_logical_tail_output_for_live_replay_uses_visual_rows(self):
+        text = "\n".join(
+            f"Reply from 127.0.0.1: bytes=32 time={i:02d}ms TTL=52"
+            for i in range(1, 5)
+        ) + "\n"
+        with patch("src.actions.command_actions._terminal_columns_for_tail_display", return_value=44):
+            out = _build_logical_tail_output_for_live_replay(
+                text,
+                _FakePipe(),
+                5,
+                display_indent_width=4,
+            )
+
+        self.assertIn("omitted 2 lines", out)
+        self.assertNotIn("time=01ms", out)
+        self.assertNotIn("time=02ms", out)
+        self.assertIn("time=03ms", out)
+        self.assertIn("time=04ms", out)
+
+    def test_build_logical_tail_output_for_live_replay_drops_incomplete_line(self):
+        text = "line1\nline2\nbytes=partial"
+        out = _build_logical_tail_output_for_live_replay(text, _FakePipe(), 4)
+        self.assertEqual(out, "line1\nline2\n")
 
     def test_build_tail_output_omitted_count_uses_real_lines_not_wrapped_visual_lines(self):
         text = "\n".join(("a" * 18) for _ in range(4)) + "\n"

@@ -341,6 +341,56 @@ class TaskControlToolTests(unittest.TestCase):
             ],
         )
 
+    def test_record_aborted_direct_shell_history_skips_slow_task_lifecycle(self):
+        appended = []
+        classify_calls = []
+        start_calls = []
+        refresh_calls = []
+
+        class _FakeSessionMemoryService:
+            def __init__(self):
+                self.calls = []
+
+            def schedule_context_usage_refresh_async(self, **kwargs):
+                self.calls.append(dict(kwargs))
+                return True
+
+        self.agent._classify_task_domains = (
+            lambda text: classify_calls.append(str(text or "")) or {"domains": ["software_development"]}
+        )
+        self.agent._start_chat_task = lambda **kwargs: start_calls.append(dict(kwargs)) or "task-direct"
+        self.agent._append_chat_message = lambda role, content: appended.append(
+            {"role": str(role or ""), "content": str(content or "")}
+        )
+        self.agent._refresh_status_context_usage_snapshot = (
+            lambda user_input_hint="", context_hint="": refresh_calls.append(
+                {
+                    "user_input_hint": str(user_input_hint or ""),
+                    "context_hint": str(context_hint or ""),
+                }
+            )
+        )
+        self.agent.active_chat_id = "chat-1"
+        self.agent.session_memory_service = _FakeSessionMemoryService()
+
+        self.agent._record_direct_shell_execution_history(
+            raw_user_command="!ping example.com",
+            executed_command="ping example.com",
+            cwd="D:/ws",
+            return_code=130,
+            stdout_text="command aborted by user\n",
+            stderr_text="",
+            aborted_by_user=True,
+        )
+
+        self.assertEqual(classify_calls, [])
+        self.assertEqual(start_calls, [])
+        self.assertEqual(refresh_calls, [])
+        self.assertEqual(self.agent.session_memory_service.calls, [])
+        self.assertEqual(len(appended), 2)
+        self.assertTrue(appended[0]["content"].startswith("[DIRECT_SHELL_USER_COMMAND]"))
+        self.assertTrue(appended[1]["content"].startswith("[DIRECT_SHELL_RESULT]"))
+
     def test_close_chat_task_cancelled_fallback_marks_latest_when_task_mark_misses(self):
         class _FakeChatStateManager:
             def __init__(self):

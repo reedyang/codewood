@@ -62,6 +62,7 @@ class PromptSeparatorBehaviorTests(unittest.TestCase):
         agent._chat_history_reload_last_terminal_width = 0
         agent._chat_history_first_visible_index_map = {}
         agent._force_reload_chat_history_from_anchor_once = False
+        agent._suppress_next_prompt_chat_reload_once = False
         agent.active_chat_id = "chat-1"
         agent.workspace_id = "default"
         agent.conversation_history = []
@@ -526,6 +527,54 @@ class PromptSeparatorBehaviorTests(unittest.TestCase):
         mock_maybe.assert_not_called()
         self.assertFalse(agent._force_reload_chat_history_from_anchor_once)
 
+    def test_prompt_reload_suppression_consumes_forced_reload_after_command_abort(self):
+        agent = self._build_agent()
+        agent._force_reload_chat_history_from_anchor_once = True
+        agent._suppress_next_prompt_chat_reload_once = True
+        agent._chat_history_reload_last_terminal_width = 80
+
+        class _InputHandlerCols120(_FakeInputHandler):
+            def get_terminal_columns(self, default=80):
+                return 120
+
+        agent.input_handler = _InputHandlerCols120()
+        with (
+            patch.object(agent, "_status_bar_render_data", return_value=([], "status")),
+            patch.object(agent, "_reload_chat_history_from_anchor_on_resize") as mock_reload,
+            patch.object(agent, "_maybe_reload_chat_history_on_terminal_resize") as mock_maybe,
+        ):
+            out = agent._get_user_input_with_history()
+
+        self.assertEqual(out, "hello")
+        mock_reload.assert_not_called()
+        mock_maybe.assert_not_called()
+        self.assertFalse(agent._force_reload_chat_history_from_anchor_once)
+        self.assertFalse(agent._suppress_next_prompt_chat_reload_once)
+        self.assertEqual(agent._chat_history_reload_last_terminal_width, 120)
+
+    def test_prompt_reload_suppression_consumes_next_width_reload_after_command_abort(self):
+        agent = self._build_agent()
+        agent._suppress_next_prompt_chat_reload_once = True
+        agent._chat_history_reload_last_terminal_width = 80
+
+        class _InputHandlerCols120(_FakeInputHandler):
+            def get_terminal_columns(self, default=80):
+                return 120
+
+        agent.input_handler = _InputHandlerCols120()
+        with (
+            patch.object(agent, "_status_bar_render_data", return_value=([], "status")),
+            patch.object(agent, "_reload_chat_history_from_anchor_on_resize") as mock_reload,
+            patch.object(agent, "_maybe_reload_chat_history_on_terminal_resize") as mock_maybe,
+        ):
+            out = agent._get_user_input_with_history()
+
+        self.assertEqual(out, "hello")
+        mock_reload.assert_not_called()
+        mock_maybe.assert_not_called()
+        self.assertFalse(agent._suppress_next_prompt_chat_reload_once)
+        self.assertEqual(agent._chat_history_reload_last_terminal_width, 120)
+
     def test_terminal_resize_callback_sets_force_reload_flag(self):
         agent = self._build_agent()
         should_interrupt = agent._handle_terminal_columns_changed_during_input(80, 120)
@@ -578,8 +627,7 @@ class PromptSeparatorBehaviorTests(unittest.TestCase):
                 "command": {"tool": "shell", "args": {"command": "echo hi"}},
                 "result": {
                     "success": True,
-                    "display_output": "  └ hi\n",
-                    "display_stderr": "",
+                    "output": "hi\n",
                 },
             }
         ]
@@ -594,17 +642,88 @@ class PromptSeparatorBehaviorTests(unittest.TestCase):
         mock_shell_output.assert_called_once_with("hi\n", "")
         mock_sep.assert_not_called()
 
-    def test_extract_model_shell_replay_output_normalizes_legacy_prefixed_display_payload(self):
+    def test_extract_model_shell_replay_output_uses_single_raw_output_field(self):
         agent = self._build_agent()
         out, err = agent._extract_model_shell_replay_output(
             {
                 "success": True,
-                "display_output": "  └ first\n    second\n",
-                "display_stderr": "",
+                "output": "first\nsecond\n",
             }
         )
         self.assertEqual(out, "first\nsecond\n")
         self.assertEqual(err, "")
+
+    def test_chat_history_model_shell_placeholder_result_does_not_synthesize_no_output(self):
+        agent = self._build_agent()
+        agent.conversation_history = [
+            {
+                "role": "assistant",
+                "content": "{\"tool\":\"shell\",\"args\":{\"command\":\"ping example.com\"}}",
+            },
+        ]
+        agent.operation_results = [
+            {
+                "command": {"tool": "shell", "args": {"command": "ping example.com"}},
+                "result": {},
+            }
+        ]
+        with (
+            patch("builtins.print"),
+            patch.object(agent, "_print_tool_call_feedback") as mock_feedback,
+            patch.object(agent, "_print_direct_shell_history_output") as mock_shell_output,
+        ):
+            agent._print_chat_history()
+        mock_feedback.assert_called_once_with(
+            "shell",
+            {"command": "ping example.com"},
+            failed=False,
+        )
+        mock_shell_output.assert_not_called()
+
+    def test_chat_history_repeated_model_shell_plan_does_not_reuse_prior_result(self):
+        agent = self._build_agent()
+        command = {"command": "ping example.com"}
+        agent.conversation_history = [
+            {
+                "role": "assistant",
+                "content": "{\"tool\":\"shell\",\"args\":{\"command\":\"ping example.com\"}}",
+            },
+            {
+                "role": "assistant",
+                "content": agent._build_model_tool_result_history_content(
+                    "shell",
+                    command,
+                    {
+                        "success": False,
+                        "output": "old output\ncommand aborted by user\n",
+                    },
+                ),
+            },
+            {
+                "role": "assistant",
+                "content": "{\"tool\":\"shell\",\"args\":{\"command\":\"ping example.com\"}}",
+            },
+        ]
+        agent.operation_results = [
+            {
+                "command": {"tool": "shell", "args": command},
+                "result": {
+                    "success": False,
+                    "output": "old output\ncommand aborted by user\n",
+                },
+            }
+        ]
+        with (
+            patch("builtins.print"),
+            patch.object(agent, "_print_tool_call_feedback") as mock_feedback,
+            patch.object(agent, "_print_direct_shell_history_output") as mock_shell_output,
+        ):
+            agent._print_chat_history()
+        self.assertEqual(mock_feedback.call_count, 2)
+        mock_shell_output.assert_called_once_with(
+            "old output\ncommand aborted by user\n",
+            "",
+        )
 
     def test_chat_history_model_shell_result_replays_failed_output_without_operation_results(self):
         agent = self._build_agent()
@@ -621,7 +740,6 @@ class PromptSeparatorBehaviorTests(unittest.TestCase):
                     {
                         "success": False,
                         "output": "'test' is not recognized\n",
-                        "stderr": "",
                     },
                 ),
             },
@@ -638,6 +756,69 @@ class PromptSeparatorBehaviorTests(unittest.TestCase):
         mock_shell_output.assert_called_once_with("'test' is not recognized\n", "")
         mock_sep.assert_not_called()
 
+    def test_chat_history_aborted_model_shell_result_prints_interrupt_banner_without_event(self):
+        agent = self._build_agent()
+        agent.conversation_history = [
+            {
+                "role": "assistant",
+                "content": agent._build_model_tool_result_history_content(
+                    "shell",
+                    {"command": "ping example.com"},
+                    {
+                        "success": False,
+                        "output": "line\ncommand aborted by user\n",
+                    },
+                ),
+            },
+        ]
+        with (
+            patch("builtins.print"),
+            patch.object(agent, "_print_tool_call_feedback") as mock_feedback,
+            patch.object(agent, "_print_direct_shell_history_output") as mock_shell_output,
+            patch.object(agent, "_print_conversation_interrupted_banner") as mock_banner,
+        ):
+            agent._print_chat_history()
+
+        mock_feedback.assert_called_once_with(
+            "shell",
+            {"command": "ping example.com"},
+            failed=True,
+        )
+        mock_shell_output.assert_called_once_with("line\ncommand aborted by user\n", "")
+        mock_banner.assert_called_once_with()
+
+    def test_chat_history_aborted_model_shell_result_does_not_duplicate_interrupt_banner_event(self):
+        agent = self._build_agent()
+        agent.conversation_history = [
+            {
+                "role": "assistant",
+                "content": agent._build_model_tool_result_history_content(
+                    "shell",
+                    {"command": "ping example.com"},
+                    {
+                        "success": False,
+                        "output": "line\ncommand aborted by user\n",
+                    },
+                ),
+            },
+            {
+                "role": "assistant",
+                "content": agent._build_conversation_interrupted_history_content(
+                    interrupted_kind="task",
+                    reason="user_interrupt",
+                ),
+            },
+        ]
+        with (
+            patch("builtins.print"),
+            patch.object(agent, "_print_tool_call_feedback"),
+            patch.object(agent, "_print_direct_shell_history_output"),
+            patch.object(agent, "_print_conversation_interrupted_banner") as mock_banner,
+        ):
+            agent._print_chat_history()
+
+        mock_banner.assert_called_once_with()
+
     def test_chat_history_assistant_after_shell_output_starts_on_new_line(self):
         agent = self._build_agent()
         agent.conversation_history = [
@@ -649,7 +830,6 @@ class PromptSeparatorBehaviorTests(unittest.TestCase):
                     {
                         "success": True,
                         "output": "partial",
-                        "stderr": "",
                     },
                 ),
             },
@@ -702,9 +882,7 @@ class PromptSeparatorBehaviorTests(unittest.TestCase):
                     {
                         "success": True,
                         "output": "line one\nline two\nline three\n",
-                        "stderr": "",
                         "display_output": "old formatted display\n",
-                        "display_stderr": "",
                     },
                 ),
             },
@@ -735,16 +913,14 @@ class PromptSeparatorBehaviorTests(unittest.TestCase):
             {
                 "success": True,
                 "output": "full output\n",
-                "stderr": "",
                 "display_output": "old display\n",
-                "display_stderr": "",
             },
         )
         payload = agent._parse_model_tool_result_history_content(content)
         self.assertIsNotNone(payload)
         self.assertEqual(payload.get("output"), "full output\n")
         self.assertNotIn("display_output", payload)
-        self.assertNotIn("display_stderr", payload)
+        self.assertNotIn("stderr", payload)
 
     def test_chat_history_model_shell_result_synthesizes_no_output_on_replay(self):
         agent = self._build_agent()
@@ -754,7 +930,7 @@ class PromptSeparatorBehaviorTests(unittest.TestCase):
                 "content": agent._build_model_tool_result_history_content(
                     "shell",
                     {"command": "true"},
-                    {"success": True, "output": "", "stderr": ""},
+                    {"success": True, "output": ""},
                 ),
             },
         ]
@@ -787,4 +963,3 @@ class PromptSeparatorBehaviorTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

@@ -11,6 +11,7 @@ from src.runtime.runtime_loop import (
     _build_minimal_verification_command,
     _format_worked_for_summary_line,
     _format_startup_directory,
+    _model_tool_result_was_aborted,
     _refresh_context_usage_after_task_boundary,
     _resolve_worked_summary_terminal_width,
     _sanitize_prompt_pollution,
@@ -72,6 +73,32 @@ class RuntimeLoopTests(unittest.TestCase):
         self.assertTrue(_shell_command_indicates_verification("pytest -q"))
         self.assertTrue(_shell_command_indicates_verification("python -m py_compile a.py"))
         self.assertFalse(_shell_command_indicates_verification("echo hello"))
+
+    def test_model_tool_result_was_aborted_detects_shell_interrupts(self):
+        self.assertTrue(
+            _model_tool_result_was_aborted(
+                "shell",
+                {"success": False, "aborted_by_user": True, "output": ""},
+            )
+        )
+        self.assertTrue(
+            _model_tool_result_was_aborted(
+                "shell",
+                {"success": False, "output": "line\ncommand aborted by user\n"},
+            )
+        )
+        self.assertFalse(
+            _model_tool_result_was_aborted(
+                "shell",
+                {"success": False, "output": "ordinary failure\n"},
+            )
+        )
+        self.assertFalse(
+            _model_tool_result_was_aborted(
+                "read",
+                {"success": False, "output": "command aborted by user\n"},
+            )
+        )
 
     def test_build_minimal_verification_command_prefers_py_compile(self):
         cmd = _build_minimal_verification_command(["a.py", "b.txt"])
