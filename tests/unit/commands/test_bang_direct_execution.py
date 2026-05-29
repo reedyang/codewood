@@ -169,6 +169,313 @@ class BangDirectExecutionTests(unittest.TestCase):
         out_plain = ansi_re.sub("", out_buf.getvalue()).lstrip("\r")
         self.assertEqual(out_plain, "  └ 123456\n    78901")
 
+    def test_direct_shell_output_stream_can_disable_gray_for_live_render(self):
+        class _TtyBuffer(StringIO):
+            def isatty(self):
+                return True
+
+            def fileno(self):
+                return 1
+
+        out_buf = _TtyBuffer()
+        state = {
+            "_suppress_first_write_clear": True,
+            "apply_gray": False,
+        }
+        with patch("src.agent.sys.stdout", out_buf):
+            out_stream, _ = self.agent._create_direct_shell_output_streams(state)
+            out_stream.write("line1\n")
+
+        self.assertNotIn("\x1b[90m", out_buf.getvalue())
+        self.assertIn("line1\n", out_buf.getvalue())
+
+    def test_direct_shell_output_stream_can_drop_remainder_of_partial_line_after_reload(self):
+        class _TtyBuffer(StringIO):
+            def isatty(self):
+                return True
+
+            def fileno(self):
+                return 1
+
+        out_buf = _TtyBuffer()
+        state = {
+            "_suppress_first_write_clear": True,
+            "apply_gray": False,
+            "drop_until_next_newline": True,
+        }
+        with patch("src.agent.sys.stdout", out_buf):
+            out_stream, _ = self.agent._create_direct_shell_output_streams(state)
+            out_stream.write("bytes=32 time=15ms TTL=52\nReply from host\n")
+
+        out = out_buf.getvalue()
+        self.assertNotIn("bytes=32", out)
+        self.assertIn("Reply from host", out)
+        self.assertFalse(bool(state.get("drop_until_next_newline", True)))
+
+    def test_direct_shell_output_stream_does_not_drop_replay_prefill_notice(self):
+        class _TtyBuffer(StringIO):
+            def isatty(self):
+                return True
+
+            def fileno(self):
+                return 1
+
+        out_buf = _TtyBuffer()
+        state = {
+            "_suppress_first_write_clear": True,
+            "apply_gray": False,
+            "drop_until_next_newline": True,
+            "suspend_drop_until_next_newline": True,
+        }
+        with patch("src.agent.sys.stdout", out_buf):
+            out_stream, _ = self.agent._create_direct_shell_output_streams(state)
+            out_stream.write("... omitted 55 lines ...\nline56\nline57\n")
+
+        out = out_buf.getvalue()
+        self.assertIn("... omitted 55 lines ...", out)
+        self.assertIn("line56", out)
+        self.assertTrue(bool(state.get("drop_until_next_newline", False)))
+
+    def test_direct_shell_output_stream_preserves_replay_omitted_base_on_next_write(self):
+        class _TtyBuffer(StringIO):
+            def isatty(self):
+                return True
+
+            def fileno(self):
+                return 1
+
+        out_buf = _TtyBuffer()
+        state = {
+            "_suppress_first_write_clear": True,
+            "apply_gray": False,
+            "max_visible_lines": 4,
+            "_live_omitted_base_lines": 55,
+        }
+        with patch("src.agent.sys.stdout", out_buf):
+            out_stream, _ = self.agent._create_direct_shell_output_streams(state)
+            out_stream.write("line56\nline57\nline58\n")
+            out_stream.write("line59\n")
+
+        out = out_buf.getvalue()
+        self.assertIn("... omitted 55 lines ...", out)
+        self.assertIn("... omitted 56 lines ...", out)
+        self.assertIn("line59", out)
+
+    def test_direct_shell_output_stream_replay_tail_uses_continuation_after_omitted_notice(self):
+        class _TtyBuffer(StringIO):
+            def isatty(self):
+                return True
+
+            def fileno(self):
+                return 1
+
+        out_buf = _TtyBuffer()
+        state = {
+            "_suppress_first_write_clear": True,
+            "apply_gray": False,
+            "max_visible_lines": 4,
+            "_live_omitted_base_lines": 6,
+            "first_line_emitted": True,
+        }
+        with patch("src.agent.sys.stdout", out_buf):
+            out_stream, _ = self.agent._create_direct_shell_output_streams(state)
+            out_stream.write("Reply from host\nReply from host 2\n")
+
+        ansi_re = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+        plain = ansi_re.sub("", out_buf.getvalue()).lstrip("\r")
+        lines = plain.splitlines()
+        self.assertIn("... omitted 6 lines ...", lines[0])
+        self.assertEqual(lines[1], "    Reply from host")
+        self.assertEqual(lines[2], "    Reply from host 2")
+
+    def test_direct_shell_output_stream_live_window_keeps_latest_n_lines(self):
+        class _TtyBuffer(StringIO):
+            def isatty(self):
+                return True
+
+            def fileno(self):
+                return 1
+
+        out_buf = _TtyBuffer()
+        state = {
+            "_suppress_first_write_clear": True,
+            "apply_gray": False,
+            "max_visible_lines": 2,
+        }
+        with patch("src.agent.sys.stdout", out_buf):
+            out_stream, _ = self.agent._create_direct_shell_output_streams(state)
+            out_stream.write("line1\nline2\nline3\n")
+
+        self.assertIn("... omitted 2 lines ...", out_buf.getvalue())
+        self.assertEqual(int(state.get("rendered_line_count", 0)), 2)
+        self.assertTrue(bool(state.get("cursor_at_line_start", False)))
+
+    def test_direct_shell_output_stream_triggers_desync_callback_on_window_shrink(self):
+        class _TtyBuffer(StringIO):
+            def isatty(self):
+                return True
+
+            def fileno(self):
+                return 1
+
+        out_buf = _TtyBuffer()
+        callback_count = {"n": 0}
+        dynamic_limit = {"v": 6}
+
+        def _provider():
+            return int(dynamic_limit["v"])
+
+        def _on_desync():
+            callback_count["n"] += 1
+            state["disable_live_render"] = True
+
+        state = {
+            "_suppress_first_write_clear": True,
+            "apply_gray": False,
+            "max_visible_lines": 6,
+            "max_visible_lines_provider": _provider,
+            "on_live_window_desynced": _on_desync,
+        }
+        with patch("src.agent.sys.stdout", out_buf):
+            out_stream, _ = self.agent._create_direct_shell_output_streams(state)
+            out_stream.write("line1\nline2\nline3\nline4\nline5\nline6\n")
+            dynamic_limit["v"] = 2
+            out_stream.write("line7\n")
+
+        self.assertEqual(callback_count["n"], 1)
+        self.assertTrue(bool(state.get("disable_live_render", False)))
+
+    def test_direct_shell_output_stream_triggers_replay_when_columns_grow(self):
+        class _TtyBuffer(StringIO):
+            def isatty(self):
+                return True
+
+            def fileno(self):
+                return 1
+
+        out_buf = _TtyBuffer()
+        callback_count = {"n": 0}
+        dynamic_cols = {"v": 24}
+
+        def _on_desync():
+            callback_count["n"] += 1
+            state["disable_live_render"] = True
+
+        state = {
+            "_suppress_first_write_clear": True,
+            "apply_gray": False,
+            "max_visible_lines": 20,
+            "on_live_window_desynced": _on_desync,
+        }
+        with (
+            patch("src.agent.sys.stdout", out_buf),
+            patch(
+                "src.agent.Agent._DirectShellOutputStream._terminal_columns",
+                side_effect=lambda: int(dynamic_cols["v"]),
+            ),
+        ):
+            out_stream, _ = self.agent._create_direct_shell_output_streams(state)
+            out_stream.write("Reply from 127.0.0.1: bytes=32 time=14ms TTL=52\n")
+            dynamic_cols["v"] = 80
+            out_stream.write("Reply from 127.0.0.1: bytes=32 time=13ms TTL=52\n")
+
+        self.assertEqual(callback_count["n"], 1)
+        self.assertTrue(bool(state.get("disable_live_render", False)))
+
+    def test_direct_shell_live_replay_snapshot_strips_suppressed_leading_blank(self):
+        snapshot = Agent._sanitize_direct_shell_live_replay_snapshot(
+            "\r\nPinging host\nReply from host\n",
+            suppress_leading_blank_once=True,
+        )
+
+        self.assertEqual(snapshot, "Pinging host\nReply from host\n")
+
+    def test_direct_shell_output_stream_suppresses_desync_when_abort_is_pending(self):
+        class _TtyBuffer(StringIO):
+            def isatty(self):
+                return True
+
+            def fileno(self):
+                return 1
+
+        out_buf = _TtyBuffer()
+        callback_count = {"n": 0}
+        dynamic_limit = {"v": 6}
+        abort_pending = {"v": False}
+
+        def _provider():
+            return int(dynamic_limit["v"])
+
+        def _on_desync():
+            callback_count["n"] += 1
+
+        state = {
+            "_suppress_first_write_clear": True,
+            "apply_gray": False,
+            "max_visible_lines": 6,
+            "max_visible_lines_provider": _provider,
+            "on_live_window_desynced": _on_desync,
+            "suppress_desync_when": lambda: bool(abort_pending["v"]),
+        }
+        with patch("src.agent.sys.stdout", out_buf):
+            out_stream, _ = self.agent._create_direct_shell_output_streams(state)
+            out_stream.write("line1\nline2\nline3\nline4\nline5\nline6\n")
+            dynamic_limit["v"] = 2
+            abort_pending["v"] = True
+            out_stream.write("line7\n")
+
+        self.assertEqual(callback_count["n"], 0)
+        self.assertTrue(bool(state.get("suspend_desync_detection", False)))
+
+    def test_direct_shell_output_stream_replay_preview_does_not_retrigger_desync(self):
+        class _TtyBuffer(StringIO):
+            def isatty(self):
+                return True
+
+            def fileno(self):
+                return 1
+
+        out_buf = _TtyBuffer()
+        callback_count = {"n": 0}
+        dynamic_limit = {"v": 6}
+
+        def _provider():
+            return int(dynamic_limit["v"])
+
+        state = {
+            "_suppress_first_write_clear": True,
+            "apply_gray": False,
+            "max_visible_lines": 6,
+            "max_visible_lines_provider": _provider,
+        }
+
+        def _on_desync():
+            callback_count["n"] += 1
+            restore_limit = state.get("max_visible_lines")
+            restore_provider = state.get("max_visible_lines_provider")
+            state["suspend_desync_detection"] = True
+            state["max_visible_lines"] = 1006
+            state["max_visible_lines_provider"] = None
+            try:
+                preview_out, _ = self.agent._create_direct_shell_output_streams(state)
+                preview_out.write("line5\nline6\n")
+                preview_out.flush()
+                state["_desync_skip_current_chunk"] = True
+            finally:
+                state["max_visible_lines"] = restore_limit
+                state["max_visible_lines_provider"] = restore_provider
+                state["suspend_desync_detection"] = False
+
+        state["on_live_window_desynced"] = _on_desync
+        with patch("src.agent.sys.stdout", out_buf):
+            out_stream, _ = self.agent._create_direct_shell_output_streams(state)
+            out_stream.write("line1\nline2\nline3\nline4\nline5\nline6\n")
+            dynamic_limit["v"] = 2
+            out_stream.write("line7\n")
+            out_stream.write("line8\n")
+
+        self.assertEqual(callback_count["n"], 1)
+
     def test_direct_shell_history_output_can_force_continuation_indent(self):
         class _TtyBuffer(StringIO):
             def isatty(self):
@@ -350,13 +657,60 @@ class BangDirectExecutionTests(unittest.TestCase):
         ansi_re = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
         out_plain = ansi_re.sub("", out_buf.getvalue()).lstrip("\r")
         self.assertIn("omitted 5 lines", out_plain)
-        self.assertNotIn("line1\n", out_plain)
-        self.assertNotIn("line5\n", out_plain)
         self.assertIn("line6\n", out_plain)
         self.assertIn("line7\n", out_plain)
+        self.assertIn("\x1b[2K", out_buf.getvalue())
         last = getattr(self.agent, "_last_direct_shell_execution", {})
         self.assertIn("line1\n", str(last.get("stdout") or ""))
         self.assertIn("line7\n", str(last.get("stdout") or ""))
+
+    @patch("subprocess.Popen")
+    def test_run_direct_shell_streams_realtime_with_prefixed_output_target(self, popen_mock):
+        class _FakePipe:
+            def __init__(self, chunks):
+                self._chunks = list(chunks)
+
+            def read(self, _n):
+                if self._chunks:
+                    return self._chunks.pop(0)
+                return b""
+
+            def close(self):
+                return None
+
+        proc = types.SimpleNamespace(
+            wait=lambda: 0,
+            poll=lambda: None,
+            pid=24680,
+            stdout=_FakePipe([b"stream-line\n"]),
+            stderr=None,
+        )
+        popen_mock.return_value = proc
+
+        forwarded_targets = []
+        real_stream = Agent._stream_direct_shell_pipe_to_prefixed_output
+
+        def _spy_stream(pipe, target_stream, capture_chunks, *extra_args):
+            forwarded_targets.append(target_stream)
+            real_stream(self.agent, pipe, target_stream, capture_chunks, *extra_args)
+
+        class _TtyBuffer(StringIO):
+            def isatty(self):
+                return True
+
+            def fileno(self):
+                return 1
+
+        with (
+            patch("src.agent.sys.stdout", _TtyBuffer()),
+            patch("src.agent.sys.stderr", _TtyBuffer()),
+            patch.object(self.agent, "_stream_direct_shell_pipe_to_prefixed_output", side_effect=_spy_stream),
+        ):
+            rc = self.agent._run_direct_shell_with_prefixed_output("echo hi", Path.cwd())
+
+        self.assertEqual(rc, 0)
+        self.assertTrue(forwarded_targets)
+        self.assertIsNotNone(forwarded_targets[0])
 
     def test_non_task_interrupt_does_not_set_task_interrupt_flag(self):
         self.agent._task_interrupt_requested = False
@@ -364,6 +718,22 @@ class BangDirectExecutionTests(unittest.TestCase):
             self.agent._request_task_interrupt(cancel_task=False)
         mock_terminate.assert_called_once_with()
         self.assertFalse(self.agent._task_interrupt_requested)
+
+    def test_stop_interrupt_monitor_swallows_keyboardinterrupt_from_join(self):
+        class _FakeThread:
+            def is_alive(self):
+                return True
+
+            def join(self, timeout=None):
+                raise KeyboardInterrupt
+
+        self.agent._interrupt_monitor_refs = 1
+        self.agent._interrupt_monitor_cancel_task_refs = 1
+        self.agent._interrupt_monitor_stop_event = threading.Event()
+        self.agent._interrupt_monitor_thread = _FakeThread()
+
+        # Should not re-raise KeyboardInterrupt while cleaning up monitor.
+        self.agent._stop_interrupt_monitor(cancel_task_on_interrupt=True)
 
     def test_consume_conversation_interrupted_banner_recent_returns_true_when_fresh(self):
         self.agent._conversation_interrupt_banner_recent = True
@@ -465,13 +835,10 @@ class BangDirectExecutionTests(unittest.TestCase):
         out_plain = ansi_re.sub("", out_buf.getvalue())
         self.assertIn("    command aborted by user", out_plain)
         self.assertNotIn("└ command aborted by user", out_plain)
-        self.assertIn(
-            "■ Conversation interrupted - tell the model what to do differently. Something went wrong?",
-            out_buf.getvalue(),
-        )
+        self.assertNotIn("Conversation interrupted", out_buf.getvalue())
         last = getattr(self.agent, "_last_direct_shell_execution", {})
         self.assertIn("command aborted by user", str(last.get("stdout") or ""))
-        self.assertGreaterEqual(int(last.get("rendered_output_lines") or 0), 4)
+        self.assertGreaterEqual(int(last.get("rendered_output_lines") or 0), 1)
         self.assertTrue(bool(last.get("cursor_at_line_start", False)))
 
     @patch("subprocess.Popen")
@@ -567,7 +934,168 @@ class BangDirectExecutionTests(unittest.TestCase):
         self.assertIn("02:01:12 [Info] Searching artifacts...\ncommand aborted by user\n", out_text)
         self.assertTrue(out_text.rstrip().endswith("command aborted by user"))
 
+    @patch("subprocess.Popen")
+    def test_run_direct_shell_abort_suppresses_late_resize_reload(self, popen_mock):
+        first_read = threading.Event()
+        dynamic_limit = {"value": 6}
+
+        class _DelayedPipe:
+            def __init__(self):
+                self._idx = 0
+
+            def read(self, _n):
+                self._idx += 1
+                if self._idx == 1:
+                    first_read.set()
+                    return b"line1\nline2\nline3\nline4\nline5\nline6\n"
+                if self._idx == 2:
+                    time.sleep(0.05)
+                    return b"line7\n"
+                return b""
+
+            def close(self):
+                return None
+
+        class _Proc:
+            pid = 55667
+            stdout = _DelayedPipe()
+            stderr = None
+
+            def wait(self):
+                first_read.wait(timeout=2.0)
+                dynamic_limit["value"] = 2
+                return 137
+
+            def poll(self):
+                return None
+
+        class _TtyBuffer(StringIO):
+            def isatty(self):
+                return True
+
+            def fileno(self):
+                return 1
+
+        popen_mock.return_value = _Proc()
+
+        with (
+            patch("src.agent.sys.stdout", _TtyBuffer()),
+            patch("src.agent.sys.stderr", _TtyBuffer()),
+            patch.object(self.agent, "_consume_process_aborted", return_value=True),
+            patch.object(self.agent, "_reload_chat_history_from_anchor_on_resize") as mock_reload,
+            patch(
+                "src.actions.command_actions._dynamic_tail_line_limit",
+                side_effect=lambda *_args, **_kwargs: int(dynamic_limit["value"]),
+            ),
+        ):
+            rc = self.agent._run_direct_shell_with_prefixed_output("echo hi", Path.cwd())
+
+        self.assertEqual(rc, 137)
+        mock_reload.assert_not_called()
+        self.assertTrue(bool(getattr(self.agent, "_suppress_next_prompt_chat_reload_once", False)))
+        out_text = str(getattr(self.agent, "_last_direct_shell_execution", {}).get("stdout") or "")
+        self.assertIn("line7\ncommand aborted by user\n", out_text)
+
+    @patch("subprocess.Popen")
+    def test_run_direct_shell_abort_does_not_wait_for_slow_reader_to_finish(self, popen_mock):
+        class _SlowPipe:
+            def __init__(self):
+                self._idx = 0
+
+            def read(self, _n):
+                self._idx += 1
+                if self._idx == 1:
+                    return b"line1\n"
+                if self._idx == 2:
+                    time.sleep(3.0)
+                    return b"late-line\n"
+                return b""
+
+            def close(self):
+                return None
+
+        proc = types.SimpleNamespace(
+            wait=lambda: 137,
+            poll=lambda: None,
+            pid=66778,
+            stdout=_SlowPipe(),
+            stderr=None,
+        )
+        popen_mock.return_value = proc
+
+        class _TtyBuffer(StringIO):
+            def isatty(self):
+                return True
+
+            def fileno(self):
+                return 1
+
+        started_at = time.monotonic()
+        with (
+            patch("src.agent.sys.stdout", _TtyBuffer()),
+            patch("src.agent.sys.stderr", _TtyBuffer()),
+            patch.object(self.agent, "_consume_process_aborted", return_value=True),
+        ):
+            rc = self.agent._run_direct_shell_with_prefixed_output("echo hi", Path.cwd())
+        elapsed = time.monotonic() - started_at
+
+        self.assertEqual(rc, 137)
+        self.assertLess(elapsed, 2.2)
+        out_text = str(getattr(self.agent, "_last_direct_shell_execution", {}).get("stdout") or "")
+        self.assertIn("command aborted by user\n", out_text)
+
+    @patch("subprocess.Popen")
+    def test_run_direct_shell_abort_does_not_block_on_process_wait_after_abort_mark(self, popen_mock):
+        class _Pipe:
+            def __init__(self):
+                self._chunks = [b"line1\n"]
+
+            def read(self, _n):
+                if self._chunks:
+                    return self._chunks.pop(0)
+                return b""
+
+            def close(self):
+                return None
+
+        class _AbortMarkedProc:
+            pid = 77889
+            stdout = _Pipe()
+            stderr = None
+
+            def wait(self, timeout=None):
+                if timeout is None:
+                    time.sleep(3.0)
+                    return 137
+                raise subprocess.TimeoutExpired(cmd="echo hi", timeout=timeout)
+
+            def poll(self):
+                return None
+
+        popen_mock.return_value = _AbortMarkedProc()
+
+        class _TtyBuffer(StringIO):
+            def isatty(self):
+                return True
+
+            def fileno(self):
+                return 1
+
+        started_at = time.monotonic()
+        with (
+            patch("src.agent.sys.stdout", _TtyBuffer()),
+            patch("src.agent.sys.stderr", _TtyBuffer()),
+            patch.object(self.agent, "_is_process_aborted", return_value=True),
+            patch.object(self.agent, "_consume_process_aborted", return_value=True),
+        ):
+            rc = self.agent._run_direct_shell_with_prefixed_output("echo hi", Path.cwd())
+        elapsed = time.monotonic() - started_at
+
+        self.assertEqual(rc, 130)
+        self.assertLess(elapsed, 1.0)
+        out_text = str(getattr(self.agent, "_last_direct_shell_execution", {}).get("stdout") or "")
+        self.assertIn("line1\ncommand aborted by user\n", out_text)
+
 
 if __name__ == "__main__":
     unittest.main()
-

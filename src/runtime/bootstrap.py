@@ -40,6 +40,7 @@ def setup_core_state(agent: Any, startup_work_directory: Path, self_repo_root: P
     agent.operation_results = []
     agent._in_task_execution = False
     agent._last_shell_output_visible_lines = 0
+    agent._tool_call_feedback_interstitial_lines = 0
 
     agent._ephemeral_script_paths = set()
     agent._ai_created_path_keys = set()
@@ -53,6 +54,7 @@ def setup_core_state(agent: Any, startup_work_directory: Path, self_repo_root: P
     agent._chat_history_first_visible_index_map = {}
     agent._chat_history_reload_last_terminal_width = 0
     agent._force_reload_chat_history_from_anchor_once = False
+    agent._suppress_next_prompt_chat_reload_once = False
     agent._task_interrupt_requested = False
     agent._interruptible_processes = {}
     agent._interrupt_state_lock = threading.RLock()

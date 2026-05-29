@@ -6,14 +6,14 @@ import sys
 import tempfile
 import threading
 import unicodedata
+import contextlib
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
-from ..config.app_info import get_app_env_var, get_app_runtime_attr_name
+from ..config.app_info import get_app_runtime_attr_name
 from ..core.console_utils import (
     _WorkingStatusTicker,
     _ansi_gray,
-    _decode_subprocess_output,
     _safe_console_write,
 )
 from ..core.console_title import restore_app_console_title
@@ -90,6 +90,28 @@ def _gray_shell_display_text(text: str) -> str:
     return colored + ("\n" if trailing_newline else "")
 
 
+def _clear_streamed_output_window(
+    stream: Any,
+    rendered_lines: int,
+    cursor_at_line_start: bool,
+) -> None:
+    lines = max(0, int(rendered_lines or 0))
+    if lines <= 0:
+        return
+    try:
+        stream.write("\r")
+        if bool(cursor_at_line_start):
+            stream.write("\x1b[1A")
+        for idx in range(lines):
+            stream.write("\r\x1b[2K")
+            if idx < (lines - 1):
+                stream.write("\x1b[1A")
+        stream.write("\r")
+        stream.flush()
+    except Exception:
+        pass
+
+
 def _format_omitted_lines_notice(omitted_lines: int, stream: Any) -> str:
     msg = f"... omitted {int(omitted_lines)} lines ..."
     try:
@@ -148,7 +170,8 @@ def _dynamic_tail_line_limit(
     reserved_lines: int = SHELL_OUTPUT_DISPLAY_RESERVED_LINES,
 ) -> int:
     rows = _terminal_rows_for_tail_display(stream)
-    return min(max(1, int(rows)), max(1, int(max_tail_lines or 1)))
+    safe_rows = max(1, int(rows) - max(0, int(reserved_lines or 0)))
+    return min(safe_rows, max(1, int(max_tail_lines or 1)))
 
 
 def _wrap_line_for_display(line: str, width: int) -> List[str]:
@@ -196,6 +219,7 @@ def _build_tail_output_for_display(
     stream: Any,
     tail_lines: int = SHELL_OUTPUT_DISPLAY_TAIL_LINES,
     display_indent_width: int = 0,
+    allow_partial_start_line: bool = True,
 ) -> str:
     raw = str(text or "")
     if not raw:
@@ -236,11 +260,16 @@ def _build_tail_output_for_display(
             used_rows += chunk_count
             continue
         available = remaining_rows - used_rows
-        if available > 0:
+        if available > 0 and bool(allow_partial_start_line):
             selected_lines.insert(0, "\n".join(chunks[-available:]))
             selected_start = idx
             partial_start_line = True
         break
+
+    if not selected_lines and lines:
+        selected_lines.insert(0, lines[-1])
+        selected_start = len(lines) - 1
+        partial_start_line = False
 
     omitted = selected_start
     if partial_start_line:
@@ -251,6 +280,101 @@ def _build_tail_output_for_display(
     if tail and trailing_newline:
         tail += "\n"
     return _format_omitted_lines_notice(omitted, stream) + tail
+
+
+def _select_logical_tail_output_for_live_replay(
+    text: str,
+    stream: Any,
+    tail_lines: int,
+    display_indent_width: int = 0,
+) -> Tuple[str, int]:
+    raw = str(text or "")
+    if not raw:
+        return "", 0
+    normalized = raw.replace("\r\n", "\n").replace("\r", "\n")
+    trailing_newline = normalized.endswith("\n")
+    lines = normalized.split("\n")
+    if trailing_newline and lines and lines[-1] == "":
+        lines = lines[:-1]
+    if not trailing_newline and lines:
+        # During live replay the last logical line may still be arriving from
+        # the subprocess. Do not use it to seed a resized window.
+        lines = lines[:-1]
+    if not lines:
+        return "", 0
+    limit = max(1, int(tail_lines or 1))
+    try:
+        stream_indent = int(getattr(stream, _STREAM_ATTR_OUTPUT_INDENT_WIDTH, 0) or 0)
+    except Exception:
+        stream_indent = 0
+    try:
+        extra_indent = int(display_indent_width or 0)
+    except Exception:
+        extra_indent = 0
+    content_width = max(
+        1,
+        _terminal_columns_for_tail_display(stream) - max(0, stream_indent + extra_indent),
+    )
+    line_chunks = [_wrap_line_for_display(line, content_width) for line in lines]
+    total_visual_rows = sum(len(chunks) for chunks in line_chunks)
+    if total_visual_rows <= limit:
+        return "\n".join(lines) + "\n", 0
+
+    notice_text = f"... omitted {len(lines)} lines ..."
+    notice_rows = max(1, _visual_rows_for_display_text(notice_text, content_width))
+    remaining_rows = max(0, limit - notice_rows)
+    selected: List[str] = []
+    selected_start = len(lines)
+    used_rows = 0
+    for idx in range(len(lines) - 1, -1, -1):
+        chunk_count = len(line_chunks[idx])
+        if used_rows + chunk_count > remaining_rows:
+            break
+        selected.insert(0, lines[idx])
+        selected_start = idx
+        used_rows += chunk_count
+
+    omitted = max(0, selected_start)
+    if not selected:
+        omitted = len(lines)
+    tail = "\n".join(selected) + ("\n" if selected else "")
+    return tail, omitted
+
+
+def _build_logical_tail_output_for_live_replay(
+    text: str,
+    stream: Any,
+    tail_lines: int,
+    display_indent_width: int = 0,
+) -> str:
+    tail, omitted = _select_logical_tail_output_for_live_replay(
+        text,
+        stream,
+        tail_lines,
+        display_indent_width=display_indent_width,
+    )
+    if omitted <= 0:
+        return tail
+    return f"... omitted {omitted} lines ...\n{tail}"
+
+
+def _append_completed_output_lines(
+    text: str,
+    completed_lines: List[str],
+    pending_state: Dict[str, str],
+) -> None:
+    chunk = str(text or "")
+    if not chunk:
+        return
+    normalized = chunk.replace("\r\n", "\n").replace("\r", "\n")
+    pending = str(pending_state.get("text", "")) + normalized
+    parts = pending.split("\n")
+    if pending.endswith("\n"):
+        completed_lines.extend(parts[:-1])
+        pending_state["text"] = ""
+    else:
+        completed_lines.extend(parts[:-1])
+        pending_state["text"] = parts[-1] if parts else ""
 
 
 def _enforce_windows_powershell_command_prefix(command: str) -> Dict[str, Any]:
@@ -354,9 +478,7 @@ def action_shell_command(
         interactive = False
         return_code = -1
         out = ""
-        err = ""
         displayed_out = ""
-        displayed_err = ""
         aborted_by_user = False
         status_ticker: Optional[_WorkingStatusTicker] = None
         status_ticker_lock = threading.Lock()
@@ -380,14 +502,9 @@ def action_shell_command(
                 import codecs
 
                 stdout_chunks: List[str] = []
-                stderr_chunks: List[str] = []
                 stream_chunks_lock = threading.Lock()
                 allow_realtime_echo = threading.Event()
                 allow_realtime_echo.set()
-                merge_stderr_for_interactive = (
-                    os.environ.get(get_app_env_var("SEPARATE_STDERR"), "").strip().lower()
-                    not in {"1", "true", "yes", "on"}
-                )
 
                 def _restore_console_after_interactive() -> None:
                     if sys.platform != "win32":
@@ -463,9 +580,7 @@ def action_shell_command(
                         env=run_env,
                         stdin=sys.stdin,
                         stdout=subprocess.PIPE,
-                        stderr=subprocess.STDOUT
-                        if merge_stderr_for_interactive
-                        else subprocess.PIPE,
+                        stderr=subprocess.STDOUT,
                         text=False,
                     )
                     reg_proc = getattr(agent, "_register_interruptible_process", None)
@@ -477,29 +592,16 @@ def action_shell_command(
                         daemon=True,
                     )
                     t_out.start()
-                    t_err: Optional[threading.Thread] = None
-                    if not merge_stderr_for_interactive:
-                        t_err = threading.Thread(
-                            target=_stream_and_capture,
-                            args=(process.stderr, sys.stderr, stderr_chunks),  # type: ignore[arg-type]
-                            daemon=True,
-                        )
-                        t_err.start()
                     return_code = process.wait()
                     # Stop direct stream echo immediately after process exit to
                     # prevent delayed raw chunks from appearing in later turns.
                     allow_realtime_echo.clear()
                     t_out.join(timeout=1.0)
-                    if t_err is not None:
-                        t_err.join(timeout=1.0)
                     # Give readers a brief extra window to capture residual bytes
                     # without writing them directly to the terminal.
                     t_out.join(timeout=0.2)
-                    if t_err is not None:
-                        t_err.join(timeout=0.2)
                     with stream_chunks_lock:
                         out = "".join(stdout_chunks)
-                        err = "" if merge_stderr_for_interactive else "".join(stderr_chunks)
                     consume_abort = getattr(agent, "_consume_process_aborted", None)
                     if callable(consume_abort):
                         aborted_by_user = bool(consume_abort(process))
@@ -514,105 +616,363 @@ def action_shell_command(
                         pass
                     _restore_console_after_interactive()
             else:
-                run_input = None
+                import codecs
+
+                run_input: Optional[bytes] = None
                 if input_data is not None:
                     run_input = str(input_data).encode("utf-8")
-                completed = subprocess.run(
-                    command,
-                    shell=True,
-                    cwd=str(execution_cwd.resolve()),
-                    capture_output=True,
-                    env=run_env,
-                    input=run_input,
-                    stdin=subprocess.DEVNULL if run_input is None else subprocess.PIPE,
-                )
-                return_code = completed.returncode
-                raw_stdout = _decode_subprocess_output(completed.stdout)
-                out = raw_stdout
-                err = _decode_subprocess_output(completed.stderr)
+                stdout_chunks: List[str] = []
+                stdout_completed_lines: List[str] = []
+                stdout_pending_line_state: Dict[str, str] = {"text": ""}
+                stream_chunks_lock = threading.Lock()
+                create_streams = getattr(agent, "_create_direct_shell_output_streams", None)
+                process_ref: Dict[str, Any] = {"process": None}
+                live_tail_limit = _dynamic_tail_line_limit(sys.stdout, reserved_lines=1)
+
+                def _is_current_process_aborted() -> bool:
+                    checker = getattr(agent, "_is_process_aborted", None)
+                    if not callable(checker):
+                        return False
+                    try:
+                        return bool(checker(process_ref.get("process")))
+                    except Exception:
+                        return False
+
+                live_stream_state: Dict[str, Any] = {
+                    "first_line_emitted": False,
+                    "rendered_line_count": 0,
+                    "cursor_at_line_start": True,
+                    "_first_write_cleared_ticker_line": False,
+                    "_first_text_emitted_notified": False,
+                    "_suppress_first_write_clear": False,
+                    "apply_gray": False,
+                    "max_visible_lines": max(1, int(live_tail_limit)),
+                    "max_visible_lines_provider": (
+                        lambda: _dynamic_tail_line_limit(sys.stdout, reserved_lines=1)
+                    ),
+                    "suppress_leading_blank_once": True,
+                    "on_text_emitted": _stop_status_ticker,
+                    "suppress_desync_when": _is_current_process_aborted,
+                }
+
+                def _recover_live_window_desync_once() -> None:
+                    if bool(live_stream_state.get("_desync_recovery_in_progress", False)):
+                        return
+                    live_stream_state["_desync_recovery_in_progress"] = True
+                    live_stream_state["disable_live_render"] = True
+                    _stop_status_ticker()
+                    snapshot_out = ""
+                    try:
+                        reload_fn = getattr(agent, "_reload_chat_history_from_anchor_on_resize", None)
+                        if callable(reload_fn):
+                            try:
+                                reload_fn(include_startup_overview=True)
+                            except TypeError:
+                                reload_fn()
+                    except Exception:
+                        pass
+                    try:
+                        with stream_chunks_lock:
+                            snapshot_out = _strip_console_color_controls(
+                                "".join(stdout_chunks)
+                            )
+                    except Exception:
+                        pass
+                    display_out = snapshot_out
+                    live_limit_out = int(live_stream_state.get("max_visible_lines", 1) or 1)
+                    omitted_base = 0
+                    try:
+                        live_limit_out = max(
+                            1,
+                            int(live_stream_state.get("max_visible_lines", 0) or 0),
+                            int(_dynamic_tail_line_limit(sys.stdout, reserved_lines=1) or 0),
+                        )
+                        if display_out:
+                            display_out, omitted_out = _select_logical_tail_output_for_live_replay(
+                                display_out,
+                                sys.stdout,
+                                live_limit_out,
+                                display_indent_width=4,
+                            )
+                            omitted_base += int(omitted_out or 0)
+                            display_out = _strip_console_color_controls(display_out)
+                    except Exception:
+                        pass
+                    if not display_out:
+                        live_stream_state["_desync_skip_current_chunk"] = True
+                        live_stream_state["drop_until_next_newline"] = bool(
+                            str(stdout_pending_line_state.get("text", ""))
+                        )
+                        live_stream_state["disable_live_render"] = False
+                        live_stream_state["_desync_recovery_in_progress"] = False
+                        return
+                    restore_limit = live_stream_state.get("max_visible_lines")
+                    restore_provider = live_stream_state.get("max_visible_lines_provider")
+                    try:
+                        live_stream_state["first_line_emitted"] = bool(int(omitted_base or 0) > 0)
+                        live_stream_state["rendered_line_count"] = 0
+                        live_stream_state["cursor_at_line_start"] = True
+                        live_stream_state["cursor_visual_col"] = 0
+                        live_stream_state["_first_write_cleared_ticker_line"] = True
+                        live_stream_state["_live_rendered_buffer"] = ""
+                        live_stream_state["_live_omitted_base_lines"] = int(omitted_base or 0)
+                        live_stream_state["suspend_desync_detection"] = True
+                        live_stream_state["suspend_drop_until_next_newline"] = True
+                        live_stream_state["max_visible_lines"] = max(
+                            int(live_limit_out or 0) + 1000,
+                            int(SHELL_OUTPUT_DISPLAY_TAIL_LINES or 0) + 1000,
+                        )
+                        live_stream_state["max_visible_lines_provider"] = None
+                        if callable(create_streams):
+                            preview_out, _ = create_streams(live_stream_state)
+                        else:
+                            preview_out = sys.stdout
+                        live_stream_state["disable_live_render"] = False
+                        if display_out:
+                            preview_out.write(display_out)
+                            preview_out.flush()
+                        if display_out:
+                            live_stream_state["_desync_skip_current_chunk"] = True
+                            live_stream_state["drop_until_next_newline"] = bool(
+                                str(stdout_pending_line_state.get("text", ""))
+                            )
+                        live_stream_state["_stream_local_state_version"] = int(
+                            live_stream_state.get("_stream_local_state_version", 0) or 0
+                        ) + 1
+                    except Exception:
+                        pass
+                    finally:
+                        try:
+                            live_stream_state["max_visible_lines"] = restore_limit
+                            live_stream_state["max_visible_lines_provider"] = restore_provider
+                        except Exception:
+                            pass
+                        live_stream_state["suspend_drop_until_next_newline"] = False
+                        live_stream_state["suspend_desync_detection"] = False
+                        live_stream_state["disable_live_render"] = False
+                        live_stream_state["_desync_recovery_in_progress"] = False
+
+                live_stream_state["on_live_window_desynced"] = _recover_live_window_desync_once
+                if callable(create_streams):
+                    try:
+                        out_stream, _ = create_streams(live_stream_state)
+                    except Exception:
+                        out_stream = sys.stdout
+                else:
+                    out_stream = sys.stdout
+
+                def _stream_and_capture(
+                    pipe: Any,
+                    target: Any,
+                    bucket: List[str],
+                    completed_lines: List[str],
+                    pending_line_state: Dict[str, str],
+                ) -> None:
+                    decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+                    realtime_started = False
+                    try:
+                        while True:
+                            if hasattr(pipe, "read1"):
+                                chunk = pipe.read1(1024)
+                            else:
+                                chunk = pipe.read(1024)
+                            if not chunk:
+                                break
+                            text_chunk = decoder.decode(chunk, final=False)
+                            if text_chunk:
+                                with stream_chunks_lock:
+                                    bucket.append(text_chunk)
+                                    _append_completed_output_lines(
+                                        text_chunk,
+                                        completed_lines,
+                                        pending_line_state,
+                                    )
+                                _stop_status_ticker()
+                                if not realtime_started:
+                                    realtime_started = True
+                                    ensure_line = getattr(agent, "_ensure_terminal_line_start", None)
+                                    if callable(ensure_line):
+                                        try:
+                                            ensure_line()
+                                        except Exception:
+                                            pass
+                                try:
+                                    target.write(text_chunk)
+                                    target.flush()
+                                except Exception:
+                                    _safe_console_write(text_chunk, target, append_newline=False)
+                        tail = decoder.decode(b"", final=True)
+                        if tail:
+                            with stream_chunks_lock:
+                                bucket.append(tail)
+                                _append_completed_output_lines(
+                                    tail,
+                                    completed_lines,
+                                    pending_line_state,
+                                )
+                            _stop_status_ticker()
+                            if not realtime_started:
+                                realtime_started = True
+                                ensure_line = getattr(agent, "_ensure_terminal_line_start", None)
+                                if callable(ensure_line):
+                                    try:
+                                        ensure_line()
+                                    except Exception:
+                                        pass
+                            try:
+                                target.write(tail)
+                                target.flush()
+                            except Exception:
+                                _safe_console_write(tail, target, append_newline=False)
+                    except Exception:
+                        pass
+                    finally:
+                        try:
+                            pipe.close()
+                        except Exception:
+                            pass
+
+                try:
+                    process = None
+                    process = subprocess.Popen(
+                        command,
+                        shell=True,
+                        cwd=str(execution_cwd.resolve()),
+                        env=run_env,
+                        stdin=subprocess.DEVNULL if run_input is None else subprocess.PIPE,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.STDOUT,
+                        text=False,
+                    )
+                    process_ref["process"] = process
+                    if run_input is not None:
+                        try:
+                            if process.stdin is not None:
+                                process.stdin.write(run_input)
+                                process.stdin.flush()
+                        except Exception:
+                            pass
+                        finally:
+                            try:
+                                if process.stdin is not None:
+                                    process.stdin.close()
+                            except Exception:
+                                pass
+                    reg_proc = getattr(agent, "_register_interruptible_process", None)
+                    if callable(reg_proc):
+                        reg_proc(process)
+                    t_out = threading.Thread(
+                        target=_stream_and_capture,
+                        args=(
+                            process.stdout,
+                            out_stream,
+                            stdout_chunks,
+                            stdout_completed_lines,
+                            stdout_pending_line_state,
+                        ),  # type: ignore[arg-type]
+                        daemon=True,
+                    )
+                    t_out.start()
+                    return_code = process.wait()
+                    consume_abort = getattr(agent, "_consume_process_aborted", None)
+                    if callable(consume_abort):
+                        aborted_by_user = bool(consume_abort(process))
+                    if aborted_by_user:
+                        live_stream_state["suspend_desync_detection"] = True
+                        try:
+                            agent._suppress_next_prompt_chat_reload_once = True
+                        except Exception:
+                            pass
+                    t_out.join(timeout=1.0)
+                    t_out.join(timeout=0.2)
+                    with stream_chunks_lock:
+                        out = "".join(stdout_chunks)
+                    if aborted_by_user:
+                        out = str(out) + ("command aborted by user\n")
+                finally:
+                    try:
+                        unreg_proc = getattr(agent, "_unregister_interruptible_process", None)
+                        if callable(unreg_proc):
+                            unreg_proc(process)
+                    except Exception:
+                        pass
             _stop_status_ticker()
 
             out = append_shell_merge_output_path(out, return_code, merge_path)
             out_tail_limit = _dynamic_tail_line_limit(sys.stdout)
-            err_tail_limit = _dynamic_tail_line_limit(sys.stderr)
             displayed_out = _build_tail_output_for_display(out, sys.stdout, out_tail_limit)
-            displayed_err = _build_tail_output_for_display(err, sys.stderr, err_tail_limit)
             displayed_out_plain = _strip_console_color_controls(displayed_out)
-            displayed_err_plain = _strip_console_color_controls(displayed_err)
             should_replay_out = True
-            should_replay_err = True
             if interactive:
                 # Interactive mode already streamed raw output to console.
                 # Skip replay when output fully fits within the tail limit and
                 # no post-processing changed the displayed text.
                 if displayed_out and (_count_output_lines(out) <= out_tail_limit) and (displayed_out == out):
                     should_replay_out = False
-                if displayed_err and (_count_output_lines(err) <= err_tail_limit) and (displayed_err == err):
-                    should_replay_err = False
             last_rendered_chunk = ""
             replay_out_text = displayed_out_plain if (displayed_out and should_replay_out) else ""
-            replay_err_text = displayed_err_plain if (displayed_err and should_replay_err) else ""
-            if (not replay_out_text) and (not replay_err_text) and int(return_code) == 0 and (not aborted_by_user):
+            if (not replay_out_text) and int(return_code) == 0 and (not aborted_by_user):
                 replay_out_text = "(no output)\n"
             replay_rendered_lines = 0
-            if replay_out_text or replay_err_text:
-                replay_direct = getattr(agent, "_print_direct_shell_history_output", None)
-                if callable(replay_direct):
-                    try:
+            lock_obj = live_stream_state.get("_write_lock")
+            lock_ctx = lock_obj if hasattr(lock_obj, "__enter__") and hasattr(lock_obj, "__exit__") else contextlib.nullcontext()
+            with lock_ctx:
+                _clear_streamed_output_window(
+                    sys.stdout,
+                    int(live_stream_state.get("rendered_line_count", 0) or 0),
+                    bool(live_stream_state.get("cursor_at_line_start", True)),
+                )
+                if replay_out_text:
+                    replay_direct = getattr(agent, "_print_direct_shell_history_output", None)
+                    if callable(replay_direct):
+                        try:
+                            replay_rendered_lines = max(
+                                0,
+                                int(replay_direct(replay_out_text, "") or 0),
+                            )
+                        except Exception:
+                            replay_rendered_lines = 0
+                    else:
+                        if replay_out_text:
+                            _safe_console_write(_gray_shell_display_text(replay_out_text), sys.stdout, append_newline=False)
                         replay_rendered_lines = max(
                             0,
-                            int(replay_direct(replay_out_text, replay_err_text) or 0),
+                            _count_output_lines(replay_out_text),
                         )
-                    except Exception:
-                        replay_rendered_lines = 0
-                else:
-                    if replay_out_text:
-                        _safe_console_write(_gray_shell_display_text(replay_out_text), sys.stdout, append_newline=False)
-                    if replay_err_text:
-                        _safe_console_write(_gray_shell_display_text(replay_err_text), sys.stderr, append_newline=False)
-                    replay_rendered_lines = max(
-                        0,
-                        _count_output_lines(replay_out_text) + _count_output_lines(replay_err_text),
-                    )
-                last_rendered_chunk = replay_err_text if replay_err_text else replay_out_text
-            if (not last_rendered_chunk) and interactive:
-                if (not should_replay_err) and err:
-                    last_rendered_chunk = err
-                elif (not should_replay_out) and out:
-                    last_rendered_chunk = out
-            # Keep next assistant/status lines on a fresh line even when command
-            # output does not end with newline. This avoids off-by-one over-clear
-            # caused by mixing "正在思考..." into the output's last visual line.
-            if last_rendered_chunk and not str(last_rendered_chunk).endswith("\n"):
-                _safe_console_write("\n", sys.stdout, append_newline=False)
-                if replay_err_text:
-                    replay_err_text = str(replay_err_text) + "\n"
-                else:
+                    last_rendered_chunk = replay_out_text
+                if (not last_rendered_chunk) and interactive:
+                    if (not should_replay_out) and out:
+                        last_rendered_chunk = out
+                # Keep next assistant/status lines on a fresh line even when command
+                # output does not end with newline. This avoids off-by-one over-clear
+                # caused by mixing "正在思考..." into the output's last visual line.
+                if last_rendered_chunk and not str(last_rendered_chunk).endswith("\n"):
+                    _safe_console_write("\n", sys.stdout, append_newline=False)
                     replay_out_text = str(replay_out_text) + "\n"
-            try:
-                agent._last_terminal_block_kind = "command_output"
-                agent._terminal_cursor_at_line_start = True
-            except Exception:
-                pass
-            try:
-                agent._last_shell_output_visible_lines = 0
-            except Exception:
-                pass
-            if aborted_by_user:
                 try:
-                    banner_fn = getattr(agent, "_print_conversation_interrupted_banner", None)
-                    if callable(banner_fn):
-                        banner_fn()
+                    agent._last_terminal_block_kind = "command_output"
+                    agent._terminal_cursor_at_line_start = True
                 except Exception:
                     pass
+                try:
+                    agent._last_shell_output_visible_lines = 0
+                except Exception:
+                    pass
+                banner_lines = 0
+                if aborted_by_user:
+                    try:
+                        banner_fn = getattr(agent, "_print_conversation_interrupted_banner", None)
+                        if callable(banner_fn):
+                            banner_lines = int(banner_fn() or 0)
+                    except Exception:
+                        banner_lines = 0
             base_out: Dict[str, Any] = {
                 "output": out,
-                "stderr": err,
                 "return_code": return_code,
                 "interactive": interactive,
+                "aborted_by_user": bool(aborted_by_user),
                 "display_output": replay_out_text,
-                "display_stderr": replay_err_text,
-                "display_rendered_lines": int(replay_rendered_lines),
+                "display_rendered_lines": int(replay_rendered_lines) + int(banner_lines),
             }
         finally:
             _stop_status_ticker()
@@ -642,7 +1002,7 @@ def action_shell_command(
                 return {"success": True, "message": "Command executed successfully (interactive mode)", **base_out}
             return {"success": True, "message": "Command executed successfully", **base_out}
 
-        combo = f"{out}\n{err}"
+        combo = str(out)
         cmd_l = command.lower()
         is_skillhub_install = ("skillhub_installer.py" in cmd_l) and (" install " in f" {cmd_l} ")
         user_cancelled = ("installation aborted by user." in combo.lower()) or (return_code == 2)
