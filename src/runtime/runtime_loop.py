@@ -12,7 +12,7 @@ import unicodedata
 from contextlib import redirect_stderr, redirect_stdout
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from ..config.app_info import (
     get_app_display_version,
@@ -115,6 +115,195 @@ def _stop_pre_task_status_ticker_for_console_output(
     except Exception:
         pass
     return None
+
+
+def _parse_tool_call_json_payload(raw: str) -> Optional[Dict[str, Any]]:
+    body = str(raw or "").strip()
+    if not body:
+        return None
+    if body.startswith("`") and body.endswith("`") and len(body) >= 2:
+        body = body[1:-1].strip()
+    if not body:
+        return None
+    try:
+        obj = json.loads(body)
+    except Exception:
+        return None
+    if not isinstance(obj, dict):
+        return None
+    tool_name = obj.get("tool") or obj.get("action")
+    if isinstance(tool_name, str) and tool_name.strip():
+        return obj
+    return None
+
+
+def _stream_visible_text_with_json_pause(text: str, *, final: bool) -> str:
+    raw = str(text or "")
+    if not raw:
+        return ""
+    out: List[str] = []
+    i = 0
+    n = len(raw)
+    lower = raw.lower()
+    while i < n:
+        start = lower.find("```json", i)
+        if start < 0:
+            out.append(raw[i:])
+            break
+        out.append(raw[i:start])
+        close = raw.find("```", start + 7)
+        if close < 0:
+            # JSON fence is incomplete; keep it buffered until completed.
+            break
+        block = raw[start : close + 3]
+        body = raw[start + 7 : close]
+        if _parse_tool_call_json_payload(body) is None:
+            out.append(block)
+        i = close + 3
+    merged = "".join(out)
+    if final:
+        return merged
+    return merged
+
+
+def _consume_streaming_ai_response(agent: Any, ai_result: Any) -> Tuple[Optional[str], bool]:
+    if isinstance(ai_result, str):
+        return ai_result, False
+    if ai_result is None:
+        return None, False
+    if isinstance(ai_result, (bytes, bytearray)):
+        try:
+            return ai_result.decode("utf-8", errors="replace"), False
+        except Exception:
+            return str(ai_result), False
+    iterator = getattr(ai_result, "__iter__", None)
+    if not callable(iterator):
+        return None, False
+
+    raw_chunks: List[str] = []
+    shown_visible = ""
+    streamed_any = False
+    last_rendered_block = ""
+    last_rendered_lines = 0
+    is_tty = bool(getattr(sys.stdout, "isatty", lambda: False)())
+    can_format_render = callable(getattr(agent, "_format_assistant_chat_display_message", None))
+
+    def _clear_previous_block() -> None:
+        nonlocal last_rendered_lines
+        if not is_tty or last_rendered_lines <= 0:
+            last_rendered_lines = 0
+            return
+        try:
+            for _ in range(min(int(last_rendered_lines), 2000)):
+                sys.stdout.write("\x1b[1A\r\x1b[2K")
+            sys.stdout.flush()
+        except Exception:
+            pass
+        last_rendered_lines = 0
+
+    def _render_visible_block(visible_text: str) -> bool:
+        nonlocal last_rendered_block, last_rendered_lines
+        display_response = format_assistant_display_response(visible_text)
+        if not display_response:
+            if last_rendered_lines > 0:
+                _clear_previous_block()
+            last_rendered_block = ""
+            return False
+        rendered = agent._format_assistant_chat_display_message(display_response)
+        if rendered == last_rendered_block:
+            return True
+        _clear_previous_block()
+        try:
+            sys.stdout.write(f"{rendered}\n")
+            sys.stdout.flush()
+        except Exception:
+            return False
+        last_rendered_block = rendered
+        last_rendered_lines = max(1, _estimate_visible_lines(agent, rendered))
+        return True
+
+    for chunk in ai_result:
+        piece = str(chunk or "")
+        if not piece:
+            continue
+        raw_chunks.append(piece)
+        visible_now = _stream_visible_text_with_json_pause("".join(raw_chunks), final=False)
+        if visible_now == shown_visible:
+            continue
+        if not streamed_any:
+            try:
+                agent._hide_previous_shell_output_if_needed()
+            except Exception:
+                pass
+            try:
+                agent._ensure_terminal_line_start()
+            except Exception:
+                pass
+        if can_format_render:
+            rendered_ok = _render_visible_block(visible_now)
+            if rendered_ok:
+                streamed_any = True
+            elif visible_now:
+                delta = visible_now[len(shown_visible) :] if visible_now.startswith(shown_visible) else visible_now
+                if delta:
+                    sys.stdout.write(delta)
+                    sys.stdout.flush()
+                    streamed_any = True
+        else:
+            delta = visible_now[len(shown_visible) :] if visible_now.startswith(shown_visible) else visible_now
+            if delta:
+                sys.stdout.write(delta)
+                sys.stdout.flush()
+                streamed_any = True
+        shown_visible = visible_now
+
+    ai_response = "".join(raw_chunks)
+    visible_final = _stream_visible_text_with_json_pause(ai_response, final=True)
+    if visible_final != shown_visible:
+        if not streamed_any:
+            try:
+                agent._hide_previous_shell_output_if_needed()
+            except Exception:
+                pass
+            try:
+                agent._ensure_terminal_line_start()
+            except Exception:
+                pass
+        if can_format_render:
+            rendered_ok = _render_visible_block(visible_final)
+            if rendered_ok:
+                streamed_any = True
+            elif visible_final:
+                tail = (
+                    visible_final[len(shown_visible) :]
+                    if visible_final.startswith(shown_visible)
+                    else visible_final
+                )
+                if tail:
+                    sys.stdout.write(tail)
+                    sys.stdout.flush()
+                    streamed_any = True
+        else:
+            tail = (
+                visible_final[len(shown_visible) :]
+                if visible_final.startswith(shown_visible)
+                else visible_final
+            )
+            if tail:
+                sys.stdout.write(tail)
+                sys.stdout.flush()
+                streamed_any = True
+        shown_visible = visible_final
+    if streamed_any:
+        if not shown_visible.endswith("\n"):
+            sys.stdout.write("\n")
+            sys.stdout.flush()
+        try:
+            agent._last_terminal_block_kind = "assistant"
+            agent._terminal_cursor_at_line_start = True
+        except Exception:
+            pass
+    return ai_response, streamed_any
 
 
 def _shell_command_indicates_verification(command: str) -> bool:
@@ -1437,10 +1626,10 @@ def run_agent_loop(agent: Any):
                     )
                     status_ticker.start()
                 try:
-                    ai_response = self.call_ai(
+                    ai_result = self.call_ai(
                         next_input,
                         context=json.dumps(last_result, ensure_ascii=False) if last_result else "",
-                        stream=False,
+                        stream=True,
                         return_message=False,
                         history_user_input=original_user_task if not user_message_recorded else None,
                         history_skip_user=user_message_recorded,
@@ -1450,12 +1639,13 @@ def run_agent_loop(agent: Any):
                     self._clear_last_thinking_line()
                 if self._consume_task_interrupt_requested():
                     raise KeyboardInterrupt
+                ai_response, streamed_assistant_output = _consume_streaming_ai_response(self, ai_result)
                 if not isinstance(ai_response, str):
                     print(f"❌ AI returned invalid response: {ai_response}")
                     break
                 if not user_message_recorded:
                     user_message_recorded = True
-                if ai_response:
+                if ai_response and not streamed_assistant_output:
                     try:
                         self._hide_previous_shell_output_if_needed()
                     except Exception:
