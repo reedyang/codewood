@@ -32,6 +32,18 @@ pip install -r requirements.txt
 
 ```bash
 python src/main.py
+# 指定 workspace（名称或路径）启动
+python src/main.py <workspace name or path>
+
+# 启动后自动执行一次任务并退出
+python src/main.py exec "you task request"
+
+# 指定 workspace 启动并自动执行任务后退出
+python src/main.py <workspace name or path> exec "you task request"
+
+# 启动时选择模型（支持 --model 或 -m）
+python src/main.py --model <model name>
+python src/main.py -m <model name>
 ```
 
 ## ⌨️ Tab键自动补全功能

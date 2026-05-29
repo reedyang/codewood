@@ -109,6 +109,73 @@ class MainConfigFormatTests(unittest.TestCase):
         )
         self.assertIn("models", error or "")
 
+    def test_startup_model_override_by_name(self):
+        provider, model_name, model_config, error = _extract_model_runtime_config(
+            {
+                "model_providers": [
+                    {
+                        "provider": "openai",
+                        "params": {
+                            "models": ["gpt-oss-120b", "gpt-4o-mini"],
+                        },
+                    },
+                    {
+                        "provider": "ollama",
+                        "params": {
+                            "models": ["qwen2.5-coder:7b"],
+                        },
+                    },
+                ]
+            },
+            requested_model="qwen2.5-coder:7b",
+        )
+        self.assertIsNone(error)
+        self.assertEqual(provider, "ollama")
+        self.assertEqual(model_name, "qwen2.5-coder:7b")
+        self.assertEqual(model_config["params"]["model"], "qwen2.5-coder:7b")
+
+    def test_startup_model_override_by_provider_model_selector(self):
+        provider, model_name, model_config, error = _extract_model_runtime_config(
+            {
+                "model_providers": [
+                    {
+                        "provider": "openai",
+                        "params": {"models": ["gpt-4o-mini"]},
+                    },
+                    {
+                        "provider": "ollama",
+                        "params": {"models": ["qwen2.5-coder:7b"]},
+                    },
+                ]
+            },
+            requested_model="openai:gpt-4o-mini",
+        )
+        self.assertIsNone(error)
+        self.assertEqual(provider, "openai")
+        self.assertEqual(model_name, "gpt-4o-mini")
+        self.assertEqual(model_config["params"]["models"], ["gpt-4o-mini"])
+
+    def test_startup_model_override_ambiguous_without_provider(self):
+        provider, model_name, model_config, error = _extract_model_runtime_config(
+            {
+                "model_providers": [
+                    {
+                        "provider": "openai",
+                        "params": {"models": ["shared-model"]},
+                    },
+                    {
+                        "provider": "ollama",
+                        "params": {"models": ["shared-model"]},
+                    },
+                ]
+            },
+            requested_model="shared-model",
+        )
+        self.assertIsNone(provider)
+        self.assertIsNone(model_name)
+        self.assertIsNone(model_config)
+        self.assertIn("ambiguous", error or "")
+
 
 if __name__ == "__main__":
     unittest.main()

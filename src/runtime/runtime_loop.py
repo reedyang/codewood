@@ -618,6 +618,7 @@ def run_agent_loop(agent: Any):
     system_cmd_re = re.compile('|'.join(system_cmd_patterns), re.IGNORECASE)
 
     while True:
+        auto_exit_after_turn = False
         in_task_execution = False
         self._in_task_execution = False
         current_task_id = ""
@@ -630,6 +631,9 @@ def run_agent_loop(agent: Any):
             if getattr(self, "_queued_user_input", None) is not None:
                 user_input = str(self._queued_user_input or "")
                 self._queued_user_input = None
+                if bool(getattr(self, "_startup_exec_turn_pending", False)):
+                    auto_exit_after_turn = True
+                    self._startup_exec_turn_pending = False
             else:
                 user_input = self._get_user_input_with_history()
             user_input = _sanitize_prompt_pollution(user_input, self.work_directory)
@@ -1892,6 +1896,9 @@ def run_agent_loop(agent: Any):
                 self._clear_last_thinking_line()
             self._stop_interrupt_monitor(cancel_task_on_interrupt=True)
             self._schedule_auto_memory_reflect()
+            if auto_exit_after_turn:
+                self._save_current_workspace_position()
+                break
 
         except KeyboardInterrupt:
             if pre_task_status_ticker is not None:

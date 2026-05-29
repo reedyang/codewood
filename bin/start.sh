@@ -16,6 +16,10 @@ set_title_from_app_info() {
     fi
 }
 
+run_main() {
+    exec "$VENV_PYTHON" "$ENTRY" --executable-name "$(basename -- "$0")" "$@"
+}
+
 if command -v python3 >/dev/null 2>&1; then
     PY_BOOTSTRAP="python3"
 elif command -v python >/dev/null 2>&1; then
@@ -27,7 +31,7 @@ fi
 
 if [ -x "$VENV_PYTHON" ]; then
     set_title_from_app_info
-    exec "$VENV_PYTHON" "$ENTRY" "$@"
+    run_main "$@"
 fi
 
 echo "Virtual environment not found. Creating \"$VENV_DIR\"..."
@@ -50,4 +54,4 @@ if [ $? -ne 0 ]; then
 fi
 
 set_title_from_app_info
-exec "$VENV_PYTHON" "$ENTRY" "$@"
+run_main "$@"
