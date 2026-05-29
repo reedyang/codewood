@@ -1,4 +1,4 @@
-import tempfile
+﻿import tempfile
 import unittest
 from pathlib import Path
 
@@ -10,7 +10,7 @@ class _DummyAgent:
         self.work_directory = work_directory
         self.workspace_root = workspace_root
         self._self_repo_root = self_repo_root
-        self.ai_workspace_dir = workspace_root / ".smart-shell"
+        self.workspace_config_dir = workspace_root / ".smart-shell"
         self.config_dir = workspace_root / ".config"
 
     def _shell_execution_cwd(self):
@@ -66,3 +66,4 @@ class PathPolicyShellGuardTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+

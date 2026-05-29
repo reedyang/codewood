@@ -1,4 +1,4 @@
-import unittest
+﻿import unittest
 import json
 from pathlib import Path
 import threading
@@ -32,7 +32,7 @@ class _FakeAgent:
         self.config_dir = Path(f"D:/Users/fake/{config_dirname}")
         self.workspace_name = "Default"
         self.active_chat_name = "New Chat"
-        self.ai_workspace_dir = Path(f"D:/Users/fake/{config_dirname}/workspace/default")
+        self.workspace_config_dir = Path(f"D:/Users/fake/{config_dirname}/workspace/default")
         self.work_directory = Path(f"D:/SourceCode/opensource/{app_slug_kebab}")
         self.system_prompt = ""
         self.params = {"context_window": 800}
@@ -904,8 +904,22 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
         self.assertIn(f"当前 {get_app_slug_kebab()} 根目录（绝对路径）：{agent._self_repo_root}", system_content)
         self.assertIn(f"当前 config 目录（绝对路径）：{agent.config_dir}", system_content)
         self.assertIn("当前 workspace 名称：Default", system_content)
-        self.assertIn(f"当前 workspace 目录（绝对路径）：{agent.ai_workspace_dir}", system_content)
+        self.assertIn(f"当前 workspace 目录（绝对路径）：{agent.workspace_config_dir}", system_content)
+        self.assertIn(
+            f"默认技能安装路径（绝对路径）：{(Path.home() / get_app_config_dirname() / 'skills').resolve()}",
+            system_content,
+        )
+        self.assertIn(
+            f"当前 workspace skills 目录（绝对路径）：{(agent.workspace_config_dir / 'skills').resolve()}",
+            system_content,
+        )
+        self.assertIn(
+            "安装第三方 skill 时：若用户未指定安装位置，必须使用“默认技能安装路径（绝对路径）”；"
+            "仅当用户明确要求安装到 workspace 时，才可使用“当前 workspace skills 目录（绝对路径）”。",
+            system_content,
+        )
 
 
 if __name__ == "__main__":
     unittest.main()
+

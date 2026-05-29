@@ -1,4 +1,4 @@
-import os
+﻿import os
 import sys
 import json
 import re
@@ -107,6 +107,7 @@ from .completion.slash_dynamic_completions import (
 from .actions import filesystem_actions
 from .actions import command_actions
 from .config.app_info import (
+    get_app_config_dirname,
     get_app_env_var,
     get_app_log_filename,
     get_app_logger_root,
@@ -312,7 +313,7 @@ class Agent:
         try:
             self._project_context_index.bind_workspace(
                 self.work_directory,
-                storage_dir=(self.ai_workspace_dir / "project_context_db"),
+                storage_dir=(self.workspace_config_dir / "project_context_db"),
             )
         except Exception:
             pass
@@ -332,7 +333,7 @@ class Agent:
                 return False
             self._project_context_refresh_inflight = True
         target_root = Path(self.work_directory)
-        target_storage = Path(self.ai_workspace_dir) / "project_context_db"
+        target_storage = Path(self.workspace_config_dir) / "project_context_db"
         reason_text = str(reason or "background")
         pc_logger = get_logger(f"{get_app_logger_root()}.project_context")
         started_at = datetime.now()
@@ -3315,7 +3316,7 @@ class Agent:
     def _refresh_workspace_runtime(self) -> None:
         self._shutdown_workspace_services(wait=True)
         self._ensure_workspace_dirs()
-        self.history_manager = HistoryManager(str(self.ai_workspace_dir))
+        self.history_manager = HistoryManager(str(self.workspace_config_dir))
         self._load_chat_state()
         if self.input_handler is not None:
             try:
@@ -3340,8 +3341,8 @@ class Agent:
         self.mcp_manager = McpManager(
             self.config_dir,
             self.mcp_config,
-            self.ai_workspace_dir,
-            tool_policy_parent=self.ai_workspace_dir,
+            self.workspace_config_dir,
+            tool_policy_parent=self.workspace_config_dir,
         )
         self.mcp_manager.register_client_method_handler("elicitation/create", self._handle_mcp_elicitation_create)
         self.mcp_manager.preload_all_async(timeout_s=12.0, force=False)
@@ -3355,7 +3356,7 @@ class Agent:
     def _schedule_memory_service_background(self) -> None:
         """后台初始化经验记忆：在本线程内 import memory_manager，再构造 MemoryService（Markdown 后端，无重型依赖）。"""
         _mod = sys.modules[__name__]
-        workspace_dir = str(self.ai_workspace_dir)
+        workspace_dir = str(self.workspace_config_dir)
         generation = getattr(self, "_workspace_runtime_generation", 0)
 
         def _run() -> None:
@@ -3374,7 +3375,7 @@ class Agent:
             try:
                 svc = MS(workspace_dir)
                 if (
-                    str(self.ai_workspace_dir) == workspace_dir
+                    str(self.workspace_config_dir) == workspace_dir
                     and getattr(self, "_workspace_runtime_generation", 0) == generation
                 ):
                     self.memory_service = svc
@@ -3437,14 +3438,14 @@ class Agent:
             latest_fp = calc_skills_dirs_fingerprint(
                 self.config_dir,
                 self._builtin_skills_root,
-                self.ai_workspace_dir,
+                self.workspace_config_dir,
             )
             if not force and latest_fp == getattr(self, "_skills_dirs_fingerprint", ""):
                 return
             self.skills = load_skills_merged(
                 self.config_dir,
                 self._builtin_skills_root,
-                self.ai_workspace_dir,
+                self.workspace_config_dir,
             )
             self._skills_dirs_fingerprint = latest_fp
             self._skills_routing_prefix = build_skills_routing_prefix(self.skills)
@@ -4048,18 +4049,18 @@ class Agent:
         """相对路径在 shell 解析时的三个候选根：当前工作目录、workspace/temp、workspace 根（兼容旧路径）。"""
         p_wd = (self.work_directory / rel).resolve()
         p_temp = (self.ai_workspace_temp_dir / rel).resolve()
-        p_ws = (self.ai_workspace_dir / rel).resolve()
+        p_ws = (self.workspace_config_dir / rel).resolve()
         return p_wd, p_temp, p_ws
 
     def _try_register_ai_output_literal(self, raw: str) -> None:
-        """Register a path string as AI-created if it resolves under work_directory or ai_workspace_dir."""
+        """Register a path string as AI-created if it resolves under work_directory or workspace_config_dir."""
         raw = (raw or "").strip()
         if not raw or ".." in raw:
             return
         try:
             p = Path(raw)
             if not p.is_absolute():
-                for base in (self.work_directory, self.ai_workspace_temp_dir, self.ai_workspace_dir):
+                for base in (self.work_directory, self.ai_workspace_temp_dir, self.workspace_config_dir):
                     try:
                         q = (base / p).resolve()
                         q.relative_to(base.resolve())
@@ -4069,7 +4070,7 @@ class Agent:
                         continue
             else:
                 q = p.resolve()
-                for base in (self.work_directory, self.ai_workspace_temp_dir, self.ai_workspace_dir):
+                for base in (self.work_directory, self.ai_workspace_temp_dir, self.workspace_config_dir):
                     try:
                         q.relative_to(base.resolve())
                         self._ai_created_path_keys.add(self._ephemeral_path_key(q))
@@ -4085,7 +4086,7 @@ class Agent:
         try:
             p = Path(path_str.strip())
             if not p.is_absolute():
-                for base in (self.work_directory, self.ai_workspace_temp_dir, self.ai_workspace_dir):
+                for base in (self.work_directory, self.ai_workspace_temp_dir, self.workspace_config_dir):
                     q = (base / p).resolve()
                     if self._ephemeral_path_key(q) in self._ai_created_path_keys:
                         return True
@@ -4183,7 +4184,10 @@ class Agent:
         try:
             if any(self._is_workspace_skill_path(p) for p in paths):
                 self._reload_skills()
-                print("🔄 Detected changes in workspace/skills; skills have been auto-reloaded.")
+                print(
+                    f"🔄 Detected changes in workspace/{get_app_config_dirname()}/skills; "
+                    "skills have been auto-reloaded."
+                )
         except Exception as e:
             print(f"⚠️ Failed to auto-reload skills: {e}")
 
@@ -5095,4 +5099,5 @@ class Agent:
         except Exception as e:
             print(f"❌ Execution failed: {e}")
             return False
+
 

@@ -1,6 +1,6 @@
 ---
 name: clawhub-skill-installer
-description: Search skills from ClawHub and install a selected skill into config_dir/skills with explicit CLI confirmation. Use whenever the user asks to browse/find/install skills from clawhub.ai, especially for "检索并安装 skill". Installation must stop on name conflicts with currently loaded skills unless an explicit conflict policy is provided.
+description: Search skills from ClawHub and install a selected skill with explicit CLI confirmation. Callers must provide an explicit install target via --install-skills-root. Use whenever the user asks to browse/find/install skills from clawhub.ai, especially for "检索并安装 skill". Installation must stop on name conflicts with currently loaded skills unless an explicit conflict policy is provided.
 license: Proprietary
 ---
 
@@ -9,9 +9,9 @@ license: Proprietary
 ## Purpose
 
 - Search skill entries from `https://clawhub.ai/skills`
-- Install selected skill into `<config_dir>/skills/<skill_id>/`
+- Install selected skill into `<install_skills_root>/<skill_id>/`
 - Enforce explicit `--confirm YES` before installation
-- Run fully non-interactively; Smart Shell no longer supports interactive script prompts
+- Run fully non-interactively; interactive script prompts are not allowed
 - Abort installation when conflict with currently loaded skill is detected unless explicitly resolved with `--on-conflict`
 
 ## CLI
@@ -20,15 +20,22 @@ Use bundled script:
 
 ```text
 python "<BUNDLE_ROOT>/scripts/clawhub_installer.py" search --query "<keyword>" [--insecure|--no-verify]
-python "<BUNDLE_ROOT>/scripts/clawhub_installer.py" install --detail-url "<skill detail url>" --config-dir "<config dir>" --confirm "YES" [--on-conflict abort|overwrite|rename] [--insecure|--no-verify]
+python "<BUNDLE_ROOT>/scripts/clawhub_installer.py" install --detail-url "<skill detail url>" --install-skills-root "<skills root>" --confirm "YES" [--config-dir "<config dir for conflict scan>"] [--on-conflict abort|overwrite|rename] [--insecure|--no-verify]
 ```
 
 ## Workflow constraints
 
 - `install` requires `--confirm YES`; otherwise script exits without writing files.
+- Installation target rule:
+  - `--install-skills-root` is mandatory for every install command.
+  - If user explicitly specifies install location, pass `--install-skills-root "<that absolute path>"`.
+  - If user asks to install into workspace, use the absolute path from system prompt line: `当前 workspace skills 目录（绝对路径）` as `--install-skills-root`.
+  - If user does not specify location, use the system prompt line `默认技能安装路径（绝对路径）` as `--install-skills-root`.
+  - Never treat workspace as default install target. Only use workspace path when the user explicitly asks for workspace installation.
 - For slash route `/clawhub-skill-installer <text>`, always treat `<text>` as the query.
 - `install` must use `--detail-url`; do not install by rerunning search with a query/index.
 - For an index selection, map the user's selected index to the `detail_url` printed by the immediately preceding `search` result for the same task.
+- If search returns multiple candidates and user did not explicitly authorize model-side selection (e.g. "你帮我选"), must ask user to pick one candidate once (index or exact URL) before running install; do not auto-pick.
 - Do not reuse stale search results, unrelated task results, or guessed URLs.
 - Confirmation must be supplied with `--confirm YES`.
 - Conflict handling must be supplied with `--on-conflict`; if omitted, the installer uses `abort`.
@@ -49,7 +56,7 @@ python "<BUNDLE_ROOT>/scripts/clawhub_installer.py" install --detail-url "<skill
 - After the user selects an index from the search results, install using the exact `detail_url` from that result:
 
 ```json
-{"tool":"shell","args":{"command":"python \"<BUNDLE_ROOT>/scripts/clawhub_installer.py\" install --detail-url \"<skill detail url>\" --config-dir \"<config dir>\" --confirm \"YES\" --on-conflict abort","interactive":false}}
+{"tool":"shell","args":{"command":"python \"<BUNDLE_ROOT>/scripts/clawhub_installer.py\" install --detail-url \"<skill detail url>\" --install-skills-root \"<skills root>\" --confirm \"YES\" --on-conflict abort","interactive":false}}
 ```
 
 - If user explicitly gives a detail URL, skip search and use the same install command.
@@ -74,10 +81,11 @@ python "<BUNDLE_ROOT>/scripts/clawhub_installer.py" search --query "<text>"
 ```
 
 4. Present the search result list to the user and ask for an index.
+4.1 If there are multiple candidates and user has not explicitly asked you to choose, do not decide on user's behalf; require one explicit user selection before install.
 5. When the user replies with an index, find that numbered result in the immediately preceding search output and install by URL:
 
 ```text
-python "<BUNDLE_ROOT>/scripts/clawhub_installer.py" install --detail-url "<detail_url from selected search result>" --config-dir "<config dir>" --confirm "YES" --on-conflict abort
+python "<BUNDLE_ROOT>/scripts/clawhub_installer.py" install --detail-url "<detail_url from selected search result>" --install-skills-root "<skills root>" --confirm "YES" --on-conflict abort
 ```
 
 6. Do not re-run search when the user chooses an index; search results may drift between calls.
@@ -86,7 +94,7 @@ python "<BUNDLE_ROOT>/scripts/clawhub_installer.py" install --detail-url "<detai
 
 ## Non-interactive controls
 
-- Search result selection is model-side: map the user's selected index to the printed `detail_url`.
+- Search result selection is model-side mapping only: after user explicitly selects an index or URL, map that selection to the printed `detail_url`; do not auto-choose from multiple candidates unless user explicitly delegates selection.
 - Install confirmation: `--confirm YES`.
 - Config conflict handling: `--on-conflict abort|overwrite|rename` (default `abort`).
 - Builtin/workspace conflicts always abort.

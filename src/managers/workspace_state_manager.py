@@ -1,4 +1,4 @@
-import hashlib
+﻿import hashlib
 import json
 import os
 from pathlib import Path
@@ -137,10 +137,10 @@ class WorkspaceStateManager:
 
     def ensure_workspace_dirs(self) -> None:
         try:
-            self._agent.ai_workspace_dir.mkdir(parents=True, exist_ok=True)
+            self._agent.workspace_config_dir.mkdir(parents=True, exist_ok=True)
         except OSError as e:
-            print(f"⚠️ Failed to create AI workspace directory {self._agent.ai_workspace_dir}: {e}")
-        self._agent.ai_workspace_temp_dir = self._agent.ai_workspace_dir / "temp"
+            print(f"⚠️ Failed to create AI workspace directory {self._agent.workspace_config_dir}: {e}")
+        self._agent.ai_workspace_temp_dir = self._agent.workspace_config_dir / "temp"
         try:
             self._agent.ai_workspace_temp_dir.mkdir(parents=True, exist_ok=True)
         except OSError as e:
@@ -161,7 +161,7 @@ class WorkspaceStateManager:
             entry.get("kind") or ("default" if workspace_id == self._default_workspace_id else "custom")
         ).lower()
         self._agent.workspace_root = root
-        self._agent.ai_workspace_dir = storage
+        self._agent.workspace_config_dir = storage
         self.ensure_workspace_dirs()
 
         current_dir = self.workspace_current_dir_path(entry)
@@ -180,7 +180,7 @@ class WorkspaceStateManager:
                 "name": self._agent.workspace_name,
                 "kind": self._agent.workspace_kind,
                 "root": str(self._agent.workspace_root),
-                "storage": str(self._agent.ai_workspace_dir),
+                "storage": str(self._agent.workspace_config_dir),
                 **(
                     {"current_dir": str(self._agent.work_directory)}
                     if entry.get("current_dir")
@@ -209,7 +209,7 @@ class WorkspaceStateManager:
                     "storage": str(
                         getattr(
                             self._agent,
-                            "ai_workspace_dir",
+                            "workspace_config_dir",
                             self._agent.work_directory / get_app_config_dirname(),
                         )
                     ),
@@ -272,3 +272,4 @@ class WorkspaceStateManager:
             return self.workspace_entry_by_root(root)
         except Exception:
             return None
+

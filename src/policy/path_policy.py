@@ -1,8 +1,8 @@
-from pathlib import Path
+﻿from pathlib import Path
 from typing import Any, Dict, Iterable, Optional
 import tempfile
 
-from ..config.app_info import get_app_name, get_app_slug_kebab
+from ..config.app_info import get_app_config_dirname, get_app_name, get_app_slug_kebab
 
 
 AI_WORKSPACE_TOP_LEVEL_DIR_NAMES = frozenset({"temp", "skills"})
@@ -23,7 +23,7 @@ class PathPolicy:
             return False
 
     def workspace_skills_root(self) -> Path:
-        return (self.agent.ai_workspace_dir / "skills").resolve()
+        return (self.agent.workspace_config_dir / "skills").resolve()
 
     def resolve_user_path(self, raw_path: str) -> Path:
         def _relative_base_dir() -> Path:
@@ -39,14 +39,16 @@ class PathPolicy:
         if not p_raw:
             return _relative_base_dir()
         norm = p_raw.replace("\\", "/").lstrip("./")
+        config_dirname = get_app_config_dirname().strip("/")
         if norm == "workspace":
-            return self.agent.ai_workspace_dir.resolve()
-        if norm.startswith("workspace/skills/"):
-            rest = norm[len("workspace/skills/") :]
+            return self.agent.workspace_config_dir.resolve()
+        workspace_config_skills_prefix = f"workspace/{config_dirname}/skills/"
+        if norm.startswith(workspace_config_skills_prefix):
+            rest = norm[len(workspace_config_skills_prefix) :]
             return (self.workspace_skills_root() / Path(rest)).resolve()
         if norm.startswith("workspace/"):
             rest = norm[len("workspace/") :]
-            return (self.agent.ai_workspace_dir / Path(rest)).resolve()
+            return (self.agent.workspace_config_dir / Path(rest)).resolve()
         if norm.startswith("skills/"):
             rest = norm[len("skills/") :]
             return (self.workspace_skills_root() / Path(rest)).resolve()
@@ -64,7 +66,7 @@ class PathPolicy:
     def is_app_protected_path(self, path: Path) -> bool:
         if self.is_workspace_skill_path(path):
             return False
-        if self.is_path_under(path, self.agent.ai_workspace_dir):
+        if self.is_path_under(path, self.agent.workspace_config_dir):
             return False
         return self.is_path_under(path, self.agent._self_repo_root) or self.is_path_under(
             path, self.agent.config_dir
@@ -74,12 +76,12 @@ class PathPolicy:
         app_name = get_app_name()
         msg = (
             f"禁止在 {app_name} workspace 根目录直接创建该路径。"
-            "请使用子目录，例如 workspace/temp/…（临时）、workspace/skills/…（技能），"
+            f"请使用子目录，例如 workspace/temp/…（临时）、workspace/{get_app_config_dirname()}/skills/…（技能），"
             "不要直接写入 workspace 根目录。"
         )
         try:
             r = path.resolve()
-            aw = self.agent.ai_workspace_dir.resolve()
+            aw = self.agent.workspace_config_dir.resolve()
             if not self.is_path_under(r, aw):
                 return None
             rel = r.relative_to(aw)
@@ -165,7 +167,7 @@ class PathPolicy:
                 return self._deny(
                     (
                         f"已拦截 shell 命令：当前位于 {get_app_slug_kebab()} 目录内，仅允许依赖安装命令"
-                        "或执行 ai_workspace_dir 下的 AI 临时脚本。"
+                        "或执行 workspace_config_dir 下的 AI 临时脚本。"
                     )
                 )
         return self._allow()
@@ -174,7 +176,7 @@ class PathPolicy:
         try:
             r = path.resolve()
             wd = self.agent.work_directory.resolve()
-            aw = self.agent.ai_workspace_dir.resolve()
+            aw = self.agent.workspace_config_dir.resolve()
         except OSError:
             return False
         return self.is_path_under(r, wd) or self.is_path_under(r, aw)
@@ -186,7 +188,7 @@ class PathPolicy:
         try:
             r = path.resolve()
             wd = self.agent.work_directory.resolve()
-            aw = self.agent.ai_workspace_dir.resolve()
+            aw = self.agent.workspace_config_dir.resolve()
             tmp = Path(tempfile.gettempdir()).resolve()
         except OSError:
             return self._deny("output_path 必须位于当前工作目录、AI 工作区或系统临时目录下")
@@ -197,10 +199,12 @@ class PathPolicy:
     @staticmethod
     def blocked_by_self_protection(action: str) -> Dict[str, Any]:
         app_slug_kebab = get_app_slug_kebab()
+        config_dirname = get_app_config_dirname()
         return {
             "success": False,
             "error": (
                 f"已拦截操作 '{action}'：运行时保护已启用，"
-                f"AI 不可修改 {app_slug_kebab} 自身（代码/配置）；`workspace/skills` 子目录除外。"
+                f"AI 不可修改 {app_slug_kebab} 自身（代码/配置）；`workspace/{config_dirname}/skills` 子目录除外。"
             ),
         }
+

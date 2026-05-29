@@ -1,4 +1,4 @@
-import json
+﻿import json
 import os
 import secrets
 from datetime import datetime
@@ -34,7 +34,7 @@ class ChatStateManager:
         return self.chat_records_dir() / self._chat_state_file
 
     def chat_records_dir(self) -> Path:
-        return self._agent.ai_workspace_dir / "chats"
+        return self._agent.workspace_config_dir / "chats"
 
     def _new_chat_record_filename(self) -> str:
         while True:
@@ -672,3 +672,4 @@ class ChatStateManager:
         if announce:
             return f"✅ Switched to Chat: [{self._agent.active_chat_name}]"
         return ""
+

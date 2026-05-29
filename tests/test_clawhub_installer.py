@@ -91,6 +91,7 @@ content
             insecure=False,
             no_verify=False,
             config_dir=tempfile.gettempdir(),
+            install_skills_root=str(Path(tempfile.gettempdir()) / "skills"),
             builtin_skills_root="",
             workspace_skills_root="",
             on_conflict="abort",
@@ -123,6 +124,7 @@ content
                 insecure=False,
                 no_verify=False,
                 config_dir=td,
+                install_skills_root=str(Path(td) / "skills"),
                 builtin_skills_root="",
                 workspace_skills_root="",
                 on_conflict="abort",
@@ -155,6 +157,7 @@ Installs a raw skill without frontmatter.
                 insecure=False,
                 no_verify=False,
                 config_dir=td,
+                install_skills_root=str(Path(td) / "skills"),
                 builtin_skills_root="",
                 workspace_skills_root="",
                 on_conflict="abort",
@@ -166,13 +169,45 @@ Installs a raw skill without frontmatter.
                         with patch("sys.stdout", new=captured):
                             rc = self.mod.cmd_install(args)
             self.assertEqual(rc, 0)
-            skill_md = (Path(td) / "skills" / "demo-raw" / "SKILL.md").read_text(encoding="utf-8")
+            skill_md = (Path(td) / "skills" / "Demo Raw" / "SKILL.md").read_text(encoding="utf-8")
             self.assertTrue(skill_md.startswith("---\n"))
             self.assertIn('name: "Demo Raw"', skill_md)
             self.assertIn('description: "Installs a raw skill without frontmatter."', skill_md)
             self.assertIn("# Demo Raw", skill_md)
             self.assertIn("- Keep this body line.", skill_md)
             self.assertIn("normalized_frontmatter: yes", captured.getvalue())
+
+    def test_install_keeps_unicode_and_spaces_in_skill_dir_name(self):
+        detail_html = """
+## SKILL.md
+---
+name: 数据 分析助手 v2
+description: unicode name
+---
+
+# 数据 分析助手 v2
+content
+
+### Files
+"""
+        with tempfile.TemporaryDirectory() as td:
+            args = SimpleNamespace(
+                confirm="YES",
+                detail_url="https://clawhub.ai/skills/data-assistant",
+                insecure=False,
+                no_verify=False,
+                config_dir=td,
+                install_skills_root=str(Path(td) / "skills"),
+                builtin_skills_root="",
+                workspace_skills_root="",
+                on_conflict="abort",
+            )
+            captured = io.StringIO()
+            with patch.object(self.mod, "_fetch_text", return_value=detail_html):
+                with patch("sys.stdout", new=captured):
+                    rc = self.mod.cmd_install(args)
+            self.assertEqual(rc, 0)
+            self.assertTrue((Path(td) / "skills" / "数据 分析助手 v2" / "SKILL.md").is_file())
 
     def test_install_config_conflict_aborts_without_prompt(self):
         detail_html = """
@@ -200,6 +235,7 @@ content
                 insecure=False,
                 no_verify=False,
                 config_dir=td,
+                install_skills_root=str(Path(td) / "skills"),
                 builtin_skills_root="",
                 workspace_skills_root="",
                 on_conflict="abort",
@@ -210,7 +246,73 @@ content
                     with patch("sys.stdout", new=captured):
                         rc = self.mod.cmd_install(args)
             self.assertEqual(rc, 3)
-            self.assertIn("Install aborted due to config conflict.", captured.getvalue())
+            self.assertIn("Install aborted due to install target conflict.", captured.getvalue())
+
+    def test_install_custom_skills_root(self):
+        detail_html = """
+## SKILL.md
+---
+name: demo-custom-root
+description: demo custom root
+---
+
+# Demo Custom Root
+content
+
+### Files
+"""
+        with tempfile.TemporaryDirectory() as td:
+            install_root = Path(td) / "workspace" / "skills"
+            args = SimpleNamespace(
+                confirm="YES",
+                detail_url="https://clawhub.ai/skills/demo-custom-root",
+                insecure=False,
+                no_verify=False,
+                config_dir=td,
+                install_skills_root=str(install_root),
+                builtin_skills_root="",
+                workspace_skills_root="",
+                on_conflict="abort",
+            )
+            captured = io.StringIO()
+            with patch.object(self.mod, "_fetch_text", return_value=detail_html):
+                with patch("sys.stdout", new=captured):
+                    rc = self.mod.cmd_install(args)
+            self.assertEqual(rc, 0)
+            self.assertTrue((install_root / "demo-custom-root" / "SKILL.md").is_file())
+            self.assertIn(f"install_skills_root: {install_root.resolve()}", captured.getvalue())
+
+    def test_install_without_path_returns_error(self):
+        detail_html = """
+## SKILL.md
+---
+name: demo-global-root
+description: demo global root
+---
+
+# Demo Global Root
+content
+
+### Files
+"""
+        with tempfile.TemporaryDirectory() as td:
+            args = SimpleNamespace(
+                confirm="YES",
+                detail_url="https://clawhub.ai/skills/demo-global-root",
+                insecure=False,
+                no_verify=False,
+                config_dir="",
+                install_skills_root="",
+                builtin_skills_root="",
+                workspace_skills_root="",
+                on_conflict="abort",
+            )
+            captured = io.StringIO()
+            with patch.object(self.mod, "_fetch_text", return_value=detail_html):
+                with patch("sys.stdout", new=captured):
+                    rc = self.mod.cmd_install(args)
+            self.assertEqual(rc, 2)
+            self.assertIn("Invalid install arguments: provide --install-skills-root.", captured.getvalue())
 
 
 if __name__ == "__main__":

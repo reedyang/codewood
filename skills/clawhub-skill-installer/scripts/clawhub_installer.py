@@ -7,6 +7,7 @@ from __future__ import annotations
 import argparse
 import io
 import json
+import os
 import re
 import shutil
 import ssl
@@ -111,7 +112,59 @@ def _fetch_bytes(url: str, timeout_sec: int = 30, verify_ssl: bool = True) -> by
 
 
 def _slugify(value: str) -> str:
-    out = re.sub(r"[^a-zA-Z0-9._-]+", "-", value.strip().lower()).strip("-")
+    raw = (value or "").strip()
+    if not raw:
+        return "clawhub-skill"
+
+    out_chars: List[str] = []
+    if os.name == "nt":
+        invalid = set('<>:"/\\|?*')
+        for ch in raw:
+            code = ord(ch)
+            if code == 0 or code < 32 or ch in invalid:
+                out_chars.append("-")
+            else:
+                out_chars.append(ch)
+        out = "".join(out_chars).rstrip(" .")
+        reserved = {
+            "CON",
+            "PRN",
+            "AUX",
+            "NUL",
+            "COM1",
+            "COM2",
+            "COM3",
+            "COM4",
+            "COM5",
+            "COM6",
+            "COM7",
+            "COM8",
+            "COM9",
+            "LPT1",
+            "LPT2",
+            "LPT3",
+            "LPT4",
+            "LPT5",
+            "LPT6",
+            "LPT7",
+            "LPT8",
+            "LPT9",
+        }
+        base = out.split(".", 1)[0].upper() if out else ""
+        if base in reserved:
+            out = f"{out}-skill"
+    else:
+        for ch in raw:
+            code = ord(ch)
+            if code == 0 or ch == "/":
+                out_chars.append("-")
+            else:
+                out_chars.append(ch)
+        out = "".join(out_chars)
+
+    out = out.strip()
+    if out in {".", ".."}:
+        out = ""
     return out or "clawhub-skill"
 
 
@@ -354,13 +407,14 @@ def _scan_skills_root(root: Path, source: str) -> List[LoadedSkill]:
     return out
 
 
-def _collect_loaded_skills(config_dir: Path, builtin_root: Optional[Path], workspace_root: Optional[Path]) -> List[LoadedSkill]:
+def _collect_loaded_skills(config_dir: Optional[Path], builtin_root: Optional[Path], workspace_root: Optional[Path]) -> List[LoadedSkill]:
     all_skills: List[LoadedSkill] = []
     if builtin_root:
         all_skills.extend(_scan_skills_root(builtin_root, "builtin"))
     if workspace_root:
         all_skills.extend(_scan_skills_root(workspace_root, "workspace"))
-    all_skills.extend(_scan_skills_root(config_dir / "skills", "config"))
+    if config_dir is not None:
+        all_skills.extend(_scan_skills_root(config_dir / "skills", "config"))
     return all_skills
 
 
@@ -501,13 +555,21 @@ def cmd_install(args: argparse.Namespace) -> int:
         print("Invalid --detail-url. It must be a ClawHub detail URL under https://clawhub.ai/skills/...")
         return 2
 
-    config_dir = Path(args.config_dir).expanduser().resolve()
-    config_skills_root = config_dir / "skills"
-    config_skills_root.mkdir(parents=True, exist_ok=True)
+    install_skills_root_raw = str(getattr(args, "install_skills_root", "") or "").strip()
+    if not install_skills_root_raw:
+        print("Invalid install arguments: provide --install-skills-root.")
+        return 2
+    install_skills_root = Path(install_skills_root_raw).expanduser().resolve()
+    install_skills_root.mkdir(parents=True, exist_ok=True)
+    config_dir_raw = str(getattr(args, "config_dir", "") or "").strip()
+    config_dir = Path(config_dir_raw).expanduser().resolve() if config_dir_raw else None
+    config_skills_root = (config_dir / "skills") if config_dir is not None else None
 
     script_path = Path(__file__).resolve()
     inferred_builtin_root = script_path.parents[2]
-    inferred_workspace_root = config_dir / "workspace" / "skills"
+    inferred_workspace_root = (
+        (config_dir / "workspace" / "skills") if config_dir is not None else None
+    )
     builtin_root = Path(args.builtin_skills_root).resolve() if args.builtin_skills_root else inferred_builtin_root
     workspace_root = Path(args.workspace_skills_root).resolve() if args.workspace_skills_root else inferred_workspace_root
 
@@ -542,12 +604,12 @@ def cmd_install(args: argparse.Namespace) -> int:
     print(f"detected_skill_name: {skill_name}", flush=True)
     if converted_frontmatter:
         print("normalized_frontmatter: yes", flush=True)
-    target_dir = config_skills_root / skill_id
+    target_dir = install_skills_root / skill_id
 
     def _resolve_dir_conflict(paths: List[Path]) -> int:
         choice = (getattr(args, "on_conflict", "abort") or "abort").strip().lower()
         if choice == "abort":
-            print("Install aborted due to config conflict. Re-run with --on-conflict overwrite or --on-conflict rename to resolve.")
+            print("Install aborted due to install target conflict. Re-run with --on-conflict overwrite or --on-conflict rename to resolve.")
             return 3
         if choice == "overwrite":
             for p in paths:
@@ -566,6 +628,8 @@ def cmd_install(args: argparse.Namespace) -> int:
         return 3
 
     loaded = _collect_loaded_skills(config_dir=config_dir, builtin_root=builtin_root, workspace_root=workspace_root)
+    if config_skills_root is None or install_skills_root != config_skills_root:
+        loaded.extend(_scan_skills_root(install_skills_root, "install_target"))
     conflicts = _detect_conflicts(loaded, new_skill_id=skill_id, new_skill_name=skill_name)
     if conflicts:
         print("【Conflict Detected】")
@@ -575,11 +639,13 @@ def cmd_install(args: argparse.Namespace) -> int:
         for c in conflicts:
             print(f"- source={c.source} skill_id={c.skill_id} skill_name={c.skill_name} path={c.path}")
         print("")
-        non_config_conflicts = [c for c in conflicts if c.source != "config"]
-        if non_config_conflicts:
+        resolvable_sources = {"config", "install_target"}
+        non_resolvable_conflicts = [c for c in conflicts if c.source not in resolvable_sources]
+        if non_resolvable_conflicts:
             print("Install aborted due to non-config conflict (builtin/workspace cannot be auto-resolved).")
             return 3
-        rc = _resolve_dir_conflict([Path(c.path) for c in conflicts])
+        conflict_paths = sorted({str(Path(c.path).resolve()) for c in conflicts})
+        rc = _resolve_dir_conflict([Path(p) for p in conflict_paths])
         if rc != 0:
             return rc
 
@@ -631,6 +697,7 @@ def cmd_install(args: argparse.Namespace) -> int:
     print(f"skill_id: {skill_id}")
     print(f"skill_name: {skill_name}")
     print(f"target_dir: {target_dir}")
+    print(f"install_skills_root: {install_skills_root}")
     print(f"companion_files: {companion_count}")
     if zip_url:
         print(f"download_zip: {zip_url}")
@@ -653,7 +720,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_install = sub.add_parser("install", help="Install one skill from ClawHub by detail URL")
     p_install.add_argument("--detail-url", default="", help="Skill detail URL on clawhub.ai")
-    p_install.add_argument("--config-dir", required=True, help="Host config directory (contains skills/)")
+    p_install.add_argument("--config-dir", default="", help="Optional host config directory used for conflict scanning")
+    p_install.add_argument(
+        "--install-skills-root",
+        required=True,
+        help="Install destination skills root",
+    )
     p_install.add_argument("--confirm", default="", help='Must be exactly "YES" to continue')
     p_install.add_argument(
         "--on-conflict",

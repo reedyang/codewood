@@ -1,4 +1,4 @@
-import re
+﻿import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -276,7 +276,7 @@ def action_read_image(agent: Any, file_path: str, prompt: str = "") -> Dict[str,
         if not abs_path.is_absolute():
             p1 = agent.work_directory / file_path
             p_temp = agent.ai_workspace_temp_dir / file_path
-            p2 = agent.ai_workspace_dir / file_path
+            p2 = agent.workspace_config_dir / file_path
             if p1.is_file():
                 abs_path = p1
             elif p_temp.is_file():
@@ -298,4 +298,5 @@ def action_read_image(agent: Any, file_path: str, prompt: str = "") -> Dict[str,
         return {"success": True, "analysis": analysis, "file": str(abs_path)}
     except Exception as e:
         return {"success": False, "error": f"Image read failed: {str(e)}"}
+
 
