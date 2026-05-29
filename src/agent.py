@@ -2148,10 +2148,7 @@ class Agent:
             return False
         if str(result.get("tool") or "").strip() != "shell":
             return False
-        if bool(result.get("aborted_by_user", False)):
-            return True
-        output_text = str(result.get("output") or "")
-        return "command aborted by user" in output_text.lower()
+        return bool(result.get("aborted_by_user", False))
 
     def _history_item_is_conversation_interrupted(self, msg: Any) -> bool:
         if not isinstance(msg, dict):
@@ -2417,10 +2414,7 @@ class Agent:
     def _is_direct_shell_result_aborted(self, result: Any) -> bool:
         if not isinstance(result, dict):
             return False
-        if bool(result.get("aborted_by_user", False)):
-            return True
-        out_text = str(result.get("stdout") or "")
-        return "command aborted by user" in out_text.lower()
+        return bool(result.get("aborted_by_user", False))
 
     def _normalize_aborted_direct_shell_stdout_for_history(self, stdout_text: str) -> str:
         text = str(stdout_text or "")
@@ -3082,6 +3076,7 @@ class Agent:
         lock = getattr(self, "_interrupt_state_lock", None)
         if lock is None:
             return
+        key = self._process_abort_key(process)
         with lock:
             procs = getattr(self, "_interruptible_processes", None)
             if isinstance(procs, dict):
@@ -3089,6 +3084,9 @@ class Agent:
                     procs.pop(id(process), None)
                 except Exception:
                     pass
+            marks = getattr(self, "_aborted_process_keys", None)
+            if isinstance(marks, set):
+                marks.discard(key)
 
     def _terminate_single_process_tree(self, process: Any) -> None:
         if process is None:
@@ -3135,13 +3133,8 @@ class Agent:
 
     @staticmethod
     def _process_abort_key(process: Any) -> str:
-        pid = None
-        try:
-            pid = int(getattr(process, "pid", 0) or 0)
-        except Exception:
-            pid = 0
-        if pid and pid > 0:
-            return f"pid:{pid}"
+        # Use object identity instead of PID. PIDs can be reused quickly,
+        # which may let stale abort marks match a later unrelated process.
         return f"obj:{id(process)}"
 
     def _mark_process_aborted(self, process: Any) -> None:
