@@ -5,6 +5,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from src.runtime.runtime_loop import (
+    _consume_streaming_ai_response,
     _compute_unreviewed_changed_files,
     _extract_done_reviewed_files,
     _build_minimal_verification_command,
@@ -317,6 +318,81 @@ class RuntimeLoopTests(unittest.TestCase):
         )
         out = _stream_visible_text_with_json_pause(raw, final=True)
         self.assertEqual(out, raw)
+
+    def test_consume_streaming_ai_response_calls_callback_before_first_visible_output(self):
+        class _FakeStream:
+            def __init__(self, state):
+                self.state = state
+
+            def write(self, text):
+                s = str(text or "")
+                if s and (not self.state["stopped"]):
+                    self.state["wrote_before_stop"] = True
+                return len(s)
+
+            def flush(self):
+                return None
+
+            def isatty(self):
+                return False
+
+        class _Agent:
+            def _hide_previous_shell_output_if_needed(self):
+                return None
+
+            def _ensure_terminal_line_start(self):
+                return None
+
+        state = {"stopped": False, "wrote_before_stop": False}
+
+        def _before_first_visible_output():
+            state["stopped"] = True
+
+        with patch("src.runtime.runtime_loop.sys.stdout", _FakeStream(state)):
+            ai_response, streamed_any = _consume_streaming_ai_response(
+                _Agent(),
+                ["he", "llo"],
+                before_first_visible_output=_before_first_visible_output,
+            )
+
+        self.assertEqual(ai_response, "hello")
+        self.assertTrue(streamed_any)
+        self.assertFalse(state["wrote_before_stop"])
+
+    def test_consume_streaming_ai_response_no_visible_output_skips_callback(self):
+        class _FakeStream:
+            def write(self, text):
+                return len(str(text or ""))
+
+            def flush(self):
+                return None
+
+            def isatty(self):
+                return False
+
+        class _Agent:
+            def _hide_previous_shell_output_if_needed(self):
+                raise AssertionError("should not be called")
+
+            def _ensure_terminal_line_start(self):
+                raise AssertionError("should not be called")
+
+        callback_calls = 0
+
+        def _before_first_visible_output():
+            nonlocal callback_calls
+            callback_calls += 1
+
+        with patch("src.runtime.runtime_loop.sys.stdout", _FakeStream()):
+            ai_response, streamed_any = _consume_streaming_ai_response(
+                _Agent(),
+                [],
+                before_first_visible_output=_before_first_visible_output,
+            )
+
+        self.assertEqual(ai_response, "")
+        self.assertFalse(streamed_any)
+        self.assertEqual(callback_calls, 0)
 
 
 if __name__ == "__main__":
