@@ -591,8 +591,20 @@ class PromptSeparatorBehaviorTests(unittest.TestCase):
         ):
             agent._print_chat_history()
         mock_feedback.assert_called_once_with("shell", {"command": "echo hi"}, failed=False)
-        mock_shell_output.assert_called_once_with("  └ hi\n", "")
+        mock_shell_output.assert_called_once_with("hi\n", "")
         mock_sep.assert_not_called()
+
+    def test_extract_model_shell_replay_output_normalizes_legacy_prefixed_display_payload(self):
+        agent = self._build_agent()
+        out, err = agent._extract_model_shell_replay_output(
+            {
+                "success": True,
+                "display_output": "  └ first\n    second\n",
+                "display_stderr": "",
+            }
+        )
+        self.assertEqual(out, "first\nsecond\n")
+        self.assertEqual(err, "")
 
     def test_chat_history_model_shell_result_replays_failed_output_without_operation_results(self):
         agent = self._build_agent()
