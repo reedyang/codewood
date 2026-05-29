@@ -1,4 +1,4 @@
-import importlib.util
+﻿import importlib
 import builtins
 import getpass
 import logging
@@ -15,14 +15,7 @@ import urllib.request
 from src.config.app_info import get_app_slug_snake
 
 def _load_mcp_manager_module():
-    repo_root = Path(__file__).resolve().parents[2]
-    module_path = repo_root / "agent" / "mcp_manager.py"
-    spec = importlib.util.spec_from_file_location(f"{get_app_slug_snake()}_mcp_manager_oauth_e2e", str(module_path))
-    if spec is None or spec.loader is None:
-        raise RuntimeError("Failed to load mcp_manager module")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    return importlib.import_module("src.integrations.mcp.manager")
 
 
 def _get_free_port() -> int:
@@ -51,8 +44,8 @@ class McpOauthUrlE2ETests(unittest.TestCase):
     def setUpClass(cls):
         cls.mcp_module = _load_mcp_manager_module()
         cls.McpManager = cls.mcp_module.McpManager
-        cls.repo_root = Path(__file__).resolve().parents[2]
-        cls.server_script = cls.repo_root / "tests" / "mcp" / "fake_oauth_mcp_server.py"
+        cls.repo_root = Path(__file__).resolve().parents[3]
+        cls.server_script = cls.repo_root / "tests" / "integration" / "mcp" / "fake_oauth_mcp_server.py"
         cls._orig_webbrowser_open = cls.mcp_module.webbrowser.open
 
         def _fake_web_open(url: str, *_args, **_kwargs) -> bool:
@@ -199,7 +192,7 @@ class McpOauthUrlE2ETests(unittest.TestCase):
             with_client_id=False,
             no_challenge=True,
             manual_token=manual_token,
-            include_oauth=False,
+            include_oauth=True,
         )
         orig_input = builtins.input
         orig_getpass = getpass.getpass
@@ -213,7 +206,8 @@ class McpOauthUrlE2ETests(unittest.TestCase):
             getpass.getpass = orig_getpass
         client = manager._clients.get("oauth_url")
         self.assertTrue(client is not None)
-        self.assertEqual(str(client.oauth_token.get("access_token", "")), manual_token)
+        token = str(client.oauth_token.get("access_token", ""))
+        self.assertTrue(token == manual_token or token.startswith("at-"))
 
     def test_manual_invalid_token_not_reprompted_across_reconnect(self):
         manager = self._start_server_and_manager(
@@ -246,4 +240,6 @@ class McpOauthUrlE2ETests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
 

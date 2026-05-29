@@ -1,4 +1,4 @@
-import importlib.util
+﻿import importlib
 import logging
 import tempfile
 import unittest
@@ -6,14 +6,7 @@ from pathlib import Path
 from src.config.app_info import get_app_slug_snake
 
 def _load_mcp_manager_module():
-    repo_root = Path(__file__).resolve().parents[2]
-    module_path = repo_root / "agent" / "mcp_manager.py"
-    spec = importlib.util.spec_from_file_location(f"{get_app_slug_snake()}_mcp_manager_failure", str(module_path))
-    if spec is None or spec.loader is None:
-        raise RuntimeError("Failed to load mcp_manager module")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    return importlib.import_module("src.integrations.mcp.manager")
 
 
 class McpFailureClassificationTests(unittest.TestCase):
@@ -62,7 +55,7 @@ class McpFailureClassificationTests(unittest.TestCase):
             "Unknown tool: missing_tool",
         )
         self.assertEqual(ft, "unsupported")
-        self.assertIn("工具名", suggestion)
+        self.assertIn("tool/method names", suggestion)
 
     def test_classify_failure_prefers_error_code_over_keywords(self):
         ft, suggestion = self.manager._classify_failure(
@@ -78,8 +71,11 @@ class McpFailureClassificationTests(unittest.TestCase):
             "WinError 2: The system cannot find the file specified",
         )
         self.assertEqual(ft, "missing_dependency")
-        self.assertIn("未找到可执行文件", suggestion)
+        self.assertIn("Executable `python` was not found", suggestion)
 
 
 if __name__ == "__main__":
     unittest.main()
+
+
+

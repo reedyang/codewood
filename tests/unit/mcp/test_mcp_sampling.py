@@ -1,4 +1,4 @@
-import importlib.util
+﻿import importlib
 import logging
 import tempfile
 import unittest
@@ -6,14 +6,7 @@ from pathlib import Path
 from src.config.app_info import get_app_slug_snake
 
 def _load_mcp_manager_module():
-    repo_root = Path(__file__).resolve().parents[2]
-    module_path = repo_root / "agent" / "mcp_manager.py"
-    spec = importlib.util.spec_from_file_location(f"{get_app_slug_snake()}_mcp_manager_sampling", str(module_path))
-    if spec is None or spec.loader is None:
-        raise RuntimeError("Failed to load mcp_manager module")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    return importlib.import_module("src.integrations.mcp.manager")
 
 
 class _FakeClient:
@@ -81,3 +74,6 @@ class McpSamplingTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+

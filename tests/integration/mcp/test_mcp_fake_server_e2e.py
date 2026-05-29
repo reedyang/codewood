@@ -1,4 +1,4 @@
-import importlib.util
+﻿import importlib
 import logging
 import socket
 import subprocess
@@ -11,14 +11,7 @@ import urllib.request
 from src.config.app_info import get_app_slug_snake
 
 def _load_mcp_manager_module():
-    repo_root = Path(__file__).resolve().parents[2]
-    module_path = repo_root / "agent" / "mcp_manager.py"
-    spec = importlib.util.spec_from_file_location(f"{get_app_slug_snake()}_mcp_manager_e2e", str(module_path))
-    if spec is None or spec.loader is None:
-        raise RuntimeError("Failed to load mcp_manager module")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    return importlib.import_module("src.integrations.mcp.manager")
 
 
 def _wait_http_ready(url: str, timeout_s: float = 5.0) -> None:
@@ -50,8 +43,8 @@ class FakeMcpServerE2ETests(unittest.TestCase):
     def setUpClass(cls):
         cls.mcp_module = _load_mcp_manager_module()
         cls.McpManager = cls.mcp_module.McpManager
-        cls.repo_root = Path(__file__).resolve().parents[2]
-        cls.server_script = cls.repo_root / "tests" / "mcp" / "fake_mcp_server.py"
+        cls.repo_root = Path(__file__).resolve().parents[3]
+        cls.server_script = cls.repo_root / "tests" / "integration" / "mcp" / "fake_mcp_server.py"
 
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
@@ -207,3 +200,5 @@ class FakeMcpServerE2ETests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
