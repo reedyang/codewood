@@ -12,7 +12,7 @@ import unicodedata
 from contextlib import redirect_stderr, redirect_stdout
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 from ..config.app_info import (
     get_app_display_version,
@@ -166,7 +166,11 @@ def _stream_visible_text_with_json_pause(text: str, *, final: bool) -> str:
     return merged
 
 
-def _consume_streaming_ai_response(agent: Any, ai_result: Any) -> Tuple[Optional[str], bool]:
+def _consume_streaming_ai_response(
+    agent: Any,
+    ai_result: Any,
+    before_first_visible_output: Optional[Callable[[], None]] = None,
+) -> Tuple[Optional[str], bool]:
     if isinstance(ai_result, str):
         return ai_result, False
     if ai_result is None:
@@ -183,6 +187,7 @@ def _consume_streaming_ai_response(agent: Any, ai_result: Any) -> Tuple[Optional
     raw_chunks: List[str] = []
     shown_visible = ""
     streamed_any = False
+    first_visible_output_ready = False
     last_rendered_block = ""
     last_rendered_lines = 0
     is_tty = bool(getattr(sys.stdout, "isatty", lambda: False)())
@@ -222,6 +227,17 @@ def _consume_streaming_ai_response(agent: Any, ai_result: Any) -> Tuple[Optional
         last_rendered_lines = max(1, _estimate_visible_lines(agent, rendered))
         return True
 
+    def _on_before_first_visible_output() -> None:
+        nonlocal first_visible_output_ready
+        if first_visible_output_ready:
+            return
+        first_visible_output_ready = True
+        if callable(before_first_visible_output):
+            try:
+                before_first_visible_output()
+            except Exception:
+                pass
+
     for chunk in ai_result:
         piece = str(chunk or "")
         if not piece:
@@ -231,6 +247,7 @@ def _consume_streaming_ai_response(agent: Any, ai_result: Any) -> Tuple[Optional
         if visible_now == shown_visible:
             continue
         if not streamed_any:
+            _on_before_first_visible_output()
             try:
                 agent._hide_previous_shell_output_if_needed()
             except Exception:
@@ -261,6 +278,7 @@ def _consume_streaming_ai_response(agent: Any, ai_result: Any) -> Tuple[Optional
     visible_final = _stream_visible_text_with_json_pause(ai_response, final=True)
     if visible_final != shown_visible:
         if not streamed_any:
+            _on_before_first_visible_output()
             try:
                 agent._hide_previous_shell_output_if_needed()
             except Exception:
@@ -1625,6 +1643,15 @@ def run_agent_loop(agent: Any):
                         fps=_WORKING_STATUS_MARQUEE_FPS,
                     )
                     status_ticker.start()
+                status_ticker_stopped = False
+
+                def _stop_status_ticker_before_first_output() -> None:
+                    nonlocal status_ticker_stopped
+                    if status_ticker_stopped:
+                        return
+                    status_ticker.stop()
+                    self._clear_last_thinking_line()
+                    status_ticker_stopped = True
                 try:
                     ai_result = self.call_ai(
                         next_input,
@@ -1634,12 +1661,18 @@ def run_agent_loop(agent: Any):
                         history_user_input=original_user_task if not user_message_recorded else None,
                         history_skip_user=user_message_recorded,
                     )
-                finally:
-                    status_ticker.stop()
-                    self._clear_last_thinking_line()
+                except Exception:
+                    _stop_status_ticker_before_first_output()
+                    raise
                 if self._consume_task_interrupt_requested():
                     raise KeyboardInterrupt
-                ai_response, streamed_assistant_output = _consume_streaming_ai_response(self, ai_result)
+                ai_response, streamed_assistant_output = _consume_streaming_ai_response(
+                    self,
+                    ai_result,
+                    before_first_visible_output=_stop_status_ticker_before_first_output,
+                )
+                if not status_ticker_stopped:
+                    _stop_status_ticker_before_first_output()
                 if not isinstance(ai_response, str):
                     print(f"❌ AI returned invalid response: {ai_response}")
                     break
