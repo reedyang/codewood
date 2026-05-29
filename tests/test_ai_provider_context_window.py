@@ -243,6 +243,67 @@ class ProviderContextWindowTests(unittest.TestCase):
         self.assertIn("input", payload)
         self.assertNotIn("messages", payload)
 
+    def test_openai_responses_mode_defaults_additional_drop_params_tools(self):
+        with patch("requests.post", return_value=_FakeResponsesApiResponse()) as mock_post:
+            out = call_ai_with_provider(
+                context=ProviderCallContext(
+                    provider="openai",
+                    model_name="Gemma-4-31B",
+                    model_params={},
+                    openai_conf={
+                        "api_key": "k",
+                        "base_url": "https://example.com/v1",
+                        "api_mode": "responses",
+                    },
+                    messages=[{"role": "user", "content": "ping"}],
+                    stream=False,
+                    return_message=False,
+                    image_data=None,
+                    image_user_idx=None,
+                    image_user_text="",
+                    session_summary_mode=False,
+                    memory_query_expansion_mode=False,
+                    domain_classifier_mode=False,
+                ),
+                append_history=lambda _s: None,
+                ollama_importer=lambda: None,
+            )
+        self.assertEqual(out, "hello from responses api")
+        payload = mock_post.call_args.kwargs.get("json", {})
+        self.assertEqual(payload.get("additional_drop_params"), ["tools"])
+        self.assertNotIn("tools", payload)
+
+    def test_openai_responses_mode_merges_configured_additional_drop_params(self):
+        with patch("requests.post", return_value=_FakeResponsesApiResponse()) as mock_post:
+            out = call_ai_with_provider(
+                context=ProviderCallContext(
+                    provider="openai",
+                    model_name="Gemma-4-31B",
+                    model_params={},
+                    openai_conf={
+                        "api_key": "k",
+                        "base_url": "https://example.com/v1",
+                        "api_mode": "responses",
+                        "additional_drop_params": ["tools"],
+                    },
+                    messages=[{"role": "user", "content": "ping"}],
+                    stream=False,
+                    return_message=False,
+                    image_data=None,
+                    image_user_idx=None,
+                    image_user_text="",
+                    session_summary_mode=False,
+                    memory_query_expansion_mode=False,
+                    domain_classifier_mode=False,
+                ),
+                append_history=lambda _s: None,
+                ollama_importer=lambda: None,
+            )
+        self.assertEqual(out, "hello from responses api")
+        payload = mock_post.call_args.kwargs.get("json", {})
+        self.assertEqual(payload.get("additional_drop_params"), ["tools"])
+        self.assertNotIn("tools", payload)
+
     def test_openai_append_fail_then_no_suffix_success_records_override(self):
         responses = [_FakeHttpErrorResponse(), _FakeResponse()]
 

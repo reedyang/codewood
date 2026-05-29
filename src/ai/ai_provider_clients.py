@@ -292,6 +292,43 @@ def _normalize_openai_api_mode(raw: Any) -> str:
     return "auto"
 
 
+def _normalize_additional_drop_params(raw: Any) -> List[str]:
+    values: List[str] = []
+    if isinstance(raw, str):
+        values = [part.strip() for part in raw.split(",")]
+    elif isinstance(raw, (list, tuple, set)):
+        values = [str(item).strip() for item in raw]
+    else:
+        return []
+    out: List[str] = []
+    seen = set()
+    for value in values:
+        if not value or value in seen:
+            continue
+        seen.add(value)
+        out.append(value)
+    return out
+
+
+def _merge_default_drop_params(
+    payload: Dict[str, Any], configured_drop_params: List[str]
+) -> List[str]:
+    out: List[str] = []
+    seen = set()
+    for item in configured_drop_params:
+        key = str(item).strip()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        out.append(key)
+
+    tools_value = payload.get("tools")
+    has_non_empty_tools = isinstance(tools_value, list) and len(tools_value) > 0
+    if not has_non_empty_tools and "tools" not in seen:
+        out.append("tools")
+    return out
+
+
 def _base_url_suffix_hint(base_url: str) -> str:
     normalized = str(base_url or "").strip().rstrip("/").casefold()
     if normalized.endswith("/responses"):
@@ -399,6 +436,7 @@ def _build_openai_payload(
     session_summary_mode: bool,
     memory_query_expansion_mode: bool,
     domain_classifier_mode: bool,
+    additional_drop_params: List[str],
 ) -> Dict[str, Any]:
     if api_kind == "responses":
         payload: Dict[str, Any] = {
@@ -415,6 +453,13 @@ def _build_openai_payload(
             payload["max_output_tokens"] = 512
         if memory_query_expansion_mode or domain_classifier_mode:
             payload["temperature"] = 0.2
+        if isinstance(payload.get("tools"), list) and not payload.get("tools"):
+            payload.pop("tools", None)
+        effective_drop_params = _merge_default_drop_params(
+            payload=payload, configured_drop_params=additional_drop_params
+        )
+        if effective_drop_params:
+            payload["additional_drop_params"] = effective_drop_params
         return payload
 
     payload = {"model": model_name, "messages": messages, "stream": stream}
@@ -422,6 +467,13 @@ def _build_openai_payload(
         payload["max_tokens"] = 512
     if memory_query_expansion_mode or domain_classifier_mode:
         payload["temperature"] = 0.2
+    if isinstance(payload.get("tools"), list) and not payload.get("tools"):
+        payload.pop("tools", None)
+    effective_drop_params = _merge_default_drop_params(
+        payload=payload, configured_drop_params=additional_drop_params
+    )
+    if effective_drop_params:
+        payload["additional_drop_params"] = effective_drop_params
     return payload
 
 
@@ -477,6 +529,7 @@ def _call_openai_once(
     session_summary_mode: bool,
     memory_query_expansion_mode: bool,
     domain_classifier_mode: bool,
+    additional_drop_params: List[str],
     append_history: Callable[[str], None],
 ):
     payload = _build_openai_payload(
@@ -490,6 +543,7 @@ def _call_openai_once(
         session_summary_mode=session_summary_mode,
         memory_query_expansion_mode=memory_query_expansion_mode,
         domain_classifier_mode=domain_classifier_mode,
+        additional_drop_params=additional_drop_params,
     )
     resp = _post_openai_request(url=url, headers=headers, payload=payload, stream=stream)
     if stream:
@@ -520,6 +574,7 @@ def _call_openai_with_suffix_strategy(
     session_summary_mode: bool,
     memory_query_expansion_mode: bool,
     domain_classifier_mode: bool,
+    additional_drop_params: List[str],
     append_history: Callable[[str], None],
 ):
     prefer_no_suffix = _openai_get_prefer_no_suffix(
@@ -558,6 +613,7 @@ def _call_openai_with_suffix_strategy(
             session_summary_mode=session_summary_mode,
             memory_query_expansion_mode=memory_query_expansion_mode,
             domain_classifier_mode=domain_classifier_mode,
+            additional_drop_params=additional_drop_params,
             append_history=append_history,
         )
     except Exception as e:
@@ -598,6 +654,7 @@ def _call_openai_with_suffix_strategy(
             session_summary_mode=session_summary_mode,
             memory_query_expansion_mode=memory_query_expansion_mode,
             domain_classifier_mode=domain_classifier_mode,
+            additional_drop_params=additional_drop_params,
             append_history=append_history,
         )
         if primary_append and not secondary_append:
@@ -719,6 +776,9 @@ def _call_with_openai_compatible(
         }
 
     api_mode = _normalize_openai_api_mode(conf.get("api_mode"))
+    additional_drop_params = _normalize_additional_drop_params(
+        conf.get("additional_drop_params")
+    )
     api_kinds = _openai_api_order_for_mode(api_mode, str(base_url or ""))
     _OPENAI_ROUTE_LOG.info(
         "openai-route dispatch model=%s api_mode=%s api_order=%s base_url=%s",
@@ -758,6 +818,7 @@ def _call_with_openai_compatible(
                 session_summary_mode=session_summary_mode,
                 memory_query_expansion_mode=memory_query_expansion_mode,
                 domain_classifier_mode=domain_classifier_mode,
+                additional_drop_params=additional_drop_params,
                 append_history=append_history,
             )
         except Exception as e:
