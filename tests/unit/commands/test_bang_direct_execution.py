@@ -113,6 +113,42 @@ class BangDirectExecutionTests(unittest.TestCase):
         self.assertEqual(out_plain, "  └ line1\n    line2\n")
         self.assertEqual(err_plain, "    err-line\n")
 
+    def test_direct_shell_output_stream_does_not_emit_indent_only_blank_line_for_leading_newline(self):
+        class _TtyBuffer(StringIO):
+            def isatty(self):
+                return True
+
+            def fileno(self):
+                return 1
+
+        out_buf = _TtyBuffer()
+        with patch("src.agent.sys.stdout", out_buf):
+            out_stream, _ = self.agent._create_direct_shell_output_streams()
+            out_stream.write("\nline1\n")
+
+        ansi_re = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+        out_plain = ansi_re.sub("", out_buf.getvalue()).lstrip("\r")
+        self.assertEqual(out_plain, "\n  └ line1\n")
+        self.assertNotIn("\n  └ \n", out_plain)
+
+    def test_direct_shell_output_stream_normalizes_carriage_return_before_render(self):
+        class _TtyBuffer(StringIO):
+            def isatty(self):
+                return True
+
+            def fileno(self):
+                return 1
+
+        out_buf = _TtyBuffer()
+        with patch("src.agent.sys.stdout", out_buf):
+            out_stream, _ = self.agent._create_direct_shell_output_streams()
+            out_stream.write("\r\nline1\n")
+
+        ansi_re = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+        out_plain = ansi_re.sub("", out_buf.getvalue()).lstrip("\r")
+        self.assertEqual(out_plain, "\n  └ line1\n")
+        self.assertNotIn("\n  └ \n", out_plain)
+
     def test_direct_shell_output_stream_wraps_long_lines_with_indent(self):
         class _TtyBuffer(StringIO):
             def isatty(self):
@@ -156,6 +192,26 @@ class BangDirectExecutionTests(unittest.TestCase):
         out_plain = ansi_re.sub("", out_buf.getvalue()).lstrip("\r")
         self.assertIn("    command aborted by user\n", out_plain)
         self.assertNotIn("└ command aborted by user", out_plain)
+
+    def test_direct_shell_history_output_trims_leading_blank_line_in_replay(self):
+        class _TtyBuffer(StringIO):
+            def isatty(self):
+                return True
+
+            def fileno(self):
+                return 1
+
+        out_buf = _TtyBuffer()
+        err_buf = _TtyBuffer()
+        with patch("src.agent.sys.stdout", out_buf), patch(
+            "src.agent.sys.stderr", err_buf
+        ):
+            self.agent._print_direct_shell_history_output("\nline1\n", "")
+
+        ansi_re = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+        out_plain = ansi_re.sub("", out_buf.getvalue()).lstrip("\r")
+        self.assertEqual(out_plain, "  └ line1\n")
+        self.assertNotIn("\n  └ line1\n", out_plain)
 
     def test_direct_shell_history_output_after_assistant_starts_on_new_line(self):
         class _TtyBuffer(StringIO):

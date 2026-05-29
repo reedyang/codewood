@@ -1077,10 +1077,53 @@ class Agent:
             display_err = str(payload.get("display_stderr") or "")
             if not display_out and not display_err and bool(payload.get("success", True)):
                 display_out = "(no output)\n"
-            return display_out, display_err
+            return (
+                self._normalize_legacy_prefixed_shell_display_for_replay(display_out),
+                self._normalize_legacy_prefixed_shell_display_for_replay(display_err),
+            )
         out_text = str(payload.get("display_output") or "")
         err_text = str(payload.get("display_stderr") or "")
-        return out_text, err_text
+        return (
+            self._normalize_legacy_prefixed_shell_display_for_replay(out_text),
+            self._normalize_legacy_prefixed_shell_display_for_replay(err_text),
+        )
+
+    @staticmethod
+    def _normalize_legacy_prefixed_shell_display_for_replay(text: str) -> str:
+        raw = str(text or "")
+        if not raw:
+            return ""
+        normalized = raw.replace("\r\n", "\n").replace("\r", "\n")
+        trailing_newline = normalized.endswith("\n")
+        lines = normalized.split("\n")
+        if trailing_newline and lines and lines[-1] == "":
+            lines = lines[:-1]
+        if not lines:
+            return normalized
+        first_idx: Optional[int] = None
+        for i, line in enumerate(lines):
+            if line.strip():
+                first_idx = i
+                break
+        if first_idx is None:
+            return normalized
+        first_line = lines[first_idx]
+        m = re.match(r"^[ \t]*└[ \t]?(.*)$", first_line)
+        if not m:
+            return normalized
+        rebuilt: List[str] = []
+        for idx, line in enumerate(lines):
+            if idx < first_idx:
+                rebuilt.append(line)
+                continue
+            if idx == first_idx:
+                rebuilt.append(m.group(1))
+                continue
+            rebuilt.append(line[4:] if line.startswith("    ") else line)
+        out = "\n".join(rebuilt)
+        if trailing_newline:
+            out += "\n"
+        return out
 
     def _extract_direct_shell_replay_output(self, stdout_text: str, stderr_text: str) -> Tuple[str, str]:
         raw_out = str(stdout_text or "")
@@ -2157,6 +2200,12 @@ class Agent:
         out_stream, err_stream = self._create_direct_shell_output_streams(shared_state)
         out = str(stdout_text or "")
         err = str(stderr_text or "")
+        # Avoid visual blank gap between "Ran ..." and first command output line
+        # when replay payload accidentally starts with CR/LF.
+        if out:
+            out = out.lstrip("\r\n")
+        if err and not out:
+            err = err.lstrip("\r\n")
         if out:
             out_stream.write(out)
             out_stream.flush()
@@ -2576,6 +2625,9 @@ class Agent:
             s = Agent._strip_console_color_controls(s)
             if not s:
                 return 0
+            # Normalize CR/CRLF to LF for stable wrapped rendering; raw carriage
+            # returns can move cursor to line start and leave an orphaned prefix.
+            s = s.replace("\r\n", "\n").replace("\r", "\n")
             if not bool(self._shared_state.get("_first_write_cleared_ticker_line", False)):
                 self._shared_state["_first_write_cleared_ticker_line"] = True
                 suppress_clear = bool(self._shared_state.get("_suppress_first_write_clear", False))
@@ -2606,6 +2658,11 @@ class Agent:
             term_cols = max(8, int(self._terminal_columns() or 80) - max(0, outer_indent))
             out_parts: List[str] = []
             for ch in s:
+                if ch == "\n":
+                    out_parts.append("\n")
+                    self._line_start = True
+                    self._visual_col = 0
+                    continue
                 if self._line_start:
                     if not bool(self._shared_state.get("first_line_emitted", False)):
                         indent = "  └ "
@@ -2621,11 +2678,6 @@ class Agent:
                         ) + 1
                     except Exception:
                         self._shared_state["rendered_line_count"] = 1
-                if ch == "\n":
-                    out_parts.append("\n")
-                    self._line_start = True
-                    self._visual_col = 0
-                    continue
                 ch_w = self._char_display_width(ch)
                 if ch_w > 0 and self._visual_col + ch_w > term_cols:
                     out_parts.append("\n    ")
