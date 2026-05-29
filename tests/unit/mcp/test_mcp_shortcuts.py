@@ -61,7 +61,7 @@ class McpShortcutCommandTests(unittest.TestCase):
             tool, _, err = self.agent._parse_mcp_shortcut_command(cmd)
             self.assertIsNone(tool, cmd)
             self.assertIsInstance(err, str, cmd)
-            self.assertTrue(err.startswith("用法:"), f"{cmd} => {err}")
+            self.assertTrue(err.startswith("Usage:"), f"{cmd} => {err}")
 
     def test_completion_contains_all_mcp_shortcuts(self):
         expected = [

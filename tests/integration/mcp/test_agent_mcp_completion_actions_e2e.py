@@ -1,4 +1,4 @@
-import contextlib
+﻿import contextlib
 import io
 import json
 import logging
@@ -46,8 +46,8 @@ def _wait_http_ready(url: str, timeout_s: float = 5.0) -> None:
 class AgentMcpCompletionActionsE2ETests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.repo_root = Path(__file__).resolve().parents[2]
-        cls.server_script = cls.repo_root / "tests" / "mcp" / "fake_mcp_server.py"
+        cls.repo_root = Path(__file__).resolve().parents[3]
+        cls.server_script = cls.repo_root / "tests" / "integration" / "mcp" / "fake_mcp_server.py"
 
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
@@ -166,4 +166,5 @@ class AgentMcpCompletionActionsE2ETests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
 
