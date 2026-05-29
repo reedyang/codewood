@@ -102,6 +102,28 @@ class PathPolicy:
     def _deny(error: str) -> Dict[str, Any]:
         return {"allowed": False, "error": str(error or "")}
 
+    def _shell_guard_directory(self) -> Path:
+        """Return the effective cwd used by shell execution for guard checks."""
+        resolver = getattr(self.agent, "_shell_execution_cwd", None)
+        if callable(resolver):
+            try:
+                resolved = resolver()
+                if isinstance(resolved, Path):
+                    return resolved.resolve()
+                if resolved:
+                    return Path(str(resolved)).resolve()
+            except Exception:
+                pass
+        raw_workspace_root = getattr(self.agent, "workspace_root", None)
+        if raw_workspace_root:
+            try:
+                root = Path(str(raw_workspace_root)).resolve()
+                if root.exists() and root.is_dir():
+                    return root
+            except Exception:
+                pass
+        return Path(self.agent.work_directory).resolve()
+
     def can_write_path(self, path: Path, action: str) -> Dict[str, Any]:
         rej = self.reject_ai_workspace_root_level_write(path)
         if rej:
@@ -137,7 +159,8 @@ class PathPolicy:
         is_dependency_install: bool,
         is_ai_workspace_script: bool,
     ) -> Dict[str, Any]:
-        if self.is_path_under(self.agent.work_directory, self.agent._self_repo_root):
+        guard_dir = self._shell_guard_directory()
+        if self.is_path_under(guard_dir, self.agent._self_repo_root):
             if not (is_dependency_install or is_ai_workspace_script):
                 return self._deny(
                     (
