@@ -3383,8 +3383,66 @@ class Agent:
         pending_line_state: Optional[Dict[str, str]] = None,
     ) -> None:
         import codecs
+        import threading
+        import time
 
         decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+        # Batched rendering keeps terminal updates efficient while preserving
+        # low-latency streaming for sparse/slow command output.
+        flush_interval_sec = 0.08
+        flush_chunk_chars = 2048
+        pending_parts: List[str] = []
+        pending_chars = 0
+        pending_has_newline = False
+        flush_lock = threading.Lock()
+        stop_flush_event = threading.Event()
+        flush_thread: Optional[threading.Thread] = None
+        last_flush_at = float(time.monotonic())
+
+        def _flush_pending(force: bool = False) -> None:
+            nonlocal pending_chars, pending_has_newline, last_flush_at
+            if target_stream is None:
+                with flush_lock:
+                    pending_parts.clear()
+                    pending_chars = 0
+                    pending_has_newline = False
+                return
+            text_to_write = ""
+            with flush_lock:
+                if not pending_parts:
+                    return
+                now = float(time.monotonic())
+                if not force:
+                    should_flush = bool(
+                        pending_has_newline
+                        or pending_chars >= int(flush_chunk_chars)
+                        or (now - last_flush_at) >= float(flush_interval_sec)
+                    )
+                    if not should_flush:
+                        return
+                text_to_write = "".join(pending_parts)
+                pending_parts.clear()
+                pending_chars = 0
+                pending_has_newline = False
+                last_flush_at = now
+            if text_to_write:
+                try:
+                    target_stream.write(text_to_write)
+                    target_stream.flush()
+                except Exception:
+                    pass
+
+        if target_stream is not None:
+            def _periodic_flusher() -> None:
+                while not stop_flush_event.wait(float(flush_interval_sec)):
+                    _flush_pending(force=False)
+
+            flush_thread = threading.Thread(
+                target=_periodic_flusher,
+                name=f"{get_app_logger_root()}-shell-stream-flusher",
+                daemon=True,
+            )
+            flush_thread.start()
         try:
             while True:
                 if hasattr(pipe, "read1"):
@@ -3404,11 +3462,12 @@ class Agent:
                             pending_line_state,
                         )
                     if target_stream is not None:
-                        try:
-                            target_stream.write(text_chunk)
-                            target_stream.flush()
-                        except Exception:
-                            pass
+                        with flush_lock:
+                            pending_parts.append(text_chunk)
+                            pending_chars += len(text_chunk)
+                            if "\n" in text_chunk:
+                                pending_has_newline = True
+                        _flush_pending(force=False)
             tail = decoder.decode(b"", final=True)
             if tail:
                 if isinstance(capture_chunks, list):
@@ -3420,14 +3479,25 @@ class Agent:
                         pending_line_state,
                     )
                 if target_stream is not None:
-                    try:
-                        target_stream.write(tail)
-                        target_stream.flush()
-                    except Exception:
-                        pass
+                    with flush_lock:
+                        pending_parts.append(tail)
+                        pending_chars += len(tail)
+                        if "\n" in tail:
+                            pending_has_newline = True
+                    _flush_pending(force=True)
         except Exception:
             pass
         finally:
+            try:
+                stop_flush_event.set()
+            except Exception:
+                pass
+            if flush_thread is not None and getattr(flush_thread, "is_alive", lambda: False)():
+                try:
+                    flush_thread.join(timeout=0.2)
+                except Exception:
+                    pass
+            _flush_pending(force=True)
             try:
                 pipe.close()
             except Exception:
