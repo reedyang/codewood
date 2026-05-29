@@ -58,6 +58,18 @@ class _FakeHttpErrorResponse:
         return {"error": "bad request"}
 
 
+class _FakeStreamResponse:
+    def __init__(self, lines):
+        self._lines = list(lines or [])
+
+    def raise_for_status(self):
+        return None
+
+    def iter_lines(self):
+        for line in self._lines:
+            yield line
+
+
 class ProviderContextWindowTests(unittest.TestCase):
     def test_openai_sends_context_window_header(self):
         with patch("requests.post", return_value=_FakeResponse()) as mock_post:
@@ -490,6 +502,43 @@ class ProviderContextWindowTests(unittest.TestCase):
         self.assertEqual(options["num_ctx"], 128000)
         self.assertEqual(options["num_predict"], 512)
         self.assertEqual(options["temperature"], 0.3)
+
+    def test_openai_stream_ignores_reasoning_delta_and_only_records_output_text(self):
+        stream_resp = _FakeStreamResponse(
+            [
+                b'data: {"type":"response.reasoning.delta","delta":"internal thinking"}',
+                b'data: {"type":"response.output_text.delta","delta":" Hel"}',
+                b'data: {"type":"response.output_text.delta","delta":"lo"}',
+                b"data: [DONE]",
+            ]
+        )
+        history = []
+        with patch("requests.post", return_value=stream_resp):
+            chunks = call_ai_with_provider(
+                context=ProviderCallContext(
+                    provider="openai",
+                    model_name="gpt-oss-120b",
+                    model_params={},
+                    openai_conf={
+                        "api_key": "k",
+                        "base_url": "https://example.com/v1",
+                        "api_mode": "responses",
+                    },
+                    messages=[{"role": "user", "content": "ping"}],
+                    stream=True,
+                    return_message=False,
+                    image_data=None,
+                    image_user_idx=None,
+                    image_user_text="",
+                    session_summary_mode=False,
+                    memory_query_expansion_mode=False,
+                    domain_classifier_mode=False,
+                ),
+                append_history=lambda s: history.append(s),
+                ollama_importer=lambda: None,
+            )
+        self.assertEqual("".join(list(chunks)), "Hello")
+        self.assertEqual(history, ["Hello"])
 
 
 if __name__ == "__main__":

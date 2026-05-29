@@ -16,6 +16,7 @@ from src.runtime.runtime_loop import (
     _sync_command_input_history,
     _should_record_command_input_history,
     _shell_command_indicates_verification,
+    _stream_visible_text_with_json_pause,
     _stop_pre_task_status_ticker_for_console_output,
     _try_record_user_task_message,
     _tool_change_and_verification_hints,
@@ -289,6 +290,33 @@ class RuntimeLoopTests(unittest.TestCase):
             user_input_hint="u",
             context_hint="ask_more_info paused",
         )
+
+    def test_stream_visible_text_with_json_pause_hides_incomplete_json_fence(self):
+        raw = "先做检查\n```json\n{\"tool\":\"read\",\"args\":{"
+        out = _stream_visible_text_with_json_pause(raw, final=False)
+        self.assertEqual(out, "先做检查\n")
+
+    def test_stream_visible_text_with_json_pause_omits_tool_json_fence_when_complete(self):
+        raw = (
+            "准备执行\n"
+            "```json\n"
+            "{\"tool\":\"read\",\"args\":{\"path\":\"a.py\"}}\n"
+            "```\n"
+            "继续"
+        )
+        out = _stream_visible_text_with_json_pause(raw, final=True)
+        self.assertEqual(out, "准备执行\n\n继续")
+
+    def test_stream_visible_text_with_json_pause_keeps_non_tool_json_fence(self):
+        raw = (
+            "说明\n"
+            "```json\n"
+            "{\"foo\":1}\n"
+            "```\n"
+            "完成"
+        )
+        out = _stream_visible_text_with_json_pause(raw, final=True)
+        self.assertEqual(out, raw)
 
 
 if __name__ == "__main__":

@@ -1,4 +1,5 @@
 import json
+import re
 import threading
 from dataclasses import dataclass
 from pathlib import Path
@@ -14,6 +15,13 @@ _OPENAI_API_ROUTE_CACHE_LOCK = threading.Lock()
 _OPENAI_API_ROUTE_CACHE_LOADED = False
 _OPENAI_API_ROUTE_CACHE: Dict[str, Any] = {"prefer_no_suffix": {}}
 _OPENAI_ROUTE_LOG = get_logger(f"{get_app_logger_root()}.openai_route")
+_THINK_TAG_RE = re.compile(r"<think>.*?</think>", flags=re.IGNORECASE | re.DOTALL)
+
+
+def _sanitize_assistant_text(text: Any) -> str:
+    if not isinstance(text, str) or not text:
+        return ""
+    return _THINK_TAG_RE.sub("", text)
 
 
 @dataclass(frozen=True)
@@ -182,6 +190,51 @@ def _stream_openai_like_response(
     resp: Any,
     append_history: Callable[[str], None],
 ):
+    def _extract_stream_text_delta(payload: Any) -> str:
+        if not isinstance(payload, dict):
+            return ""
+        event_type = str(payload.get("type") or "").strip().lower()
+        if "reasoning" in event_type:
+            return ""
+        try:
+            choices = payload.get("choices")
+            if isinstance(choices, list) and choices:
+                first = choices[0]
+                if isinstance(first, dict):
+                    delta_obj = first.get("delta")
+                    if isinstance(delta_obj, dict):
+                        content = delta_obj.get("content")
+                        if isinstance(content, str):
+                            return content
+                        if isinstance(content, list):
+                            pieces: List[str] = []
+                            for item in content:
+                                if not isinstance(item, dict):
+                                    continue
+                                item_type = str(item.get("type") or "").strip().lower()
+                                if "reasoning" in item_type:
+                                    continue
+                                text = item.get("text")
+                                if isinstance(text, str):
+                                    pieces.append(text)
+                            if pieces:
+                                return "".join(pieces)
+        except Exception:
+            pass
+
+        if "output_text.delta" in event_type:
+            d = payload.get("delta")
+            if isinstance(d, str):
+                return d
+        if event_type.endswith(".delta") and "output_text" in event_type:
+            d = payload.get("delta")
+            if isinstance(d, str):
+                return d
+        out = payload.get("output_text")
+        if isinstance(out, str):
+            return out
+        return ""
+
     def gen():
         buffer = ""
         first_chunk = True
@@ -196,26 +249,7 @@ def _stream_openai_like_response(
             data_str = data.decode("utf-8", errors="replace")
             try:
                 payload = json.loads(data_str)
-                delta = ""
-                if isinstance(payload, dict):
-                    try:
-                        delta = payload["choices"][0]["delta"].get("content", "")
-                    except Exception:
-                        delta = ""
-                    if not delta:
-                        event_type = str(payload.get("type") or "")
-                        if "output_text.delta" in event_type:
-                            d = payload.get("delta")
-                            if isinstance(d, str):
-                                delta = d
-                        elif event_type.endswith(".delta"):
-                            d = payload.get("delta")
-                            if isinstance(d, str):
-                                delta = d
-                        if not delta:
-                            out = payload.get("output_text")
-                            if isinstance(out, str):
-                                delta = out
+                delta = _sanitize_assistant_text(_extract_stream_text_delta(payload))
                 if delta:
                     if first_chunk:
                         delta = delta.lstrip()
@@ -240,10 +274,10 @@ def _extract_text_from_response_content(content: Any) -> str:
         if not isinstance(item, dict):
             continue
         item_type = str(item.get("type") or "")
-        if item_type in ("output_text", "input_text", "reasoning_text", "text"):
+        if item_type in ("output_text", "input_text", "text"):
             text = item.get("text")
             if isinstance(text, str) and text:
-                parts.append(text)
+                parts.append(_sanitize_assistant_text(text))
     return "".join(parts)
 
 
@@ -554,7 +588,13 @@ def _call_openai_once(
 
     data = resp.json()
     message = _extract_message_from_openai_response_data(data)
-    ai_response = message.get("content", "") or ""
+    raw_content = message.get("content", "")
+    if isinstance(raw_content, list):
+        ai_response = _extract_text_from_response_content(raw_content)
+    else:
+        ai_response = _sanitize_assistant_text(raw_content or "")
+    message = dict(message)
+    message["content"] = ai_response
     append_history(ai_response)
     return message if return_message else ai_response
 
@@ -885,7 +925,7 @@ def _call_with_ollama(
             buffer = ""
             first_chunk = True
             for chunk in response:
-                delta = chunk.get("message", {}).get("content", "")
+                delta = _sanitize_assistant_text(chunk.get("message", {}).get("content", ""))
                 if delta:
                     if first_chunk:
                         delta = delta.lstrip()
@@ -905,7 +945,9 @@ def _call_with_ollama(
     }
     response = ollama.chat(**chat_kwargs)
     message = response.get("message", {}) or {}
-    ai_response = message.get("content", "") or ""
+    ai_response = _sanitize_assistant_text(message.get("content", "") or "")
+    message = dict(message)
+    message["content"] = ai_response
     append_history(ai_response)
     return message if return_message else ai_response
 
