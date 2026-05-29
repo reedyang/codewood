@@ -36,6 +36,7 @@ python "<BUNDLE_ROOT>/scripts/clawhub_installer.py" install --detail-url "<skill
 - `install` must use `--detail-url`; do not install by rerunning search with a query/index.
 - For an index selection, map the user's selected index to the `detail_url` printed by the immediately preceding `search` result for the same task.
 - If search returns multiple candidates and user did not explicitly authorize model-side selection (e.g. "你帮我选"), must ask user to pick one candidate once (index or exact URL) before running install; do not auto-pick.
+- For consecutive installations in one conversation, treat each new install request as a new selection round: do not reuse any previously chosen index, and ask again based on the current search result list.
 - Do not reuse stale search results, unrelated task results, or guessed URLs.
 - Confirmation must be supplied with `--confirm YES`.
 - Conflict handling must be supplied with `--on-conflict`; if omitted, the installer uses `abort`.
@@ -89,6 +90,7 @@ python "<BUNDLE_ROOT>/scripts/clawhub_installer.py" install --detail-url "<detai
 ```
 
 6. Do not re-run search when the user chooses an index; search results may drift between calls.
+6.1 For a later new install request, do not inherit or reuse any prior index selection from earlier installs; present current results and require a fresh user choice.
 7. If a config conflict aborts and the user chooses overwrite or rename, re-run install with the same selected `--detail-url` and the requested `--on-conflict` value.
 8. Do not perform non-installer actions until install finishes or user cancels.
 
