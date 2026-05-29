@@ -1,11 +1,12 @@
-import json
+﻿import json
 import re
 import threading
 import time
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
-from ..config.app_info import get_app_logger_root, get_app_slug_kebab
+from ..config.app_info import get_app_config_dirname, get_app_logger_root, get_app_slug_kebab
 from ..core.config.model_providers import DEFAULT_CONTEXT_WINDOW, parse_context_window
 from ..core.logging.app_logging import get_logger
 
@@ -1444,13 +1445,19 @@ class SessionMemoryService:
             f"{self.agent._active_skill_full_prompt}"
         )
         # Key runtime metadata is intentionally non-clippable.
+        workspace_skills_dir = (Path(self.agent.workspace_config_dir) / "skills").resolve()
+        default_install_skills_dir = (Path.home() / get_app_config_dirname() / "skills").resolve()
         runtime_tail_raw = (
             f"当前操作系统信息：{os_info}\n当前日期时间：{date_time}\n"
             f"当前 {get_app_slug_kebab()} 根目录（绝对路径）：{self.agent._self_repo_root}\n"
             f"当前 config 目录（绝对路径）：{self.agent.config_dir}\n"
             f"当前 workspace 名称：{self.agent.workspace_name}\n"
             f"当前 chat 名称（弱提示，仅会话标签，不代表本轮任务目标）：{self.agent.active_chat_name}\n"
-            f"当前 workspace 目录（绝对路径）：{self.agent.ai_workspace_dir}\n"
+            f"当前 workspace 目录（绝对路径）：{self.agent.workspace_config_dir}\n"
+            f"默认技能安装路径（绝对路径）：{default_install_skills_dir}\n"
+            f"当前 workspace skills 目录（绝对路径）：{workspace_skills_dir}\n"
+            "安装第三方 skill 时：若用户未指定安装位置，必须使用“默认技能安装路径（绝对路径）”；"
+            "仅当用户明确要求安装到 workspace 时，才可使用“当前 workspace skills 目录（绝对路径）”。\n"
         )
         tail_context = immutable_system_core + runtime_tail_raw
         if mem_block:
@@ -1650,3 +1657,4 @@ class SessionMemoryService:
         except Exception:
             pass
         return messages, True
+

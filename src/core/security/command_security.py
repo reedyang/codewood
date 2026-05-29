@@ -1,4 +1,4 @@
-import hashlib
+﻿import hashlib
 import json
 import os
 import re
@@ -8,7 +8,7 @@ from typing import Any, List, Optional
 
 
 def confirm_allowlist_path(agent: Any) -> Path:
-    return agent.ai_workspace_dir / "confirm_allowlist.json"
+    return agent.workspace_config_dir / "confirm_allowlist.json"
 
 
 def normalize_path_allowlist_key(p: Path) -> str:
@@ -325,3 +325,4 @@ def reset_always_confirm_skip(agent: Any) -> dict:
             f"{' (confirm_allowlist.json deleted)' if removed else ''}"
         ),
     }
+

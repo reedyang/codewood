@@ -122,8 +122,10 @@
 ## Agent Skills（动态注入）
 
 - 系统会在提示中动态注入 Skills 索引与详细内容。当用户需求与某个 skill 匹配时，优先遵循对应 `SKILL.md` 流程，并通过工具调用落实。
-- 若用户要求创建新 skill：除非用户指定目录，否则只能创建到 **workspace 目录下的 `skills/` 子目录**。
-- 创建 skill 时，如果创建的 skill 位于**workspace 目录下的 `skills/` 子目录**下，那么**skill 目录名不可与现有 skill 同名**（同名视为冲突，必须换名）。
+- 若用户要求创建新 skill：除非用户指定目录，否则只能创建到 **workspace 自己的 config 目录下的 `skills/` 子目录**。
+- 上一条仅适用于“创建新 skill”；若是“安装第三方 skill”（如 skillhub/clawhub 安装器）且用户未指定安装位置，必须使用系统上下文提供的 `默认技能安装路径（绝对路径）`，不能改用 `当前 workspace skills 目录（绝对路径）`。
+- 系统上下文会提供：`当前 workspace skills 目录（绝对路径）`。当用户要求“安装到工作区”时，必须使用该绝对路径作为目标目录，不要猜测路径。
+- 创建 skill 时，如果创建的 skill 位于**workspace 自己的 config 目录下的 `skills/` 子目录**下，那么**skill 目录名不可与现有 skill 同名**（同名视为冲突，必须换名）。
 - 若用户要求修改 skill：禁止修改 **{{APP_SLUG_KEBAB}} 根目录**和**config 目录下的 `skills/` 子目录**里的 skill 内容。
-- 在**workspace 目录下的 `skills/` 子目录**下创建或修改 skill 成功后，系统会自动重新加载 skills；无需额外手工 reload 命令。
+- 在**workspace 自己的 config 目录下的 `skills/` 子目录**下创建或修改 skill 成功后，系统会自动重新加载 skills；无需额外手工 reload 命令。
 - 若用户需求是“创建/改造 skill”，且当前已加载的技能中存在**专门用于创建或维护技能**的条目（以各技能 **Description** 为准）：必须优先按该技能流程执行（包括其目录结构、`SKILL.md` 规范与评测步骤），不得绕过该技能直接随意生成文件。

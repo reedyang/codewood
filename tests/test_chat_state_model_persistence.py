@@ -1,4 +1,4 @@
-import tempfile
+﻿import tempfile
 import threading
 import unittest
 import json
@@ -60,7 +60,7 @@ def _assert_hash_record_file(testcase, record_file: str):
 
 class _FakeAgent:
     def __init__(self, workspace: Path):
-        self.ai_workspace_dir = workspace
+        self.workspace_config_dir = workspace
         self._chat_state = {}
         self._chat_state_lock = threading.RLock()
         self.provider = "openai"
@@ -650,3 +650,4 @@ class ChatStateModelPersistenceTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+

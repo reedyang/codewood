@@ -1,4 +1,4 @@
-import os
+﻿import os
 import re
 import shlex
 import shutil
@@ -1132,7 +1132,7 @@ def ensure_absolute_script_for_shell_cwd(agent: Any, command: str) -> str:
     if invoked is None or not invoked.is_file():
         return command
     try:
-        invoked.resolve().relative_to(agent.ai_workspace_dir.resolve())
+        invoked.resolve().relative_to(agent.workspace_config_dir.resolve())
     except ValueError:
         return command
     new_cmd = rewrite_shell_command_script_arg_to_abs(agent, command, invoked.resolve())
@@ -1218,7 +1218,7 @@ def is_ai_workspace_script_command(agent: Any, command: str) -> bool:
     invoked = parse_shell_invoked_script_path(agent, command or "")
     if invoked is None:
         return False
-    return agent._is_path_under(invoked, agent.ai_workspace_dir)
+    return agent._is_path_under(invoked, agent.workspace_config_dir)
 
 
 def try_remove_ephemeral_script_after_shell(agent: Any, command: str) -> Optional[str]:
@@ -1286,3 +1286,4 @@ def append_shell_merge_output_path(stdout_text: str, return_code: int, merge_pat
     if not head:
         return marker + "\n" + extra
     return head + "\n\n---\n" + marker + "\n" + extra
+

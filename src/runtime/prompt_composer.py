@@ -1,4 +1,4 @@
-import json
+﻿import json
 import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -179,20 +179,9 @@ def build_agents_md_system_append(agent: Any) -> str:
     except Exception:
         pass
     try:
-        candidates.append(("workspace", Path(agent.ai_workspace_dir) / "AGENTS.md"))
+        candidates.append(("workspace", Path(agent.workspace_config_dir) / "AGENTS.md"))
     except Exception:
         pass
-    try:
-        config_dirname = get_app_config_dirname()
-        candidates.append(
-            (
-                f"workspace/{config_dirname}",
-                Path(agent.ai_workspace_dir) / config_dirname / "AGENTS.md",
-            )
-        )
-    except Exception:
-        pass
-
     sections: List[str] = []
     seen_keys: set = set()
     for scope, file_path in candidates:
@@ -647,3 +636,4 @@ def build_single_skill_prompt(
         "",
     ]
     return "\n".join(lines), meta
+

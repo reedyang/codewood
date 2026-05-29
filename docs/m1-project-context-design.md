@@ -85,7 +85,7 @@ The index is stored under the active AI workspace directory:
 `ProjectContextIndex` is initialized with:
 
 - `workspace_root = agent.work_directory`
-- `storage_dir = agent.ai_workspace_dir / "project_context_db"`
+- `storage_dir = agent.workspace_config_dir / "project_context_db"`
 
 When the active workspace/runtime is refreshed, Smart Shell schedules a background refresh using the current `work_directory` and the current workspace `project_context_db` directory.
 

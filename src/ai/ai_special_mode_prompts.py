@@ -1,4 +1,4 @@
-import os
+﻿import os
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -18,7 +18,7 @@ FREEDOM_COMBINED_REVIEW_SYSTEM_PROMPT = (
     'Reply with ONLY one JSON object (no markdown code fence): '
     '{"safe_auto": true or false, "reversible": true or false, "manipulation": true or false, "reason": "brief"}. '
     "safe_auto=true ONLY if the script is unlikely to: "
-    "(1) modify or delete files except under work_directory, under ai_workspace_dir, "
+    "(1) modify or delete files except under work_directory, under workspace_config_dir, "
     "and files implied by ai_tracked_path_keys (session AI-created), or clearly NEW outputs under those dirs; "
     "(2) modify system configuration: Windows registry/services/firewall/hosts/machine env, Linux /etc system files, etc. "
     "reversible=true if the overall operation can be undone without permanent loss of unique user data "
@@ -160,3 +160,4 @@ def build_special_mode_messages(
         ], False, None
 
     return None, True, None
+

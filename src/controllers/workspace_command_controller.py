@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import re
 import shlex
@@ -120,7 +120,7 @@ def print_workspace_help(_agent: Any) -> None:
 def print_workspace_current(agent: Any) -> None:
     print(f"Current workspace: {agent.workspace_name} ({agent.workspace_id})")
     print(f"  root: {agent.workspace_root}")
-    print(f"  storage: {agent.ai_workspace_dir}")
+    print(f"  storage: {agent.workspace_config_dir}")
     print(f"  current directory: {agent.work_directory}")
 
 
@@ -432,4 +432,5 @@ def handle_workspace_builtin_command(agent: Any, builtin_line: str) -> bool:
 
     print(f"❌ Invalid workspace subcommand: {parts[1]}\n{workspace_usage()}")
     return True
+
 

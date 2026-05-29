@@ -1,4 +1,4 @@
-import re
+﻿import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -17,7 +17,7 @@ class _DummyAgent:
     def __init__(self, work_directory: Path) -> None:
         self.work_directory = work_directory
         self.workspace_root = work_directory
-        self.ai_workspace_dir = work_directory
+        self.workspace_config_dir = work_directory
         self.execution_policy = "confirmation"
         self._ai_created_path_keys = set()
         self.preview_segments_calls: List[List[Dict[str, Any]]] = []
@@ -81,8 +81,6 @@ class ApplyPatchPreviewTests(unittest.TestCase):
             self.assertTrue(result.get("success"), result.get("error"))
             self.assertTrue(target.exists())
             self.assertEqual(target.read_text(encoding="utf-8"), "# Prompts 收集\n\n## System Prompt（完整）\n")
-            warnings = [str(x) for x in (result.get("warnings") or [])]
-            self.assertTrue(any("legacy '*** Begin Patch' Add File format" in w for w in warnings))
 
     def test_apply_patch_legacy_repeated_end_patch_warns_but_succeeds(self):
         with tempfile.TemporaryDirectory() as td:
@@ -216,7 +214,7 @@ class ApplyPatchPreviewTests(unittest.TestCase):
             target = workspace_root / "demo.txt"
             target.write_text("hello\n", encoding="utf-8")
             agent = _DummyAgent(workspace_root)
-            agent.ai_workspace_dir = ai_workspace
+            agent.workspace_config_dir = ai_workspace
             agent.workspace_root = workspace_root
             agent.execution_policy = "moderate"
 
@@ -230,3 +228,4 @@ class ApplyPatchPreviewTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+

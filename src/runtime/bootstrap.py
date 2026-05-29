@@ -1,4 +1,4 @@
-import threading
+﻿import threading
 from pathlib import Path
 from typing import Any, Optional
 
@@ -97,7 +97,7 @@ def setup_workspace_and_history(
         agent._workspaces_state["active"] = default_workspace_id
     agent._apply_workspace_entry(active_workspace, startup_work_directory)
 
-    agent.history_manager = HistoryManager(str(agent.ai_workspace_dir))
+    agent.history_manager = HistoryManager(str(agent.workspace_config_dir))
     agent._load_chat_state()
     setup_app_logging(agent.config_dir)
 
@@ -234,8 +234,8 @@ def setup_prompt_and_mcp(agent: Any) -> None:
     agent.mcp_manager = McpManager(
         agent.config_dir,
         agent.mcp_config,
-        agent.ai_workspace_dir,
-        tool_policy_parent=agent.ai_workspace_dir,
+        agent.workspace_config_dir,
+        tool_policy_parent=agent.workspace_config_dir,
     )
     agent.mcp_manager.register_client_method_handler(
         "elicitation/create",
@@ -262,12 +262,12 @@ def setup_skills(agent: Any, builtin_skills_dir: Optional[str]) -> None:
     agent.skills = load_skills_merged(
         agent.config_dir,
         agent._builtin_skills_root,
-        agent.ai_workspace_dir,
+        agent.workspace_config_dir,
     )
     agent._skills_dirs_fingerprint = calc_skills_dirs_fingerprint(
         agent.config_dir,
         agent._builtin_skills_root,
-        agent.ai_workspace_dir,
+        agent.workspace_config_dir,
     )
     agent._skills_routing_prefix = build_skills_routing_prefix(agent.skills)
     agent._active_skill_full_prompt = ""
@@ -321,7 +321,7 @@ def setup_runtime_services(agent: Any) -> None:
     agent._project_context_refresh_inflight = False
     agent._project_context_index = ProjectContextIndex(
         workspace_root=agent.work_directory,
-        storage_dir=(agent.ai_workspace_dir / "project_context_db"),
+        storage_dir=(agent.workspace_config_dir / "project_context_db"),
     )
     try:
         agent._schedule_project_context_refresh_background(force=False, reason="startup")
@@ -332,3 +332,4 @@ def setup_runtime_services(agent: Any) -> None:
     agent._last_memory_reflect_at = 0.0
     agent._schedule_memory_service_background()
     agent.tool_dispatcher = ToolDispatcher(agent, agent._execute_tool_call_legacy)
+

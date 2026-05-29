@@ -1,4 +1,4 @@
-import hashlib
+﻿import hashlib
 import json
 import os
 import re
@@ -19,7 +19,7 @@ def confirm_allowlist_path(agent: Any) -> Path:
 
 
 def freedom_script_review_cache_path(agent: Any) -> Path:
-    return agent.ai_workspace_dir / "freedom_script_review_cache.json"
+    return agent.workspace_config_dir / "freedom_script_review_cache.json"
 
 
 def load_freedom_script_review_cache(agent: Any) -> None:
@@ -371,7 +371,7 @@ def ai_assess_ephemeral_script_combined(
     keys = sorted(agent._ai_created_path_keys)[:120]
     payload = (
         f"work_directory={agent.work_directory.resolve()}\n"
-        f"ai_workspace_dir={agent.ai_workspace_dir.resolve()}\n"
+        f"workspace_config_dir={agent.workspace_config_dir.resolve()}\n"
         f"os={os.name}\n"
         f"ai_tracked_path_keys_normalized={json.dumps(keys, ensure_ascii=False)}\n"
         f"script_file={script_path.resolve()}\n\n"
@@ -544,3 +544,4 @@ def freedom_auto_confirm(agent: Any, command: Dict[str, Any]) -> bool:
     else:
         _print_with_auto_hide_tracking(agent, f"{mode_prefix} classified as unsafe or uncertain, manual confirmation is still required - {reason}")
     return reversible
+

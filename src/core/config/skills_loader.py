@@ -1,9 +1,9 @@
 """
 Load Agent Skills from Anthropic-style folders: ``<skills_root>/<id>/SKILL.md`` (YAML frontmatter + body).
 
-- **Workspace:** ``<workspace_dir>/skills/`` (lowest priority)
-- **Builtin:** typically ``<project_root>/skills/``
-- **External:** ``<config_dir>/skills/`` (beside ``config.jsonc``, highest priority)
+- **Builtin:** typically ``<project_root>/skills/`` (lowest priority)
+- **Global external:** ``<config_dir>/skills/``
+- **Workspace external:** ``<workspace_dir>/<app_config_dir>/skills/`` (highest priority)
 
 See: https://github.com/anthropics/skills/blob/main/README.md
 """
@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 import yaml
-from ...config.app_info import get_app_name
+from ...config.app_info import get_app_config_dirname, get_app_name
 
 
 def _parse_model_context_file_env_from_meta(meta: Optional[dict]) -> Optional[str]:
@@ -169,24 +169,28 @@ def load_skills_from_config_dir(config_dir: Path) -> List[SkillRecord]:
     return _scan_skills_root(Path(config_dir).expanduser().resolve() / "skills")
 
 
+def _workspace_config_skills_root(workspace_dir: Path) -> Path:
+    return Path(workspace_dir).expanduser().resolve() / "skills"
+
+
 def load_skills_merged(
     config_dir: Path,
     builtin_skills_dir: Optional[Path] = None,
     workspace_dir: Optional[Path] = None,
 ) -> List[SkillRecord]:
     """
-    Merge workspace, builtin and external Agent Skills.
+    Merge builtin, global external, and workspace external Agent Skills.
 
     Priority (low -> high):
     - Builtin: ``builtin_skills_dir`` (typically ``<project_root>/skills/``)
-    - External: ``<config_dir>/skills/`` (user / config-side skills)
-    - Workspace: ``<workspace_dir>/skills/`` (workspace-side skills)
+    - Global external: ``<config_dir>/skills/`` (user / config-side skills)
+    - Workspace external: ``<workspace_storage_dir>/skills/`` (workspace-local skills)
 
     Same ``skill_id`` (folder name): higher-priority source overrides lower-priority source.
     """
     workspace: List[SkillRecord] = []
     if workspace_dir is not None:
-        workspace = _scan_skills_root(Path(workspace_dir).expanduser().resolve() / "skills")
+        workspace = _scan_skills_root(_workspace_config_skills_root(Path(workspace_dir)))
     external = _scan_skills_root(Path(config_dir).expanduser().resolve() / "skills")
     builtin: List[SkillRecord] = []
     if builtin_skills_dir is not None:
@@ -240,9 +244,9 @@ def calc_skills_dirs_fingerprint(
     expensive reload when nothing changed.
     """
     payload: Dict[str, object] = {
-        "external": _skills_root_fingerprint_part(Path(config_dir).expanduser().resolve() / "skills"),
+        "global_external": _skills_root_fingerprint_part(Path(config_dir).expanduser().resolve() / "skills"),
         "builtin": _skills_root_fingerprint_part(builtin_skills_dir) if builtin_skills_dir is not None else None,
-        "workspace": _skills_root_fingerprint_part(Path(workspace_dir).expanduser().resolve() / "skills")
+        "workspace_external": _skills_root_fingerprint_part(_workspace_config_skills_root(Path(workspace_dir)))
         if workspace_dir is not None
         else None,
     }
@@ -270,7 +274,7 @@ def build_skills_routing_prefix(skills: List[SkillRecord]) -> str:
     lines = [
         "## Agent Skills 索引（系统提示最前，必读）",
         "",
-        "下列技能按优先级由低到高合并加载：项目根目录内建 `skills/` → `config.jsonc` 同目录下的外部 `skills/` → `workspace/skills/`；**同名技能以后者覆盖前者**。",
+        f"下列技能按优先级由低到高合并加载：项目根目录内建 `skills/` → 全局 `config/skills/` → `workspace/{get_app_config_dirname()}/skills/`；**同名技能以后者覆盖前者**。",
         "**在输出任何 JSON 操作指令之前**：若当前用户任务与下文中某项「简述」在语义上相符（含同义表述与相关子任务），你必须：",
         "",
         "1. 在本提示靠后的 **「Agent Skills（详细内容）」** 一节中找到对应技能；",

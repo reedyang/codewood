@@ -1,4 +1,4 @@
-import unittest
+﻿import unittest
 import tempfile
 import subprocess
 from pathlib import Path
@@ -20,7 +20,7 @@ class _Policy:
 class _DummyAgent:
     def __init__(self):
         self.work_directory = Path.cwd()
-        self.ai_workspace_dir = Path.cwd()
+        self.workspace_config_dir = Path.cwd()
         self.workspace_root = Path.cwd()
         self.startup_initial_directory = Path.cwd()
         self.execution_policy = "confirmation"
@@ -38,7 +38,7 @@ class _DummyAgent:
         self._confirm_allowlist_salt = ""
 
     def _workspace_relative_script_triple(self, p: Path):
-        return (self.work_directory / p, self.ai_workspace_dir / p, self.ai_workspace_dir / p)
+        return (self.work_directory / p, self.workspace_config_dir / p, self.workspace_config_dir / p)
 
     def _get_path_policy(self):
         return _Policy()
@@ -455,7 +455,7 @@ class ShellCommandExecutionGuardsTests(unittest.TestCase):
             target.write_text("hello", encoding="utf-8")
             agent.workspace_root = ws
             agent.work_directory = ws
-            agent.ai_workspace_dir = ws
+            agent.workspace_config_dir = ws
             agent.prompt_result = False
 
             with patch("subprocess.run", return_value=_FakeCompleted("hello\n")):
@@ -473,7 +473,7 @@ class ShellCommandExecutionGuardsTests(unittest.TestCase):
             target.write_text("hello", encoding="utf-8")
             agent.workspace_root = ws
             agent.work_directory = ws
-            agent.ai_workspace_dir = ws
+            agent.workspace_config_dir = ws
             agent.prompt_result = False
 
             with patch("subprocess.run", return_value=_FakeCompleted("hello\n")):
@@ -494,7 +494,7 @@ class ShellCommandExecutionGuardsTests(unittest.TestCase):
             outside.write_text("x", encoding="utf-8")
             agent.workspace_root = ws
             agent.work_directory = ws
-            agent.ai_workspace_dir = ws
+            agent.workspace_config_dir = ws
             agent.prompt_result = False
 
             result = action_shell_command(agent, f'type "{outside}"', confirmed=False, interactive=False, input_data=None)
@@ -599,3 +599,4 @@ class ShellCommandExecutionGuardsTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
