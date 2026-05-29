@@ -39,18 +39,26 @@ def _format_startup_usage_with_executable(executable_name: str) -> str:
     command = str(executable_name or "").strip() or "python src/main.py"
     return (
         "Usage:\n"
-        f"  {command}\n"
-        f"  {command} <workspace name or path>\n"
-        f"  {command} exec \"<task request>\"\n"
-        f"  {command} <workspace name or path> exec \"<task request>\"\n"
-        f"  {command} [workspace] [exec \"<task request>\"] [-m|--model <model>]"
+        f"  {command} [OPTIONS] [WORKSPACE]\n"
+        f"  {command} [OPTIONS] [WORKSPACE] <COMMAND> [PROMPT]"
     )
 
 
 def _format_startup_help(executable_name: str = "python src/main.py") -> str:
     return (
         f"Version: {get_app_version()}\n"
-        f"{_format_startup_usage_with_executable(executable_name)}"
+        f"{_format_startup_usage_with_executable(executable_name)}\n"
+        "\n"
+        "Commands:\n"
+        f"  exec                       Run {get_app_name()} and execute your prompt non-interactively, then exit\n"
+        "\n"
+        "Arguments:\n"
+        "  [WORKSPACE]                Workspace name or path to enter on startup\n"
+        "  [PROMPT]                   Prompt text used by the exec command\n"
+        "\n"
+        "Options:\n"
+        "  -m, --model <MODEL>        Select startup model (for example: openai:gpt-4o-mini)\n"
+        f"  -h, --help                 Print help for {get_app_name()} and exit\n"
     )
 
 
@@ -616,4 +624,3 @@ def main(argv: list[str] | None = None):
 
 if __name__ == "__main__":
     sys.exit(main(sys.argv[1:])) 
-

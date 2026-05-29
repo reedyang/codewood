@@ -130,7 +130,10 @@ class MainStartupConfigTests(unittest.TestCase):
         out = buf.getvalue()
         self.assertIn("Version:", out)
         self.assertIn("Usage:", out)
-        self.assertIn("[-m|--model <model>]", out)
+        self.assertIn("Commands:", out)
+        self.assertIn("Arguments:", out)
+        self.assertIn("Options:", out)
+        self.assertIn("-m, --model <MODEL>", out)
         self.assertNotIn("Config file not found", out)
         self.assertNotIn("Please update the model settings in:", out)
 
