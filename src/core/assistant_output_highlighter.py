@@ -271,6 +271,8 @@ def _looks_like_shell_command_line(text: str) -> bool:
         "kubectl",
         "curl",
         "wget",
+        "rg",
+        "ripgrep",
         "make",
         "uv",
         "poetry",

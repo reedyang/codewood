@@ -201,6 +201,26 @@ class AiOutputDisplayTests(unittest.TestCase):
         self.assertIn("<C>agent.py</C>", out)
         self.assertIn("<PSP>-Raw</PSP>", out)
 
+    def test_highlight_rg_pipeline_command_line_is_treated_as_shell(self):
+        text = "rg -i 'token' -n . | select-String -Pattern 'usage|rate'"
+        with patch("src.core.assistant_output_highlighter._ansi_bright_blue", side_effect=lambda s: f"<BB>{s}</BB>"), patch(
+            "src.core.assistant_output_highlighter._ansi_yellow", side_effect=lambda s: f"<Y>{s}</Y>"
+        ), patch("src.core.assistant_output_highlighter._ansi_green", side_effect=lambda s: f"<G>{s}</G>"), patch(
+            "src.core.assistant_output_highlighter._ansi_ps_command", side_effect=lambda s: f"<PSC>{s}</PSC>"
+        ), patch(
+            "src.core.assistant_output_highlighter._ansi_ps_parameter", side_effect=lambda s: f"<PSP>{s}</PSP>"
+        ), patch(
+            "src.core.assistant_output_highlighter._ansi_ps_pipe", side_effect=lambda s: f"<PSPIPE>{s}</PSPIPE>"
+        ):
+            out = aoh.highlight_assistant_display_line(text)
+
+        self.assertIn("<PSC>rg</PSC>", out)
+        self.assertIn("<PSP>-i</PSP>", out)
+        self.assertIn("<PSP>-n</PSP>", out)
+        self.assertIn("<PSPIPE>|</PSPIPE>", out)
+        self.assertIn("<PSC>select-String</PSC>", out)
+        self.assertIn("<PSP>-Pattern</PSP>", out)
+
     def test_tool_call_summary_for_powershell_shell_only_shows_command(self):
         cmd = 'powershell -ExecutionPolicy Bypass -Command "Get-ChildItem -Force"'
         s = self.agent._tool_call_summary("shell", {"command": cmd, "force": True, "input": "x"})

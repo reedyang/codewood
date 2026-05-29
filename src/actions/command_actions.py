@@ -289,6 +289,7 @@ def action_shell_command(
     if manual_confirm_from_ai:
         agent._manual_confirm_required_shell_once = False
     command = ensure_absolute_script_for_shell_cwd(agent, command.strip())
+    command = enforce_workspace_rg_for_shell_command(agent, command)
     command = tune_7z_output_for_piped_terminal(command)
     enforce_res = _enforce_windows_powershell_command_prefix(command)
     if not enforce_res.get("ok", False):
@@ -1139,6 +1140,129 @@ def ensure_absolute_script_for_shell_cwd(agent: Any, command: str) -> str:
     if new_cmd != command:
         print("ℹ️ Shell cwd is the work directory; workspace script path has been expanded to an absolute path.")
     return new_cmd
+
+
+def _workspace_rg_executable_path(agent: Any) -> Optional[Path]:
+    roots: List[Path] = []
+    raw_repo_root = getattr(agent, "_self_repo_root", None)
+    if raw_repo_root:
+        try:
+            roots.append(Path(str(raw_repo_root)).expanduser().resolve())
+        except Exception:
+            pass
+    try:
+        roots.append(Path(__file__).resolve().parents[2])
+    except Exception:
+        pass
+
+    dedup: List[Path] = []
+    seen: set[str] = set()
+    for root in roots:
+        key = str(root).casefold() if os.name == "nt" else str(root)
+        if key in seen:
+            continue
+        seen.add(key)
+        dedup.append(root)
+
+    names = ("rg.exe", "rg.cmd", "rg.bat", "rg") if os.name == "nt" else ("rg",)
+    for root in dedup:
+        bin_dir = root / "bin"
+        for name in names:
+            candidate = bin_dir / name
+            try:
+                if not candidate.is_file():
+                    continue
+                if os.name != "nt" and not os.access(str(candidate), os.X_OK):
+                    continue
+                return candidate.resolve()
+            except Exception:
+                continue
+    return None
+
+
+def _rewrite_shell_command_head_executable(
+    command: str,
+    *,
+    target_exe_bases: set[str],
+    replacement: str,
+) -> str:
+    import subprocess
+
+    s = str(command or "").strip()
+    if not s:
+        return command
+    call_prefix = ""
+    if s.lower().startswith("call "):
+        call_prefix = "call "
+        s = s[5:].strip()
+    parts = _split_shell_like(s)
+    if not parts:
+        return command
+    if len(parts) == 1:
+        unwrapped_single = _strip_wrapping_quotes(parts[0])
+        if unwrapped_single and unwrapped_single != parts[0]:
+            reparsed = _split_shell_like(unwrapped_single)
+            if len(reparsed) > 1:
+                s = unwrapped_single
+                parts = reparsed
+    base0 = _token_exe_base(_strip_wrapping_quotes(parts[0]))
+
+    if base0 in ("powershell", "pwsh"):
+        payload = _find_option_value(parts, ("-command", "-c", "/c"))
+        if payload is not None:
+            inner_re = _rewrite_shell_command_head_executable(
+                payload,
+                target_exe_bases=target_exe_bases,
+                replacement=replacement,
+            )
+            if inner_re != payload:
+                new_parts = list(parts)
+                for i in range(1, len(new_parts) - 1):
+                    if new_parts[i].lower() in ("-command", "-c", "/c"):
+                        new_parts[i + 1] = inner_re
+                        break
+                if os.name == "nt":
+                    return call_prefix + subprocess.list2cmdline(new_parts)
+                return call_prefix + shlex.join(new_parts)
+
+    if len(parts) >= 3 and base0 == "cmd" and parts[1].lower() in ("/c", "/k"):
+        inner = " ".join(parts[2:])
+        inner_re = _rewrite_shell_command_head_executable(
+            inner,
+            target_exe_bases=target_exe_bases,
+            replacement=replacement,
+        )
+        if inner_re != inner:
+            if os.name == "nt":
+                return call_prefix + subprocess.list2cmdline([parts[0], parts[1], inner_re])
+            return f"{call_prefix}{parts[0]} {parts[1]} {inner_re}"
+
+    if base0 not in target_exe_bases:
+        return command
+    parts[0] = replacement
+    if os.name == "nt":
+        return call_prefix + subprocess.list2cmdline(parts)
+    return call_prefix + shlex.join(parts)
+
+
+def enforce_workspace_rg_for_shell_command(agent: Any, command: str) -> str:
+    rg_path = _workspace_rg_executable_path(agent)
+    if rg_path is None:
+        return command
+    return _rewrite_shell_command_head_executable(
+        command,
+        target_exe_bases={"rg"},
+        replacement=str(rg_path),
+    )
+
+
+def normalize_shell_command_for_summary(command: str) -> str:
+    """Normalize command string for concise tool-call summary display."""
+    return _rewrite_shell_command_head_executable(
+        command,
+        target_exe_bases={"rg"},
+        replacement="rg",
+    )
 
 
 def tune_7z_output_for_piped_terminal(command: str) -> str:

@@ -4446,7 +4446,9 @@ class Agent:
                         summary = summary.replace("''", "'")
                 if not summary:
                     summary = cmd
-                return summary
+                return command_actions.normalize_shell_command_for_summary(summary)
+            if cmd:
+                return command_actions.normalize_shell_command_for_summary(cmd)
         for k in (
             "skill_id",
             "mcp",
