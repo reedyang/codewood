@@ -5,6 +5,7 @@
       "params": {
         "api_key": "<YOUR API KEY>",
         "base_url": "https://api.openai.com/v1",
+        "api_mode": "auto",
         "models": [
           {
             "name": "<YOUR MODEL NAME>",
