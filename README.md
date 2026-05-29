@@ -159,6 +159,7 @@ smart-shell/
       "params": {
         "api_key": "${HAPPYCODING_API_KEY}",
         "base_url": "https://happycoding.corp.zoom.com/api/v1",
+        "api_mode": "auto",
         "models": [
           { "name": "gpt-oss-120b", "context_window": "128K" },
           { "name": "gpt-4o-mini", "context_window": 64000 }
@@ -185,6 +186,10 @@ smart-shell/
 **配置说明**:
 - `model_providers`: 多模型提供方列表；启动时默认使用第一个 provider
 - `model_providers[i].provider`: 支持 `ollama`、`openai`
+- `model_providers[i].params.api_mode`: 仅 `openai` provider 生效，支持 `auto`（默认）、`chat`、`responses`
+  - `auto`: 自动在 Chat Completions 与 Responses API 间选择；若 `base_url` 以 `/chat/completions` 或 `/responses` 结尾，会优先按该类型调用
+  - `chat`: 按 Chat Completions API 调用（默认补全 `.../chat/completions`）
+  - `responses`: 按 Responses API 调用（默认补全 `.../responses`）
 - `model_providers[i].params.models`: 模型列表；默认使用第一个模型。每项支持两种写法：
   - 字符串：`"gpt-oss-120b"`（使用默认 `context_window=128000`）
   - 对象：`{"name":"gpt-oss-120b","context_window":"128K"}`（可为数字，或带 `k/K` 后缀的字符串）
