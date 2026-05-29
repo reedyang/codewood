@@ -35,7 +35,7 @@ if not exist "%VENV_DIR%\Scripts\activate.bat" (
     )
 ) else (
     call :set_title_from_app_info
-    "%VENV_PYTHON%" "%ENTRY%" %*
+    call :run_main %*
     exit /b %ERRORLEVEL%
 )
 
@@ -52,7 +52,7 @@ if errorlevel 1 (
 )
 
 call :set_title_from_app_info
-"%VENV_PYTHON%" "%ENTRY%" %*
+call :run_main %*
 exit /b %ERRORLEVEL%
 
 :set_title_from_app_info
@@ -62,3 +62,7 @@ for /f "usebackq delims=" %%I in (`"%VENV_PYTHON%" -c "import runpy;d=runpy.run_
 )
 if defined APP_NAME title %APP_NAME%
 exit /b 0
+
+:run_main
+"%VENV_PYTHON%" "%ENTRY%" --executable-name "%~nx0" %*
+exit /b %ERRORLEVEL%

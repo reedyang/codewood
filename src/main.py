@@ -10,6 +10,7 @@ import sys
 import os
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 # Add the project root to Python path so the src package imports consistently
 # whether this file is launched as a script or imported by tests.
@@ -22,12 +23,115 @@ from src.core.config.config_jsonc import (
     load_config_jsonc,
     save_config_jsonc,
 )
-from src.config.app_info import get_app_config_dirname, get_app_name
+from src.config.app_info import get_app_config_dirname, get_app_name, get_app_version
 from src.core.config.model_providers import parse_configured_models
 from src.core.console_utils import _ansi_red
 from src.core.console_title import restore_app_console_title
 
 CONFIG_TEMPLATE_RELATIVE_PATH = Path("src/config") / "config.template.jsonc"
+
+
+def _format_startup_usage() -> str:
+    return _format_startup_usage_with_executable("python src/main.py")
+
+
+def _format_startup_usage_with_executable(executable_name: str) -> str:
+    command = str(executable_name or "").strip() or "python src/main.py"
+    return (
+        "Usage:\n"
+        f"  {command}\n"
+        f"  {command} <workspace name or path>\n"
+        f"  {command} exec \"<task request>\"\n"
+        f"  {command} <workspace name or path> exec \"<task request>\"\n"
+        f"  {command} [workspace] [exec \"<task request>\"] [-m|--model <model>]"
+    )
+
+
+def _format_startup_help(executable_name: str = "python src/main.py") -> str:
+    return (
+        f"Version: {get_app_version()}\n"
+        f"{_format_startup_usage_with_executable(executable_name)}"
+    )
+
+
+def _parse_startup_cli_args(argv: list[str]) -> tuple[dict[str, Any] | None, str | None]:
+    """Parse startup CLI args with flexible ordering."""
+    executable_name = "python src/main.py"
+    filtered_argv: list[str] = []
+    idx = 0
+    while idx < len(argv):
+        token = str(argv[idx] or "").strip()
+        if token == "--executable-name":
+            if idx + 1 >= len(argv):
+                return None, "❌ Missing value for --executable-name.\n" + _format_startup_usage()
+            name = str(argv[idx + 1] or "").strip()
+            if not name:
+                return None, "❌ Executable name cannot be empty.\n" + _format_startup_usage()
+            executable_name = name
+            idx += 2
+            continue
+        filtered_argv.append(token)
+        idx += 1
+
+    usage_text = _format_startup_usage_with_executable(executable_name)
+
+    if not filtered_argv:
+        return {
+            "workspace_selector": None,
+            "exec_task": None,
+            "model_selector": None,
+            "show_help": False,
+            "executable_name": executable_name,
+        }, None
+
+    workspace_selector: str | None = None
+    exec_task: str | None = None
+    model_selector: str | None = None
+    show_help = False
+    positionals: list[str] = []
+
+    idx = 0
+    while idx < len(filtered_argv):
+        token = filtered_argv[idx]
+        if token in ("-h", "--help"):
+            show_help = True
+            idx += 1
+            continue
+        if token in ("-m", "--model"):
+            if idx + 1 >= len(filtered_argv):
+                return None, "❌ Missing model name for -m/--model.\n" + usage_text
+            model_selector = str(filtered_argv[idx + 1] or "").strip()
+            if not model_selector:
+                return None, "❌ Model name cannot be empty.\n" + usage_text
+            idx += 2
+            continue
+        positionals.append(token)
+        idx += 1
+
+    if positionals:
+        if positionals[0] == "exec":
+            if len(positionals) < 2:
+                return None, "❌ Missing task text after exec.\n" + usage_text
+            exec_task = " ".join(positionals[1:]).strip()
+        else:
+            workspace_selector = positionals[0]
+            if len(positionals) >= 2:
+                if positionals[1] != "exec":
+                    return None, "❌ Unsupported arguments.\n" + usage_text
+                if len(positionals) < 3:
+                    return None, "❌ Missing task text after exec.\n" + usage_text
+                exec_task = " ".join(positionals[2:]).strip()
+
+    if exec_task is not None and not exec_task.strip():
+        return None, "❌ Task text cannot be empty.\n" + usage_text
+
+    return {
+        "workspace_selector": workspace_selector,
+        "exec_task": exec_task,
+        "model_selector": model_selector,
+        "show_help": show_help,
+        "executable_name": executable_name,
+    }, None
 
 
 def _get_user_config_template_path() -> Path:
@@ -77,34 +181,139 @@ def _print_startup_basic_overview(
         print("")
 
 
-def _extract_model_runtime_config(config: dict):
-    """Extract runtime model config from the new model_providers format."""
+def _extract_model_runtime_config(config: dict, requested_model: str | None = None):
+    """Extract runtime model config from model_providers, with optional startup model override."""
     model_providers = config.get("model_providers")
     if not isinstance(model_providers, list) or not model_providers:
         return None, None, None, "❌ Configuration error: missing 'model_providers' configuration."
 
-    first_provider = model_providers[0]
-    if not isinstance(first_provider, dict):
-        return None, None, None, "❌ Configuration error: model_providers[0] must be an object."
+    catalog: list[dict[str, Any]] = []
+    provider_entries: list[dict[str, Any]] = []
+    for item in model_providers:
+        if not isinstance(item, dict):
+            continue
+        provider = str(item.get("provider") or "").strip()
+        params_raw = item.get("params", {})
+        if not provider or not isinstance(params_raw, dict):
+            continue
+        parsed_models = parse_configured_models(params_raw)
+        if not parsed_models:
+            continue
+        provider_entries.append(
+            {
+                "provider": provider,
+                "params_raw": params_raw,
+                "models": parsed_models,
+            }
+        )
+        for model_item in parsed_models:
+            model_name = str(model_item.get("name") or "").strip()
+            if not model_name:
+                continue
+            catalog.append(
+                {
+                    "provider": provider,
+                    "name": model_name,
+                    "context_window": int(model_item.get("context_window") or 0),
+                    "params_raw": params_raw,
+                    "provider_models": parsed_models,
+                }
+            )
 
-    provider = str(first_provider.get("provider", "")).strip()
-    params_raw = first_provider.get("params", {})
-    if not isinstance(params_raw, dict):
-        return None, None, None, "❌ Configuration error: model_providers[0].params must be an object."
+    if not provider_entries:
+        return None, None, None, "❌ Configuration error: model_providers entries are invalid or have no models."
 
-    parsed_models = parse_configured_models(params_raw)
-    if not parsed_models:
-        return None, None, None, "❌ Configuration error: model_providers[0].params.models is missing or empty."
+    requested = str(requested_model or "").strip()
+    selected: dict[str, Any] | None = None
 
-    first_model = parsed_models[0]
-    model_name = str(first_model.get("name") or "").strip()
+    if not requested:
+        first_provider = provider_entries[0]
+        first_model = first_provider["models"][0]
+        selected = {
+            "provider": str(first_provider["provider"]),
+            "name": str(first_model.get("name") or "").strip(),
+            "context_window": int(first_model.get("context_window") or 0),
+            "params_raw": first_provider["params_raw"],
+            "provider_models": first_provider["models"],
+        }
+    elif ":" in requested:
+        req_provider, req_name = requested.split(":", 1)
+        req_provider = req_provider.strip().casefold()
+        req_name = req_name.strip().casefold()
+        for item in catalog:
+            if str(item.get("provider") or "").casefold() == req_provider and str(item.get("name") or "").casefold() == req_name:
+                selected = item
+                break
+        # Model names may include ":" (for example ollama names), so fallback to pure-name lookup.
+        if selected is None:
+            req_name_full = requested.casefold()
+            matches = [
+                item
+                for item in catalog
+                if str(item.get("name") or "").casefold() == req_name_full
+            ]
+            if len(matches) == 1:
+                selected = matches[0]
+            elif len(matches) > 1:
+                selectors = ", ".join(
+                    sorted({f"{m.get('provider')}:{m.get('name')}" for m in matches})
+                )
+                return (
+                    None,
+                    None,
+                    None,
+                    "❌ Configuration error: model name is ambiguous. "
+                    f"Please use provider:model, candidates: {selectors}",
+                )
+            else:
+                return (
+                    None,
+                    None,
+                    None,
+                    f"❌ Configuration error: model '{requested}' is not found in model_providers.",
+                )
+    else:
+        req_name = requested.casefold()
+        matches = [
+            item
+            for item in catalog
+            if str(item.get("name") or "").casefold() == req_name
+        ]
+        if not matches:
+            return (
+                None,
+                None,
+                None,
+                f"❌ Configuration error: model '{requested}' is not found in model_providers.",
+            )
+        if len(matches) > 1:
+            selectors = ", ".join(
+                sorted({f"{m.get('provider')}:{m.get('name')}" for m in matches})
+            )
+            return (
+                None,
+                None,
+                None,
+                "❌ Configuration error: model name is ambiguous. "
+                f"Please use provider:model, candidates: {selectors}",
+            )
+        selected = matches[0]
+
+    provider = str(selected.get("provider") or "").strip() if selected else ""
+    model_name = str(selected.get("name") or "").strip() if selected else ""
     if not provider or not model_name:
-        return None, None, None, "❌ Configuration error: model_providers[0].provider or the first model is empty."
+        return None, None, None, "❌ Configuration error: selected provider/model is empty."
 
-    params = dict(params_raw)
-    params["models"] = [str(item.get("name") or "").strip() for item in parsed_models]
+    params_raw = selected.get("params_raw", {}) if isinstance(selected, dict) else {}
+    provider_models = selected.get("provider_models", []) if isinstance(selected, dict) else []
+    params = dict(params_raw) if isinstance(params_raw, dict) else {}
+    params["models"] = [
+        str(item.get("name") or "").strip()
+        for item in provider_models
+        if str(item.get("name") or "").strip()
+    ]
     params["model"] = model_name
-    params["context_window"] = int(first_model.get("context_window") or 0)
+    params["context_window"] = int(selected.get("context_window") or 0)
 
     model_config = {
         "provider": provider,
@@ -171,9 +380,78 @@ def _validate_template_placeholder_values(
     return "template_placeholder_values_in_use"
 
 
-def main():
+def _apply_startup_workspace(agent: Any, selector: str | None) -> tuple[bool, str | None]:
+    """Switch to a startup workspace by name/id/path."""
+    raw = str(selector or "").strip()
+    if not raw:
+        return True, None
+
+    entry = agent._workspace_entry_by_selector(raw)
+    if entry is None:
+        try:
+            root = agent._workspace_path_from_arg(raw)
+        except Exception:
+            root = None
+        if root is None or (not root.exists()) or (not root.is_dir()):
+            return False, f"❌ Workspace '{raw}' not found by name/id/path."
+        entry = agent._workspace_entry_by_root(root)
+        if entry is None:
+            workspace_id = agent._workspace_id_for_path(root)
+            workspaces = agent._workspaces_state.setdefault("workspaces", {})
+            if not isinstance(workspaces, dict):
+                workspaces = {}
+                agent._workspaces_state["workspaces"] = workspaces
+            counter = 2
+            base_id = workspace_id
+            while workspace_id in workspaces:
+                workspace_id = f"{base_id}_{counter}"
+                counter += 1
+            entry = {
+                "id": workspace_id,
+                "name": root.name or str(root),
+                "kind": "custom",
+                "root": str(root),
+                "storage": str(root / get_app_config_dirname()),
+            }
+            workspaces[workspace_id] = entry
+
+    agent._save_current_workspace_position()
+    agent._apply_workspace_entry(entry, agent.work_directory)
+    agent._refresh_workspace_runtime()
+    agent._save_current_workspace_position()
+    return True, None
+
+
+def _apply_startup_model_override(
+    agent: Any,
+    selector: str | None,
+) -> tuple[bool, str | None]:
+    """Force runtime+active-chat model to selector when user passed -m/--model."""
+    requested = str(selector or "").strip()
+    if not requested:
+        return True, None
+    try:
+        result = str(agent._switch_model_by_selector(requested) or "").strip()
+    except Exception as exc:
+        return False, f"❌ Failed to apply startup model '{requested}': {exc}"
+    if result.startswith("❌"):
+        return False, result
+    return True, None
+
+
+def main(argv: list[str] | None = None):
     """Main function."""
     restore_app_console_title()
+
+    raw_argv = list(argv) if argv is not None else []
+    cli_args, cli_error = _parse_startup_cli_args(raw_argv)
+    if cli_error:
+        print(cli_error)
+        return 1
+    if isinstance(cli_args, dict) and bool(cli_args.get("show_help", False)):
+        executable_name = str(cli_args.get("executable_name") or "python src/main.py").strip()
+        print(_format_startup_help(executable_name=executable_name))
+        return 0
 
     work_directory = None
     config = None
@@ -222,7 +500,16 @@ def main():
         else:
             _print_model_settings_update_notice(config_path)
         return 1
-    provider, model_name, model_config, config_error = _extract_model_runtime_config(config)
+    model_selector = ""
+    if isinstance(cli_args, dict):
+        model_selector = str(cli_args.get("model_selector") or "").strip()
+    model_override_selector = ""
+    if model_selector:
+        model_override_selector = f"{provider}:{model_name}" if False else ""
+    provider, model_name, model_config, config_error = _extract_model_runtime_config(
+        config,
+        requested_model=model_selector or None,
+    )
     if config_error:
         _print_startup_basic_overview()
         _print_model_settings_update_notice(config_path or (Path.home() / get_app_config_dirname() / CONFIG_JSONC_FILENAME))
@@ -238,9 +525,18 @@ def main():
         return 1
 
     params = model_config.get("params", {})
+    model_override_selector = ""
+    if model_selector:
+        model_override_selector = f"{provider}:{model_name}"
 
     # 配置就绪后再加载重型 agent 模块，缩短「启动」到「模型信息」之间的等待
     from src.agent import Agent
+
+    workspace_selector = ""
+    exec_task = ""
+    if isinstance(cli_args, dict):
+        workspace_selector = str(cli_args.get("workspace_selector") or "").strip()
+        exec_task = str(cli_args.get("exec_task") or "").strip()
 
     if provider == "openai" and params:
         agent = None
@@ -254,6 +550,17 @@ def main():
                 config_dir=config_dir,
                 builtin_skills_dir=builtin_skills_dir,
             )
+            ok, ws_error = _apply_startup_workspace(agent, workspace_selector or None)
+            if not ok:
+                print(str(ws_error or "❌ Failed to apply startup workspace."))
+                return 1
+            ok, model_error = _apply_startup_model_override(agent, model_override_selector or None)
+            if not ok:
+                print(str(model_error or "❌ Failed to apply startup model override."))
+                return 1
+            if exec_task:
+                agent._queued_user_input = exec_task
+                agent._startup_exec_turn_pending = True
             agent.run()
             return 0
         except Exception as e:
@@ -278,6 +585,17 @@ def main():
                 config_dir=config_dir,
                 builtin_skills_dir=builtin_skills_dir,
             )
+            ok, ws_error = _apply_startup_workspace(agent, workspace_selector or None)
+            if not ok:
+                print(str(ws_error or "❌ Failed to apply startup workspace."))
+                return 1
+            ok, model_error = _apply_startup_model_override(agent, model_override_selector or None)
+            if not ok:
+                print(str(model_error or "❌ Failed to apply startup model override."))
+                return 1
+            if exec_task:
+                agent._queued_user_input = exec_task
+                agent._startup_exec_turn_pending = True
             agent.run()
             return 0
         except KeyboardInterrupt:
@@ -297,5 +615,5 @@ def main():
         return 1
 
 if __name__ == "__main__":
-    sys.exit(main()) 
+    sys.exit(main(sys.argv[1:])) 
 
