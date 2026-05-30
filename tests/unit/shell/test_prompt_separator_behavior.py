@@ -475,6 +475,25 @@ class PromptSeparatorBehaviorTests(unittest.TestCase):
         self.assertEqual(out, "hello")
         mock_history.assert_called_once_with(start_index=2)
 
+    def test_chat_reload_tail_anchor_uses_latest_user_turn(self):
+        agent = self._build_agent()
+        agent.conversation_history = [
+            {"role": "user", "content": "old"},
+            {"role": "assistant", "content": "old-reply"},
+            {"role": "user", "content": "latest"},
+            {"role": "assistant", "content": "latest-reply"},
+            {
+                "role": "user",
+                "content": agent._build_internal_slash_user_history_content("/chat reload"),
+            },
+            {"role": "assistant", "content": "reload-output"},
+        ]
+
+        start = agent._remember_active_chat_history_tail_anchor()
+
+        self.assertEqual(start, 2)
+        self.assertEqual(agent._get_active_chat_history_first_visible_index(), 2)
+
     def test_resize_check_first_snapshot_does_not_reload(self):
         agent = self._build_agent()
         with (
