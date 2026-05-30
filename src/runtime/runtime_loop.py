@@ -192,6 +192,9 @@ def _consume_streaming_ai_response(
     last_rendered_lines = 0
     is_tty = bool(getattr(sys.stdout, "isatty", lambda: False)())
     can_format_render = callable(getattr(agent, "_format_assistant_chat_display_message", None))
+    append_stream_builder = getattr(agent, "_build_internal_slash_output_stream", None)
+    can_append_stream = bool(is_tty and callable(append_stream_builder))
+    append_stream = None
 
     def _clear_previous_block() -> None:
         nonlocal last_rendered_lines
@@ -238,6 +241,50 @@ def _consume_streaming_ai_response(
             except Exception:
                 pass
 
+    def _ensure_append_stream() -> Any:
+        nonlocal append_stream
+        if append_stream is not None:
+            return append_stream
+        builder = append_stream_builder if callable(append_stream_builder) else None
+        if builder is None:
+            return None
+        term_cols = None
+        term_cols_fn = getattr(agent, "_terminal_columns_for_line_estimate", None)
+        if callable(term_cols_fn):
+            try:
+                term_cols = int(term_cols_fn() or 0)
+            except Exception:
+                term_cols = None
+        try:
+            if term_cols and term_cols > 0:
+                append_stream = builder(sys.stdout, terminal_columns=term_cols)
+            else:
+                append_stream = builder(sys.stdout)
+        except TypeError:
+            try:
+                append_stream = builder(sys.stdout)
+            except Exception:
+                append_stream = None
+        except Exception:
+            append_stream = None
+        if append_stream is None:
+            return None
+        try:
+            sys.stdout.write(f"{_ansi_gray('•')} ")
+            sys.stdout.flush()
+        except Exception:
+            try:
+                sys.stdout.write("• ")
+                sys.stdout.flush()
+            except Exception:
+                pass
+        try:
+            append_stream._line_start = False
+            append_stream._visual_col = 2
+        except Exception:
+            pass
+        return append_stream
+
     for chunk in ai_result:
         piece = str(chunk or "")
         if not piece:
@@ -256,7 +303,24 @@ def _consume_streaming_ai_response(
                 agent._ensure_terminal_line_start()
             except Exception:
                 pass
-        if can_format_render:
+        if can_append_stream:
+            delta = visible_now[len(shown_visible) :] if visible_now.startswith(shown_visible) else visible_now
+            if delta:
+                target_stream = _ensure_append_stream()
+                if target_stream is not None:
+                    try:
+                        target_stream.write(delta)
+                        target_stream.flush()
+                        streamed_any = True
+                    except Exception:
+                        sys.stdout.write(delta)
+                        sys.stdout.flush()
+                        streamed_any = True
+                else:
+                    sys.stdout.write(delta)
+                    sys.stdout.flush()
+                    streamed_any = True
+        elif can_format_render:
             rendered_ok = _render_visible_block(visible_now)
             if rendered_ok:
                 streamed_any = True
@@ -287,7 +351,28 @@ def _consume_streaming_ai_response(
                 agent._ensure_terminal_line_start()
             except Exception:
                 pass
-        if can_format_render:
+        if can_append_stream:
+            tail = (
+                visible_final[len(shown_visible) :]
+                if visible_final.startswith(shown_visible)
+                else visible_final
+            )
+            if tail:
+                target_stream = _ensure_append_stream()
+                if target_stream is not None:
+                    try:
+                        target_stream.write(tail)
+                        target_stream.flush()
+                        streamed_any = True
+                    except Exception:
+                        sys.stdout.write(tail)
+                        sys.stdout.flush()
+                        streamed_any = True
+                else:
+                    sys.stdout.write(tail)
+                    sys.stdout.flush()
+                    streamed_any = True
+        elif can_format_render:
             rendered_ok = _render_visible_block(visible_final)
             if rendered_ok:
                 streamed_any = True
