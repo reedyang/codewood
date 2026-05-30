@@ -1439,16 +1439,23 @@ class SessionMemoryService:
         mem_block = mem_block_raw
         if mem_block:
             mem_block = self._clip_text_to_token_budget(mem_block, mem_budget)
+        active_skill_prompt = str(getattr(self.agent, "_active_skill_full_prompt", "") or "").strip()
+        skill_tail_system_content = ""
+        if active_skill_prompt:
+            skill_tail_system_content = (
+                "【动态技能正文（后置注入）】\n"
+                "以下内容来自当前任务已激活或按需请求的 skill；在不违反安全硬约束时，执行以该正文为准。\n\n"
+                + active_skill_prompt
+            )
         immutable_system_core = (
             f"{self.agent._skills_routing_prefix}{self.agent.system_prompt}\n"
             f"{self._domain_prompt_append()}"
-            f"{self.agent._active_skill_full_prompt}"
         )
         # Key runtime metadata is intentionally non-clippable.
         workspace_skills_dir = (Path(self.agent.workspace_config_dir) / "skills").resolve()
         default_install_skills_dir = (Path.home() / get_app_config_dirname() / "skills").resolve()
         runtime_tail_raw = (
-            f"当前操作系统信息：{os_info}\n当前日期时间：{date_time}\n"
+            f"当前操作系统信息：{os_info}\n"
             f"当前 {get_app_slug_kebab()} 根目录（绝对路径）：{self.agent._self_repo_root}\n"
             f"当前 config 目录（绝对路径）：{self.agent.config_dir}\n"
             f"当前 workspace 名称：{self.agent.workspace_name}\n"
@@ -1507,7 +1514,7 @@ class SessionMemoryService:
                 current_input += f"最近被取消的任务: {last_cancelled_task}\n"
         if mem_block:
             current_input += (
-                "【硬性要求】作答前须核对上一条 system 开头的「经验记忆」："
+                "【硬性要求】作答前须核对首条 system 消息中的「经验记忆」："
                 "与本轮用户问题相关的条目必须在答复中体现，不得用与这些记录无关的通用助手或供应商设定替代。\n\n"
             )
         current_input += (
@@ -1515,7 +1522,11 @@ class SessionMemoryService:
             f"当前目录（workspace）: {workspace_directory}\n"
         )
         if self.agent.operation_results:
-            op_line = f"最近的操作结果: {self.agent.operation_results[-1]}\n"
+            latest_op = self.agent.operation_results[-1]
+            if isinstance(latest_op, dict) and ("timestamp" in latest_op):
+                latest_op = dict(latest_op)
+                latest_op.pop("timestamp", None)
+            op_line = f"最近的操作结果: {latest_op}\n"
             current_input += self._clip_text_to_token_budget(op_line, op_context_budget)
         if context:
             ctx_line = f"操作上下文: {context}\n"
@@ -1524,7 +1535,11 @@ class SessionMemoryService:
             current_input += f"最近的中断状态: {interruption_line}\n"
         # 用户原始需求必须进入上下文（即使历史被压缩）。
         current_input += f"用户原始需求: {original_requirement}\n"
-        current_input += f"用户输入: {user_input}"
+        # Keep timestamp at the tail to preserve upstream cache prefix stability.
+        current_input += f"用户输入: {user_input}\n"
+        current_input += f"本地时间参考: {date_time}"
+        if skill_tail_system_content:
+            messages.append({"role": "system", "content": skill_tail_system_content})
         current_user_msg = {"role": "user", "content": current_input}
         messages.append(current_user_msg)
 
@@ -1533,6 +1548,8 @@ class SessionMemoryService:
         user_tokens = 0
         try:
             system_tokens = self._estimate_message_tokens("system", sys_prefix)
+            if skill_tail_system_content:
+                system_tokens += self._estimate_message_tokens("system", skill_tail_system_content)
             history_tokens = sum(
                 self._estimate_message_tokens(str(m.get("role") or ""), str(m.get("content") or ""))
                 for m in history_messages
@@ -1595,7 +1612,11 @@ class SessionMemoryService:
                     f"当前目录（workspace）: {workspace_directory}\n"
                 )
                 if self.agent.operation_results:
-                    op_line2 = f"最近的操作结果: {self.agent.operation_results[-1]}\n"
+                    latest_op2 = self.agent.operation_results[-1]
+                    if isinstance(latest_op2, dict) and ("timestamp" in latest_op2):
+                        latest_op2 = dict(latest_op2)
+                        latest_op2.pop("timestamp", None)
+                    op_line2 = f"最近的操作结果: {latest_op2}\n"
                     current_input2_optional += self._clip_text_to_token_budget(op_line2, aggressive_op_context_budget)
                 if context:
                     ctx_line2 = f"操作上下文: {context}\n"
@@ -1603,7 +1624,8 @@ class SessionMemoryService:
                 # Hard anchors: never clip original requirement and current input.
                 current_input2_tail = (
                     f"用户原始需求: {original_requirement}\n"
-                    f"用户输入: {user_input}"
+                    f"用户输入: {user_input}\n"
+                    f"本地时间参考: {date_time}"
                 )
                 required_anchor = current_input2_head + current_input2_tail
                 optional_budget = max(0, aggressive_user_budget - self._estimate_text_tokens(required_anchor))
@@ -1611,6 +1633,8 @@ class SessionMemoryService:
                 current_input2 = current_input2_head + current_input2_optional + current_input2_tail
 
                 system_tokens2 = self._estimate_message_tokens("system", sys_prefix2)
+                if skill_tail_system_content:
+                    system_tokens2 += self._estimate_message_tokens("system", skill_tail_system_content)
                 history_tokens2 = sum(
                     self._estimate_message_tokens(str(m.get("role") or ""), str(m.get("content") or ""))
                     for m in history_messages2
@@ -1619,9 +1643,10 @@ class SessionMemoryService:
                 total_input_tokens2 = int(system_tokens2 + history_tokens2 + user_tokens2)
 
                 if total_input_tokens2 < total_input_tokens:
-                    messages = [{"role": "system", "content": sys_prefix2}] + list(history_messages2) + [
-                        {"role": "user", "content": current_input2}
-                    ]
+                    messages = [{"role": "system", "content": sys_prefix2}] + list(history_messages2)
+                    if skill_tail_system_content:
+                        messages.append({"role": "system", "content": skill_tail_system_content})
+                    messages.append({"role": "user", "content": current_input2})
                     sys_prefix = sys_prefix2
                     history_messages = history_messages2
                     current_input = current_input2

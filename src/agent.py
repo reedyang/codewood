@@ -3384,6 +3384,13 @@ class Agent:
         """Primary + fallback ESC polling used by the background interrupt monitor."""
         if os.name != "nt":
             return False
+        # Prefer async key-state polling first; in modern Windows terminals,
+        # stdin key-buffer polling can occasionally surface stray ESC bytes.
+        try:
+            if self._poll_windows_escape_pressed_async_fallback():
+                return True
+        except Exception:
+            pass
         msvcrt = None
         try:
             import msvcrt as _msvcrt
@@ -3403,10 +3410,20 @@ class Agent:
                             pass
                         return False
                     if ch == b"\x1b":
+                        # ESC may be a prefix of terminal escape sequences.
+                        # Give the input buffer a tiny window; if extra bytes
+                        # follow, treat it as a sequence rather than interrupt.
+                        try:
+                            time.sleep(0.01)
+                            if msvcrt.kbhit():
+                                _ = msvcrt.getch()
+                                return False
+                        except Exception:
+                            pass
                         return True
             except Exception:
                 pass
-        return self._poll_windows_escape_pressed_async_fallback()
+        return False
 
     def _start_interrupt_monitor(self, cancel_task_on_interrupt: bool = False) -> None:
         if os.name != "nt":
@@ -3427,14 +3444,20 @@ class Agent:
             self._interrupt_monitor_stop_event = stop_event
             # Ignore stale key state/buffer immediately after monitor starts.
             monitor_armed_at = float(time.monotonic()) + 0.25
+            last_interrupt_at = 0.0
 
             def _monitor() -> None:
+                nonlocal last_interrupt_at
                 while not stop_event.wait(0.03):
                     try:
                         if not self._poll_windows_escape_pressed():
                             continue
                         if float(time.monotonic()) < monitor_armed_at:
                             continue
+                        now_ts = float(time.monotonic())
+                        if (now_ts - last_interrupt_at) < 0.5:
+                            continue
+                        last_interrupt_at = now_ts
                         with lock:
                             should_cancel_task = bool(
                                 int(getattr(self, "_interrupt_monitor_cancel_task_refs", 0) or 0) > 0
