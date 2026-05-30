@@ -110,7 +110,14 @@ def build_special_mode_messages(
             return None, False, "❌ Error: streaming mode is not supported for freedom-mode combined review."
         return [
             {"role": "system", "content": FREEDOM_COMBINED_REVIEW_SYSTEM_PROMPT},
-            {"role": "user", "content": f"Current operating system: {os_info}\nLocal time: {date_time}\n\n{user_input}"},
+            {
+                "role": "user",
+                "content": (
+                    f"Current operating system: {os_info}\n\n"
+                    f"{user_input}\n\n"
+                    f"Local time: {date_time}"
+                ),
+            },
         ], False, None
 
     if minimal_classifier:
@@ -121,8 +128,9 @@ def build_special_mode_messages(
             {
                 "role": "user",
                 "content": (
-                    f"Current working directory: {work_directory}\nOperating system: {os_info}\nLocal time: {date_time}\n"
-                    f"Command JSON to classify:\n{user_input}"
+                    f"Current working directory: {work_directory}\nOperating system: {os_info}\n"
+                    f"Command JSON to classify:\n{user_input}\n"
+                    f"Local time: {date_time}"
                 ),
             },
         ], False, None
