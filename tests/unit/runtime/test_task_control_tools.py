@@ -241,6 +241,7 @@ class TaskControlToolTests(unittest.TestCase):
 
     def test_direct_shell_history_starts_classified_task(self):
         classify_calls = []
+        scheduled = []
         start_calls = []
         close_calls = []
         appended = []
@@ -294,6 +295,15 @@ class TaskControlToolTests(unittest.TestCase):
         self.agent._start_chat_task = _start_chat_task
         self.agent._append_chat_message = _append_chat_message
         self.agent._close_chat_task = _close_chat_task
+        self.agent._schedule_direct_shell_task_classification = (
+            lambda chat_id, task_id, raw_user_command: scheduled.append(
+                {
+                    "chat_id": str(chat_id or ""),
+                    "task_id": str(task_id or ""),
+                    "raw_user_command": str(raw_user_command or ""),
+                }
+            )
+        )
         self.agent.active_chat_id = "chat-1"
         self.agent.session_memory_service = _FakeSessionMemoryService()
         self.agent._refresh_status_context_usage_snapshot = (
@@ -314,13 +324,23 @@ class TaskControlToolTests(unittest.TestCase):
             stderr_text="boom",
         )
 
-        self.assertEqual(classify_calls, ["powershell -Command Get-ChildItem"])
-        self.assertEqual(start_calls[0]["domains"], ["software_development"])
+        self.assertEqual(classify_calls, [])
+        self.assertEqual(start_calls[0]["domains"], ["general_other"])
         self.assertEqual(len(appended), 2)
         self.assertTrue(appended[0]["content"].startswith("[DIRECT_SHELL_USER_COMMAND]"))
         self.assertTrue(appended[1]["content"].startswith("[DIRECT_SHELL_RESULT]"))
         self.assertEqual([x["task_id"] for x in appended], ["task-direct", "task-direct"])
         self.assertEqual(close_calls, [("task-direct", "done")])
+        self.assertEqual(
+            scheduled,
+            [
+                {
+                    "chat_id": "chat-1",
+                    "task_id": "task-direct",
+                    "raw_user_command": "powershell -Command Get-ChildItem",
+                }
+            ],
+        )
         self.assertEqual(
             refresh_calls,
             [
@@ -345,6 +365,7 @@ class TaskControlToolTests(unittest.TestCase):
         appended = []
         classify_calls = []
         start_calls = []
+        scheduled = []
         refresh_calls = []
 
         class _FakeSessionMemoryService:
@@ -359,6 +380,9 @@ class TaskControlToolTests(unittest.TestCase):
             lambda text: classify_calls.append(str(text or "")) or {"domains": ["software_development"]}
         )
         self.agent._start_chat_task = lambda **kwargs: start_calls.append(dict(kwargs)) or "task-direct"
+        self.agent._schedule_direct_shell_task_classification = (
+            lambda **kwargs: scheduled.append(dict(kwargs))
+        )
         self.agent._append_chat_message = lambda role, content: appended.append(
             {"role": str(role or ""), "content": str(content or "")}
         )
@@ -385,6 +409,7 @@ class TaskControlToolTests(unittest.TestCase):
 
         self.assertEqual(classify_calls, [])
         self.assertEqual(start_calls, [])
+        self.assertEqual(scheduled, [])
         self.assertEqual(refresh_calls, [])
         self.assertEqual(self.agent.session_memory_service.calls, [])
         self.assertEqual(len(appended), 2)

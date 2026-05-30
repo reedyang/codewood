@@ -788,6 +788,64 @@ class Agent:
         except Exception:
             pass
 
+    def _classify_and_update_direct_shell_task(
+        self,
+        chat_id: str,
+        task_id: str,
+        raw_user_command: str,
+    ) -> None:
+        cid = str(chat_id or "").strip()
+        tid = str(task_id or "").strip()
+        raw_cmd = str(raw_user_command or "").strip()
+        if not cid or not tid or not raw_cmd:
+            return
+        try:
+            domain_info = self._classify_task_domains(raw_cmd)
+        except Exception:
+            return
+        try:
+            domains = list(domain_info.get("domains") or [])
+        except Exception:
+            domains = []
+        if not domains:
+            domains = ["general_other"]
+        try:
+            updater = getattr(self._chat_state_manager, "update_task_classification", None)
+            if callable(updater):
+                updater(
+                    cid,
+                    tid,
+                    domains=domains,
+                    classifier=domain_info if isinstance(domain_info, dict) else {},
+                )
+        except Exception:
+            pass
+
+    def _schedule_direct_shell_task_classification(
+        self,
+        chat_id: str,
+        task_id: str,
+        raw_user_command: str,
+    ) -> None:
+        cid = str(chat_id or "").strip()
+        tid = str(task_id or "").strip()
+        raw_cmd = str(raw_user_command or "").strip()
+        if not cid or not tid or not raw_cmd:
+            return
+
+        def _worker() -> None:
+            self._classify_and_update_direct_shell_task(
+                chat_id=cid,
+                task_id=tid,
+                raw_user_command=raw_cmd,
+            )
+
+        try:
+            t = threading.Thread(target=_worker, daemon=True)
+            t.start()
+        except Exception:
+            pass
+
     @staticmethod
     def _parse_domain_classifier_json(text: str) -> Optional[Dict[str, Any]]:
         raw = str(text or "").strip()
@@ -2172,7 +2230,9 @@ class Agent:
             return False
         if str(result.get("tool") or "").strip() != "shell":
             return False
-        return bool(result.get("aborted_by_user", False))
+        if bool(result.get("aborted_by_user", False)):
+            return True
+        return "command aborted by user" in str(result.get("output") or "").lower()
 
     def _history_item_is_conversation_interrupted(self, msg: Any) -> bool:
         if not isinstance(msg, dict):
@@ -2299,14 +2359,20 @@ class Agent:
         raw_cmd = str(raw_user_command or "").strip()
         if not raw_cmd:
             return
+        active_chat_id = str(getattr(self, "active_chat_id", "") or "").strip()
         direct_task_id = ""
         if not bool(aborted_by_user):
             try:
-                domain_info = self._classify_task_domains(raw_cmd)
                 direct_task_id = self._start_chat_task(
                     root_user_input=raw_cmd,
-                    domains=list(domain_info.get("domains") or []),
-                    classifier=domain_info,
+                    domains=["general_other"],
+                    classifier={
+                        "primary_domain": "general_other",
+                        "secondary_domains": [],
+                        "confidence": 0.0,
+                        "reason": "deferred_direct_shell_classification",
+                        "domains": ["general_other"],
+                    },
                 )
             except Exception:
                 direct_task_id = ""
@@ -2330,6 +2396,12 @@ class Agent:
             except Exception:
                 pass
         if not bool(aborted_by_user):
+            if direct_task_id and active_chat_id:
+                self._schedule_direct_shell_task_classification(
+                    chat_id=active_chat_id,
+                    task_id=direct_task_id,
+                    raw_user_command=raw_cmd,
+                )
             self._refresh_context_usage_after_task_boundary(
                 user_input_hint=raw_cmd,
                 context_hint="direct shell completed",
@@ -2438,7 +2510,10 @@ class Agent:
     def _is_direct_shell_result_aborted(self, result: Any) -> bool:
         if not isinstance(result, dict):
             return False
-        return bool(result.get("aborted_by_user", False))
+        if bool(result.get("aborted_by_user", False)):
+            return True
+        merged = f"{result.get('stdout') or ''}\n{result.get('stderr') or ''}"
+        return "command aborted by user" in merged.lower()
 
     def _normalize_aborted_direct_shell_stdout_for_history(self, stdout_text: str) -> str:
         text = str(stdout_text or "")

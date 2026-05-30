@@ -366,6 +366,67 @@ class ChatStateModelPersistenceTests(unittest.TestCase):
             self.assertTrue(ok)
             self.assertEqual(chat.get("active_task_id"), "")
 
+    def test_update_task_classification_updates_domains_classifier_and_scores(self):
+        with tempfile.TemporaryDirectory() as td:
+            agent = _FakeAgent(Path(td))
+            manager = ChatStateManager(agent, "chats.json")
+            agent._chat_state = {
+                "version": 2,
+                "active": "chat-1",
+                "chats": [
+                    {
+                        "id": "chat-1",
+                        "name": "Main",
+                        "name_source": "manual",
+                        "created_at": "",
+                        "updated_at": "",
+                        "model_provider": "openai",
+                        "model_name": "gpt-4.1",
+                        "tasks": [
+                            {
+                                "id": "task-1",
+                                "status": "done",
+                                "root_user_input": "hello",
+                                "domains": ["general_other"],
+                                "domain_scores": {},
+                                "classifier": {},
+                                "created_at": "",
+                                "updated_at": "",
+                                "closed_at": "",
+                                "switched_from_task_id": "",
+                            }
+                        ],
+                        "active_task_id": "",
+                        "messages": [],
+                        "context_usage_percent": 0,
+                        "context_input_tokens": 0,
+                        "context_window": 0,
+                    }
+                ],
+            }
+            save_calls = []
+            manager.save_chat_state = lambda: save_calls.append("saved")
+
+            ok = manager.update_task_classification(
+                "chat-1",
+                "task-1",
+                domains=["software_development"],
+                classifier={
+                    "primary_domain": "software_development",
+                    "secondary_domains": ["operations_maintenance"],
+                    "confidence": 0.8,
+                },
+            )
+
+            self.assertTrue(ok)
+            chat = manager.find_chat_by_id("chat-1")
+            task = chat.get("tasks")[0]
+            self.assertEqual(task.get("domains"), ["software_development"])
+            self.assertEqual(task.get("classifier", {}).get("primary_domain"), "software_development")
+            self.assertEqual(task.get("domain_scores", {}).get("software_development"), 0.8)
+            self.assertEqual(task.get("domain_scores", {}).get("operations_maintenance"), 0.8)
+            self.assertEqual(save_calls, ["saved"])
+
     def test_load_chat_state_invalid_schema_resets_and_persists_default(self):
         with tempfile.TemporaryDirectory() as td:
             workspace = Path(td)
