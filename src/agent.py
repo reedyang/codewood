@@ -3187,12 +3187,12 @@ class Agent:
             if isinstance(marks, set):
                 marks.discard(key)
 
-    def _terminate_single_process_tree(self, process: Any) -> None:
+    def _terminate_single_process_tree(self, process: Any) -> bool:
         if process is None:
-            return
+            return False
         try:
             if hasattr(process, "poll") and process.poll() is not None:
-                return
+                return False
         except Exception:
             pass
         pid = None
@@ -3201,34 +3201,38 @@ class Agent:
         except Exception:
             pid = None
         if os.name == "nt" and pid:
+            terminated = False
             try:
-                subprocess.run(
+                proc = subprocess.run(
                     ["taskkill", "/F", "/T", "/PID", str(pid)],
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                     check=False,
                 )
+                terminated = int(getattr(proc, "returncode", 1) or 1) == 0
             except Exception:
                 try:
                     process.kill()
+                    terminated = True
                 except Exception:
                     pass
-            return
+            return bool(terminated)
         try:
             if pid:
                 import signal
 
                 try:
                     os.killpg(pid, signal.SIGKILL)
-                    return
+                    return True
                 except Exception:
                     pass
         except Exception:
             pass
         try:
             process.kill()
+            return True
         except Exception:
-            pass
+            return False
 
     @staticmethod
     def _process_abort_key(process: Any) -> str:
@@ -3288,8 +3292,17 @@ class Agent:
             else:
                 procs = []
         for p in procs:
-            self._mark_process_aborted(p)
-            self._terminate_single_process_tree(p)
+            is_running = False
+            try:
+                if hasattr(p, "poll"):
+                    is_running = p.poll() is None
+            except Exception:
+                is_running = False
+            if not is_running:
+                continue
+            terminated = bool(self._terminate_single_process_tree(p))
+            if terminated:
+                self._mark_process_aborted(p)
 
     def _request_task_interrupt(self, source: str = "esc", cancel_task: bool = False) -> None:
         if cancel_task:
@@ -3328,20 +3341,16 @@ class Agent:
             state = {
                 "ready": False,
                 "get_async_key_state": None,
-                "get_foreground_window": None,
-                "console_hwnd": 0,
                 "esc_down": False,
+                "esc_down_since": 0.0,
+                "esc_emitted": False,
             }
             try:
                 import ctypes
 
                 user32 = ctypes.windll.user32
-                kernel32 = ctypes.windll.kernel32
                 get_async_key_state = getattr(user32, "GetAsyncKeyState", None)
-                get_foreground_window = getattr(user32, "GetForegroundWindow", None)
-                get_console_window = getattr(kernel32, "GetConsoleWindow", None)
-                console_hwnd = int(get_console_window() or 0) if callable(get_console_window) else 0
-                if callable(get_async_key_state) and callable(get_foreground_window) and console_hwnd:
+                if callable(get_async_key_state):
                     initial_esc_down = False
                     try:
                         initial_esc_down = bool(int(get_async_key_state(0x1B) or 0) & 0x8000)
@@ -3351,9 +3360,9 @@ class Agent:
                         {
                             "ready": True,
                             "get_async_key_state": get_async_key_state,
-                            "get_foreground_window": get_foreground_window,
-                            "console_hwnd": console_hwnd,
                             "esc_down": bool(initial_esc_down),
+                            "esc_down_since": float(time.monotonic()) if initial_esc_down else 0.0,
+                            "esc_emitted": False,
                         }
                     )
             except Exception:
@@ -3362,12 +3371,6 @@ class Agent:
         if not bool(state.get("ready", False)):
             return False
         try:
-            get_foreground_window = state.get("get_foreground_window")
-            if callable(get_foreground_window):
-                fg_hwnd = int(get_foreground_window() or 0)
-                if fg_hwnd and fg_hwnd != int(state.get("console_hwnd") or 0):
-                    state["esc_down"] = False
-                    return False
             get_async_key_state = state.get("get_async_key_state")
             if not callable(get_async_key_state):
                 return False
@@ -3375,8 +3378,24 @@ class Agent:
             cur = int(get_async_key_state(0x1B) or 0)
             is_down = bool(cur & 0x8000)
             was_down = bool(state.get("esc_down", False))
-            state["esc_down"] = is_down
-            return bool(is_down and not was_down)
+            now_ts = float(time.monotonic())
+            if is_down and not was_down:
+                state["esc_down"] = True
+                state["esc_down_since"] = now_ts
+                state["esc_emitted"] = False
+                return False
+            if is_down and was_down:
+                # Require a short hold in fallback mode to avoid noise/ghost events.
+                down_since = float(state.get("esc_down_since", 0.0) or 0.0)
+                emitted = bool(state.get("esc_emitted", False))
+                if (not emitted) and down_since > 0.0 and (now_ts - down_since) >= 0.03:
+                    state["esc_emitted"] = True
+                    return True
+                return False
+            state["esc_down"] = False
+            state["esc_down_since"] = 0.0
+            state["esc_emitted"] = False
+            return False
         except Exception:
             return False
 
@@ -3384,13 +3403,6 @@ class Agent:
         """Primary + fallback ESC polling used by the background interrupt monitor."""
         if os.name != "nt":
             return False
-        # Prefer async key-state polling first; in modern Windows terminals,
-        # stdin key-buffer polling can occasionally surface stray ESC bytes.
-        try:
-            if self._poll_windows_escape_pressed_async_fallback():
-                return True
-        except Exception:
-            pass
         msvcrt = None
         try:
             import msvcrt as _msvcrt
@@ -3398,6 +3410,43 @@ class Agent:
             msvcrt = _msvcrt
         except Exception:
             msvcrt = None
+        if msvcrt is None:
+            # Last-resort fallback when CRT key polling is unavailable.
+            return self._poll_windows_escape_pressed_async_fallback()
+        state = getattr(self, "_interrupt_msvcrt_escape_state", None)
+        if not isinstance(state, dict):
+            state = {"pending_esc_at": 0.0}
+            self._interrupt_msvcrt_escape_state = state
+        now_ts = float(time.monotonic())
+        pending_esc_at = float(state.get("pending_esc_at", 0.0) or 0.0)
+        if pending_esc_at > 0.0:
+            try:
+                if msvcrt.kbhit():
+                    nxt = msvcrt.getch()
+                    state["pending_esc_at"] = 0.0
+                    # Treat known continuation bytes as an escape sequence, not
+                    # a standalone Esc interrupt.
+                    if nxt in (b"\x00", b"\xe0"):
+                        try:
+                            if msvcrt.kbhit():
+                                _ = msvcrt.getch()
+                        except Exception:
+                            pass
+                        return False
+                    if nxt in (b"[", b"O"):
+                        return False
+                    if nxt == b"\x1b":
+                        state["pending_esc_at"] = now_ts
+                    return False
+            except Exception:
+                state["pending_esc_at"] = 0.0
+                return False
+            # Confirm Esc only after a short ambiguity window; this prevents
+            # split escape-sequence bytes from being misread as user interrupt.
+            if (now_ts - pending_esc_at) >= 0.045:
+                state["pending_esc_at"] = 0.0
+                return True
+            return False
         if msvcrt is not None:
             try:
                 if msvcrt.kbhit():
@@ -3410,20 +3459,13 @@ class Agent:
                             pass
                         return False
                     if ch == b"\x1b":
-                        # ESC may be a prefix of terminal escape sequences.
-                        # Give the input buffer a tiny window; if extra bytes
-                        # follow, treat it as a sequence rather than interrupt.
-                        try:
-                            time.sleep(0.01)
-                            if msvcrt.kbhit():
-                                _ = msvcrt.getch()
-                                return False
-                        except Exception:
-                            pass
-                        return True
+                        state["pending_esc_at"] = now_ts
+                        return False
+                    state["pending_esc_at"] = 0.0
             except Exception:
                 pass
-        return False
+        # Secondary path for environments where CRT key polling misses Esc.
+        return self._poll_windows_escape_pressed_async_fallback()
 
     def _start_interrupt_monitor(self, cancel_task_on_interrupt: bool = False) -> None:
         if os.name != "nt":
@@ -3445,6 +3487,10 @@ class Agent:
             # Ignore stale key state/buffer immediately after monitor starts.
             monitor_armed_at = float(time.monotonic()) + 0.25
             last_interrupt_at = 0.0
+            try:
+                self._interrupt_msvcrt_escape_state = {"pending_esc_at": 0.0}
+            except Exception:
+                pass
 
             def _monitor() -> None:
                 nonlocal last_interrupt_at
