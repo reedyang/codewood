@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import os
 import shlex
+import sys
+from contextlib import redirect_stderr, redirect_stdout
 from datetime import datetime
 from typing import Any
 
@@ -50,6 +52,28 @@ def _print_startup_overview_safe(agent: Any) -> None:
         pass
 
 
+def _unwrap_nested_output_stream(stream: Any) -> Any:
+    """
+    Best-effort stream unwrapping for nested output wrappers.
+    This lets full-screen chat reload render on the real terminal stream
+    instead of inheriting slash-output indentation wrappers.
+    """
+    cur = stream
+    seen = set()
+    while cur is not None:
+        sid = id(cur)
+        if sid in seen:
+            break
+        seen.add(sid)
+        nxt = getattr(cur, "_base_stream", None)
+        if nxt is None:
+            nxt = getattr(cur, "_primary", None)
+        if nxt is None:
+            break
+        cur = nxt
+    return stream if cur is None else cur
+
+
 def _reload_chat_from_top(agent: Any, chat_id: str) -> None:
     reload_chat_id = str(chat_id or "").strip()
     if not reload_chat_id:
@@ -73,7 +97,13 @@ def _reload_chat_from_top(agent: Any, chat_id: str) -> None:
         pass
     resize_reload = getattr(agent, "_reload_chat_history_from_anchor_on_resize", None)
     if callable(resize_reload):
-        resize_reload()
+        real_stdout = _unwrap_nested_output_stream(sys.stdout)
+        real_stderr = _unwrap_nested_output_stream(sys.stderr)
+        if (real_stdout is not sys.stdout) or (real_stderr is not sys.stderr):
+            with redirect_stdout(real_stdout), redirect_stderr(real_stderr):
+                resize_reload()
+        else:
+            resize_reload()
         return
     # Fallback: keep historical UX order when shared reload helper is unavailable.
     _clear_terminal_screen()

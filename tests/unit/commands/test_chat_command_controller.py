@@ -53,6 +53,24 @@ class _NoopLock:
         return False
 
 
+class _PrefixingStream:
+    def __init__(self, base_stream):
+        self._base_stream = base_stream
+
+    def write(self, text):
+        s = str(text)
+        if not s:
+            return 0
+        chunks = s.splitlines(keepends=True)
+        prefixed = "".join(
+            (f"  {chunk}" if chunk.strip() else chunk) for chunk in chunks
+        )
+        return self._base_stream.write(prefixed)
+
+    def flush(self):
+        return self._base_stream.flush()
+
+
 class ChatCommandControllerTests(unittest.TestCase):
     def test_non_chat_command_not_handled(self):
         agent = _FakeChatAgent()
@@ -127,6 +145,28 @@ class ChatCommandControllerTests(unittest.TestCase):
             ],
         )
         self.assertEqual(buf.getvalue(), "")
+
+    def test_reload_with_resize_helper_uses_unwrapped_stdout(self):
+        class _ReloadAgent(_FakeChatAgent):
+            def _reload_chat_history_from_anchor_on_resize(self):
+                print("› hello")
+                print("• world")
+
+        agent = _ReloadAgent()
+        base_out = io.StringIO()
+        wrapped_out = _PrefixingStream(base_out)
+        with (
+            patch("src.controllers.chat_command_controller.sys.stdout", wrapped_out),
+            patch("src.controllers.chat_command_controller.sys.stderr", wrapped_out),
+            patch("src.controllers.chat_command_controller._clear_terminal_screen") as mock_clear,
+            patch("src.controllers.chat_command_controller._print_startup_overview_safe") as mock_startup,
+        ):
+            handled = handle_chat_builtin_command(agent, "chat reload")
+        self.assertTrue(handled)
+        self.assertEqual(agent.load_chat_state_calls, 1)
+        self.assertEqual(base_out.getvalue(), "› hello\n• world\n")
+        mock_clear.assert_not_called()
+        mock_startup.assert_not_called()
 
 
 if __name__ == "__main__":
