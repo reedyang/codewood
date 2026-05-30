@@ -2172,9 +2172,7 @@ class Agent:
             return False
         if str(result.get("tool") or "").strip() != "shell":
             return False
-        if bool(result.get("aborted_by_user", False)):
-            return True
-        return "command aborted by user" in str(result.get("output") or "").lower()
+        return bool(result.get("aborted_by_user", False))
 
     def _history_item_is_conversation_interrupted(self, msg: Any) -> bool:
         if not isinstance(msg, dict):
@@ -2440,10 +2438,7 @@ class Agent:
     def _is_direct_shell_result_aborted(self, result: Any) -> bool:
         if not isinstance(result, dict):
             return False
-        if bool(result.get("aborted_by_user", False)):
-            return True
-        merged = f"{result.get('stdout') or ''}\n{result.get('stderr') or ''}"
-        return "command aborted by user" in merged.lower()
+        return bool(result.get("aborted_by_user", False))
 
     def _normalize_aborted_direct_shell_stdout_for_history(self, stdout_text: str) -> str:
         text = str(stdout_text or "")
@@ -3272,12 +3267,18 @@ class Agent:
                 get_console_window = getattr(kernel32, "GetConsoleWindow", None)
                 console_hwnd = int(get_console_window() or 0) if callable(get_console_window) else 0
                 if callable(get_async_key_state) and callable(get_foreground_window) and console_hwnd:
+                    initial_esc_down = False
+                    try:
+                        initial_esc_down = bool(int(get_async_key_state(0x1B) or 0) & 0x8000)
+                    except Exception:
+                        initial_esc_down = False
                     state.update(
                         {
                             "ready": True,
                             "get_async_key_state": get_async_key_state,
                             "get_foreground_window": get_foreground_window,
                             "console_hwnd": console_hwnd,
+                            "esc_down": bool(initial_esc_down),
                         }
                     )
             except Exception:
@@ -3349,11 +3350,15 @@ class Agent:
                 return
             stop_event = threading.Event()
             self._interrupt_monitor_stop_event = stop_event
+            # Ignore stale key state/buffer immediately after monitor starts.
+            monitor_armed_at = float(time.monotonic()) + 0.25
 
             def _monitor() -> None:
                 while not stop_event.wait(0.03):
                     try:
                         if not self._poll_windows_escape_pressed():
+                            continue
+                        if float(time.monotonic()) < monitor_armed_at:
                             continue
                         with lock:
                             should_cancel_task = bool(
