@@ -943,6 +943,7 @@ def run_agent_loop(agent: Any):
         original_user_task = ""
         user_message_recorded = False
         pre_task_status_ticker: Optional[_WorkingStatusTicker] = None
+        active_status_ticker: Optional[_WorkingStatusTicker] = None
         try:
             self._refresh_input_handler_skill_completions()
             # 获取用户输入（含等待态回注输入），统一走主循环处理路径
@@ -1538,6 +1539,11 @@ def run_agent_loop(agent: Any):
             )
             self._start_interrupt_monitor(cancel_task_on_interrupt=True)
             self._consume_task_interrupt_requested()
+            try:
+                self._conversation_interrupt_banner_recent = False
+                self._conversation_interrupt_banner_recent_at = 0.0
+            except Exception:
+                pass
             self._rewrite_previous_prompt_as_user(raw_user_input.strip())
             pre_task_status_ticker = _WorkingStatusTicker(
                 sys.stdout,
@@ -1763,15 +1769,17 @@ def run_agent_loop(agent: Any):
                         fps=_WORKING_STATUS_MARQUEE_FPS,
                     )
                     status_ticker.start()
+                active_status_ticker = status_ticker
                 status_ticker_stopped = False
 
                 def _stop_status_ticker_before_first_output() -> None:
-                    nonlocal status_ticker_stopped
+                    nonlocal status_ticker_stopped, active_status_ticker
                     if status_ticker_stopped:
                         return
                     status_ticker.stop()
                     self._clear_last_thinking_line()
                     status_ticker_stopped = True
+                    active_status_ticker = None
                 try:
                     ai_result = self.call_ai(
                         next_input,
@@ -2250,6 +2258,13 @@ def run_agent_loop(agent: Any):
                 pre_task_status_ticker.stop()
                 pre_task_status_ticker = None
                 self._clear_last_thinking_line()
+            if active_status_ticker is not None:
+                try:
+                    active_status_ticker.stop()
+                except Exception:
+                    pass
+                active_status_ticker = None
+                self._clear_last_thinking_line()
             self._stop_interrupt_monitor(cancel_task_on_interrupt=True)
             self._schedule_auto_memory_reflect()
             if auto_exit_after_turn:
@@ -2260,6 +2275,13 @@ def run_agent_loop(agent: Any):
             if pre_task_status_ticker is not None:
                 pre_task_status_ticker.stop()
                 pre_task_status_ticker = None
+                self._clear_last_thinking_line()
+            if active_status_ticker is not None:
+                try:
+                    active_status_ticker.stop()
+                except Exception:
+                    pass
+                active_status_ticker = None
                 self._clear_last_thinking_line()
             if in_task_execution:
                 in_task_execution = False
@@ -2328,6 +2350,13 @@ def run_agent_loop(agent: Any):
             if pre_task_status_ticker is not None:
                 pre_task_status_ticker.stop()
                 pre_task_status_ticker = None
+                self._clear_last_thinking_line()
+            if active_status_ticker is not None:
+                try:
+                    active_status_ticker.stop()
+                except Exception:
+                    pass
+                active_status_ticker = None
                 self._clear_last_thinking_line()
             self._in_task_execution = False
             self._stop_interrupt_monitor(cancel_task_on_interrupt=True)
