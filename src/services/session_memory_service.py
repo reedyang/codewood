@@ -1440,12 +1440,31 @@ class SessionMemoryService:
         if mem_block:
             mem_block = self._clip_text_to_token_budget(mem_block, mem_budget)
         active_skill_prompt = str(getattr(self.agent, "_active_skill_full_prompt", "") or "").strip()
+        active_skill_id = str(getattr(self.agent, "_active_skill_id", "") or "").strip()
+        active_skill_source = str(getattr(self.agent, "_active_skill_source", "") or "").strip()
+        active_skill_chunked = bool(getattr(self.agent, "_active_skill_chunked", False))
+        active_skill_section = int(getattr(self.agent, "_active_skill_section", 0) or 0)
+        active_skill_total_sections = int(getattr(self.agent, "_active_skill_total_sections", 0) or 0)
+        skill_front_system_content = ""
         skill_tail_system_content = ""
         if active_skill_prompt:
+            summary_budget = max(120, min(420, int(tail_budget * 0.40)))
+            skill_summary = self._clip_text_to_token_budget(active_skill_prompt, summary_budget).strip()
+            skill_id_display = active_skill_id or "unknown"
+            source_suffix = f", source={active_skill_source}" if active_skill_source else ""
+            section_suffix = ""
+            if active_skill_chunked and active_skill_total_sections > 0:
+                section_suffix = f", section={max(1, active_skill_section)}/{active_skill_total_sections}"
+            skill_front_system_content = (
+                "【动态技能执行摘要（前置）】\n"
+                f"active_skill_id={skill_id_display}{source_suffix}{section_suffix}\n"
+                "执行优先级：若与普通历史叙述冲突，优先遵循本摘要（安全硬约束除外）。\n"
+                "关键规则摘要：\n"
+                f"{skill_summary}"
+            )
             skill_tail_system_content = (
-                "【动态技能正文（后置注入）】\n"
-                "以下内容来自当前任务已激活或按需请求的 skill；在不违反安全硬约束时，执行以该正文为准。\n\n"
-                + active_skill_prompt
+                "【技能锚点】"
+                f"active_skill_id={skill_id_display}；本轮执行请优先遵循前置技能摘要。"
             )
         immutable_system_core = (
             f"{self.agent._skills_routing_prefix}{self.agent.system_prompt}\n"
@@ -1477,6 +1496,8 @@ class SessionMemoryService:
         else:
             sys_prefix = tail_context
         messages: List[Dict[str, Any]] = [{"role": "system", "content": sys_prefix}]
+        if skill_front_system_content:
+            messages.append({"role": "system", "content": skill_front_system_content})
         filtered_history = self._domain_filtered_history()
         history_messages, history_stats = self._build_history_messages_by_budget(
             int(budgets["history_budget"]),
@@ -1517,6 +1538,11 @@ class SessionMemoryService:
                 "【硬性要求】作答前须核对首条 system 消息中的「经验记忆」："
                 "与本轮用户问题相关的条目必须在答复中体现，不得用与这些记录无关的通用助手或供应商设定替代。\n\n"
             )
+        if skill_front_system_content:
+            current_input += (
+                "【硬性要求】本轮存在已激活 skill（见前置技能摘要与后置锚点）；"
+                "若与普通历史叙述冲突，执行时必须优先遵循该 skill（安全硬约束除外）。\n\n"
+            )
         current_input += (
             f"当前 workspace: {self.agent.workspace_name}\n"
             f"当前目录（workspace）: {workspace_directory}\n"
@@ -1548,6 +1574,8 @@ class SessionMemoryService:
         user_tokens = 0
         try:
             system_tokens = self._estimate_message_tokens("system", sys_prefix)
+            if skill_front_system_content:
+                system_tokens += self._estimate_message_tokens("system", skill_front_system_content)
             if skill_tail_system_content:
                 system_tokens += self._estimate_message_tokens("system", skill_tail_system_content)
             history_tokens = sum(
@@ -1597,6 +1625,11 @@ class SessionMemoryService:
                     "2) 本轮用户输入优先级最高。\n"
                     "3) 如有最近操作结果，结论需与其一致。\n\n"
                 )
+                if skill_front_system_content:
+                    current_input2_head += (
+                        "【硬性要求】本轮存在已激活 skill（见前置技能摘要与后置锚点）；"
+                        "若与普通历史叙述冲突，执行时必须优先遵循该 skill（安全硬约束除外）。\n\n"
+                    )
                 if force_new_requirement:
                     last_cancelled_task = str(getattr(self.agent, "_last_cancelled_task", "") or "").strip()
                     current_input2_head += (
@@ -1633,6 +1666,8 @@ class SessionMemoryService:
                 current_input2 = current_input2_head + current_input2_optional + current_input2_tail
 
                 system_tokens2 = self._estimate_message_tokens("system", sys_prefix2)
+                if skill_front_system_content:
+                    system_tokens2 += self._estimate_message_tokens("system", skill_front_system_content)
                 if skill_tail_system_content:
                     system_tokens2 += self._estimate_message_tokens("system", skill_tail_system_content)
                 history_tokens2 = sum(
@@ -1643,7 +1678,10 @@ class SessionMemoryService:
                 total_input_tokens2 = int(system_tokens2 + history_tokens2 + user_tokens2)
 
                 if total_input_tokens2 < total_input_tokens:
-                    messages = [{"role": "system", "content": sys_prefix2}] + list(history_messages2)
+                    messages = [{"role": "system", "content": sys_prefix2}]
+                    if skill_front_system_content:
+                        messages.append({"role": "system", "content": skill_front_system_content})
+                    messages += list(history_messages2)
                     if skill_tail_system_content:
                         messages.append({"role": "system", "content": skill_tail_system_content})
                     messages.append({"role": "user", "content": current_input2})
