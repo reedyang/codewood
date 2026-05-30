@@ -603,6 +603,56 @@ class ChatStateManager:
             self.save_chat_state()
             return True
 
+    def update_task_classification(
+        self,
+        chat_id: str,
+        task_id: str,
+        domains: List[str],
+        classifier: Optional[Dict[str, Any]] = None,
+    ) -> bool:
+        cid = str(chat_id or "").strip()
+        tid = str(task_id or "").strip()
+        if not cid or not tid:
+            return False
+        dvals = [str(x).strip() for x in (domains or []) if str(x).strip()]
+        unique_domains: List[str] = []
+        for d in dvals:
+            if d not in unique_domains:
+                unique_domains.append(d)
+        if not unique_domains:
+            unique_domains = ["general_other"]
+
+        cls = classifier if isinstance(classifier, dict) else {}
+        domain_scores: Dict[str, float] = {}
+        primary = str(cls.get("primary_domain") or "").strip()
+        secondary_raw = cls.get("secondary_domains")
+        secondary = secondary_raw if isinstance(secondary_raw, list) else []
+        try:
+            confidence = float(cls.get("confidence") or 0.0)
+        except Exception:
+            confidence = 0.0
+        if primary:
+            domain_scores[primary] = confidence
+        for dom in secondary:
+            d = str(dom or "").strip()
+            if d and d not in domain_scores:
+                domain_scores[d] = confidence
+
+        with self._agent._chat_state_lock:
+            chat = self.find_chat_by_id(cid)
+            if not chat:
+                return False
+            task = self._find_task_by_id(chat, tid)
+            if not task:
+                return False
+            task["domains"] = unique_domains
+            task["classifier"] = cls
+            task["domain_scores"] = domain_scores
+            task["updated_at"] = self._now_text()
+            chat["updated_at"] = self._now_text()
+            self.save_chat_state()
+            return True
+
     def activate_chat(
         self,
         chat_id: str,

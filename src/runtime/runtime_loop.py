@@ -353,7 +353,9 @@ def _model_tool_result_was_aborted(tool_name: str, result: Any) -> bool:
         return False
     if not isinstance(result, dict):
         return False
-    return bool(result.get("aborted_by_user", False))
+    if bool(result.get("aborted_by_user", False)):
+        return True
+    return "command aborted by user" in str(result.get("output") or "").lower()
 
 
 def _reload_chat_history_after_aborted_command(agent: Any) -> None:
