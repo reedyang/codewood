@@ -1,4 +1,5 @@
 import os
+import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -420,6 +421,58 @@ class RuntimeLoopTests(unittest.TestCase):
         self.assertEqual(ai_response, "")
         self.assertFalse(streamed_any)
         self.assertEqual(callback_calls, 0)
+
+    def test_consume_streaming_ai_response_tty_append_mode_avoids_block_clear_redraw(self):
+        class _FakeTtyStream:
+            def __init__(self):
+                self.writes = []
+
+            def write(self, text):
+                s = str(text or "")
+                self.writes.append(s)
+                return len(s)
+
+            def flush(self):
+                return None
+
+            def isatty(self):
+                return True
+
+        class _AppendStream:
+            def __init__(self, base):
+                self._base = base
+                self._line_start = True
+                self._visual_col = 0
+
+            def write(self, text):
+                return self._base.write(text)
+
+            def flush(self):
+                return self._base.flush()
+
+        class _Agent:
+            def _hide_previous_shell_output_if_needed(self):
+                return None
+
+            def _ensure_terminal_line_start(self):
+                return None
+
+            def _build_internal_slash_output_stream(self, base_stream, terminal_columns=None):
+                _ = terminal_columns
+                return _AppendStream(base_stream)
+
+        fake_out = _FakeTtyStream()
+        with patch("src.runtime.runtime_loop.sys.stdout", fake_out):
+            ai_response, streamed_any = _consume_streaming_ai_response(
+                _Agent(),
+                ["he", "llo"],
+            )
+
+        merged = "".join(fake_out.writes)
+        self.assertEqual(ai_response, "hello")
+        self.assertTrue(streamed_any)
+        self.assertNotIn("\x1b[1A\r\x1b[2K", merged)
+        self.assertIn("hello", re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", merged))
 
 
 if __name__ == "__main__":
