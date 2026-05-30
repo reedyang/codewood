@@ -90,9 +90,13 @@ def _reload_chat_from_top(agent: Any, chat_id: str) -> None:
         print(reload_result)
         return
     try:
-        remember = getattr(agent, "_remember_active_chat_history_first_visible_index", None)
-        if callable(remember):
-            remember(0)
+        remember_tail = getattr(agent, "_remember_active_chat_history_tail_anchor", None)
+        if callable(remember_tail):
+            remember_tail()
+        else:
+            remember = getattr(agent, "_remember_active_chat_history_first_visible_index", None)
+            if callable(remember):
+                remember(0)
     except Exception:
         pass
     resize_reload = getattr(agent, "_reload_chat_history_from_anchor_on_resize", None)

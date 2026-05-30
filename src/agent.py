@@ -954,6 +954,30 @@ class Agent:
             idx = 0
         return max(0, min(idx, total))
 
+    def _remember_active_chat_history_tail_anchor(self) -> int:
+        try:
+            hist = list(self.conversation_history or [])
+        except Exception:
+            hist = []
+        if not hist:
+            self._remember_active_chat_history_first_visible_index(0)
+            return 0
+        start = max(0, len(hist) - 1)
+        for idx in range(len(hist) - 1, -1, -1):
+            msg = hist[idx]
+            if not isinstance(msg, dict):
+                continue
+            if str(msg.get("role") or "").strip().lower() != "user":
+                continue
+            content = str(msg.get("content") or "")
+            slash_cmd = self._parse_internal_slash_user_history_content(content)
+            if slash_cmd and slash_cmd.strip().lower() == "/chat reload":
+                continue
+            start = idx
+            break
+        self._remember_active_chat_history_first_visible_index(start)
+        return start
+
     def _reload_chat_history_from_anchor_on_resize(
         self,
         include_startup_overview: bool = True,
@@ -2148,7 +2172,9 @@ class Agent:
             return False
         if str(result.get("tool") or "").strip() != "shell":
             return False
-        return bool(result.get("aborted_by_user", False))
+        if bool(result.get("aborted_by_user", False)):
+            return True
+        return "command aborted by user" in str(result.get("output") or "").lower()
 
     def _history_item_is_conversation_interrupted(self, msg: Any) -> bool:
         if not isinstance(msg, dict):
@@ -2414,7 +2440,10 @@ class Agent:
     def _is_direct_shell_result_aborted(self, result: Any) -> bool:
         if not isinstance(result, dict):
             return False
-        return bool(result.get("aborted_by_user", False))
+        if bool(result.get("aborted_by_user", False)):
+            return True
+        merged = f"{result.get('stdout') or ''}\n{result.get('stderr') or ''}"
+        return "command aborted by user" in merged.lower()
 
     def _normalize_aborted_direct_shell_stdout_for_history(self, stdout_text: str) -> str:
         text = str(stdout_text or "")
