@@ -45,10 +45,6 @@
       "highlights": ["/execution-policy show"]
     },
     {
-      "text": "Use /session-summary show to verify conversation summarization settings.",
-      "highlights": ["/session-summary show"]
-    },
-    {
       "text": "Prefix local shell commands with !, for example !git status.",
       "highlights": ["!", "!git status"]
     },

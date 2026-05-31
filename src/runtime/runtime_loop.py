@@ -1162,48 +1162,6 @@ def run_agent_loop(agent: Any):
                             print("Usage: /execution-policy <show|unlimited|moderate|confirmation>")
                             continue
 
-                        if bl.startswith("session-summary "):
-                            sub = bl[len("session-summary ") :].strip().lower()
-                            if sub in ("on", "enable", "true", "1"):
-                                self.session_summary_llm_enabled = True
-                                ok = self._save_session_summary_llm_to_config()
-                                print(
-                                    f"✅ Session LLM summary enabled (periodic compression for experiential-memory retrieval query)"
-                                    f"{f'; saved to {CONFIG_JSONC_FILENAME}' if ok else ' (failed to save config; only effective for this process)'}"
-                                )
-                                continue
-                            if sub in ("off", "disable", "false", "0"):
-                                self.session_summary_llm_enabled = False
-                                ok = self._save_session_summary_llm_to_config()
-                                print(
-                                    f"✅ Session LLM summary disabled (rolling excerpts are still kept)"
-                                    f"{f'; saved to {CONFIG_JSONC_FILENAME}' if ok else ' (failed to save config; only effective for this process)'}"
-                                )
-                                continue
-                            if sub == "show":
-                                on = bool(getattr(self, "session_summary_llm_enabled", True))
-                                cfg_path = self.config_dir / CONFIG_JSONC_FILENAME
-                                print(
-                                    f"Session LLM summary (session_summary_llm): {'on' if on else 'off'}\n"
-                                    f"  Config key: \"session_summary_llm\" in {CONFIG_JSONC_FILENAME} (boolean)\n"
-                                    f"  Config file: {cfg_path}"
-                                )
-                                continue
-                            print(
-                                "Usage: /session-summary <on|off|show>\n"
-                                "  on/off   - toggle periodic LLM session summary (rolling excerpt remains when off)\n"
-                                "  show     - show current switch and config file path"
-                            )
-                            continue
-                        if bl == "session-summary":
-                            print(
-                                "Usage: /session-summary <on|off|show>\n"
-                                "  /session-summary on     - enable LLM session summary\n"
-                                "  /session-summary off    - disable (rolling excerpt only)\n"
-                                "  /session-summary show   - show status"
-                            )
-                            continue
-
                         if bl == "always_confirm-reset":
                             self.execute_tool_call("always_confirm_reset", {})
                             continue

@@ -107,7 +107,6 @@ def setup_workspace_and_history(
 def setup_runtime_preferences(agent: Any) -> None:
     agent.execution_policy = "confirmation"
     agent.memory_enabled = True
-    agent.session_summary_llm_enabled = True
     agent.memory_fallback_expansion_enabled = True
     agent.project_context_first_round_evidence_enabled = True
     # Tool gates: default disabled so only core built-in coding tools are available.
@@ -125,13 +124,6 @@ def setup_runtime_preferences(agent: Any) -> None:
             if pol not in ("unlimited", "moderate", "confirmation"):
                 pol = "confirmation"
             agent.execution_policy = pol
-
-            _sslm = cfg_data.get("session_summary_llm", True)
-            agent.session_summary_llm_enabled = (
-                _sslm
-                if isinstance(_sslm, bool)
-                else str(_sslm).strip().lower() in ("1", "true", "yes", "on")
-            )
 
             _mfe = cfg_data.get("memory_fallback_expansion", True)
             agent.memory_fallback_expansion_enabled = (
@@ -172,7 +164,7 @@ def setup_runtime_preferences(agent: Any) -> None:
                 # Keep backward compatibility for explicit positive values.
                 agent.max_tool_rounds = parsed_rounds if parsed_rounds and parsed_rounds > 0 else None
     except Exception as e:
-        print(f"⚠️ 读取 {CONFIG_JSONC_FILENAME} 失败（执行策略 / session_summary_llm 等使用默认值）: {e}")
+        print(f"⚠️ 读取 {CONFIG_JSONC_FILENAME} 失败（执行策略等使用默认值）: {e}")
 
 
 def setup_policy_caches(agent: Any) -> None:

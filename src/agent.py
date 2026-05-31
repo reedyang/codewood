@@ -4587,25 +4587,6 @@ class Agent:
             print(f"⚠️ Failed to save execution policy to config: {e}")
             return False
 
-    def _save_session_summary_llm_to_config(self) -> bool:
-        """将 session_summary_llm 开关写入 config.jsonc（与 execution_policy 等并存）。"""
-        try:
-            cfg_path = self.config_dir / CONFIG_JSONC_FILENAME
-            cfg_data: Dict[str, Any] = {}
-            if cfg_path.exists():
-                try:
-                    cfg_data = load_config_jsonc(cfg_path) or {}
-                except Exception:
-                    cfg_data = {}
-            cfg_data["session_summary_llm"] = bool(
-                getattr(self, "session_summary_llm_enabled", True)
-            )
-            save_config_jsonc(cfg_path, cfg_data)
-            return True
-        except Exception as e:
-            print(f"⚠️ Failed to save session_summary_llm to config: {e}")
-            return False
-
     def _save_memory_enabled_to_config(self) -> bool:
         """将 memory_enabled 开关写入 config.jsonc。"""
         try:
@@ -5331,7 +5312,6 @@ class Agent:
         print("  /mcp enable-tools <server> <tool1,tool2>")
         print("\nMemory:")
         print("  /memory status | enable | disable | stats | list | search <query> | remember <text> | delete <id>")
-        print("  /session-summary on|off|show")
         print("  /execution-policy show|unlimited|moderate|confirmation")
         print("  /always_confirm-reset")
         print("\nDirect shell (bypass AI):")
