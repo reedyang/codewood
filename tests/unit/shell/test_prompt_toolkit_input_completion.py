@@ -561,6 +561,77 @@ class PromptToolkitInputCompletionTests(unittest.TestCase):
         self.assertEqual(ev.current_buffer.text, "git! status")
         self.assertEqual(ev.app.invalidate_calls, 0)
 
+    def test_sync_shell_mode_from_history_bang_normalizes_buffer_and_enables_mode(self):
+        handler = pti.PromptToolkitInputHandler.__new__(pti.PromptToolkitInputHandler)
+        handler._shell_mode_active = False
+        handler._shell_mode_auto_by_history = False
+        handler._shell_mode_last_working_index = 9
+        handler._shell_mode_history_indices = set()
+        handler._shell_mode_sync_guard = False
+        buf = type("Buffer", (), {"text": "!ping www.baidu.com", "cursor_position": 20, "working_index": 8})()
+
+        changed = handler._sync_shell_mode_from_buffer(buf)
+
+        self.assertTrue(changed)
+        self.assertTrue(handler._shell_mode_active)
+        self.assertTrue(handler._shell_mode_auto_by_history)
+        self.assertIn(8, handler._shell_mode_history_indices)
+        self.assertEqual(buf.text, "ping www.baidu.com")
+
+    def test_sync_shell_mode_from_history_non_bang_disables_auto_mode(self):
+        handler = pti.PromptToolkitInputHandler.__new__(pti.PromptToolkitInputHandler)
+        handler._shell_mode_active = True
+        handler._shell_mode_auto_by_history = True
+        handler._shell_mode_last_working_index = 8
+        handler._shell_mode_history_indices = {8}
+        handler._shell_mode_sync_guard = False
+        buf = type("Buffer", (), {"text": "git status", "cursor_position": 10, "working_index": 7})()
+
+        changed = handler._sync_shell_mode_from_buffer(buf)
+
+        self.assertTrue(changed)
+        self.assertFalse(handler._shell_mode_active)
+        self.assertFalse(handler._shell_mode_auto_by_history)
+
+    def test_sync_shell_mode_remembers_normalized_bang_history_index(self):
+        handler = pti.PromptToolkitInputHandler.__new__(pti.PromptToolkitInputHandler)
+        handler._shell_mode_active = False
+        handler._shell_mode_auto_by_history = False
+        handler._shell_mode_last_working_index = 9
+        handler._shell_mode_history_indices = set()
+        handler._shell_mode_sync_guard = False
+
+        bang_buf = type("Buffer", (), {"text": "!ping www.baidu.com", "cursor_position": 20, "working_index": 8})()
+        handler._sync_shell_mode_from_buffer(bang_buf)
+        self.assertEqual(bang_buf.text, "ping www.baidu.com")
+
+        normal_buf = type("Buffer", (), {"text": "git status", "cursor_position": 10, "working_index": 7})()
+        handler._sync_shell_mode_from_buffer(normal_buf)
+        self.assertFalse(handler._shell_mode_active)
+
+        recalled_buf = type("Buffer", (), {"text": "ping www.baidu.com", "cursor_position": 18, "working_index": 8})()
+        changed = handler._sync_shell_mode_from_buffer(recalled_buf)
+
+        self.assertTrue(changed)
+        self.assertTrue(handler._shell_mode_active)
+        self.assertTrue(handler._shell_mode_auto_by_history)
+        self.assertEqual(recalled_buf.text, "ping www.baidu.com")
+
+    def test_sync_shell_mode_keeps_manual_mode_when_non_bang_text_changes(self):
+        handler = pti.PromptToolkitInputHandler.__new__(pti.PromptToolkitInputHandler)
+        handler._shell_mode_active = True
+        handler._shell_mode_auto_by_history = False
+        handler._shell_mode_last_working_index = 8
+        handler._shell_mode_history_indices = set()
+        handler._shell_mode_sync_guard = False
+        buf = type("Buffer", (), {"text": "git status", "cursor_position": 10, "working_index": 7})()
+
+        changed = handler._sync_shell_mode_from_buffer(buf)
+
+        self.assertFalse(changed)
+        self.assertTrue(handler._shell_mode_active)
+        self.assertFalse(handler._shell_mode_auto_by_history)
+
 
 if __name__ == "__main__":
     unittest.main()

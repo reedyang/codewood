@@ -37,6 +37,9 @@ SHIFT_ENTER_KEY_ALIASES: Tuple[Tuple[str, ...], ...] = (
 _RESIZE_ATTR_DRAFT = get_app_runtime_attr_name("resize_draft", leading_underscore=True)
 _RESIZE_ATTR_CURSOR = get_app_runtime_attr_name("resize_cursor_position", leading_underscore=True)
 _RESIZE_ATTR_INTERRUPTED = get_app_runtime_attr_name("resize_interrupted", leading_underscore=True)
+_SHELL_MODE_SYNC_HANDLER_ATTR = get_app_runtime_attr_name(
+    "shell_mode_sync_handler", leading_underscore=True
+)
 
 from .builtin_slash_commands import slash_builtin_completions
 from ..core.console_utils import _ansi_gray, _ansi_rgb
@@ -1136,6 +1139,10 @@ class PromptToolkitInputHandler:
         self._status_bar_fragments = []
         self._status_bar_enabled = True
         self._shell_mode_active = False
+        self._shell_mode_auto_by_history = False
+        self._shell_mode_last_working_index = None
+        self._shell_mode_history_indices = set()
+        self._shell_mode_sync_guard = False
         self._prompt_line = ""
         self._pending_prefill_text = ""
         self._pending_prefill_cursor_position = 0
@@ -1249,6 +1256,116 @@ class PromptToolkitInputHandler:
             return [(f"fg:{SHELL_MODE_COLOR_HEX}", SHELL_MODE_PROMPT)]
         return str(getattr(self, "_prompt_line", "") or "")
 
+    @staticmethod
+    def _strip_one_leading_bang(text: str) -> str:
+        s = str(text or "")
+        if not s:
+            return s
+        idx = 0
+        n = len(s)
+        while idx < n and s[idx].isspace():
+            idx += 1
+        if idx >= n or s[idx] != "!":
+            return s
+        # Keep left indentation, remove one leading bang, and trim spaces after it.
+        return s[:idx] + s[idx + 1 :].lstrip()
+
+    def _sync_shell_mode_from_buffer(self, buf: Any) -> bool:
+        if buf is None:
+            return False
+        if bool(getattr(self, "_shell_mode_sync_guard", False)):
+            return False
+
+        text = str(getattr(buf, "text", "") or "")
+        trimmed = text.lstrip()
+        starts_with_bang = bool(trimmed.startswith("!"))
+
+        working_index = getattr(buf, "working_index", None)
+        prev_working_index = getattr(self, "_shell_mode_last_working_index", None)
+        history_navigated = (
+            prev_working_index is not None and working_index != prev_working_index
+        )
+        self._shell_mode_last_working_index = working_index
+
+        active = bool(getattr(self, "_shell_mode_active", False))
+        auto_by_history = bool(getattr(self, "_shell_mode_auto_by_history", False))
+        shell_history_indices = getattr(self, "_shell_mode_history_indices", None)
+        if not isinstance(shell_history_indices, set):
+            shell_history_indices = set()
+            self._shell_mode_history_indices = shell_history_indices
+        known_shell_index = working_index in shell_history_indices
+        changed = False
+
+        if starts_with_bang and working_index is not None:
+            shell_history_indices.add(working_index)
+            known_shell_index = True
+
+        if starts_with_bang or known_shell_index:
+            if (not active) or bool(history_navigated):
+                self._shell_mode_active = True
+                self._shell_mode_auto_by_history = True
+                active = True
+                auto_by_history = True
+                changed = True
+
+            if starts_with_bang and auto_by_history:
+                normalized = self._strip_one_leading_bang(text)
+                if normalized != text:
+                    try:
+                        old_cursor = int(getattr(buf, "cursor_position", len(text)) or 0)
+                    except Exception:
+                        old_cursor = len(text)
+                    removed = max(0, len(text) - len(normalized))
+                    self._shell_mode_sync_guard = True
+                    try:
+                        buf.text = normalized
+                        try:
+                            max_pos = len(normalized)
+                            buf.cursor_position = max(0, min(max_pos, old_cursor - removed))
+                        except Exception:
+                            pass
+                    finally:
+                        self._shell_mode_sync_guard = False
+                    changed = True
+        else:
+            # Only auto-exit when user actually navigated history away from a bang command.
+            if bool(history_navigated) and active and auto_by_history:
+                self._shell_mode_active = False
+                self._shell_mode_auto_by_history = False
+                changed = True
+
+        return changed
+
+    def _install_shell_mode_sync_handler(self, buf: Any) -> None:
+        if buf is None:
+            return
+        if getattr(buf, _SHELL_MODE_SYNC_HANDLER_ATTR, None) is not None:
+            return
+
+        def _on_text_changed(_ev: Any = None) -> None:
+            changed = self._sync_shell_mode_from_buffer(buf)
+            if not changed:
+                return
+            try:
+                if self.session is not None:
+                    app = getattr(self.session, "app", None)
+                    if app is not None:
+                        app.invalidate()
+            except Exception:
+                pass
+
+        try:
+            evt = getattr(buf, "on_text_changed", None)
+            if evt is None:
+                return
+            if hasattr(evt, "add_handler"):
+                evt.add_handler(_on_text_changed)
+            else:
+                evt += _on_text_changed
+            setattr(buf, _SHELL_MODE_SYNC_HANDLER_ATTR, _on_text_changed)
+        except Exception:
+            pass
+
     def _clear_status_overlay_line_if_possible(self) -> None:
         try:
             if not bool(getattr(self, "_status_bar_enabled", False)):
@@ -1344,6 +1461,14 @@ class PromptToolkitInputHandler:
             self._pending_shell_mode_active = False
         if not hasattr(self, "_pending_prefill_cursor_position"):
             self._pending_prefill_cursor_position = 0
+        if not hasattr(self, "_shell_mode_auto_by_history"):
+            self._shell_mode_auto_by_history = False
+        if not hasattr(self, "_shell_mode_last_working_index"):
+            self._shell_mode_last_working_index = None
+        if not hasattr(self, "_shell_mode_history_indices"):
+            self._shell_mode_history_indices = set()
+        if not hasattr(self, "_shell_mode_sync_guard"):
+            self._shell_mode_sync_guard = False
 
         self._status_bar_text = str(status_bar_text or "")
         self._status_bar_fragments = (
@@ -1370,27 +1495,34 @@ class PromptToolkitInputHandler:
                     multiline=True,
                     prompt_continuation=self._multiline_prompt_continuation,
                 )
+                pending_cursor: Optional[int] = None
                 if prefill_text:
                     prompt_kwargs["default"] = prefill_text
                     pending_cursor = int(
                         getattr(self, "_pending_prefill_cursor_position", 0) or 0
                     )
 
-                    def _restore_prefill_cursor() -> None:
-                        try:
-                            app = getattr(self.session, "app", None)
-                            if app is None:
-                                return
-                            buf = getattr(app, "current_buffer", None)
-                            if buf is None:
-                                return
+                def _pre_run_setup() -> None:
+                    try:
+                        app = getattr(self.session, "app", None)
+                        if app is None:
+                            return
+                        buf = getattr(app, "current_buffer", None)
+                        if buf is None:
+                            return
+                        self._install_shell_mode_sync_handler(buf)
+                        self._shell_mode_last_working_index = getattr(
+                            buf, "working_index", None
+                        )
+                        self._sync_shell_mode_from_buffer(buf)
+                        if pending_cursor is not None:
                             max_pos = len(str(getattr(buf, "text", "") or ""))
                             cursor = max(0, min(pending_cursor, max_pos))
                             buf.cursor_position = cursor
-                        except Exception:
-                            pass
+                    except Exception:
+                        pass
 
-                    prompt_kwargs["pre_run"] = _restore_prefill_cursor
+                prompt_kwargs["pre_run"] = _pre_run_setup
 
                 user_input = self.session.prompt(
                     self._shell_mode_prompt_message,
@@ -1424,11 +1556,15 @@ class PromptToolkitInputHandler:
             if bool(getattr(self, "_shell_mode_active", False)):
                 shell_text = str(user_input or "").strip()
                 self._shell_mode_active = False
+                self._shell_mode_auto_by_history = False
                 if not shell_text:
                     self._erase_previous_prompt_line_if_tty()
                     self._print_shell_mode_empty_command_hint()
                     return ""
-                user_input = f"!{shell_text}"
+                if shell_text.startswith("!"):
+                    user_input = shell_text
+                else:
+                    user_input = f"!{shell_text}"
             
             # 保存到历史记录
             if user_input:
@@ -1483,6 +1619,7 @@ class PromptToolkitInputHandler:
                 cursor_pos = int(getattr(buf, "cursor_position", len(text)) or 0)
                 if cursor_pos <= 0:
                     self._shell_mode_active = True
+                    self._shell_mode_auto_by_history = False
                     try:
                         event.app.invalidate()
                     except Exception:
@@ -1491,6 +1628,7 @@ class PromptToolkitInputHandler:
                 buf.insert_text("!")
                 return
             self._shell_mode_active = True
+            self._shell_mode_auto_by_history = False
             try:
                 event.app.invalidate()
             except Exception:
@@ -1521,6 +1659,7 @@ class PromptToolkitInputHandler:
                 getattr(buf, "text", "") or ""
             ):
                 self._shell_mode_active = False
+                self._shell_mode_auto_by_history = False
                 try:
                     event.app.invalidate()
                 except Exception:
