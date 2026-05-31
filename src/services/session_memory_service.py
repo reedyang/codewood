@@ -6,7 +6,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
-from ..config.app_info import get_app_config_dirname, get_app_logger_root, get_app_slug_kebab
+from ..config.app_info import get_app_config_dirname, get_app_logger_root
 from ..core.config.model_providers import DEFAULT_CONTEXT_WINDOW, parse_context_window
 from ..core.logging.app_logging import get_logger
 
@@ -1475,7 +1475,6 @@ class SessionMemoryService:
         default_install_skills_dir = (Path.home() / get_app_config_dirname() / "skills").resolve()
         runtime_tail_raw = (
             f"当前操作系统信息：{os_info}\n"
-            f"当前 {get_app_slug_kebab()} 根目录（绝对路径）：{self.agent._self_repo_root}\n"
             f"当前 config 目录（绝对路径）：{self.agent.config_dir}\n"
             f"当前 workspace 名称：{self.agent.workspace_name}\n"
             f"当前 chat 名称（弱提示，仅会话标签，不代表本轮任务目标）：{self.agent.active_chat_name}\n"
