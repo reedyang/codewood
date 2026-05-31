@@ -569,8 +569,6 @@ class SessionMemoryService:
         return ""
 
     def maybe_refresh_session_summary_llm(self) -> None:
-        if not getattr(self.agent, "session_summary_llm_enabled", True):
-            return
         all_hist = list(getattr(self.agent, "conversation_history", None) or [])
         filtered_hist = [
             m for m in all_hist

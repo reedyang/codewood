@@ -24,7 +24,6 @@ class _FakeAgent:
         self.operation_results = []
         self._session_summary_llm = ""
         self._session_summary_rolling = ""
-        self.session_summary_llm_enabled = False
         self._last_llm_summary_pair_count = 0
         self._skills_routing_prefix = ""
         self._active_skill_full_prompt = ""
