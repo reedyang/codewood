@@ -699,6 +699,8 @@ def _refresh_context_usage_after_task_boundary(
                 user_input_hint=str(user_input_hint or ""),
                 context_hint=str(context_hint or ""),
             )
+    except KeyboardInterrupt:
+        pass
     except Exception:
         pass
     try:
@@ -710,6 +712,8 @@ def _refresh_context_usage_after_task_boundary(
                 context_hint=str(context_hint or ""),
                 expected_chat_id=str(getattr(agent, "active_chat_id", "") or "").strip(),
             )
+    except KeyboardInterrupt:
+        pass
     except Exception:
         pass
 
