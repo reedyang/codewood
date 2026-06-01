@@ -31,6 +31,7 @@ class _FakeSession:
 class _FakeOutput:
     def __init__(self, columns: int):
         self._columns = columns
+        self.raw_writes = []
 
     def get_size(self):
         class _Size:
@@ -38,6 +39,12 @@ class _FakeOutput:
         size = _Size()
         size.columns = self._columns
         return size
+
+    def write_raw(self, text: str):
+        self.raw_writes.append(text)
+
+    def flush(self):
+        pass
 
 
 class _FakeEvent:
@@ -89,6 +96,20 @@ class _FakeBuffer:
         self.cursor_position = len(text)
 
 
+class _FakeDocument:
+    def __init__(self, cursor_position_row: int, line_count: int):
+        self.cursor_position_row = cursor_position_row
+        self.line_count = line_count
+
+
+class _FakePromptBuffer:
+    def __init__(self, text: str, cursor_position: int, document=None):
+        self.text = text
+        self.cursor_position = cursor_position
+        self.document = document
+        self.complete_state = None
+
+
 class _CursorAwareSession:
     def __init__(self, returned_text: str):
         self.returned_text = returned_text
@@ -109,6 +130,118 @@ class _CursorAwareSession:
 
 
 class PromptToolkitInputCompletionTests(unittest.TestCase):
+    def test_status_overlay_tracks_bottom_of_multiline_history_buffer(self):
+        app = _FakeHookApp(columns=80)
+        app.current_buffer = _FakePromptBuffer(
+            "line1\nline2\nline3",
+            0,
+            _FakeDocument(cursor_position_row=0, line_count=3),
+        )
+        session = _FakeHookSession(app)
+
+        with patch.object(pti, "_get_system_terminal_columns", return_value=0):
+            pti._attach_blink_after_render_hook(
+                session,
+                status_provider=lambda: "status",
+            )
+            app.before_render.fire(app)
+            app.after_render.fire(app)
+
+        self.assertIn("\x1b[4B\r", app.output.raw_writes)
+        self.assertNotIn("\x1b[2B\r", app.output.raw_writes)
+
+    def test_status_overlay_clears_old_multiline_position_when_history_shrinks(self):
+        app = _FakeHookApp(columns=80)
+        app.current_buffer = _FakePromptBuffer(
+            "line1\nline2\nline3",
+            0,
+            _FakeDocument(cursor_position_row=0, line_count=3),
+        )
+        session = _FakeHookSession(app)
+
+        with patch.object(pti, "_get_system_terminal_columns", return_value=0):
+            pti._attach_blink_after_render_hook(
+                session,
+                status_provider=lambda: "status",
+            )
+            app.before_render.fire(app)
+            app.after_render.fire(app)
+            app.output.raw_writes.clear()
+
+            app.current_buffer = _FakePromptBuffer(
+                "single line",
+                len("single line"),
+                _FakeDocument(cursor_position_row=0, line_count=1),
+            )
+            app.before_render.fire(app)
+            self.assertEqual(app.output.raw_writes, [])
+            app.after_render.fire(app)
+
+        self.assertEqual(app.output.raw_writes.count("\x1b[4B\r"), 1)
+        self.assertEqual(app.output.raw_writes.count("\x1b[2B\r"), 1)
+
+    def test_status_overlay_clears_old_position_when_multiline_cursor_was_last_row(self):
+        app = _FakeHookApp(columns=80)
+        app.current_buffer = _FakePromptBuffer(
+            "line1\nline2\nline3",
+            len("line1\nline2\nline3"),
+            _FakeDocument(cursor_position_row=2, line_count=3),
+        )
+        session = _FakeHookSession(app)
+
+        with patch.object(pti, "_get_system_terminal_columns", return_value=0):
+            pti._attach_blink_after_render_hook(
+                session,
+                status_provider=lambda: "status",
+            )
+            app.before_render.fire(app)
+            app.after_render.fire(app)
+            self.assertIn("\x1b[2B\r", app.output.raw_writes)
+            app.output.raw_writes.clear()
+
+            app.current_buffer = _FakePromptBuffer(
+                "single line",
+                len("single line"),
+                _FakeDocument(cursor_position_row=0, line_count=1),
+            )
+            app.before_render.fire(app)
+            self.assertEqual(app.output.raw_writes, [])
+            app.after_render.fire(app)
+
+        self.assertEqual(app.output.raw_writes.count("\x1b[4B\r"), 1)
+        self.assertEqual(app.output.raw_writes.count("\x1b[2B\r"), 1)
+
+    def test_status_overlay_does_not_clear_input_when_history_grows(self):
+        app = _FakeHookApp(columns=80)
+        app.current_buffer = _FakePromptBuffer(
+            "single line",
+            len("single line"),
+            _FakeDocument(cursor_position_row=0, line_count=1),
+        )
+        session = _FakeHookSession(app)
+
+        with patch.object(pti, "_get_system_terminal_columns", return_value=0):
+            pti._attach_blink_after_render_hook(
+                session,
+                status_provider=lambda: "status",
+            )
+            app.before_render.fire(app)
+            app.after_render.fire(app)
+            self.assertIn("\x1b[2B\r", app.output.raw_writes)
+            app.output.raw_writes.clear()
+
+            app.current_buffer = _FakePromptBuffer(
+                "line1\nline2\nline3",
+                len("line1\nline2\nline3"),
+                _FakeDocument(cursor_position_row=2, line_count=3),
+            )
+            app.before_render.fire(app)
+            app.after_render.fire(app)
+
+        self.assertNotIn("\x1b[0B\r", app.output.raw_writes)
+        self.assertEqual(app.output.raw_writes.count("\r"), 0)
+        self.assertEqual(app.output.raw_writes.count("\x1b[2B\r"), 1)
+
     def test_resize_hook_uses_initial_columns_snapshot_for_first_shrink(self):
         app = _FakeHookApp(columns=120)
         session = _FakeHookSession(app)
