@@ -33,6 +33,51 @@ class _FakeResponsesApiResponse:
         }
 
 
+class _FakeChatToolsResponse:
+    def raise_for_status(self):
+        return None
+
+    def json(self):
+        return {
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "call_1",
+                                "type": "function",
+                                "function": {
+                                    "name": "read_file",
+                                    "arguments": "{\"path\":\"README.md\"}",
+                                },
+                            }
+                        ],
+                    }
+                }
+            ]
+        }
+
+
+class _FakeResponsesToolsApiResponse:
+    def raise_for_status(self):
+        return None
+
+    def json(self):
+        return {
+            "object": "response",
+            "output": [
+                {
+                    "type": "function_call",
+                    "name": "read_file",
+                    "arguments": "{\"path\":\"README.md\"}",
+                    "call_id": "call_resp_1",
+                }
+            ],
+        }
+
+
 class _FakeOllama:
     def __init__(self):
         self.calls = []
@@ -71,6 +116,25 @@ class _FakeStreamResponse:
 
 
 class ProviderContextWindowTests(unittest.TestCase):
+    @staticmethod
+    def _sample_tool_schema():
+        return [
+            {
+                "type": "function",
+                "function": {
+                    "name": "read_file",
+                    "description": "Read one file",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "path": {"type": "string"},
+                        },
+                        "required": ["path"],
+                    },
+                },
+            }
+        ]
+
     def test_openai_sends_context_window_header(self):
         with patch("requests.post", return_value=_FakeResponse()) as mock_post:
             out = call_ai_with_provider(
@@ -315,6 +379,91 @@ class ProviderContextWindowTests(unittest.TestCase):
         payload = mock_post.call_args.kwargs.get("json", {})
         self.assertEqual(payload.get("additional_drop_params"), ["tools"])
         self.assertNotIn("tools", payload)
+
+    def test_openai_chat_mode_supports_standard_tools_call(self):
+        with patch("requests.post", return_value=_FakeChatToolsResponse()) as mock_post:
+            out = call_ai_with_provider(
+                context=ProviderCallContext(
+                    provider="openai",
+                    model_name="Gemma-4-31B",
+                    model_params={},
+                    openai_conf={
+                        "api_key": "k",
+                        "base_url": "https://example.com/v1",
+                        "api_mode": "chat",
+                    },
+                    messages=[{"role": "user", "content": "please read readme"}],
+                    stream=False,
+                    return_message=True,
+                    image_data=None,
+                    image_user_idx=None,
+                    image_user_text="",
+                    session_summary_mode=False,
+                    memory_query_expansion_mode=False,
+                    domain_classifier_mode=False,
+                    tool_schemas=self._sample_tool_schema(),
+                    tool_choice="required",
+                ),
+                append_history=lambda _s: None,
+                ollama_importer=lambda: None,
+            )
+        self.assertIsInstance(out, dict)
+        self.assertIn("tool_calls", out)
+        payload = mock_post.call_args.kwargs.get("json", {})
+        self.assertIn("tools", payload)
+        self.assertEqual(payload.get("tool_choice"), "required")
+        self.assertEqual(
+            payload.get("tools", [{}])[0].get("function", {}).get("name"),
+            "read_file",
+        )
+        self.assertNotIn(
+            "tools",
+            payload.get("additional_drop_params", []),
+        )
+
+    def test_openai_responses_mode_supports_standard_tools_call(self):
+        with patch("requests.post", return_value=_FakeResponsesToolsApiResponse()) as mock_post:
+            out = call_ai_with_provider(
+                context=ProviderCallContext(
+                    provider="openai",
+                    model_name="Gemma-4-31B",
+                    model_params={},
+                    openai_conf={
+                        "api_key": "k",
+                        "base_url": "https://example.com/v1",
+                        "api_mode": "responses",
+                        "additional_drop_params": ["tools", "stop"],
+                    },
+                    messages=[{"role": "user", "content": "please read readme"}],
+                    stream=False,
+                    return_message=True,
+                    image_data=None,
+                    image_user_idx=None,
+                    image_user_text="",
+                    session_summary_mode=False,
+                    memory_query_expansion_mode=False,
+                    domain_classifier_mode=False,
+                    tool_schemas=self._sample_tool_schema(),
+                    tool_choice="required",
+                ),
+                append_history=lambda _s: None,
+                ollama_importer=lambda: None,
+            )
+        self.assertIsInstance(out, dict)
+        self.assertIn("tool_calls", out)
+        tool_calls = out.get("tool_calls") or []
+        self.assertTrue(isinstance(tool_calls, list) and tool_calls)
+        self.assertEqual(tool_calls[0].get("function", {}).get("name"), "read_file")
+
+        payload = mock_post.call_args.kwargs.get("json", {})
+        self.assertIn("tools", payload)
+        self.assertEqual(payload.get("tool_choice"), "required")
+        self.assertEqual(payload.get("tools", [{}])[0].get("name"), "read_file")
+        self.assertNotIn(
+            "tools",
+            payload.get("additional_drop_params", []),
+        )
+        self.assertIn("stop", payload.get("additional_drop_params", []))
 
     def test_openai_append_fail_then_no_suffix_success_records_override(self):
         responses = [_FakeHttpErrorResponse(), _FakeResponse()]

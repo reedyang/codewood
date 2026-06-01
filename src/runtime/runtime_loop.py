@@ -137,6 +137,39 @@ def _parse_tool_call_json_payload(raw: str) -> Optional[Dict[str, Any]]:
     return None
 
 
+def _parse_tool_plan_from_model_message(
+    message: Any,
+) -> Optional[Tuple[str, Dict[str, Any]]]:
+    if not isinstance(message, dict):
+        return None
+    tool_calls = message.get("tool_calls")
+    if not isinstance(tool_calls, list) or not tool_calls:
+        return None
+    first = tool_calls[0]
+    if not isinstance(first, dict):
+        return None
+    fn = first.get("function")
+    if not isinstance(fn, dict):
+        return None
+    tool_name = str(fn.get("name") or "").strip()
+    if not tool_name:
+        return None
+    raw_args = fn.get("arguments")
+    if isinstance(raw_args, dict):
+        return tool_name, raw_args
+    if isinstance(raw_args, str):
+        raw_text = raw_args.strip()
+        if not raw_text:
+            return tool_name, {}
+        try:
+            parsed = json.loads(raw_text)
+            if isinstance(parsed, dict):
+                return tool_name, parsed
+        except Exception:
+            return tool_name, {}
+    return tool_name, {}
+
+
 def _stream_visible_text_with_json_pause(text: str, *, final: bool) -> str:
     raw = str(text or "")
     if not raw:
@@ -1629,6 +1662,7 @@ def run_agent_loop(agent: Any):
                     "- 用户若请求“指定 MCP server 的信息/详情”，首个查询工具必须是 mcp_server_info。\n"
                     "- mcp_status/mcp_status_refresh 仅用于全局 MCP 状态总览，不可替代指定 server 的详情查询。\n\n"
                 )
+            task_uses_standard_openai_tools = bool(self._use_standard_openai_tools_call())
             first_round_contract = (
                 "\n\n【首轮回复硬性要求（必须遵守）】\n"
                 "1) 对于需要两步及以上完成的任务，先简要说明“将要完成哪些事情”，紧随其后再输出任务编排：Step 1..N，并为每步标注状态（pending/in_progress/completed/failed）。\n"
@@ -1659,6 +1693,17 @@ def run_agent_loop(agent: Any):
                 "{\"tool\":\"<tool_name>\",\"args\":{...}}\n"
                 "```"
             )
+            if task_uses_standard_openai_tools:
+                first_round_contract = (
+                    "\n\n【首轮回复硬性要求（必须遵守）】\n"
+                    "1) 对于需要两步及以上完成的任务，先简要说明“将要完成哪些事情”，紧随其后再输出任务编排：Step 1..N，并为每步标注状态（pending/in_progress/completed/failed）。\n"
+                    "2) 不要输出工具调用 JSON 文本；若需要调用工具，请直接使用标准 tools 调用（tool_calls）。若无需工具可直接自然语言回答。\n"
+                    "3) 对于需要两步及以上完成的任务，禁止首轮直接只给工具调用而不做“事项简述 + 步骤编排”。\n"
+                    "4) 若用户问题可被上一条 system 开头的【经验记忆】单独完整回答，"
+                    "首轮应直接给出简短自然语言并结束（若本轮无文件改动可调用 done）。不要输出 Step 编排或 memory_search。\n"
+                    "5) 若任务需要把自然语言指称解析为稳定标识符/映射：先阅读【经验记忆】，仍不足则首轮或次轮使用 memory_search，再执行检索、shell 或 request_skill_prompt；禁止在未核对记忆时先猜标识符再搜网。\n"
+                    "6) 只要调用了网络检索相关的工具、命令、脚本或 skill（网页搜索、联网抓取、在线查询等），调用 done 前必须先输出一次检索结果总结（关键信息、来源要点、与用户问题的对应关系）；禁止检索后直接 done。\n"
+                )
             first_round_evidence = ""
             if self._project_context_feature_enabled():
                 project_context_ready = False
@@ -1776,24 +1821,40 @@ def run_agent_loop(agent: Any):
                     status_ticker_stopped = True
                     active_status_ticker = None
                 try:
+                    standard_tool_schemas = (
+                        list(getattr(self, "tool_specs", []) or [])
+                        if task_uses_standard_openai_tools
+                        else None
+                    )
                     ai_result = self.call_ai(
                         next_input,
                         context=json.dumps(last_result, ensure_ascii=False) if last_result else "",
-                        stream=True,
-                        return_message=False,
+                        stream=(not task_uses_standard_openai_tools),
+                        return_message=task_uses_standard_openai_tools,
                         history_user_input=original_user_task if not user_message_recorded else None,
                         history_skip_user=user_message_recorded,
+                        tool_schemas=standard_tool_schemas,
+                        tool_choice=None,
                     )
                 except Exception:
                     _stop_status_ticker_before_first_output()
                     raise
                 if self._consume_task_interrupt_requested():
                     raise KeyboardInterrupt
-                ai_response, streamed_assistant_output = _consume_streaming_ai_response(
-                    self,
-                    ai_result,
-                    before_first_visible_output=_stop_status_ticker_before_first_output,
-                )
+                message_tool_plan: Optional[Tuple[str, Dict[str, Any]]] = None
+                if isinstance(ai_result, dict):
+                    if not status_ticker_stopped:
+                        _stop_status_ticker_before_first_output()
+                    msg_content = ai_result.get("content", "")
+                    ai_response = msg_content if isinstance(msg_content, str) else str(msg_content or "")
+                    streamed_assistant_output = False
+                    message_tool_plan = _parse_tool_plan_from_model_message(ai_result)
+                else:
+                    ai_response, streamed_assistant_output = _consume_streaming_ai_response(
+                        self,
+                        ai_result,
+                        before_first_visible_output=_stop_status_ticker_before_first_output,
+                    )
                 if not status_ticker_stopped:
                     _stop_status_ticker_before_first_output()
                 if not isinstance(ai_response, str):
@@ -1815,7 +1876,9 @@ def run_agent_loop(agent: Any):
                         self._last_terminal_block_kind = "assistant"
                         self._terminal_cursor_at_line_start = True
 
-                fallback_plan = self._parse_tool_plan_from_response(ai_response)
+                fallback_plan = message_tool_plan
+                if fallback_plan is None:
+                    fallback_plan = self._parse_tool_plan_from_response(ai_response)
                 if fallback_plan:
                     tool_name, args = fallback_plan
                     if tool_name != "done":
@@ -1829,31 +1892,63 @@ def run_agent_loop(agent: Any):
                         sys.stdout.write("\n")
                     sys.stdout.flush()
                 if not fallback_plan:
+                    if task_uses_standard_openai_tools and str(ai_response or "").strip():
+                        if current_task_id:
+                            self._close_chat_task(current_task_id, "done")
+                        _refresh_context_usage_after_task_boundary(
+                            self,
+                            user_input_hint=str(original_user_task or ""),
+                            context_hint="task finished direct answer",
+                        )
+                        break
                     misplaced_plan = self._find_tool_plan_anywhere(ai_response)
                     no_tool_rounds += 1
                     if no_tool_rounds >= max_no_tool_rounds:
-                        print("❌ The model repeatedly failed to produce an executable JSON tool plan. Auto-execution has stopped for this round.")
+                        if task_uses_standard_openai_tools:
+                            print("❌ The model repeatedly failed to produce a valid tool_calls response. Auto-execution has stopped for this round.")
+                        else:
+                            print("❌ The model repeatedly failed to produce an executable JSON tool plan. Auto-execution has stopped for this round.")
                         break
-                    print(
-                        f"⚠️ No executable JSON tool plan detected (retry {no_tool_rounds}/{max_no_tool_rounds}): "
-                        "the model will be asked again to output {\"tool\":\"...\",\"args\":{...}}."
-                    )
-                    if misplaced_plan:
-                        m_tool, m_args = misplaced_plan
-                        next_input = (
-                            f"【用户原始需求】\n{original_user_task}\n\n"
-                            "你上一条回复包含工具调用 JSON，但它不在回复结尾（后面仍有文本），因此被判无效。\n"
-                            "请在下一条回复中把该工具调用原样放在最后一行，且其后不要再有任何文本。\n"
-                            f"请输出：{{\"tool\":\"{m_tool}\",\"args\":{json.dumps(m_args, ensure_ascii=False)} }}"
+                    if task_uses_standard_openai_tools:
+                        print(
+                            f"⚠️ No valid tool_calls detected (retry {no_tool_rounds}/{max_no_tool_rounds}): "
+                            "the model will be asked again to call one tool via standard tool_calls."
                         )
                     else:
-                        next_input = (
-                            f"【用户原始需求】\n{original_user_task}\n\n"
-                            "你上一条回复没有给出可执行 JSON。\n"
-                            "请只输出一个 JSON 对象：{\"tool\":\"工具名\",\"args\":{...}}；"
-                            "任务完成时输出 done JSON（若本轮改过文件，args 需包含 reviewed_files 覆盖全部已修改文件）。"
-                            "若你判断任务已完成，下一条必须直接输出 done，禁止再调用无关工具。"
+                        print(
+                            f"⚠️ No executable JSON tool plan detected (retry {no_tool_rounds}/{max_no_tool_rounds}): "
+                            "the model will be asked again to output {\"tool\":\"...\",\"args\":{...}}."
                         )
+                    if misplaced_plan:
+                        m_tool, m_args = misplaced_plan
+                        if task_uses_standard_openai_tools:
+                            next_input = (
+                                f"【用户原始需求】\n{original_user_task}\n\n"
+                                "你上一条回复包含文本 JSON 工具计划，但当前模式要求使用标准 tool_calls。\n"
+                                f"请直接调用工具 `{m_tool}`，参数保持为 {json.dumps(m_args, ensure_ascii=False)}。"
+                            )
+                        else:
+                            next_input = (
+                                f"【用户原始需求】\n{original_user_task}\n\n"
+                                "你上一条回复包含工具调用 JSON，但它不在回复结尾（后面仍有文本），因此被判无效。\n"
+                                "请在下一条回复中把该工具调用原样放在最后一行，且其后不要再有任何文本。\n"
+                                f"请输出：{{\"tool\":\"{m_tool}\",\"args\":{json.dumps(m_args, ensure_ascii=False)} }}"
+                            )
+                    else:
+                        if task_uses_standard_openai_tools:
+                            next_input = (
+                                f"【用户原始需求】\n{original_user_task}\n\n"
+                                "你上一条回复没有给出有效的标准 tool_calls。\n"
+                                "请直接调用一个最合适的工具；若任务已完成，请直接调用 done。"
+                            )
+                        else:
+                            next_input = (
+                                f"【用户原始需求】\n{original_user_task}\n\n"
+                                "你上一条回复没有给出可执行 JSON。\n"
+                                "请只输出一个 JSON 对象：{\"tool\":\"工具名\",\"args\":{...}}；"
+                                "任务完成时输出 done JSON（若本轮改过文件，args 需包含 reviewed_files 覆盖全部已修改文件）。"
+                                "若你判断任务已完成，下一条必须直接输出 done，禁止再调用无关工具。"
+                            )
                     is_first_round = False
                     continue
 
@@ -2141,7 +2236,11 @@ def run_agent_loop(agent: Any):
                         f"【用户原始需求】\n{original_user_task}\n\n"
                         "你刚调用了 task_changed，系统已将原始需求切换为“新任务”。\n"
                         + (f"切换原因：{reason}\n" if reason else "")
-                        + "请基于新的原始需求继续输出下一条 JSON 工具计划。"
+                        + (
+                            "请基于新的原始需求继续调用下一条标准 tools。"
+                            if task_uses_standard_openai_tools
+                            else "请基于新的原始需求继续输出下一条 JSON 工具计划。"
+                        )
                     )
                     continue
                 if bool(result.get("needs_user_input", False)) and str(result.get("input_type", "")).strip() == "supplement":
@@ -2190,9 +2289,15 @@ def run_agent_loop(agent: Any):
                     next_input = (
                         f"【用户原始需求】\n{original_user_task}\n\n"
                         f"【用户补充信息】\n{supplement_text}\n\n"
-                        "请判断该补充信息是否与原始需求相关：\n"
-                        "- 若完全无关：调用 {\"tool\":\"task_changed\",\"args\":{\"new_task\":\"<用户补充信息提炼后的新需求>\",\"reason\":\"...\"}}；\n"
-                        "- 若相关：继续输出下一条工具调用 JSON；若信息仍不充分，可再次调用 ask_more_info。"
+                        + (
+                            "请判断该补充信息是否与原始需求相关：\n"
+                            "- 若完全无关：调用 task_changed（new_task 填提炼后的新需求，reason 填原因）；\n"
+                            "- 若相关：继续调用下一条标准 tools；若信息仍不充分，可再次调用 ask_more_info。"
+                            if task_uses_standard_openai_tools
+                            else "请判断该补充信息是否与原始需求相关：\n"
+                            "- 若完全无关：调用 {\"tool\":\"task_changed\",\"args\":{\"new_task\":\"<用户补充信息提炼后的新需求>\",\"reason\":\"...\"}}；\n"
+                            "- 若相关：继续输出下一条工具调用 JSON；若信息仍不充分，可再次调用 ask_more_info。"
+                        )
                     )
                     continue
                 if (
@@ -2236,9 +2341,15 @@ def run_agent_loop(agent: Any):
                     f"【用户原始需求】\n{original_user_task}\n\n"
                     f"{step_progress}\n\n"
                     f"【上一条工具执行结果（压缩）】\n{self._compact_result_for_next_input(result)}\n\n"
-                    "请继续输出下一条 JSON 工具计划：{\"tool\":\"工具名\",\"args\":{...}}；"
-                    "任务全部完成时输出 done JSON（若本轮改过文件，args 需包含 reviewed_files 覆盖全部已修改文件）。"
-                    "若上一条结果已满足原始需求，下一条必须直接输出 done。"
+                    + (
+                        "请继续调用下一条标准 tools；"
+                        "任务全部完成时请直接调用 done（若本轮改过文件，args.reviewed_files 需覆盖全部已修改文件）。"
+                        "若上一条结果已满足原始需求，下一条必须直接调用 done。"
+                        if task_uses_standard_openai_tools
+                        else "请继续输出下一条 JSON 工具计划：{\"tool\":\"工具名\",\"args\":{...}}；"
+                        "任务全部完成时输出 done JSON（若本轮改过文件，args 需包含 reviewed_files 覆盖全部已修改文件）。"
+                        "若上一条结果已满足原始需求，下一条必须直接输出 done。"
+                    )
                     + (f"\n{post_status_rule}" if post_status_rule else "")
                     + (f"\n{post_result_synthesis_rule}" if post_result_synthesis_rule else "")
                 )

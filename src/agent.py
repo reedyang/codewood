@@ -41,7 +41,7 @@ from .core.config.config_jsonc import (
     load_config_jsonc,
     save_config_jsonc,
 )
-from .core.config.model_providers import parse_configured_models
+from .core.config.model_providers import parse_bool_flag, parse_configured_models
 from .core.assistant_output_highlighter import (
     format_assistant_display_response,
     highlight_assistant_display_line,
@@ -505,6 +505,9 @@ class Agent:
             for model_item in parsed_models:
                 model_name = str(model_item.get("name") or "").strip()
                 context_window = int(model_item.get("context_window") or 0)
+                use_simulated_tools = bool(
+                    model_item.get("use_simulated_tools", False)
+                )
                 selector = f"{provider}:{model_name}"
                 key = selector.lower()
                 if key in seen:
@@ -513,6 +516,7 @@ class Agent:
                 params = dict(base_params)
                 params["model"] = model_name
                 params["context_window"] = context_window
+                params["use_simulated_tools"] = use_simulated_tools
                 out.append(
                     {
                         "provider": provider,
@@ -532,6 +536,15 @@ class Agent:
         if not provider or not model_name:
             return ""
         return f"{provider}:{model_name}"
+
+    def _use_simulated_tools_call(self) -> bool:
+        params = getattr(self, "params", {}) or {}
+        raw = params.get("use_simulated_tools", False) if isinstance(params, dict) else False
+        return parse_bool_flag(raw, default_value=False)
+
+    def _use_standard_openai_tools_call(self) -> bool:
+        provider = str(getattr(self, "provider", "") or "").strip().lower()
+        return provider == "openai" and (not self._use_simulated_tools_call())
 
     def _find_configured_model_choice(self, selector: str) -> Optional[Dict[str, Any]]:
         needle = str(selector or "").strip().lower()
@@ -556,6 +569,7 @@ class Agent:
             ctx = self.ai_orchestrator.context
             ctx.provider = self.provider
             ctx.model_name = self.model_name
+            ctx.model_params = self.params
             ctx.openai_conf = self.openai_conf
         except Exception:
             pass
@@ -4814,6 +4828,8 @@ class Agent:
         image_path: Optional[str] = None,
         history_user_input: Optional[str] = None,
         history_skip_user: bool = False,
+        tool_schemas: Optional[List[Dict[str, Any]]] = None,
+        tool_choice: Any = None,
     ):
         """调用大模型 API 获取回复；支持流式输出。"""
         call_ctx = AICallContext(
@@ -4830,6 +4846,8 @@ class Agent:
             image_path=image_path,
             history_user_input=history_user_input,
             history_skip_user=history_skip_user,
+            tool_schemas=tool_schemas,
+            tool_choice=tool_choice,
         )
         self.ai_orchestrator.context.provider = self.provider
         self.ai_orchestrator.context.model_name = self.model_name

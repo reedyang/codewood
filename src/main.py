@@ -223,6 +223,9 @@ def _extract_model_runtime_config(config: dict, requested_model: str | None = No
                     "provider": provider,
                     "name": model_name,
                     "context_window": int(model_item.get("context_window") or 0),
+                    "use_simulated_tools": bool(
+                        model_item.get("use_simulated_tools", False)
+                    ),
                     "params_raw": params_raw,
                     "provider_models": parsed_models,
                 }
@@ -241,6 +244,9 @@ def _extract_model_runtime_config(config: dict, requested_model: str | None = No
             "provider": str(first_provider["provider"]),
             "name": str(first_model.get("name") or "").strip(),
             "context_window": int(first_model.get("context_window") or 0),
+            "use_simulated_tools": bool(
+                first_model.get("use_simulated_tools", False)
+            ),
             "params_raw": first_provider["params_raw"],
             "provider_models": first_provider["models"],
         }
@@ -322,6 +328,9 @@ def _extract_model_runtime_config(config: dict, requested_model: str | None = No
     ]
     params["model"] = model_name
     params["context_window"] = int(selected.get("context_window") or 0)
+    params["use_simulated_tools"] = bool(
+        selected.get("use_simulated_tools", False)
+    )
 
     model_config = {
         "provider": provider,
