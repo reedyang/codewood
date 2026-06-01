@@ -242,6 +242,46 @@ class PromptToolkitInputCompletionTests(unittest.TestCase):
         self.assertEqual(app.output.raw_writes.count("\r"), 0)
         self.assertEqual(app.output.raw_writes.count("\x1b[2B\r"), 1)
 
+    def test_status_overlay_erases_once_when_menu_opens_then_stops_erasing(self):
+        app = _FakeHookApp(columns=80)
+        app.current_buffer = _FakePromptBuffer(
+            "demo",
+            len("demo"),
+            _FakeDocument(cursor_position_row=0, line_count=1),
+        )
+        session = _FakeHookSession(app)
+
+        def _status_provider():
+            buf = getattr(app, "current_buffer", None)
+            if buf is not None and getattr(buf, "complete_state", None) is not None:
+                return ""
+            return "status"
+
+        with patch.object(pti, "_get_system_terminal_columns", return_value=0):
+            pti._attach_blink_after_render_hook(
+                session,
+                status_provider=_status_provider,
+            )
+            # Initial render: status line is drawn once.
+            app.before_render.fire(app)
+            app.after_render.fire(app)
+            app.output.raw_writes.clear()
+
+            # Completion menu opens: erase status overlay once on transition.
+            app.current_buffer.complete_state = object()
+            app.before_render.fire(app)
+            app.after_render.fire(app)
+            open_transition_writes = list(app.output.raw_writes)
+            app.output.raw_writes.clear()
+
+            # While menu stays open, no repeated erase should happen.
+            app.before_render.fire(app)
+            app.after_render.fire(app)
+            keep_open_writes = list(app.output.raw_writes)
+
+        self.assertIn("\x1b[2K", open_transition_writes)
+        self.assertNotIn("\x1b[2K", keep_open_writes)
+
     def test_resize_hook_uses_initial_columns_snapshot_for_first_shrink(self):
         app = _FakeHookApp(columns=120)
         session = _FakeHookSession(app)

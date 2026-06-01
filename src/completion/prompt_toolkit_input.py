@@ -165,6 +165,7 @@ def _attach_blink_after_render_hook(
         "visible": False,
         "text": "",
         "desired": "",
+        "menu_open": False,
         "last_cols": max(0, initial_cols),
         "rows_down": 2,
         "target_row": 2,
@@ -191,6 +192,16 @@ def _attach_blink_after_render_hook(
 
     def _on_before_render(_app) -> None:
         try:
+            prev_menu_open = bool(state.get("menu_open"))
+            menu_open = False
+            try:
+                buf = getattr(_app, "current_buffer", None)
+                menu_open = (
+                    buf is not None and getattr(buf, "complete_state", None) is not None
+                )
+            except Exception:
+                menu_open = False
+            state["menu_open"] = bool(menu_open)
             desired = str(status_provider() or "") if callable(status_provider) else ""
             state["desired"] = desired
             output = getattr(_app, "output", None)
@@ -198,6 +209,20 @@ def _attach_blink_after_render_hook(
             state["pending_rows_down"] = rows_down
             state["pending_target_row"] = target_row
             state["pending_cursor_row"] = cursor_row
+            if menu_open and (not prev_menu_open) and bool(state.get("visible")):
+                try:
+                    old_target_row = int(state.get("target_row", target_row) or target_row)
+                    if (
+                        output is not None
+                        and hasattr(output, "write_raw")
+                        and hasattr(output, "flush")
+                    ):
+                        _draw_overlay_line(output, "", old_target_row - cursor_row)
+                        output.flush()
+                except Exception:
+                    pass
+                state["visible"] = False
+                state["text"] = ""
             try:
                 cols = _get_system_terminal_columns(default=0)
                 if cols <= 0:
@@ -247,6 +272,7 @@ def _attach_blink_after_render_hook(
             if output is not None and hasattr(output, "write_raw") and hasattr(output, "flush"):
                 try:
                     desired = str(state.get("desired") or "")
+                    menu_open = bool(state.get("menu_open"))
                     rows_down = int(
                         state.get(
                             "pending_rows_down",
@@ -257,26 +283,27 @@ def _attach_blink_after_render_hook(
                     target_row = int(state.get("pending_target_row", rows_down) or rows_down)
                     cursor_row = int(state.get("pending_cursor_row", 0) or 0)
                     old_target_row = int(state.get("target_row", target_row) or target_row)
-                    if bool(state.get("visible")):
-                        if desired == "" and old_target_row >= target_row:
-                            _draw_overlay_line(output, "", old_target_row - cursor_row)
-                            state["visible"] = False
-                            state["text"] = ""
-                        elif desired and old_target_row > target_row:
-                            _draw_overlay_line(output, "", old_target_row - cursor_row)
-                        elif desired == "":
-                            state["visible"] = False
-                            state["text"] = ""
-                    # Always redraw when desired text exists: external prints (e.g.
-                    # /chat switch history) may scroll previous overlay away, while
-                    # state still says "visible".
-                    if desired:
-                        _draw_overlay_line(output, desired, rows_down)
-                        state["visible"] = True
-                        state["text"] = desired
-                    state["rows_down"] = rows_down
-                    state["target_row"] = target_row
-                    state["cursor_row"] = cursor_row
+                    if not menu_open:
+                        if bool(state.get("visible")):
+                            if desired == "" and old_target_row >= target_row:
+                                _draw_overlay_line(output, "", old_target_row - cursor_row)
+                                state["visible"] = False
+                                state["text"] = ""
+                            elif desired and old_target_row > target_row:
+                                _draw_overlay_line(output, "", old_target_row - cursor_row)
+                            elif desired == "":
+                                state["visible"] = False
+                                state["text"] = ""
+                        # Always redraw when desired text exists: external prints (e.g.
+                        # /chat switch history) may scroll previous overlay away, while
+                        # state still says "visible".
+                        if desired:
+                            _draw_overlay_line(output, desired, rows_down)
+                            state["visible"] = True
+                            state["text"] = desired
+                        state["rows_down"] = rows_down
+                        state["target_row"] = target_row
+                        state["cursor_row"] = cursor_row
                 except Exception:
                     pass
                 if not _is_vscode_terminal():
