@@ -57,6 +57,9 @@ def _is_usable_rg_executable(candidate: Path) -> bool:
             timeout=2.0,
         )
         return int(getattr(proc, "returncode", 1)) == 0
+    except KeyboardInterrupt:
+        # Treat interrupts as an unusable probe result so cancel flows can exit cleanly.
+        return False
     except Exception:
         return False
 
