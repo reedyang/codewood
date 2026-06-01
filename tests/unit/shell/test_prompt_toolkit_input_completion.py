@@ -821,6 +821,21 @@ class PromptToolkitInputCompletionTests(unittest.TestCase):
         self.assertFalse(handler._shell_mode_active)
         self.assertFalse(handler._shell_mode_auto_by_history)
 
+    def test_sync_shell_mode_from_history_non_bang_disables_manual_shell_mode(self):
+        handler = pti.PromptToolkitInputHandler.__new__(pti.PromptToolkitInputHandler)
+        handler._shell_mode_active = True
+        handler._shell_mode_auto_by_history = False
+        handler._shell_mode_last_working_index = 8
+        handler._shell_mode_history_indices = set()
+        handler._shell_mode_sync_guard = False
+        buf = type("Buffer", (), {"text": "git status", "cursor_position": 10, "working_index": 7})()
+
+        changed = handler._sync_shell_mode_from_buffer(buf)
+
+        self.assertTrue(changed)
+        self.assertFalse(handler._shell_mode_active)
+        self.assertFalse(handler._shell_mode_auto_by_history)
+
     def test_sync_shell_mode_from_slash_history_clears_stale_shell_index(self):
         handler = pti.PromptToolkitInputHandler.__new__(pti.PromptToolkitInputHandler)
         handler._shell_mode_active = True
@@ -888,7 +903,7 @@ class PromptToolkitInputCompletionTests(unittest.TestCase):
         handler._shell_mode_last_working_index = 8
         handler._shell_mode_history_indices = set()
         handler._shell_mode_sync_guard = False
-        buf = type("Buffer", (), {"text": "git status", "cursor_position": 10, "working_index": 7})()
+        buf = type("Buffer", (), {"text": "git status", "cursor_position": 10, "working_index": 8})()
 
         changed = handler._sync_shell_mode_from_buffer(buf)
 

@@ -1452,8 +1452,9 @@ class PromptToolkitInputHandler:
                         self._shell_mode_sync_guard = False
                     changed = True
         else:
-            # Only auto-exit when user actually navigated history away from a bang command.
-            if bool(history_navigated) and active and auto_by_history:
+            # When history navigation lands on a non-shell entry, sync back to
+            # normal mode regardless of how shell mode was entered.
+            if bool(history_navigated) and active:
                 self._shell_mode_active = False
                 self._shell_mode_auto_by_history = False
                 changed = True
