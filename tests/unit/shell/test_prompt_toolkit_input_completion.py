@@ -648,6 +648,42 @@ class PromptToolkitInputCompletionTests(unittest.TestCase):
         self.assertFalse(handler._shell_mode_active)
         self.assertFalse(handler._shell_mode_auto_by_history)
 
+    def test_sync_shell_mode_from_slash_history_clears_stale_shell_index(self):
+        handler = pti.PromptToolkitInputHandler.__new__(pti.PromptToolkitInputHandler)
+        handler._shell_mode_active = True
+        handler._shell_mode_auto_by_history = True
+        handler._shell_mode_last_working_index = 9
+        handler._shell_mode_history_indices = {8}
+        handler._shell_mode_sync_guard = False
+        buf = type("Buffer", (), {"text": "/chat reload", "cursor_position": 12, "working_index": 8})()
+
+        changed = handler._sync_shell_mode_from_buffer(buf)
+
+        self.assertTrue(changed)
+        self.assertFalse(handler._shell_mode_active)
+        self.assertFalse(handler._shell_mode_auto_by_history)
+        self.assertNotIn(8, handler._shell_mode_history_indices)
+        self.assertEqual(buf.text, "/chat reload")
+
+    def test_reset_command_history_clears_shell_mode_history_indices_without_session(self):
+        handler = pti.PromptToolkitInputHandler.__new__(pti.PromptToolkitInputHandler)
+        handler.history = ["!ping example.com"]
+        handler.session = None
+        handler._shell_mode_active = True
+        handler._shell_mode_auto_by_history = True
+        handler._shell_mode_last_working_index = 8
+        handler._shell_mode_history_indices = {8}
+        handler._shell_mode_sync_guard = True
+
+        handler.reset_command_history(["/chat reload"])
+
+        self.assertEqual(handler.history, [])
+        self.assertFalse(handler._shell_mode_active)
+        self.assertFalse(handler._shell_mode_auto_by_history)
+        self.assertIsNone(handler._shell_mode_last_working_index)
+        self.assertEqual(handler._shell_mode_history_indices, set())
+        self.assertFalse(handler._shell_mode_sync_guard)
+
     def test_sync_shell_mode_remembers_normalized_bang_history_index(self):
         handler = pti.PromptToolkitInputHandler.__new__(pti.PromptToolkitInputHandler)
         handler._shell_mode_active = False

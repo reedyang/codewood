@@ -63,6 +63,7 @@ def setup_core_state(agent: Any, startup_work_directory: Path, self_repo_root: P
     agent._interrupt_monitor_refs = 0
     agent._interrupt_monitor_cancel_task_refs = 0
     agent._aborted_process_keys = set()
+    agent._process_interrupt_requested = False
     agent._conversation_interrupt_banner_recent = False
     agent._conversation_interrupt_banner_recent_at = 0.0
 

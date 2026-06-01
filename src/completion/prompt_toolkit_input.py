@@ -1312,6 +1312,10 @@ class PromptToolkitInputHandler:
         known_shell_index = working_index in shell_history_indices
         changed = False
 
+        if trimmed.startswith("/") and known_shell_index:
+            shell_history_indices.discard(working_index)
+            known_shell_index = False
+
         if starts_with_bang and working_index is not None:
             shell_history_indices.add(working_index)
             known_shell_index = True
@@ -1878,6 +1882,11 @@ class PromptToolkitInputHandler:
         Must be called when disk history is cleared; otherwise arrow-key history stays stale in RAM.
         """
         self.history = []
+        self._shell_mode_active = False
+        self._shell_mode_auto_by_history = False
+        self._shell_mode_last_working_index = None
+        self._shell_mode_history_indices = set()
+        self._shell_mode_sync_guard = False
         if not PROMPT_TOOLKIT_AVAILABLE or not getattr(self, "session", None):
             return
         entries = entries if entries is not None else []

@@ -3281,16 +3281,36 @@ class Agent:
             marks = getattr(self, "_aborted_process_keys", None)
             return bool(isinstance(marks, set) and key in marks)
 
-    def _terminate_interruptible_processes(self) -> None:
+    def _mark_process_interrupt_requested(self) -> None:
         lock = getattr(self, "_interrupt_state_lock", None)
         if lock is None:
+            self._process_interrupt_requested = True
             return
+        with lock:
+            self._process_interrupt_requested = True
+
+    def _consume_process_interrupt_requested(self) -> bool:
+        lock = getattr(self, "_interrupt_state_lock", None)
+        if lock is None:
+            wanted = bool(getattr(self, "_process_interrupt_requested", False))
+            self._process_interrupt_requested = False
+            return wanted
+        with lock:
+            wanted = bool(getattr(self, "_process_interrupt_requested", False))
+            self._process_interrupt_requested = False
+            return wanted
+
+    def _terminate_interruptible_processes(self) -> bool:
+        lock = getattr(self, "_interrupt_state_lock", None)
+        if lock is None:
+            return False
         with lock:
             cur = getattr(self, "_interruptible_processes", {})
             if isinstance(cur, dict):
                 procs = list(cur.values())
             else:
                 procs = []
+        requested_any = False
         for p in procs:
             is_running = False
             try:
@@ -3300,9 +3320,15 @@ class Agent:
                 is_running = False
             if not is_running:
                 continue
+            requested_any = True
             terminated = bool(self._terminate_single_process_tree(p))
-            if terminated:
+            try:
+                ended_after_request = hasattr(p, "poll") and p.poll() is not None
+            except Exception:
+                ended_after_request = False
+            if terminated or ended_after_request:
                 self._mark_process_aborted(p)
+        return bool(requested_any)
 
     def _request_task_interrupt(self, source: str = "esc", cancel_task: bool = False) -> None:
         if cancel_task:
@@ -3312,6 +3338,8 @@ class Agent:
                     self._task_interrupt_requested = True
             else:
                 self._task_interrupt_requested = True
+        if not cancel_task:
+            self._mark_process_interrupt_requested()
         self._terminate_interruptible_processes()
         if cancel_task:
             try:
@@ -3876,7 +3904,11 @@ class Agent:
                 # Test doubles and a few Popen-like objects may not accept the
                 # timeout kwarg. Fall back to their blocking wait implementation.
                 return_code = process.wait()
-            aborted_by_user = bool(aborted_by_user or self._consume_process_aborted(process))
+            aborted_by_user = bool(
+                aborted_by_user
+                or self._consume_process_aborted(process)
+                or self._consume_process_interrupt_requested()
+            )
             if aborted_by_user:
                 # Once ESC has terminated the process, let the final abort
                 # renderer own cleanup; residual pipe bytes must not trigger a
@@ -3941,9 +3973,7 @@ class Agent:
                             )
                             or 0
                         )
-                        stream_state["rendered_line_count"] = int(
-                            stream_state.get("rendered_line_count", 0) or 0
-                        ) + rendered
+                        stream_state["rendered_line_count"] = rendered
                         last_displayed_chunk = displayed_stderr if displayed_stderr else displayed_stdout
                         stream_state["cursor_at_line_start"] = not bool(
                             last_displayed_chunk and not str(last_displayed_chunk).endswith("\n")
