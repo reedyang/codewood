@@ -31,6 +31,7 @@ class BangDirectExecutionTests(unittest.TestCase):
         self.agent._interruptible_processes = {}
         self.agent._task_interrupt_requested = False
         self.agent._aborted_process_keys = set()
+        self.agent._process_interrupt_requested = False
         self.agent._last_terminal_block_kind = ""
         self.agent._terminal_cursor_at_line_start = True
 
@@ -718,6 +719,24 @@ class BangDirectExecutionTests(unittest.TestCase):
             self.agent._request_task_interrupt(cancel_task=False)
         mock_terminate.assert_called_once_with()
         self.assertFalse(self.agent._task_interrupt_requested)
+        self.assertTrue(self.agent._consume_process_interrupt_requested())
+
+    def test_non_task_interrupt_marks_direct_shell_even_when_no_process_was_seen(self):
+        self.agent._task_interrupt_requested = False
+        with patch.object(self.agent, "_terminate_interruptible_processes", return_value=False):
+            self.agent._request_task_interrupt(cancel_task=False)
+        self.assertFalse(self.agent._task_interrupt_requested)
+        self.assertTrue(self.agent._consume_process_interrupt_requested())
+
+    def test_task_interrupt_does_not_leave_direct_shell_interrupt_flag(self):
+        self.agent._task_interrupt_requested = False
+        with (
+            patch.object(self.agent, "_terminate_interruptible_processes", return_value=True),
+            patch.dict(sys.modules, {"_thread": types.SimpleNamespace(interrupt_main=lambda: None)}),
+        ):
+            self.agent._request_task_interrupt(cancel_task=True)
+        self.assertTrue(self.agent._consume_task_interrupt_requested())
+        self.assertFalse(self.agent._consume_process_interrupt_requested())
 
     def test_stop_interrupt_monitor_swallows_keyboardinterrupt_from_join(self):
         class _FakeThread:
@@ -840,6 +859,95 @@ class BangDirectExecutionTests(unittest.TestCase):
         self.assertIn("command aborted by user", str(last.get("stdout") or ""))
         self.assertGreaterEqual(int(last.get("rendered_output_lines") or 0), 1)
         self.assertTrue(bool(last.get("cursor_at_line_start", False)))
+
+    @patch("subprocess.Popen")
+    def test_run_direct_shell_abort_reports_final_rendered_lines_only(self, popen_mock):
+        class _FakePipe:
+            def __init__(self):
+                self._chunks = [b"line1\nline2\n"]
+
+            def read(self, _n):
+                if self._chunks:
+                    return self._chunks.pop(0)
+                return b""
+
+            def close(self):
+                return None
+
+        proc = types.SimpleNamespace(
+            wait=lambda: 137,
+            poll=lambda: None,
+            pid=22335,
+            stdout=_FakePipe(),
+            stderr=None,
+        )
+        popen_mock.return_value = proc
+
+        class _TtyBuffer(StringIO):
+            def isatty(self):
+                return True
+
+            def fileno(self):
+                return 1
+
+        with (
+            patch("src.agent.sys.stdout", _TtyBuffer()),
+            patch("src.agent.sys.stderr", _TtyBuffer()),
+            patch.object(self.agent, "_consume_process_aborted", return_value=True),
+            patch("src.actions.command_actions._dynamic_tail_line_limit", return_value=20),
+        ):
+            rc = self.agent._run_direct_shell_with_prefixed_output("echo hi", Path.cwd())
+
+        self.assertEqual(rc, 137)
+        last = getattr(self.agent, "_last_direct_shell_execution", {})
+        self.assertEqual(int(last.get("rendered_output_lines") or 0), 3)
+        self.assertTrue(bool(last.get("cursor_at_line_start", False)))
+
+    @patch("subprocess.Popen")
+    def test_run_direct_shell_abort_uses_interrupt_request_when_abort_mark_was_missed(self, popen_mock):
+        class _FakePipe:
+            def __init__(self):
+                self._chunks = [b"line1\n"]
+
+            def read(self, _n):
+                if self._chunks:
+                    return self._chunks.pop(0)
+                return b""
+
+            def close(self):
+                return None
+
+        proc = types.SimpleNamespace(
+            wait=lambda timeout=None: 137,
+            poll=lambda: 137,
+            pid=22336,
+            stdout=_FakePipe(),
+            stderr=None,
+        )
+        popen_mock.return_value = proc
+
+        class _TtyBuffer(StringIO):
+            def isatty(self):
+                return True
+
+            def fileno(self):
+                return 1
+
+        self.agent._process_interrupt_requested = True
+        out_buf = _TtyBuffer()
+        with (
+            patch("src.agent.sys.stdout", out_buf),
+            patch("src.agent.sys.stderr", _TtyBuffer()),
+            patch.object(self.agent, "_consume_process_aborted", return_value=False),
+            patch("src.actions.command_actions._dynamic_tail_line_limit", return_value=20),
+        ):
+            rc = self.agent._run_direct_shell_with_prefixed_output("echo hi", Path.cwd())
+
+        self.assertEqual(rc, 137)
+        self.assertIn("command aborted by user", out_buf.getvalue())
+        last = getattr(self.agent, "_last_direct_shell_execution", {})
+        self.assertTrue(bool(last.get("aborted_by_user", False)))
+        self.assertIn("line1\ncommand aborted by user\n", str(last.get("stdout") or ""))
 
     @patch("subprocess.Popen")
     def test_run_direct_shell_abort_line_is_newline_separated_in_history_when_prev_output_has_no_newline(

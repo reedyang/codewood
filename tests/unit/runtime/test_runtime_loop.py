@@ -13,6 +13,7 @@ from src.runtime.runtime_loop import (
     _format_worked_for_summary_line,
     _format_startup_directory,
     _model_tool_result_was_aborted,
+    _render_aborted_direct_shell_feedback,
     _refresh_context_usage_after_task_boundary,
     _resolve_worked_summary_terminal_width,
     _sanitize_prompt_pollution,
@@ -99,6 +100,48 @@ class RuntimeLoopTests(unittest.TestCase):
                 "read",
                 {"success": False, "output": "command aborted by user\n"},
             )
+        )
+
+    def test_render_aborted_direct_shell_feedback_repaints_then_prints_banner(self):
+        calls = []
+
+        class _Agent:
+            def _repaint_direct_shell_command_feedback_if_failed(
+                self,
+                command,
+                rendered_output_lines,
+                cursor_at_line_start,
+                failed,
+            ):
+                calls.append(
+                    (
+                        "repaint",
+                        command,
+                        rendered_output_lines,
+                        cursor_at_line_start,
+                        failed,
+                    )
+                )
+
+            def _print_conversation_interrupted_banner(self):
+                calls.append(("banner",))
+                return 3
+
+        agent = _Agent()
+
+        _render_aborted_direct_shell_feedback(
+            agent,
+            "ping www.baidu.com",
+            {"rendered_output_lines": 4, "cursor_at_line_start": True},
+        )
+
+        self.assertTrue(bool(getattr(agent, "_suppress_next_prompt_chat_reload_once", False)))
+        self.assertEqual(
+            calls,
+            [
+                ("repaint", "ping www.baidu.com", 4, True, True),
+                ("banner",),
+            ],
         )
 
     def test_build_minimal_verification_command_prefers_py_compile(self):

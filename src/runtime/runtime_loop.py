@@ -459,6 +459,41 @@ def _reload_chat_history_after_aborted_command(agent: Any) -> None:
         pass
 
 
+def _render_aborted_direct_shell_feedback(agent: Any, command: str, result: Any) -> None:
+    try:
+        agent._suppress_next_prompt_chat_reload_once = True
+    except Exception:
+        pass
+    rendered_lines = 0
+    cursor_at_line_start = True
+    if isinstance(result, dict):
+        try:
+            rendered_lines = int(result.get("rendered_output_lines") or 0)
+        except Exception:
+            rendered_lines = 0
+        try:
+            cursor_at_line_start = bool(result.get("cursor_at_line_start", True))
+        except Exception:
+            cursor_at_line_start = True
+    repaint = getattr(agent, "_repaint_direct_shell_command_feedback_if_failed", None)
+    if callable(repaint):
+        try:
+            repaint(
+                command,
+                rendered_output_lines=rendered_lines,
+                cursor_at_line_start=cursor_at_line_start,
+                failed=True,
+            )
+        except Exception:
+            pass
+    banner = getattr(agent, "_print_conversation_interrupted_banner", None)
+    if callable(banner):
+        try:
+            banner()
+        except Exception:
+            pass
+
+
 def _tool_change_and_verification_hints(
     tool_name: str,
     args: Dict[str, Any],
@@ -1252,7 +1287,7 @@ def run_agent_loop(agent: Any):
                     aborted_direct_result = self._is_direct_shell_result_aborted(last_direct)
                     self._show_separator_next_prompt = not aborted_direct_result
                     if aborted_direct_result:
-                        _reload_chat_history_after_aborted_command(self)
+                        _render_aborted_direct_shell_feedback(self, ui, last_direct)
                     continue
 
                 user_input_cmd = ui
@@ -1412,7 +1447,9 @@ def run_agent_loop(agent: Any):
                     )
                     self._show_separator_next_prompt = not aborted_direct_result
                     if aborted_direct_result:
-                        _reload_chat_history_after_aborted_command(self)
+                        _render_aborted_direct_shell_feedback(
+                            self, ui, current_direct_result
+                        )
                     continue
 
                 # e.g. !git status — not in the small whitelist but still direct shell
@@ -1483,7 +1520,7 @@ def run_agent_loop(agent: Any):
                 aborted_direct_result = self._is_direct_shell_result_aborted(last_direct)
                 self._show_separator_next_prompt = not aborted_direct_result
                 if aborted_direct_result:
-                    _reload_chat_history_after_aborted_command(self)
+                    _render_aborted_direct_shell_feedback(self, ui, last_direct)
                 continue
 
             # Natural-language turn: rewrite prompt line as chat-style user line.
