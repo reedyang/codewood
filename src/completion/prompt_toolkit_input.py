@@ -97,6 +97,50 @@ def _get_system_terminal_columns(default: int = 0) -> int:
     return int(default or 0)
 
 
+def _get_buffer_cursor_row_and_line_count(app: Any) -> Tuple[int, int]:
+    try:
+        buf = getattr(app, "current_buffer", None)
+        if buf is None:
+            return 0, 1
+        doc = getattr(buf, "document", None)
+        if doc is not None:
+            try:
+                cursor_row = int(getattr(doc, "cursor_position_row", 0) or 0)
+                line_count_attr = getattr(doc, "line_count", None)
+                line_count = (
+                    int(line_count_attr())
+                    if callable(line_count_attr)
+                    else int(line_count_attr or 0)
+                )
+                if line_count > 0:
+                    return max(0, cursor_row), max(1, line_count)
+            except Exception:
+                pass
+        text = str(getattr(buf, "text", "") or "")
+        cursor_position = int(getattr(buf, "cursor_position", len(text)) or 0)
+        cursor_position = max(0, min(cursor_position, len(text)))
+        cursor_row = text[:cursor_position].count("\n")
+        line_count = text.count("\n") + 1
+        return max(0, cursor_row), max(1, line_count)
+    except Exception:
+        return 0, 1
+
+
+def _get_buffer_rows_below_cursor(app: Any) -> int:
+    try:
+        cursor_row, line_count = _get_buffer_cursor_row_and_line_count(app)
+        return max(0, line_count - cursor_row - 1)
+    except Exception:
+        return 0
+
+
+def _get_status_overlay_position(app: Any) -> Tuple[int, int, int]:
+    cursor_row, line_count = _get_buffer_cursor_row_and_line_count(app)
+    target_row = max(0, line_count - 1) + 2
+    rows_down = max(0, target_row - cursor_row)
+    return rows_down, target_row, cursor_row
+
+
 def _attach_blink_after_render_hook(
     session,
     status_provider: Optional[Callable[[], str]] = None,
@@ -117,12 +161,29 @@ def _attach_blink_after_render_hook(
     initial_cols = _get_system_terminal_columns(default=0)
     if initial_cols <= 0:
         initial_cols = _get_output_columns_from_obj(output, default=0)
-    state = {"visible": False, "text": "", "desired": "", "last_cols": max(0, initial_cols)}
+    state = {
+        "visible": False,
+        "text": "",
+        "desired": "",
+        "last_cols": max(0, initial_cols),
+        "rows_down": 2,
+        "target_row": 2,
+        "cursor_row": 0,
+        "pending_rows_down": 2,
+        "pending_target_row": 2,
+        "pending_cursor_row": 0,
+    }
 
-    def _draw_overlay_line(output, text: str) -> None:
+    def _draw_overlay_line(output, text: str, row_delta: int) -> None:
         # 使用保存/恢复光标，仅在提示符下方两行写入状态栏。
+        row_delta = int(row_delta or 0)
         output.write_raw("\x1b7")
-        output.write_raw("\x1b[2B\r")
+        if row_delta > 0:
+            output.write_raw(f"\x1b[{row_delta}B\r")
+        elif row_delta < 0:
+            output.write_raw(f"\x1b[{abs(row_delta)}A\r")
+        else:
+            output.write_raw("\r")
         output.write_raw("\x1b[2K")
         if text:
             output.write_raw(text)
@@ -133,6 +194,10 @@ def _attach_blink_after_render_hook(
             desired = str(status_provider() or "") if callable(status_provider) else ""
             state["desired"] = desired
             output = getattr(_app, "output", None)
+            rows_down, target_row, cursor_row = _get_status_overlay_position(_app)
+            state["pending_rows_down"] = rows_down
+            state["pending_target_row"] = target_row
+            state["pending_cursor_row"] = cursor_row
             try:
                 cols = _get_system_terminal_columns(default=0)
                 if cols <= 0:
@@ -173,17 +238,6 @@ def _attach_blink_after_render_hook(
                         state["last_cols"] = cols
             except Exception:
                 pass
-            if (
-                desired == ""
-                and state["visible"]
-                and output is not None
-                and hasattr(output, "write_raw")
-                and hasattr(output, "flush")
-            ):
-                _draw_overlay_line(output, "")
-                output.flush()
-                state["visible"] = False
-                state["text"] = ""
         except Exception:
             pass
 
@@ -193,13 +247,36 @@ def _attach_blink_after_render_hook(
             if output is not None and hasattr(output, "write_raw") and hasattr(output, "flush"):
                 try:
                     desired = str(state.get("desired") or "")
+                    rows_down = int(
+                        state.get(
+                            "pending_rows_down",
+                            2 + _get_buffer_rows_below_cursor(_app),
+                        )
+                        or 0
+                    )
+                    target_row = int(state.get("pending_target_row", rows_down) or rows_down)
+                    cursor_row = int(state.get("pending_cursor_row", 0) or 0)
+                    old_target_row = int(state.get("target_row", target_row) or target_row)
+                    if bool(state.get("visible")):
+                        if desired == "" and old_target_row >= target_row:
+                            _draw_overlay_line(output, "", old_target_row - cursor_row)
+                            state["visible"] = False
+                            state["text"] = ""
+                        elif desired and old_target_row > target_row:
+                            _draw_overlay_line(output, "", old_target_row - cursor_row)
+                        elif desired == "":
+                            state["visible"] = False
+                            state["text"] = ""
                     # Always redraw when desired text exists: external prints (e.g.
                     # /chat switch history) may scroll previous overlay away, while
                     # state still says "visible".
                     if desired:
-                        _draw_overlay_line(output, desired)
+                        _draw_overlay_line(output, desired, rows_down)
                         state["visible"] = True
                         state["text"] = desired
+                    state["rows_down"] = rows_down
+                    state["target_row"] = target_row
+                    state["cursor_row"] = cursor_row
                 except Exception:
                     pass
                 if not _is_vscode_terminal():
