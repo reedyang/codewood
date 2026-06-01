@@ -378,12 +378,23 @@ class FileCompleter(Completer):
         slash_skill_commands: Optional[List[str]] = None,
         slash_mcp_commands: Optional[List[str]] = None,
         slash_dynamic_rules: Optional[List[Dict[str, Any]]] = None,
+        shell_mode_provider: Optional[Callable[[], bool]] = None,
     ):
         self.work_directory = work_directory
         self.workspace_directory = workspace_directory or work_directory
         self.slash_skill_commands = slash_skill_commands or []
         self.slash_mcp_commands = slash_mcp_commands or []
         self.slash_dynamic_rules = slash_dynamic_rules or []
+        self.shell_mode_provider = shell_mode_provider
+
+    def _is_shell_mode_active(self) -> bool:
+        provider = getattr(self, "shell_mode_provider", None)
+        if not callable(provider):
+            return False
+        try:
+            return bool(provider())
+        except Exception:
+            return False
 
     def _matching_base_directory(self) -> Path:
         base = self.workspace_directory or self.work_directory
@@ -569,56 +580,58 @@ class FileCompleter(Completer):
                         )
                     return
 
-        # Slash built-ins: always provide command completion when applicable.
-        # Special-case lone "/" on non-Windows to avoid enumerating root files.
-        idx, slash_part = self._slash_fragment_for_completion(text)
-        if idx >= 0 and slash_part:
-            delayed_groups = self._resolve_dynamic_groups()
-            builtin_matches = slash_builtin_completions(
-                slash_part,
-                dynamic_commands=(
-                    self.slash_skill_commands
-                    + self.slash_mcp_commands
-                ),
-                delayed_dynamic_groups=delayed_groups,
-            )
-            if builtin_matches:
-                # When delayed dynamic completion is active, hide the trigger
-                # command itself from menu (e.g. "/workspace switch ").
-                active_trigger_norms = {
-                    str(trigger or "").rstrip().lower()
-                    for trigger, _ in delayed_groups
-                    if str(trigger or "").strip()
-                    and slash_part.lower().startswith(str(trigger or "").lower())
-                }
-                if active_trigger_norms:
-                    builtin_matches = [
-                        mc
-                        for mc in builtin_matches
-                        if str(mc or "").rstrip().lower() not in active_trigger_norms
-                    ]
+        shell_mode_active = self._is_shell_mode_active()
+        if not shell_mode_active:
+            # Slash built-ins: always provide command completion when applicable.
+            # Special-case lone "/" on non-Windows to avoid enumerating root files.
+            idx, slash_part = self._slash_fragment_for_completion(text)
+            if idx >= 0 and slash_part:
+                delayed_groups = self._resolve_dynamic_groups()
+                builtin_matches = slash_builtin_completions(
+                    slash_part,
+                    dynamic_commands=(
+                        self.slash_skill_commands
+                        + self.slash_mcp_commands
+                    ),
+                    delayed_dynamic_groups=delayed_groups,
+                )
                 if builtin_matches:
-                    spos = -len(slash_part)
-                    seen = set()
-                    all_delayed_groups = delayed_groups
-                    for mc in builtin_matches:
-                        if mc in seen:
-                            continue
-                        seen.add(mc)
-                        display_text = self._dynamic_completion_display(
-                            slash_part, mc, all_delayed_groups
-                        )
-                        yield Completion(
-                            mc,
-                            start_position=spos,
-                            display=display_text,
-                        )
+                    # When delayed dynamic completion is active, hide the trigger
+                    # command itself from menu (e.g. "/workspace switch ").
+                    active_trigger_norms = {
+                        str(trigger or "").rstrip().lower()
+                        for trigger, _ in delayed_groups
+                        if str(trigger or "").strip()
+                        and slash_part.lower().startswith(str(trigger or "").lower())
+                    }
+                    if active_trigger_norms:
+                        builtin_matches = [
+                            mc
+                            for mc in builtin_matches
+                            if str(mc or "").rstrip().lower() not in active_trigger_norms
+                        ]
+                    if builtin_matches:
+                        spos = -len(slash_part)
+                        seen = set()
+                        all_delayed_groups = delayed_groups
+                        for mc in builtin_matches:
+                            if mc in seen:
+                                continue
+                            seen.add(mc)
+                            display_text = self._dynamic_completion_display(
+                                slash_part, mc, all_delayed_groups
+                            )
+                            yield Completion(
+                                mc,
+                                start_position=spos,
+                                display=display_text,
+                            )
+                        return
+                if slash_part == "/":
                     return
-            if slash_part == "/":
-                return
-            # Keep Windows behavior: slash prefix is command namespace, not file path.
-            if os.name == "nt":
-                return
+                # Keep Windows behavior: slash prefix is command namespace, not file path.
+                if os.name == "nt":
+                    return
 
         # Generic token-based file/path completion (from last whitespace boundary)
         if token:
@@ -1178,6 +1191,9 @@ class PromptToolkitInputHandler:
                 slash_skill_commands,
                 slash_mcp_commands,
                 slash_dynamic_rules,
+                shell_mode_provider=lambda: bool(
+                    getattr(self, "_shell_mode_active", False)
+                ),
             )
             self._key_bindings = self._create_key_bindings()
             self._pt_history = InMemoryHistory()
@@ -1239,10 +1255,10 @@ class PromptToolkitInputHandler:
                     buf = getattr(app, "current_buffer", None)
                     if (
                         buf is not None
-                        and str(getattr(buf, "text", "") or "")
-                        and (not bool(getattr(self, "_shell_mode_active", False)))
+                        and getattr(buf, "complete_state", None) is not None
                     ):
-                        # 输入中隐藏状态栏，清空输入后再显示。
+                        # Completion menus occupy the same visual area as the
+                        # overlay status line; hide only while the menu is open.
                         return ""
             status_line = str(self._status_bar_text or "")
             if bool(getattr(self, "_shell_mode_active", False)):
