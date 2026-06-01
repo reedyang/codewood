@@ -212,6 +212,28 @@ class PromptToolkitInputCompletionTests(unittest.TestCase):
         self.assertIn("from_workspace.txt", out)
         self.assertNotIn("from_work_dir.txt", out)
 
+    def test_shell_mode_suppresses_slash_command_completions(self):
+        with tempfile.TemporaryDirectory() as td:
+            completer = FileCompleter(
+                Path(td),
+                slash_skill_commands=["/skill/demo"],
+                shell_mode_provider=lambda: True,
+            )
+            with (
+                patch.object(completer, "_get_path_completions", return_value=[]),
+                patch.object(completer, "_get_local_completions", return_value=[]),
+            ):
+                out = list(completer.get_completions(_Doc("/sk"), None))
+        self.assertEqual(out, [])
+
+    def test_shell_mode_keeps_filename_completions(self):
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            (base / "demo.txt").write_text("x", encoding="utf-8")
+            completer = FileCompleter(base, shell_mode_provider=lambda: True)
+            out = list(completer.get_completions(_Doc("de"), None))
+        self.assertTrue(any(getattr(c, "text", "") == "demo.txt" for c in out))
+
     def test_get_input_uses_multiline_prompt_and_two_space_continuation(self):
         handler = pti.PromptToolkitInputHandler.__new__(pti.PromptToolkitInputHandler)
         handler.session = _FakeSession("line1\nline2")
@@ -416,6 +438,39 @@ class PromptToolkitInputCompletionTests(unittest.TestCase):
             len(plain) - len(plain.rstrip(" ")),
             pti._shell_mode_effective_right_padding(),
         )
+
+    def test_status_line_stays_visible_while_typing_without_completion_menu(self):
+        handler = pti.PromptToolkitInputHandler.__new__(pti.PromptToolkitInputHandler)
+        buf = type("Buffer", (), {"text": "hello", "complete_state": None})()
+        app = type("App", (), {"current_buffer": buf})()
+        handler.session = type("Session", (), {"app": app})()
+        handler._status_bar_enabled = True
+        handler._status_bar_text = "status"
+        handler._shell_mode_active = False
+
+        self.assertEqual(handler._status_line_for_overlay(), "status")
+
+    def test_status_line_hides_while_completion_menu_is_open(self):
+        handler = pti.PromptToolkitInputHandler.__new__(pti.PromptToolkitInputHandler)
+        buf = type("Buffer", (), {"text": "hello", "complete_state": object()})()
+        app = type("App", (), {"current_buffer": buf})()
+        handler.session = type("Session", (), {"app": app})()
+        handler._status_bar_enabled = True
+        handler._status_bar_text = "status"
+        handler._shell_mode_active = False
+
+        self.assertEqual(handler._status_line_for_overlay(), "")
+
+    def test_shell_mode_status_line_hides_while_completion_menu_is_open(self):
+        handler = pti.PromptToolkitInputHandler.__new__(pti.PromptToolkitInputHandler)
+        buf = type("Buffer", (), {"text": "de", "complete_state": object()})()
+        app = type("App", (), {"current_buffer": buf})()
+        handler.session = type("Session", (), {"app": app})()
+        handler._status_bar_enabled = True
+        handler._status_bar_text = "status"
+        handler._shell_mode_active = True
+
+        self.assertEqual(handler._status_line_for_overlay(), "")
 
     def test_shell_mode_submission_prefixes_command_with_bang(self):
         handler = pti.PromptToolkitInputHandler.__new__(pti.PromptToolkitInputHandler)
