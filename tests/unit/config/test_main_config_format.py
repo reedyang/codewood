@@ -30,6 +30,7 @@ class MainConfigFormatTests(unittest.TestCase):
         self.assertEqual(model_config["params"]["models"][0], "gpt-oss-120b")
         self.assertEqual(model_config["params"]["model"], "gpt-oss-120b")
         self.assertEqual(model_config["params"]["context_window"], 128000)
+        self.assertFalse(model_config["params"]["use_simulated_tools"])
 
     def test_supports_object_model_with_numeric_context_window(self):
         provider, model_name, model_config, error = _extract_model_runtime_config(
@@ -52,6 +53,7 @@ class MainConfigFormatTests(unittest.TestCase):
         self.assertEqual(model_name, "gpt-oss-120b")
         self.assertEqual(model_config["params"]["models"], ["gpt-oss-120b", "gpt-4o-mini"])
         self.assertEqual(model_config["params"]["context_window"], 64000)
+        self.assertFalse(model_config["params"]["use_simulated_tools"])
 
     def test_supports_k_suffix_context_window(self):
         _, _, model_config, error = _extract_model_runtime_config(
@@ -88,6 +90,28 @@ class MainConfigFormatTests(unittest.TestCase):
         )
         self.assertIsNone(error)
         self.assertEqual(model_config["params"]["context_window"], 128000)
+
+    def test_supports_use_simulated_tools_flag(self):
+        _, _, model_config, error = _extract_model_runtime_config(
+            {
+                "model_providers": [
+                    {
+                        "provider": "openai",
+                        "params": {
+                            "models": [
+                                {
+                                    "name": "gpt-oss-120b",
+                                    "context_window": 128000,
+                                    "use_simulated_tools": "true",
+                                },
+                            ]
+                        },
+                    }
+                ]
+            }
+        )
+        self.assertIsNone(error)
+        self.assertTrue(model_config["params"]["use_simulated_tools"])
 
     def test_requires_model_providers(self):
         provider, model_name, model_config, error = _extract_model_runtime_config({})

@@ -98,6 +98,8 @@ class AIOrchestrator:
                 session_summary_mode=call_ctx.session_summary_mode,
                 memory_query_expansion_mode=call_ctx.memory_query_expansion_mode,
                 domain_classifier_mode=call_ctx.domain_classifier_mode,
+                tool_schemas=call_ctx.tool_schemas,
+                tool_choice=call_ctx.tool_choice,
             )
             return call_ai_with_provider(
                 context=provider_ctx,

@@ -1,11 +1,11 @@
 ## 工具目录（通过提示词注入）
 
-你必须仅输出一个 JSON 对象来选择工具：`{"tool":"name","args":{...}}`。
-其中 **`name` 只能**来自本文件末尾 **Available tools** 列表（对应 `src/tools/tools.jsonc`）或通过 `mcp_call_tool` 调用的 MCP 工具名。**禁止**虚构名称（如 `weather`、`get_forecast`），也**禁止**把 Agent Skills 的目录名 `skill_id` 当作 `tool`：若任务命中技能且当前会话尚未注入该 skill 的正文，先用 **`request_skill_prompt`** 加载该 `skill_id`；若已注入（例如用户通过 `/skills/<skill-name>` 显式启用），默认不要重复调用 `request_skill_prompt`，直接按 SKILL 执行 `shell` 等业务工具。仅当系统提示明确为「分段注入」且确需后续内容时，才可按需调用 `{"tool":"request_skill_prompt","args":{"skill_id":"...","section":n}}` 或 `{"tool":"request_skill_prompt","args":{"skill_id":"...","full":true}}`。
-每一轮回复都必须包含且仅包含一个工具调用 JSON；如果有自然语言内容，必须把该 JSON 放在回复结尾。
-首轮回复是硬约束：对于需要两步及以上完成的任务，首轮必须先简要说明将要完成的目标事项，再给出 Step 1..N 的步骤编排和状态，最后给本轮唯一工具调用 JSON。
-多步任务必须先输出“将要完成哪些目标”的简要说明，再输出任务编排（Step 1..N + 状态），再给本轮唯一工具调用 JSON。
-每次收到工具结果后，先更新步骤状态，再输出下一条工具调用 JSON。
+工具调用格式由当前轮系统/运行时指令明确给出，必须严格按当前指令执行。
+下文若出现 JSON 示例，仅用于表达参数语义；实际调用格式始终以当前轮系统/运行时指令为准。
+其中 **`name` 只能**来自本文件末尾 **Available tools** 列表（对应 `src/tools/tools.jsonc`）或通过 `mcp_call_tool` 调用的 MCP 工具名。**禁止**虚构名称（如 `weather`、`get_forecast`），也**禁止**把 Agent Skills 的目录名 `skill_id` 当作 `tool`：若任务命中技能且当前会话尚未注入该 skill 的正文，先用 **`request_skill_prompt`** 加载该 `skill_id`；若已注入（例如用户通过 `/skills/<skill-name>` 显式启用），默认不要重复调用 `request_skill_prompt`，直接按 SKILL 执行 `shell` 等业务工具。仅当系统提示明确为「分段注入」且确需后续内容时，才可按需调用 `request_skill_prompt`（携带 `section` / `full`）。
+首轮回复是硬约束：对于需要两步及以上完成的任务，首轮必须先简要说明将要完成的目标事项，再给出 Step 1..N 的步骤编排和状态，最后给本轮唯一工具调用。
+多步任务必须先输出“将要完成哪些目标”的简要说明，再输出任务编排（Step 1..N + 状态），再给本轮唯一工具调用。
+每次收到工具结果后，先更新步骤状态，再给出下一条工具调用。
 若本轮编排了 Step 1..N 且后续步涉及已点名的 skill（例如已 `request_skill_prompt` 的 `skill-a`/`skill-b`）或其它工具/MCP，**禁止**在前几步成功后就 `done`；须执行完所列步骤，或显式说明修订计划的原因后再结束。
 对于大工程代码理解/修改任务（跨模块、定位调用链、涉及多个候选目录），若当前不在 Default workspace 且该工具可用，优先先调用 `project_context_search` 获取候选文件与符号，再决定 `shell` 的下一步，避免盲目全局扫描。
 当任务完成时输出 `done`。若本轮未修改文件，可输出：`{"tool":"done","args":{}}`；若本轮修改了文件，必须输出：`{"tool":"done","args":{"reviewed_files":["<file1>","<file2>"]}}`，且 `reviewed_files` 需覆盖所有已修改文件。
@@ -28,7 +28,7 @@
 你必须判断补充信息与原始需求的相关性：若完全无关，调用 `task_changed` 切换任务；
 若相关但仍不充分，可以再次调用 `ask_more_info`。
 `task_changed` 用法：`{"tool":"task_changed","args":{"new_task":"<新的任务陈述>","reason":"<可选>"}}`。
-选择工具时不要输出 Markdown 代码块，也不要附加额外解释。
+选择工具时不要输出与当前工具调用格式冲突的内容，也不要附加无关解释。
 
 文本文件操作规则（强制）：
 
@@ -131,9 +131,7 @@
 Step 1 [completed]: <已完成步骤>
 Step 2 [in_progress]: <当前步骤>
 
-```json
-{"tool":"<tool_name>","args":{...}}
-```
+随后给出本轮唯一工具调用（格式以当前轮系统/运行时指令为准）。
 
 ## `shell` 与技能包 `SKILL.md` frontmatter（扩展输出 / 宿主无关约定）
 

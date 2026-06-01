@@ -39,6 +39,8 @@ class AICallContext:
     image_path: Optional[str] = None
     history_user_input: Optional[str] = None
     history_skip_user: bool = False
+    tool_schemas: Optional[List[Dict[str, Any]]] = None
+    tool_choice: Any = None
 
 
 @dataclass(frozen=True)
@@ -56,6 +58,8 @@ class ProviderCallContext:
     session_summary_mode: bool
     memory_query_expansion_mode: bool
     domain_classifier_mode: bool
+    tool_schemas: Optional[List[Dict[str, Any]]] = None
+    tool_choice: Any = None
 
 
 class OpenAIRequestError(RuntimeError):
@@ -344,20 +348,97 @@ def _normalize_additional_drop_params(raw: Any) -> List[str]:
     return out
 
 
+def _normalize_openai_tool_schemas(raw_tools: Any, api_kind: str) -> List[Dict[str, Any]]:
+    if not isinstance(raw_tools, list):
+        return []
+    out: List[Dict[str, Any]] = []
+    for item in raw_tools:
+        if not isinstance(item, dict):
+            continue
+        item_type = str(item.get("type") or "function").strip().lower()
+        if item_type != "function":
+            continue
+        fn = item.get("function")
+        fn_obj = fn if isinstance(fn, dict) else item
+        fn_name = str(fn_obj.get("name") or "").strip()
+        if not fn_name:
+            continue
+        fn_desc = str(fn_obj.get("description") or "").strip()
+        fn_params = fn_obj.get("parameters")
+        if not isinstance(fn_params, dict):
+            fn_params = {"type": "object", "properties": {}}
+        if api_kind == "responses":
+            normalized: Dict[str, Any] = {
+                "type": "function",
+                "name": fn_name,
+                "parameters": fn_params,
+            }
+            if fn_desc:
+                normalized["description"] = fn_desc
+            out.append(normalized)
+            continue
+        # chat/completions
+        fn_payload: Dict[str, Any] = {
+            "name": fn_name,
+            "parameters": fn_params,
+        }
+        if fn_desc:
+            fn_payload["description"] = fn_desc
+        out.append({"type": "function", "function": fn_payload})
+    return out
+
+
+def _normalize_openai_tool_choice(raw_tool_choice: Any, api_kind: str) -> Any:
+    if raw_tool_choice is None:
+        return None
+    if isinstance(raw_tool_choice, str):
+        return raw_tool_choice.strip() or None
+    if not isinstance(raw_tool_choice, dict):
+        return None
+
+    choice_type = str(raw_tool_choice.get("type") or "").strip().lower()
+    if choice_type != "function":
+        return raw_tool_choice
+
+    if api_kind == "responses":
+        fn_name = ""
+        fn_node = raw_tool_choice.get("function")
+        if isinstance(fn_node, dict):
+            fn_name = str(fn_node.get("name") or "").strip()
+        if not fn_name:
+            fn_name = str(raw_tool_choice.get("name") or "").strip()
+        if not fn_name:
+            return None
+        return {"type": "function", "name": fn_name}
+
+    # chat/completions
+    fn_node = raw_tool_choice.get("function")
+    if isinstance(fn_node, dict):
+        fn_name = str(fn_node.get("name") or "").strip()
+        if fn_name:
+            return {"type": "function", "function": {"name": fn_name}}
+    fn_name = str(raw_tool_choice.get("name") or "").strip()
+    if fn_name:
+        return {"type": "function", "function": {"name": fn_name}}
+    return None
+
+
 def _merge_default_drop_params(
     payload: Dict[str, Any], configured_drop_params: List[str]
 ) -> List[str]:
     out: List[str] = []
     seen = set()
+    tools_value = payload.get("tools")
+    has_non_empty_tools = isinstance(tools_value, list) and len(tools_value) > 0
+
     for item in configured_drop_params:
         key = str(item).strip()
         if not key or key in seen:
             continue
+        if has_non_empty_tools and key == "tools":
+            continue
         seen.add(key)
         out.append(key)
-
-    tools_value = payload.get("tools")
-    has_non_empty_tools = isinstance(tools_value, list) and len(tools_value) > 0
     if not has_non_empty_tools and "tools" not in seen:
         out.append("tools")
     return out
@@ -471,7 +552,12 @@ def _build_openai_payload(
     memory_query_expansion_mode: bool,
     domain_classifier_mode: bool,
     additional_drop_params: List[str],
+    tool_schemas: Optional[List[Dict[str, Any]]],
+    tool_choice: Any,
 ) -> Dict[str, Any]:
+    tools_payload = _normalize_openai_tool_schemas(tool_schemas, api_kind=api_kind)
+    tool_choice_payload = _normalize_openai_tool_choice(tool_choice, api_kind=api_kind)
+
     if api_kind == "responses":
         payload: Dict[str, Any] = {
             "model": model_name,
@@ -483,6 +569,10 @@ def _build_openai_payload(
             ),
             "stream": stream,
         }
+        if tools_payload:
+            payload["tools"] = tools_payload
+            if tool_choice_payload is not None:
+                payload["tool_choice"] = tool_choice_payload
         if session_summary_mode or memory_query_expansion_mode or domain_classifier_mode:
             payload["max_output_tokens"] = 512
         if memory_query_expansion_mode or domain_classifier_mode:
@@ -497,6 +587,10 @@ def _build_openai_payload(
         return payload
 
     payload = {"model": model_name, "messages": messages, "stream": stream}
+    if tools_payload:
+        payload["tools"] = tools_payload
+        if tool_choice_payload is not None:
+            payload["tool_choice"] = tool_choice_payload
     if session_summary_mode or memory_query_expansion_mode or domain_classifier_mode:
         payload["max_tokens"] = 512
     if memory_query_expansion_mode or domain_classifier_mode:
@@ -564,6 +658,8 @@ def _call_openai_once(
     memory_query_expansion_mode: bool,
     domain_classifier_mode: bool,
     additional_drop_params: List[str],
+    tool_schemas: Optional[List[Dict[str, Any]]],
+    tool_choice: Any,
     append_history: Callable[[str], None],
 ):
     payload = _build_openai_payload(
@@ -578,6 +674,8 @@ def _call_openai_once(
         memory_query_expansion_mode=memory_query_expansion_mode,
         domain_classifier_mode=domain_classifier_mode,
         additional_drop_params=additional_drop_params,
+        tool_schemas=tool_schemas,
+        tool_choice=tool_choice,
     )
     resp = _post_openai_request(url=url, headers=headers, payload=payload, stream=stream)
     if stream:
@@ -615,6 +713,8 @@ def _call_openai_with_suffix_strategy(
     memory_query_expansion_mode: bool,
     domain_classifier_mode: bool,
     additional_drop_params: List[str],
+    tool_schemas: Optional[List[Dict[str, Any]]],
+    tool_choice: Any,
     append_history: Callable[[str], None],
 ):
     prefer_no_suffix = _openai_get_prefer_no_suffix(
@@ -654,6 +754,8 @@ def _call_openai_with_suffix_strategy(
             memory_query_expansion_mode=memory_query_expansion_mode,
             domain_classifier_mode=domain_classifier_mode,
             additional_drop_params=additional_drop_params,
+            tool_schemas=tool_schemas,
+            tool_choice=tool_choice,
             append_history=append_history,
         )
     except Exception as e:
@@ -695,6 +797,8 @@ def _call_openai_with_suffix_strategy(
             memory_query_expansion_mode=memory_query_expansion_mode,
             domain_classifier_mode=domain_classifier_mode,
             additional_drop_params=additional_drop_params,
+            tool_schemas=tool_schemas,
+            tool_choice=tool_choice,
             append_history=append_history,
         )
         if primary_append and not secondary_append:
@@ -752,20 +856,53 @@ def _extract_message_from_openai_response_data(data: Any) -> Dict[str, Any]:
 
     output = data.get("output")
     if isinstance(output, list):
+        content_text = ""
+        role = "assistant"
+        tool_calls: List[Dict[str, Any]] = []
         for item in output:
             if not isinstance(item, dict):
                 continue
-            if str(item.get("type") or "") != "message":
+            item_type = str(item.get("type") or "").strip().lower()
+            if item_type == "message":
+                role = str(item.get("role") or role)
+                piece = _extract_text_from_response_content(item.get("content"))
+                if piece:
+                    if content_text:
+                        content_text += "\n"
+                    content_text += piece
                 continue
-            content_text = _extract_text_from_response_content(item.get("content"))
-            if content_text:
-                return {"role": str(item.get("role") or "assistant"), "content": content_text}
-        for item in output:
-            if not isinstance(item, dict):
-                continue
-            content_text = _extract_text_from_response_content(item.get("content"))
-            if content_text:
-                return {"role": str(item.get("role") or "assistant"), "content": content_text}
+            if item_type == "function_call":
+                fn_name = str(item.get("name") or "").strip()
+                if not fn_name:
+                    continue
+                raw_args = item.get("arguments")
+                if isinstance(raw_args, str):
+                    fn_args = raw_args
+                elif raw_args is None:
+                    fn_args = "{}"
+                else:
+                    try:
+                        fn_args = json.dumps(raw_args, ensure_ascii=False)
+                    except Exception:
+                        fn_args = "{}"
+                call_id = str(item.get("call_id") or item.get("id") or "").strip()
+                if not call_id:
+                    call_id = f"call_{len(tool_calls) + 1}"
+                tool_calls.append(
+                    {
+                        "id": call_id,
+                        "type": "function",
+                        "function": {
+                            "name": fn_name,
+                            "arguments": fn_args,
+                        },
+                    }
+                )
+        if content_text or tool_calls:
+            message: Dict[str, Any] = {"role": role, "content": content_text}
+            if tool_calls:
+                message["tool_calls"] = tool_calls
+            return message
 
     output_text = data.get("output_text")
     if isinstance(output_text, str) and output_text:
@@ -795,6 +932,8 @@ def _call_with_openai_compatible(
     session_summary_mode: bool,
     memory_query_expansion_mode: bool,
     domain_classifier_mode: bool,
+    tool_schemas: Optional[List[Dict[str, Any]]],
+    tool_choice: Any,
     append_history: Callable[[str], None],
     api_key_error_msg: str,
     default_base_url: str,
@@ -859,6 +998,8 @@ def _call_with_openai_compatible(
                 memory_query_expansion_mode=memory_query_expansion_mode,
                 domain_classifier_mode=domain_classifier_mode,
                 additional_drop_params=additional_drop_params,
+                tool_schemas=tool_schemas,
+                tool_choice=tool_choice,
                 append_history=append_history,
             )
         except Exception as e:
@@ -971,6 +1112,8 @@ def call_ai_with_provider(
             session_summary_mode=context.session_summary_mode,
             memory_query_expansion_mode=context.memory_query_expansion_mode,
             domain_classifier_mode=context.domain_classifier_mode,
+            tool_schemas=context.tool_schemas,
+            tool_choice=context.tool_choice,
             append_history=append_history,
             api_key_error_msg="❌ Error: OpenAI API key is not configured. Please set api_key in config.jsonc model.params.",
             default_base_url="https://api.openai.com/v1",

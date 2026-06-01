@@ -9,7 +9,8 @@
         "models": [
           {
             "name": "<YOUR MODEL NAME>",
-            "context_window": 131072
+            "context_window": 131072,
+            "use_simulated_tools": false
           }
         ]
       }
