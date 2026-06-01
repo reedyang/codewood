@@ -1780,9 +1780,22 @@ class PromptToolkitInputHandler:
         @kb.add("backspace")
         def _on_backspace(event):
             buf = event.current_buffer
-            if bool(getattr(self, "_shell_mode_active", False)) and not str(
-                getattr(buf, "text", "") or ""
-            ):
+            shell_mode_active = bool(getattr(self, "_shell_mode_active", False))
+            text_before = str(getattr(buf, "text", "") or "")
+            try:
+                cursor_pos = int(getattr(buf, "cursor_position", len(text_before)) or 0)
+            except Exception:
+                cursor_pos = len(text_before)
+
+            def _is_bang_only_marker(value: str) -> bool:
+                s = str(value or "")
+                if not s:
+                    return False
+                if not s.lstrip().startswith("!"):
+                    return False
+                return not str(self._strip_one_leading_bang(s) or "").strip()
+
+            if shell_mode_active and cursor_pos <= 0:
                 self._shell_mode_active = False
                 self._shell_mode_auto_by_history = False
                 try:
@@ -1790,7 +1803,36 @@ class PromptToolkitInputHandler:
                 except Exception:
                     pass
                 return
+
+            if shell_mode_active and not text_before:
+                self._shell_mode_active = False
+                self._shell_mode_auto_by_history = False
+                try:
+                    event.app.invalidate()
+                except Exception:
+                    pass
+                return
+
+            bang_only_before_delete = bool(
+                shell_mode_active and _is_bang_only_marker(text_before)
+            )
             buf.delete_before_cursor(count=1)
+            if bang_only_before_delete:
+                text_after = str(getattr(buf, "text", "") or "")
+                if (not text_after.strip()) or _is_bang_only_marker(text_after):
+                    try:
+                        buf.text = ""
+                        if hasattr(buf, "cursor_position"):
+                            buf.cursor_position = 0
+                    except Exception:
+                        pass
+                    self._shell_mode_active = False
+                    self._shell_mode_auto_by_history = False
+                    try:
+                        event.app.invalidate()
+                    except Exception:
+                        pass
+                    return
             # Recompute completions immediately after deletion.
             buf.start_completion(select_first=False)
 

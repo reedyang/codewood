@@ -789,6 +789,110 @@ class PromptToolkitInputCompletionTests(unittest.TestCase):
         self.assertEqual(ev.current_buffer.text, "git! status")
         self.assertEqual(ev.app.invalidate_calls, 0)
 
+    def test_backspace_on_bang_only_marker_exits_shell_mode(self):
+        class _Buffer:
+            def __init__(self, text: str, cursor_position: int):
+                self.text = text
+                self.cursor_position = cursor_position
+                self.start_completion_calls = 0
+
+            def delete_before_cursor(self, count: int = 1):
+                if self.cursor_position <= 0:
+                    return
+                left = self.text[: self.cursor_position]
+                right = self.text[self.cursor_position :]
+                delete_n = max(0, min(count, len(left)))
+                left = left[: len(left) - delete_n]
+                self.text = f"{left}{right}"
+                self.cursor_position = len(left)
+
+            def start_completion(self, select_first: bool = False):
+                self.start_completion_calls += 1
+
+        class _App:
+            def __init__(self):
+                self.invalidate_calls = 0
+
+            def invalidate(self):
+                self.invalidate_calls += 1
+
+        class _Event:
+            def __init__(self, text: str, cursor_position: int):
+                self.current_buffer = _Buffer(text, cursor_position)
+                self.app = _App()
+
+        handler = pti.PromptToolkitInputHandler.__new__(pti.PromptToolkitInputHandler)
+        handler._shell_mode_active = True
+        handler._shell_mode_auto_by_history = False
+        kb = handler._create_key_bindings()
+        backspace_binding = next(
+            b
+            for b in kb.bindings
+            if getattr(getattr(b, "handler", None), "__name__", "") == "_on_backspace"
+        )
+
+        ev = _Event("!", 1)
+        backspace_binding.handler(ev)
+
+        self.assertFalse(handler._shell_mode_active)
+        self.assertFalse(handler._shell_mode_auto_by_history)
+        self.assertEqual(ev.current_buffer.text, "")
+        self.assertEqual(ev.current_buffer.cursor_position, 0)
+        self.assertEqual(ev.current_buffer.start_completion_calls, 0)
+        self.assertEqual(ev.app.invalidate_calls, 1)
+
+    def test_backspace_at_shell_prompt_start_exits_shell_mode_and_keeps_text(self):
+        class _Buffer:
+            def __init__(self, text: str, cursor_position: int):
+                self.text = text
+                self.cursor_position = cursor_position
+                self.start_completion_calls = 0
+
+            def delete_before_cursor(self, count: int = 1):
+                if self.cursor_position <= 0:
+                    return
+                left = self.text[: self.cursor_position]
+                right = self.text[self.cursor_position :]
+                delete_n = max(0, min(count, len(left)))
+                left = left[: len(left) - delete_n]
+                self.text = f"{left}{right}"
+                self.cursor_position = len(left)
+
+            def start_completion(self, select_first: bool = False):
+                self.start_completion_calls += 1
+
+        class _App:
+            def __init__(self):
+                self.invalidate_calls = 0
+
+            def invalidate(self):
+                self.invalidate_calls += 1
+
+        class _Event:
+            def __init__(self, text: str, cursor_position: int):
+                self.current_buffer = _Buffer(text, cursor_position)
+                self.app = _App()
+
+        handler = pti.PromptToolkitInputHandler.__new__(pti.PromptToolkitInputHandler)
+        handler._shell_mode_active = True
+        handler._shell_mode_auto_by_history = False
+        kb = handler._create_key_bindings()
+        backspace_binding = next(
+            b
+            for b in kb.bindings
+            if getattr(getattr(b, "handler", None), "__name__", "") == "_on_backspace"
+        )
+
+        ev = _Event("git status", 0)
+        backspace_binding.handler(ev)
+
+        self.assertFalse(handler._shell_mode_active)
+        self.assertFalse(handler._shell_mode_auto_by_history)
+        self.assertEqual(ev.current_buffer.text, "git status")
+        self.assertEqual(ev.current_buffer.cursor_position, 0)
+        self.assertEqual(ev.current_buffer.start_completion_calls, 0)
+        self.assertEqual(ev.app.invalidate_calls, 1)
+
     def test_sync_shell_mode_from_history_bang_normalizes_buffer_and_enables_mode(self):
         handler = pti.PromptToolkitInputHandler.__new__(pti.PromptToolkitInputHandler)
         handler._shell_mode_active = False
