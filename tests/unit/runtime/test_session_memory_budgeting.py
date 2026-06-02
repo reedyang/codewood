@@ -420,6 +420,29 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
         system_content = str(messages[0].get("content") or "")
         self.assertIn("Domain Prompt: Software Development", system_content)
 
+    def test_regular_task_messages_include_full_active_skill_prompt(self):
+        agent = _FakeAgent()
+        agent._active_skill_id = "codex-usage"
+        agent._active_skill_source = "local"
+        agent._active_skill_section = 1
+        agent._active_skill_total_sections = 1
+        agent._active_skill_chunked = False
+        agent._active_skill_full_prompt = (
+            "ACTIVE_SKILL_PROMPT_START\n"
+            + ("long skill rule body that used to be clipped " * 240)
+            + "\nACTIVE_SKILL_PROMPT_END"
+        )
+        svc = SessionMemoryService(agent)
+
+        messages, _ = svc.build_regular_task_messages("查看我的codex用量")
+        joined = "\n".join(str(m.get("content") or "") for m in messages)
+
+        self.assertIn("【动态技能正文（前置完整注入）】", joined)
+        self.assertIn("ACTIVE_SKILL_PROMPT_START", joined)
+        self.assertIn("ACTIVE_SKILL_PROMPT_END", joined)
+        self.assertIn("----- BEGIN ACTIVE SKILL PROMPT -----", joined)
+        self.assertIn("----- END ACTIVE SKILL PROMPT -----", joined)
+
     def test_context_window_below_64k_uses_history_only_chat_context(self):
         agent = _FakeAgent()
         agent.params = {"context_window": 63999}
