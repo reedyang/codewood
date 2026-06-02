@@ -233,6 +233,7 @@ def _stream_visible_text_with_json_pause(text: str, *, final: bool) -> str:
     if final:
         return strip_tool_json_blocks_for_display(merged)
     else:
+        merged = _buffer_trailing_partial_json_fence_for_stream(merged)
         merged = _strip_or_buffer_assistant_tool_call_markers_for_stream(merged)
         merged = _strip_or_buffer_pseudo_tool_calls_for_stream(merged)
         pending_span = _find_trailing_plain_tool_json_span(merged)
@@ -242,6 +243,25 @@ def _stream_visible_text_with_json_pause(text: str, *, final: bool) -> str:
         else:
             merged = _trim_trailing_blank_paragraph_for_stream(merged)
     return merged
+
+
+def _buffer_trailing_partial_json_fence_for_stream(text: str) -> str:
+    raw = str(text or "")
+    if not raw:
+        return ""
+    line_start = max(raw.rfind("\n"), raw.rfind("\r")) + 1
+    tail = raw[line_start:]
+    stripped_tail = tail.lstrip()
+    leading_ws = len(tail) - len(stripped_tail)
+    if not stripped_tail:
+        return raw
+    opener = "```json"
+    lowered = stripped_tail.lower()
+    if len(lowered) >= len(opener):
+        return raw
+    if opener.startswith(lowered):
+        return raw[: line_start + leading_ws]
+    return raw
 
 
 def _strip_or_buffer_pseudo_tool_calls_for_stream(text: str) -> str:
