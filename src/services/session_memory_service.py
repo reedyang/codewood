@@ -7,7 +7,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
-from ..config.app_info import get_app_config_dirname, get_app_logger_root, get_app_runtime_attr_name, get_app_slug_kebab
+from ..config.app_info import get_app_config_dirname, get_app_logger_root, get_app_runtime_attr_name
 from ..core.config.model_providers import DEFAULT_CONTEXT_WINDOW, parse_context_window
 from ..core.console_utils import _ansi_gray
 from ..core.logging.app_logging import get_logger
@@ -55,6 +55,36 @@ class SessionMemoryService:
         self._context_usage_refresh_pending: Optional[Dict[str, str]] = None
         self._context_compaction_lock = threading.Lock()
         self._start_token_counter_warmup()
+
+    def _model_visible_path_text(self, raw_path: Any) -> str:
+        fallback = "(hidden internal runtime directory)"
+        if not raw_path:
+            return fallback
+        try:
+            resolved = Path(raw_path).resolve()
+        except Exception:
+            return fallback
+        repo_root = getattr(self.agent, "_self_repo_root", None)
+        if repo_root:
+            try:
+                if resolved.relative_to(Path(repo_root).resolve()) is not None:
+                    return fallback
+            except Exception:
+                pass
+        return str(resolved)
+
+    def _model_visible_workspace_directory_text(self) -> str:
+        workspace_root = getattr(self.agent, "workspace_root", None)
+        if workspace_root:
+            visible = self._model_visible_path_text(workspace_root)
+            if visible != "(hidden internal runtime directory)":
+                return visible
+        workspace_config_dir = getattr(self.agent, "workspace_config_dir", None)
+        if workspace_config_dir:
+            visible = self._model_visible_path_text(workspace_config_dir)
+            if visible != "(hidden internal runtime directory)":
+                return visible
+        return "(hidden internal runtime directory)"
 
     def _context_usage_state_key(self) -> str:
         chat_id = str(getattr(self.agent, "active_chat_id", "") or "").strip()
@@ -1466,15 +1496,18 @@ class SessionMemoryService:
             source_history=source_history,
         )
         os_info = os.uname() if hasattr(os, "uname") else os.name
+        workspace_root_text = self._model_visible_workspace_directory_text()
+        workspace_data_dir_text = self._model_visible_path_text(
+            getattr(self.agent, "workspace_config_dir", None)
+        )
         workspace_skills_dir = (Path(self.agent.workspace_config_dir) / "skills").resolve()
         default_install_skills_dir = (Path.home() / get_app_config_dirname() / "skills").resolve()
         runtime_tail_raw = (
             f"当前操作系统信息：{os_info}\n"
-            f"当前 {get_app_slug_kebab()} 根目录（绝对路径）：{self.agent._self_repo_root}\n"
-            f"当前 config 目录（绝对路径）：{self.agent.config_dir}\n"
             f"当前 workspace 名称：{self.agent.workspace_name}\n"
             f"当前 chat 名称（弱提示，仅会话标签，不代表本轮任务目标）：{self.agent.active_chat_name}\n"
-            f"当前 workspace 目录（绝对路径）：{self.agent.workspace_config_dir}\n"
+            f"当前 workspace 根目录（绝对路径）：{workspace_root_text}\n"
+            f"当前 workspace 数据目录（绝对路径）：{workspace_data_dir_text}\n"
             f"默认技能安装路径（绝对路径）：{default_install_skills_dir}\n"
             f"当前 workspace skills 目录（绝对路径）：{workspace_skills_dir}\n"
             "安装第三方 skill 时：若用户未指定安装位置，必须使用“默认技能安装路径（绝对路径）”；"
@@ -1887,15 +1920,18 @@ class SessionMemoryService:
             f"{self._software_development_prompt_append()}"
         )
         # Key runtime metadata is intentionally non-clippable.
+        workspace_root_text = self._model_visible_workspace_directory_text()
+        workspace_data_dir_text = self._model_visible_path_text(
+            getattr(self.agent, "workspace_config_dir", None)
+        )
         workspace_skills_dir = (Path(self.agent.workspace_config_dir) / "skills").resolve()
         default_install_skills_dir = (Path.home() / get_app_config_dirname() / "skills").resolve()
         runtime_tail_raw = (
             f"当前操作系统信息：{os_info}\n"
-            f"当前 {get_app_slug_kebab()} 根目录（绝对路径）：{self.agent._self_repo_root}\n"
-            f"当前 config 目录（绝对路径）：{self.agent.config_dir}\n"
             f"当前 workspace 名称：{self.agent.workspace_name}\n"
             f"当前 chat 名称（弱提示，仅会话标签，不代表本轮任务目标）：{self.agent.active_chat_name}\n"
-            f"当前 workspace 目录（绝对路径）：{self.agent.workspace_config_dir}\n"
+            f"当前 workspace 根目录（绝对路径）：{workspace_root_text}\n"
+            f"当前 workspace 数据目录（绝对路径）：{workspace_data_dir_text}\n"
             f"默认技能安装路径（绝对路径）：{default_install_skills_dir}\n"
             f"当前 workspace skills 目录（绝对路径）：{workspace_skills_dir}\n"
             "安装第三方 skill 时：若用户未指定安装位置，必须使用“默认技能安装路径（绝对路径）”；"
@@ -1928,7 +1964,7 @@ class SessionMemoryService:
         force_new_requirement = bool(
             getattr(self.agent, "_force_current_input_as_requirement_once", False)
         )
-        workspace_directory = getattr(self.agent, "workspace_root", self.agent.work_directory)
+        workspace_directory = self._model_visible_workspace_directory_text()
         original_requirement = (
             str(user_input or "").strip()
             if force_new_requirement

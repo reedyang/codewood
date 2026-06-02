@@ -33,6 +33,7 @@ class _FakeAgent:
         self.config_dir = Path(f"D:/Users/fake/{config_dirname}")
         self.workspace_name = "Default"
         self.active_chat_name = "New Chat"
+        self.workspace_root = Path("D:/tmp/test")
         self.workspace_config_dir = Path(f"D:/Users/fake/{config_dirname}/workspace/default")
         self.work_directory = Path(f"D:/SourceCode/opensource/{app_slug_kebab}")
         self.system_prompt = ""
@@ -1071,10 +1072,14 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
         messages, _ = svc.build_regular_task_messages("继续推进", context="ctx-" + ("q" * 1200))
         system_content = str(messages[0].get("content") or "")
         self.assertIn("[SYSTEM_PROMPT_END_MARK]", system_content)
-        self.assertIn(f"当前 {get_app_slug_kebab()} 根目录（绝对路径）：{agent._self_repo_root}", system_content)
-        self.assertIn(f"当前 config 目录（绝对路径）：{agent.config_dir}", system_content)
         self.assertIn("当前 workspace 名称：Default", system_content)
-        self.assertIn(f"当前 workspace 目录（绝对路径）：{agent.workspace_config_dir}", system_content)
+        self.assertNotIn(str(agent._self_repo_root), system_content)
+        self.assertNotIn(str(agent.work_directory), system_content)
+        self.assertIn(f"当前 workspace 根目录（绝对路径）：{agent.workspace_root}", system_content)
+        self.assertIn(
+            f"当前 workspace 数据目录（绝对路径）：{agent.workspace_config_dir}",
+            system_content,
+        )
         self.assertIn(
             f"默认技能安装路径（绝对路径）：{(Path.home() / get_app_config_dirname() / 'skills').resolve()}",
             system_content,
