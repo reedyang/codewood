@@ -19,6 +19,8 @@ from ..core.config.skills_loader import (
 from ..tooling.dispatcher import ToolDispatcher
 from ..tools.project_context_index import ProjectContextIndex
 
+DEFAULT_AUTO_COMPACT_TRIGGER_PERCENT = 60
+
 
 def setup_core_state(agent: Any, startup_work_directory: Path, self_repo_root: Path) -> None:
     agent.work_directory = startup_work_directory
@@ -109,6 +111,7 @@ def setup_runtime_preferences(agent: Any) -> None:
     agent.memory_enabled = True
     agent.memory_fallback_expansion_enabled = True
     agent.project_context_first_round_evidence_enabled = True
+    agent.auto_compact_trigger_percent = DEFAULT_AUTO_COMPACT_TRIGGER_PERCENT
     # Tool gates: default disabled so only core built-in coding tools are available.
     agent.mcp_tools_enabled = False
     # None means unlimited auto-execution rounds for a single task.
@@ -152,6 +155,19 @@ def setup_runtime_preferences(agent: Any) -> None:
                 if isinstance(_mcp_tools_enabled, bool)
                 else str(_mcp_tools_enabled).strip().lower() in ("1", "true", "yes", "on")
             )
+
+            _compact_pct = cfg_data.get("auto_compact_trigger_percent", DEFAULT_AUTO_COMPACT_TRIGGER_PERCENT)
+            try:
+                parsed_compact_pct = int(_compact_pct)
+            except Exception:
+                parsed_compact_pct = None
+            if parsed_compact_pct is None or parsed_compact_pct < 1 or parsed_compact_pct > 100:
+                print(
+                    f"⚠️ Invalid auto_compact_trigger_percent in {CONFIG_JSONC_FILENAME}: "
+                    f"{_compact_pct!r}; using default {DEFAULT_AUTO_COMPACT_TRIGGER_PERCENT}%."
+                )
+                parsed_compact_pct = DEFAULT_AUTO_COMPACT_TRIGGER_PERCENT
+            agent.auto_compact_trigger_percent = parsed_compact_pct
 
             _mtr = cfg_data.get("max_tool_rounds", None)
             if _mtr is None:

@@ -1,11 +1,13 @@
 ﻿import unittest
+import io
 import json
 from pathlib import Path
 import threading
 import time
+from contextlib import redirect_stdout
 from unittest.mock import MagicMock, patch
 
-from src.config.app_info import get_app_config_dirname, get_app_slug_kebab
+from src.config.app_info import get_app_config_dirname, get_app_runtime_attr_name, get_app_slug_kebab
 from src.services.session_memory_service import SessionMemoryService
 
 DIRECT_SHELL_USER_HISTORY_PREFIX = "[DIRECT_SHELL_USER_COMMAND]"
@@ -216,7 +218,188 @@ class _FakeAgent:
         return payload if isinstance(payload, dict) and str(payload.get("kind") or "") == "task_worked_summary" else None
 
 
+class _FakeTerminalStream:
+    def __init__(self, columns: int):
+        setattr(self, get_app_runtime_attr_name("terminal_columns"), lambda: columns)
+
+
+class _FakeWrappedTerminalStream:
+    def __init__(self, base_stream: _FakeTerminalStream):
+        self._base_stream = base_stream
+
+
 class SessionMemoryBudgetingTests(unittest.TestCase):
+    def test_regular_task_history_starts_at_latest_compaction_summary(self):
+        agent = _FakeAgent()
+        agent.params = {"context_window": 16000}
+        agent._compose_system_prompt_snapshot = lambda include_tools=True: "SYSTEM"
+        svc = SessionMemoryService(agent)
+        summary = svc.build_context_compaction_summary_content(
+            summary="旧内容已经被压缩到这里",
+            mode="manual",
+            covered_message_count=2,
+        )
+        agent.conversation_history = [
+            {"role": "user", "content": "旧需求不应直接进入上下文"},
+            {"role": "assistant", "content": "旧回答不应直接进入上下文"},
+            {"role": "assistant", "content": summary},
+            {"role": "user", "content": "摘要后的用户消息"},
+            {"role": "assistant", "content": "摘要后的助手消息"},
+        ]
+
+        messages, _ = svc.build_regular_task_messages("继续")
+        joined = "\n".join(str(m.get("content") or "") for m in messages)
+
+        self.assertIn("【上下文摘要】", joined)
+        self.assertIn("旧内容已经被压缩到这里", joined)
+        self.assertIn("摘要后的用户消息", joined)
+        self.assertIn("摘要后的助手消息", joined)
+        self.assertNotIn("旧需求不应直接进入上下文", joined)
+        self.assertNotIn("旧回答不应直接进入上下文", joined)
+
+    def test_manual_compact_inserts_summary_after_covered_tail_and_uses_override_messages(self):
+        agent = _FakeAgent()
+        agent.params = {"context_window": 16000}
+        agent._compose_system_prompt_snapshot = lambda include_tools=True: "SYSTEM"
+        svc = SessionMemoryService(agent)
+        previous = svc.build_context_compaction_summary_content(
+            summary="前一次摘要",
+            mode="auto",
+            covered_message_count=4,
+        )
+        agent.conversation_history = [
+            {"role": "user", "content": "更旧消息"},
+            {"role": "assistant", "content": previous},
+            {"role": "user", "content": "后续用户消息"},
+            {"role": "assistant", "content": "后续助手消息"},
+        ]
+        captured = {}
+
+        def _fake_call_ai(*args, **kwargs):
+            captured["messages_override"] = kwargs.get("messages_override")
+            captured["record_history_override"] = kwargs.get("record_history_override")
+            return "新的合并摘要"
+
+        agent.call_ai = _fake_call_ai  # type: ignore[attr-defined]
+
+        with redirect_stdout(io.StringIO()):
+            ok = svc.compact_context("manual")
+
+        self.assertTrue(ok)
+        self.assertEqual(captured.get("record_history_override"), False)
+        override_joined = "\n".join(str(m.get("content") or "") for m in captured["messages_override"])
+        self.assertIn("前一次摘要", override_joined)
+        self.assertIn("后续用户消息", override_joined)
+        self.assertIn("后续助手消息", override_joined)
+        self.assertNotIn("更旧消息", override_joined)
+        inserted = agent.conversation_history[4]
+        payload = svc.parse_context_compaction_summary_content(str(inserted.get("content") or ""))
+        self.assertIsInstance(payload, dict)
+        self.assertEqual(payload.get("summary"), "新的合并摘要")
+        self.assertEqual(payload.get("mode"), "manual")
+
+    def test_compact_inserts_completed_notice_but_excludes_notice_from_model_context(self):
+        agent = _FakeAgent()
+        agent.params = {"context_window": 16000}
+        agent._compose_system_prompt_snapshot = lambda include_tools=True: "SYSTEM"
+        svc = SessionMemoryService(agent)
+        agent.conversation_history = [
+            {"role": "user", "content": "需要摘要的消息"},
+            {"role": "assistant", "content": "需要摘要的回答"},
+        ]
+        agent.call_ai = lambda *args, **kwargs: "摘要正文"  # type: ignore[attr-defined]
+
+        with redirect_stdout(io.StringIO()):
+            ok = svc.compact_context("manual")
+
+        self.assertTrue(ok)
+        notice_payload = svc.parse_context_compaction_notice_content(
+            str(agent.conversation_history[3].get("content") or "")
+        )
+        self.assertIsInstance(notice_payload, dict)
+        self.assertEqual(notice_payload.get("message"), "Context automatically compacted")
+
+        messages, _ = svc.build_regular_task_messages("继续")
+        joined = "\n".join(str(m.get("content") or "") for m in messages)
+        self.assertIn("摘要正文", joined)
+        self.assertNotIn("Context automatically compacted", joined)
+
+    def test_auto_compact_candidate_selection_preserves_recent_tail_within_five_percent(self):
+        agent = _FakeAgent()
+        agent.params = {"context_window": 1000}
+        agent._compose_system_prompt_snapshot = lambda include_tools=True: "SYSTEM"
+        agent.token_estimator = lambda s: len(str(s or ""))
+        svc = SessionMemoryService(agent)
+        previous = svc.build_context_compaction_summary_content(
+            summary="前一次摘要",
+            mode="manual",
+            covered_message_count=2,
+        )
+        agent.conversation_history = [
+            {"role": "assistant", "content": previous},
+            {"role": "user", "content": "需要被摘要的较早用户消息 " + ("x" * 80)},
+            {"role": "assistant", "content": "需要被摘要的较早助手消息 " + ("y" * 80)},
+            {"role": "user", "content": "短尾"},
+            {"role": "assistant", "content": "短答"},
+        ]
+
+        candidates = svc._compaction_candidate_rows("auto")
+        candidate_text = "\n".join(str(m.get("content") or "") for _idx, m in candidates)
+
+        self.assertIn("前一次摘要", candidate_text)
+        self.assertIn("需要被摘要的较早用户消息", candidate_text)
+        self.assertIn("需要被摘要的较早助手消息", candidate_text)
+        self.assertNotIn("短尾", candidate_text)
+        self.assertNotIn("短答", candidate_text)
+
+    def test_compaction_banner_line_is_centered_and_full_width(self):
+        agent = _FakeAgent()
+        agent._terminal_columns_for_prompt_separator = lambda default=80: 41
+        svc = SessionMemoryService(agent)
+
+        line = svc._format_compaction_banner_line("Compacting context")
+
+        self.assertEqual(len(line), 41)
+        self.assertIn(" Compacting context ", line)
+        self.assertTrue(line.startswith("─"))
+        self.assertTrue(line.endswith("─"))
+
+    def test_compaction_banner_uses_same_width_as_prompt_separator(self):
+        agent = _FakeAgent()
+        agent._terminal_columns_for_prompt_separator = lambda default=80: 41
+        svc = SessionMemoryService(agent)
+        fake_stdout = _FakeTerminalStream(42)
+
+        with patch("src.services.session_memory_service.sys.stdout", fake_stdout):
+            line = svc._format_compaction_banner_line("Compacting context")
+
+        self.assertEqual(len(line), 41)
+
+    def test_compaction_banner_uses_visible_raw_width_when_stdout_is_wrapped(self):
+        agent = _FakeAgent()
+        agent._terminal_columns_for_prompt_separator = lambda default=80: 41
+        svc = SessionMemoryService(agent)
+        fake_stdout = _FakeWrappedTerminalStream(_FakeTerminalStream(42))
+
+        with patch("src.services.session_memory_service.sys.stdout", fake_stdout):
+            line = svc._format_compaction_banner_line("Compacting context")
+
+        self.assertEqual(len(line), 41)
+
+    def test_compaction_banner_prints_gray_line(self):
+        agent = _FakeAgent()
+        agent._terminal_columns_for_prompt_separator = lambda default=80: 41
+        svc = SessionMemoryService(agent)
+
+        with patch("src.services.session_memory_service._ansi_gray", side_effect=lambda s: f"<gray>{s}</gray>"):
+            out = io.StringIO()
+            with redirect_stdout(out):
+                rendered = svc._print_compaction_banner("Automatically compacting context")
+
+        self.assertEqual(rendered, 3)
+        self.assertIn("<gray>", out.getvalue())
+        self.assertIn(" Automatically compacting context ", out.getvalue())
+
     def test_refresh_context_usage_snapshot_persists_chat_state_immediately(self):
         agent = _FakeAgent()
         agent.conversation_history = [
@@ -909,4 +1092,3 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

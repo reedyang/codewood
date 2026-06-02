@@ -177,6 +177,7 @@ smart-shell/
   ],
   "execution_policy": "moderate",
   "project_context_first_round_evidence": true,
+  "auto_compact_trigger_percent": 60,
   "max_tool_rounds": 30,
   "memory_enabled": false,
   "mcp_tools_enabled": false
@@ -195,6 +196,7 @@ smart-shell/
   - 对象：`{"name":"gpt-oss-120b","context_window":"128K","streaming":true}`（`context_window` 可为数字，或带 `k/K` 后缀的字符串）
 - `context_window`: 仅接受正整数，或形如 `^\d+[kK]?$` 的字符串（`k/K` 表示乘以 1000）；无效值会自动回退到默认 `128000`
 - `streaming`: 模型级流式输出开关，默认 `true`；可按模型单独配置是否启用流式输出
+- `auto_compact_trigger_percent`: 自动摘要触发阈值百分比，默认 `60`；仅接受 `1..100` 的整数，非法值会提示并回退到 `60`
 - `model_providers[i].params`: 该 provider 的参数（例如 API 密钥、基础 URL 等）
 - `mcp_tools_enabled`: 是否开启 MCP 管理类工具（默认 `false`）。关闭时不可用：`mcp_server_info`、`mcp_disable_tools`、`mcp_enable_tools`、`mcp_list_disabled_tools`、`mcp_sampling_create_message`、`mcp_completion_complete`
 - `config.jsonc` 中所有字符串配置值都支持环境变量占位符：当值写成 `${ENV_NAME}` 时会在运行时读取对应环境变量

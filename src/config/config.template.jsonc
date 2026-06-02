@@ -19,6 +19,7 @@
   ],
   "execution_policy": "moderate",
   "project_context_first_round_evidence": true,
+  "auto_compact_trigger_percent": 60,
   "max_tool_rounds": null,
   "memory_enabled": false,
   "mcp_tools_enabled": false

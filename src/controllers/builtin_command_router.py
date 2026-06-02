@@ -69,6 +69,15 @@ def dispatch_builtin_command(
             pass
         return True, False
 
+    if bl == "compact":
+        svc = getattr(agent, "session_memory_service", None)
+        compact_fn = getattr(svc, "compact_context", None)
+        if callable(compact_fn):
+            compact_fn(mode="manual")
+        else:
+            print("Context compaction is unavailable.")
+        return True, False
+
     if agent._handle_model_builtin_command(builtin_line):
         return True, False
 
