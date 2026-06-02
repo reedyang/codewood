@@ -859,7 +859,7 @@ def _build_minimal_verification_command(changed_files: List[str]) -> str:
     if py_files:
         joined = " ".join(f'"{f}"' for f in py_files)
         return f"python -m py_compile {joined}"
-    return "请先执行最小验证（相关测试、编译或静态检查）"
+    return "Run minimal verification first (relevant tests, compilation, or static checks)."
 
 
 def _resolve_worked_summary_terminal_width(agent: Any, default: int = 80) -> int:
@@ -1539,7 +1539,7 @@ def run_agent_loop(agent: Any):
                             cursor_at_line_start = bool(last_direct.get("cursor_at_line_start", True))
                         else:
                             rendered_lines = _estimate_visible_lines(
-                                self, "❌ 执行文件失败\n"
+                                self, "❌ Failed to execute file\n"
                             )
                         self._repaint_direct_shell_command_feedback_if_failed(
                             ui,
@@ -1812,7 +1812,7 @@ def run_agent_loop(agent: Any):
             worked_summary_emitted = False
             turn_send_started_at = time.perf_counter()
             _emit_flow_log(
-                f"用户回车发送: chars={len(task_user_input)}, active_chat={getattr(self, 'active_chat_id', '')}"
+                f"User submitted input: chars={len(task_user_input)}, active_chat={getattr(self, 'active_chat_id', '')}"
             )
             self._start_interrupt_monitor(cancel_task_on_interrupt=True)
             self._consume_task_interrupt_requested()
@@ -1833,7 +1833,7 @@ def run_agent_loop(agent: Any):
                     maybe_auto_compact(original_user_task)
                 except Exception:
                     try:
-                        _emit_flow_log("自动上下文 compact 失败，继续发送当前请求")
+                        _emit_flow_log("Automatic context compact failed; continuing with the current request")
                     except Exception:
                         pass
             pre_task_status_ticker = _WorkingStatusTicker(
@@ -1899,44 +1899,41 @@ def run_agent_loop(agent: Any):
                             self._active_skill_chunked = bool(meta.get("chunked", False))
                 if skill_items:
                     forced_skill_prefix = (
-                        f"【强制技能】本轮必须优先使用以下 skills（按用户输入顺序）：{', '.join(skill_items)}，"
-                        "并按各自 SKILL.md 执行。若与 AGENTS.md 或通用系统说明冲突，"
-                        "以这些 skills 正文为准（安全/越权/破坏性硬限制除外）。\n\n"
+                        f"[Forced skills] This turn must prioritize these skills in user-input order: {', '.join(skill_items)}. "
+                        "Follow each corresponding SKILL.md. If they conflict with AGENTS.md or general system instructions, "
+                        "the skill bodies take precedence except for safety, privilege, and destructive-action hard limits.\n\n"
                     )
                 if full_prompts:
                     self._active_skill_full_prompt = "\n".join(full_prompts)
             mcp_tool_selection_constraint = ""
             if bool(getattr(self, "mcp_tools_enabled", False)):
                 mcp_tool_selection_constraint = (
-                    "【MCP 工具选择补充约束】\n"
-                    "- 用户若请求“指定 MCP server 的信息/详情”，首个查询工具必须是 mcp_server_info。\n"
-                    "- mcp_status/mcp_status_refresh 仅用于全局 MCP 状态总览，不可替代指定 server 的详情查询。\n\n"
+                    "[Additional MCP tool selection constraints]\n"
+                    "- If the user asks for information/details about one specific MCP server, the first query tool must be `mcp_server_info`.\n"
+                    "- `mcp_status` / `mcp_status_refresh` are only for global MCP status overview and must not replace details for a specific server.\n\n"
                 )
             task_uses_standard_openai_tools = bool(self._use_standard_openai_tools_call())
             first_round_contract = (
                 "0) STANDARD TOOL MODE HARD REQUIREMENT: every assistant message MUST include at least one API-standard `tool_calls` entry. Content-only replies are invalid in this mode; if the task is complete, call `done`; otherwise call the next required tool.\n"
-                "\n\n【首轮回复硬性要求（必须遵守）】\n"
-                "1) 对于需要两步及以上完成的任务，先简要说明“将要完成哪些事情”，紧随其后再输出任务编排：Step 1..N，并为每步标注状态（pending/in_progress/completed/failed）。\n"
-                "2) 若需要工具，同一条 assistant message 必须同时包含：content=上述自然语言计划/状态；tool_calls=标准 API 工具调用字段。不要拆成两条消息，也不要先计划后等待下一轮再调用。\n"
-                "3) 禁止在 content 正文中输出或序列化 `tool_calls`、`content/tool_calls` 消息对象、工具 JSON/YAML、XML/标签形式、Markdown 工具调用代码块或其它伪工具调用格式。\n"
-                "4) 对于需要两步及以上完成的任务，禁止首轮只有 tool_calls 而没有“事项简述 + 步骤编排”；也禁止只有计划正文而缺少必要的标准 API tool_calls。\n"
-                "5) 若用户问题可被上一条 system 开头的【经验记忆】单独完整回答，"
-                "首轮应在 content 给出简短自然语言答复，并通过标准 API tool_calls 调用 done。\n"
-                "6) 若任务需要把自然语言指称解析为稳定标识符/映射：先阅读【经验记忆】，仍不足则首轮或次轮使用 memory_search，再执行检索、shell 或 request_skill_prompt；禁止在未核对记忆时先猜标识符再搜网。\n"
-                "7) 只要调用了网络检索相关的工具、命令、脚本或 skill（网页搜索、联网抓取、在线查询等），调用 done 前必须先输出一次检索结果总结（关键信息、来源要点、与用户问题的对应关系）；禁止检索后直接 done。\n"
-                "8) done 只能在已经给出用户可见的最终答复、总结或结果说明之后调用；简单问候、闲聊、概念解释、直接可回答的问题，也必须在 content 给出自然语言答复并通过标准 API tool_calls 调用 done。\n\n"
+                "\n\n[First-turn hard requirements]\n"
+                "1) For tasks that require two or more steps, briefly state what will be done, then list Step 1..N with status (pending/in_progress/completed/failed).\n"
+                "2) If a tool is needed, the same assistant message must include both content=visible plan/status and tool_calls=standard API tool-call field. Do not split the plan and tool invocation into separate messages or turns.\n"
+                "3) Never output or serialize `tool_calls`, `content/tool_calls` message objects, tool JSON/YAML, XML/tags, markdown tool-call code blocks, or any pseudo tool-call format in content.\n"
+                "4) For multi-step tool tasks, the first turn must not contain only tool_calls without a visible task summary and step plan; it must also not contain only a plan without the required standard API tool_calls.\n"
+                "5) If the user question can be answered completely from injected experiential memory, put the concise visible answer in content and call `done` through standard API tool_calls.\n"
+                "6) If the task needs a natural-language reference resolved to a stable identifier or mapping, read experiential memory first; if still insufficient, use `memory_search` before search, shell, or request_skill_prompt. Do not guess identifiers before checking memory.\n"
+                "7) If any network search/fetch/online query/tool/script/skill was used, before `done` output a search-results summary with key facts, source highlights, and relevance to the user question. Do not go directly from search to done.\n"
+                "8) `done` is allowed only after content includes a user-visible final answer, summary, or result. Greetings, chat, conceptual explanations, and directly answerable questions must also include visible content and call `done` through standard API tool_calls.\n\n"
                 + mcp_tool_selection_constraint
-                + "【经验记忆 memory_* 使用规则】\n"
-                "- memory_search：若 system 开头【经验记忆】已含作答所需信息，不要为走流程而调用；"
-                "但若任务依赖「仅可能存在于记忆中的实体标识/别名映射」而当前看不出可靠值，必须先 memory_search 再调用下游取数或脚本，禁止臆造标识符。\n"
-                "- memory_add：用户明确要求「记住某事」「以后按某偏好」且属于个人经验而非文档时；"
-                "若你认为用户观点明显有误，仍可按工具说明在内容中记录你的判断（system_note）。\n"
+                + "[Experiential memory `memory_*` rules]\n"
+                "- `memory_search`: if injected experiential memory already contains enough information, do not call it merely for process. If the task depends on an entity identifier or alias mapping that may exist only in memory and no reliable value is visible, call `memory_search` before downstream tools; do not invent identifiers.\n"
+                "- `memory_add`: use it when the user explicitly asks to remember something or use a preference in the future and it is personal experiential information rather than documentation. If you believe the user's statement is clearly wrong, you may record your judgment in `system_note` according to tool rules.\n"
             )
             if not task_uses_standard_openai_tools:
                 first_round_contract = (
-                    "\n\n【基础聊天模式】\n"
-                    "当前模型 context window 小于 64k；本轮禁止使用标准 API tool_calls，也不要在正文中模拟、书写或序列化任何工具调用。\n"
-                    "请只用自然语言回答用户；如果任务需要读取文件、执行命令、加载 skill、调用 MCP 或其它工具能力，请说明当前小上下文模型仅支持基础聊天，建议切换到 64k 及以上上下文模型后再执行。\n"
+                    "\n\n[Basic chat mode]\n"
+                    "The current model context window is under 64k. This turn must not use standard API tool_calls and must not simulate, write, or serialize any tool call in visible text.\n"
+                    "Answer only in natural language. If the task requires reading files, running commands, loading skills, calling MCP, or other tool capabilities, explain that this small-context model supports only basic chat and suggest switching to a 64k+ context model before executing it.\n"
                 )
             first_round_evidence = ""
             if task_uses_standard_openai_tools and self._project_context_feature_enabled():
@@ -1968,7 +1965,7 @@ def run_agent_loop(agent: Any):
                 if project_context_ready:
                     project_context_started_at = time.perf_counter()
                     _emit_flow_log(
-                        "首轮项目上下文检索准备开始: "
+                        "First-round project context retrieval preparation started: "
                         f"files_total={project_context_files_total}"
                     )
                     ev_args = {
@@ -1988,7 +1985,7 @@ def run_agent_loop(agent: Any):
                     first_round_evidence = self._render_evidence_block_from_project_context_result(ev_res)
                     project_context_elapsed_ms = int((time.perf_counter() - project_context_started_at) * 1000)
                     _emit_flow_log(
-                        "首轮项目上下文检索准备结束: "
+                        "First-round project context retrieval preparation finished: "
                         f"success={bool(ev_res.get('success', False))}, "
                         f"matches={int(ev_res.get('total_matches', 0) or 0)}, "
                         f"elapsed_ms={project_context_elapsed_ms}"
@@ -2002,20 +1999,20 @@ def run_agent_loop(agent: Any):
                     except Exception:
                         pass
                     _emit_flow_log(
-                        "首轮项目上下文检索准备结束: "
+                        "First-round project context retrieval preparation finished: "
                         f"skipped(not_ready:{project_context_skip_reason}), "
                         f"files_total={project_context_files_total}, "
                         f"refresh_inflight={project_context_inflight}"
                     )
             else:
-                _emit_flow_log("首轮项目上下文检索准备结束: skipped(feature_disabled)")
+                _emit_flow_log("First-round project context retrieval preparation finished: skipped(feature_disabled)")
             next_input = (
                 f"{forced_mcp_prefix}{forced_skill_prefix}{original_user_task}"
                 f"{first_round_contract}"
                 f"{(chr(10) + chr(10) + first_round_evidence) if first_round_evidence else ''}"
             )
             ready_to_send_elapsed_ms = int((time.perf_counter() - turn_send_started_at) * 1000)
-            _emit_flow_log(f"首轮请求准备完成，开始真正发送: elapsed_ms={ready_to_send_elapsed_ms}")
+            _emit_flow_log(f"First-round request preparation complete; sending actual request: elapsed_ms={ready_to_send_elapsed_ms}")
             is_first_round = True
             last_announced_skill_key: Optional[str] = None
             raw_max_tool_rounds = getattr(self, "max_tool_rounds", None)
@@ -2189,9 +2186,9 @@ def run_agent_loop(agent: Any):
                         print("❌ The model repeatedly called done without a user-visible answer. Auto-execution has stopped for this round.")
                         break
                     next_input = (
-                        f"【用户原始需求】\n{original_user_task}\n\n"
-                        "你上一条回复只调用了 done，但没有给用户可见的自然语言答复。\n"
-                        "请用同一条 assistant message 重试：content 里给出简短自然语言最终答复，并通过标准 API tool_calls 调用 done。"
+                        f"[Original user request]\n{original_user_task}\n\n"
+                        "Your previous response only called `done` and did not provide any user-visible natural-language answer.\n"
+                        "Retry with one assistant message: put a concise final answer in content and call `done` through standard API tool_calls."
                     )
                     is_first_round = False
                     continue
@@ -2226,14 +2223,14 @@ def run_agent_loop(agent: Any):
                         "the model will be asked again to call one or more tools via standard tool_calls."
                     )
                     next_input = (
-                        f"【用户原始需求】\n{original_user_task}\n\n"
+                        f"[Original user request]\n{original_user_task}\n\n"
                         "HARD REQUIREMENT: your next assistant message MUST include standard API `tool_calls`; content-only replies are invalid in this mode.\n"
                         "If the task is complete, put the final visible answer in content and call `done` via API `tool_calls` in the same message.\n"
                         "If the task is not complete, put the next visible status in content and call the next real tool via API `tool_calls` in the same message.\n"
-                        "你上一条回复没有给出有效的标准 API tool_calls。\n"
-                        "请用同一条 assistant message 重试：content 里保留简短计划/状态/结果，真实工具动作放入 API `tool_calls` 字段。\n"
-                        "禁止在正文中打印或序列化包含 `content`、`tool_calls`、`tool`、`args` 或 `arguments` 的 JSON/YAML/message 对象。\n"
-                        "若用户目标已经完成，请先在 content 给出可见最终结果，再通过标准 `tool_calls` 调用 done。"
+                        "Your previous response did not include valid standard API tool_calls.\n"
+                        "Retry with one assistant message: content contains only a concise plan/status/result, and the real tool action goes in API `tool_calls`.\n"
+                        "Never print or serialize JSON/YAML/message objects containing `content`, `tool_calls`, `tool`, `args`, or `arguments` in visible text.\n"
+                        "If the user goal is complete, first put the visible final result in content, then call `done` through standard `tool_calls`."
                     )
                     is_first_round = False
                     continue
@@ -2260,11 +2257,11 @@ def run_agent_loop(agent: Any):
                                 "requesting the model to resend a valid patch/git-apply unified diff call."
                             )
                             next_input = (
-                                f"【用户原始需求】\n{original_user_task}\n\n"
-                                "你上一条 apply_patch 工具计划缺少必填参数。\n"
-                                "请只输出一个有效 JSON（不要附加其它文本）：\n"
+                                f"[Original user request]\n{original_user_task}\n\n"
+                                "Your previous `apply_patch` tool plan was missing required arguments.\n"
+                                "Retry with a valid standard API tool_calls entry for `apply_patch`; do not print JSON in visible text:\n"
                                 "{\"tool\":\"apply_patch\",\"args\":{\"path\":\"<file>\",\"patch\":\"--- a/<file>\\n+++ b/<file>\\n@@ ... @@\\n- old\\n+ new\"}}\n"
-                                "要求：`path` 和 `patch` 都必须提供；`patch` 优先使用标准 patch/git apply unified diff（包含 ---/+++ 与至少一个 `@@ ... @@` hunk）。"
+                                "Required arguments: `path` and `patch`. Prefer a standard unified diff patch containing ---/+++ and at least one `@@ ... @@` hunk."
                             )
                             no_tool_rounds = 0
                             is_first_round = False
@@ -2286,9 +2283,9 @@ def run_agent_loop(agent: Any):
                         request_is_expansion = force_full or (requested_section is not None and requested_section > 1)
                         if canon_sid and canon_sid in preloaded_skill_ids and not request_is_expansion:
                             next_input = (
-                                f"【用户原始需求】\n{original_user_task}\n\n"
-                                f"skill_id=`{sid}` 已由本轮显式 `/skills/<skill-name>` 引用预注入。"
-                                "禁止再次调用 request_skill_prompt。请直接继续调用标准 tools。"
+                                f"[Original user request]\n{original_user_task}\n\n"
+                                f"skill_id=`{sid}` was explicitly pre-injected this turn through `/skills/<skill-name>`. "
+                                "Do not call request_skill_prompt again. Continue directly with standard tools."
                             )
                             no_tool_rounds = 0
                             continue_after_batch = True
@@ -2302,9 +2299,9 @@ def run_agent_loop(agent: Any):
                             and not request_is_expansion
                         ):
                             next_input = (
-                                f"【用户原始需求】\n{original_user_task}\n\n"
-                                f"skill_id=`{sid}` 的完整提示已在当前会话中注入。"
-                                "禁止重复调用 request_skill_prompt。请直接继续调用标准 tools。"
+                                f"[Original user request]\n{original_user_task}\n\n"
+                                f"skill_id=`{sid}` has already been injected in this session. "
+                                "Do not call request_skill_prompt repeatedly. Continue directly with standard tools."
                             )
                             no_tool_rounds = 0
                             continue_after_batch = True
@@ -2328,9 +2325,9 @@ def run_agent_loop(agent: Any):
                         if not full_prompt:
                             no_tool_rounds += 1
                             next_input = (
-                                f"【用户原始需求】\n{original_user_task}\n\n"
-                                f"你请求的 skill_id=`{sid}` 不存在。"
-                                "请基于已加载技能索引重试，输出有效的 request_skill_prompt，或直接继续调用标准 tools。"
+                                f"[Original user request]\n{original_user_task}\n\n"
+                                f"The requested skill_id=`{sid}` does not exist. "
+                                "Retry based on the loaded skill index with a valid request_skill_prompt call, or continue directly with standard tools."
                             )
                             continue_after_batch = True
                             break
@@ -2343,10 +2340,10 @@ def run_agent_loop(agent: Any):
                         self._active_skill_total_sections = int(meta.get("total") or 0)
                         self._active_skill_chunked = bool(meta.get("chunked", False))
                         next_input = (
-                            f"【用户原始需求】\n{original_user_task}\n\n"
-                            f"已注入 skill_id=`{sid}` 的 skill 提示。"
-                            f"当前段进度：{self._active_skill_section}/{self._active_skill_total_sections if self._active_skill_total_sections else 1}。"
-                            "请继续调用标准 tools；可一次调用一个或多个工具。"
+                            f"[Original user request]\n{original_user_task}\n\n"
+                            f"Injected the skill prompt for skill_id=`{sid}` . "
+                            f"Current section progress: {self._active_skill_section}/{self._active_skill_total_sections if self._active_skill_total_sections else 1}。"
+                            "Continue with standard tools; you may call one or more tools at once."
                         )
                         no_tool_rounds = 0
                         continue_after_batch = True
@@ -2355,13 +2352,13 @@ def run_agent_loop(agent: Any):
                     pseudo_command = {"tool": tool_name, "args": args}
                     if self._is_repeated_tool_call_pattern(tool_name, args):
                         next_input = (
-                            f"【用户原始需求】\n{original_user_task}\n\n"
-                            "检测到你在重复调用相同的 shell（参数几乎相同）。\n"
-                            "请停止重复检索，改为：\n"
-                            "1) 基于现有结果先给出阶段性结论；\n"
-                            "2) 若证据不足，仅补充一次更有针对性的工具调用；\n"
-                            "3) 若已足够，直接输出 done。\n"
-                            "下一条请继续调用标准 tools，并避免重复；可一次调用一个或多个工具。"
+                            f"[Original user request]\n{original_user_task}\n\n"
+                            "Detected repeated calls to the same shell command with nearly identical arguments.\n"
+                            "Stop repeating the search. Instead:\n"
+                            "1) Provide an interim conclusion from existing results;\n"
+                            "2) If evidence is insufficient, make only one more targeted tool call;\n"
+                            "3) If evidence is sufficient, call `done`.\n"
+                            "Continue with standard tools and avoid repetition; you may call one or more tools at once."
                         )
                         no_tool_rounds = 0
                         continue_after_batch = True
@@ -2487,10 +2484,10 @@ def run_agent_loop(agent: Any):
                         print(f"   New task: {original_user_task}")
                         reason = str(result.get("reason") or "").strip()
                         next_input = (
-                            f"【用户原始需求】\n{original_user_task}\n\n"
-                            "你刚调用了 task_changed，系统已将原始需求切换为“新任务”。\n"
-                            + (f"切换原因：{reason}\n" if reason else "")
-                            + "请基于新的原始需求继续调用标准 tools；可一次调用一个或多个工具。"
+                            f"[Original user request]\n{original_user_task}\n\n"
+                            "You just called `task_changed`; the system has switched the original request to the new task.\n"
+                            + (f"Switch reason: {reason}\n" if reason else "")
+                            + "Continue based on the new original request using standard tools; you may call one or more tools at once."
                         )
                         continue_after_batch = True
                         break
@@ -2540,11 +2537,11 @@ def run_agent_loop(agent: Any):
                             break_after_batch = True
                             break
                         next_input = (
-                            f"【用户原始需求】\n{original_user_task}\n\n"
-                            f"【用户补充信息】\n{supplement_text}\n\n"
-                            + "请判断该补充信息是否与原始需求相关：\n"
-                            "- 若完全无关：调用 task_changed（new_task 填提炼后的新需求，reason 填原因）；\n"
-                            "- 若相关：继续调用标准 tools；可一次调用一个或多个工具；若信息仍不充分，可再次调用 ask_more_info。"
+                            f"[Original user request]\n{original_user_task}\n\n"
+                            f"[User supplement]\n{supplement_text}\n\n"
+                            + "Decide whether this supplement is related to the original request:\n"
+                            "- If completely unrelated: call `task_changed` with `new_task` set to the distilled new request and `reason` set to why.\n"
+                            "- If related: continue with standard tools; you may call one or more tools at once. If information is still insufficient, call `ask_more_info` again."
                         )
                         continue_after_batch = True
                         break
@@ -2553,7 +2550,7 @@ def run_agent_loop(agent: Any):
                         and bool(result.get("needs_user_input", False))
                         and (result.get("retryable", True) is False)
                     ):
-                        hint = str(result.get("error", "") or "需要用户输入后再继续。")
+                        hint = str(result.get("error", "") or "User input is required before continuing.")
                         print(f"⏸️ Auto-continue paused: {hint}")
                         _refresh_context_usage_after_task_boundary(
                             self,
@@ -2590,19 +2587,19 @@ def run_agent_loop(agent: Any):
                 post_status_rule = ""
                 if last_tool_name in ("mcp_status", "mcp_status_refresh"):
                     post_status_rule = (
-                        "你刚执行了 MCP 状态查询工具。下一步必须先根据上一条工具返回里的 status 字段，"
-                        "按固定模板输出完整状态报告；该轮禁止直接 done。状态报告输出完成后的下一步再输出 done。"
+                        "You just ran an MCP status query tool. The next step must first render the complete status report from the previous tool result's `status` fields, "
+                        "using the fixed template. Do not call `done` in that step. After the status report is visible, call `done` in the following step."
                     )
                 elif last_tool_name == "mcp_server_info":
                     post_status_rule = (
-                        "你刚执行了 mcp_server_info。下一步必须先根据上一条工具返回里的 info/status 字段，"
-                        "按固定模板输出该 server 的详情报告；该轮禁止直接 done。"
-                        "详情报告输出完成后，请基于【用户原始需求】自行判断："
-                        "若原始需求仅为查询/展示该指定 MCP 信息，则下一步必须直接输出 done；"
-                        "若原始需求还包含其他未完成目标，则继续输出与原始需求相关的下一条工具调用。"
-                        "查询/展示类需求默认只需自然语言回复，禁止创建额外文件或执行 shell 落盘；"
-                        "仅当用户明确要求“导出/保存/写入文件”时，才允许创建文件。"
-                        "禁止为凑步骤而调用 mcp_status/mcp_status_refresh 或 shell 等无关工具。"
+                        "You just ran `mcp_server_info`. The next step must first render the server details report from the previous tool result's `info`/`status` fields, "
+                        "using the fixed template. Do not call `done` in that step."
+                        "After the report is visible, decide from [Original user request]: "
+                        "if it only asks to query/show that MCP server, the next step must call `done`; "
+                        "if it contains other unfinished goals, continue with the relevant next tool call."
+                        "Query/show requests should not create files or run shell by default; "
+                        "create files only when the user explicitly asks to export/save/write a file."
+                        "Do not call unrelated tools such as mcp_status/mcp_status_refresh or shell just to pad steps."
                     )
                 post_result_synthesis_rule = self._build_post_result_synthesis_rule(
                     tool_name=last_tool_name,
@@ -2610,12 +2607,12 @@ def run_agent_loop(agent: Any):
                     result=last_tool_result,
                 )
                 next_input = (
-                    f"【用户原始需求】\n{original_user_task}\n\n"
+                    f"[Original user request]\n{original_user_task}\n\n"
                     f"{step_progress}\n\n"
-                    f"【上一批工具执行结果（压缩）】\n{self._compact_result_for_next_input(result_for_next_input)}\n\n"
-                    + "请继续调用标准 tools；可一次调用一个或多个工具；"
-                    "任务全部完成时请直接调用 done（若本轮改过文件，args.reviewed_files 需覆盖全部已修改文件）。"
-                    "若上一批结果已满足原始需求，下一条必须直接调用 done。"
+                    f"[Previous batch tool results (compact)]\n{self._compact_result_for_next_input(result_for_next_input)}\n\n"
+                    + "Continue with standard tools; you may call one or more tools at once. "
+                    "When the task is fully complete, call `done` directly (if files changed this turn, `args.reviewed_files` must cover all modified files). "
+                    "If the previous batch result already satisfies the original request, the next message must call `done` directly."
                     + (f"\n{post_status_rule}" if post_status_rule else "")
                     + (f"\n{post_result_synthesis_rule}" if post_result_synthesis_rule else "")
                 )

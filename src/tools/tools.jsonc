@@ -4,7 +4,7 @@
     "type": "function",
     "function": {
       "name": "shell",
-      "description": "在当前工作目录执行系统 shell 命令。",
+      "description": "Execute a system shell command in the current working directory.",
       "parameters": {
         "type": "object",
         "properties": {
@@ -23,7 +23,7 @@
     "type": "function",
     "function": {
       "name": "apply_patch",
-      "description": "对指定文本文件应用标准 unified diff（patch/git apply 格式，包含 ---/+++ 与 @@ hunk）。",
+      "description": "Apply a standard unified diff to a specified text file (patch/git apply format, including ---/+++ and @@ hunks).",
       "parameters": {
         "type": "object",
         "properties": {
@@ -32,7 +32,7 @@
           },
           "patch": {
             "type": "string",
-            "description": "优先使用标准 patch/git apply unified diff（含 ---/+++ 与至少一个 @@ ... @@ hunk）。"
+            "description": "Prefer a standard patch/git apply unified diff, including ---/+++ and at least one @@ ... @@ hunk."
           }
         },
         "required": ["path", "patch"]
@@ -43,7 +43,7 @@
     "type": "function",
     "function": {
       "name": "read_image",
-      "description": "读取图片文件并返回 AI 对图片内容的理解结果。",
+      "description": "Read an image file and return the AI interpretation of its contents.",
       "parameters": {
         "type": "object",
         "properties": {
@@ -62,33 +62,33 @@
     "type": "function",
     "function": {
       "name": "project_context_search",
-      "description": "面向大项目的轻量代码上下文检索：按 query 返回候选文件、相关符号与匹配原因。支持增量索引刷新、强制重建与状态查看。",
+      "description": "Lightweight code-context retrieval for large projects: returns candidate files, related symbols, and match reasons by query. Supports incremental index refresh, forced rebuild, and status checks.",
       "parameters": {
         "type": "object",
         "properties": {
           "query": {
             "type": "string",
-            "description": "检索意图，例如“where auth token validated”或“RoomSettingsPanel timer crash”"
+            "description": "Retrieval intent, for example 'where auth token validated' or 'RoomSettingsPanel timer crash'."
           },
           "max_files": {
             "type": "integer",
-            "description": "最多返回候选文件数（默认 12，最大 50）"
+            "description": "Maximum number of candidate files to return (default 12, max 50)."
           },
           "refresh": {
             "type": "boolean",
-            "description": "是否在检索前做一次增量刷新（默认 true）"
+            "description": "Whether to run an incremental refresh before retrieval (default true)."
           },
           "refresh_async": {
             "type": "boolean",
-            "description": "是否异步触发增量刷新（默认 false）；启用后本次先用当前索引返回候选，刷新结果在后续轮次生效"
+            "description": "Whether to trigger incremental refresh asynchronously (default false). If enabled, this call returns candidates from the current index first; refresh results affect later turns."
           },
           "force_rebuild": {
             "type": "boolean",
-            "description": "是否强制全量重建索引后再检索（慢）"
+            "description": "Whether to force a full index rebuild before retrieval (slow)."
           },
           "status_only": {
             "type": "boolean",
-            "description": "仅返回索引状态，不执行检索"
+            "description": "Return only index status; do not run retrieval."
           }
         },
         "required": ["query"]
@@ -99,7 +99,7 @@
     "type": "function",
     "function": {
       "name": "mcp_server_info",
-      "description": "查询指定 MCP 服务器的聚合信息（状态、tools/resources/prompts）。",
+      "description": "Query aggregated information for a specified MCP server (status, tools, resources, prompts).",
       "parameters": {
         "type": "object",
         "properties": {
@@ -133,7 +133,7 @@
     "type": "function",
     "function": {
       "name": "mcp_reload_config",
-      "description": "手动重载 mcp.jsonc 配置并按增量规则热更新 MCP（新增/变更/删除）。",
+      "description": "Manually reload mcp.jsonc and hot-update MCP incrementally (add/change/delete).",
       "parameters": {
         "type": "object",
         "properties": {}
@@ -144,7 +144,7 @@
     "type": "function",
     "function": {
       "name": "mcp_disable_tools",
-      "description": "禁用指定 MCP server 的 tools（支持逗号分隔字符串或数组）。",
+      "description": "Disable tools for a specified MCP server (supports comma-separated string or array).",
       "parameters": {
         "type": "object",
         "properties": {
@@ -152,7 +152,7 @@
             "type": "string"
           },
           "tools": {
-            "description": "tool 名称列表，支持 \"a,b,c\" 或 [\"a\",\"b\"]",
+            "description": "List of tool names; supports \"a,b,c\" or [\"a\",\"b\"].",
             "oneOf": [
               { "type": "string" },
               {
@@ -170,7 +170,7 @@
     "type": "function",
     "function": {
       "name": "mcp_enable_tools",
-      "description": "启用（解除禁用）指定 MCP server 的 tools（支持逗号分隔字符串或数组）。",
+      "description": "Enable (undelete from disabled list) tools for a specified MCP server (supports comma-separated string or array).",
       "parameters": {
         "type": "object",
         "properties": {
@@ -178,7 +178,7 @@
             "type": "string"
           },
           "tools": {
-            "description": "tool 名称列表，支持 \"a,b,c\" 或 [\"a\",\"b\"]",
+            "description": "List of tool names; supports \"a,b,c\" or [\"a\",\"b\"].",
             "oneOf": [
               { "type": "string" },
               {
@@ -196,7 +196,7 @@
     "type": "function",
     "function": {
       "name": "mcp_list_disabled_tools",
-      "description": "查看 MCP tool 禁用清单（可按 server 查询）。",
+      "description": "View the MCP tool disabled list (optionally filtered by server).",
       "parameters": {
         "type": "object",
         "properties": {
@@ -211,7 +211,7 @@
     "type": "function",
     "function": {
       "name": "mcp_list_tools",
-      "description": "列出指定 MCP 服务器可用的工具。",
+      "description": "List available tools for a specified MCP server.",
       "parameters": {
         "type": "object",
         "properties": {
@@ -233,7 +233,7 @@
     "type": "function",
     "function": {
       "name": "mcp_call_tool",
-      "description": "使用 JSON 参数调用单个 MCP 工具。",
+      "description": "Call a single MCP tool with JSON arguments.",
       "parameters": {
         "type": "object",
         "properties": {
@@ -258,7 +258,7 @@
     "type": "function",
     "function": {
       "name": "mcp_call_tool_batch",
-      "description": "在一次批处理请求中调用多个 MCP 工具。",
+      "description": "Call multiple MCP tools in one batch request.",
       "parameters": {
         "type": "object",
         "properties": {
@@ -286,7 +286,7 @@
     "type": "function",
     "function": {
       "name": "mcp_list_resources",
-      "description": "列出指定 MCP 服务器的资源。",
+      "description": "List resources for a specified MCP server.",
       "parameters": {
         "type": "object",
         "properties": {
@@ -308,7 +308,7 @@
     "type": "function",
     "function": {
       "name": "mcp_read_resource",
-      "description": "按 URI 读取 MCP 资源内容。",
+      "description": "Read MCP resource content by URI.",
       "parameters": {
         "type": "object",
         "properties": {
@@ -330,7 +330,7 @@
     "type": "function",
     "function": {
       "name": "mcp_list_resource_templates",
-      "description": "列出 MCP 资源模板。",
+      "description": "List MCP resource templates.",
       "parameters": {
         "type": "object",
         "properties": {
@@ -352,7 +352,7 @@
     "type": "function",
     "function": {
       "name": "mcp_list_prompts",
-      "description": "列出指定 MCP 服务器的 prompts。",
+      "description": "List prompts for a specified MCP server.",
       "parameters": {
         "type": "object",
         "properties": {
@@ -374,7 +374,7 @@
     "type": "function",
     "function": {
       "name": "mcp_get_prompt",
-      "description": "使用可选参数解析单个 MCP prompt。",
+      "description": "Resolve a single MCP prompt with optional arguments.",
       "parameters": {
         "type": "object",
         "properties": {
@@ -399,7 +399,7 @@
     "type": "function",
     "function": {
       "name": "mcp_sampling_create_message",
-      "description": "调用 MCP sampling/createMessage 能力。",
+      "description": "Call the MCP sampling/createMessage capability.",
       "parameters": {
         "type": "object",
         "properties": {
@@ -421,7 +421,7 @@
     "type": "function",
     "function": {
       "name": "mcp_completion_complete",
-      "description": "调用 MCP completion/complete 能力。",
+      "description": "Call the MCP completion/complete capability.",
       "parameters": {
         "type": "object",
         "properties": {
@@ -443,7 +443,7 @@
     "type": "function",
     "function": {
       "name": "mcp_status",
-      "description": "仅从内存缓存读取 MCP 状态。",
+      "description": "Read MCP status only from the in-memory cache.",
       "parameters": {
         "type": "object",
         "properties": {
@@ -458,7 +458,7 @@
     "type": "function",
     "function": {
       "name": "mcp_status_refresh",
-      "description": "通过实时服务器检查刷新 MCP 状态。",
+      "description": "Refresh MCP status through live server checks.",
       "parameters": {
         "type": "object",
         "properties": {
@@ -485,7 +485,7 @@
     "type": "function",
     "function": {
       "name": "mcp_reconnect",
-      "description": "重连单个 MCP 服务器并刷新其工具列表。",
+      "description": "Reconnect a single MCP server and refresh its tool list.",
       "parameters": {
         "type": "object",
         "properties": {
@@ -504,7 +504,7 @@
     "type": "function",
     "function": {
       "name": "memory_search",
-      "description": "在当前工作区作用域内语义检索「经验记忆」。缺信息以完成任务时，须先于其它内置工具 / skills / MCP 调用本工具（可明确判定与历史记忆无关的单次输入或纯外部事实除外）；若无命中或仍不足，再用其它能力补齐。若本轮 system 中【经验记忆】已完整覆盖所需信息则不必重复检索。自然语言指称实体且缺少稳定标识时，用实体名/别名 + 可能的关键词作 query，禁止未检索就臆造编号。query 填检索要点；可选 limit。",
+      "description": "Semantically search experiential memory within the current workspace scope. When information is missing to complete the task, call this before other built-in tools, skills, or MCP tools, except for one-off inputs clearly unrelated to memory or pure external facts. If there are no hits or information remains insufficient, use other capabilities to fill the gap. If this turn's system prompt experiential memory already fully covers the needed information, do not search again. When a natural-language entity reference lacks a stable identifier, query with the entity name/alias and likely keywords; do not invent IDs before searching. Put retrieval essentials in query; limit is optional.",
       "parameters": {
         "type": "object",
         "properties": {
@@ -522,7 +522,7 @@
     "type": "function",
     "function": {
       "name": "memory_add",
-      "description": "写入一条经验记忆。仅用于事实性的简短条目（约定、偏好结论、纠正结果）。若用户强调「永远/长期/一直记住」且内容是稳定默认（称呼、助手显示名、长期交互规则），应改用 user_preferences_patch，勿仅用本工具代替。禁止保存代码片段、脚本/命令原始输出、日志原文或总结后的大段文本；代码/输出信息应通过 shell（必要时配合 summarize）实时读取。禁止写入密码、token、私钥。若你认为用户观点可能有误，可在 system_note 中写明你的独立判断。",
+      "description": "Write one experiential memory entry. Use only for short factual entries such as agreements, preference conclusions, or corrections. If the user emphasizes permanent/long-term memory and the content is a stable default (forms of address, assistant display name, long-term interaction rules), use user_preferences_patch instead of only this tool. Do not save code snippets, raw script/command output, raw logs, or long summarized text; code/output information should be read live through shell when needed (with summarize if necessary). Do not write passwords, tokens, or private keys. If you believe the user's view may be wrong, record your independent judgment in system_note.",
       "parameters": {
         "type": "object",
         "properties": {
@@ -538,11 +538,11 @@
           },
           "memory_type": {
             "type": "string",
-            "description": "如 lesson / preference / note"
+            "description": "For example lesson / preference / note."
           },
           "source": {
             "type": "string",
-            "description": "如 assistant / user_request / auto"
+            "description": "For example assistant / user_request / auto."
           },
           "user_request": {
             "type": "string"
@@ -559,7 +559,7 @@
     "type": "function",
     "function": {
       "name": "memory_list",
-      "description": "列出当前工作区作用域下最近的经验记忆摘要（按最近访问排序）。",
+      "description": "List recent experiential memory summaries in the current workspace scope, sorted by recent access.",
       "parameters": {
         "type": "object",
         "properties": {
@@ -574,7 +574,7 @@
     "type": "function",
     "function": {
       "name": "memory_stats",
-      "description": "读取经验记忆存储统计（条数、嵌入模型、目录）。",
+      "description": "Read experiential memory storage stats (entry count, embedding model, directory).",
       "parameters": {
         "type": "object",
         "properties": {}
@@ -585,7 +585,7 @@
     "type": "function",
     "function": {
       "name": "memory_delete",
-      "description": "按 id 删除一条经验记忆。",
+      "description": "Delete one experiential memory entry by id.",
       "parameters": {
         "type": "object",
         "properties": {
@@ -601,13 +601,13 @@
     "type": "function",
     "function": {
       "name": "user_preferences_read",
-      "description": "读取持久化用户偏好文件全文（config 目录下 user_preferences.md），用于修改前查看当前内容。非经验记忆库；该文件内容会固定注入 system。可选 max_chars 截断返回。",
+      "description": "Read the full persistent user preferences file (user_preferences.md under config) to inspect current content before editing. This is not the experiential memory store; its content is always injected into system. Optional max_chars truncates the returned content.",
       "parameters": {
         "type": "object",
         "properties": {
           "max_chars": {
             "type": "integer",
-            "description": "可选，正文最大字符数，默认 16000"
+            "description": "Optional maximum body characters; default 16000."
           }
         }
       }
@@ -617,7 +617,7 @@
     "type": "function",
     "function": {
       "name": "user_preferences_patch",
-      "description": "写入/更新持久化用户偏好文件（Markdown + YAML 头）。每轮对话会自动注入 system。用户说「永远记住」「以后一直」「别忘」且指稳定口径（尤其助手/用户称呼、默认语气与规则）时必须使用本工具（通常 upsert_section），而非仅 memory_add。operation=replace_body 替换正文；operation=upsert_section 按二级标题插入或替换小节。禁止写入密钥/token。",
+      "description": "Write/update the persistent user preferences file (Markdown + YAML frontmatter). It is injected into system every turn. When the user says to remember something permanently/always/not forget and the content is a stable stance (especially assistant/user forms of address, default tone, or rules), use this tool, usually upsert_section, instead of only memory_add. operation=replace_body replaces the body; operation=upsert_section inserts or replaces a section by level-2 heading. Do not write secrets/tokens.",
       "parameters": {
         "type": "object",
         "properties": {
@@ -627,15 +627,15 @@
           },
           "markdown_body": {
             "type": "string",
-            "description": "replace_body 时必填：完整 Markdown 正文（不含 YAML 头）"
+            "description": "Required for replace_body: full Markdown body without YAML frontmatter."
           },
           "section_heading": {
             "type": "string",
-            "description": "upsert_section 时必填：小节标题（不要写 ##）"
+            "description": "Required for upsert_section: section title without ##."
           },
           "section_body": {
             "type": "string",
-            "description": "upsert_section 时：小节正文 Markdown"
+            "description": "For upsert_section: section body Markdown."
           }
         },
         "required": ["operation"]
@@ -646,7 +646,7 @@
     "type": "function",
     "function": {
       "name": "freedom_on",
-      "description": "开启自由模式确认策略。",
+      "description": "Enable the free-mode confirmation policy.",
       "parameters": {
         "type": "object",
         "properties": {}
@@ -657,7 +657,7 @@
     "type": "function",
     "function": {
       "name": "freedom_off",
-      "description": "关闭自由模式确认策略。",
+      "description": "Disable the free-mode confirmation policy.",
       "parameters": {
         "type": "object",
         "properties": {}
@@ -668,7 +668,7 @@
     "type": "function",
     "function": {
       "name": "always_confirm_reset",
-      "description": "清空免确认白名单并强制重新确认。",
+      "description": "Clear the skip-confirm allowlist and force confirmation again.",
       "parameters": {
         "type": "object",
         "properties": {}
@@ -679,7 +679,7 @@
     "type": "function",
     "function": {
       "name": "request_skill_prompt",
-      "description": "请求注入指定 skill 的提示（虚拟控制工具，不直接执行业务操作）。支持长技能正文分段注入：可传 section 加载指定段，或 full=true 加载完整正文。",
+      "description": "Request injection of the prompt for a specified skill. This is a virtual control tool and does not directly perform business actions. Supports chunked long skill bodies: pass section to load a specific section, or full=true to load the complete body.",
       "parameters": {
         "type": "object",
         "properties": {
@@ -702,7 +702,7 @@
     "type": "function",
     "function": {
       "name": "ask_more_info",
-      "description": "当缺少关键输入时，向用户请求补充信息并暂停自动续步，待用户输入后继续。须已先按顺序尝试 memory_search 与其它工具/skills/MCP 仍无法可靠获得时再调用。",
+      "description": "When key input is missing, ask the user for supplementary information and pause auto-continuation until the user responds. Call this only after trying memory_search and other tools/skills/MCP in order and still being unable to obtain the information reliably.",
       "parameters": {
         "type": "object",
         "properties": {
@@ -724,7 +724,7 @@
     "type": "function",
     "function": {
       "name": "task_changed",
-      "description": "当用户补充信息与原始需求完全无关时，声明切换到新任务。",
+      "description": "Declare a switch to a new task when the user's supplementary information is completely unrelated to the original request.",
       "parameters": {
         "type": "object",
         "properties": {
@@ -743,13 +743,13 @@
     "type": "function",
     "function": {
       "name": "done",
-      "description": "标记当前用户任务已完成。若本轮修改了文件，args.reviewed_files 应列出已复查文件清单。",
+      "description": "Mark the current user task as complete. If files were modified this turn, args.reviewed_files should list the reviewed files.",
       "parameters": {
         "type": "object",
         "properties": {
           "reviewed_files": {
             "type": "array",
-            "description": "可选。已复查文件路径列表。software_development 场景下若有代码改动，需覆盖本轮所有已修改文件。",
+            "description": "Optional list of reviewed file paths. In software_development scenarios, if code changed, this must cover all files modified this turn.",
             "items": {
               "type": "string"
             }

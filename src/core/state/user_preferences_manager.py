@@ -75,7 +75,7 @@ def _write_file(path: Path, meta: Dict[str, Any], body: str) -> None:
 def _reject_secrets(text: str) -> Optional[str]:
     for line in (text or "").splitlines():
         if _SECRET_LINE_PAT.search(line):
-            return "内容疑似包含密钥/token 行，已拒绝写入（请概括描述，勿粘贴完整 secret）。"
+            return "Content appears to contain a secret/token line, so it was rejected. Please summarize it instead of pasting the full secret."
     return None
 
 
@@ -138,25 +138,25 @@ def merge_sections(
 
 
 def build_system_append(config_dir: Path, max_chars: int = MAX_BODY_CHARS) -> str:
-    """供注入 system：返回带标题前缀的文本；空文件返回空串。"""
+    """For system injection: return text with a heading prefix; empty files return an empty string."""
     path = _preferences_path(config_dir)
     _, body = _read_file(path)
     body = (body or "").strip()
     if not body:
         return ""
     if len(body) > max_chars:
-        body = body[: max_chars - 1] + "…"
+        body = body[: max_chars - 1] + "..."
     note = (
-        "\n\n（上文为用户持久化偏好；若与【经验记忆】中零散条目冲突，"
-        "以本段为准用于称呼、交互习惯与长期约定；事实性细节仍以双方确认与较新记录为准。）"
+        "\n\n(The above section contains persistent user preferences. If it conflicts with scattered experiential memory entries, "
+        "this section takes precedence for forms of address, interaction habits, and long-term agreements. "
+        "Factual details still depend on mutual confirmation and newer records.)"
     )
     block = (
-        "\n\n## 【用户偏好（持久化，须遵守）】\n\n"
+        "\n\n## [User Preferences (Persistent, Must Follow)]\n\n"
         + body
         + note
     )
     return block
-
 
 def read_body(config_dir: Path) -> Tuple[Dict[str, Any], str]:
     return _read_file(_preferences_path(Path(config_dir)))
@@ -170,7 +170,7 @@ def replace_body(config_dir: Path, new_body: str) -> Dict[str, Any]:
     if len(body) > MAX_BODY_CHARS:
         return {
             "success": False,
-            "error": f"正文超过上限 {MAX_BODY_CHARS} 字符，请先合并或删减后再写入。",
+            "error": f"Body exceeds the limit of {MAX_BODY_CHARS} characters. Merge or shorten the content before writing.",
         }
     path = _preferences_path(Path(config_dir))
     meta, _ = _read_file(path)
@@ -191,7 +191,7 @@ def upsert_section(
     if len(merged) > MAX_BODY_CHARS:
         return {
             "success": False,
-            "error": f"合并后超过上限 {MAX_BODY_CHARS} 字符，请删减其它小节或缩短内容。",
+            "error": f"Merged content exceeds the limit of {MAX_BODY_CHARS} characters. Delete other sections or shorten the content.",
         }
     _write_file(path, meta, merged)
     return {"success": True, "path": str(path), "section": section_heading.strip()}

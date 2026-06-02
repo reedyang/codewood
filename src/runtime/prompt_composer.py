@@ -18,16 +18,16 @@ _SYSTEM_FILE_SEARCH_NEARBY_RULE_KEY = "{{SYSTEM_FILE_SEARCH_NEARBY_RULE}}"
 _TOOLS_FILE_SEARCH_NEARBY_RULE_KEY = "{{TOOLS_FILE_SEARCH_NEARBY_RULE}}"
 
 _SYSTEM_FILE_SEARCH_NEARBY_RULE_FALLBACK = (
-    "必须先执行检索（如 `Select-String`/`rg`），再按行号分段读取附近内容；禁止一次读取整个文件。"
+    "first run a search such as `Select-String` or `rg`, then read nearby content by line range; do not read the whole file at once."
 )
 _SYSTEM_FILE_SEARCH_NEARBY_RULE_RG_ONLY = (
-    "必须先执行 `rg` 检索，再按行号分段读取附近内容；禁止一次读取整个文件。"
+    "first run `rg`, then read nearby content by line range; do not read the whole file at once."
 )
 _TOOLS_FILE_SEARCH_NEARBY_RULE_FALLBACK = (
-    "必须先检索命中位置，再按行号读取附近片段；禁止一次读取整个文件。"
+    "first locate matches, then read nearby snippets by line range; do not read the whole file at once."
 )
 _TOOLS_FILE_SEARCH_NEARBY_RULE_RG_ONLY = (
-    "必须先用 `rg` 检索命中位置，再按行号读取附近片段；禁止一次读取整个文件。"
+    "first use `rg` to locate matches, then read nearby snippets by line range; do not read the whole file at once."
 )
 
 
@@ -104,7 +104,7 @@ def build_mcp_system_append(agent: Any) -> str:
     """Build MCP section appended to system prompt (with redacted env values)."""
     servers = (agent.mcp_config or {}).get("mcpServers", {})
     if not isinstance(servers, dict) or not servers:
-        return "\n\n## MCP 配置\n未检测到可用 MCP server（config 目录下无 mcp.jsonc 或配置为空）。"
+        return "\n\n## MCP Configuration\nNo usable MCP server was detected; `mcp.jsonc` is missing or empty under the config directory."
     status_servers: Dict[str, Any] = {}
     try:
         status_servers = (
@@ -119,16 +119,16 @@ def build_mcp_system_append(agent: Any) -> str:
     lines: List[str] = [
         "",
         "",
-        "## MCP 配置",
-        "已从 config 目录下的 mcp.jsonc 加载 MCP servers。调用前请优先选择最匹配的 server。",
-        "仅可引用“已加载”server 的工具能力；未加载 server 禁止在自然语言中当作可用能力引用。",
-        "决策约束：当“已加载 + 已缓存 tools”中存在可覆盖用户意图的工具时，必须优先走 mcp_call_tool，"
-        "不得先创建临时脚本或调用 shell 模拟实现（除非工具调用已明确失败且无等价 MCP 工具）。",
-        "可用 servers（敏感 env 已脱敏，仅显示键名）：",
+        "## MCP Configuration",
+        "MCP servers were loaded from `mcp.jsonc` under the config directory. Before calling a tool, choose the most relevant loaded server.",
+        "Only capabilities from loaded servers may be treated as available. Do not describe unloaded servers as available capabilities.",
+        "Decision constraint: when loaded cached MCP tools can satisfy the user intent, prefer `mcp_call_tool` ",
+        "instead of creating a temporary script or simulating the capability through shell, unless the MCP tool clearly failed and no equivalent MCP tool exists.",
+        "Available servers (sensitive env values are redacted; only key names are shown):",
     ]
     for name, conf in servers.items():
         if not isinstance(conf, dict):
-            lines.append(f"- {name}: 配置无效（应为 object）")
+            lines.append(f"- {name}: invalid configuration; expected an object")
             continue
         st = status_servers.get(name, {})
         state_raw = str(st.get("state", "pending") or "pending").lower()
@@ -154,23 +154,23 @@ def build_mcp_system_append(agent: Any) -> str:
         if isinstance(env, dict) and env:
             env_keys = ", ".join(str(k) for k in sorted(env.keys()))
             lines.append(f"  env_keys: {env_keys}")
-    lines.append(f"已加载 servers: {', '.join(loaded) if loaded else '无'}")
-    lines.append(f"未加载 servers: {', '.join(not_loaded) if not_loaded else '无'}")
-    lines.append("已缓存 tools（调用 mcp_list_tools 后更新）：")
+    lines.append(f"Loaded servers: {', '.join(loaded) if loaded else 'none'}")
+    lines.append(f"Not loaded servers: {', '.join(not_loaded) if not_loaded else 'none'}")
+    lines.append("Cached tools (updated after `mcp_list_tools`):")
     try:
         lines.append(agent.mcp_manager.cached_tools_for_prompt())
     except Exception:
-        lines.append("尚无已缓存的 MCP tools。")
-    lines.append("已缓存 resources（调用 mcp_list_resources 后更新）：")
+        lines.append("No cached MCP tools yet.")
+    lines.append("Cached resources (updated after `mcp_list_resources`):")
     try:
         lines.append(agent.mcp_manager.cached_resources_for_prompt())
     except Exception:
-        lines.append("尚无已缓存的 MCP resources。")
-    lines.append("已缓存 prompts（调用 mcp_list_prompts 后更新）：")
+        lines.append("No cached MCP resources yet.")
+    lines.append("Cached prompts (updated after `mcp_list_prompts`):")
     try:
         lines.append(agent.mcp_manager.cached_prompts_for_prompt())
     except Exception:
-        lines.append("尚无已缓存的 MCP prompts。")
+        lines.append("No cached MCP prompts yet.")
     return "\n".join(lines)
 
 
@@ -245,12 +245,12 @@ def load_tools_spec_from_jsonc(agent: Any) -> List[Dict[str, Any]]:
 
         return specs
     except Exception as e:
-        print(f"⚠️ tools.jsonc 加载失败: {e}")
+        print(f"⚠️ Failed to load tools.jsonc: {e}")
         return []
 
 
 def build_user_preferences_system_append(agent: Any) -> str:
-    """持久化用户偏好文件，固定注入 system（在 MCP/tools 之前）。"""
+    """Persistent user preferences injected into system before MCP/tools."""
     try:
         from ..core.state import user_preferences_manager as _upm
 
@@ -303,15 +303,15 @@ def build_agents_md_system_append(agent: Any) -> str:
         return ""
     header = (
         "\n\n## User Custom Prompts (AGENTS.md)\n\n"
-        "优先级说明：本节用于注入用户自定义提示；当用户在当前请求中**显式指定 skill**"
-        "（例如 `/skills/<skill-name>` 或已触发 `request_skill_prompt`）且与本节冲突时，"
-        "以显式指定的 skill 正文为准。\n\n"
+        "Priority note: this section injects user-defined prompts. If the current request explicitly selects a skill "
+        "(for example `/skills/<skill-name>` or a triggered `request_skill_prompt`) and conflicts with this section, "
+        "the explicitly selected skill body takes precedence.\n\n"
     )
     return header + "\n\n".join(sections) + "\n"
 
 
 def compose_system_prompt_snapshot(agent: Any, include_tools: bool) -> str:
-    """组装当前可见 system 快照：base + 用户偏好 + MCP [+ 工具目录]。"""
+    """Assemble the current model-visible system snapshot."""
     core = (
         agent._base_system_prompt
         + build_agents_md_system_append(agent)
@@ -336,10 +336,10 @@ def build_runtime_cache_prompt_append(agent: Any, default_workspace_id: str) -> 
         cache_root = (ws_root / get_app_config_dirname() / ".cache").resolve()
     return (
         "\n\n## Runtime Cache Directory Hint\n"
-        "- 通用缓存根目录（workspace 级）: "
+        "- General cache root directory (workspace-level): "
         f"`{cache_root}`\n"
-        "- 若某个脚本支持 `--cache-dir` 参数或其它传递 cache 路径的的参数，则传入此目录。"
-        "- 若脚本未声明或不支持 cache 参数，不要强行传参。"
+        "- If a script supports `--cache-dir` or another cache path parameter, pass this directory.\n"
+        "- If a script does not declare or support a cache parameter, do not force one."
     )
 
 
@@ -347,7 +347,7 @@ def build_tools_prompt_append(agent: Any) -> str:
     """Build tool catalog text injected into system prompt from external md template."""
     template = str(getattr(agent, "tools_prompt_template", "") or "").strip()
     template = re.sub(
-        r"\n?首轮输出模板示例：[\s\S]*$",
+        r"\n?First-turn output template example:[\s\S]*$",
         "",
         template,
         flags=re.IGNORECASE,
@@ -362,9 +362,9 @@ def build_tools_prompt_append(agent: Any) -> str:
     ]
     lines.insert(
         1,
-        "当且仅当当前会话尚未注入目标 skill 正文时，请直接使用标准 tools 调用 request_skill_prompt；"
-        "若该 skill 已注入（例如通过 `/skills/<skill-name>` 显式启用），默认不要重复调用 request_skill_prompt，直接继续业务步骤；"
-        "但当技能正文为分段注入时，可按需通过标准 tools 调用 request_skill_prompt 加载第 n 段或完整正文。",
+        "Call `request_skill_prompt` through standard tools only when the target skill body has not yet been injected. "
+        "If the skill was already injected, for example by `/skills/<skill-name>`, do not repeat `request_skill_prompt`; continue the business steps directly. "
+        "If the skill body was chunked, you may call `request_skill_prompt` for a specific section or for the full body as needed.",
     )
     for t in (agent.tool_specs or []):
         fn = (t or {}).get("function", {})
@@ -387,11 +387,11 @@ def _build_tool_call_mode_prompt() -> str:
         "- HARD REQUIREMENT: every assistant message in this mode MUST include at least one standard API `tool_calls` entry. A content-only assistant message is invalid, even when the task is complete.\n"
         "- If the user goal is complete, include the visible final answer in `content` and call `done` through standard API `tool_calls` in the same assistant message.\n"
         "- If the user goal is not complete, include the next visible status in `content` and call the next real tool through standard API `tool_calls` in the same assistant message.\n"
-        "- 当前模型必须使用 API 标准 `tool_calls` 字段发起工具调用。\n"
-        "- 回复正文只允许写用户可见的自然语言说明、步骤状态或结果总结。\n"
-        "- 禁止在回复正文中输出任何工具调用表示，包括 JSON 工具对象、XML/标签形式、Markdown 代码块、"
-        "`tool`/`args` 示例或其它伪工具调用格式。\n"
-        "- 如果用户目标已经完成，先在正文给出用户可见答复，再通过 API 标准 `tool_calls` 调用 `done`。"
+        "- The current model must invoke tools through the API-standard `tool_calls` field.\n"
+        "- Visible text may contain only user-visible natural-language explanation, step status, or result summary.\n"
+        "- Never print any tool-call representation in visible text, including JSON tool objects, XML/tags, markdown code blocks, "
+        "`tool`/`args` examples, or any other pseudo tool-call format.\n"
+        "- If the user goal is complete, first include the user-visible answer in content, then call `done` through API-standard `tool_calls`."
     )
 
 
@@ -403,28 +403,28 @@ def build_os_file_ops_prompt_append() -> str:
         else _TOOLS_FILE_SEARCH_NEARBY_RULE_FALLBACK
     )
     search_policy_line = (
-        "- 当需要定位关键词并读取文本附近内容时，"
+        "- When locating keywords and reading nearby text, "
         + search_policy_rule
         + "\n"
     )
     if os.name == "nt":
         return (
             "\n\n## File Operation Policy (OS-Specific)\n"
-            "- 可通过操作系统命令完成的文件操作（读取、检索、创建、编辑、批量替换）必须使用 `shell` 工具执行。\n"
-            "- 命令路由优先级：脚本执行规则 > 文本文件操作规则。若命令目标是执行脚本（如 python/py/node/bash/pwsh 调用脚本文件），必须按脚本执行规则处理。\n"
-            '- 当前系统为 Windows：仅当命令目标是文本文件操作（读取、检索、创建、编辑、替换）时，才必须使用 `powershell -ExecutionPolicy Bypass -Command "<command>"` 形式执行；运行脚本不属于文本文件操作。\n'
-            "- 禁止使用 `type`、`findstr`、`copy`、`move`、`del`、`cmd /c` 等非该前缀方式处理这些文件操作。\n"
+            "- File operations that can be done through OS commands (read, search, create, edit, bulk replace) must use `shell`.\n"
+            "- Command routing priority: script execution rules override text-file operation rules. If the target is script execution, such as python/py/node/bash/pwsh running a script file, follow script execution rules.\n"
+            '- Current OS is Windows: only text-file operations (read, search, create, edit, replace) must use `powershell -ExecutionPolicy Bypass -Command "<command>"`; running scripts is not a text-file operation.\n'
+            "- Do not use `type`, `findstr`, `copy`, `move`, `del`, `cmd /c`, or other non-prefix forms for those file operations.\n"
             + search_policy_line
-            + "- 读取文本文件时，单次读取不得超过 100 行；超过时必须拆分为多次分段读取。\n"
-            + '- 脚本执行时禁止使用多余的 PowerShell 包装。允许示例：`python tools/a.py --x 1`、`py scripts/job.py`；禁止示例：`powershell -ExecutionPolicy Bypass -Command "python tools/a.py --x 1"`。\n'
-            + "- 在输出命令前必须自检：若命令包含 python/py + 脚本文件，则直接调用 python/py；若命令目标是文本文件操作，则使用 PowerShell 前缀。"
+            + "- Do not read more than 100 lines from a text file in one call; split larger reads into ranges.\n"
+            + '- Do not wrap script execution in unnecessary PowerShell. Allowed: `python tools/a.py --x 1`, `py scripts/job.py`; forbidden: `powershell -ExecutionPolicy Bypass -Command "python tools/a.py --x 1"`.\n'
+            + "- Before issuing a command, self-check: python/py plus script file means direct python/py call; text-file operation means PowerShell prefix."
         )
     return (
         "\n\n## File Operation Policy (OS-Specific)\n"
-        "- 可通过操作系统命令完成的文件操作（读取、检索、创建、编辑、批量替换）必须使用 `shell` 工具执行。\n"
-        "- 当前系统为非 Windows：`shell.command` 使用 POSIX shell 规范（优先 `cat`/`sed`/`awk`/`grep`/`find`，需要修改文件时优先 `sed -i` 或重定向）。\n"
+        "- File operations that can be done through OS commands (read, search, create, edit, bulk replace) must use `shell`.\n"
+        "- Current OS is not Windows: `shell.command` uses POSIX shell conventions; prefer `cat`/`sed`/`awk`/`grep`/`find`, and prefer `sed -i` or redirection when editing files.\n"
         + search_policy_line
-        + "- 读取文本文件时，单次读取不得超过 100 行；超过时必须拆分为多次分段读取。\n"
+        + "- Do not read more than 100 lines from a text file in one call; split larger reads into ranges.\n"
     )
 
 
@@ -434,7 +434,7 @@ def load_tools_prompt_template() -> str:
     try:
         return path.read_text(encoding="utf-8")
     except Exception as e:
-        print(f"⚠️ tools_prompt.md 加载失败: {e}")
+        print(f"⚠️ Failed to load tools_prompt.md: {e}")
         return "## Tool Catalog (prompt-injected)"
 
 
@@ -489,7 +489,7 @@ def build_local_skill_context_pack(target: Any) -> str:
         lines.append("- key headings:")
         for h in headings:
             lines.append(f"  - {h}")
-    lines.append("- usage_hint: 优先基于上述路径做定点读取/执行，避免无界搜索。")
+    lines.append("- usage_hint: Prefer targeted reads/execution based on the paths above; avoid unbounded search.")
     return "\n".join(lines)
 
 
@@ -524,7 +524,7 @@ def build_mcp_skill_context_pack(
         f"- skill_id: `{skill_id}`",
         f"- prompt_messages: {len(rendered_parts or [])}",
         f"- rendered_chars: {char_count}",
-        "- usage_hint: 先按消息顺序执行首个可落地步骤，再根据结果迭代。",
+        "- usage_hint: Execute the first actionable step in message order, then iterate based on results.",
     ]
     return "\n".join(lines)
 
@@ -594,14 +594,14 @@ def render_skill_section_payload(
     payload = sections[idx - 1]
     hint_lines = [
         "",
-        f"[Skill 分段注入] 当前仅注入第 {idx}/{total} 段，以控制 prompt 体积。",
+        f"[Chunked skill injection] Only section {idx}/{total} is currently injected to control prompt size.",
     ]
     if idx < total:
         hint_lines.append(
-            f"如需下一段，请通过标准 tools 调用 `request_skill_prompt`，参数包含 `skill_id` 与 `section={idx + 1}`。"
+            f"If the next section is needed, call `request_skill_prompt` through standard tools with `skill_id` and `section={idx + 1}`."
         )
     hint_lines.append(
-        "如需完整正文，请通过标准 tools 调用 `request_skill_prompt`，参数包含 `skill_id` 与 `full=true`。"
+        "If the full body is needed, call `request_skill_prompt` through standard tools with `skill_id` and `full=true`."
     )
     return payload + "\n" + "\n".join(hint_lines), {
         "chunked": True,
@@ -708,16 +708,16 @@ def build_single_skill_prompt(
                 )
                 lines = [
                     "",
-                    "## Agent Skill（按需加载）",
+                    "## Agent Skill (On-Demand)",
                     f"### MCP Skill Prompt: `{sid_raw}` · server `{srv}`",
                     f"**Description:** {desc or '(no description)'}",
                     "",
                     build_mcp_skill_context_pack(srv, sid_raw, rendered_parts),
                     "",
-                    "【优先级】当前请求已显式指定该 skill：若与 AGENTS.md 或通用系统说明冲突，"
-                    "按本 skill 正文执行（安全/越权/破坏性硬限制除外）。",
+                    "Priority: the current request explicitly selected this skill. If it conflicts with AGENTS.md or general system instructions, "
+                    "follow this skill body except for safety, privilege, and destructive-action hard limits.",
                     "",
-                    "以下正文来自 MCP `prompts/get` 返回，请严格按其步骤执行：",
+                    "The body below comes from MCP `prompts/get`; follow its steps strictly:",
                     "",
                     payload_text,
                     "",
@@ -740,18 +740,18 @@ def build_single_skill_prompt(
     )
     lines = [
         "",
-        "## Agent Skill（按需加载）",
-        f"### Skill: `{target.name}` · 目录 `{target.skill_id}`",
+        "## Agent Skill (On-Demand)",
+        f"### Skill: `{target.name}` · directory `{target.skill_id}`",
         f"**Description:** {target.description}",
         "",
         build_local_skill_context_pack(target),
         "",
-        "【优先级】当前请求已显式指定该 skill：若与 AGENTS.md 或通用系统说明冲突，"
-        "按本 skill 正文执行（安全/越权/破坏性硬限制除外）。",
+        "Priority: the current request explicitly selected this skill. If it conflicts with AGENTS.md or general system instructions, "
+        "follow this skill body except for safety, privilege, and destructive-action hard limits.",
         "",
         f"**Skill bundle root (absolute path on this machine):** `{target.bundle_root}`",
         f"**SKILL.md path (same bundle):** `{_br / 'SKILL.md'}`",
-        "技能正文中的 `<skill_root>` 即指上文的 **Skill bundle root**。",
+        "`<skill_root>` in the skill body refers to the **Skill bundle root** above.",
         "",
         payload_text,
         "",
