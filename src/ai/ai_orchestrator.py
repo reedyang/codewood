@@ -30,25 +30,31 @@ class AIOrchestrator:
         provider = str(self.context.provider or "")
         model_name = str(self.context.model_name or "")
         try:
-            special_messages, special_record_history, special_error = build_special_mode_messages(
-                user_input=call_ctx.user_input,
-                stream=call_ctx.stream,
-                minimal_classifier=call_ctx.minimal_classifier,
-                freedom_combined_review=call_ctx.freedom_combined_review,
-                reflection_mode=call_ctx.reflection_mode,
-                session_summary_mode=call_ctx.session_summary_mode,
-                memory_query_expansion_mode=call_ctx.memory_query_expansion_mode,
-                work_directory=str(self.context.work_directory),
-            )
-            if special_error:
-                return special_error
-            if special_messages is not None:
-                messages = special_messages
-                record_history = special_record_history
+            if call_ctx.messages_override is not None:
+                messages = list(call_ctx.messages_override)
+                record_history = bool(call_ctx.record_history_override)
             else:
-                messages, record_history = self.context.regular_message_builder(
-                    call_ctx.user_input, call_ctx.context
+                special_messages, special_record_history, special_error = build_special_mode_messages(
+                    user_input=call_ctx.user_input,
+                    stream=call_ctx.stream,
+                    minimal_classifier=call_ctx.minimal_classifier,
+                    freedom_combined_review=call_ctx.freedom_combined_review,
+                    reflection_mode=call_ctx.reflection_mode,
+                    session_summary_mode=call_ctx.session_summary_mode,
+                    memory_query_expansion_mode=call_ctx.memory_query_expansion_mode,
+                    work_directory=str(self.context.work_directory),
                 )
+                if special_error:
+                    return special_error
+                if special_messages is not None:
+                    messages = special_messages
+                    record_history = special_record_history
+                else:
+                    messages, record_history = self.context.regular_message_builder(
+                        call_ctx.user_input, call_ctx.context
+                    )
+                if call_ctx.record_history_override is not None:
+                    record_history = bool(call_ctx.record_history_override)
 
             if not provider or not model_name:
                 return "❌ Error: model is not configured correctly. Please check the model settings in config.jsonc."

@@ -10,6 +10,7 @@ if "ollama" not in sys.modules:
     sys.modules["ollama"] = fake_ollama
 
 from src.agent import Agent
+from src.services.session_memory_service import SessionMemoryService
 
 
 class _FakeHistoryManager:
@@ -94,6 +95,120 @@ class PromptSeparatorBehaviorTests(unittest.TestCase):
             out = agent._get_user_input_with_history()
         self.assertEqual(out, "hello")
         mock_separator.assert_not_called()
+
+    def test_chat_history_replays_context_compaction_notice_banner(self):
+        agent = self._build_agent()
+        agent.session_memory_service = SessionMemoryService(agent)
+        summary = agent.session_memory_service.build_context_compaction_summary_content(
+            summary="这段摘要只给模型上下文使用",
+            mode="manual",
+            covered_message_count=2,
+        )
+        notice = agent.session_memory_service.build_context_compaction_notice_content(
+            "Context automatically compacted"
+        )
+        agent.conversation_history = [
+            {"role": "user", "content": "reload 前的普通消息"},
+            {"role": "assistant", "content": summary},
+            {"role": "assistant", "content": notice},
+            {"role": "assistant", "content": "reload 后的普通回复"},
+        ]
+
+        with (
+            patch.object(agent.session_memory_service, "_print_compaction_banner") as mock_banner,
+            patch("builtins.print") as mock_print,
+        ):
+            agent._print_chat_history()
+
+        mock_banner.assert_called_once_with("Context automatically compacted")
+        rendered = "\n".join(str(call.args[0]) for call in mock_print.call_args_list if call.args)
+        self.assertIn("reload 前的普通消息", rendered)
+        self.assertIn("reload 后的普通回复", rendered)
+        self.assertNotIn("这段摘要只给模型上下文使用", rendered)
+
+    def test_compact_slash_history_is_replayed_before_compacted_notice(self):
+        agent = self._build_agent()
+        agent.session_memory_service = SessionMemoryService(agent)
+        summary = agent.session_memory_service.build_context_compaction_summary_content(
+            summary="压缩摘要",
+            mode="manual",
+            covered_message_count=2,
+        )
+        notice = agent.session_memory_service.build_context_compaction_notice_content(
+            "Context automatically compacted"
+        )
+        agent.conversation_history = [
+            {"role": "user", "content": "旧消息"},
+            {"role": "assistant", "content": summary},
+            {"role": "assistant", "content": notice},
+        ]
+
+        agent._record_internal_slash_execution_history("/compact", "")
+
+        roles_and_contents = [
+            (msg.get("role"), str(msg.get("content") or ""))
+            for msg in agent.conversation_history
+        ]
+        compact_idx = next(
+            idx for idx, (_role, content) in enumerate(roles_and_contents) if "/compact" in content
+        )
+        notice_idx = next(
+            idx
+            for idx, (_role, content) in enumerate(roles_and_contents)
+            if "CONTEXT_COMPACTION_NOTICE" in content
+        )
+        self.assertLess(compact_idx, notice_idx)
+
+        events = []
+
+        def fake_print(*args, **_kwargs):
+            if args:
+                events.append(str(args[0]))
+
+        def fake_banner(text):
+            events.append(str(text))
+
+        with (
+            patch.object(agent.session_memory_service, "_print_compaction_banner", side_effect=fake_banner),
+            patch("builtins.print", side_effect=fake_print),
+        ):
+            agent._print_chat_history()
+
+        compact_event_idx = next(idx for idx, text in enumerate(events) if "/compact" in text)
+        compacted_event_idx = next(
+            idx for idx, text in enumerate(events) if "Context automatically compacted" in text
+        )
+        self.assertLess(compact_event_idx, compacted_event_idx)
+
+    def test_failed_compact_slash_history_is_not_moved_before_old_notice(self):
+        agent = self._build_agent()
+        agent.session_memory_service = SessionMemoryService(agent)
+        summary = agent.session_memory_service.build_context_compaction_summary_content(
+            summary="旧摘要",
+            mode="manual",
+            covered_message_count=2,
+        )
+        notice = agent.session_memory_service.build_context_compaction_notice_content(
+            "Context automatically compacted"
+        )
+        agent.conversation_history = [
+            {"role": "assistant", "content": summary},
+            {"role": "assistant", "content": notice},
+        ]
+
+        agent._record_internal_slash_execution_history("/compact", "No context available to compact.\n")
+
+        compact_idx = next(
+            idx
+            for idx, msg in enumerate(agent.conversation_history)
+            if "/compact" in str(msg.get("content") or "")
+        )
+        notice_idx = next(
+            idx
+            for idx, msg in enumerate(agent.conversation_history)
+            if "CONTEXT_COMPACTION_NOTICE" in str(msg.get("content") or "")
+        )
+        self.assertGreater(compact_idx, notice_idx)
 
     def test_separator_has_blank_line_above_and_below(self):
         agent = self._build_agent()

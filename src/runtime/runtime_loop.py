@@ -1594,6 +1594,20 @@ def run_agent_loop(agent: Any):
             except Exception:
                 pass
             self._rewrite_previous_prompt_as_user(raw_user_input.strip())
+            original_user_task = task_user_input
+            maybe_auto_compact = getattr(
+                getattr(self, "session_memory_service", None),
+                "maybe_auto_compact_before_user_message",
+                None,
+            )
+            if callable(maybe_auto_compact):
+                try:
+                    maybe_auto_compact(original_user_task)
+                except Exception:
+                    try:
+                        _emit_flow_log("自动上下文 compact 失败，继续发送当前请求")
+                    except Exception:
+                        pass
             pre_task_status_ticker = _WorkingStatusTicker(
                 sys.stdout,
                 fps=_WORKING_STATUS_MARQUEE_FPS,
@@ -1602,7 +1616,6 @@ def run_agent_loop(agent: Any):
 
             last_result = None
             self._last_auto_removed_ephemeral = None
-            original_user_task = task_user_input
             current_task_id = self._start_chat_task(
                 root_user_input=original_user_task,
             )

@@ -102,6 +102,9 @@ class McpShortcutCommandTests(unittest.TestCase):
         for item in expected:
             self.assertIn(item, SLASH_BUILTIN_COMMANDS)
 
+    def test_completion_contains_compact_command(self):
+        self.assertIn("/compact", SLASH_BUILTIN_COMMANDS)
+
 
 if __name__ == "__main__":
     unittest.main()

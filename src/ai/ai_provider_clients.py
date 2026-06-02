@@ -40,6 +40,8 @@ class AICallContext:
     history_skip_user: bool = False
     tool_schemas: Optional[List[Dict[str, Any]]] = None
     tool_choice: Any = None
+    messages_override: Optional[List[Dict[str, Any]]] = None
+    record_history_override: Optional[bool] = None
 
 
 @dataclass(frozen=True)

@@ -18,6 +18,7 @@ class _FakeChatAgent:
         self._chat_target = {"id": "chat-3", "name": "Other Chat"}
         self.print_chat_history_calls = []
         self.tail_anchor_calls = 0
+        self.remembered_first_visible_indexes = []
 
     def _load_chat_state(self):
         self.load_chat_state_calls += 1
@@ -48,6 +49,9 @@ class _FakeChatAgent:
     def _remember_active_chat_history_tail_anchor(self):
         self.tail_anchor_calls += 1
         return 4
+
+    def _remember_active_chat_history_first_visible_index(self, index):
+        self.remembered_first_visible_indexes.append(index)
 
 
 class _NoopLock:
@@ -106,7 +110,8 @@ class ChatCommandControllerTests(unittest.TestCase):
             ],
         )
         self.assertEqual(buf.getvalue(), "")
-        self.assertEqual(agent.tail_anchor_calls, 1)
+        self.assertEqual(agent.remembered_first_visible_indexes, [0])
+        self.assertEqual(agent.tail_anchor_calls, 0)
 
     def test_reload_prints_activate_error(self):
         agent = _FakeChatAgent()

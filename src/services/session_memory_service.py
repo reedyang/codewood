@@ -1,13 +1,15 @@
 ﻿import json
 import re
+import sys
 import threading
 import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
-from ..config.app_info import get_app_config_dirname, get_app_logger_root, get_app_slug_kebab
+from ..config.app_info import get_app_config_dirname, get_app_logger_root, get_app_runtime_attr_name, get_app_slug_kebab
 from ..core.config.model_providers import DEFAULT_CONTEXT_WINDOW, parse_context_window
+from ..core.console_utils import _ansi_gray
 from ..core.logging.app_logging import get_logger
 
 MEMORY_RETRIEVAL_ROUNDS = 3
@@ -35,6 +37,10 @@ SMALL_CTX_MAX = 16_000
 MEDIUM_CTX_MAX = 64_000
 AGGRESSIVE_COMPRESS_TRIGGER_PCT = 80
 AGGRESSIVE_COMPRESS_TARGET_PCT = 20
+AUTO_COMPACT_TRIGGER_PCT = 60
+AUTO_COMPACT_TAIL_WINDOW_RATIO = 0.05
+CONTEXT_COMPACTION_SUMMARY_PREFIX = "[CONTEXT_COMPACTION_SUMMARY]"
+CONTEXT_COMPACTION_NOTICE_PREFIX = "[CONTEXT_COMPACTION_NOTICE]"
 
 
 class SessionMemoryService:
@@ -47,6 +53,7 @@ class SessionMemoryService:
         self._context_usage_refresh_lock = threading.Lock()
         self._context_usage_refresh_inflight = False
         self._context_usage_refresh_pending: Optional[Dict[str, str]] = None
+        self._context_compaction_lock = threading.Lock()
         self._start_token_counter_warmup()
 
     def _context_usage_state_key(self) -> str:
@@ -109,6 +116,103 @@ class SessionMemoryService:
         if r == "user":
             self.agent._maybe_schedule_auto_chat_name()
 
+    def build_context_compaction_summary_content(
+        self,
+        *,
+        summary: str,
+        mode: str,
+        covered_message_count: int,
+    ) -> str:
+        payload = {
+            "kind": "context_compaction_summary",
+            "summary": str(summary or "").strip(),
+            "mode": str(mode or "").strip().lower() or "manual",
+            "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "covered_message_count": max(0, int(covered_message_count or 0)),
+        }
+        return CONTEXT_COMPACTION_SUMMARY_PREFIX + json.dumps(payload, ensure_ascii=False)
+
+    def parse_context_compaction_summary_content(self, content: str) -> Optional[Dict[str, Any]]:
+        text = str(content or "")
+        if not text.startswith(CONTEXT_COMPACTION_SUMMARY_PREFIX):
+            return None
+        body = text[len(CONTEXT_COMPACTION_SUMMARY_PREFIX):].strip()
+        if not body:
+            return None
+        try:
+            payload = json.loads(body)
+        except Exception:
+            return None
+        if not isinstance(payload, dict):
+            return None
+        if str(payload.get("kind") or "").strip() != "context_compaction_summary":
+            return None
+        return payload
+
+    def is_context_compaction_summary_message(self, msg: Any) -> bool:
+        if not isinstance(msg, dict):
+            return False
+        if str(msg.get("role") or "").strip().lower() != "assistant":
+            return False
+        return isinstance(
+            self.parse_context_compaction_summary_content(str(msg.get("content") or "")),
+            dict,
+        )
+
+    def build_context_compaction_notice_content(self, message: str = "Context automatically compacted") -> str:
+        payload = {
+            "kind": "context_compaction_notice",
+            "message": str(message or "Context automatically compacted").strip(),
+            "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        }
+        return CONTEXT_COMPACTION_NOTICE_PREFIX + json.dumps(payload, ensure_ascii=False)
+
+    def parse_context_compaction_notice_content(self, content: str) -> Optional[Dict[str, Any]]:
+        text = str(content or "")
+        if not text.startswith(CONTEXT_COMPACTION_NOTICE_PREFIX):
+            return None
+        body = text[len(CONTEXT_COMPACTION_NOTICE_PREFIX):].strip()
+        if not body:
+            return None
+        try:
+            payload = json.loads(body)
+        except Exception:
+            return None
+        if not isinstance(payload, dict):
+            return None
+        if str(payload.get("kind") or "").strip() != "context_compaction_notice":
+            return None
+        return payload
+
+    def is_context_compaction_notice_message(self, msg: Any) -> bool:
+        if not isinstance(msg, dict):
+            return False
+        if str(msg.get("role") or "").strip().lower() != "assistant":
+            return False
+        return isinstance(
+            self.parse_context_compaction_notice_content(str(msg.get("content") or "")),
+            dict,
+        )
+
+    def _context_compaction_summary_for_model(self, content: str) -> str:
+        payload = self.parse_context_compaction_summary_content(content)
+        if not isinstance(payload, dict):
+            return ""
+        summary = str(payload.get("summary") or "").strip()
+        if not summary:
+            return ""
+        created_at = str(payload.get("created_at") or "").strip()
+        mode = str(payload.get("mode") or "").strip()
+        header = "【上下文摘要】"
+        meta: List[str] = []
+        if mode:
+            meta.append(f"mode={mode}")
+        if created_at:
+            meta.append(f"created_at={created_at}")
+        if meta:
+            header += " " + "; ".join(meta)
+        return header + "\n" + summary
+
     def _is_excluded_user_message_for_model_context(self, msg: Dict[str, Any]) -> bool:
         if not isinstance(msg, dict):
             return False
@@ -121,6 +225,10 @@ class SessionMemoryService:
         raw = str(content or "")
         if not raw:
             return False
+        if self.parse_context_compaction_notice_content(raw) is not None:
+            return True
+        if self.parse_context_compaction_summary_content(raw) is not None:
+            return True
         parse_slash_result = getattr(self.agent, "_parse_internal_slash_result_history_content", None)
         if callable(parse_slash_result):
             try:
@@ -308,11 +416,52 @@ class SessionMemoryService:
             return _context_eligible_messages(hist)
         return _context_eligible_messages(chat_messages)
 
+    def _context_eligible_history_with_indices(self) -> List[Tuple[int, Dict[str, Any]]]:
+        hist = list(getattr(self.agent, "conversation_history", None) or [])
+        out: List[Tuple[int, Dict[str, Any]]] = []
+        for idx, item in enumerate(hist):
+            if not isinstance(item, dict):
+                continue
+            role = str(item.get("role") or "").strip().lower()
+            if role not in ("user", "assistant"):
+                continue
+            if role == "user" and self._is_excluded_user_message_for_model_context(item):
+                continue
+            if self._is_builtin_slash_user_message(role, str(item.get("content") or "")):
+                continue
+            out.append((idx, item))
+        return out
+
+    def latest_compaction_summary_index(self, history: Optional[List[Dict[str, Any]]] = None) -> int:
+        rows = list(history if history is not None else self._context_eligible_history())
+        for idx in range(len(rows) - 1, -1, -1):
+            if self.is_context_compaction_summary_message(rows[idx]):
+                return idx
+        return -1
+
+    def history_for_regular_context(self) -> List[Dict[str, Any]]:
+        rows = self._context_eligible_history()
+        idx = self.latest_compaction_summary_index(rows)
+        if idx >= 0:
+            return rows[idx:]
+        return rows
+
+    def _history_with_indices_for_regular_context(self) -> List[Tuple[int, Dict[str, Any]]]:
+        rows = self._context_eligible_history_with_indices()
+        for idx in range(len(rows) - 1, -1, -1):
+            if self.is_context_compaction_summary_message(rows[idx][1]):
+                return rows[idx:]
+        return rows
+
     def _normalize_history_content_for_model(self, role: str, content: str) -> str:
         text = str(content or "")
         norm_role = str(role or "").strip().lower()
         if not text:
             return ""
+        if norm_role == "assistant":
+            compact_summary = self._context_compaction_summary_for_model(text)
+            if compact_summary:
+                return compact_summary
         parse_user_cmd = getattr(self.agent, "_parse_direct_shell_user_history_content", None)
         parse_direct_result = getattr(self.agent, "_parse_direct_shell_result_history_content", None)
         is_direct_aborted = getattr(self.agent, "_is_direct_shell_result_aborted", None)
@@ -402,6 +551,10 @@ class SessionMemoryService:
                     return False
             return False
         if norm_role == "assistant":
+            if self.parse_context_compaction_notice_content(text) is not None:
+                return True
+            if self.parse_context_compaction_summary_content(text) is not None:
+                return True
             parse_slash_result = getattr(self.agent, "_parse_internal_slash_result_history_content", None)
             if callable(parse_slash_result):
                 try:
@@ -1039,7 +1192,7 @@ class SessionMemoryService:
                     if root:
                         return root
                     break
-        hist = self._context_eligible_history()
+        hist = self.history_for_regular_context()
         for msg in hist:
             if str(msg.get("role") or "").strip().lower() != "user":
                 continue
@@ -1148,6 +1301,8 @@ class SessionMemoryService:
                 continue
             if role == "user" and self._is_builtin_slash_user_message(role, raw_content):
                 continue
+            if role == "assistant" and self.parse_context_compaction_notice_content(raw_content) is not None:
+                continue
             if role == "assistant" and callable(parse_slash_result):
                 try:
                     slash_payload = parse_slash_result(raw_content)
@@ -1226,6 +1381,326 @@ class SessionMemoryService:
         }
         return working, stats
 
+    def _message_cost_for_tail_budget(self, msg: Dict[str, Any]) -> int:
+        role = str(msg.get("role") or "").strip().lower()
+        content = self._normalize_history_content_for_model(role, str(msg.get("content") or ""))
+        return self._estimate_message_tokens(role, content)
+
+    def _auto_tail_count_within_budget(self, rows: List[Tuple[int, Dict[str, Any]]], max_tokens: int) -> int:
+        if not rows or max_tokens <= 0:
+            return 0
+        total = 0
+        tail_count = 0
+        pos = len(rows) - 1
+        while pos >= 0:
+            if self.is_context_compaction_summary_message(rows[pos][1]):
+                break
+            group_start = pos
+            role = str(rows[pos][1].get("role") or "").strip().lower()
+            if role == "assistant" and pos - 1 >= 0:
+                prev = rows[pos - 1][1]
+                if (
+                    str(prev.get("role") or "").strip().lower() == "user"
+                    and not self.is_context_compaction_summary_message(prev)
+                ):
+                    group_start = pos - 1
+            group = rows[group_start:pos + 1]
+            if any(self.is_context_compaction_summary_message(m) for _idx, m in group):
+                break
+            cost = sum(self._message_cost_for_tail_budget(m) for _idx, m in group)
+            if cost <= 0:
+                break
+            if total + cost > max_tokens:
+                break
+            total += cost
+            tail_count += len(group)
+            pos = group_start - 1
+        return tail_count
+
+    def _compaction_candidate_rows(self, mode: str) -> List[Tuple[int, Dict[str, Any]]]:
+        rows = self._history_with_indices_for_regular_context()
+        if not rows:
+            return []
+        normalized_mode = str(mode or "").strip().lower()
+        compact_until_pos = len(rows) - 1
+        if normalized_mode == "auto":
+            budgets = self._context_token_budgets()
+            ctx_window = int(budgets.get("context_window") or DEFAULT_CONTEXT_WINDOW)
+            tail_budget = max(1, int(ctx_window * AUTO_COMPACT_TAIL_WINDOW_RATIO))
+            tail_count = self._auto_tail_count_within_budget(rows, tail_budget)
+            compact_until_pos = len(rows) - tail_count - 1
+        if compact_until_pos < 0:
+            return []
+        candidates = rows[:compact_until_pos + 1]
+        has_new_dialogue = any(
+            not self.is_context_compaction_summary_message(m)
+            and not self.is_context_compaction_notice_message(m)
+            for _idx, m in candidates
+        )
+        if not has_new_dialogue:
+            return []
+        return candidates
+
+    def build_compaction_messages(
+        self,
+        mode: str,
+        source_history: List[Dict[str, Any]],
+        compact_until_index: int,
+    ) -> List[Dict[str, Any]]:
+        import os
+
+        _ = compact_until_index
+        self.agent._reload_skills()
+        try:
+            system_prompt = self.agent._compose_system_prompt_snapshot(include_tools=True)
+        except Exception:
+            system_prompt = str(getattr(self.agent, "system_prompt", "") or "")
+        budgets = self._context_token_budgets()
+        history_budget = max(160, int(int(budgets.get("input_budget") or 1024) * 0.72))
+        summary_budget = max(80, int(history_budget * 0.10))
+        assistant_clip = max(120, int(budgets.get("assistant_clip_tokens") or 260))
+        history_messages, _stats = self._build_history_messages_by_budget(
+            history_budget,
+            summary_budget,
+            assistant_clip,
+            source_history=source_history,
+        )
+        os_info = os.uname() if hasattr(os, "uname") else os.name
+        workspace_skills_dir = (Path(self.agent.workspace_config_dir) / "skills").resolve()
+        default_install_skills_dir = (Path.home() / get_app_config_dirname() / "skills").resolve()
+        runtime_tail_raw = (
+            f"当前操作系统信息：{os_info}\n"
+            f"当前 {get_app_slug_kebab()} 根目录（绝对路径）：{self.agent._self_repo_root}\n"
+            f"当前 config 目录（绝对路径）：{self.agent.config_dir}\n"
+            f"当前 workspace 名称：{self.agent.workspace_name}\n"
+            f"当前 chat 名称（弱提示，仅会话标签，不代表本轮任务目标）：{self.agent.active_chat_name}\n"
+            f"当前 workspace 目录（绝对路径）：{self.agent.workspace_config_dir}\n"
+            f"默认技能安装路径（绝对路径）：{default_install_skills_dir}\n"
+            f"当前 workspace skills 目录（绝对路径）：{workspace_skills_dir}\n"
+            "安装第三方 skill 时：若用户未指定安装位置，必须使用“默认技能安装路径（绝对路径）”；"
+            "仅当用户明确要求安装到 workspace 时，才可使用“当前 workspace skills 目录（绝对路径）”。\n"
+        )
+        sys_content = (
+            f"{str(getattr(self.agent, '_skills_routing_prefix', '') or '')}"
+            f"{system_prompt}\n"
+            f"{self._software_development_prompt_append()}"
+            f"{runtime_tail_raw}"
+            "\n【上下文 compact 摘要任务】\n"
+            "你正在为后续同一 chat 生成持久上下文摘要。请只输出摘要正文，不要寒暄、不要工具调用、不要 Markdown 代码块。\n"
+            "摘要必须保留：用户原始目标、已完成/未完成事项、关键约束、重要决策、文件/命令/工具结果、错误与中断状态、后续继续时必须知道的事实。\n"
+            "如果已有上一条【上下文摘要】，请把它与后续消息合并为一份更新后的摘要，不要重复无关细节。\n"
+        )
+        user_content = (
+            f"compact_mode={str(mode or '').strip().lower() or 'manual'}\n"
+            "请基于以上历史消息生成一份可替代这些消息的上下文摘要。"
+        )
+        return [{"role": "system", "content": sys_content}] + history_messages + [{"role": "user", "content": user_content}]
+
+    def _format_compaction_banner_line(self, text: str) -> str:
+        label = f" {str(text or '').strip()} "
+        width = self._terminal_columns_for_compaction_banner()
+        if len(label) >= width:
+            return label.strip()
+        pad = width - len(label)
+        left = pad // 2
+        right = pad - left
+        return ("─" * left) + label + ("─" * right)
+
+    def _compaction_output_stream(self) -> Any:
+        stream = sys.stdout
+        seen: Set[int] = set()
+        while stream is not None:
+            sid = id(stream)
+            if sid in seen:
+                break
+            seen.add(sid)
+            nxt = getattr(stream, "_primary", None)
+            if nxt is None:
+                nxt = getattr(stream, "_base_stream", None)
+            if nxt is None:
+                break
+            stream = nxt
+        return stream or sys.stdout
+
+    def _terminal_columns_for_compaction_banner(self) -> int:
+        stream = self._compaction_output_stream()
+        if stream is not sys.stdout:
+            width_raw = self._terminal_columns_from_compaction_streams(stream)
+            if width_raw > 0:
+                return max(1, width_raw - 1)
+        fn_prompt = getattr(self.agent, "_terminal_columns_for_prompt_separator", None)
+        if callable(fn_prompt):
+            try:
+                width0 = int(fn_prompt(default=80) or 0)
+                if width0 > 0:
+                    return max(1, width0)
+            except Exception:
+                pass
+        width_raw = self._terminal_columns_from_compaction_streams(stream)
+        if width_raw > 0:
+            return width_raw
+        return 80
+
+    def _terminal_columns_from_compaction_streams(self, stream: Any) -> int:
+        candidates: List[int] = []
+        terminal_columns_attr = get_app_runtime_attr_name("terminal_columns")
+        for obj in (sys.stdout, stream, sys.__stdout__):
+            try:
+                fn = getattr(obj, terminal_columns_attr, None)
+                if callable(fn):
+                    candidates.append(int(fn() or 0))
+            except Exception:
+                pass
+        for obj in (stream, sys.__stdout__, sys.stdout):
+            try:
+                if hasattr(obj, "fileno"):
+                    candidates.append(int(__import__("os").get_terminal_size(obj.fileno()).columns or 0))
+            except Exception:
+                pass
+        for name in ("_terminal_columns_for_line_estimate",):
+            fn2 = getattr(self.agent, name, None)
+            if callable(fn2):
+                try:
+                    candidates.append(int(fn2() or 0))
+                except Exception:
+                    pass
+        width = max([c for c in candidates if c > 0], default=80)
+        return max(1, int(width))
+
+    def _write_compaction_raw(self, text: str) -> None:
+        stream = self._compaction_output_stream()
+        try:
+            stream.write(str(text or ""))
+            stream.flush()
+        except Exception:
+            try:
+                sys.stdout.write(str(text or ""))
+                sys.stdout.flush()
+            except Exception:
+                pass
+
+    def _print_compaction_banner(self, text: str) -> int:
+        line = self._format_compaction_banner_line(text)
+        self._write_compaction_raw("\n" + _ansi_gray(line) + "\n\n")
+        try:
+            self.agent._terminal_cursor_at_line_start = True
+        except Exception:
+            pass
+        return 3
+
+    def _clear_compaction_banner(self, rendered_lines: int) -> None:
+        rows = max(0, int(rendered_lines or 0))
+        if rows <= 0:
+            return
+        stream = self._compaction_output_stream()
+        try:
+            if not (hasattr(stream, "isatty") and stream.isatty()):
+                return
+        except Exception:
+            return
+        try:
+            for _ in range(min(rows, 20)):
+                stream.write("\x1b[1A\r\x1b[2K")
+            stream.flush()
+        except Exception:
+            pass
+
+    def compact_context(self, mode: str = "manual") -> bool:
+        normalized_mode = str(mode or "").strip().lower() or "manual"
+        if normalized_mode not in {"auto", "manual"}:
+            normalized_mode = "manual"
+        if not self._context_compaction_lock.acquire(blocking=False):
+            if normalized_mode == "manual":
+                print("Context compaction is already running.")
+            return False
+        try:
+            return self._compact_context_locked(normalized_mode)
+        finally:
+            self._context_compaction_lock.release()
+
+    def _compact_context_locked(self, mode: str) -> bool:
+        candidates_with_idx = self._compaction_candidate_rows(mode)
+        if not candidates_with_idx:
+            if mode == "manual":
+                print("No context available to compact.")
+            return False
+        start_text = "Automatically compacting context" if mode == "auto" else "Compacting context"
+        start_banner_lines = self._print_compaction_banner(start_text)
+        source_history = [m for _idx, m in candidates_with_idx]
+        insert_after_idx = int(candidates_with_idx[-1][0])
+        messages = self.build_compaction_messages(mode, source_history, insert_after_idx)
+        try:
+            raw = self.agent.call_ai(
+                "Generate context compaction summary.",
+                context="",
+                stream=False,
+                return_message=False,
+                messages_override=messages,
+                record_history_override=False,
+            )
+        except Exception as e:
+            get_logger().exception("context compact: model call failed")
+            if mode == "manual":
+                print(f"Context compaction failed: {e}")
+            return False
+        summary = str(raw or "").strip() if isinstance(raw, str) else ""
+        if summary.startswith("❌") or summary.startswith("Error calling LLM API") or not summary:
+            if mode == "manual":
+                print(summary or "Context compaction failed: empty summary.")
+            return False
+        summary = summary.replace("```", "").strip()
+        content = self.build_context_compaction_summary_content(
+            summary=summary,
+            mode=mode,
+            covered_message_count=len(source_history),
+        )
+        created_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        task_id = str(getattr(self.agent, "_active_runtime_task_id", "") or "").strip()
+        msg = {
+            "role": "assistant",
+            "content": content,
+            "task_id": task_id,
+            "created_at": created_at,
+        }
+        notice_msg = {
+            "role": "assistant",
+            "content": self.build_context_compaction_notice_content("Context automatically compacted"),
+            "task_id": task_id,
+            "created_at": created_at,
+        }
+        try:
+            self.agent.conversation_history.insert(insert_after_idx + 1, msg)
+            self.agent.conversation_history.insert(insert_after_idx + 2, notice_msg)
+            self.agent._sync_active_chat_messages()
+            self.refresh_context_usage_snapshot(context_hint="context compacted")
+        except Exception:
+            get_logger().exception("context compact: failed to persist summary")
+            if mode == "manual":
+                print("Context compaction failed while saving summary.")
+            return False
+        self._clear_compaction_banner(start_banner_lines)
+        self._print_compaction_banner("Context automatically compacted")
+        return True
+
+    def maybe_auto_compact_before_user_message(self, user_input: str) -> bool:
+        if not self._context_compaction_lock.acquire(blocking=False):
+            return False
+        try:
+            self.refresh_context_usage_snapshot(user_input_hint=str(user_input or ""))
+            usage_pct = int(getattr(self.agent, "_last_context_usage_percent", 0) or 0)
+            try:
+                trigger_pct = int(getattr(self.agent, "auto_compact_trigger_percent", AUTO_COMPACT_TRIGGER_PCT) or AUTO_COMPACT_TRIGGER_PCT)
+            except Exception:
+                trigger_pct = AUTO_COMPACT_TRIGGER_PCT
+            trigger_pct = max(1, min(100, trigger_pct))
+            if usage_pct < trigger_pct:
+                return False
+            if not self._compaction_candidate_rows("auto"):
+                return False
+            return self._compact_context_locked("auto")
+        finally:
+            self._context_compaction_lock.release()
+
     def refresh_context_usage_snapshot(
         self,
         user_input_hint: str = "",
@@ -1245,7 +1720,7 @@ class SessionMemoryService:
                     return
             expected_key = str(expected_state_key or "").strip()
             budgets = self._context_token_budgets()
-            filtered_history = self._context_eligible_history()
+            filtered_history = self.history_for_regular_context()
             history_messages, _stats = self._build_history_messages_by_budget(
                 int(budgets["history_budget"]),
                 int(budgets["history_summary_budget"]),
@@ -1439,7 +1914,7 @@ class SessionMemoryService:
         messages: List[Dict[str, Any]] = [{"role": "system", "content": sys_prefix}]
         if skill_front_system_content:
             messages.append({"role": "system", "content": skill_front_system_content})
-        filtered_history = self._context_eligible_history()
+        filtered_history = self.history_for_regular_context()
         history_messages, history_stats = self._build_history_messages_by_budget(
             int(budgets["history_budget"]),
             int(budgets["history_summary_budget"]),
@@ -1664,4 +2139,3 @@ class SessionMemoryService:
         except Exception:
             pass
         return messages, True
-

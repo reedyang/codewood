@@ -1119,6 +1119,27 @@ class Agent:
                     continue
                 print(self._format_user_chat_display_message(content))
             elif role == "assistant":
+                compact_notice = None
+                try:
+                    compact_notice = self.session_memory_service.parse_context_compaction_notice_content(content)
+                except Exception:
+                    compact_notice = None
+                if compact_notice is not None:
+                    msg_text = str(compact_notice.get("message") or "Context automatically compacted").strip()
+                    try:
+                        self.session_memory_service._print_compaction_banner(msg_text)
+                    except Exception:
+                        print(msg_text)
+                    continue
+                compact_payload = None
+                try:
+                    compact_payload = self.session_memory_service.parse_context_compaction_summary_content(content)
+                except Exception:
+                    compact_payload = None
+                if compact_payload is not None:
+                    # Compact summaries are durable state for the model context,
+                    # not user-visible chat transcript content.
+                    continue
                 interrupted_event = self._parse_conversation_interrupted_history_content(content)
                 if interrupted_event is not None:
                     self._print_conversation_interrupted_banner()
@@ -2301,20 +2322,50 @@ class Agent:
             "exclude_from_model_context": True,
             "persist_to_chat_state": False,
         }
-        self.conversation_history.append(
-            {
-                **transient_base,
-                "role": "user",
-                "content": user_content,
-            }
-        )
-        self.conversation_history.append(
-            {
-                **transient_base,
-                "role": "assistant",
-                "content": assistant_content,
-            }
-        )
+        user_msg = {
+            **transient_base,
+            "role": "user",
+            "content": user_content,
+        }
+        assistant_msg = {
+            **transient_base,
+            "role": "assistant",
+            "content": assistant_content,
+        }
+        insert_idx = self._internal_slash_history_insert_index(raw_cmd, output_text)
+        if insert_idx is not None:
+            self.conversation_history.insert(insert_idx, user_msg)
+            self.conversation_history.insert(insert_idx + 1, assistant_msg)
+            return
+        self.conversation_history.append(user_msg)
+        self.conversation_history.append(assistant_msg)
+
+    def _internal_slash_history_insert_index(
+        self,
+        raw_user_command: str,
+        output_text: str,
+    ) -> Optional[int]:
+        normalized = re.sub(r"\s+", " ", str(raw_user_command or "").strip().lower())
+        if normalized != "/compact":
+            return None
+        if str(output_text or "").strip():
+            return None
+        svc = getattr(self, "session_memory_service", None)
+        is_summary = getattr(svc, "is_context_compaction_summary_message", None)
+        is_notice = getattr(svc, "is_context_compaction_notice_message", None)
+        if not callable(is_summary) or not callable(is_notice):
+            return None
+        hist = self.conversation_history
+        if not isinstance(hist, list) or len(hist) < 2:
+            return None
+        notice_idx = len(hist) - 1
+        summary_idx = notice_idx - 1
+        try:
+            if is_notice(hist[notice_idx]) and is_summary(hist[summary_idx]):
+                return summary_idx
+        except Exception:
+            return None
+        return None
 
     def _is_direct_shell_result_aborted(self, result: Any) -> bool:
         if not isinstance(result, dict):
@@ -4624,6 +4675,8 @@ class Agent:
         history_skip_user: bool = False,
         tool_schemas: Optional[List[Dict[str, Any]]] = None,
         tool_choice: Any = None,
+        messages_override: Optional[List[Dict[str, Any]]] = None,
+        record_history_override: Optional[bool] = None,
     ):
         """调用大模型 API 获取回复；支持流式输出。"""
         effective_stream = self._streaming_enabled_for_current_model() if stream is None else bool(stream)
@@ -4642,6 +4695,8 @@ class Agent:
             history_skip_user=history_skip_user,
             tool_schemas=tool_schemas,
             tool_choice=tool_choice,
+            messages_override=messages_override,
+            record_history_override=record_history_override,
         )
         self.ai_orchestrator.context.provider = self.provider
         self.ai_orchestrator.context.model_name = self.model_name
@@ -5135,6 +5190,7 @@ class Agent:
         print("  /clear screen")
         print("  /clear input history")
         print("  /clear context")
+        print("  /compact")
         print("  /help")
         print("  /model [<model_provider>:<name>]")
         print("\nChat commands:")

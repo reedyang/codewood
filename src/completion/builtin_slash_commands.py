@@ -16,6 +16,7 @@ SLASH_BUILTIN_COMMANDS: List[str] = [
     "/chat reload",
     "/chat rename ",
     "/chat switch ",
+    "/compact",
     "/clear context",
     "/clear input history",
     "/clear screen",
