@@ -95,6 +95,57 @@ class AgentCallAiStreamingTests(unittest.TestCase):
             out,
         )
 
+    def test_model_switch_applies_and_clears_model_level_extra_headers(self):
+        agent = Agent.__new__(Agent)
+        agent.provider = "openai"
+        agent.model_name = "plain"
+        agent.params = {
+            "api_key": "k",
+            "base_url": "https://example.test/v1",
+            "model": "plain",
+            "models": ["plain", "needs-header"],
+            "extra_headers": {},
+        }
+        agent.openai_conf = agent.params
+        agent.ai_orchestrator = _FakeOrchestrator()
+        agent._set_active_chat_model = lambda *_args, **_kwargs: None
+        agent._refresh_status_context_usage_snapshot = lambda: None
+        agent._load_runtime_config_data = lambda: {
+            "model_providers": [
+                {
+                    "provider": "openai",
+                    "params": {
+                        "api_key": "k",
+                        "base_url": "https://example.test/v1",
+                        "models": [
+                            {"name": "plain"},
+                            {
+                                "name": "needs-header",
+                                "extra_headers": {"X-Model": "needs-header"},
+                            },
+                        ],
+                    },
+                }
+            ]
+        }
+
+        out = agent._switch_model_by_selector("openai:needs-header")
+
+        self.assertIn("Switched model: openai:needs-header", out)
+        self.assertEqual(agent.params.get("model"), "needs-header")
+        self.assertEqual(agent.params.get("extra_headers"), {"X-Model": "needs-header"})
+        self.assertIs(agent.openai_conf, agent.params)
+        self.assertEqual(
+            agent.ai_orchestrator.context.openai_conf.get("extra_headers"),
+            {"X-Model": "needs-header"},
+        )
+
+        agent._switch_model_by_selector("openai:plain")
+
+        self.assertEqual(agent.params.get("model"), "plain")
+        self.assertEqual(agent.params.get("extra_headers"), {})
+        self.assertEqual(agent.ai_orchestrator.context.openai_conf.get("extra_headers"), {})
+
 
 if __name__ == "__main__":
     unittest.main()

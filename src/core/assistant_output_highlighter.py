@@ -31,6 +31,7 @@ _POWERSHELL_OPERATOR_TOKENS = {
     "-isnot",
     "-as",
 }
+_ASSISTANT_TOOL_CALL_MARKER = "<|assistant tool_calls|>"
 
 
 def _ansi_ps_command(text: str) -> str:
@@ -75,6 +76,35 @@ def strip_tool_json_blocks_for_display(text: str) -> str:
             if valid_items:
                 return valid_items
         return None
+
+    def _strip_assistant_tool_call_marker_blocks(raw: str) -> str:
+        s = str(raw or "")
+        marker = _ASSISTANT_TOOL_CALL_MARKER
+        out: List[str] = []
+        i = 0
+        while i < len(s):
+            start = s.find(marker, i)
+            if start < 0:
+                out.append(s[i:])
+                break
+            out.append(s[i:start])
+            body_start = start + len(marker)
+            end = s.find(marker, body_start)
+            if end < 0:
+                body = s[body_start:]
+                if _parse_tool_call_obj(body) is not None:
+                    break
+                out.append(s[start:])
+                break
+            body = s[body_start:end]
+            if _parse_tool_call_obj(body) is not None:
+                i = end + len(marker)
+                continue
+            out.append(s[start : end + len(marker)])
+            i = end + len(marker)
+        return "".join(out)
+
+    text = _strip_assistant_tool_call_marker_blocks(text)
 
     # Parse fenced blocks line-by-line so inline "```" inside JSON string values
     # (for example patch payloads) won't prematurely terminate the fence.

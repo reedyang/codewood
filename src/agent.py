@@ -495,6 +495,7 @@ class Agent:
                 params["context_window"] = context_window
                 params["use_simulated_tools"] = use_simulated_tools
                 params["streaming"] = streaming
+                params["extra_headers"] = dict(model_item.get("extra_headers") or {})
                 out.append(
                     {
                         "provider": provider,
@@ -5034,6 +5035,36 @@ class Agent:
         if not text:
             return []
 
+        marker = "<|assistant tool_calls|>"
+        marker_matches = list(
+            re.finditer(
+                re.escape(marker) + r"(.*?)" + re.escape(marker),
+                text,
+                flags=re.DOTALL,
+            )
+        )
+        for mm in reversed(marker_matches):
+            body = (mm.group(1) or "").strip()
+            tail = text[mm.end() :].strip()
+            if not tail or re.fullmatch(r"[\s`\-]*", tail):
+                try:
+                    value = json.loads(body)
+                except Exception:
+                    value = None
+                plans = self._extract_tool_plans_from_json_value(value)
+                if plans:
+                    return plans
+        marker_start = text.rfind(marker)
+        if marker_start >= 0:
+            body = text[marker_start + len(marker) :].strip()
+            try:
+                value = json.loads(body)
+            except Exception:
+                value = None
+            plans = self._extract_tool_plans_from_json_value(value)
+            if plans:
+                return plans
+
         fence_matches = list(
             re.finditer(r"```(?:json)?\s*(.*?)\s*```", text, flags=re.IGNORECASE | re.DOTALL)
         )
@@ -5097,6 +5128,23 @@ class Agent:
         if not isinstance(text, str):
             return []
         out: List[Tuple[str, Dict[str, Any]]] = []
+        marker = "<|assistant tool_calls|>"
+        search_pos = 0
+        while True:
+            marker_start = text.find(marker, search_pos)
+            if marker_start < 0:
+                break
+            body_start = marker_start + len(marker)
+            marker_end = text.find(marker, body_start)
+            body = text[body_start:marker_end if marker_end >= 0 else len(text)].strip()
+            try:
+                value = json.loads(body)
+            except Exception:
+                value = None
+            out.extend(self._extract_tool_plans_from_json_value(value))
+            if marker_end < 0:
+                break
+            search_pos = marker_end + len(marker)
         for _, _, value in self._collect_json_value_spans(text):
             out.extend(self._extract_tool_plans_from_json_value(value))
         return out
