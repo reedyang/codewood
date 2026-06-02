@@ -2015,23 +2015,26 @@ class SessionMemoryService:
         skill_front_system_content = ""
         skill_tail_system_content = ""
         if active_skill_prompt:
-            summary_budget = max(120, min(420, int(tail_budget * 0.40)))
-            skill_summary = self._clip_text_to_token_budget(active_skill_prompt, summary_budget).strip()
             skill_id_display = active_skill_id or "unknown"
             source_suffix = f", source={active_skill_source}" if active_skill_source else ""
             section_suffix = ""
             if active_skill_chunked and active_skill_total_sections > 0:
                 section_suffix = f", section={max(1, active_skill_section)}/{active_skill_total_sections}"
+            content_scope = "当前已加载段" if active_skill_chunked else "完整正文"
             skill_front_system_content = (
-                "【动态技能执行摘要（前置）】\n"
+                "【动态技能正文（前置完整注入）】\n"
                 f"active_skill_id={skill_id_display}{source_suffix}{section_suffix}\n"
-                "执行优先级：若与普通历史叙述冲突，优先遵循本摘要（安全硬约束除外）。\n"
-                "关键规则摘要：\n"
-                f"{skill_summary}"
+                "执行优先级：若与普通历史叙述冲突，优先遵循本技能正文（安全硬约束除外）。\n"
+                f"以下是当前激活 skill 的{content_scope}，不是摘要；"
+                "除非正文明确要求读取附加引用文件，或需要排查文件状态，"
+                "否则不要再通过 shell/type/cat 读取 SKILL.md 来弥补本段内容。\n"
+                "----- BEGIN ACTIVE SKILL PROMPT -----\n"
+                f"{active_skill_prompt}\n"
+                "----- END ACTIVE SKILL PROMPT -----"
             )
             skill_tail_system_content = (
                 "【技能锚点】"
-                f"active_skill_id={skill_id_display}；本轮执行请优先遵循前置技能摘要。"
+                f"active_skill_id={skill_id_display}；本轮执行请优先遵循前置技能正文。"
             )
         immutable_system_core = (
             f"{self.agent._skills_routing_prefix}{self.agent.system_prompt}\n"
