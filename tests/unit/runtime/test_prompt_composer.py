@@ -31,8 +31,8 @@ class PromptComposerTests(unittest.TestCase):
         )
         with patch("src.runtime.prompt_composer.has_usable_workspace_rg_bin", return_value=True):
             updated = prompt_composer.render_workspace_prompt_variables(original)
-        self.assertIn("必须先执行 `rg` 检索", updated)
-        self.assertIn("必须先用 `rg` 检索命中位置", updated)
+        self.assertIn("first run `rg`", updated)
+        self.assertIn("first use `rg` to locate matches", updated)
         self.assertNotIn("{{SYSTEM_FILE_SEARCH_NEARBY_RULE}}", updated)
         self.assertNotIn("{{TOOLS_FILE_SEARCH_NEARBY_RULE}}", updated)
 
@@ -42,19 +42,19 @@ class PromptComposerTests(unittest.TestCase):
         )
         with patch("src.runtime.prompt_composer.has_usable_workspace_rg_bin", return_value=False):
             updated = prompt_composer.render_workspace_prompt_variables(original)
-        self.assertIn("必须先执行检索（如 `Select-String`/`rg`）", updated)
-        self.assertIn("必须先检索命中位置", updated)
+        self.assertIn("first run a search such as `Select-String` or `rg`", updated)
+        self.assertIn("first locate matches", updated)
 
     def test_build_os_file_ops_prompt_append_uses_rg_search_line_when_available(self):
         with patch("src.runtime.prompt_composer.has_usable_workspace_rg_bin", return_value=True):
             text = prompt_composer.build_os_file_ops_prompt_append()
-        self.assertIn("必须先用 `rg` 检索命中位置", text)
+        self.assertIn("first use `rg` to locate matches", text)
 
     def test_build_os_file_ops_prompt_append_uses_generic_search_line_when_rg_unavailable(self):
         with patch("src.runtime.prompt_composer.has_usable_workspace_rg_bin", return_value=False):
             text = prompt_composer.build_os_file_ops_prompt_append()
-        self.assertIn("必须先检索命中位置", text)
-        self.assertNotIn("必须先用 `rg` 检索命中位置", text)
+        self.assertIn("first locate matches", text)
+        self.assertNotIn("first use `rg` to locate matches", text)
 
     def test_standard_tools_prompt_strips_simulated_json_examples(self):
         agent = SimpleNamespace(
@@ -78,8 +78,8 @@ class PromptComposerTests(unittest.TestCase):
         self.assertIn("HARD REQUIREMENT", text)
         self.assertIn("content-only assistant message is invalid", text)
         self.assertIn("call `done` through standard API `tool_calls`", text)
-        self.assertIn("回复正文只允许写用户可见", text)
-        self.assertIn("禁止在回复正文中输出任何工具调用表示", text)
+        self.assertIn("Visible text may contain only user-visible", text)
+        self.assertIn("Never print any tool-call representation", text)
         self.assertIn("Available tools:", text)
         self.assertNotIn('{"tool"', text)
         self.assertNotIn("```json", text)
@@ -93,7 +93,7 @@ class PromptComposerTests(unittest.TestCase):
         )
 
         self.assertFalse(meta.get("full"))
-        self.assertIn("标准 tools", text)
+        self.assertIn("standard tools", text)
         self.assertIn("section=2", text)
         self.assertNotIn('{"tool"', text)
         self.assertNotIn("```json", text)

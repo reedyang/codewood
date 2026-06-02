@@ -38,7 +38,7 @@ def _parse_model_context_file_env_from_meta(meta: Optional[dict]) -> Optional[st
     if not s:
         return None
     if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", s):
-        print(f"⚠️ SKILL.md frontmatter 中 model_context_file_env 无效: {s!r}，已忽略")
+        print(f"⚠️ Invalid model_context_file_env in SKILL.md frontmatter: {s!r}; ignored")
         return None
     return s
 
@@ -120,7 +120,7 @@ def _scan_skills_root(skills_root: Path) -> List[SkillRecord]:
         try:
             raw = skill_md.read_text(encoding="utf-8")
         except OSError as e:
-            print(f"⚠️ 无法读取技能文件 {skill_md}: {e}")
+            print(f"⚠️ Failed to read skill file {skill_md}: {e}")
             continue
 
         meta, body = _split_frontmatter(raw)
@@ -272,33 +272,33 @@ def build_skills_routing_prefix(skills: List[SkillRecord]) -> str:
         return ""
 
     lines = [
-        "## Agent Skills 索引（系统提示最前，必读）",
+        "## Agent Skills Index (front of system prompt, required reading)",
         "",
-        f"下列技能按优先级由低到高合并加载：项目根目录内建 `skills/` → 全局 `config/skills/` → `workspace/{get_app_config_dirname()}/skills/`；**同名技能以后者覆盖前者**。",
-        "**在输出任何 JSON 操作指令之前**：若当前用户任务与下文中某项「简述」在语义上相符（含同义表述与相关子任务），你必须：",
+        f"The following skills are merged from low to high priority: project built-in `skills/` -> global `config/skills/` -> `workspace/{get_app_config_dirname()}/skills/`; skills with the same name are overridden by later sources.",
+        "Before any tool action: if the current user task semantically matches a skill description below, including synonyms and related subtasks, you must:",
         "",
-        "1. 在本提示靠后的 **「Agent Skills（详细内容）」** 一节中找到对应技能；",
-        "2. **严格按该技能正文**中的步骤、推荐工具、脚本形态与约束执行，不得擅自改用与技能冲突的捷径；",
-        "3. 技能正文与上文通用说明冲突时，**以技能正文为准**。",
+        "1. Find the corresponding skill in the later **Agent Skills (Detailed Content)** section;",
+        "2. Strictly follow that skill body's steps, recommended tools, script forms, and constraints; do not replace it with shortcuts that conflict with the skill;",
+        "3. If a skill body conflicts with general instructions above, follow the skill body, except for safety, privilege, and destructive-action hard limits.",
         "",
-        "**已加载技能一览：**",
+        "**Loaded skills:**",
         "",
     ]
     for s in skills:
-        lines.append(f"- **`{s.name}`** · 目录 `{s.skill_id}` — {s.description}")
+        lines.append(f"- **`{s.name}`** · directory `{s.skill_id}` - {s.description}")
     lines.extend(
         [
             "",
-            "**`tool` 字段与技能（必读）：** 上表中的 **目录名 `skill_id` 不是合法 `tool` 名**（禁止把技能目录名当作工具名输出）。"
-            "必须先调用内置工具 **`request_skill_prompt`**（`args.skill_id` 填目录名）注入 SKILL 全文，再按正文用 `shell` 等执行。"
-            "除 `tools.jsonc` / 下文 Available tools 所列名称外，**禁止虚构工具名**（例如把「查天气」映射成不存在的 `weather` 工具）。",
+            "**The `tool` field and skills (required):** the directory `skill_id` values above are not legal tool names. Do not output a skill directory name as a tool name. "
+            "First call the built-in tool **`request_skill_prompt`** with `args.skill_id` set to the directory name to inject the full SKILL body, then follow the body using business tools such as `shell`. "
+            "Do not invent tool names outside `tools.jsonc` / the later Available tools list, for example mapping a weather request to a nonexistent `weather` tool.",
             "",
-            "**Bundled files:** 技能正文里的 `scripts/...` 等路径相对于各技能在磁盘上的目录（见下文 **Skill bundle root**）。"
-            "`shell` 在**用户工作目录**执行，不会自动进入技能目录；调用随包脚本时必须使用 **绝对路径**（下文已列出本机检测到的 `.py` 时可直接复制）。",
+            "**Bundled files:** paths such as `scripts/...` inside a skill body are relative to that skill's on-disk directory (see **Skill bundle root** below). "
+            "`shell` runs in the user's working directory and does not automatically enter the skill directory; when calling bundled scripts, use absolute paths. Detected `.py` script paths below may be copied directly.",
             "",
             "---",
             "",
-            f"（以下为 {get_app_name()} 通用能力说明；完整技能正文在文档后部的「Agent Skills（详细内容）」。）",
+            f"(The following is the general {get_app_name()} capability guidance; full skill bodies appear later in **Agent Skills (Detailed Content)**.)",
             "",
         ]
     )

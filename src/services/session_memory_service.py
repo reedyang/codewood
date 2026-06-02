@@ -1,4 +1,4 @@
-﻿import json
+import json
 import re
 import sys
 import threading
@@ -237,7 +237,7 @@ class SessionMemoryService:
             return ""
         created_at = str(payload.get("created_at") or "").strip()
         mode = str(payload.get("mode") or "").strip()
-        header = "【上下文摘要】"
+        header = "[Context summary]"
         meta: List[str] = []
         if mode:
             meta.append(f"mode={mode}")
@@ -566,7 +566,7 @@ class SessionMemoryService:
             except Exception:
                 cmd = ""
             if cmd:
-                return f"[用户直接执行命令] !{cmd}"
+                return f"[User direct command] !{cmd}"
 
         if norm_role == "assistant" and callable(parse_direct_result):
             try:
@@ -605,7 +605,7 @@ class SessionMemoryService:
                 status = "interrupted_by_user=true" if aborted else "interrupted_by_user=false"
                 success_text = "true" if success else "false"
                 header = (
-                    "[命令执行结果] "
+                    "[Command result] "
                     f"command={executed or '<empty>'}; return_code={rc_text}; "
                     f"executed_success={success_text}; {status}"
                 )
@@ -622,11 +622,11 @@ class SessionMemoryService:
                 reason = str(payload2.get("reason") or "user_interrupt").strip()
                 detail = str(payload2.get("detail") or "").strip()
                 msg = (
-                    f"[会话中断事件] kind={interrupted_kind}; reason={reason}; "
-                    "任务被用户中断，除非用户明确要求继续，否则不要自动续跑。"
+                    f"[Session interruption event] kind={interrupted_kind}; reason={reason}; "
+                    "The task was interrupted by the user. Do not auto-resume unless the user explicitly asks to continue."
                 )
                 if detail:
-                    msg += f"\n被中断的任务: {detail}"
+                    msg += f"\nInterrupted task: {detail}"
                 return msg
 
         return text
@@ -693,9 +693,9 @@ class SessionMemoryService:
                     evt = None
                 if isinstance(evt, dict):
                     detail = str(evt.get("detail") or "").strip()
-                    line = "最近一次任务执行被用户中断（ESC）。除非用户明确要求，禁止自动续跑被中断任务。"
+                    line = "The most recent task execution was interrupted by the user (ESC). Do not auto-resume the interrupted task unless the user explicitly asks."
                     if detail:
-                        line += f" 被中断任务: {detail}"
+                        line += f" Interrupted task: {detail}"
                     return line
             if callable(parse_direct_result):
                 try:
@@ -713,9 +713,9 @@ class SessionMemoryService:
                         cmd = str(dr.get("executed_command") or "").strip()
                         rc = dr.get("return_code")
                         return (
-                            "最近一次直接命令执行被用户强制终止；"
+                            "The most recent direct command execution was forcibly terminated by the user; "
                             f"command={cmd or '<empty>'}; return_code={rc}。"
-                            "不要将该命令视为已完整成功执行。"
+                            "Do not treat that command as fully and successfully completed."
                         )
         return ""
 
@@ -746,10 +746,10 @@ class SessionMemoryService:
         llm = (self.agent._session_summary_llm or "").strip()
         if llm:
             cap = min(800, SESSION_SUMMARY_LLM_MAX_CHARS)
-            return f"[会话摘要]\n{llm[:cap]}"
+            return f"[Session summary]\n{llm[:cap]}"
         roll = (self.agent._session_summary_rolling or "").strip()
         if roll:
-            return f"[会话摘录]\n{roll}"
+            return f"[Session excerpt]\n{roll}"
         return ""
 
     def maybe_refresh_session_summary_llm(self) -> None:
@@ -773,7 +773,7 @@ class SessionMemoryService:
             role = (msg.get("role") or "").strip().lower()
             if role not in ("user", "assistant"):
                 continue
-            tag = "用户" if role == "user" else "助手"
+            tag = "User" if role == "user" else "Assistant"
             c = str(msg.get("content") or "")[:500].replace("\n", " ")
             lines.append(f"{tag}: {c}")
         blob = "\n".join(lines)
@@ -781,7 +781,7 @@ class SessionMemoryService:
             return
         try:
             raw = self.agent.call_ai(
-                "以下是本会话近期消息摘录，请按系统指令输出摘要。\n\n" + blob,
+                "Below is a recent excerpt from this session. Produce the summary according to the system instructions.\n\n" + blob,
                 context="",
                 stream=False,
                 session_summary_mode=True,
@@ -791,7 +791,7 @@ class SessionMemoryService:
         if not isinstance(raw, str):
             return
         text = raw.strip()
-        if text.startswith("❌") or text.startswith("调用大模型"):
+        if text.startswith("❌") or text.startswith("calling the model"):
             return
         text = text.replace("```", "").strip()
         if not text:
@@ -828,8 +828,8 @@ class SessionMemoryService:
         if not s:
             return False
         needles = (
-            "检索记忆", "根据记忆", "查记忆", "你的记忆", "经验记忆", "不记得", "给你起过",
-            "起的名字", "昵称", "称呼", "我是谁", "你是谁", "我叫什么", "之前给你", "约定过", "还记得吗",
+            "search memory", "use memory", "check memory", "your memory", "experiential memory", "do not remember", "named you before",
+            "given name", "nickname", "form of address", "who am I", "who are you", "what is my name", "previously gave you", "agreed before", "do you remember",
         )
         return any(x in s for x in needles)
 
@@ -865,7 +865,7 @@ class SessionMemoryService:
             content = _clip(raw_content, per_msg)
             if not content:
                 continue
-            tag = "用户" if role == "user" else "助手"
+            tag = "User" if role == "user" else "Assistant"
             lines.append(f"[{tag}] {content}")
         return "\n".join(lines).strip()
 
@@ -876,13 +876,13 @@ class SessionMemoryService:
         if pref:
             parts.append(pref)
         if dia:
-            parts.append("【近期对话摘录】\n" + dia)
+            parts.append("[Recent dialogue excerpt]\n" + dia)
         return "\n\n".join(parts).strip()
 
     @staticmethod
     def parse_memory_expansion_json(text: str) -> Optional[Dict[str, Any]]:
         raw = (text or "").strip()
-        if not raw or raw.startswith("❌") or raw.startswith("调用大模型"):
+        if not raw or raw.startswith("❌") or raw.startswith("calling the model"):
             return None
         if raw.startswith("```"):
             raw = re.sub(r"^```(?:json)?\s*", "", raw, flags=re.IGNORECASE)
@@ -949,11 +949,11 @@ class SessionMemoryService:
     def run_memory_expansion_llm(self, user_input: str) -> Optional[Dict[str, Any]]:
         ref = self.memory_expansion_reference_block()
         body = (user_input or "").strip()
-        payload = ((ref + "\n\n---\n\n") if ref else "") + "【当前用户提问】（仅用于提取检索用词与同义实体，不要直接回答用户）\n" + body
+        payload = ((ref + "\n\n---\n\n") if ref else "") + "[Current user question] (Use only to extract retrieval terms and synonymous entities. Do not answer the user directly.)\n" + body
         try:
             raw = self.agent.call_ai(payload, context="", stream=False, memory_query_expansion_mode=True)
         except Exception:
-            get_logger().exception("经验记忆：查询扩展 LLM 调用异常")
+            get_logger().exception("Experiential memory: query expansion LLM call failed")
             return None
         if not isinstance(raw, str):
             return None
@@ -970,8 +970,8 @@ class SessionMemoryService:
         identity_mode = self.user_input_emphasizes_memory_or_identity(raw_ui)
         if identity_mode:
             for bq in (
-                "用户偏好 昵称 名字 称呼 助手身份 起名 约定",
-                "preference nickname identity assistant name 称呼",
+                "user preference nickname name form-of-address assistant identity naming agreement",
+                "preference nickname identity assistant name form of address",
             ):
                 rows_boost.extend(self.agent.memory_service.search_memories(bq, top_k=5, scope_key=sk))
         seen_b: Set[str] = set()
@@ -990,10 +990,10 @@ class SessionMemoryService:
         if self.should_run_memory_query_expansion(rows_sem, rows_boost, identity_mode):
             max_raw = max((float(r.get("raw_score") or 0) for r in rows_sem), default=0.0)
             if not rows_sem:
-                _mem_log.info("经验记忆：触发查询扩展 fallback（主检索无命中）")
+                _mem_log.info("Experiential memory: triggered query expansion fallback (primary retrieval had no hits)")
             else:
                 _mem_log.info(
-                    "经验记忆：触发查询扩展 fallback（主检索偏弱 max_raw=%.2f < %.2f）",
+                    "Experiential memory: triggered query expansion fallback (primary retrieval weak max_raw=%.2f < %.2f)",
                     max_raw,
                     MEMORY_FALLBACK_MIN_RAW_SCORE,
                 )
@@ -1001,17 +1001,17 @@ class SessionMemoryService:
             if exp:
                 kw = self.memory_expansion_keywords_query_string(exp)
                 if kw:
-                    q2 = (q.strip() + "\n\n【扩展检索词】\n" + kw).strip()
+                    q2 = (q.strip() + "\n\n[Expanded retrieval terms]\n" + kw).strip()
                     rows_exp = self.agent.memory_service.search_memories(q2, top_k=8, scope_key=sk)
                     _mem_log.info(
-                        "经验记忆：查询扩展已执行（扩展词约 %d 字，二次检索 %d 条）",
+                        "Experiential memory: query expansion executed (about %d chars of expanded terms, %d secondary retrieval results)",
                         len(kw),
                         len(rows_exp),
                     )
                 else:
-                    _mem_log.info("经验记忆：查询扩展未产生可用关键词（各槽位为空）")
+                    _mem_log.info("Experiential memory: query expansion produced no usable keywords (all slots empty)")
             else:
-                _mem_log.info("经验记忆：查询扩展未生效（模型返回不可解析或调用失败）")
+                _mem_log.info("Experiential memory: query expansion did not take effect (model response could not be parsed or call failed)")
 
         seen: Set[str] = set()
         merged: List[Dict[str, Any]] = []
@@ -1072,20 +1072,20 @@ class SessionMemoryService:
             if not rows:
                 return ""
             lines = [
-                "【经验记忆（内化教训与偏好；关键事实请仍核实）】",
-                "若同主题（如称呼、显示名）出现多条：答复时的「当前口径」以记录时间最新者为准；较早条目为沿革/曾用信息，用户未问及不必展开，问起可如实说明。",
+                "[Experiential memory (internalized lessons and preferences; still verify key facts)]",
+                "If multiple entries cover the same topic (such as form of address or display name), use the newest record as the current stance when replying. Older entries are history/previous usage; do not expand unless the user asks, but be truthful if asked.",
             ]
             total = len("\n".join(lines))
             for r in rows:
                 block = f"- ({r.get('tier', '')}) {r.get('title', '')}: {r.get('content', '')[:500]}"
                 if r.get("system_note"):
-                    block += f" [内省备注: {r['system_note'][:200]}]"
+                    block += f" [System note: {r['system_note'][:200]}]"
                 ca = r.get("created_at")
                 if ca is not None:
                     try:
                         ts = float(ca)
                         if ts > 0:
-                            block += f" [记录时间: {datetime.fromtimestamp(ts).strftime('%Y-%m-%d %H:%M')}]"
+                            block += f" [Recorded at: {datetime.fromtimestamp(ts).strftime('%Y-%m-%d %H:%M')}]"
                     except (TypeError, ValueError, OSError, OverflowError):
                         pass
                 if total + 1 + len(block) > max_chars:
@@ -1115,7 +1115,7 @@ class SessionMemoryService:
                 self.run_memory_reflection_body()
             except Exception:
                 try:
-                    get_logger().exception("自动记忆反思失败")
+                    get_logger().exception("Automatic memory reflection failed")
                 except Exception:
                     pass
 
@@ -1168,7 +1168,7 @@ class SessionMemoryService:
         for m in mems[:8]:
             if not isinstance(m, dict) or not m.get("must_store"):
                 continue
-            title = str(m.get("title") or "经验").strip()[:500]
+            title = str(m.get("title") or "experience").strip()[:500]
             content = str(m.get("content") or "").strip()
             if not content:
                 continue
@@ -1419,7 +1419,7 @@ class SessionMemoryService:
                 break
         if not lines:
             return ""
-        summary = "[历史摘要]\n" + " | ".join(lines)
+        summary = "[History summary]\n" + " | ".join(lines)
         return self._clip_text_to_token_budget(summary, summary_budget)
 
     def _build_history_messages_by_budget(
@@ -1618,29 +1618,29 @@ class SessionMemoryService:
         workspace_skills_dir = (Path(self.agent.workspace_config_dir) / "skills").resolve()
         default_install_skills_dir = (Path.home() / get_app_config_dirname() / "skills").resolve()
         runtime_tail_raw = (
-            f"当前操作系统信息：{os_info}\n"
-            f"当前 workspace 名称：{self.agent.workspace_name}\n"
-            f"当前 chat 名称（弱提示，仅会话标签，不代表本轮任务目标）：{self.agent.active_chat_name}\n"
-            f"当前 workspace 根目录（绝对路径）：{workspace_root_text}\n"
-            f"当前 workspace 数据目录（绝对路径）：{workspace_data_dir_text}\n"
-            f"默认技能安装路径（绝对路径）：{default_install_skills_dir}\n"
-            f"当前 workspace skills 目录（绝对路径）：{workspace_skills_dir}\n"
-            "安装第三方 skill 时：若用户未指定安装位置，必须使用“默认技能安装路径（绝对路径）”；"
-            "仅当用户明确要求安装到 workspace 时，才可使用“当前 workspace skills 目录（绝对路径）”。\n"
+            f"Current OS info: {os_info}\n"
+            f"Current workspace name: {self.agent.workspace_name}\n"
+            f"Current chat name (weak hint, session label only, not this turn's task goal): {self.agent.active_chat_name}\n"
+            f"Current workspace root (absolute path): {workspace_root_text}\n"
+            f"Current workspace data directory (absolute path): {workspace_data_dir_text}\n"
+            f"Default skill install path (absolute path): {default_install_skills_dir}\n"
+            f"Current workspace skills directory (absolute path): {workspace_skills_dir}\n"
+            "When installing a third-party skill: if the user does not specify an install location, you must use the Default skill install path (absolute path); "
+            "use the Current workspace skills directory (absolute path) only when the user explicitly asks to install into the workspace.\n"
         )
         sys_content = (
             f"{str(getattr(self.agent, '_skills_routing_prefix', '') or '')}"
             f"{system_prompt}\n"
             f"{self._software_development_prompt_append()}"
             f"{runtime_tail_raw}"
-            "\n【上下文 compact 摘要任务】\n"
-            "你正在为后续同一 chat 生成持久上下文摘要。请只输出摘要正文，不要寒暄、不要工具调用、不要 Markdown 代码块。\n"
-            "摘要必须保留：用户原始目标、已完成/未完成事项、关键约束、重要决策、文件/命令/工具结果、错误与中断状态、后续继续时必须知道的事实。\n"
-            "如果已有上一条【上下文摘要】，请把它与后续消息合并为一份更新后的摘要，不要重复无关细节。\n"
+            "\n[Context compaction summary task]\n"
+            "You are generating a durable context summary for later turns in the same chat. Output only the summary body; do not include greetings, tool calls, or Markdown code blocks.\n"
+            "The summary must preserve: the original user goal, completed and unfinished items, key constraints, important decisions, file/command/tool results, errors and interruption status, and facts required to continue later.\n"
+            "If a previous [Context summary] exists, merge it with subsequent messages into one updated summary without repeating irrelevant details.\n"
         )
         user_content = (
             f"compact_mode={str(mode or '').strip().lower() or 'manual'}\n"
-            "请基于以上历史消息生成一份可替代这些消息的上下文摘要。"
+            "Based on the history above, generate a context summary that can replace those messages."
         )
         return [{"role": "system", "content": sys_content}] + history_messages + [{"role": "user", "content": user_content}]
 
@@ -1891,8 +1891,8 @@ class SessionMemoryService:
                 f"{str(getattr(self.agent, '_skills_routing_prefix', '') or '')}"
                 f"{system_prompt_snapshot}\n"
                 f"{self._software_development_prompt_append()}"
-                f"当前 workspace 名称：{str(getattr(self.agent, 'workspace_name', '') or '')}\n"
-                f"当前 chat 名称：{str(getattr(self.agent, 'active_chat_name', '') or '')}\n"
+                f"Current workspace name: {str(getattr(self.agent, 'workspace_name', '') or '')}\n"
+                f"Current chat name: {str(getattr(self.agent, 'active_chat_name', '') or '')}\n"
             )
             system_tokens = self._estimate_message_tokens("system", sys_text)
             force_new_requirement = bool(
@@ -1904,14 +1904,14 @@ class SessionMemoryService:
                 else self._first_user_requirement(str(user_input_hint or "").strip())
             )
             user_anchor = (
-                "【关键约束】\n"
-                "1) 用户原始需求必须持续满足。\n"
-                "2) 本轮用户输入优先级最高。\n\n"
-                f"用户原始需求: {requirement}\n"
-                f"用户输入: {str(user_input_hint or '').strip()}\n"
+                "[Key constraints]\n"
+                "1) The original user request must remain satisfied.\n"
+                "2) This turn's user input has highest priority.\n\n"
+                f"Original user request: {requirement}\n"
+                f"User input: {str(user_input_hint or '').strip()}\n"
             )
             if context_hint:
-                user_anchor += f"操作上下文: {str(context_hint)}\n"
+                user_anchor += f"Operation context: {str(context_hint)}\n"
             user_tokens = self._estimate_message_tokens("user", user_anchor)
             total_input_tokens = int(system_tokens + history_tokens + user_tokens)
             if expected:
@@ -2020,21 +2020,21 @@ class SessionMemoryService:
             section_suffix = ""
             if active_skill_chunked and active_skill_total_sections > 0:
                 section_suffix = f", section={max(1, active_skill_section)}/{active_skill_total_sections}"
-            content_scope = "当前已加载段" if active_skill_chunked else "完整正文"
+            content_scope = "the currently loaded section" if active_skill_chunked else "the full body"
             skill_front_system_content = (
-                "【动态技能正文（前置完整注入）】\n"
+                "[Dynamic skill body (front-loaded full injection)]\n"
                 f"active_skill_id={skill_id_display}{source_suffix}{section_suffix}\n"
-                "执行优先级：若与普通历史叙述冲突，优先遵循本技能正文（安全硬约束除外）。\n"
-                f"以下是当前激活 skill 的{content_scope}，不是摘要；"
-                "除非正文明确要求读取附加引用文件，或需要排查文件状态，"
-                "否则不要再通过 shell/type/cat 读取 SKILL.md 来弥补本段内容。\n"
+                "Execution priority: if this conflicts with ordinary history narration, follow this skill body first (except for safety hard constraints).\n"
+                f"The following is {content_scope} of the currently active skill, not a summary; "
+                "unless the body explicitly requires reading additional reference files or file state must be diagnosed, "
+                "do not read SKILL.md again through shell/type/cat to compensate for this section.\n"
                 "----- BEGIN ACTIVE SKILL PROMPT -----\n"
                 f"{active_skill_prompt}\n"
                 "----- END ACTIVE SKILL PROMPT -----"
             )
             skill_tail_system_content = (
-                "【技能锚点】"
-                f"active_skill_id={skill_id_display}；本轮执行请优先遵循前置技能正文。"
+                "[Skill anchor]"
+                f"active_skill_id={skill_id_display}; for this turn, prioritize the front-loaded skill body."
             )
         immutable_system_core = (
             f"{self.agent._skills_routing_prefix}{self.agent.system_prompt}\n"
@@ -2048,22 +2048,22 @@ class SessionMemoryService:
         workspace_skills_dir = (Path(self.agent.workspace_config_dir) / "skills").resolve()
         default_install_skills_dir = (Path.home() / get_app_config_dirname() / "skills").resolve()
         runtime_tail_raw = (
-            f"当前操作系统信息：{os_info}\n"
-            f"当前 workspace 名称：{self.agent.workspace_name}\n"
-            f"当前 chat 名称（弱提示，仅会话标签，不代表本轮任务目标）：{self.agent.active_chat_name}\n"
-            f"当前 workspace 根目录（绝对路径）：{workspace_root_text}\n"
-            f"当前 workspace 数据目录（绝对路径）：{workspace_data_dir_text}\n"
-            f"默认技能安装路径（绝对路径）：{default_install_skills_dir}\n"
-            f"当前 workspace skills 目录（绝对路径）：{workspace_skills_dir}\n"
-            "安装第三方 skill 时：若用户未指定安装位置，必须使用“默认技能安装路径（绝对路径）”；"
-            "仅当用户明确要求安装到 workspace 时，才可使用“当前 workspace skills 目录（绝对路径）”。\n"
+            f"Current OS info: {os_info}\n"
+            f"Current workspace name: {self.agent.workspace_name}\n"
+            f"Current chat name (weak hint, session label only, not this turn's task goal): {self.agent.active_chat_name}\n"
+            f"Current workspace root (absolute path): {workspace_root_text}\n"
+            f"Current workspace data directory (absolute path): {workspace_data_dir_text}\n"
+            f"Default skill install path (absolute path): {default_install_skills_dir}\n"
+            f"Current workspace skills directory (absolute path): {workspace_skills_dir}\n"
+            "When installing a third-party skill: if the user does not specify an install location, you must use the Default skill install path (absolute path); "
+            "use the Current workspace skills directory (absolute path) only when the user explicitly asks to install into the workspace.\n"
         )
         tail_context = immutable_system_core + runtime_tail_raw
         if mem_block:
             sys_prefix = (
-                "【经验记忆 — 须主动落实】\n"
-                "以下为当前工作区已持久化条目。其后每一轮答复前都须先判断是否相关；"
-                "相关则自然语言输出必须以本段为准，不得以未约定的通用云端/供应商默认人设替代。\n\n"
+                "[Experiential memory - must be applied proactively]\n"
+                "The following entries are persisted for the current workspace. Before each subsequent reply, first decide whether they are relevant; "
+                "if relevant, natural-language output must follow this section and must not replace it with a generic cloud/provider default persona.\n\n"
                 + mem_block + "\n\n---\n\n" + tail_context
             )
         else:
@@ -2093,50 +2093,50 @@ class SessionMemoryService:
         )
         current_input = ""
         current_input += (
-            "【关键约束】\n"
-            "1) 用户原始需求必须持续满足。\n"
-            "2) 本轮用户输入优先级最高。\n"
-            "3) 如有最近操作结果，结论需与其一致。\n\n"
+            "[Key constraints]\n"
+            "1) The original user request must remain satisfied.\n"
+            "2) This turn's user input has highest priority.\n"
+            "3) If there is a recent operation result, conclusions must be consistent with it.\n\n"
         )
         if force_new_requirement:
             last_cancelled_task = str(getattr(self.agent, "_last_cancelled_task", "") or "").strip()
             current_input += (
-                "4) 上一任务已由用户取消；本轮若是新任务，禁止主动恢复或重做被取消任务，"
-                "除非用户明确要求继续。\n\n"
+                "4) The previous task was cancelled by the user. If this turn is a new task, do not proactively resume or redo the cancelled task "
+                "unless the user explicitly asks to continue.\n\n"
             )
             if last_cancelled_task:
-                current_input += f"最近被取消的任务: {last_cancelled_task}\n"
+                current_input += f"Recently cancelled task: {last_cancelled_task}\n"
         if mem_block:
             current_input += (
-                "【硬性要求】作答前须核对首条 system 消息中的「经验记忆」："
-                "与本轮用户问题相关的条目必须在答复中体现，不得用与这些记录无关的通用助手或供应商设定替代。\n\n"
+                "[Hard requirement] Before answering, check the experiential memory in the first system message: "
+                "entries relevant to this turn's user question must be reflected in the answer; do not replace them with generic assistant or provider settings unrelated to those records.\n\n"
             )
         if skill_front_system_content:
             current_input += (
-                "【硬性要求】本轮存在已激活 skill（见前置技能摘要与后置锚点）；"
-                "若与普通历史叙述冲突，执行时必须优先遵循该 skill（安全硬约束除外）。\n\n"
+                "[Hard requirement] This turn has an active skill (see the front-loaded skill body and trailing anchor); "
+                "if it conflicts with ordinary history narration, execution must prioritize that skill (except for safety hard constraints).\n\n"
             )
         current_input += (
-            f"当前 workspace: {self.agent.workspace_name}\n"
-            f"当前目录（workspace）: {workspace_directory}\n"
+            f"Current workspace: {self.agent.workspace_name}\n"
+            f"Current directory (workspace): {workspace_directory}\n"
         )
         if self.agent.operation_results:
             latest_op = self.agent.operation_results[-1]
             if isinstance(latest_op, dict) and ("timestamp" in latest_op):
                 latest_op = dict(latest_op)
                 latest_op.pop("timestamp", None)
-            op_line = f"最近的操作结果: {latest_op}\n"
+            op_line = f"Most recent operation result: {latest_op}\n"
             current_input += self._clip_text_to_token_budget(op_line, op_context_budget)
         if context:
-            ctx_line = f"操作上下文: {context}\n"
+            ctx_line = f"Operation context: {context}\n"
             current_input += self._clip_text_to_token_budget(ctx_line, op_context_budget)
         if interruption_line:
-            current_input += f"最近的中断状态: {interruption_line}\n"
-        # 用户原始需求必须进入上下文（即使历史被压缩）。
-        current_input += f"用户原始需求: {original_requirement}\n"
+            current_input += f"Most recent interruption status: {interruption_line}\n"
+        # The original user request must enter context even when history is compressed.
+        current_input += f"Original user request: {original_requirement}\n"
         # Keep timestamp at the tail to preserve upstream cache prefix stability.
-        current_input += f"用户输入: {user_input}\n"
-        current_input += f"本地时间参考: {date_time}"
+        current_input += f"User input: {user_input}\n"
+        current_input += f"Local time reference: {date_time}"
         if skill_tail_system_content:
             messages.append({"role": "system", "content": skill_tail_system_content})
         current_user_msg = {"role": "user", "content": current_input}
@@ -2177,7 +2177,7 @@ class SessionMemoryService:
                 tail_context2 = immutable_system_core + runtime_tail_raw
                 if mem_block2:
                     sys_prefix2 = (
-                        "【经验记忆 — 压缩模式】\n"
+                        "[Experiential memory - compressed mode]\n"
                         + mem_block2
                         + "\n\n---\n\n"
                         + tail_context2
@@ -2193,48 +2193,48 @@ class SessionMemoryService:
                 )
                 current_input2_head = ""
                 current_input2_head += (
-                    "【关键约束】\n"
-                    "1) 用户原始需求必须持续满足。\n"
-                    "2) 本轮用户输入优先级最高。\n"
-                    "3) 如有最近操作结果，结论需与其一致。\n\n"
+                    "[Key constraints]\n"
+                    "1) The original user request must remain satisfied.\n"
+                    "2) This turn's user input has highest priority.\n"
+                    "3) If there is a recent operation result, conclusions must be consistent with it.\n\n"
                 )
                 if skill_front_system_content:
                     current_input2_head += (
-                        "【硬性要求】本轮存在已激活 skill（见前置技能摘要与后置锚点）；"
-                        "若与普通历史叙述冲突，执行时必须优先遵循该 skill（安全硬约束除外）。\n\n"
+                        "[Hard requirement] This turn has an active skill (see the front-loaded skill body and trailing anchor); "
+                        "if it conflicts with ordinary history narration, execution must prioritize that skill (except for safety hard constraints).\n\n"
                     )
                 if force_new_requirement:
                     last_cancelled_task = str(getattr(self.agent, "_last_cancelled_task", "") or "").strip()
                     current_input2_head += (
-                        "4) 上一任务已由用户取消；本轮若是新任务，禁止主动恢复或重做被取消任务，"
-                        "除非用户明确要求继续。\n\n"
+                        "4) The previous task was cancelled by the user. If this turn is a new task, do not proactively resume or redo the cancelled task "
+                        "unless the user explicitly asks to continue.\n\n"
                     )
                     if last_cancelled_task:
-                        current_input2_head += f"最近被取消的任务: {last_cancelled_task}\n"
+                        current_input2_head += f"Recently cancelled task: {last_cancelled_task}\n"
                 if interruption_line:
-                    current_input2_head += f"最近的中断状态: {interruption_line}\n"
+                    current_input2_head += f"Most recent interruption status: {interruption_line}\n"
                 if self.agent.operation_results:
                     latest_op2 = self.agent.operation_results[-1]
                     if isinstance(latest_op2, dict) and ("timestamp" in latest_op2):
                         latest_op2 = dict(latest_op2)
                         latest_op2.pop("timestamp", None)
-                    op_line2 = f"最近的操作结果: {latest_op2}\n"
+                    op_line2 = f"Most recent operation result: {latest_op2}\n"
                     current_input2_head += self._clip_text_to_token_budget(
                         op_line2,
                         max(48, aggressive_op_context_budget),
                     )
                 current_input2_optional = (
-                    f"当前 workspace: {self.agent.workspace_name}\n"
-                    f"当前目录（workspace）: {workspace_directory}\n"
+                    f"Current workspace: {self.agent.workspace_name}\n"
+                    f"Current directory (workspace): {workspace_directory}\n"
                 )
                 if context:
-                    ctx_line2 = f"操作上下文: {context}\n"
+                    ctx_line2 = f"Operation context: {context}\n"
                     current_input2_optional += self._clip_text_to_token_budget(ctx_line2, aggressive_op_context_budget)
                 # Hard anchors: never clip original requirement and current input.
                 current_input2_tail = (
-                    f"用户原始需求: {original_requirement}\n"
-                    f"用户输入: {user_input}\n"
-                    f"本地时间参考: {date_time}"
+                    f"Original user request: {original_requirement}\n"
+                    f"User input: {user_input}\n"
+                    f"Local time reference: {date_time}"
                 )
                 required_anchor = current_input2_head + current_input2_tail
                 optional_budget = max(0, aggressive_user_budget - self._estimate_text_tokens(required_anchor))

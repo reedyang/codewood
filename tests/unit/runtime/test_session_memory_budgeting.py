@@ -1,4 +1,4 @@
-﻿import unittest
+import unittest
 import io
 import json
 from pathlib import Path
@@ -251,7 +251,7 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
         messages, _ = svc.build_regular_task_messages("继续")
         joined = "\n".join(str(m.get("content") or "") for m in messages)
 
-        self.assertIn("【上下文摘要】", joined)
+        self.assertIn("[Context summary]", joined)
         self.assertIn("旧内容已经被压缩到这里", joined)
         self.assertIn("摘要后的用户消息", joined)
         self.assertIn("摘要后的助手消息", joined)
@@ -437,7 +437,7 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
         messages, _ = svc.build_regular_task_messages("查看我的codex用量")
         joined = "\n".join(str(m.get("content") or "") for m in messages)
 
-        self.assertIn("【动态技能正文（前置完整注入）】", joined)
+        self.assertIn("[Dynamic skill body (front-loaded full injection)]", joined)
         self.assertIn("ACTIVE_SKILL_PROMPT_START", joined)
         self.assertIn("ACTIVE_SKILL_PROMPT_END", joined)
         self.assertIn("----- BEGIN ACTIVE SKILL PROMPT -----", joined)
@@ -473,7 +473,7 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
         self.assertIn("上一轮问题", joined)
         self.assertIn("上一轮回答", joined)
         self.assertNotIn("SYSTEM SHOULD NOT BE SENT", joined)
-        self.assertNotIn("用户原始需求:", joined)
+        self.assertNotIn("Original user request:", joined)
         self.assertNotIn("ctx-should-not-be-sent", joined)
         self.assertNotIn("operation-context", joined)
         self.assertEqual(calls, {"reload": 0, "compose": 0})
@@ -489,7 +489,7 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
 
         self.assertEqual(messages[0].get("role"), "system")
         self.assertIn("SYSTEM AT 64K", joined)
-        self.assertIn("用户原始需求: 你好", str(messages[-1].get("content") or ""))
+        self.assertIn("Original user request: 你好", str(messages[-1].get("content") or ""))
 
     def test_context_eligible_history_returns_all_context_eligible_messages(self):
         agent = _FakeAgent()
@@ -788,8 +788,8 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
         joined = "\n".join(str(m.get("content") or "") for m in messages[1:-1])
         self.assertIn("msg-23", joined)
         # User original requirement must be explicitly injected.
-        self.assertIn("用户原始需求: 最初需求：做一个任务规划器", messages[-1]["content"])
-        self.assertIn("用户输入: 现在请继续实现第2步", messages[-1]["content"])
+        self.assertIn("Original user request: 最初需求：做一个任务规划器", messages[-1]["content"])
+        self.assertIn("User input: 现在请继续实现第2步", messages[-1]["content"])
 
     def test_regular_task_messages_include_recent_aborted_command_context(self):
         agent = _FakeAgent()
@@ -811,10 +811,10 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
         svc = SessionMemoryService(agent)
         messages, _ = svc.build_regular_task_messages("继续处理后续步骤")
         history_joined = "\n".join(str(m.get("content") or "") for m in messages[1:-1])
-        self.assertIn("[命令执行结果]", history_joined)
+        self.assertIn("[Command result]", history_joined)
         self.assertIn("executed_success=false", history_joined)
         self.assertIn("interrupted_by_user=true", history_joined)
-        self.assertIn("最近一次直接命令执行被用户强制终止", str(messages[-1]["content"]))
+        self.assertIn("The most recent direct command execution was forcibly terminated by the user", str(messages[-1]["content"]))
 
     def test_regular_task_messages_include_direct_command_success_status(self):
         agent = _FakeAgent()
@@ -836,7 +836,7 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
         svc = SessionMemoryService(agent)
         messages, _ = svc.build_regular_task_messages("继续")
         history_joined = "\n".join(str(m.get("content") or "") for m in messages[1:-1])
-        self.assertIn("[命令执行结果]", history_joined)
+        self.assertIn("[Command result]", history_joined)
         self.assertIn("executed_success=true", history_joined)
         self.assertIn("interrupted_by_user=false", history_joined)
 
@@ -856,8 +856,8 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
         svc = SessionMemoryService(agent)
         messages, _ = svc.build_regular_task_messages("继续")
         history_joined = "\n".join(str(m.get("content") or "") for m in messages[1:-1])
-        self.assertIn("[会话中断事件]", history_joined)
-        self.assertIn("最近一次任务执行被用户中断（ESC）", str(messages[-1]["content"]))
+        self.assertIn("[Session interruption event]", history_joined)
+        self.assertIn("The most recent task execution was interrupted by the user (ESC)", str(messages[-1]["content"]))
 
     def test_internal_slash_history_is_excluded_from_model_context_and_requirement(self):
         agent = _FakeAgent()
@@ -878,7 +878,7 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
         history_joined = "\n".join(str(m.get("content") or "") for m in messages[1:-1])
         self.assertNotIn("/chat reload", history_joined)
         self.assertNotIn("reloaded", history_joined)
-        self.assertIn("用户原始需求: 最初需求：修复构建", str(messages[-1]["content"]))
+        self.assertIn("Original user request: 最初需求：修复构建", str(messages[-1]["content"]))
 
     def test_raw_slash_builtin_user_message_is_excluded_from_model_context_and_requirement(self):
         agent = _FakeAgent()
@@ -892,7 +892,7 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
         messages, _ = svc.build_regular_task_messages("继续执行")
         history_joined = "\n".join(str(m.get("content") or "") for m in messages[1:-1])
         self.assertNotIn("/chat reload", history_joined)
-        self.assertIn("用户原始需求: 最初需求：修复构建", str(messages[-1]["content"]))
+        self.assertIn("Original user request: 最初需求：修复构建", str(messages[-1]["content"]))
 
     def test_task_worked_summary_history_is_excluded_from_model_context(self):
         agent = _FakeAgent()
@@ -911,8 +911,8 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
         agent = _FakeAgent()
         svc = SessionMemoryService(agent)
         messages, _ = svc.build_regular_task_messages("请写一个脚本")
-        self.assertIn("用户原始需求: 请写一个脚本", messages[-1]["content"])
-        self.assertIn("用户输入: 请写一个脚本", messages[-1]["content"])
+        self.assertIn("Original user request: 请写一个脚本", messages[-1]["content"])
+        self.assertIn("User input: 请写一个脚本", messages[-1]["content"])
 
     def test_cancelled_previous_task_forces_new_requirement_once(self):
         agent = _FakeAgent()
@@ -923,13 +923,13 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
 
         messages, _ = svc.build_regular_task_messages("新任务：实现B功能")
         user_block = messages[-1]["content"]
-        self.assertIn("用户原始需求: 新任务：实现B功能", user_block)
-        self.assertIn("最近被取消的任务: 旧任务：修复A模块", user_block)
-        self.assertIn("禁止主动恢复或重做被取消任务", user_block)
+        self.assertIn("Original user request: 新任务：实现B功能", user_block)
+        self.assertIn("Recently cancelled task: 旧任务：修复A模块", user_block)
+        self.assertIn("do not proactively resume or redo the cancelled task", user_block)
         self.assertFalse(bool(getattr(agent, "_force_current_input_as_requirement_once", True)))
 
         messages2, _ = svc.build_regular_task_messages("继续")
-        self.assertIn("用户原始需求: 旧任务：修复A模块", messages2[-1]["content"])
+        self.assertIn("Original user request: 旧任务：修复A模块", messages2[-1]["content"])
 
     def test_degradation_adds_history_summary_before_full_drop(self):
         agent = _FakeAgent()
@@ -944,7 +944,7 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
         messages, _ = svc.build_regular_task_messages("继续", context="ctx")
         history_messages = messages[1:-1]
         joined = "\n".join(str(m.get("content") or "") for m in history_messages)
-        self.assertIn("[历史摘要]", joined)
+        self.assertIn("[History summary]", joined)
         self.assertIn("msg-99", joined)
 
     def test_large_context_keeps_more_history_than_small_context(self):
@@ -1142,10 +1142,10 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
             messages, _ = svc.build_regular_task_messages("现在执行修复", context="操作上下文-" + ("c" * 300))
         self.assertTrue(logger.info.called)
         user_block = messages[-1]["content"]
-        self.assertIn("【关键约束】", user_block)
-        self.assertIn("最近的操作结果:", user_block)
-        self.assertIn("用户原始需求: 最初需求：修复构建脚本", user_block)
-        self.assertIn("用户输入: 现在执行修复", user_block)
+        self.assertIn("[Key constraints]", user_block)
+        self.assertIn("Most recent operation result:", user_block)
+        self.assertIn("Original user request: 最初需求：修复构建脚本", user_block)
+        self.assertIn("User input: 现在执行修复", user_block)
         self.assertTrue(hasattr(agent, "_last_context_usage_percent"))
         self.assertGreaterEqual(int(getattr(agent, "_last_context_usage_percent", -1)), 0)
 
@@ -1200,25 +1200,26 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
         messages, _ = svc.build_regular_task_messages("继续推进", context="ctx-" + ("q" * 1200))
         system_content = str(messages[0].get("content") or "")
         self.assertIn("[SYSTEM_PROMPT_END_MARK]", system_content)
-        self.assertIn("当前 workspace 名称：Default", system_content)
+        self.assertIn("Current workspace name: Default", system_content)
         self.assertNotIn(str(agent._self_repo_root), system_content)
         self.assertNotIn(str(agent.work_directory), system_content)
-        self.assertIn(f"当前 workspace 根目录（绝对路径）：{agent.workspace_root}", system_content)
+        self.assertIn(f"Current workspace root (absolute path): {agent.workspace_root}", system_content)
         self.assertIn(
-            f"当前 workspace 数据目录（绝对路径）：{agent.workspace_config_dir}",
+            f"Current workspace data directory (absolute path): {agent.workspace_config_dir}",
             system_content,
         )
         self.assertIn(
-            f"默认技能安装路径（绝对路径）：{(Path.home() / get_app_config_dirname() / 'skills').resolve()}",
+            f"Default skill install path (absolute path): {(Path.home() / get_app_config_dirname() / 'skills').resolve()}",
             system_content,
         )
         self.assertIn(
-            f"当前 workspace skills 目录（绝对路径）：{(agent.workspace_config_dir / 'skills').resolve()}",
+            f"Current workspace skills directory (absolute path): {(agent.workspace_config_dir / 'skills').resolve()}",
             system_content,
         )
         self.assertIn(
-            "安装第三方 skill 时：若用户未指定安装位置，必须使用“默认技能安装路径（绝对路径）”；"
-            "仅当用户明确要求安装到 workspace 时，才可使用“当前 workspace skills 目录（绝对路径）”。",
+            "When installing a third-party skill: if the user does not specify an install location, "
+            "you must use the Default skill install path (absolute path); use the Current workspace skills directory "
+            "(absolute path) only when the user explicitly asks to install into the workspace.",
             system_content,
         )
 
