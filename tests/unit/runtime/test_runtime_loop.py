@@ -24,6 +24,7 @@ from src.runtime.runtime_loop import (
     _stop_pre_task_status_ticker_for_console_output,
     _try_record_user_task_message,
     _tool_change_and_verification_hints,
+    _parse_tool_plans_from_model_message,
     _parse_tool_plan_from_model_message,
 )
 
@@ -563,6 +564,43 @@ class RuntimeLoopTests(unittest.TestCase):
         self.assertTrue(streamed_any)
         tool_plan = _parse_tool_plan_from_model_message(stream.final_message)
         self.assertEqual(tool_plan, ("read_file", {"path": "README.md"}))
+
+    def test_parse_tool_plans_from_model_message_returns_all_tool_calls(self):
+        message = {
+            "role": "assistant",
+            "tool_calls": [
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {
+                        "name": "read_file",
+                        "arguments": "{\"path\":\"README.md\"}",
+                    },
+                },
+                {
+                    "id": "call_2",
+                    "type": "function",
+                    "function": {
+                        "name": "grep",
+                        "arguments": {
+                            "pattern": "streaming",
+                            "path": "src",
+                        },
+                    },
+                },
+            ],
+        }
+        self.assertEqual(
+            _parse_tool_plans_from_model_message(message),
+            [
+                ("read_file", {"path": "README.md"}),
+                ("grep", {"pattern": "streaming", "path": "src"}),
+            ],
+        )
+        self.assertEqual(
+            _parse_tool_plan_from_model_message(message),
+            ("read_file", {"path": "README.md"}),
+        )
 
 
 if __name__ == "__main__":

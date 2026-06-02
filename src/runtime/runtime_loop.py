@@ -133,37 +133,50 @@ def _parse_tool_call_json_payload(raw: str) -> Optional[Dict[str, Any]]:
     return None
 
 
+def _parse_tool_plans_from_model_message(
+    message: Any,
+) -> List[Tuple[str, Dict[str, Any]]]:
+    if not isinstance(message, dict):
+        return []
+    tool_calls = message.get("tool_calls")
+    if not isinstance(tool_calls, list) or not tool_calls:
+        return []
+    plans: List[Tuple[str, Dict[str, Any]]] = []
+    for tool_call in tool_calls:
+        if not isinstance(tool_call, dict):
+            continue
+        fn = tool_call.get("function")
+        if not isinstance(fn, dict):
+            continue
+        tool_name = str(fn.get("name") or "").strip()
+        if not tool_name:
+            continue
+        raw_args = fn.get("arguments")
+        if isinstance(raw_args, dict):
+            plans.append((tool_name, raw_args))
+            continue
+        if isinstance(raw_args, str):
+            raw_text = raw_args.strip()
+            if not raw_text:
+                plans.append((tool_name, {}))
+                continue
+            try:
+                parsed = json.loads(raw_text)
+                if isinstance(parsed, dict):
+                    plans.append((tool_name, parsed))
+                    continue
+            except Exception:
+                plans.append((tool_name, {}))
+                continue
+        plans.append((tool_name, {}))
+    return plans
+
+
 def _parse_tool_plan_from_model_message(
     message: Any,
 ) -> Optional[Tuple[str, Dict[str, Any]]]:
-    if not isinstance(message, dict):
-        return None
-    tool_calls = message.get("tool_calls")
-    if not isinstance(tool_calls, list) or not tool_calls:
-        return None
-    first = tool_calls[0]
-    if not isinstance(first, dict):
-        return None
-    fn = first.get("function")
-    if not isinstance(fn, dict):
-        return None
-    tool_name = str(fn.get("name") or "").strip()
-    if not tool_name:
-        return None
-    raw_args = fn.get("arguments")
-    if isinstance(raw_args, dict):
-        return tool_name, raw_args
-    if isinstance(raw_args, str):
-        raw_text = raw_args.strip()
-        if not raw_text:
-            return tool_name, {}
-        try:
-            parsed = json.loads(raw_text)
-            if isinstance(parsed, dict):
-                return tool_name, parsed
-        except Exception:
-            return tool_name, {}
-    return tool_name, {}
+    plans = _parse_tool_plans_from_model_message(message)
+    return plans[0] if plans else None
 
 
 def _stream_visible_text_with_json_pause(text: str, *, final: bool) -> str:
@@ -1685,7 +1698,7 @@ def run_agent_loop(agent: Any):
                 first_round_contract = (
                     "\n\n【首轮回复硬性要求（必须遵守）】\n"
                     "1) 对于需要两步及以上完成的任务，先简要说明“将要完成哪些事情”，紧随其后再输出任务编排：Step 1..N，并为每步标注状态（pending/in_progress/completed/failed）。\n"
-                    "2) 不要输出工具调用 JSON 文本；若需要调用工具，请直接使用标准 tools 调用（tool_calls）。若无需工具可直接自然语言回答。\n"
+                    "2) 不要输出工具调用 JSON 文本；若需要调用工具，请直接使用标准 tools 调用（tool_calls），可在同一条 assistant 回复中一次调用一个或多个工具。若无需工具可直接自然语言回答。\n"
                     "3) 对于需要两步及以上完成的任务，禁止首轮直接只给工具调用而不做“事项简述 + 步骤编排”。\n"
                     "4) 若用户问题可被上一条 system 开头的【经验记忆】单独完整回答，"
                     "首轮应直接给出简短自然语言并结束（若本轮无文件改动可调用 done）。不要输出 Step 编排或 memory_search。\n"
@@ -1829,14 +1842,14 @@ def run_agent_loop(agent: Any):
                     raise
                 if self._consume_task_interrupt_requested():
                     raise KeyboardInterrupt
-                message_tool_plan: Optional[Tuple[str, Dict[str, Any]]] = None
+                message_tool_plans: List[Tuple[str, Dict[str, Any]]] = []
                 if isinstance(ai_result, dict):
                     if not status_ticker_stopped:
                         _stop_status_ticker_before_first_output()
                     msg_content = ai_result.get("content", "")
                     ai_response = msg_content if isinstance(msg_content, str) else str(msg_content or "")
                     streamed_assistant_output = False
-                    message_tool_plan = _parse_tool_plan_from_model_message(ai_result)
+                    message_tool_plans = _parse_tool_plans_from_model_message(ai_result)
                 else:
                     ai_response, streamed_assistant_output = _consume_streaming_ai_response(
                         self,
@@ -1848,7 +1861,7 @@ def run_agent_loop(agent: Any):
                         if not ai_response:
                             msg_content = stream_final_message.get("content", "")
                             ai_response = msg_content if isinstance(msg_content, str) else str(msg_content or "")
-                        message_tool_plan = _parse_tool_plan_from_model_message(
+                        message_tool_plans = _parse_tool_plans_from_model_message(
                             stream_final_message
                         )
                 if not status_ticker_stopped:
@@ -1872,22 +1885,24 @@ def run_agent_loop(agent: Any):
                         self._last_terminal_block_kind = "assistant"
                         self._terminal_cursor_at_line_start = True
 
-                fallback_plan = message_tool_plan
-                if fallback_plan is None:
+                fallback_plans = list(message_tool_plans)
+                if not fallback_plans:
                     fallback_plan = self._parse_tool_plan_from_response(ai_response)
-                if fallback_plan:
-                    tool_name, args = fallback_plan
-                    if tool_name != "done":
-                        self._print_tool_call_feedback(tool_name, args, failed=False)
+                    if fallback_plan is not None:
+                        fallback_plans = [fallback_plan]
+                if fallback_plans:
+                    for tool_name, args in fallback_plans:
+                        if tool_name != "done":
+                            self._print_tool_call_feedback(tool_name, args, failed=False)
                 else:
                     tool_name, args = "", {}
 
-                if ai_response and not fallback_plan:
+                if ai_response and not fallback_plans:
                     # Keep output spacing consistent when only narrative is shown.
                     if not ai_response.endswith("\n"):
                         sys.stdout.write("\n")
                     sys.stdout.flush()
-                if not fallback_plan:
+                if not fallback_plans:
                     if task_uses_standard_openai_tools and str(ai_response or "").strip():
                         if current_task_id:
                             self._close_chat_task(current_task_id, "done")
@@ -1908,7 +1923,7 @@ def run_agent_loop(agent: Any):
                     if task_uses_standard_openai_tools:
                         print(
                             f"⚠️ No valid tool_calls detected (retry {no_tool_rounds}/{max_no_tool_rounds}): "
-                            "the model will be asked again to call one tool via standard tool_calls."
+                            "the model will be asked again to call one or more tools via standard tool_calls."
                         )
                     else:
                         print(
@@ -1935,7 +1950,7 @@ def run_agent_loop(agent: Any):
                             next_input = (
                                 f"【用户原始需求】\n{original_user_task}\n\n"
                                 "你上一条回复没有给出有效的标准 tool_calls。\n"
-                                "请直接调用一个最合适的工具；若任务已完成，请直接调用 done。"
+                                "请直接调用一个或多个最合适的工具；若任务已完成，请直接调用 done。"
                             )
                         else:
                             next_input = (
@@ -1948,318 +1963,392 @@ def run_agent_loop(agent: Any):
                     is_first_round = False
                     continue
 
-                if not tool_name:
-                    print("❌ Tool plan is missing tool name. Ending this round.")
-                    break
+                executed_batch_results: List[Dict[str, Any]] = []
+                last_tool_name = ""
+                last_tool_args: Dict[str, Any] = {}
+                last_tool_result: Dict[str, Any] = {}
+                continue_after_batch = False
+                break_after_batch = False
 
-                if tool_name == "apply_patch":
-                    patch_path = str(args.get("path") or "").strip() if isinstance(args, dict) else ""
-                    patch_text = args.get("patch") if isinstance(args, dict) else None
-                    if (not patch_path) or (not isinstance(patch_text, str)) or (not patch_text.strip()):
-                        print(
-                            "⚠️ apply_patch plan is missing required `path`/`patch`; "
-                            "requesting the model to resend a valid patch/git-apply unified diff call."
-                        )
-                        next_input = (
-                            f"【用户原始需求】\n{original_user_task}\n\n"
-                            "你上一条 apply_patch 工具计划缺少必填参数。\n"
-                            "请只输出一个有效 JSON（不要附加其它文本）：\n"
-                            "{\"tool\":\"apply_patch\",\"args\":{\"path\":\"<file>\",\"patch\":\"--- a/<file>\\n+++ b/<file>\\n@@ ... @@\\n- old\\n+ new\"}}\n"
-                            "要求：`path` 和 `patch` 都必须提供；`patch` 优先使用标准 patch/git apply unified diff（包含 ---/+++ 与至少一个 `@@ ... @@` hunk）。"
-                        )
-                        no_tool_rounds = 0
-                        is_first_round = False
-                        continue
-
-                if tool_name == "request_skill_prompt":
-                    sid = str(args.get("skill_id") or "").strip()
-                    canon_sid = self._canonical_skill_id(sid)
-                    active_sid = self._canonical_skill_id(self._active_skill_id or "")
-                    requested_section_raw = args.get("section")
-                    requested_section: Optional[int] = None
-                    try:
-                        if requested_section_raw is not None:
-                            requested_section = int(requested_section_raw)
-                    except Exception:
-                        requested_section = None
-                    force_full = bool(args.get("full", False))
-                    request_is_expansion = force_full or (requested_section is not None and requested_section > 1)
-                    if canon_sid and canon_sid in preloaded_skill_ids and not request_is_expansion:
-                        next_input = (
-                            f"【用户原始需求】\n{original_user_task}\n\n"
-                            f"skill_id=`{sid}` 已由本轮显式 `/skills/<skill-name>` 引用预注入。"
-                            "禁止再次调用 request_skill_prompt。请直接输出下一条业务工具调用 JSON。"
-                        )
-                        no_tool_rounds = 0
-                        continue
-                    if (
-                        active_sid
-                        and canon_sid
-                        and active_sid == canon_sid
-                        and str(self._active_skill_full_prompt or "").strip()
-                        and not self._active_skill_chunked
-                        and not request_is_expansion
-                    ):
-                        next_input = (
-                            f"【用户原始需求】\n{original_user_task}\n\n"
-                            f"skill_id=`{sid}` 的完整提示已在当前会话中注入。"
-                            "禁止重复调用 request_skill_prompt。请直接输出下一条业务工具调用 JSON。"
-                        )
-                        no_tool_rounds = 0
-                        continue
-                    if (
-                        active_sid
-                        and canon_sid
-                        and active_sid == canon_sid
-                        and self._active_skill_chunked
-                        and requested_section is None
-                        and not force_full
-                        and self._active_skill_section > 0
-                        and self._active_skill_section < self._active_skill_total_sections
-                    ):
-                        requested_section = self._active_skill_section + 1
-                    full_prompt, meta = self._build_single_skill_prompt(
-                        sid,
-                        requested_section=requested_section,
-                        full=force_full,
-                    )
-                    if not full_prompt:
-                        no_tool_rounds += 1
-                        next_input = (
-                            f"【用户原始需求】\n{original_user_task}\n\n"
-                            f"你请求的 skill_id=`{sid}` 不存在。"
-                            "请基于已加载技能索引重试，输出有效的 request_skill_prompt，或直接继续输出业务工具调用 JSON。"
-                        )
-                        continue
-                    if active_sid != canon_sid:
-                        print(f"🧩 About to enable skill: {sid}")
-                    self._active_skill_full_prompt = full_prompt
-                    self._active_skill_id = canon_sid or sid
-                    self._active_skill_source = "local" if self._is_local_skill_id(canon_sid or sid) else "mcp"
-                    self._active_skill_section = int(meta.get("section") or 0)
-                    self._active_skill_total_sections = int(meta.get("total") or 0)
-                    self._active_skill_chunked = bool(meta.get("chunked", False))
-                    next_input = (
-                        f"【用户原始需求】\n{original_user_task}\n\n"
-                        f"已注入 skill_id=`{sid}` 的 skill 提示。"
-                        f"当前段进度：{self._active_skill_section}/{self._active_skill_total_sections if self._active_skill_total_sections else 1}。"
-                        "请继续输出下一条工具调用 JSON。"
-                    )
-                    no_tool_rounds = 0
-                    continue
-
-                pseudo_command = {"tool": tool_name, "args": args}
-                if self._is_repeated_tool_call_pattern(tool_name, args):
-                    next_input = (
-                        f"【用户原始需求】\n{original_user_task}\n\n"
-                        "检测到你在重复调用相同的 shell（参数几乎相同）。\n"
-                        "请停止重复检索，改为：\n"
-                        "1) 基于现有结果先给出阶段性结论；\n"
-                        "2) 若证据不足，仅补充一次更有针对性的工具调用；\n"
-                        "3) 若已足够，直接输出 done。\n"
-                        "下一条请输出一个新的 JSON 工具计划。"
-                    )
-                    no_tool_rounds = 0
-                    continue
-                selected_skill = self._infer_selected_skill(pseudo_command, ai_response)
-                if selected_skill:
-                    skill_key = f"{selected_skill.get('skill_id')}::{selected_skill.get('name')}"
-                    if skill_key != last_announced_skill_key:
-                        print(f"🧩 Use skill: {selected_skill.get('name')} ({selected_skill.get('skill_id')})")
-                        last_announced_skill_key = skill_key
-
-                if self._consume_task_interrupt_requested():
-                    raise KeyboardInterrupt
-                result = self.execute_tool_call(tool_name, args)
-                repaint_up_lines = 1
-                if tool_name == "shell":
-                    try:
-                        rendered_lines = int(result.get("display_rendered_lines", 0) or 0)
-                    except Exception:
-                        rendered_lines = 0
-                    try:
-                        interstitial_lines = int(
-                            getattr(self, "_tool_call_feedback_interstitial_lines", 0) or 0
-                        )
-                    except Exception:
-                        interstitial_lines = 0
-                    repaint_up_lines = max(1, rendered_lines + max(0, interstitial_lines) + 1)
-                aborted_tool_result = _model_tool_result_was_aborted(tool_name, result)
-                self._repaint_tool_call_feedback_if_failed(
-                    tool_name,
-                    args,
-                    failed=(not bool(result.get("success", True))) and (not aborted_tool_result),
-                    up_lines=repaint_up_lines,
-                )
-                try:
-                    self._tool_call_feedback_interstitial_lines = 0
-                except Exception:
-                    pass
-                no_tool_rounds = 0
-                self.operation_results.append({
-                    "command": pseudo_command,
-                    "result": result,
-                    "timestamp": datetime.now().isoformat()
-                })
-                if tool_name == "shell":
-                    recorder = getattr(self, "_record_model_tool_execution_history", None)
-                    if callable(recorder):
-                        try:
-                            recorder(tool_name, args, result if isinstance(result, dict) else {})
-                        except Exception:
-                            pass
-                    if aborted_tool_result:
-                        _reload_chat_history_after_aborted_command(self)
-                last_result = result
-                is_first_round = False
-                if tool_name == "apply_patch" and (not bool(result.get("success", False))):
-                    err = str(result.get("error") or result.get("message") or "unknown error").strip()
-                    print(f"❌ apply_patch failed: {err}")
-                hints = _tool_change_and_verification_hints(tool_name, args, result)
-                if bool(hints.get("code_changed", False)):
-                    code_changed_in_task = True
-                    for fp in list(hints.get("changed_files") or []):
-                        fpp = str(fp or "").strip()
-                        if fpp:
-                            changed_files_in_task.add(fpp)
-
-                if self._result_indicates_user_cancelled(result):
-                    self._force_current_input_as_requirement_once = True
-                    self._last_cancelled_task = str(original_user_task or "").strip()
-                    if current_task_id:
-                        self._close_chat_task(current_task_id, "cancelled")
-                    _refresh_context_usage_after_task_boundary(
-                        self,
-                        user_input_hint=str(original_user_task or ""),
-                        context_hint="task cancelled",
-                    )
-                    print("⏹️ User cancellation detected. The current task has been terminated.")
-                    break
-
-                if result.get("finished"):
-                    if (not worked_summary_emitted) and tool_round > 1:
-                        _print_worked_for_summary_line(
-                            self,
-                            int(max(0.0, time.monotonic() - float(task_started_at))),
-                        )
-                        worked_summary_emitted = True
-                    if current_task_id:
-                        self._close_chat_task(current_task_id, "done")
-                    _refresh_context_usage_after_task_boundary(
-                        self,
-                        user_input_hint=str(original_user_task or ""),
-                        context_hint="task finished",
-                    )
-                    break
-                if bool(result.get("task_changed", False)):
-                    new_task = str(result.get("new_task") or "").strip()
-                    if not new_task:
-                        print("❌ task_changed returned without new_task. Auto-execution has stopped for this round.")
+                for tool_name, args in fallback_plans:
+                    if not tool_name:
+                        print("❌ Tool plan is missing tool name. Ending this round.")
+                        break_after_batch = True
                         break
-                    old_task = original_user_task
-                    original_user_task = new_task
-                    if current_task_id:
-                        self._close_chat_task(current_task_id, "switched")
-                    current_task_id = self._start_chat_task(
-                        root_user_input=original_user_task,
-                        switched_from_task_id=str(current_task_id or ""),
-                    )
-                    code_changed_in_task = False
-                    changed_files_in_task = set()
-                    print("🔄 AI judged the user supplement unrelated to the original requirement; switched to a new task.")
-                    print(f"   Old task: {old_task}")
-                    print(f"   New task: {original_user_task}")
-                    reason = str(result.get("reason") or "").strip()
-                    next_input = (
-                        f"【用户原始需求】\n{original_user_task}\n\n"
-                        "你刚调用了 task_changed，系统已将原始需求切换为“新任务”。\n"
-                        + (f"切换原因：{reason}\n" if reason else "")
-                        + (
-                            "请基于新的原始需求继续调用下一条标准 tools。"
-                            if task_uses_standard_openai_tools
-                            else "请基于新的原始需求继续输出下一条 JSON 工具计划。"
-                        )
-                    )
-                    continue
-                if bool(result.get("needs_user_input", False)) and str(result.get("input_type", "")).strip() == "supplement":
-                    if (not worked_summary_emitted) and tool_name == "ask_more_info":
-                        _print_worked_for_summary_line(
-                            self,
-                            int(max(0.0, time.monotonic() - float(task_started_at))),
-                        )
-                        worked_summary_emitted = True
-                    q = str(result.get("question") or "").strip() or "Please provide supplementary information:"
-                    print("🙋 Supplementary information is required before continuing.")
-                    print(f"❓ {q}")
-                    supplement_text = ""
-                    handoff_to_main_loop = False
-                    while True:
+
+                    if tool_name == "apply_patch":
+                        patch_path = str(args.get("path") or "").strip() if isinstance(args, dict) else ""
+                        patch_text = args.get("patch") if isinstance(args, dict) else None
+                        if (not patch_path) or (not isinstance(patch_text, str)) or (not patch_text.strip()):
+                            print(
+                                "⚠️ apply_patch plan is missing required `path`/`patch`; "
+                                "requesting the model to resend a valid patch/git-apply unified diff call."
+                            )
+                            next_input = (
+                                f"【用户原始需求】\n{original_user_task}\n\n"
+                                "你上一条 apply_patch 工具计划缺少必填参数。\n"
+                                "请只输出一个有效 JSON（不要附加其它文本）：\n"
+                                "{\"tool\":\"apply_patch\",\"args\":{\"path\":\"<file>\",\"patch\":\"--- a/<file>\\n+++ b/<file>\\n@@ ... @@\\n- old\\n+ new\"}}\n"
+                                "要求：`path` 和 `patch` 都必须提供；`patch` 优先使用标准 patch/git apply unified diff（包含 ---/+++ 与至少一个 `@@ ... @@` hunk）。"
+                            )
+                            no_tool_rounds = 0
+                            is_first_round = False
+                            continue_after_batch = True
+                            break
+
+                    if tool_name == "request_skill_prompt":
+                        sid = str(args.get("skill_id") or "").strip()
+                        canon_sid = self._canonical_skill_id(sid)
+                        active_sid = self._canonical_skill_id(self._active_skill_id or "")
+                        requested_section_raw = args.get("section")
+                        requested_section: Optional[int] = None
                         try:
-                            supplement_text = self._get_user_input_with_history().strip()
-                        except KeyboardInterrupt:
-                            print("\n⏸️ Supplementary input cancelled. This task round is paused.")
-                            supplement_text = ""
+                            if requested_section_raw is not None:
+                                requested_section = int(requested_section_raw)
+                        except Exception:
+                            requested_section = None
+                        force_full = bool(args.get("full", False))
+                        request_is_expansion = force_full or (requested_section is not None and requested_section > 1)
+                        if canon_sid and canon_sid in preloaded_skill_ids and not request_is_expansion:
+                            next_input = (
+                                f"【用户原始需求】\n{original_user_task}\n\n"
+                                f"skill_id=`{sid}` 已由本轮显式 `/skills/<skill-name>` 引用预注入。"
+                                + (
+                                    "禁止再次调用 request_skill_prompt。请直接继续调用标准 tools。"
+                                    if task_uses_standard_openai_tools
+                                    else "禁止再次调用 request_skill_prompt。请直接输出下一条业务工具调用 JSON。"
+                                )
+                            )
+                            no_tool_rounds = 0
+                            continue_after_batch = True
+                            break
+                        if (
+                            active_sid
+                            and canon_sid
+                            and active_sid == canon_sid
+                            and str(self._active_skill_full_prompt or "").strip()
+                            and not self._active_skill_chunked
+                            and not request_is_expansion
+                        ):
+                            next_input = (
+                                f"【用户原始需求】\n{original_user_task}\n\n"
+                                f"skill_id=`{sid}` 的完整提示已在当前会话中注入。"
+                                + (
+                                    "禁止重复调用 request_skill_prompt。请直接继续调用标准 tools。"
+                                    if task_uses_standard_openai_tools
+                                    else "禁止重复调用 request_skill_prompt。请直接输出下一条业务工具调用 JSON。"
+                                )
+                            )
+                            no_tool_rounds = 0
+                            continue_after_batch = True
+                            break
+                        if (
+                            active_sid
+                            and canon_sid
+                            and active_sid == canon_sid
+                            and self._active_skill_chunked
+                            and requested_section is None
+                            and not force_full
+                            and self._active_skill_section > 0
+                            and self._active_skill_section < self._active_skill_total_sections
+                        ):
+                            requested_section = self._active_skill_section + 1
+                        full_prompt, meta = self._build_single_skill_prompt(
+                            sid,
+                            requested_section=requested_section,
+                            full=force_full,
+                        )
+                        if not full_prompt:
+                            no_tool_rounds += 1
+                            next_input = (
+                                f"【用户原始需求】\n{original_user_task}\n\n"
+                                f"你请求的 skill_id=`{sid}` 不存在。"
+                                + (
+                                    "请基于已加载技能索引重试，输出有效的 request_skill_prompt，或直接继续调用标准 tools。"
+                                    if task_uses_standard_openai_tools
+                                    else "请基于已加载技能索引重试，输出有效的 request_skill_prompt，或直接继续输出业务工具调用 JSON。"
+                                )
+                            )
+                            continue_after_batch = True
+                            break
+                        if active_sid != canon_sid:
+                            print(f"🧩 About to enable skill: {sid}")
+                        self._active_skill_full_prompt = full_prompt
+                        self._active_skill_id = canon_sid or sid
+                        self._active_skill_source = "local" if self._is_local_skill_id(canon_sid or sid) else "mcp"
+                        self._active_skill_section = int(meta.get("section") or 0)
+                        self._active_skill_total_sections = int(meta.get("total") or 0)
+                        self._active_skill_chunked = bool(meta.get("chunked", False))
+                        next_input = (
+                            f"【用户原始需求】\n{original_user_task}\n\n"
+                            f"已注入 skill_id=`{sid}` 的 skill 提示。"
+                            f"当前段进度：{self._active_skill_section}/{self._active_skill_total_sections if self._active_skill_total_sections else 1}。"
+                            + (
+                                "请继续调用标准 tools；可一次调用一个或多个工具。"
+                                if task_uses_standard_openai_tools
+                                else "请继续输出下一条工具调用 JSON。"
+                            )
+                        )
+                        no_tool_rounds = 0
+                        continue_after_batch = True
+                        break
+
+                    pseudo_command = {"tool": tool_name, "args": args}
+                    if self._is_repeated_tool_call_pattern(tool_name, args):
+                        next_input = (
+                            f"【用户原始需求】\n{original_user_task}\n\n"
+                            "检测到你在重复调用相同的 shell（参数几乎相同）。\n"
+                            "请停止重复检索，改为：\n"
+                            "1) 基于现有结果先给出阶段性结论；\n"
+                            "2) 若证据不足，仅补充一次更有针对性的工具调用；\n"
+                            "3) 若已足够，直接输出 done。\n"
+                            + (
+                                "下一条请继续调用标准 tools，并避免重复；可一次调用一个或多个工具。"
+                                if task_uses_standard_openai_tools
+                                else "下一条请输出一个新的 JSON 工具计划。"
+                            )
+                        )
+                        no_tool_rounds = 0
+                        continue_after_batch = True
+                        break
+                    selected_skill = self._infer_selected_skill(pseudo_command, ai_response)
+                    if selected_skill:
+                        skill_key = f"{selected_skill.get('skill_id')}::{selected_skill.get('name')}"
+                        if skill_key != last_announced_skill_key:
+                            print(f"🧩 Use skill: {selected_skill.get('name')} ({selected_skill.get('skill_id')})")
+                            last_announced_skill_key = skill_key
+
+                    if self._consume_task_interrupt_requested():
+                        raise KeyboardInterrupt
+                    result = self.execute_tool_call(tool_name, args)
+                    repaint_up_lines = 1
+                    if tool_name == "shell":
+                        try:
+                            rendered_lines = int(result.get("display_rendered_lines", 0) or 0)
+                        except Exception:
+                            rendered_lines = 0
+                        try:
+                            interstitial_lines = int(
+                                getattr(self, "_tool_call_feedback_interstitial_lines", 0) or 0
+                            )
+                        except Exception:
+                            interstitial_lines = 0
+                        repaint_up_lines = max(1, rendered_lines + max(0, interstitial_lines) + 1)
+                    aborted_tool_result = _model_tool_result_was_aborted(tool_name, result)
+                    self._repaint_tool_call_feedback_if_failed(
+                        tool_name,
+                        args,
+                        failed=(not bool(result.get("success", True))) and (not aborted_tool_result),
+                        up_lines=repaint_up_lines,
+                    )
+                    try:
+                        self._tool_call_feedback_interstitial_lines = 0
+                    except Exception:
+                        pass
+                    no_tool_rounds = 0
+                    self.operation_results.append({
+                        "command": pseudo_command,
+                        "result": result,
+                        "timestamp": datetime.now().isoformat()
+                    })
+                    executed_batch_results.append({
+                        "tool": tool_name,
+                        "args": args,
+                        "result": result,
+                    })
+                    if tool_name == "shell":
+                        recorder = getattr(self, "_record_model_tool_execution_history", None)
+                        if callable(recorder):
+                            try:
+                                recorder(tool_name, args, result if isinstance(result, dict) else {})
+                            except Exception:
+                                pass
+                        if aborted_tool_result:
+                            _reload_chat_history_after_aborted_command(self)
+                    last_result = result
+                    last_tool_name = tool_name
+                    last_tool_args = args if isinstance(args, dict) else {}
+                    last_tool_result = result if isinstance(result, dict) else {}
+                    is_first_round = False
+                    if tool_name == "apply_patch" and (not bool(result.get("success", False))):
+                        err = str(result.get("error") or result.get("message") or "unknown error").strip()
+                        print(f"❌ apply_patch failed: {err}")
+                    hints = _tool_change_and_verification_hints(tool_name, args, result)
+                    if bool(hints.get("code_changed", False)):
+                        code_changed_in_task = True
+                        for fp in list(hints.get("changed_files") or []):
+                            fpp = str(fp or "").strip()
+                            if fpp:
+                                changed_files_in_task.add(fpp)
+
+                    if self._result_indicates_user_cancelled(result):
+                        self._force_current_input_as_requirement_once = True
+                        self._last_cancelled_task = str(original_user_task or "").strip()
+                        if current_task_id:
+                            self._close_chat_task(current_task_id, "cancelled")
+                        _refresh_context_usage_after_task_boundary(
+                            self,
+                            user_input_hint=str(original_user_task or ""),
+                            context_hint="task cancelled",
+                        )
+                        print("⏹️ User cancellation detected. The current task has been terminated.")
+                        break_after_batch = True
+                        break
+
+                    if result.get("finished"):
+                        if (not worked_summary_emitted) and tool_round > 1:
+                            _print_worked_for_summary_line(
+                                self,
+                                int(max(0.0, time.monotonic() - float(task_started_at))),
+                            )
+                            worked_summary_emitted = True
+                        if current_task_id:
+                            self._close_chat_task(current_task_id, "done")
+                        _refresh_context_usage_after_task_boundary(
+                            self,
+                            user_input_hint=str(original_user_task or ""),
+                            context_hint="task finished",
+                        )
+                        break_after_batch = True
+                        break
+                    if bool(result.get("task_changed", False)):
+                        new_task = str(result.get("new_task") or "").strip()
+                        if not new_task:
+                            print("❌ task_changed returned without new_task. Auto-execution has stopped for this round.")
+                            break_after_batch = True
+                            break
+                        old_task = original_user_task
+                        original_user_task = new_task
+                        if current_task_id:
+                            self._close_chat_task(current_task_id, "switched")
+                        current_task_id = self._start_chat_task(
+                            root_user_input=original_user_task,
+                            switched_from_task_id=str(current_task_id or ""),
+                        )
+                        code_changed_in_task = False
+                        changed_files_in_task = set()
+                        print("🔄 AI judged the user supplement unrelated to the original requirement; switched to a new task.")
+                        print(f"   Old task: {old_task}")
+                        print(f"   New task: {original_user_task}")
+                        reason = str(result.get("reason") or "").strip()
+                        next_input = (
+                            f"【用户原始需求】\n{original_user_task}\n\n"
+                            "你刚调用了 task_changed，系统已将原始需求切换为“新任务”。\n"
+                            + (f"切换原因：{reason}\n" if reason else "")
+                            + (
+                                "请基于新的原始需求继续调用标准 tools；可一次调用一个或多个工具。"
+                                if task_uses_standard_openai_tools
+                                else "请基于新的原始需求继续输出下一条 JSON 工具计划。"
+                            )
+                        )
+                        continue_after_batch = True
+                        break
+                    if bool(result.get("needs_user_input", False)) and str(result.get("input_type", "")).strip() == "supplement":
+                        if (not worked_summary_emitted) and tool_name == "ask_more_info":
+                            _print_worked_for_summary_line(
+                                self,
+                                int(max(0.0, time.monotonic() - float(task_started_at))),
+                            )
+                            worked_summary_emitted = True
+                        q = str(result.get("question") or "").strip() or "Please provide supplementary information:"
+                        print("🙋 Supplementary information is required before continuing.")
+                        print(f"❓ {q}")
+                        supplement_text = ""
+                        handoff_to_main_loop = False
+                        while True:
+                            try:
+                                supplement_text = self._get_user_input_with_history().strip()
+                            except KeyboardInterrupt:
+                                print("\n⏸️ Supplementary input cancelled. This task round is paused.")
+                                supplement_text = ""
+                                break
+                            if not supplement_text:
+                                print("⚠️ No supplementary information received. This task round is paused.")
+                                break
+                            if supplement_text.startswith("/") or supplement_text.startswith("!"):
+                                # Route prefixed input back to the main loop so it shares
+                                # the exact same parsing/execution path as a normal turn.
+                                self._queued_user_input = supplement_text
+                                handoff_to_main_loop = True
+                                break
+                            break
+                        if handoff_to_main_loop:
+                            _refresh_context_usage_after_task_boundary(
+                                self,
+                                user_input_hint=str(original_user_task or ""),
+                                context_hint="ask_more_info handoff",
+                            )
+                            break_after_batch = True
                             break
                         if not supplement_text:
-                            print("⚠️ No supplementary information received. This task round is paused.")
+                            _refresh_context_usage_after_task_boundary(
+                                self,
+                                user_input_hint=str(original_user_task or ""),
+                                context_hint="ask_more_info paused",
+                            )
+                            break_after_batch = True
                             break
-                        if supplement_text.startswith("/") or supplement_text.startswith("!"):
-                            # Route prefixed input back to the main loop so it shares
-                            # the exact same parsing/execution path as a normal turn.
-                            self._queued_user_input = supplement_text
-                            handoff_to_main_loop = True
-                            break
+                        next_input = (
+                            f"【用户原始需求】\n{original_user_task}\n\n"
+                            f"【用户补充信息】\n{supplement_text}\n\n"
+                            + (
+                                "请判断该补充信息是否与原始需求相关：\n"
+                                "- 若完全无关：调用 task_changed（new_task 填提炼后的新需求，reason 填原因）；\n"
+                                "- 若相关：继续调用标准 tools；可一次调用一个或多个工具；若信息仍不充分，可再次调用 ask_more_info。"
+                                if task_uses_standard_openai_tools
+                                else "请判断该补充信息是否与原始需求相关：\n"
+                                "- 若完全无关：调用 {\"tool\":\"task_changed\",\"args\":{\"new_task\":\"<用户补充信息提炼后的新需求>\",\"reason\":\"...\"}}；\n"
+                                "- 若相关：继续输出下一条工具调用 JSON；若信息仍不充分，可再次调用 ask_more_info。"
+                            )
+                        )
+                        continue_after_batch = True
                         break
-                    if handoff_to_main_loop:
+                    if (
+                        (not result.get("success", True))
+                        and bool(result.get("needs_user_input", False))
+                        and (result.get("retryable", True) is False)
+                    ):
+                        hint = str(result.get("error", "") or "需要用户输入后再继续。")
+                        print(f"⏸️ Auto-continue paused: {hint}")
                         _refresh_context_usage_after_task_boundary(
                             self,
                             user_input_hint=str(original_user_task or ""),
-                            context_hint="ask_more_info handoff",
+                            context_hint="task paused needs user input",
                         )
+                        break_after_batch = True
                         break
-                    if not supplement_text:
-                        _refresh_context_usage_after_task_boundary(
-                            self,
-                            user_input_hint=str(original_user_task or ""),
-                            context_hint="ask_more_info paused",
-                        )
-                        break
-                    next_input = (
-                        f"【用户原始需求】\n{original_user_task}\n\n"
-                        f"【用户补充信息】\n{supplement_text}\n\n"
-                        + (
-                            "请判断该补充信息是否与原始需求相关：\n"
-                            "- 若完全无关：调用 task_changed（new_task 填提炼后的新需求，reason 填原因）；\n"
-                            "- 若相关：继续调用下一条标准 tools；若信息仍不充分，可再次调用 ask_more_info。"
-                            if task_uses_standard_openai_tools
-                            else "请判断该补充信息是否与原始需求相关：\n"
-                            "- 若完全无关：调用 {\"tool\":\"task_changed\",\"args\":{\"new_task\":\"<用户补充信息提炼后的新需求>\",\"reason\":\"...\"}}；\n"
-                            "- 若相关：继续输出下一条工具调用 JSON；若信息仍不充分，可再次调用 ask_more_info。"
-                        )
-                    )
+
+                if break_after_batch:
+                    break
+                if continue_after_batch:
                     continue
-                if (
-                    (not result.get("success", True))
-                    and bool(result.get("needs_user_input", False))
-                    and (result.get("retryable", True) is False)
-                ):
-                    hint = str(result.get("error", "") or "需要用户输入后再继续。")
-                    print(f"⏸️ Auto-continue paused: {hint}")
-                    _refresh_context_usage_after_task_boundary(
-                        self,
-                        user_input_hint=str(original_user_task or ""),
-                        context_hint="task paused needs user input",
-                    )
+                if not executed_batch_results:
+                    print("❌ No executable tool call was completed in this round.")
                     break
 
+                result_for_next_input: Dict[str, Any]
+                if len(executed_batch_results) == 1:
+                    result_for_next_input = last_tool_result
+                else:
+                    batch_success = True
+                    for entry in executed_batch_results:
+                        entry_result = entry.get("result")
+                        if isinstance(entry_result, dict) and (entry_result.get("success", True) is False):
+                            batch_success = False
+                            break
+                    result_for_next_input = {
+                        "success": batch_success,
+                        "batch_results": executed_batch_results,
+                    }
+                last_result = result_for_next_input
                 step_progress = self._build_step_progress_context()
                 post_status_rule = ""
-                if tool_name in ("mcp_status", "mcp_status_refresh"):
+                if last_tool_name in ("mcp_status", "mcp_status_refresh"):
                     post_status_rule = (
                         "你刚执行了 MCP 状态查询工具。下一步必须先根据上一条工具返回里的 status 字段，"
                         "按固定模板输出完整状态报告；该轮禁止直接 done。状态报告输出完成后的下一步再输出 done。"
                     )
-                elif tool_name == "mcp_server_info":
+                elif last_tool_name == "mcp_server_info":
                     post_status_rule = (
                         "你刚执行了 mcp_server_info。下一步必须先根据上一条工具返回里的 info/status 字段，"
                         "按固定模板输出该 server 的详情报告；该轮禁止直接 done。"
@@ -2271,18 +2360,18 @@ def run_agent_loop(agent: Any):
                         "禁止为凑步骤而调用 mcp_status/mcp_status_refresh 或 shell 等无关工具。"
                     )
                 post_result_synthesis_rule = self._build_post_result_synthesis_rule(
-                    tool_name=tool_name,
-                    args=args,
-                    result=result,
+                    tool_name=last_tool_name,
+                    args=last_tool_args,
+                    result=last_tool_result,
                 )
                 next_input = (
                     f"【用户原始需求】\n{original_user_task}\n\n"
                     f"{step_progress}\n\n"
-                    f"【上一条工具执行结果（压缩）】\n{self._compact_result_for_next_input(result)}\n\n"
+                    f"【上一批工具执行结果（压缩）】\n{self._compact_result_for_next_input(result_for_next_input)}\n\n"
                     + (
-                        "请继续调用下一条标准 tools；"
+                        "请继续调用标准 tools；可一次调用一个或多个工具；"
                         "任务全部完成时请直接调用 done（若本轮改过文件，args.reviewed_files 需覆盖全部已修改文件）。"
-                        "若上一条结果已满足原始需求，下一条必须直接调用 done。"
+                        "若上一批结果已满足原始需求，下一条必须直接调用 done。"
                         if task_uses_standard_openai_tools
                         else "请继续输出下一条 JSON 工具计划：{\"tool\":\"工具名\",\"args\":{...}}；"
                         "任务全部完成时输出 done JSON（若本轮改过文件，args 需包含 reviewed_files 覆盖全部已修改文件）。"
@@ -2405,4 +2494,3 @@ def run_agent_loop(agent: Any):
             self._in_task_execution = False
             self._stop_interrupt_monitor(cancel_task_on_interrupt=True)
             print(f"❌ Error occurred: {str(e)}")
-
