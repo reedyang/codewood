@@ -2181,17 +2181,14 @@ def run_agent_loop(agent: Any):
                         self._terminal_cursor_at_line_start = True
 
                 if task_uses_standard_openai_tools and _is_textless_done_only_tool_call(ai_response, fallback_plans):
-                    no_tool_rounds += 1
-                    if no_tool_rounds >= max_no_tool_rounds:
-                        print("❌ The model repeatedly called done without a user-visible answer. Auto-execution has stopped for this round.")
-                        break
-                    next_input = (
-                        f"[Original user request]\n{original_user_task}\n\n"
-                        "Your previous response only called `done` and did not provide any user-visible natural-language answer.\n"
-                        "Retry with one assistant message: put a concise final answer in content and call `done` through standard API tool_calls."
+                    if current_task_id:
+                        self._close_chat_task(current_task_id, "done")
+                    _refresh_context_usage_after_task_boundary(
+                        self,
+                        user_input_hint=str(original_user_task or ""),
+                        context_hint="task finished",
                     )
-                    is_first_round = False
-                    continue
+                    break
                 if fallback_plans:
                     for tool_name, args in fallback_plans:
                         if tool_name != "done":
