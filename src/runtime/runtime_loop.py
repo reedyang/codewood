@@ -82,10 +82,6 @@ class _TeeTextStream:
         return getattr(self._primary, name)
 
 
-def _is_software_development_domain(domains: List[str]) -> bool:
-    return "software_development" in {str(x or "").strip() for x in (domains or [])}
-
-
 def _estimate_visible_lines(agent: Any, text: str) -> int:
     s = str(text or "")
     if not s:
@@ -1586,20 +1582,8 @@ def run_agent_loop(agent: Any):
             last_result = None
             self._last_auto_removed_ephemeral = None
             original_user_task = task_user_input
-            domain_classify_started_at = time.perf_counter()
-            _emit_flow_log("任务领域分类开始")
-            domain_info = self._classify_task_domains(original_user_task)
-            domain_elapsed_ms = int((time.perf_counter() - domain_classify_started_at) * 1000)
-            _emit_flow_log(
-                "任务领域分类结束: "
-                f"primary={domain_info.get('primary_domain', 'general_other')}, "
-                f"domains={list(domain_info.get('domains') or ['general_other'])}, "
-                f"elapsed_ms={domain_elapsed_ms}"
-            )
             current_task_id = self._start_chat_task(
                 root_user_input=original_user_task,
-                domains=list(domain_info.get("domains") or []),
-                classifier=domain_info,
             )
             user_message_recorded = _try_record_user_task_message(
                 self, original_user_task, already_recorded=user_message_recorded
@@ -1979,35 +1963,6 @@ def run_agent_loop(agent: Any):
                         is_first_round = False
                         continue
 
-                if (
-                    tool_name == "done"
-                    and _is_software_development_domain(
-                        list(getattr(self, "_active_runtime_task_domains", None) or [])
-                    )
-                    and code_changed_in_task
-                ):
-                    reviewed_files = _extract_done_reviewed_files(args if isinstance(args, dict) else {})
-                    missing_review_files = _compute_unreviewed_changed_files(
-                        sorted(changed_files_in_task),
-                        reviewed_files,
-                    )
-                    if missing_review_files:
-                        missing_text = "\n".join(f"- {x}" for x in missing_review_files)
-                        print(
-                            "⚠️ Code changes were detected in this task but review coverage is incomplete; "
-                            "'done' was blocked and missing files must be reviewed first."
-                        )
-                        next_input = (
-                            f"【用户原始需求】\n{original_user_task}\n\n"
-                            "你已经修改了文件，但 `done.args.reviewed_files` 未覆盖全部已修改文件。\n"
-                            "请先逐一 review 以下漏掉的文件，再继续：\n"
-                            f"{missing_text}\n\n"
-                            "完成 review 后，请输出 done 并补齐 reviewed_files，例如：\n"
-                            "{\"tool\":\"done\",\"args\":{\"reviewed_files\":[\"<file1>\",\"<file2>\"]}}"
-                        )
-                        no_tool_rounds = 0
-                        continue
-
                 if tool_name == "request_skill_prompt":
                     sid = str(args.get("skill_id") or "").strip()
                     canon_sid = self._canonical_skill_id(sid)
@@ -2180,32 +2135,6 @@ def run_agent_loop(agent: Any):
                             int(max(0.0, time.monotonic() - float(task_started_at))),
                         )
                         worked_summary_emitted = True
-                    if (
-                        tool_name == "done"
-                        and _is_software_development_domain(
-                            list(getattr(self, "_active_runtime_task_domains", None) or [])
-                        )
-                        and code_changed_in_task
-                    ):
-                        reviewed_files = _extract_done_reviewed_files(
-                            args if isinstance(args, dict) else {}
-                        )
-                        missing_review_files = _compute_unreviewed_changed_files(
-                            sorted(changed_files_in_task),
-                            reviewed_files,
-                        )
-                        if missing_review_files:
-                            missing_text = "\n".join(f"- {x}" for x in missing_review_files)
-                            next_input = (
-                                f"【用户原始需求】\n{original_user_task}\n\n"
-                                "done 已触发，但 reviewed_files 仍未覆盖全部已修改文件。\n"
-                                "请先补充 review 以下文件：\n"
-                                f"{missing_text}\n\n"
-                                "然后重新输出："
-                                "{\"tool\":\"done\",\"args\":{\"reviewed_files\":[...]}}"
-                            )
-                            no_tool_rounds = 0
-                            continue
                     if current_task_id:
                         self._close_chat_task(current_task_id, "done")
                     _refresh_context_usage_after_task_boundary(
@@ -2223,11 +2152,8 @@ def run_agent_loop(agent: Any):
                     original_user_task = new_task
                     if current_task_id:
                         self._close_chat_task(current_task_id, "switched")
-                    domain_info = self._classify_task_domains(original_user_task)
                     current_task_id = self._start_chat_task(
                         root_user_input=original_user_task,
-                        domains=list(domain_info.get("domains") or []),
-                        classifier=domain_info,
                         switched_from_task_id=str(current_task_id or ""),
                     )
                     code_changed_in_task = False

@@ -68,11 +68,9 @@ class TaskControlToolTests(unittest.TestCase):
                 self,
                 chat_id,
                 root_user_input,
-                domains,
-                classifier=None,
                 switched_from_task_id="",
             ):
-                _ = (chat_id, root_user_input, domains, classifier, switched_from_task_id)
+                _ = (chat_id, root_user_input, switched_from_task_id)
                 return "task-2"
 
         class _FakeSessionMemoryService:
@@ -92,7 +90,6 @@ class TaskControlToolTests(unittest.TestCase):
         self.agent.active_chat_id = "chat-1"
         self.agent._chat_state_manager = _FakeChatStateManager()
         self.agent._active_runtime_task_id = ""
-        self.agent._active_runtime_task_domains = []
         self.agent.session_memory_service = _FakeSessionMemoryService()
         self.agent._refresh_status_context_usage_snapshot = (
             lambda user_input_hint="", context_hint="": refresh_calls.append(
@@ -105,13 +102,10 @@ class TaskControlToolTests(unittest.TestCase):
 
         task_id = self.agent._start_chat_task(
             root_user_input="new task input",
-            domains=["data_analysis"],
-            classifier={"primary_domain": "data_analysis", "domains": ["data_analysis"]},
         )
 
         self.assertEqual(task_id, "task-2")
         self.assertEqual(self.agent._active_runtime_task_id, "task-2")
-        self.assertEqual(self.agent._active_runtime_task_domains, ["data_analysis"])
         self.assertEqual(len(refresh_calls), 1)
         self.assertEqual(refresh_calls[0]["context_hint"], "task started")
         self.assertEqual(len(self.agent.session_memory_service.calls), 1)
@@ -123,11 +117,9 @@ class TaskControlToolTests(unittest.TestCase):
                 self,
                 chat_id,
                 root_user_input,
-                domains,
-                classifier=None,
                 switched_from_task_id="",
             ):
-                _ = (chat_id, root_user_input, domains, classifier, switched_from_task_id)
+                _ = (chat_id, root_user_input, switched_from_task_id)
                 return ""
 
         class _FakeSessionMemoryService:
@@ -138,14 +130,11 @@ class TaskControlToolTests(unittest.TestCase):
         self.agent.active_chat_id = "chat-1"
         self.agent._chat_state_manager = _FakeChatStateManager()
         self.agent._active_runtime_task_id = "task-old"
-        self.agent._active_runtime_task_domains = []
         self.agent.session_memory_service = _FakeSessionMemoryService()
         self.agent._refresh_status_context_usage_snapshot = lambda user_input_hint="", context_hint="": None
 
         task_id = self.agent._start_chat_task(
             root_user_input="new task input",
-            domains=["data_analysis"],
-            classifier={"primary_domain": "data_analysis", "domains": ["data_analysis"]},
         )
 
         self.assertEqual(task_id, "")
@@ -169,7 +158,6 @@ class TaskControlToolTests(unittest.TestCase):
         self.agent._session_summary_rolling = "def"
         self.agent._last_llm_summary_pair_count = 3
         self.agent._active_runtime_task_id = "task-1"
-        self.agent._active_runtime_task_domains = ["software_development"]
         self.agent._last_context_usage_percent = 34
         self.agent._last_context_input_tokens = 1234
         self.agent._chat_state_manager = _FakeChatStateManager()
@@ -180,7 +168,6 @@ class TaskControlToolTests(unittest.TestCase):
         self.assertEqual(self.agent.conversation_history, [])
         self.assertEqual(self.agent.operation_results, [])
         self.assertEqual(self.agent._active_runtime_task_id, "")
-        self.assertEqual(self.agent._active_runtime_task_domains, [])
         self.assertEqual(self.agent._last_context_usage_percent, 0)
         self.assertEqual(self.agent._last_context_input_tokens, 0)
         self.assertEqual(self.agent._chat_state_manager.cleared, ["chat-1"])
@@ -231,17 +218,13 @@ class TaskControlToolTests(unittest.TestCase):
         self.agent._chat_state_manager = _FakeChatStateManager()
         self.agent.session_memory_service = _FakeSessionMemoryService()
         self.agent._active_runtime_task_id = "task-9"
-        self.agent._active_runtime_task_domains = ["visual_design"]
 
         ok = self.agent._close_chat_task("task-9", "cancelled")
 
         self.assertTrue(ok)
         self.assertEqual(self.agent._active_runtime_task_id, "")
-        self.assertEqual(self.agent._active_runtime_task_domains, [])
 
-    def test_direct_shell_history_starts_classified_task(self):
-        classify_calls = []
-        scheduled = []
+    def test_direct_shell_history_starts_task_without_classification(self):
         start_calls = []
         close_calls = []
         appended = []
@@ -256,20 +239,10 @@ class TaskControlToolTests(unittest.TestCase):
                 self.calls.append(dict(kwargs))
                 return True
 
-        def _classify(user_input):
-            classify_calls.append(str(user_input or ""))
-            return {
-                "primary_domain": "software_development",
-                "domains": ["software_development"],
-                "confidence": 0.9,
-            }
-
-        def _start_chat_task(root_user_input, domains, classifier=None, switched_from_task_id=""):
+        def _start_chat_task(root_user_input, switched_from_task_id=""):
             start_calls.append(
                 {
                     "root_user_input": str(root_user_input or ""),
-                    "domains": list(domains or []),
-                    "classifier": dict(classifier or {}),
                     "switched_from_task_id": str(switched_from_task_id or ""),
                 }
             )
@@ -291,19 +264,9 @@ class TaskControlToolTests(unittest.TestCase):
                 self.agent._active_runtime_task_id = ""
             return True
 
-        self.agent._classify_task_domains = _classify
         self.agent._start_chat_task = _start_chat_task
         self.agent._append_chat_message = _append_chat_message
         self.agent._close_chat_task = _close_chat_task
-        self.agent._schedule_direct_shell_task_classification = (
-            lambda chat_id, task_id, raw_user_command: scheduled.append(
-                {
-                    "chat_id": str(chat_id or ""),
-                    "task_id": str(task_id or ""),
-                    "raw_user_command": str(raw_user_command or ""),
-                }
-            )
-        )
         self.agent.active_chat_id = "chat-1"
         self.agent.session_memory_service = _FakeSessionMemoryService()
         self.agent._refresh_status_context_usage_snapshot = (
@@ -324,23 +287,12 @@ class TaskControlToolTests(unittest.TestCase):
             stderr_text="boom",
         )
 
-        self.assertEqual(classify_calls, [])
-        self.assertEqual(start_calls[0]["domains"], ["general_other"])
+        self.assertEqual(start_calls[0]["root_user_input"], "powershell -Command Get-ChildItem")
         self.assertEqual(len(appended), 2)
         self.assertTrue(appended[0]["content"].startswith("[DIRECT_SHELL_USER_COMMAND]"))
         self.assertTrue(appended[1]["content"].startswith("[DIRECT_SHELL_RESULT]"))
         self.assertEqual([x["task_id"] for x in appended], ["task-direct", "task-direct"])
         self.assertEqual(close_calls, [("task-direct", "done")])
-        self.assertEqual(
-            scheduled,
-            [
-                {
-                    "chat_id": "chat-1",
-                    "task_id": "task-direct",
-                    "raw_user_command": "powershell -Command Get-ChildItem",
-                }
-            ],
-        )
         self.assertEqual(
             refresh_calls,
             [
@@ -363,9 +315,7 @@ class TaskControlToolTests(unittest.TestCase):
 
     def test_record_aborted_direct_shell_history_skips_slow_task_lifecycle(self):
         appended = []
-        classify_calls = []
         start_calls = []
-        scheduled = []
         refresh_calls = []
 
         class _FakeSessionMemoryService:
@@ -376,13 +326,7 @@ class TaskControlToolTests(unittest.TestCase):
                 self.calls.append(dict(kwargs))
                 return True
 
-        self.agent._classify_task_domains = (
-            lambda text: classify_calls.append(str(text or "")) or {"domains": ["software_development"]}
-        )
         self.agent._start_chat_task = lambda **kwargs: start_calls.append(dict(kwargs)) or "task-direct"
-        self.agent._schedule_direct_shell_task_classification = (
-            lambda **kwargs: scheduled.append(dict(kwargs))
-        )
         self.agent._append_chat_message = lambda role, content: appended.append(
             {"role": str(role or ""), "content": str(content or "")}
         )
@@ -407,9 +351,7 @@ class TaskControlToolTests(unittest.TestCase):
             aborted_by_user=True,
         )
 
-        self.assertEqual(classify_calls, [])
         self.assertEqual(start_calls, [])
-        self.assertEqual(scheduled, [])
         self.assertEqual(refresh_calls, [])
         self.assertEqual(self.agent.session_memory_service.calls, [])
         self.assertEqual(len(appended), 2)

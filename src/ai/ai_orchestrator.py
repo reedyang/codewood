@@ -38,7 +38,6 @@ class AIOrchestrator:
                 reflection_mode=call_ctx.reflection_mode,
                 session_summary_mode=call_ctx.session_summary_mode,
                 memory_query_expansion_mode=call_ctx.memory_query_expansion_mode,
-                domain_classifier_mode=call_ctx.domain_classifier_mode,
                 work_directory=str(self.context.work_directory),
             )
             if special_error:
@@ -61,7 +60,6 @@ class AIOrchestrator:
                     call_ctx.reflection_mode,
                     call_ctx.session_summary_mode,
                     call_ctx.memory_query_expansion_mode,
-                    call_ctx.domain_classifier_mode,
                 )
             )
             image_data, image_user_idx, image_user_text, image_error = prepare_image_input(
@@ -97,7 +95,6 @@ class AIOrchestrator:
                 image_user_text=image_user_text,
                 session_summary_mode=call_ctx.session_summary_mode,
                 memory_query_expansion_mode=call_ctx.memory_query_expansion_mode,
-                domain_classifier_mode=call_ctx.domain_classifier_mode,
                 tool_schemas=call_ctx.tool_schemas,
                 tool_choice=call_ctx.tool_choice,
             )

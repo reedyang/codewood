@@ -92,41 +92,18 @@ class ChatStateManager:
         self,
         task_id: str,
         root_user_input: str,
-        domains: List[str],
-        classifier: Optional[Dict[str, Any]] = None,
         switched_from_task_id: str = "",
     ) -> Dict[str, Any]:
         now = self._now_text()
-        dvals = [str(x).strip() for x in (domains or []) if str(x).strip()]
-        unique_domains: List[str] = []
-        for d in dvals:
-            if d not in unique_domains:
-                unique_domains.append(d)
-        if not unique_domains:
-            unique_domains = ["general_other"]
-        out: Dict[str, Any] = {
+        return {
             "id": task_id,
             "status": TASK_STATUS_OPEN,
             "root_user_input": str(root_user_input or "").strip(),
-            "domains": unique_domains,
-            "domain_scores": {},
-            "classifier": classifier if isinstance(classifier, dict) else {},
             "created_at": now,
             "updated_at": now,
             "closed_at": "",
             "switched_from_task_id": str(switched_from_task_id or "").strip(),
         }
-        if isinstance(classifier, dict):
-            primary = str(classifier.get("primary_domain") or "").strip()
-            secondary_raw = classifier.get("secondary_domains")
-            secondary = secondary_raw if isinstance(secondary_raw, list) else []
-            if primary:
-                out["domain_scores"][primary] = float(classifier.get("confidence") or 0.0)
-            for dom in secondary:
-                d = str(dom).strip()
-                if d and d not in out["domain_scores"]:
-                    out["domain_scores"][d] = float(classifier.get("confidence") or 0.0)
-        return out
 
     def _normalize_message(
         self,
@@ -157,38 +134,10 @@ class ChatStateManager:
         if status not in TASK_STATUSES:
             raise ValueError("invalid task status")
         root_user_input = str(raw.get("root_user_input") or "").strip()
-        domains_raw = raw.get("domains")
-        if not isinstance(domains_raw, list):
-            raise ValueError("domains must be list")
-        domains = []
-        for d in domains_raw:
-            s = str(d).strip()
-            if s and s not in domains:
-                domains.append(s)
-        if not domains:
-            domains = ["general_other"]
-        classifier = raw.get("classifier")
-        if not isinstance(classifier, dict):
-            classifier = {}
-        domain_scores = raw.get("domain_scores")
-        if not isinstance(domain_scores, dict):
-            domain_scores = {}
-        normalized_scores: Dict[str, float] = {}
-        for k, v in domain_scores.items():
-            key = str(k).strip()
-            if not key:
-                continue
-            try:
-                normalized_scores[key] = float(v)
-            except Exception:
-                normalized_scores[key] = 0.0
         return {
             "id": tid,
             "status": status,
             "root_user_input": root_user_input,
-            "domains": domains,
-            "domain_scores": normalized_scores,
-            "classifier": classifier,
             "created_at": str(raw.get("created_at") or "").strip() or self._now_text(),
             "updated_at": str(raw.get("updated_at") or "").strip() or self._now_text(),
             "closed_at": str(raw.get("closed_at") or "").strip(),
@@ -555,8 +504,6 @@ class ChatStateManager:
         self,
         chat_id: str,
         root_user_input: str,
-        domains: List[str],
-        classifier: Optional[Dict[str, Any]] = None,
         switched_from_task_id: str = "",
     ) -> Optional[str]:
         with self._agent._chat_state_lock:
@@ -567,8 +514,6 @@ class ChatStateManager:
             entry = self.new_task_entry(
                 task_id=task_id,
                 root_user_input=root_user_input,
-                domains=domains,
-                classifier=classifier,
                 switched_from_task_id=switched_from_task_id,
             )
             self._task_entries(chat).append(entry)
@@ -603,56 +548,6 @@ class ChatStateManager:
             self.save_chat_state()
             return True
 
-    def update_task_classification(
-        self,
-        chat_id: str,
-        task_id: str,
-        domains: List[str],
-        classifier: Optional[Dict[str, Any]] = None,
-    ) -> bool:
-        cid = str(chat_id or "").strip()
-        tid = str(task_id or "").strip()
-        if not cid or not tid:
-            return False
-        dvals = [str(x).strip() for x in (domains or []) if str(x).strip()]
-        unique_domains: List[str] = []
-        for d in dvals:
-            if d not in unique_domains:
-                unique_domains.append(d)
-        if not unique_domains:
-            unique_domains = ["general_other"]
-
-        cls = classifier if isinstance(classifier, dict) else {}
-        domain_scores: Dict[str, float] = {}
-        primary = str(cls.get("primary_domain") or "").strip()
-        secondary_raw = cls.get("secondary_domains")
-        secondary = secondary_raw if isinstance(secondary_raw, list) else []
-        try:
-            confidence = float(cls.get("confidence") or 0.0)
-        except Exception:
-            confidence = 0.0
-        if primary:
-            domain_scores[primary] = confidence
-        for dom in secondary:
-            d = str(dom or "").strip()
-            if d and d not in domain_scores:
-                domain_scores[d] = confidence
-
-        with self._agent._chat_state_lock:
-            chat = self.find_chat_by_id(cid)
-            if not chat:
-                return False
-            task = self._find_task_by_id(chat, tid)
-            if not task:
-                return False
-            task["domains"] = unique_domains
-            task["classifier"] = cls
-            task["domain_scores"] = domain_scores
-            task["updated_at"] = self._now_text()
-            chat["updated_at"] = self._now_text()
-            self.save_chat_state()
-            return True
-
     def activate_chat(
         self,
         chat_id: str,
@@ -681,14 +576,6 @@ class ChatStateManager:
             self._agent._session_summary_rolling = ""
             self._agent._last_llm_summary_pair_count = 0
             self._agent._active_runtime_task_id = str(chat.get("active_task_id") or "").strip()
-            current_domains: List[str] = []
-            if self._agent._active_runtime_task_id:
-                task = self._find_task_by_id(chat, self._agent._active_runtime_task_id)
-                if isinstance(task, dict):
-                    vals = task.get("domains")
-                    if isinstance(vals, list):
-                        current_domains = [str(x).strip() for x in vals if str(x).strip()]
-            self._agent._active_runtime_task_domains = current_domains
             try:
                 self._agent._apply_chat_model_from_entry(chat, persist_if_missing=True)
             except Exception:

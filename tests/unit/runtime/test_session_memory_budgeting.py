@@ -40,7 +40,6 @@ class _FakeAgent:
         self.active_chat_id = "chat-1"
         self._chat_state = {"chats": []}
         self._active_runtime_task_id = ""
-        self._active_runtime_task_domains = []
         self.sync_active_chat_messages_calls = 0
 
     def _reload_skills(self):
@@ -58,12 +57,6 @@ class _FakeAgent:
             if str(c.get("id") or "") == str(chat_id or ""):
                 return c
         return None
-
-    def _domain_specific_system_prompt_append(self):
-        domains = list(getattr(self, "_active_runtime_task_domains", None) or [])
-        if "software_development" in domains:
-            return "\n\n【领域强化：软件开发】\n硬性要求...\n"
-        return ""
 
     def _sync_active_chat_messages(self):
         self.sync_active_chat_messages_calls += 1
@@ -236,26 +229,24 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
 
         self.assertGreater(agent.sync_active_chat_messages_calls, 0)
 
-    def test_domain_prompt_is_appended_for_specific_domain(self):
+    def test_software_development_prompt_is_always_appended(self):
         agent = _FakeAgent()
-        agent._active_runtime_task_domains = ["software_development"]
         svc = SessionMemoryService(agent)
         messages, _ = svc.build_regular_task_messages("请修复构建错误")
         system_content = str(messages[0].get("content") or "")
-        self.assertIn("【领域强化：软件开发】", system_content)
+        self.assertIn("Domain Prompt: Software Development", system_content)
 
-    def test_domain_filtered_history_collects_all_matching_tasks_from_last_context_message_domain(self):
+    def test_context_eligible_history_returns_all_context_eligible_messages(self):
         agent = _FakeAgent()
         agent._active_runtime_task_id = "task-a"
-        agent._active_runtime_task_domains = ["software_development"]
         agent._chat_state = {
             "chats": [
                 {
                     "id": "chat-1",
                     "tasks": [
-                        {"id": "task-a", "domains": ["software_development"]},
-                        {"id": "task-b", "domains": ["software_development", "documentation_writing"]},
-                        {"id": "task-c", "domains": ["visual_design"]},
+                        {"id": "task-a"},
+                        {"id": "task-b"},
+                        {"id": "task-c"},
                     ],
                     "messages": [
                         {"role": "user", "content": "C1", "task_id": "task-c"},
@@ -269,23 +260,22 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
         }
         agent.conversation_history = list(agent._chat_state["chats"][0]["messages"])
         svc = SessionMemoryService(agent)
-        filtered = svc._domain_filtered_history()
+        filtered = svc._context_eligible_history()
         joined = " | ".join(str(x.get("content") or "") for x in filtered)
         self.assertIn("A1", joined)
         self.assertIn("B1", joined)
-        self.assertNotIn("C1", joined)
+        self.assertIn("C1", joined)
 
-    def test_domain_filtered_history_ignores_slash_builtin_when_resolving_anchor_domain(self):
+    def test_context_eligible_history_ignores_slash_builtin_messages(self):
         agent = _FakeAgent()
         agent._active_runtime_task_id = "task-c"
-        agent._active_runtime_task_domains = ["visual_design"]
         agent._chat_state = {
             "chats": [
                 {
                     "id": "chat-1",
                     "tasks": [
-                        {"id": "task-a", "domains": ["software_development"]},
-                        {"id": "task-c", "domains": ["visual_design"]},
+                        {"id": "task-a"},
+                        {"id": "task-c"},
                     ],
                     "messages": [
                         {"role": "user", "content": "A1", "task_id": "task-a"},
@@ -297,23 +287,22 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
         }
         agent.conversation_history = list(agent._chat_state["chats"][0]["messages"])
         svc = SessionMemoryService(agent)
-        filtered = svc._domain_filtered_history()
+        filtered = svc._context_eligible_history()
         joined = " | ".join(str(x.get("content") or "") for x in filtered)
         self.assertIn("A1", joined)
         self.assertIn("A2", joined)
         self.assertNotIn("/chat list", joined)
 
-    def test_domain_filtered_history_skips_cancelled_unanswered_user_message_for_anchor(self):
+    def test_context_eligible_history_skips_cancelled_unanswered_user_message(self):
         agent = _FakeAgent()
         agent._active_runtime_task_id = "task-b"
-        agent._active_runtime_task_domains = ["visual_design"]
         agent._chat_state = {
             "chats": [
                 {
                     "id": "chat-1",
                     "tasks": [
-                        {"id": "task-a", "domains": ["software_development"]},
-                        {"id": "task-b", "domains": ["visual_design"]},
+                        {"id": "task-a"},
+                        {"id": "task-b"},
                     ],
                     "messages": [
                         {"role": "user", "content": "A1", "task_id": "task-a"},
@@ -330,16 +319,15 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
         }
         agent.conversation_history = list(agent._chat_state["chats"][0]["messages"])
         svc = SessionMemoryService(agent)
-        filtered = svc._domain_filtered_history()
+        filtered = svc._context_eligible_history()
         joined = " | ".join(str(x.get("content") or "") for x in filtered)
         self.assertIn("A1", joined)
         self.assertIn("A2", joined)
         self.assertNotIn("B1-pending", joined)
 
-    def test_domain_filtered_history_skips_interrupted_marker_when_resolving_anchor(self):
+    def test_context_eligible_history_keeps_internal_interrupted_marker(self):
         agent = _FakeAgent()
         agent._active_runtime_task_id = "task-b"
-        agent._active_runtime_task_domains = ["visual_design"]
         interrupted = agent._build_conversation_interrupted_history_content(
             interrupted_kind="task",
             reason="user_interrupt",
@@ -350,8 +338,8 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
                 {
                     "id": "chat-1",
                     "tasks": [
-                        {"id": "task-a", "domains": ["software_development"]},
-                        {"id": "task-b", "domains": ["visual_design"]},
+                        {"id": "task-a"},
+                        {"id": "task-b"},
                     ],
                     "messages": [
                         {"role": "user", "content": "A1", "task_id": "task-a"},
@@ -370,13 +358,13 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
         agent.conversation_history = list(agent._chat_state["chats"][0]["messages"])
         svc = SessionMemoryService(agent)
 
-        filtered = svc._domain_filtered_history()
+        filtered = svc._context_eligible_history()
 
         joined = " | ".join(str(x.get("content") or "") for x in filtered)
         self.assertIn("A1", joined)
         self.assertIn("A2", joined)
-        self.assertNotIn("B1-pending", joined)
-        self.assertNotIn("[CONVERSATION_INTERRUPTED]", joined)
+        self.assertFalse(any(str(x.get("content") or "") == "B1-pending" for x in filtered))
+        self.assertIn("[CONVERSATION_INTERRUPTED]", joined)
 
     def test_mark_cancelled_task_unanswered_user_messages_marks_only_unanswered_tail(self):
         agent = _FakeAgent()
@@ -658,16 +646,16 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
         agent = _FakeAgent()
         agent.params = {"context_window": 2200}
         agent.conversation_history.append({"role": "user", "content": "最初需求：做一个任务规划器"})
-        for i in range(1, 36):
+        for i in range(1, 56):
             role = "assistant" if i % 2 == 0 else "user"
-            content = f"msg-{i} " + ("assistant-long " * 60 if role == "assistant" else ("user-long " * 30))
+            content = f"msg-{i} " + ("assistant-long " * 100 if role == "assistant" else ("user-long " * 50))
             agent.conversation_history.append({"role": role, "content": content})
         svc = SessionMemoryService(agent)
         messages, _ = svc.build_regular_task_messages("继续", context="ctx")
         history_messages = messages[1:-1]
         joined = "\n".join(str(m.get("content") or "") for m in history_messages)
         self.assertIn("[历史摘要]", joined)
-        self.assertIn("msg-35", joined)
+        self.assertIn("msg-55", joined)
 
     def test_large_context_keeps_more_history_than_small_context(self):
         small = _FakeAgent()
