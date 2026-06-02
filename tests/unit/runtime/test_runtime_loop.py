@@ -26,6 +26,7 @@ from src.runtime.runtime_loop import (
     _tool_change_and_verification_hints,
     _parse_tool_plans_from_model_message,
     _parse_tool_plan_from_model_message,
+    _is_textless_done_only_tool_call,
 )
 
 
@@ -392,6 +393,38 @@ class RuntimeLoopTests(unittest.TestCase):
         out = _stream_visible_text_with_json_pause(raw, final=True)
         self.assertEqual(out, raw)
 
+    def test_stream_visible_text_with_json_pause_hides_trailing_plain_tool_json(self):
+        raw = (
+            "我先说明一下。\n\n"
+            "{\"tool\":\"done\",\"args\":{}}\n"
+        )
+        out = _stream_visible_text_with_json_pause(raw, final=False)
+        self.assertEqual(out, "我先说明一下。")
+
+    def test_stream_visible_text_with_json_pause_omits_trailing_plain_tool_json_when_final(self):
+        raw = (
+            "我先说明一下。\n\n"
+            "{\"tool\":\"done\",\"args\":{}}\n"
+        )
+        out = _stream_visible_text_with_json_pause(raw, final=True)
+        self.assertEqual(out, "我先说明一下。")
+
+    def test_stream_visible_text_with_json_pause_hides_partial_plain_tool_json(self):
+        raw = (
+            "我先说明一下。\n\n"
+            "{\"tool"
+        )
+        out = _stream_visible_text_with_json_pause(raw, final=False)
+        self.assertEqual(out, "我先说明一下。")
+
+    def test_stream_visible_text_with_json_pause_keeps_plain_non_tool_json(self):
+        raw = (
+            "数据如下：\n\n"
+            "{\"foo\":1}"
+        )
+        out = _stream_visible_text_with_json_pause(raw, final=False)
+        self.assertEqual(out, raw)
+
     def test_stream_visible_text_with_json_pause_omits_tool_json_array_fence_when_complete(self):
         raw = (
             "准备执行\n"
@@ -570,6 +603,117 @@ class RuntimeLoopTests(unittest.TestCase):
         self.assertNotIn("\x1b[1A\r\x1b[2K", merged)
         self.assertIn("hello", re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", merged))
 
+    def test_consume_streaming_ai_response_does_not_duplicate_text_before_plain_tool_json(self):
+        class _FakeStdout:
+            def __init__(self):
+                self.writes = []
+
+            def write(self, text):
+                self.writes.append(str(text or ""))
+                return len(str(text or ""))
+
+            def flush(self):
+                return None
+
+            def isatty(self):
+                return False
+
+        class _Agent:
+            def _hide_previous_shell_output_if_needed(self):
+                return None
+
+            def _ensure_terminal_line_start(self):
+                return None
+
+        fake_out = _FakeStdout()
+        chunks = [
+            "你好，我是小雨，很高兴为你服务！\n\n",
+            "{\"tool",
+            "\":\"done\",\"args\":{}}",
+        ]
+        with patch("src.runtime.runtime_loop.sys.stdout", fake_out):
+            ai_response, streamed_any = _consume_streaming_ai_response(_Agent(), chunks)
+
+        rendered = "".join(fake_out.writes)
+        self.assertIn("\"tool\":\"done\"", ai_response)
+        self.assertTrue(streamed_any)
+        self.assertEqual(rendered.count("你好，我是小雨，很高兴为你服务！"), 1)
+        self.assertNotIn('{"tool', rendered)
+        self.assertNotIn("\n\n", rendered)
+
+    def test_consume_streaming_ai_response_buffers_blank_lines_before_plain_tool_json(self):
+        class _FakeStdout:
+            def __init__(self):
+                self.writes = []
+
+            def write(self, text):
+                self.writes.append(str(text or ""))
+                return len(str(text or ""))
+
+            def flush(self):
+                return None
+
+            def isatty(self):
+                return False
+
+        class _Agent:
+            def _hide_previous_shell_output_if_needed(self):
+                return None
+
+            def _ensure_terminal_line_start(self):
+                return None
+
+        fake_out = _FakeStdout()
+        chunks = [
+            "你好！\n\n",
+            "{\"tool\":\"done\",\"args\":{}}",
+        ]
+        with patch("src.runtime.runtime_loop.sys.stdout", fake_out):
+            ai_response, streamed_any = _consume_streaming_ai_response(_Agent(), chunks)
+
+        rendered = "".join(fake_out.writes)
+        self.assertIn("\"tool\":\"done\"", ai_response)
+        self.assertTrue(streamed_any)
+        self.assertEqual(rendered, "你好！\n")
+
+    def test_consume_streaming_ai_response_hides_assistant_tool_call_marker(self):
+        class _FakeStdout:
+            def __init__(self):
+                self.writes = []
+
+            def write(self, text):
+                self.writes.append(str(text or ""))
+                return len(str(text or ""))
+
+            def flush(self):
+                return None
+
+            def isatty(self):
+                return False
+
+        class _Agent:
+            def _hide_previous_shell_output_if_needed(self):
+                return None
+
+            def _ensure_terminal_line_start(self):
+                return None
+
+        fake_out = _FakeStdout()
+        chunks = [
+            "你好！有什么我可以帮您处理的任务吗？\n",
+            "<|assistant",
+            " tool_calls|>{\"tool\":\"done\",\"args\":{}}<|assistant tool_calls|>",
+        ]
+        with patch("src.runtime.runtime_loop.sys.stdout", fake_out):
+            ai_response, streamed_any = _consume_streaming_ai_response(_Agent(), chunks)
+
+        rendered = "".join(fake_out.writes)
+        self.assertIn("<|assistant tool_calls|>", ai_response)
+        self.assertTrue(streamed_any)
+        self.assertIn("你好！有什么我可以帮您处理的任务吗？", rendered)
+        self.assertNotIn("<|assistant", rendered)
+        self.assertNotIn('{"tool"', rendered)
+
     def test_streamed_final_message_tool_calls_can_be_parsed_after_text_stream(self):
         class _FakeStream:
             final_message = {
@@ -651,6 +795,21 @@ class RuntimeLoopTests(unittest.TestCase):
             _parse_tool_plan_from_model_message(message),
             ("read_file", {"path": "README.md"}),
         )
+
+    def test_textless_done_only_tool_call_detection(self):
+        self.assertTrue(
+            _is_textless_done_only_tool_call("", [("done", {})])
+        )
+        self.assertTrue(
+            _is_textless_done_only_tool_call(None, [("done", {}), ("done", {"reviewed_files": []})])
+        )
+        self.assertFalse(
+            _is_textless_done_only_tool_call("已完成。", [("done", {})])
+        )
+        self.assertFalse(
+            _is_textless_done_only_tool_call("", [("read_file", {"path": "README.md"})])
+        )
+        self.assertFalse(_is_textless_done_only_tool_call("", []))
 
 
 if __name__ == "__main__":

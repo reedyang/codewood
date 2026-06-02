@@ -1,6 +1,7 @@
 import json
 import os
 import subprocess
+import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -344,18 +345,50 @@ def build_runtime_cache_prompt_append(agent: Any, default_workspace_id: str) -> 
 
 def build_tools_prompt_append(agent: Any) -> str:
     """Build tool catalog text injected into system prompt from external md template."""
-    lines: List[str] = [agent.tools_prompt_template.strip(), "", "Available tools:"]
-    lines.insert(
-        1,
-        "当且仅当当前会话尚未注入目标 skill 正文时，先输出："
-        "{\"tool\":\"request_skill_prompt\",\"args\":{\"skill_id\":\"<skill_id>\"}}；"
-        "若该 skill 已注入（例如通过 `/skills/<skill-name>` 显式启用），默认禁止重复调用 request_skill_prompt，直接继续业务步骤；"
-        "但当技能正文为分段注入时，可按需调用 "
-        "{\"tool\":\"request_skill_prompt\",\"args\":{\"skill_id\":\"<skill_id>\",\"section\":<n>}} "
-        "加载第 n 段，或用 "
-        "{\"tool\":\"request_skill_prompt\",\"args\":{\"skill_id\":\"<skill_id>\",\"full\":true}} "
-        "加载完整正文。",
+    use_standard_tools = bool(
+        getattr(agent, "_use_standard_openai_tools_call", lambda: False)()
     )
+    template = str(getattr(agent, "tools_prompt_template", "") or "").strip()
+    if use_standard_tools:
+        template = re.sub(
+            r"\n?首轮输出模板示例：[\s\S]*$",
+            "",
+            template,
+            flags=re.IGNORECASE,
+        ).strip()
+    else:
+        template += (
+            "\n\n【模拟 JSON tool call 模式】\n"
+            "若需要输出模拟 tool call，请务必把 JSON 包在 ```json ... ``` 代码块中，"
+            "并把代码块放在回复末尾；代码块前不要留空行。"
+        )
+
+    lines: List[str] = [template, "", "Available tools:"]
+    if use_standard_tools:
+        lines.insert(
+            1,
+            "当且仅当当前会话尚未注入目标 skill 正文时，请直接使用标准 tools 调用 request_skill_prompt；"
+            "若该 skill 已注入（例如通过 `/skills/<skill-name>` 显式启用），默认不要重复调用 request_skill_prompt，直接继续业务步骤；"
+            "但当技能正文为分段注入时，可按需通过标准 tools 调用 request_skill_prompt 加载第 n 段或完整正文。",
+        )
+    else:
+        lines.insert(
+            1,
+            "当且仅当当前会话尚未注入目标 skill 正文时，先输出位于 ```json ... ``` 代码块中的请求：\n"
+            "```json\n"
+            "{\"tool\":\"request_skill_prompt\",\"args\":{\"skill_id\":\"<skill_id>\"}}\n"
+            "```\n"
+            "若该 skill 已注入（例如通过 `/skills/<skill-name>` 显式启用），默认不要重复调用 request_skill_prompt，直接继续业务步骤；"
+            "但当技能正文为分段注入时，可按需调用位于 ```json ... ``` 代码块中的请求：\n"
+            "```json\n"
+            "{\"tool\":\"request_skill_prompt\",\"args\":{\"skill_id\":\"<skill_id>\",\"section\":<n>}}\n"
+            "```\n"
+            "加载第 n 段，或用位于 ```json ... ``` 代码块中的请求：\n"
+            "```json\n"
+            "{\"tool\":\"request_skill_prompt\",\"args\":{\"skill_id\":\"<skill_id>\",\"full\":true}}\n"
+            "```\n"
+            "加载完整正文。"
+        )
     for t in (agent.tool_specs or []):
         fn = (t or {}).get("function", {})
         name = str(fn.get("name") or "").strip()
@@ -575,10 +608,10 @@ def render_skill_section_payload(
     if idx < total:
         hint_lines.append(
             "如需下一段，请调用 "
-            f'{{"tool":"request_skill_prompt","args":{{"skill_id":"...","section":{idx + 1}}}}}。'
+            f"```json\n{{\"tool\":\"request_skill_prompt\",\"args\":{{\"skill_id\":\"...\",\"section\":{idx + 1}}}}}\n```。"
         )
     hint_lines.append(
-        '如需完整正文，可调用 {"tool":"request_skill_prompt","args":{"skill_id":"...","full":true}}。'
+        '如需完整正文，可调用 ```json\n{"tool":"request_skill_prompt","args":{"skill_id":"...","full":true}}\n```。'
     )
     return payload + "\n" + "\n".join(hint_lines), {
         "chunked": True,

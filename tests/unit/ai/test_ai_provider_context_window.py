@@ -949,6 +949,159 @@ class ProviderContextWindowTests(unittest.TestCase):
         self.assertEqual("".join(list(chunks)), "Hello")
         self.assertEqual(history, ["Hello"])
 
+    def test_openai_responses_stream_uses_completed_snapshot_when_no_text_delta(self):
+        stream_resp = _FakeStreamResponse(
+            [
+                b'data: {"type":"response.created","response":{"id":"resp_1","status":"in_progress"}}',
+                b'data: {"type":"response.completed","response":{"object":"response","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"hello from completed snapshot"}]}]}}',
+                b"data: [DONE]",
+            ]
+        )
+        history = []
+        with patch("requests.post", return_value=stream_resp):
+            chunks = call_ai_with_provider(
+                context=ProviderCallContext(
+                    provider="openai",
+                    model_name="gpt-oss-120b",
+                    model_params={},
+                    openai_conf={
+                        "api_key": "k",
+                        "base_url": "https://example.com/v1",
+                        "api_mode": "responses",
+                    },
+                    messages=[{"role": "user", "content": "ping"}],
+                    stream=True,
+                    return_message=False,
+                    image_data=None,
+                    image_user_idx=None,
+                    image_user_text="",
+                    session_summary_mode=False,
+                    memory_query_expansion_mode=False,
+                ),
+                append_history=lambda s: history.append(s),
+                ollama_importer=lambda: None,
+            )
+
+        self.assertEqual("".join(list(chunks)), "hello from completed snapshot")
+        self.assertEqual(history, ["hello from completed snapshot"])
+        final_message = getattr(chunks, "final_message", None)
+        self.assertIsInstance(final_message, dict)
+        self.assertEqual(final_message.get("content"), "hello from completed snapshot")
+
+    def test_openai_responses_stream_uses_output_item_done_snapshot_when_no_text_delta(self):
+        stream_resp = _FakeStreamResponse(
+            [
+                b'data: {"type":"response.output_item.done","item":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"hello from output item"}]}}',
+                b"data: [DONE]",
+            ]
+        )
+        history = []
+        with patch("requests.post", return_value=stream_resp):
+            chunks = call_ai_with_provider(
+                context=ProviderCallContext(
+                    provider="openai",
+                    model_name="gpt-oss-120b",
+                    model_params={},
+                    openai_conf={
+                        "api_key": "k",
+                        "base_url": "https://example.com/v1",
+                        "api_mode": "responses",
+                    },
+                    messages=[{"role": "user", "content": "ping"}],
+                    stream=True,
+                    return_message=False,
+                    image_data=None,
+                    image_user_idx=None,
+                    image_user_text="",
+                    session_summary_mode=False,
+                    memory_query_expansion_mode=False,
+                ),
+                append_history=lambda s: history.append(s),
+                ollama_importer=lambda: None,
+            )
+
+        self.assertEqual("".join(list(chunks)), "hello from output item")
+        self.assertEqual(history, ["hello from output item"])
+        final_message = getattr(chunks, "final_message", None)
+        self.assertIsInstance(final_message, dict)
+        self.assertEqual(final_message.get("content"), "hello from output item")
+
+    def test_openai_responses_stream_uses_content_part_done_when_no_text_delta(self):
+        stream_resp = _FakeStreamResponse(
+            [
+                b'data: {"type":"response.content_part.done","part":{"type":"output_text","text":"hello from content part"}}',
+                b"data: [DONE]",
+            ]
+        )
+        history = []
+        with patch("requests.post", return_value=stream_resp):
+            chunks = call_ai_with_provider(
+                context=ProviderCallContext(
+                    provider="openai",
+                    model_name="gpt-oss-120b",
+                    model_params={},
+                    openai_conf={
+                        "api_key": "k",
+                        "base_url": "https://example.com/v1",
+                        "api_mode": "responses",
+                    },
+                    messages=[{"role": "user", "content": "ping"}],
+                    stream=True,
+                    return_message=False,
+                    image_data=None,
+                    image_user_idx=None,
+                    image_user_text="",
+                    session_summary_mode=False,
+                    memory_query_expansion_mode=False,
+                ),
+                append_history=lambda s: history.append(s),
+                ollama_importer=lambda: None,
+            )
+
+        self.assertEqual("".join(list(chunks)), "hello from content part")
+        self.assertEqual(history, ["hello from content part"])
+        final_message = getattr(chunks, "final_message", None)
+        self.assertIsInstance(final_message, dict)
+        self.assertEqual(final_message.get("content"), "hello from content part")
+
+    def test_openai_responses_stream_uses_output_text_done_when_no_text_delta(self):
+        stream_resp = _FakeStreamResponse(
+            [
+                b'data: {"type":"response.output_text.done","text":"hello from output text done"}',
+                b"data: [DONE]",
+            ]
+        )
+        history = []
+        with patch("requests.post", return_value=stream_resp):
+            chunks = call_ai_with_provider(
+                context=ProviderCallContext(
+                    provider="openai",
+                    model_name="gpt-oss-120b",
+                    model_params={},
+                    openai_conf={
+                        "api_key": "k",
+                        "base_url": "https://example.com/v1",
+                        "api_mode": "responses",
+                    },
+                    messages=[{"role": "user", "content": "ping"}],
+                    stream=True,
+                    return_message=False,
+                    image_data=None,
+                    image_user_idx=None,
+                    image_user_text="",
+                    session_summary_mode=False,
+                    memory_query_expansion_mode=False,
+                ),
+                append_history=lambda s: history.append(s),
+                ollama_importer=lambda: None,
+            )
+
+        self.assertEqual("".join(list(chunks)), "hello from output text done")
+        self.assertEqual(history, ["hello from output text done"])
+        final_message = getattr(chunks, "final_message", None)
+        self.assertIsInstance(final_message, dict)
+        self.assertEqual(final_message.get("content"), "hello from output text done")
+
     def test_openai_chat_tools_stream_assembles_final_tool_calls(self):
         with patch("requests.post", return_value=_FakeChatToolsStreamResponse()):
             chunks = call_ai_with_provider(

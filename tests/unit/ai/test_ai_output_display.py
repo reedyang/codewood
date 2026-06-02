@@ -79,6 +79,14 @@ class AiOutputDisplayTests(unittest.TestCase):
         out = aoh.strip_tool_json_blocks_for_display(text)
         self.assertEqual(out, "先分两步处理。")
 
+    def test_strip_assistant_tool_call_marker_block_keeps_narrative(self):
+        text = (
+            "你好！有什么我可以帮您处理的任务吗？\n"
+            "<|assistant tool_calls|>{\"tool\":\"done\",\"args\":{}}<|assistant tool_calls|>"
+        )
+        out = aoh.strip_tool_json_blocks_for_display(text)
+        self.assertEqual(out, "你好！有什么我可以帮您处理的任务吗？")
+
     def test_parse_tool_plans_from_response_supports_multiple_json_objects(self):
         text = (
             "先读文件再检索。\n\n"
@@ -110,6 +118,13 @@ class AiOutputDisplayTests(unittest.TestCase):
                 ("project_context_search", {"query": "foo"}),
             ],
         )
+
+    def test_parse_tool_plans_from_response_supports_assistant_tool_call_marker(self):
+        text = (
+            "你好！有什么我可以帮您处理的任务吗？\n"
+            "<|assistant tool_calls|>{\"tool\":\"done\",\"args\":{}}<|assistant tool_calls|>"
+        )
+        self.assertEqual(self.agent._parse_tool_plans_from_response(text), [("done", {})])
 
     def test_format_assistant_display_response_highlights_key_tokens(self):
         text = (

@@ -81,6 +81,37 @@ class AIOrchestratorTests(unittest.TestCase):
         joined = "\n".join(str(msg.get("content") or "") for msg in captured_messages)
         self.assertIn("Current working directory: D:/SourceCode/opensource/smart-shell", joined)
 
+    def test_empty_assistant_response_is_not_written_to_history(self):
+        history = []
+
+        def _regular_builder(user_input, _context):
+            return [{"role": "user", "content": user_input}], True
+
+        ctx = AgentAIContext(
+            provider="openai",
+            model_name="test-model",
+            model_params={},
+            openai_conf={"api_key": "x"},
+            work_directory=".",
+            history_writer=lambda role, content: history.append((role, content)),
+            regular_message_builder=_regular_builder,
+            ollama_importer=lambda: None,
+        )
+        orchestrator = AIOrchestrator(ctx)
+
+        def _fake_provider_call(*, context, append_history, ollama_importer):
+            _ = context, ollama_importer
+            append_history("")
+            return ""
+
+        with patch("src.ai.ai_orchestrator.call_ai_with_provider", _fake_provider_call):
+            result = orchestrator.call(
+                call_ctx=AICallContext(user_input="hello", stream=True)
+            )
+
+        self.assertEqual(result, "")
+        self.assertEqual(history, [("user", "hello")])
+
 
 if __name__ == "__main__":
     unittest.main()

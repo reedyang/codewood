@@ -327,6 +327,112 @@ def _collect_stream_tool_calls_from_payload(
         _update_stream_tool_call_state(state, item=item, append_arguments=False)
 
 
+def _extract_stream_snapshot_message(payload: Any) -> Optional[Dict[str, Any]]:
+    if not isinstance(payload, dict):
+        return None
+
+    def _text_from_part(value: Any) -> str:
+        if isinstance(value, str):
+            return _sanitize_assistant_text(value)
+        if isinstance(value, list):
+            return _extract_text_from_response_content(value)
+        if not isinstance(value, dict):
+            return ""
+        item_type = str(value.get("type") or "").strip().lower()
+        if "reasoning" in item_type:
+            return ""
+        for key in ("text", "output_text", "content"):
+            text = value.get(key)
+            if isinstance(text, str) and text:
+                return _sanitize_assistant_text(text)
+            if isinstance(text, list):
+                extracted = _extract_text_from_response_content(text)
+                if extracted:
+                    return extracted
+        return ""
+
+    def _non_empty_message(message: Any) -> Optional[Dict[str, Any]]:
+        if not isinstance(message, dict):
+            return None
+        content = message.get("content")
+        has_text = isinstance(content, str) and bool(content)
+        has_tools = bool(message.get("tool_calls"))
+        if has_text or has_tools:
+            return message
+        return None
+
+    for key in ("response", "data"):
+        nested = payload.get(key)
+        if isinstance(nested, dict):
+            try:
+                message = _extract_message_from_openai_response_data(nested)
+            except Exception:
+                message = None
+            found = _non_empty_message(message)
+            if found:
+                return found
+
+    if any(key in payload for key in ("choices", "output", "output_text")):
+        try:
+            message = _extract_message_from_openai_response_data(payload)
+        except Exception:
+            message = None
+        found = _non_empty_message(message)
+        if found:
+            return found
+
+    message = payload.get("message")
+    if isinstance(message, dict):
+        role = str(message.get("role") or "assistant")
+        content_text = _text_from_part(message.get("content"))
+        if content_text:
+            return {"role": role, "content": content_text}
+
+    if str(payload.get("type") or "").strip().lower() == "message":
+        role = str(payload.get("role") or "assistant")
+        content_text = _text_from_part(payload.get("content"))
+        if content_text:
+            return {"role": role, "content": content_text}
+
+    for field in ("item", "output_item"):
+        item = payload.get(field)
+        if not isinstance(item, dict):
+            continue
+        item_type = str(item.get("type") or "").strip().lower()
+        if item_type == "message":
+            role = str(item.get("role") or "assistant")
+            content_text = _text_from_part(item.get("content"))
+            if content_text:
+                return {"role": role, "content": content_text}
+        if item_type == "function_call":
+            try:
+                message = _extract_message_from_openai_response_data({"output": [item]})
+            except Exception:
+                message = None
+            found = _non_empty_message(message)
+            if found:
+                return found
+
+    event_type = str(payload.get("type") or "").strip().lower()
+    for key in ("part", "content_part"):
+        content_part = payload.get(key)
+        content_text = _text_from_part(content_part)
+        if content_text:
+            return {"role": "assistant", "content": content_text}
+
+    if any(token in event_type for token in ("output_text", "content_part", "message")) and "delta" not in event_type:
+        for key in ("text", "output_text"):
+            text = payload.get(key)
+            if isinstance(text, str) and text:
+                return {"role": "assistant", "content": _sanitize_assistant_text(text)}
+
+    content_text = _text_from_part(payload.get("content"))
+    if content_text:
+        return {"role": "assistant", "content": content_text}
+
+    return None
+
+
 def _build_stream_tool_calls_message(
     *,
     content: str,
@@ -413,6 +519,9 @@ def _stream_openai_like_response(
         def __iter__(self):
             buffer = ""
             first_chunk = True
+            snapshot_message: Optional[Dict[str, Any]] = None
+            seen_event_types: List[str] = []
+            seen_payload_keys: List[str] = []
             tool_call_states: Dict[str, Dict[str, Any]] = {}
             tool_call_order: List[str] = []
             for line in resp.iter_lines():
@@ -428,11 +537,21 @@ def _stream_openai_like_response(
                     payload = json.loads(data_str)
                 except Exception:
                     continue
+                event_type = str(payload.get("type") or "").strip()
+                if event_type and event_type not in seen_event_types:
+                    seen_event_types.append(event_type)
+                for key in payload.keys():
+                    key_text = str(key)
+                    if key_text not in seen_payload_keys:
+                        seen_payload_keys.append(key_text)
                 _collect_stream_tool_calls_from_payload(
                     payload,
                     states=tool_call_states,
                     order=tool_call_order,
                 )
+                current_snapshot = _extract_stream_snapshot_message(payload)
+                if current_snapshot:
+                    snapshot_message = current_snapshot
                 delta = _sanitize_assistant_text(_extract_stream_text_delta(payload))
                 if delta:
                     if first_chunk:
@@ -441,11 +560,40 @@ def _stream_openai_like_response(
                     if delta:
                         buffer += delta
                         yield delta
+            if snapshot_message:
+                snapshot_text = _sanitize_assistant_text(
+                    snapshot_message.get("content", "") or ""
+                )
+                if snapshot_text:
+                    if not buffer:
+                        snapshot_delta = snapshot_text.lstrip() if first_chunk else snapshot_text
+                        if snapshot_delta:
+                            buffer += snapshot_delta
+                            yield snapshot_delta
+                    elif snapshot_text.startswith(buffer):
+                        snapshot_delta = snapshot_text[len(buffer) :]
+                        if snapshot_delta:
+                            buffer += snapshot_delta
+                            yield snapshot_delta
+                    else:
+                        buffer = snapshot_text
             self.final_message = _build_stream_tool_calls_message(
                 content=buffer,
                 states=tool_call_states,
                 order=tool_call_order,
             )
+            if snapshot_message:
+                snapshot_tools = snapshot_message.get("tool_calls")
+                if snapshot_tools and not self.final_message.get("tool_calls"):
+                    self.final_message["tool_calls"] = snapshot_tools
+            if not buffer:
+                _OPENAI_ROUTE_LOG.warning(
+                    "openai-stream empty-output event_types=%s payload_keys=%s snapshot_seen=%s has_tool_calls=%s",
+                    ",".join(seen_event_types[-12:]),
+                    ",".join(seen_payload_keys[-20:]),
+                    bool(snapshot_message),
+                    bool(self.final_message.get("tool_calls")),
+                )
             append_history(buffer)
 
     return _OpenAIStreamResult()
@@ -933,6 +1081,14 @@ def _call_openai_once(
         ai_response = _sanitize_assistant_text(raw_content or "")
     message = dict(message)
     message["content"] = ai_response
+    if not ai_response:
+        _OPENAI_ROUTE_LOG.warning(
+            "openai-response empty-output api_kind=%s data_keys=%s message_keys=%s has_tool_calls=%s",
+            api_kind,
+            ",".join(sorted([str(k) for k in data.keys()])),
+            ",".join(sorted([str(k) for k in message.keys()])),
+            bool(message.get("tool_calls")),
+        )
     append_history(ai_response)
     return message if return_message else ai_response
 

@@ -1,6 +1,8 @@
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+from ..config.app_info import get_app_logger_root
+from ..core.logging.app_logging import get_logger
 from .ai_provider_clients import (
     AICallContext,
     ProviderCallContext,
@@ -8,6 +10,9 @@ from .ai_provider_clients import (
     prepare_image_input,
 )
 from .ai_special_mode_prompts import build_special_mode_messages
+
+
+_AI_HISTORY_LOG = get_logger(f"{get_app_logger_root()}.ai_history")
 
 
 @dataclass
@@ -86,6 +91,16 @@ class AIOrchestrator:
                         else call_ctx.user_input
                     )
                     self.context.history_writer("user", _u)
+                if not str(ai_response or "").strip():
+                    _AI_HISTORY_LOG.warning(
+                        "llm-history empty-assistant skipped provider=%s model=%s stream=%s return_message=%s history_skip_user=%s",
+                        provider,
+                        model_name,
+                        bool(call_ctx.stream),
+                        bool(call_ctx.return_message),
+                        bool(call_ctx.history_skip_user),
+                    )
+                    return
                 self.context.history_writer("assistant", ai_response)
 
             provider_ctx = ProviderCallContext(
