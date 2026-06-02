@@ -10,6 +10,7 @@ from ..core.config.model_providers import (
     DEFAULT_CONTEXT_WINDOW,
     DEFAULT_OLLAMA_PORT,
     parse_context_window,
+    parse_extra_headers,
     parse_port,
 )
 from ..core.logging.app_logging import get_logger
@@ -1210,6 +1211,17 @@ def _call_with_openai_compatible(
         "Content-Type": "application/json",
         "X-Context-Window": str(context_window),
     }
+    extra_headers = parse_extra_headers(conf.get("extra_headers"))
+    if extra_headers:
+        existing_keys = {str(key).casefold() for key in headers.keys()}
+        for key, value in extra_headers.items():
+            normalized_key = str(key or "").strip()
+            if not normalized_key:
+                continue
+            if normalized_key.casefold() in existing_keys:
+                continue
+            headers[normalized_key] = str(value)
+            existing_keys.add(normalized_key.casefold())
     last_error: Optional[Exception] = None
     for api_kind in api_kinds:
         try:

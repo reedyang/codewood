@@ -11,7 +11,10 @@
             "name": "<YOUR MODEL NAME>",
             "context_window": 131072,
             "streaming": true,              // optional, default is true
-            "use_simulated_tools": false    // optional, default is false
+            "use_simulated_tools": false,   // optional, default is false
+            "extra_headers": {
+              "X-Model": "<YOUR MODEL NAME>" // optional, model-level custom headers
+            }
           }
         ]
       }

@@ -230,6 +230,46 @@ class ProviderContextWindowTests(unittest.TestCase):
         headers = mock_post.call_args.kwargs.get("headers", {})
         self.assertEqual(headers.get("X-Context-Window"), "128000")
 
+    def test_openai_merges_model_level_extra_headers(self):
+        with patch("requests.post", return_value=_FakeResponse()) as mock_post:
+            out = call_ai_with_provider(
+                context=ProviderCallContext(
+                    provider="openai",
+                    model_name="gpt-oss-120b",
+                    model_params={
+                        "context_window": 128000,
+                        "extra_headers": {
+                            "X-Model": "gpt-oss-120b",
+                            "X-Test-Route": "enabled",
+                        },
+                    },
+                    openai_conf={
+                        "api_key": "k",
+                        "base_url": "https://example.com/v1",
+                        "context_window": 128000,
+                        "extra_headers": {
+                            "X-Model": "gpt-oss-120b",
+                            "X-Test-Route": "enabled",
+                        },
+                    },
+                    messages=[{"role": "user", "content": "hi"}],
+                    stream=False,
+                    return_message=False,
+                    image_data=None,
+                    image_user_idx=None,
+                    image_user_text="",
+                    session_summary_mode=False,
+                    memory_query_expansion_mode=False,
+                ),
+                append_history=lambda _s: None,
+                ollama_importer=lambda: None,
+            )
+        self.assertEqual(out, "ok")
+        headers = mock_post.call_args.kwargs.get("headers", {})
+        self.assertEqual(headers.get("X-Context-Window"), "128000")
+        self.assertEqual(headers.get("X-Model"), "gpt-oss-120b")
+        self.assertEqual(headers.get("X-Test-Route"), "enabled")
+
     def test_openai_supports_responses_api_output_shape(self):
         with patch("requests.post", return_value=_FakeResponsesApiResponse()):
             out = call_ai_with_provider(

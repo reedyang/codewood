@@ -1,4 +1,5 @@
 import re
+import re
 from typing import Any, Dict, List
 
 
@@ -62,6 +63,24 @@ def parse_port(value: Any, default_value: int = DEFAULT_OLLAMA_PORT) -> int:
     return default_value
 
 
+def parse_extra_headers(value: Any) -> Dict[str, str]:
+    if not isinstance(value, dict):
+        return {}
+
+    headers: Dict[str, str] = {}
+    for raw_name, raw_value in value.items():
+        name = str(raw_name or "").strip()
+        if not name:
+            continue
+        if raw_value is None:
+            continue
+        value_text = str(raw_value).strip()
+        if not value_text:
+            continue
+        headers[name] = value_text
+    return headers
+
+
 def is_basic_chat_only_context_window(value: Any) -> bool:
     context_window = parse_context_window(value, default_value=DEFAULT_CONTEXT_WINDOW)
     return context_window < SIMPLE_CHAT_SYSTEM_PROMPT_MIN_CONTEXT_WINDOW
@@ -84,6 +103,7 @@ def parse_configured_models(
         context_window_raw: Any = None
         use_simulated_tools_raw: Any = False
         streaming_raw: Any = True
+        extra_headers_raw: Any = {}
         if isinstance(item, str):
             model_name = item.strip()
         elif isinstance(item, dict):
@@ -91,6 +111,7 @@ def parse_configured_models(
             context_window_raw = item.get("context_window")
             use_simulated_tools_raw = item.get("use_simulated_tools", False)
             streaming_raw = item.get("streaming", True)
+            extra_headers_raw = item.get("extra_headers", {})
         else:
             model_name = str(item or "").strip()
         if not model_name:
@@ -107,6 +128,7 @@ def parse_configured_models(
                 "streaming": parse_bool_flag(
                     streaming_raw, default_value=True
                 ),
+                "extra_headers": parse_extra_headers(extra_headers_raw),
             }
         )
     return parsed
