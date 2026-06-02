@@ -1468,6 +1468,7 @@ def _call_with_ollama(
 
     ollama_options: Dict[str, Any] = {"num_ctx": int(context_window)}
     ollama_tools = _normalize_openai_tool_schemas(tool_schemas, api_kind="chat")
+    ollama_tool_choice = _normalize_openai_tool_choice(tool_choice, api_kind="chat")
     if session_summary_mode:
         ollama_options.update({"num_predict": 512, "temperature": 0.3})
     elif memory_query_expansion_mode:
@@ -1485,6 +1486,8 @@ def _call_with_ollama(
     }
     if ollama_tools:
         payload["tools"] = ollama_tools
+        if ollama_tool_choice is not None:
+            payload["tool_choice"] = ollama_tool_choice
 
     import requests
 
@@ -1507,6 +1510,7 @@ def _call_with_ollama(
         tool_request_response = response
         fallback_payload = dict(payload)
         fallback_payload.pop("tools", None)
+        fallback_payload.pop("tool_choice", None)
         response, fallback_error = _post_ollama_chat(fallback_payload)
         if fallback_error is not None:
             return _format_ollama_http_error(url, request_error, tool_request_response)

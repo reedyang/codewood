@@ -384,11 +384,14 @@ def build_tools_prompt_append(agent: Any) -> str:
 def _build_tool_call_mode_prompt() -> str:
     return (
         "## Tool Call Mode: Standard API tool_calls\n"
+        "- HARD REQUIREMENT: every assistant message in this mode MUST include at least one standard API `tool_calls` entry. A content-only assistant message is invalid, even when the task is complete.\n"
+        "- If the user goal is complete, include the visible final answer in `content` and call `done` through standard API `tool_calls` in the same assistant message.\n"
+        "- If the user goal is not complete, include the next visible status in `content` and call the next real tool through standard API `tool_calls` in the same assistant message.\n"
         "- 当前模型必须使用 API 标准 `tool_calls` 字段发起工具调用。\n"
         "- 回复正文只允许写用户可见的自然语言说明、步骤状态或结果总结。\n"
-        "- 禁止在回复正文中输出任何工具调用表示，包括 JSON 工具对象、`<tool_calls>...</tool_calls>`、Markdown 代码块、"
+        "- 禁止在回复正文中输出任何工具调用表示，包括 JSON 工具对象、XML/标签形式、Markdown 代码块、"
         "`tool`/`args` 示例或其它伪工具调用格式。\n"
-        "- 如果无需工具，直接自然语言回答；如果需要工具，不要把工具调用写成文本。"
+        "- 如果用户目标已经完成，先在正文给出用户可见答复，再通过 API 标准 `tool_calls` 调用 `done`。"
     )
 
 

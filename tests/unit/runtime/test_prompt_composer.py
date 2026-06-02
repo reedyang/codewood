@@ -75,6 +75,9 @@ class PromptComposerTests(unittest.TestCase):
         text = prompt_composer.build_tools_prompt_append(agent)
 
         self.assertIn("Tool Call Mode: Standard API tool_calls", text)
+        self.assertIn("HARD REQUIREMENT", text)
+        self.assertIn("content-only assistant message is invalid", text)
+        self.assertIn("call `done` through standard API `tool_calls`", text)
         self.assertIn("回复正文只允许写用户可见", text)
         self.assertIn("禁止在回复正文中输出任何工具调用表示", text)
         self.assertIn("Available tools:", text)

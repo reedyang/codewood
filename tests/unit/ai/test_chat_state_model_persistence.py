@@ -316,6 +316,66 @@ class ChatStateModelPersistenceTests(unittest.TestCase):
             self.assertEqual(agent.active_chat_id, "chat-1")
             self.assertEqual(agent._active_runtime_task_id, "task-1")
 
+    def test_load_chat_state_preserves_pseudo_tool_call_metadata(self):
+        with tempfile.TemporaryDirectory() as td:
+            workspace = Path(td)
+            pseudo_text = '{"tool_calls":[{"tool":"shell","args":{"command":"echo hi"}}]}'
+            payload = {
+                "version": CHAT_STATE_VERSION,
+                "active": "chat-1",
+                "chats": [
+                    {
+                        "id": "chat-1",
+                        "name": "Main",
+                        "name_source": "manual",
+                        "created_at": "",
+                        "updated_at": "",
+                        "model_provider": "openai",
+                        "model_name": "gpt-4.1",
+                        "tasks": [
+                            {
+                                "id": "task-1",
+                                "status": "open",
+                                "root_user_input": "hello",
+                                "created_at": "",
+                                "updated_at": "",
+                                "closed_at": "",
+                                "switched_from_task_id": "",
+                            }
+                        ],
+                        "active_task_id": "task-1",
+                        "messages": [
+                            {
+                                "role": "assistant",
+                                "content": "Plan: run a safe command.",
+                                "task_id": "task-1",
+                                "created_at": "",
+                                "pseudo_tool_call_text": pseudo_text,
+                                "pseudo_tool_call_tools": ["shell", "", " shell "],
+                            }
+                        ],
+                        "context_usage_percent": 0,
+                        "context_input_tokens": 0,
+                        "context_window": 0,
+                    }
+                ],
+            }
+            _write_chat_store(workspace, payload)
+
+            agent = _FakeAgent(workspace)
+            manager = ChatStateManager(agent, "chats.json")
+
+            manager.load_chat_state()
+
+            chat = manager.find_chat_by_id("chat-1")
+            self.assertIsNotNone(chat)
+            msgs = list(chat.get("messages") or [])
+            self.assertEqual(len(msgs), 1)
+            self.assertEqual(msgs[0].get("content"), "Plan: run a safe command.")
+            self.assertNotIn("tool_calls", msgs[0].get("content", ""))
+            self.assertEqual(msgs[0].get("pseudo_tool_call_text"), pseudo_text)
+            self.assertEqual(msgs[0].get("pseudo_tool_call_tools"), ["shell", "shell"])
+
     def test_close_task_clears_active_task_id_when_closed(self):
         with tempfile.TemporaryDirectory() as td:
             agent = _FakeAgent(Path(td))
@@ -556,6 +616,64 @@ class ChatStateModelPersistenceTests(unittest.TestCase):
             self.assertEqual(len(saved_msgs), 1)
             self.assertTrue(bool(saved_msgs[0].get("exclude_from_model_context", False)))
 
+    def test_sync_active_chat_messages_persists_pseudo_tool_call_metadata(self):
+        with tempfile.TemporaryDirectory() as td:
+            workspace = Path(td)
+            agent = _FakeAgent(workspace)
+            manager = ChatStateManager(agent, "chats.json")
+            agent._chat_state = {
+                "version": 2,
+                "active": "chat-1",
+                "chats": [
+                    {
+                        "id": "chat-1",
+                        "name": "Main",
+                        "name_source": "manual",
+                        "created_at": "",
+                        "updated_at": "",
+                        "model_provider": "openai",
+                        "model_name": "gpt-4.1",
+                        "tasks": [],
+                        "active_task_id": "",
+                        "messages": [],
+                        "context_usage_percent": 0,
+                        "context_input_tokens": 0,
+                        "context_window": 0,
+                    }
+                ],
+            }
+            pseudo_text = '{"tool_calls":[{"tool":"shell","args":{"command":"echo hi"}}]}'
+            agent.active_chat_id = "chat-1"
+            agent._active_runtime_task_id = "task-1"
+            agent.conversation_history = [
+                {
+                    "role": "assistant",
+                    "content": "Plan: run a safe command.",
+                    "task_id": "task-1",
+                    "pseudo_tool_call_text": pseudo_text,
+                    "pseudo_tool_call_tools": ["shell", "", " shell "],
+                }
+            ]
+
+            manager.sync_active_chat_messages()
+
+            chat = manager.find_chat_by_id("chat-1")
+            self.assertIsNotNone(chat)
+            msgs = list(chat.get("messages") or [])
+            self.assertEqual(len(msgs), 1)
+            self.assertEqual(msgs[0].get("content"), "Plan: run a safe command.")
+            self.assertNotIn("tool_calls", msgs[0].get("content", ""))
+            self.assertEqual(msgs[0].get("pseudo_tool_call_text"), pseudo_text)
+            self.assertEqual(msgs[0].get("pseudo_tool_call_tools"), ["shell", "shell"])
+            payload = _read_chat_index(workspace)
+            _assert_hash_record_file(self, payload["chats"][0].get("record_file"))
+            saved_msgs = list(_read_first_chat_record(workspace).get("messages") or [])
+            self.assertEqual(len(saved_msgs), 1)
+            self.assertEqual(saved_msgs[0].get("content"), "Plan: run a safe command.")
+            self.assertNotIn("tool_calls", saved_msgs[0].get("content", ""))
+            self.assertEqual(saved_msgs[0].get("pseudo_tool_call_text"), pseudo_text)
+            self.assertEqual(saved_msgs[0].get("pseudo_tool_call_tools"), ["shell", "shell"])
+
     def test_sync_active_chat_messages_skips_memory_only_messages(self):
         with tempfile.TemporaryDirectory() as td:
             workspace = Path(td)
@@ -657,4 +775,3 @@ class ChatStateModelPersistenceTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

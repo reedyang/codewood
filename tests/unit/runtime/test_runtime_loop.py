@@ -6,6 +6,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from src.runtime.runtime_loop import (
+    _can_finish_without_tool_calls,
     _consume_streaming_ai_response,
     _compute_unreviewed_changed_files,
     _extract_done_reviewed_files,
@@ -20,6 +21,7 @@ from src.runtime.runtime_loop import (
     _sync_command_input_history,
     _should_record_command_input_history,
     _shell_command_indicates_verification,
+    _strip_leaked_internal_history_markers,
     _stream_visible_text_with_json_pause,
     _stop_pre_task_status_ticker_for_console_output,
     _try_record_user_task_message,
@@ -27,6 +29,10 @@ from src.runtime.runtime_loop import (
     _parse_tool_plans_from_model_message,
     _parse_tool_plan_from_model_message,
     _is_textless_done_only_tool_call,
+    _looks_like_pseudo_tool_call_text,
+    _split_trailing_pseudo_tool_calls_text,
+    _split_trailing_pseudo_tool_calls_text_details,
+    _replace_latest_assistant_history_content,
 )
 
 
@@ -366,17 +372,33 @@ class RuntimeLoopTests(unittest.TestCase):
             context_hint="ask_more_info paused",
         )
 
-    def test_stream_visible_text_with_json_pause_keeps_incomplete_json_fence(self):
+    def test_standard_tool_mode_never_finishes_from_content_only_response(self):
+        self.assertFalse(_can_finish_without_tool_calls(True, "final answer"))
+        self.assertFalse(_can_finish_without_tool_calls(True, ""))
+        self.assertTrue(_can_finish_without_tool_calls(False, "final answer"))
+        self.assertFalse(_can_finish_without_tool_calls(False, ""))
+
+    def test_stream_visible_text_with_json_pause_caches_incomplete_tool_json_fence(self):
         raw = "先做检查\n```json\n{\"tool\":\"shell\",\"args\":{"
         out = _stream_visible_text_with_json_pause(raw, final=False)
-        self.assertEqual(out, raw)
+        self.assertEqual(out, raw.split("```json", 1)[0].rstrip())
 
     def test_stream_visible_text_with_json_pause_keeps_partial_json_fence_opener(self):
         raw = "先做检查\n```"
         out = _stream_visible_text_with_json_pause(raw, final=False)
         self.assertEqual(out, raw)
 
-    def test_stream_visible_text_with_json_pause_keeps_tool_json_fence_when_complete(self):
+    def test_stream_visible_text_caches_unclosed_json_fence_before_tool_key(self):
+        raw = (
+            "Plan\n"
+            "Step 1 [in_progress]: Run command\n\n"
+            "```json\n"
+            "{\n"
+        )
+        out = _stream_visible_text_with_json_pause(raw, final=False)
+        self.assertEqual(out, raw.split("```json", 1)[0].rstrip())
+
+    def test_stream_visible_text_with_json_pause_hides_tool_json_fence_when_complete(self):
         raw = (
             "准备执行\n"
             "```json\n"
@@ -385,7 +407,7 @@ class RuntimeLoopTests(unittest.TestCase):
             "继续"
         )
         out = _stream_visible_text_with_json_pause(raw, final=True)
-        self.assertEqual(out, raw)
+        self.assertEqual(out, raw.split("```json", 1)[0].rstrip())
 
     def test_stream_visible_text_with_json_pause_keeps_non_tool_json_fence(self):
         raw = (
@@ -398,29 +420,90 @@ class RuntimeLoopTests(unittest.TestCase):
         out = _stream_visible_text_with_json_pause(raw, final=True)
         self.assertEqual(out, raw)
 
-    def test_stream_visible_text_with_json_pause_keeps_trailing_plain_tool_json(self):
+    def test_stream_visible_text_hides_tool_calls_json_fence_when_complete(self):
+        raw = (
+            "Plan\n"
+            "Step 1 [in_progress]: Run command\n\n"
+            "```json\n"
+            "{\n"
+            "  \"tool_calls\": [\n"
+            "    {\"function\":{\"name\":\"shell\"}}\n"
+            "  ]\n"
+            "}\n"
+            "```"
+        )
+        out = _stream_visible_text_with_json_pause(raw, final=True)
+        self.assertEqual(out, raw.split("```json", 1)[0].rstrip())
+
+    def test_stream_visible_text_caches_partial_tool_calls_key(self):
+        raw = (
+            "Plan\n"
+            "{\n"
+            "  \"tool_calls"
+        )
+        out = _stream_visible_text_with_json_pause(raw, final=False)
+        self.assertEqual(out, raw.split("{", 1)[0].rstrip())
+
+    def test_stream_visible_text_caches_bare_trailing_json_object_start(self):
+        raw = (
+            "Plan\n"
+            "Step 1 [in_progress]: Load skill\n\n"
+            "{"
+        )
+        out = _stream_visible_text_with_json_pause(raw, final=False)
+        self.assertEqual(out, raw.split("{", 1)[0].rstrip())
+
+    def test_stream_visible_text_caches_bare_trailing_json_array_start(self):
+        raw = (
+            "Plan\n"
+            "Step 1 [in_progress]: Load skill\n\n"
+            "[\n"
+            "  {"
+        )
+        out = _stream_visible_text_with_json_pause(raw, final=False)
+        self.assertEqual(out, raw.split("\n\n[", 1)[0].rstrip())
+
+    def test_stream_visible_text_with_json_pause_caches_trailing_plain_tool_json(self):
         raw = (
             "我先说明一下。\n\n"
             "{\"tool\":\"done\",\"args\":{}}\n"
         )
         out = _stream_visible_text_with_json_pause(raw, final=False)
-        self.assertEqual(out, raw)
+        self.assertEqual(out, raw.split('{"tool', 1)[0].rstrip())
 
-    def test_stream_visible_text_with_json_pause_keeps_trailing_plain_tool_json_when_final(self):
+    def test_stream_visible_text_with_json_pause_hides_trailing_plain_tool_json_when_final(self):
         raw = (
             "我先说明一下。\n\n"
             "{\"tool\":\"done\",\"args\":{}}\n"
         )
         out = _stream_visible_text_with_json_pause(raw, final=True)
-        self.assertEqual(out, raw)
+        self.assertEqual(out, raw.split('{"tool', 1)[0].rstrip())
 
-    def test_stream_visible_text_with_json_pause_keeps_partial_plain_tool_json(self):
+    def test_stream_visible_text_with_json_pause_hides_trailing_tool_array_when_final(self):
+        raw = (
+            "Done\n\n"
+            "[\n"
+            "  {\"tool\":\"done\",\"args\":{}}\n"
+            "]"
+        )
+        out = _stream_visible_text_with_json_pause(raw, final=True)
+        self.assertEqual(out, raw.split("[", 1)[0].rstrip())
+
+    def test_stream_visible_text_hides_internal_model_tool_result_marker(self):
+        raw = (
+            "Done\n\n"
+            "[MODEL_TOOL_RESULT]{\"kind\":\"model_tool_result\",\"tool\":\"done\",\"args\":{}}"
+        )
+        out = _stream_visible_text_with_json_pause(raw, final=True)
+        self.assertEqual(out, "Done")
+
+    def test_stream_visible_text_with_json_pause_caches_partial_plain_tool_json(self):
         raw = (
             "我先说明一下。\n\n"
             "{\"tool"
         )
         out = _stream_visible_text_with_json_pause(raw, final=False)
-        self.assertEqual(out, raw)
+        self.assertEqual(out, raw.split('{"tool', 1)[0].rstrip())
 
     def test_stream_visible_text_with_json_pause_keeps_plain_non_tool_json(self):
         raw = (
@@ -430,7 +513,34 @@ class RuntimeLoopTests(unittest.TestCase):
         out = _stream_visible_text_with_json_pause(raw, final=False)
         self.assertEqual(out, raw)
 
-    def test_stream_visible_text_keeps_pseudo_tool_calls_block(self):
+    def test_stream_visible_text_with_json_pause_releases_partial_false_alarm(self):
+        raw = "data:\n{\"toolbox\": true}"
+        out = _stream_visible_text_with_json_pause(raw, final=False)
+        self.assertEqual(out, raw)
+
+    def test_stream_visible_text_caches_serialized_message_until_confirmed(self):
+        raw = (
+            "Planning...\n"
+            "{\"content\":\"Step 1 [in_progress]: Load skill\","
+        )
+        out = _stream_visible_text_with_json_pause(raw, final=False)
+        self.assertEqual(out, raw.split("{\"content\"", 1)[0].rstrip())
+
+    def test_stream_visible_text_hides_serialized_message_with_tool_calls(self):
+        raw = (
+            "Planning...\n"
+            "{\"content\":\"Step 1 [in_progress]: Load skill\","
+            "\"tool_calls\":[{\"function\":{\"name\":\"request_skill_prompt\"}}]}"
+        )
+        out = _stream_visible_text_with_json_pause(raw, final=True)
+        self.assertEqual(out, raw.split("{\"content\"", 1)[0].rstrip())
+
+    def test_stream_visible_text_releases_content_json_without_tool_calls(self):
+        raw = "data:\n{\"content\":\"ordinary data\"}"
+        out = _stream_visible_text_with_json_pause(raw, final=True)
+        self.assertEqual(out, raw)
+
+    def test_stream_visible_text_hides_pseudo_tool_calls_block(self):
         raw = (
             "准备执行\n\n"
             "<tool_calls>\n"
@@ -438,18 +548,18 @@ class RuntimeLoopTests(unittest.TestCase):
             "</tool_calls>"
         )
         out = _stream_visible_text_with_json_pause(raw, final=False)
-        self.assertEqual(out, raw)
+        self.assertEqual(out, raw.split("<tool_calls", 1)[0].rstrip())
 
-    def test_stream_visible_text_keeps_unclosed_pseudo_tool_calls_block(self):
+    def test_stream_visible_text_caches_unclosed_pseudo_tool_calls_block(self):
         raw = (
             "准备执行\n\n"
             "<tool_calls>\n"
             "{\"tool\":\"shell\""
         )
         out = _stream_visible_text_with_json_pause(raw, final=False)
-        self.assertEqual(out, raw)
+        self.assertEqual(out, raw.split("<tool_calls", 1)[0].rstrip())
 
-    def test_stream_visible_text_with_json_pause_keeps_tool_json_array_fence_when_complete(self):
+    def test_stream_visible_text_with_json_pause_hides_tool_json_array_fence_when_complete(self):
         raw = (
             "准备执行\n"
             "```json\n"
@@ -461,7 +571,30 @@ class RuntimeLoopTests(unittest.TestCase):
             "继续"
         )
         out = _stream_visible_text_with_json_pause(raw, final=True)
-        self.assertEqual(out, raw)
+        self.assertEqual(out, raw.split("```json", 1)[0].rstrip())
+
+    def test_stream_visible_text_hides_plain_fenced_single_tool_object(self):
+        raw = (
+            "Done\n\n"
+            "```\n"
+            "{\n"
+            "  \"tool\": \"done\",\n"
+            "  \"args\": {}\n"
+            "}\n"
+            "```"
+        )
+        out = _stream_visible_text_with_json_pause(raw, final=True)
+        self.assertEqual(out, raw.split("```", 1)[0].rstrip())
+
+    def test_stream_visible_text_hides_plain_fenced_tool_calls_object(self):
+        raw = (
+            "Done\n\n"
+            "```\n"
+            "{\"tool_calls\":[{\"tool\":\"done\",\"args\":{}}]}\n"
+            "```"
+        )
+        out = _stream_visible_text_with_json_pause(raw, final=True)
+        self.assertEqual(out, raw.split("```", 1)[0].rstrip())
 
     def test_consume_streaming_ai_response_calls_callback_before_first_visible_output(self):
         class _FakeStream:
@@ -662,7 +795,7 @@ class RuntimeLoopTests(unittest.TestCase):
         self.assertIn("\"tool\":\"done\"", ai_response)
         self.assertTrue(streamed_any)
         self.assertEqual(rendered.count("你好，我是小雨，很高兴为你服务！"), 1)
-        self.assertIn('{"tool', rendered)
+        self.assertNotIn('{"tool', rendered)
         self.assertIn("\n\n", rendered)
 
     def test_consume_streaming_ai_response_buffers_blank_lines_before_plain_tool_json(self):
@@ -699,7 +832,7 @@ class RuntimeLoopTests(unittest.TestCase):
         self.assertIn("\"tool\":\"done\"", ai_response)
         self.assertTrue(streamed_any)
         self.assertIn("你好！", rendered)
-        self.assertIn("\"tool\":\"done\"", rendered)
+        self.assertNotIn("\"tool\":\"done\"", rendered)
 
     def test_consume_streaming_ai_response_keeps_assistant_tool_call_marker_text(self):
         class _FakeStdout:
@@ -736,8 +869,8 @@ class RuntimeLoopTests(unittest.TestCase):
         self.assertIn("<|assistant tool_calls|>", ai_response)
         self.assertTrue(streamed_any)
         self.assertIn("你好！有什么我可以帮您处理的任务吗？", rendered)
-        self.assertIn("<|assistant", rendered)
-        self.assertIn('{"tool"', rendered)
+        self.assertNotIn("<|assistant", rendered)
+        self.assertNotIn('{"tool"', rendered)
 
     def test_streamed_final_message_tool_calls_can_be_parsed_after_text_stream(self):
         class _FakeStream:
@@ -831,6 +964,228 @@ class RuntimeLoopTests(unittest.TestCase):
             ),
         }
         self.assertEqual(_parse_tool_plans_from_model_message(message), [])
+
+    def test_parse_tool_plans_from_model_message_accepts_trailing_text_tool_calls(self):
+        message = {
+            "role": "assistant",
+            "content": (
+                "我将查询 Codex 使用情况。\n\n"
+                "Step 1 [in_progress]: 查询 Codex 使用情况\n\n"
+                "{\n"
+                "  \"tool_calls\": [\n"
+                "    {\n"
+                "      \"tool\": \"shell\",\n"
+                "      \"args\": {\n"
+                "        \"command\": \"npx @ccusage/codex@latest daily --compact\"\n"
+                "      }\n"
+                "    }\n"
+                "  ]\n"
+                "}"
+            ),
+        }
+        self.assertEqual(
+            _parse_tool_plans_from_model_message(message),
+            [("shell", {"command": "npx @ccusage/codex@latest daily --compact"})],
+        )
+
+    def test_parse_tool_plans_from_model_message_accepts_trailing_single_tool_object(self):
+        message = {
+            "role": "assistant",
+            "content": (
+                "Done\n\n"
+                "{\n"
+                "  \"tool\": \"done\",\n"
+                "  \"args\": {}\n"
+                "}"
+            ),
+        }
+        self.assertEqual(_parse_tool_plans_from_model_message(message), [("done", {})])
+
+    def test_parse_tool_plans_from_model_message_accepts_minified_single_tool_object(self):
+        message = {
+            "role": "assistant",
+            "content": "Done\n\n{\"tool\":\"done\",\"args\":{}}",
+        }
+        self.assertEqual(_parse_tool_plans_from_model_message(message), [("done", {})])
+
+    def test_parse_tool_plans_from_model_message_accepts_plain_fenced_single_tool_object(self):
+        message = {
+            "role": "assistant",
+            "content": (
+                "Done\n\n"
+                "```\n"
+                "{\n"
+                "  \"tool\": \"done\",\n"
+                "  \"args\": {}\n"
+                "}\n"
+                "```"
+            ),
+        }
+        self.assertEqual(_parse_tool_plans_from_model_message(message), [("done", {})])
+
+    def test_parse_tool_plans_from_model_message_accepts_plain_fenced_tool_calls_object(self):
+        message = {
+            "role": "assistant",
+            "content": (
+                "Done\n\n"
+                "```\n"
+                "{\"tool_calls\":[{\"tool\":\"done\",\"args\":{}}]}\n"
+                "```"
+            ),
+        }
+        self.assertEqual(_parse_tool_plans_from_model_message(message), [("done", {})])
+
+    def test_parse_tool_plans_from_model_message_accepts_plain_fenced_tool_array(self):
+        message = {
+            "role": "assistant",
+            "content": (
+                "Done\n\n"
+                "```\n"
+                "[{\"tool\":\"done\",\"args\":{}}]\n"
+                "```"
+            ),
+        }
+        self.assertEqual(_parse_tool_plans_from_model_message(message), [("done", {})])
+
+    def test_parse_tool_plans_from_model_message_accepts_trailing_tool_array(self):
+        message = {
+            "role": "assistant",
+            "content": (
+                "Done\n\n"
+                "[\n"
+                "  {\"tool\":\"done\",\"args\":{}}\n"
+                "]"
+            ),
+        }
+        self.assertEqual(_parse_tool_plans_from_model_message(message), [("done", {})])
+
+    def test_split_trailing_pseudo_tool_calls_text_removes_suffix(self):
+        text = (
+            "Plan\n"
+            "Step 1 [in_progress]: Run command\n\n"
+            "{\n"
+            "  \"tool_calls\": [\n"
+            "    {\"tool\": \"shell\", \"args\": {\"command\": \"echo hi\"}}\n"
+            "  ]\n"
+            "}"
+        )
+        visible, plans = _split_trailing_pseudo_tool_calls_text(text)
+        self.assertEqual(visible, "Plan\nStep 1 [in_progress]: Run command")
+        self.assertEqual(plans, [("shell", {"command": "echo hi"})])
+
+    def test_split_trailing_pseudo_tool_calls_text_removes_tool_array_suffix(self):
+        text = (
+            "Done\n\n"
+            "[\n"
+            "  {\"tool\":\"done\",\"args\":{}}\n"
+            "]"
+        )
+        visible, plans, pseudo_text = _split_trailing_pseudo_tool_calls_text_details(text)
+        self.assertEqual(visible, "Done")
+        self.assertEqual(plans, [("done", {})])
+        self.assertTrue(pseudo_text.startswith("["))
+
+    def test_split_trailing_pseudo_tool_calls_text_uses_serialized_content(self):
+        text = (
+            "{"
+            "\"content\":\"Final answer\","
+            "\"tool_calls\":[{\"function\":{\"name\":\"done\",\"arguments\":\"{}\"}}]"
+            "}"
+        )
+        visible, plans, pseudo_text = _split_trailing_pseudo_tool_calls_text_details(text)
+        self.assertEqual(visible, "Final answer")
+        self.assertEqual(plans, [("done", {})])
+        self.assertIn('"tool_calls"', pseudo_text)
+
+    def test_split_trailing_pseudo_tool_calls_text_details_returns_suffix(self):
+        text = (
+            "Plan\n\n"
+            "{\n"
+            "  \"tool_calls\": [\n"
+            "    {\"tool\": \"shell\", \"args\": {\"command\": \"echo hi\"}}\n"
+            "  ]\n"
+            "}"
+        )
+        visible, plans, pseudo_text = _split_trailing_pseudo_tool_calls_text_details(text)
+        self.assertEqual(visible, "Plan")
+        self.assertEqual(plans, [("shell", {"command": "echo hi"})])
+        self.assertIn('"tool_calls"', pseudo_text)
+        self.assertIn('"command": "echo hi"', pseudo_text)
+
+    def test_strip_leaked_internal_history_markers_removes_suffix(self):
+        text = (
+            "Final answer\n\n"
+            "[MODEL_TOOL_RESULT]{\"kind\":\"model_tool_result\",\"tool\":\"done\"}"
+        )
+        self.assertEqual(_strip_leaked_internal_history_markers(text), "Final answer")
+
+    def test_replace_latest_assistant_history_records_pseudo_tool_call_metadata(self):
+        old_content = (
+            "Plan\n\n"
+            "{\"tool_calls\":[{\"tool\":\"shell\",\"args\":{\"command\":\"echo hi\"}}]}"
+        )
+
+        class _Agent:
+            def __init__(self):
+                self.conversation_history = [
+                    {"role": "user", "content": "x"},
+                    {"role": "assistant", "content": old_content},
+                ]
+                self.synced = 0
+
+            def _sync_active_chat_messages(self):
+                self.synced += 1
+
+        agent = _Agent()
+        _replace_latest_assistant_history_content(
+            agent,
+            old_content,
+            "Plan",
+            pseudo_tool_call_text='{"tool_calls":[{"tool":"shell"}]}',
+            pseudo_tool_call_tools=["shell"],
+        )
+
+        msg = agent.conversation_history[-1]
+        self.assertEqual(msg.get("content"), "Plan")
+        self.assertEqual(msg.get("pseudo_tool_call_text"), '{"tool_calls":[{"tool":"shell"}]}')
+        self.assertEqual(msg.get("pseudo_tool_call_tools"), ["shell"])
+        self.assertEqual(agent.synced, 1)
+
+    def test_parse_tool_plans_from_model_message_accepts_trailing_fenced_tool_calls(self):
+        message = {
+            "role": "assistant",
+            "content": (
+                "Plan\n\n"
+                "```json\n"
+                "{\"tool_calls\":[{\"function\":{\"name\":\"done\",\"arguments\":\"{}\"}}]}\n"
+                "```"
+            ),
+        }
+        self.assertEqual(_parse_tool_plans_from_model_message(message), [("done", {})])
+
+    def test_standard_tool_calls_take_precedence_over_trailing_text_tool_calls(self):
+        message = {
+            "role": "assistant",
+            "content": "{\"tool_calls\":[{\"tool\":\"shell\",\"args\":{\"command\":\"wrong\"}}]}",
+            "tool_calls": [
+                {
+                    "function": {
+                        "name": "done",
+                        "arguments": "{}",
+                    },
+                },
+            ],
+        }
+        self.assertEqual(_parse_tool_plans_from_model_message(message), [("done", {})])
+
+    def test_pseudo_tool_call_text_detection(self):
+        self.assertTrue(_looks_like_pseudo_tool_call_text('{"tool":"done","args":{}}'))
+        self.assertTrue(_looks_like_pseudo_tool_call_text('<tool_calls>\n{"tool":"done"}\n</tool_calls>'))
+        self.assertTrue(_looks_like_pseudo_tool_call_text('tool: done\nargs: {}'))
+        self.assertTrue(_looks_like_pseudo_tool_call_text('```json\n{"tool_calls":[{"function":{"name":"done"}}]}\n```'))
+        self.assertTrue(_looks_like_pseudo_tool_call_text('{"content":"plan","tool_calls":[{"function":{"name":"done"}}]}'))
+        self.assertFalse(_looks_like_pseudo_tool_call_text('{"toolbox": true}'))
+        self.assertFalse(_looks_like_pseudo_tool_call_text('I checked the tool output and summarized it.'))
 
     def test_textless_done_only_tool_call_detection(self):
         self.assertTrue(

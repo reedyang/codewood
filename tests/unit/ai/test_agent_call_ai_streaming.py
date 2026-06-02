@@ -53,11 +53,21 @@ class AgentCallAiStreamingTests(unittest.TestCase):
 
     def test_standard_tools_mode_is_enabled_for_ollama(self):
         self.agent.provider = "ollama"
-        self.agent.params = {}
+        self.agent.params = {"context_window": 64000}
         self.assertTrue(self.agent._use_standard_openai_tools_call())
 
     def test_standard_tools_mode_is_enabled_for_openai(self):
         self.agent.provider = "openai"
+        self.agent.params = {"context_window": 64000}
+        self.assertTrue(self.agent._use_standard_openai_tools_call())
+
+    def test_standard_tools_mode_is_disabled_below_64k(self):
+        self.agent.provider = "openai"
+        self.agent.params = {"context_window": 63999}
+        self.assertFalse(self.agent._use_standard_openai_tools_call())
+
+    def test_standard_tools_mode_uses_default_context_window_when_missing(self):
+        self.agent.provider = "ollama"
         self.agent.params = {}
         self.assertTrue(self.agent._use_standard_openai_tools_call())
 
