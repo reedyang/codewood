@@ -223,7 +223,7 @@ def setup_model_ai_stack(
             model_name=agent.model_name,
             model_params=agent.params,
             openai_conf=agent.openai_conf,
-            work_directory=str(agent.work_directory),
+            work_directory=agent._model_visible_directory_text(),
             history_writer=agent._append_chat_message,
             regular_message_builder=agent._build_regular_task_messages,
             ollama_importer=ollama_importer,

@@ -406,6 +406,29 @@ class Agent:
             return root
         return self.work_directory
 
+    def _model_visible_directory_text(self) -> str:
+        """Return the directory path that is safe to expose in model prompts."""
+        fallback = "(hidden internal runtime directory)"
+        candidates = [
+            getattr(self, "workspace_root", None),
+            getattr(self, "workspace_config_dir", None),
+            getattr(self, "work_directory", None),
+        ]
+        for raw in candidates:
+            if not raw:
+                continue
+            try:
+                resolved = self._resolve_path_lenient(Path(raw))
+            except Exception:
+                continue
+            try:
+                if self._is_path_under(resolved, self._self_repo_root):
+                    continue
+            except Exception:
+                pass
+            return str(resolved)
+        return fallback
+
     def _reset_work_directory_to_startup_initial(self) -> None:
         """Restore current directory to startup initial directory and persist state."""
         target = None
@@ -4702,7 +4725,7 @@ class Agent:
         self.ai_orchestrator.context.model_name = self.model_name
         self.ai_orchestrator.context.model_params = self.params
         self.ai_orchestrator.context.openai_conf = self.openai_conf
-        self.ai_orchestrator.context.work_directory = str(self.work_directory)
+        self.ai_orchestrator.context.work_directory = self._model_visible_directory_text()
         return self.ai_orchestrator.call(call_ctx=call_ctx)
 
     def _ephemeral_path_key(self, path: Path) -> str:
