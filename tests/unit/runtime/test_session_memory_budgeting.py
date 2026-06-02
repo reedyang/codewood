@@ -37,7 +37,7 @@ class _FakeAgent:
         self.workspace_config_dir = Path(f"D:/Users/fake/{config_dirname}/workspace/default")
         self.work_directory = Path(f"D:/SourceCode/opensource/{app_slug_kebab}")
         self.system_prompt = ""
-        self.params = {"context_window": 800}
+        self.params = {"context_window": 128000}
         self._force_current_input_as_requirement_once = False
         self._last_cancelled_task = ""
         self.active_chat_id = "chat-1"
@@ -419,6 +419,54 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
         messages, _ = svc.build_regular_task_messages("请修复构建错误")
         system_content = str(messages[0].get("content") or "")
         self.assertIn("Domain Prompt: Software Development", system_content)
+
+    def test_context_window_below_64k_uses_history_only_chat_context(self):
+        agent = _FakeAgent()
+        agent.params = {"context_window": 63999}
+        calls = {"reload": 0, "compose": 0}
+
+        def _reload_skills():
+            calls["reload"] += 1
+
+        def _compose(include_tools=True):
+            _ = include_tools
+            calls["compose"] += 1
+            return "SYSTEM SHOULD NOT BE SENT"
+
+        agent._reload_skills = _reload_skills
+        agent._compose_system_prompt_snapshot = _compose
+        agent.operation_results = [{"secret": "operation-context"}]
+        agent.conversation_history = [
+            {"role": "user", "content": "上一轮问题"},
+            {"role": "assistant", "content": "上一轮回答"},
+        ]
+        svc = SessionMemoryService(agent)
+
+        messages, _ = svc.build_regular_task_messages("你好", context="ctx-should-not-be-sent")
+        joined = "\n".join(str(m.get("content") or "") for m in messages)
+
+        self.assertFalse(any(str(m.get("role") or "") == "system" for m in messages))
+        self.assertEqual(messages[-1], {"role": "user", "content": "你好"})
+        self.assertIn("上一轮问题", joined)
+        self.assertIn("上一轮回答", joined)
+        self.assertNotIn("SYSTEM SHOULD NOT BE SENT", joined)
+        self.assertNotIn("用户原始需求:", joined)
+        self.assertNotIn("ctx-should-not-be-sent", joined)
+        self.assertNotIn("operation-context", joined)
+        self.assertEqual(calls, {"reload": 0, "compose": 0})
+
+    def test_context_window_at_64k_keeps_full_system_context(self):
+        agent = _FakeAgent()
+        agent.params = {"context_window": 64000}
+        agent._compose_system_prompt_snapshot = lambda include_tools=True: "SYSTEM AT 64K"
+        svc = SessionMemoryService(agent)
+
+        messages, _ = svc.build_regular_task_messages("你好")
+        joined = "\n".join(str(m.get("content") or "") for m in messages)
+
+        self.assertEqual(messages[0].get("role"), "system")
+        self.assertIn("SYSTEM AT 64K", joined)
+        self.assertIn("用户原始需求: 你好", str(messages[-1].get("content") or ""))
 
     def test_context_eligible_history_returns_all_context_eligible_messages(self):
         agent = _FakeAgent()
@@ -828,18 +876,19 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
 
     def test_degradation_adds_history_summary_before_full_drop(self):
         agent = _FakeAgent()
-        agent.params = {"context_window": 2200}
+        agent.params = {"context_window": 64000}
+        agent.token_estimator = lambda s: len(str(s or ""))
         agent.conversation_history.append({"role": "user", "content": "最初需求：做一个任务规划器"})
-        for i in range(1, 56):
+        for i in range(1, 100):
             role = "assistant" if i % 2 == 0 else "user"
-            content = f"msg-{i} " + ("assistant-long " * 100 if role == "assistant" else ("user-long " * 50))
+            content = f"msg-{i} " + ("assistant-long " * 700 if role == "assistant" else ("user-long " * 450))
             agent.conversation_history.append({"role": role, "content": content})
         svc = SessionMemoryService(agent)
         messages, _ = svc.build_regular_task_messages("继续", context="ctx")
         history_messages = messages[1:-1]
         joined = "\n".join(str(m.get("content") or "") for m in history_messages)
         self.assertIn("[历史摘要]", joined)
-        self.assertIn("msg-55", joined)
+        self.assertIn("msg-99", joined)
 
     def test_large_context_keeps_more_history_than_small_context(self):
         small = _FakeAgent()
@@ -1045,15 +1094,26 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
 
     def test_aggressive_compression_triggers_over_80_percent(self):
         agent = _FakeAgent()
-        agent.params = {"context_window": 700}
+        agent.params = {"context_window": 64000}
         agent.token_estimator = lambda s: len(str(s or ""))  # deterministic pressure
         agent.conversation_history.append({"role": "user", "content": "最初需求：完成复杂重构"})
-        for i in range(1, 30):
+        for i in range(1, 80):
             role = "assistant" if i % 2 == 0 else "user"
             agent.conversation_history.append(
-                {"role": role, "content": f"round-{i} " + ("x" * 260)}
+                {"role": role, "content": f"round-{i} " + ("x" * 1800)}
             )
         svc = SessionMemoryService(agent)
+        svc._context_token_budgets = lambda: {
+            "profile": "medium",
+            "context_window": 64000,
+            "input_budget": 100000,
+            "system_budget": 30000,
+            "history_budget": 58000,
+            "op_context_budget": 20000,
+            "history_summary_budget": 8000,
+            "memory_share_ratio": 45,
+            "assistant_clip_tokens": 1800,
+        }
         _messages, _ = svc.build_regular_task_messages("继续推进", context="ctx-" + ("y" * 1200))
         pre = int(getattr(agent, "_last_context_usage_percent_precompression", 0))
         post = int(getattr(agent, "_last_context_usage_percent", 0))
@@ -1063,12 +1123,23 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
 
     def test_system_prompt_core_not_clipped_under_aggressive_compress(self):
         agent = _FakeAgent()
-        agent.params = {"context_window": 700}
+        agent.params = {"context_window": 64000}
         agent.token_estimator = lambda s: len(str(s or ""))
-        for i in range(1, 24):
+        for i in range(1, 80):
             role = "assistant" if i % 2 == 0 else "user"
-            agent.conversation_history.append({"role": role, "content": f"round-{i} " + ("z" * 220)})
+            agent.conversation_history.append({"role": role, "content": f"round-{i} " + ("z" * 1800)})
         svc = SessionMemoryService(agent)
+        svc._context_token_budgets = lambda: {
+            "profile": "medium",
+            "context_window": 64000,
+            "input_budget": 64000,
+            "system_budget": 30000,
+            "history_budget": 42000,
+            "op_context_budget": 12000,
+            "history_summary_budget": 6000,
+            "memory_share_ratio": 45,
+            "assistant_clip_tokens": 1800,
+        }
         messages, _ = svc.build_regular_task_messages("继续推进", context="ctx-" + ("q" * 1200))
         system_content = str(messages[0].get("content") or "")
         self.assertIn("[SYSTEM_PROMPT_END_MARK]", system_content)

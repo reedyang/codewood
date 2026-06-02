@@ -25,6 +25,7 @@ from src.core.config.config_jsonc import (
 )
 from src.config.app_info import get_app_config_dirname, get_app_name, get_app_version
 from src.core.config.model_providers import DEFAULT_OLLAMA_PORT
+from src.core.config.model_providers import basic_chat_only_context_warning
 from src.core.config.model_providers import parse_configured_models
 from src.core.config.model_providers import parse_port
 from src.core.console_utils import _ansi_red
@@ -166,6 +167,19 @@ def _create_user_config_template(user_home: Path) -> Path:
 def _print_model_settings_update_notice(config_path: str | Path) -> None:
     normalized_path = str(Path(str(config_path)).expanduser())
     print(_ansi_red(f"Please update the model settings in: {normalized_path}"))
+
+
+def _set_basic_chat_only_context_prompt_warning_for_agent(agent: Any) -> None:
+    params = getattr(agent, "params", {}) or {}
+    raw_context_window = params.get("context_window") if isinstance(params, dict) else None
+    warning = basic_chat_only_context_warning(raw_context_window)
+    if not warning:
+        return
+    set_warning = getattr(agent, "_set_pending_prompt_warning", None)
+    if callable(set_warning):
+        set_warning(warning)
+    else:
+        setattr(agent, "_pending_prompt_warning_line", warning)
 
 
 def _print_startup_basic_overview(
@@ -582,6 +596,7 @@ def main(argv: list[str] | None = None):
             if not ok:
                 print(str(model_error or "❌ Failed to apply startup model override."))
                 return 1
+            _set_basic_chat_only_context_prompt_warning_for_agent(agent)
             if exec_task:
                 agent._queued_user_input = exec_task
                 agent._startup_exec_turn_pending = True
@@ -617,6 +632,7 @@ def main(argv: list[str] | None = None):
             if not ok:
                 print(str(model_error or "❌ Failed to apply startup model override."))
                 return 1
+            _set_basic_chat_only_context_prompt_warning_for_agent(agent)
             if exec_task:
                 agent._queued_user_input = exec_task
                 agent._startup_exec_turn_pending = True

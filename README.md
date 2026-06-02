@@ -197,6 +197,7 @@ smart-shell/
   - 字符串：`"gpt-oss-120b"`（使用默认 `context_window=128000`、`streaming=true`）
   - 对象：`{"name":"gpt-oss-120b","context_window":"128K","streaming":true}`（`context_window` 可为数字，或带 `k/K` 后缀的字符串）
 - `context_window`: 仅接受正整数，或形如 `^\d+[kK]?$` 的字符串（`k/K` 表示乘以 1000）；无效值会自动回退到默认 `128000`
+- 当模型 `context_window < 64000` 时，Smart Shell 不注入系统提示词、工具提示、技能提示、记忆或操作上下文，只发送历史消息和当前用户输入，用于支持小上下文模型的简单聊天
 - `streaming`: 模型级流式输出开关，默认 `true`；可按模型单独配置是否启用流式输出
 - `auto_compact_trigger_percent`: 自动摘要触发阈值百分比，默认 `60`；仅接受 `1..100` 的整数，非法值会提示并回退到 `60`
 - `model_providers[i].params`: 该 provider 的参数（例如 API 密钥、基础 URL 等）

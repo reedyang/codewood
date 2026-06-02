@@ -8,7 +8,11 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 from ..config.app_info import get_app_config_dirname, get_app_logger_root, get_app_runtime_attr_name
-from ..core.config.model_providers import DEFAULT_CONTEXT_WINDOW, parse_context_window
+from ..core.config.model_providers import (
+    DEFAULT_CONTEXT_WINDOW,
+    SIMPLE_CHAT_SYSTEM_PROMPT_MIN_CONTEXT_WINDOW,
+    parse_context_window,
+)
 from ..core.console_utils import _ansi_gray
 from ..core.logging.app_logging import get_logger
 
@@ -1276,6 +1280,59 @@ class SessionMemoryService:
             "assistant_clip_tokens": assistant_clip_tokens,
         }
 
+    def _should_use_simple_chat_context(self, budgets: Dict[str, Any]) -> bool:
+        try:
+            ctx_window = int(budgets.get("context_window") or DEFAULT_CONTEXT_WINDOW)
+        except Exception:
+            ctx_window = DEFAULT_CONTEXT_WINDOW
+        return ctx_window < SIMPLE_CHAT_SYSTEM_PROMPT_MIN_CONTEXT_WINDOW
+
+    def _build_simple_chat_messages(
+        self,
+        user_input: str,
+        budgets: Dict[str, Any],
+    ) -> Tuple[List[Dict[str, Any]], bool]:
+        user_text = str(user_input or "")
+        user_tokens = self._estimate_message_tokens("user", user_text)
+        input_budget = int(budgets.get("input_budget") or 1024)
+        history_budget = max(0, input_budget - user_tokens)
+        history_messages, history_stats = self._build_history_messages_by_budget(
+            history_budget,
+            int(budgets.get("history_summary_budget") or 80),
+            int(budgets.get("assistant_clip_tokens") or 180),
+            source_history=self.history_for_regular_context(),
+        )
+        messages: List[Dict[str, Any]] = list(history_messages)
+        messages.append({"role": "user", "content": user_text})
+
+        try:
+            history_tokens = sum(
+                self._estimate_message_tokens(str(m.get("role") or ""), str(m.get("content") or ""))
+                for m in history_messages
+            )
+            total_input_tokens = int(history_tokens + user_tokens)
+            ctx_window = int(budgets.get("context_window") or DEFAULT_CONTEXT_WINDOW)
+            usage_pct = max(0, min(999, int(round((total_input_tokens * 100.0) / max(1, ctx_window)))))
+            self.agent._last_context_usage_percent_precompression = usage_pct
+            self.agent._last_context_aggressive_compression_applied = False
+            self._store_context_usage_snapshot(ctx_window, total_input_tokens)
+            if bool(getattr(self.agent, "_force_current_input_as_requirement_once", False)):
+                self.agent._force_current_input_as_requirement_once = False
+            get_logger().info(
+                "context-pack profile=simple-chat ctx_window=%s input_budget=%s system=0 history=%s user=%s "
+                "history_trimmed_assistant=%s history_summary_messages=%s history_dropped=%s",
+                budgets.get("context_window"),
+                budgets.get("input_budget"),
+                history_tokens,
+                user_tokens,
+                history_stats.get("assistant_trimmed", 0),
+                history_stats.get("summary_messages", 0),
+                history_stats.get("dropped_messages", 0),
+            )
+        except Exception:
+            pass
+        return messages, True
+
     def _software_development_prompt_append(self) -> str:
         cached = getattr(self, "_software_development_prompt_cache", None)
         if isinstance(cached, str):
@@ -1870,6 +1927,10 @@ class SessionMemoryService:
         return True
 
     def build_regular_task_messages(self, user_input: str, context: str = "") -> Tuple[List[Dict[str, Any]], bool]:
+        budgets = self._context_token_budgets()
+        if self._should_use_simple_chat_context(budgets):
+            return self._build_simple_chat_messages(user_input, budgets)
+
         import os
 
         os_info = os.uname() if hasattr(os, "uname") else os.name
@@ -1879,7 +1940,6 @@ class SessionMemoryService:
         self.maybe_refresh_session_summary_llm()
         self.agent._reload_skills()
         self.agent.system_prompt = self.agent._compose_system_prompt_snapshot(include_tools=True)
-        budgets = self._context_token_budgets()
         op_context_budget = int(budgets["op_context_budget"])
         memory_share = float(int(budgets.get("memory_share_ratio", 45))) / 100.0
         mem_budget = max(80, int(int(budgets["system_budget"]) * memory_share))

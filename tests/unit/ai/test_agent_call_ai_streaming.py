@@ -61,6 +61,40 @@ class AgentCallAiStreamingTests(unittest.TestCase):
         self.agent.params = {"use_simulated_tools": True}
         self.assertFalse(self.agent._use_standard_openai_tools_call())
 
+    def test_model_switch_warns_when_context_window_is_below_64k(self):
+        agent = Agent.__new__(Agent)
+        agent.provider = "openai"
+        agent.model_name = "large"
+        agent.params = {"context_window": 128000}
+        agent._find_configured_model_choice = lambda selector: {
+            "provider": "openai",
+            "name": "tiny",
+            "selector": "openai:tiny",
+            "params": {
+                "model": "tiny",
+                "context_window": 32000,
+            },
+        }
+        agent._current_model_selector = lambda: "openai:large"
+        agent._set_active_chat_model = lambda *_args, **_kwargs: None
+        agent._refresh_status_context_usage_snapshot = lambda: None
+
+        def _apply_choice(choice, validate=False):
+            _ = validate
+            agent.provider = str(choice.get("provider") or "")
+            agent.model_name = str(choice.get("name") or "")
+            agent.params = dict(choice.get("params") or {})
+
+        agent._apply_runtime_model_choice = _apply_choice
+
+        out = agent._switch_model_by_selector("openai:tiny")
+
+        self.assertIn("✅ Switched model: openai:tiny", out)
+        self.assertIn(
+            "\n\n⚠️ Model context window is too small; only basic chat is supported.\n",
+            out,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

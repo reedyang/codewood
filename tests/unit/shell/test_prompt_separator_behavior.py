@@ -25,6 +25,15 @@ class _FakeInputHandler:
         return "hello"
 
 
+class _RecordingInputHandler(_FakeInputHandler):
+    def __init__(self, events):
+        self.events = events
+
+    def get_input_with_completion(self, prompt, **kwargs):
+        self.events.append("prompt")
+        return "hello"
+
+
 class _FakeInputHandlerWithColumns(_FakeInputHandler):
     def get_terminal_columns(self, default=80):
         return 6
@@ -95,6 +104,36 @@ class PromptSeparatorBehaviorTests(unittest.TestCase):
             out = agent._get_user_input_with_history()
         self.assertEqual(out, "hello")
         mock_separator.assert_not_called()
+
+    def test_pending_prompt_warning_prints_immediately_above_prompt(self):
+        agent = self._build_agent()
+        events = []
+        agent.input_handler = _RecordingInputHandler(events)
+        agent._set_pending_prompt_warning(
+            "⚠️ Model context window is too small; only basic chat is supported."
+        )
+
+        def _capture_print(text="", *args, **kwargs):
+            _ = (args, kwargs)
+            events.append(str(text))
+
+        with (
+            patch.object(agent, "_status_bar_render_data", return_value=([], "status")),
+            patch("src.agent._ansi_yellow", side_effect=lambda s: s),
+            patch("builtins.print", side_effect=_capture_print),
+        ):
+            out = agent._get_user_input_with_history()
+
+        self.assertEqual(out, "hello")
+        self.assertEqual(
+            events,
+            [
+                "⚠️ Model context window is too small; only basic chat is supported.",
+                "",
+                "prompt",
+            ],
+        )
+        self.assertEqual(getattr(agent, "_pending_prompt_warning_line", ""), "")
 
     def test_chat_history_replays_context_compaction_notice_banner(self):
         agent = self._build_agent()
