@@ -345,56 +345,27 @@ def build_runtime_cache_prompt_append(agent: Any, default_workspace_id: str) -> 
 
 def build_tools_prompt_append(agent: Any) -> str:
     """Build tool catalog text injected into system prompt from external md template."""
-    use_standard_tools = bool(
-        getattr(agent, "_use_standard_openai_tools_call", lambda: False)()
-    )
     template = str(getattr(agent, "tools_prompt_template", "") or "").strip()
-    if use_standard_tools:
-        template = re.sub(
-            r"\n?首轮输出模板示例：[\s\S]*$",
-            "",
-            template,
-            flags=re.IGNORECASE,
-        ).strip()
-    else:
-        template += (
-            "\n\n【模拟 JSON tool call 模式】\n"
-            "若需要输出模拟 tool call，请务必把 JSON 包在 ```json ... ``` 代码块中，"
-            "并把代码块放在回复末尾；代码块前不要留空行。"
-        )
+    template = re.sub(
+        r"\n?首轮输出模板示例：[\s\S]*$",
+        "",
+        template,
+        flags=re.IGNORECASE,
+    ).strip()
 
     lines: List[str] = [
         template,
         "",
-        _build_tool_call_mode_prompt(use_standard_tools=use_standard_tools),
+        _build_tool_call_mode_prompt(),
         "",
         "Available tools:",
     ]
-    if use_standard_tools:
-        lines.insert(
-            1,
-            "当且仅当当前会话尚未注入目标 skill 正文时，请直接使用标准 tools 调用 request_skill_prompt；"
-            "若该 skill 已注入（例如通过 `/skills/<skill-name>` 显式启用），默认不要重复调用 request_skill_prompt，直接继续业务步骤；"
-            "但当技能正文为分段注入时，可按需通过标准 tools 调用 request_skill_prompt 加载第 n 段或完整正文。",
-        )
-    else:
-        lines.insert(
-            1,
-            "当且仅当当前会话尚未注入目标 skill 正文时，先输出位于 ```json ... ``` 代码块中的请求：\n"
-            "```json\n"
-            "{\"tool\":\"request_skill_prompt\",\"args\":{\"skill_id\":\"<skill_id>\"}}\n"
-            "```\n"
-            "若该 skill 已注入（例如通过 `/skills/<skill-name>` 显式启用），默认不要重复调用 request_skill_prompt，直接继续业务步骤；"
-            "但当技能正文为分段注入时，可按需调用位于 ```json ... ``` 代码块中的请求：\n"
-            "```json\n"
-            "{\"tool\":\"request_skill_prompt\",\"args\":{\"skill_id\":\"<skill_id>\",\"section\":<n>}}\n"
-            "```\n"
-            "加载第 n 段，或用位于 ```json ... ``` 代码块中的请求：\n"
-            "```json\n"
-            "{\"tool\":\"request_skill_prompt\",\"args\":{\"skill_id\":\"<skill_id>\",\"full\":true}}\n"
-            "```\n"
-            "加载完整正文。"
-        )
+    lines.insert(
+        1,
+        "当且仅当当前会话尚未注入目标 skill 正文时，请直接使用标准 tools 调用 request_skill_prompt；"
+        "若该 skill 已注入（例如通过 `/skills/<skill-name>` 显式启用），默认不要重复调用 request_skill_prompt，直接继续业务步骤；"
+        "但当技能正文为分段注入时，可按需通过标准 tools 调用 request_skill_prompt 加载第 n 段或完整正文。",
+    )
     for t in (agent.tool_specs or []):
         fn = (t or {}).get("function", {})
         name = str(fn.get("name") or "").strip()
@@ -410,19 +381,14 @@ def build_tools_prompt_append(agent: Any) -> str:
     return "\n".join(lines)
 
 
-def _build_tool_call_mode_prompt(*, use_standard_tools: bool) -> str:
-    if use_standard_tools:
-        return (
-            "## Tool Call Mode: Standard API tool_calls\n"
-            "- 当前模型必须使用 API 标准 `tool_calls` 字段发起工具调用。\n"
-            "- 回复正文只允许写用户可见的自然语言说明、步骤状态或结果总结。\n"
-            "- 禁止在回复正文中输出任何工具调用表示，包括 JSON 工具对象、`<tool_calls>...</tool_calls>`、Markdown 代码块、"
-            "`tool`/`args` 示例或其它伪工具调用格式。\n"
-            "- 如果无需工具，直接自然语言回答；如果需要工具，不要把工具调用写成文本。"
-        )
+def _build_tool_call_mode_prompt() -> str:
     return (
-        "## Tool Call Mode: Simulated JSON\n"
-        "- 当前模型使用模拟 JSON tool call。若需要输出工具调用，必须放入回复末尾的 ```json ... ``` 代码块。"
+        "## Tool Call Mode: Standard API tool_calls\n"
+        "- 当前模型必须使用 API 标准 `tool_calls` 字段发起工具调用。\n"
+        "- 回复正文只允许写用户可见的自然语言说明、步骤状态或结果总结。\n"
+        "- 禁止在回复正文中输出任何工具调用表示，包括 JSON 工具对象、`<tool_calls>...</tool_calls>`、Markdown 代码块、"
+        "`tool`/`args` 示例或其它伪工具调用格式。\n"
+        "- 如果无需工具，直接自然语言回答；如果需要工具，不要把工具调用写成文本。"
     )
 
 
@@ -611,7 +577,6 @@ def render_skill_section_payload(
     requested_section: Optional[int],
     full: bool,
     initial_sections: int,
-    use_standard_tools: bool = False,
 ) -> Tuple[str, Dict[str, Any]]:
     total = len(sections)
     if total <= 0:
@@ -629,23 +594,12 @@ def render_skill_section_payload(
         f"[Skill 分段注入] 当前仅注入第 {idx}/{total} 段，以控制 prompt 体积。",
     ]
     if idx < total:
-        if use_standard_tools:
-            hint_lines.append(
-                f"如需下一段，请通过标准 tools 调用 `request_skill_prompt`，参数包含 `skill_id` 与 `section={idx + 1}`。"
-            )
-        else:
-            hint_lines.append(
-                "如需下一段，请调用 "
-                f"```json\n{{\"tool\":\"request_skill_prompt\",\"args\":{{\"skill_id\":\"...\",\"section\":{idx + 1}}}}}\n```。"
-            )
-    if use_standard_tools:
         hint_lines.append(
-            "如需完整正文，请通过标准 tools 调用 `request_skill_prompt`，参数包含 `skill_id` 与 `full=true`。"
+            f"如需下一段，请通过标准 tools 调用 `request_skill_prompt`，参数包含 `skill_id` 与 `section={idx + 1}`。"
         )
-    else:
-        hint_lines.append(
-            '如需完整正文，可调用 ```json\n{"tool":"request_skill_prompt","args":{"skill_id":"...","full":true}}\n```。'
-        )
+    hint_lines.append(
+        "如需完整正文，请通过标准 tools 调用 `request_skill_prompt`，参数包含 `skill_id` 与 `full=true`。"
+    )
     return payload + "\n" + "\n".join(hint_lines), {
         "chunked": True,
         "section": idx,
@@ -670,9 +624,6 @@ def build_single_skill_prompt(
     2) MCP prompts fallback
     """
     sid = (skill_id or "").strip().lower()
-    use_standard_tools = bool(
-        getattr(agent, "_use_standard_openai_tools_call", lambda: False)()
-    )
     if not sid:
         return None, {"chunked": False, "section": 0, "total": 0, "full": True}
     target = None
@@ -751,7 +702,6 @@ def build_single_skill_prompt(
                     requested_section=requested_section,
                     full=full,
                     initial_sections=initial_sections,
-                    use_standard_tools=use_standard_tools,
                 )
                 lines = [
                     "",
@@ -784,7 +734,6 @@ def build_single_skill_prompt(
         requested_section=requested_section,
         full=full,
         initial_sections=initial_sections,
-        use_standard_tools=use_standard_tools,
     )
     lines = [
         "",

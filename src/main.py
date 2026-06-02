@@ -239,9 +239,6 @@ def _extract_model_runtime_config(config: dict, requested_model: str | None = No
                     "provider": provider,
                     "name": model_name,
                     "context_window": int(model_item.get("context_window") or 0),
-                    "use_simulated_tools": bool(
-                        model_item.get("use_simulated_tools", False)
-                    ),
                     "streaming": bool(model_item.get("streaming", True)),
                     "extra_headers": dict(model_item.get("extra_headers") or {}),
                     "params_raw": params_raw,
@@ -262,9 +259,6 @@ def _extract_model_runtime_config(config: dict, requested_model: str | None = No
             "provider": str(first_provider["provider"]),
             "name": str(first_model.get("name") or "").strip(),
             "context_window": int(first_model.get("context_window") or 0),
-            "use_simulated_tools": bool(
-                first_model.get("use_simulated_tools", False)
-            ),
             "streaming": bool(first_model.get("streaming", True)),
             "extra_headers": dict(first_model.get("extra_headers") or {}),
             "params_raw": first_provider["params_raw"],
@@ -348,9 +342,6 @@ def _extract_model_runtime_config(config: dict, requested_model: str | None = No
     ]
     params["model"] = model_name
     params["context_window"] = int(selected.get("context_window") or 0)
-    params["use_simulated_tools"] = bool(
-        selected.get("use_simulated_tools", False)
-    )
     params["streaming"] = bool(selected.get("streaming", True))
     params["extra_headers"] = dict(selected.get("extra_headers") or {})
     if provider.strip().lower() == "ollama":

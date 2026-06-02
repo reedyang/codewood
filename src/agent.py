@@ -481,9 +481,6 @@ class Agent:
             for model_item in parsed_models:
                 model_name = str(model_item.get("name") or "").strip()
                 context_window = int(model_item.get("context_window") or 0)
-                use_simulated_tools = bool(
-                    model_item.get("use_simulated_tools", False)
-                )
                 streaming = bool(model_item.get("streaming", True))
                 selector = f"{provider}:{model_name}"
                 key = selector.lower()
@@ -493,7 +490,6 @@ class Agent:
                 params = dict(base_params)
                 params["model"] = model_name
                 params["context_window"] = context_window
-                params["use_simulated_tools"] = use_simulated_tools
                 params["streaming"] = streaming
                 params["extra_headers"] = dict(model_item.get("extra_headers") or {})
                 out.append(
@@ -516,14 +512,9 @@ class Agent:
             return ""
         return f"{provider}:{model_name}"
 
-    def _use_simulated_tools_call(self) -> bool:
-        params = getattr(self, "params", {}) or {}
-        raw = params.get("use_simulated_tools", False) if isinstance(params, dict) else False
-        return parse_bool_flag(raw, default_value=False)
-
     def _use_standard_openai_tools_call(self) -> bool:
         provider = str(getattr(self, "provider", "") or "").strip().lower()
-        return provider in {"openai", "ollama"} and (not self._use_simulated_tools_call())
+        return provider in {"openai", "ollama"}
 
     def _streaming_enabled_for_current_model(self) -> bool:
         params = getattr(self, "params", {}) or {}
@@ -1243,38 +1234,6 @@ class Agent:
                         pass
                     self._last_terminal_block_kind = "assistant"
                     self._terminal_cursor_at_line_start = True
-                tool_plans = self._find_tool_plans_anywhere(content)
-                if tool_plans:
-                    for tool_name, args in tool_plans:
-                        if tool_name == "done":
-                            continue
-                        if tool_name == "shell" and (idx + 1) < len(hist):
-                            nxt = hist[idx + 1]
-                            nxt_role = str(nxt.get("role") or "").strip().lower()
-                            if nxt_role == "assistant":
-                                nxt_payload = self._parse_model_tool_result_history_content(
-                                    str(nxt.get("content") or "")
-                                )
-                                if self._model_tool_result_matches_plan(tool_name, args, nxt_payload):
-                                    continue
-                        tool_result, tool_result_cursor = self._consume_tool_call_result_from_operation_results(
-                            operation_results,
-                            tool_result_cursor,
-                            tool_name,
-                            args,
-                        )
-                        failed = not bool(tool_result.get("success", True))
-                        self._print_tool_call_feedback(tool_name, args, failed=failed)
-                        if tool_name == "shell":
-                            out_text, err_text = self._extract_model_shell_replay_output(tool_result)
-                            if out_text or err_text:
-                                self._print_direct_shell_history_output(out_text, err_text)
-                            if self._is_model_shell_result_aborted(tool_result) and (
-                                not self._history_item_is_conversation_interrupted(
-                                    hist[idx + 1] if (idx + 1) < len(hist) else None
-                                )
-                            ):
-                                self._print_conversation_interrupted_banner()
             else:
                 print(content)
         self._show_separator_next_prompt = False
@@ -4961,197 +4920,6 @@ class Agent:
                 lines.append(f"   symbols: {', '.join(str(x) for x in syms[:4])}")
         lines.append("")
         return "\n".join(lines)
-
-    def _extract_tool_plans_from_json_value(
-        self,
-        value: Any,
-    ) -> List[Tuple[str, Dict[str, Any]]]:
-        out: List[Tuple[str, Dict[str, Any]]] = []
-        if isinstance(value, dict):
-            tool_name = value.get("tool") or value.get("action")
-            args = value.get("args") or value.get("params") or {}
-            if isinstance(tool_name, str) and tool_name.strip():
-                out.append((tool_name.strip(), args if isinstance(args, dict) else {}))
-            return out
-        if isinstance(value, list):
-            for item in value:
-                out.extend(self._extract_tool_plans_from_json_value(item))
-        return out
-
-    def _collect_json_value_spans(self, text: str) -> List[Tuple[int, int, Any]]:
-        spans: List[Tuple[int, int, Any]] = []
-        if not isinstance(text, str) or not text:
-            return spans
-        n = len(text)
-        for idx, ch0 in enumerate(text):
-            if ch0 not in "{[":
-                continue
-            stack: List[str] = []
-            in_str = False
-            esc = False
-            end = -1
-            i = idx
-            while i < n:
-                ch = text[i]
-                if in_str:
-                    if esc:
-                        esc = False
-                    elif ch == "\\":
-                        esc = True
-                    elif ch == '"':
-                        in_str = False
-                    i += 1
-                    continue
-                if ch == '"':
-                    in_str = True
-                    i += 1
-                    continue
-                if ch in "{[":
-                    stack.append("}" if ch == "{" else "]")
-                elif ch in "}]":
-                    if not stack or stack[-1] != ch:
-                        stack = []
-                        break
-                    stack.pop()
-                    if not stack:
-                        end = i + 1
-                        break
-                i += 1
-            if end == -1:
-                continue
-            chunk = text[idx:end].strip()
-            try:
-                value = json.loads(chunk)
-            except Exception:
-                continue
-            spans.append((idx, end, value))
-        return spans
-
-    def _parse_tool_plans_from_response(self, text: str) -> List[Tuple[str, Dict[str, Any]]]:
-        """Parse one or more trailing tool-plan JSON values from model response."""
-        if not isinstance(text, str):
-            return []
-        text = text.strip()
-        if not text:
-            return []
-
-        marker = "<|assistant tool_calls|>"
-        marker_matches = list(
-            re.finditer(
-                re.escape(marker) + r"(.*?)" + re.escape(marker),
-                text,
-                flags=re.DOTALL,
-            )
-        )
-        for mm in reversed(marker_matches):
-            body = (mm.group(1) or "").strip()
-            tail = text[mm.end() :].strip()
-            if not tail or re.fullmatch(r"[\s`\-]*", tail):
-                try:
-                    value = json.loads(body)
-                except Exception:
-                    value = None
-                plans = self._extract_tool_plans_from_json_value(value)
-                if plans:
-                    return plans
-        marker_start = text.rfind(marker)
-        if marker_start >= 0:
-            body = text[marker_start + len(marker) :].strip()
-            try:
-                value = json.loads(body)
-            except Exception:
-                value = None
-            plans = self._extract_tool_plans_from_json_value(value)
-            if plans:
-                return plans
-
-        fence_matches = list(
-            re.finditer(r"```(?:json)?\s*(.*?)\s*```", text, flags=re.IGNORECASE | re.DOTALL)
-        )
-        for fm in reversed(fence_matches):
-            body = (fm.group(1) or "").strip()
-            if body.startswith("`") and body.endswith("`") and len(body) >= 2:
-                body = body[1:-1].strip()
-            if not body:
-                continue
-            try:
-                value = json.loads(body)
-            except Exception:
-                continue
-            plans = self._extract_tool_plans_from_json_value(value)
-            if not plans:
-                continue
-            tail = text[fm.end() :].strip()
-            if not tail or re.fullmatch(r"[\s`\-]*", tail):
-                return plans
-
-        valid: List[Tuple[int, int, List[Tuple[str, Dict[str, Any]]]]] = []
-        for start, end, value in self._collect_json_value_spans(text):
-            plans = self._extract_tool_plans_from_json_value(value)
-            if plans:
-                valid.append((start, end, plans))
-        if not valid:
-            return []
-
-        collected: List[Tuple[int, int, List[Tuple[str, Dict[str, Any]]]]] = []
-        cursor = len(text)
-        while True:
-            matched: Optional[Tuple[int, int, List[Tuple[str, Dict[str, Any]]]]] = None
-            for start, end, plans in sorted(valid, key=lambda item: item[1], reverse=True):
-                if end > cursor:
-                    continue
-                middle = text[end:cursor].strip()
-                if middle and not re.fullmatch(r"[\s`\-]*", middle):
-                    continue
-                matched = (start, end, plans)
-                break
-            if matched is None:
-                break
-            collected.append(matched)
-            cursor = matched[0]
-
-        if not collected:
-            return []
-
-        collected.reverse()
-        out: List[Tuple[str, Dict[str, Any]]] = []
-        for _, _, plans in collected:
-            out.extend(plans)
-        return out
-
-    def _parse_tool_plan_from_response(self, text: str) -> Optional[Tuple[str, Dict[str, Any]]]:
-        plans = self._parse_tool_plans_from_response(text)
-        return plans[0] if plans else None
-
-    def _find_tool_plans_anywhere(self, text: str) -> List[Tuple[str, Dict[str, Any]]]:
-        """Find one or more valid tool plan JSON values anywhere in response."""
-        if not isinstance(text, str):
-            return []
-        out: List[Tuple[str, Dict[str, Any]]] = []
-        marker = "<|assistant tool_calls|>"
-        search_pos = 0
-        while True:
-            marker_start = text.find(marker, search_pos)
-            if marker_start < 0:
-                break
-            body_start = marker_start + len(marker)
-            marker_end = text.find(marker, body_start)
-            body = text[body_start:marker_end if marker_end >= 0 else len(text)].strip()
-            try:
-                value = json.loads(body)
-            except Exception:
-                value = None
-            out.extend(self._extract_tool_plans_from_json_value(value))
-            if marker_end < 0:
-                break
-            search_pos = marker_end + len(marker)
-        for _, _, value in self._collect_json_value_spans(text):
-            out.extend(self._extract_tool_plans_from_json_value(value))
-        return out
-
-    def _find_tool_plan_anywhere(self, text: str) -> Optional[Tuple[str, Dict[str, Any]]]:
-        plans = self._find_tool_plans_anywhere(text)
-        return plans[0] if plans else None
 
     def _strip_tool_json_blocks_for_display(self, text: str) -> str:
         return strip_tool_json_blocks_for_display(text)

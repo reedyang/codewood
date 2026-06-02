@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import re
 from typing import Callable, List, Pattern, Tuple
 
@@ -31,11 +30,6 @@ _POWERSHELL_OPERATOR_TOKENS = {
     "-isnot",
     "-as",
 }
-_ASSISTANT_TOOL_CALL_MARKER = "<|assistant tool_calls|>"
-_PSEUDO_TOOL_CALLS_OPEN = "<tool_calls>"
-_PSEUDO_TOOL_CALLS_CLOSE = "</tool_calls>"
-
-
 def _ansi_ps_command(text: str) -> str:
     return _ansi_rgb(text, 97, 175, 239)
 
@@ -53,207 +47,10 @@ def _ansi_ps_pipe(text: str) -> str:
 
 
 def strip_tool_json_blocks_for_display(text: str) -> str:
-    """Hide trailing tool-call JSON blocks from assistant display text."""
+    """Return assistant display text without legacy pseudo tool-call filtering."""
     if not isinstance(text, str) or not text:
         return ""
-
-    def _parse_tool_call_obj(raw: str) -> dict | list | None:
-        body = str(raw or "").strip()
-        if body.startswith("`") and body.endswith("`") and len(body) >= 2:
-            body = body[1:-1].strip()
-        if not body:
-            return None
-        try:
-            obj = json.loads(body)
-        except Exception:
-            return None
-        if isinstance(obj, dict) and isinstance((obj.get("tool") or obj.get("action")), str):
-            return obj
-        if isinstance(obj, list):
-            valid_items = []
-            for item in obj:
-                if not (isinstance(item, dict) and isinstance((item.get("tool") or item.get("action")), str)):
-                    return None
-                valid_items.append(item)
-            if valid_items:
-                return valid_items
-        return None
-
-    def _strip_assistant_tool_call_marker_blocks(raw: str) -> str:
-        s = str(raw or "")
-        marker = _ASSISTANT_TOOL_CALL_MARKER
-        out: List[str] = []
-        i = 0
-        while i < len(s):
-            start = s.find(marker, i)
-            if start < 0:
-                out.append(s[i:])
-                break
-            out.append(s[i:start])
-            body_start = start + len(marker)
-            end = s.find(marker, body_start)
-            if end < 0:
-                body = s[body_start:]
-                if _parse_tool_call_obj(body) is not None:
-                    break
-                out.append(s[start:])
-                break
-            body = s[body_start:end]
-            if _parse_tool_call_obj(body) is not None:
-                i = end + len(marker)
-                continue
-            out.append(s[start : end + len(marker)])
-            i = end + len(marker)
-        return "".join(out)
-
-    def _strip_pseudo_tool_calls_blocks(raw: str) -> str:
-        s = str(raw or "")
-        if not s:
-            return ""
-        lower = s.lower()
-        out: List[str] = []
-        i = 0
-        while i < len(s):
-            start = lower.find(_PSEUDO_TOOL_CALLS_OPEN, i)
-            if start < 0:
-                out.append(s[i:])
-                break
-            out.append(s[i:start])
-            body_start = start + len(_PSEUDO_TOOL_CALLS_OPEN)
-            end = lower.find(_PSEUDO_TOOL_CALLS_CLOSE, body_start)
-            if end < 0:
-                body = s[body_start:]
-                if _parse_tool_call_obj(body) is not None:
-                    break
-                out.append(s[start:])
-                break
-            body = s[body_start:end]
-            if _parse_tool_call_obj(body) is not None:
-                i = end + len(_PSEUDO_TOOL_CALLS_CLOSE)
-                continue
-            out.append(s[start : end + len(_PSEUDO_TOOL_CALLS_CLOSE)])
-            i = end + len(_PSEUDO_TOOL_CALLS_CLOSE)
-        return "".join(out)
-
-    text = _strip_assistant_tool_call_marker_blocks(text)
-    text = _strip_pseudo_tool_calls_blocks(text)
-
-    # Parse fenced blocks line-by-line so inline "```" inside JSON string values
-    # (for example patch payloads) won't prematurely terminate the fence.
-    lines = text.splitlines(keepends=True)
-    kept_lines: List[str] = []
-    i = 0
-    while i < len(lines):
-        line = lines[i]
-        if not re.match(r"^\s*```(?:json)?\s*$", line, flags=re.IGNORECASE):
-            kept_lines.append(line)
-            i += 1
-            continue
-
-        j = i + 1
-        while j < len(lines) and not re.match(r"^\s*```\s*$", lines[j], flags=re.IGNORECASE):
-            j += 1
-
-        if j < len(lines):
-            block_body = "".join(lines[i + 1 : j])
-            if _parse_tool_call_obj(block_body) is not None:
-                i = j + 1
-                continue
-            kept_lines.extend(lines[i : j + 1])
-            i = j + 1
-            continue
-
-        # Unclosed tail fence: if it's a tool call JSON block, drop it.
-        tail_body = "".join(lines[i + 1 :])
-        if _parse_tool_call_obj(tail_body) is not None:
-            break
-        kept_lines.extend(lines[i:])
-        break
-
-    out = "".join(kept_lines)
-    stripped = out.strip()
-    if not stripped:
-        return ""
-
-    unclosed = re.search(r"```(?:json)?\s*(.*)\Z", stripped, flags=re.IGNORECASE | re.DOTALL)
-    if unclosed:
-        if _parse_tool_call_obj(unclosed.group(1) or "") is not None:
-            return stripped[: unclosed.start()].strip()
-
-    def _find_trailing_tool_json_span(s: str) -> Tuple[int, int] | None:
-        s = s.rstrip()
-        if not s:
-            return None
-        n = len(s)
-        valid: List[Tuple[int, int]] = []
-        for start, ch0 in enumerate(s):
-            if ch0 not in "{[":
-                continue
-            stack: List[str] = []
-            in_str = False
-            esc = False
-            end = -1
-            i = start
-            while i < n:
-                ch = s[i]
-                if in_str:
-                    if esc:
-                        esc = False
-                    elif ch == "\\":
-                        esc = True
-                    elif ch == '"':
-                        in_str = False
-                    i += 1
-                    continue
-                if ch == '"':
-                    in_str = True
-                    i += 1
-                    continue
-                if ch in "{[":
-                    stack.append("}" if ch == "{" else "]")
-                elif ch in "}]":
-                    if not stack or stack[-1] != ch:
-                        stack = []
-                        break
-                    stack.pop()
-                    if not stack:
-                        end = i + 1
-                        break
-                i += 1
-            if end == -1:
-                continue
-            chunk = s[start:end].strip()
-            if _parse_tool_call_obj(chunk) is not None:
-                valid.append((start, end))
-        if not valid:
-            return None
-        cursor = n
-        first_start: int | None = None
-        while True:
-            matched: Tuple[int, int] | None = None
-            for start, end in sorted(valid, key=lambda item: item[1], reverse=True):
-                if end > cursor:
-                    continue
-                middle = s[end:cursor].strip()
-                if middle and not re.fullmatch(r"[\s`\-]*", middle):
-                    continue
-                matched = (start, end)
-                break
-            if matched is None:
-                break
-            first_start = matched[0]
-            cursor = matched[0]
-        if first_start is None:
-            return None
-        return (first_start, n)
-
-    trailing_span = _find_trailing_tool_json_span(stripped)
-    if trailing_span:
-        start, _ = trailing_span
-        prefix = stripped[:start]
-        prefix = re.sub(r"```(?:json)?\s*$", "", prefix, flags=re.IGNORECASE)
-        return prefix.strip()
-    return stripped
+    return text.strip()
 
 
 def normalize_display_text(text: str) -> str:

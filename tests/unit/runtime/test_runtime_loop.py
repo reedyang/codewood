@@ -21,7 +21,6 @@ from src.runtime.runtime_loop import (
     _should_record_command_input_history,
     _shell_command_indicates_verification,
     _stream_visible_text_with_json_pause,
-    _strip_or_buffer_pseudo_tool_calls_for_stream,
     _stop_pre_task_status_ticker_for_console_output,
     _try_record_user_task_message,
     _tool_change_and_verification_hints,
@@ -367,17 +366,17 @@ class RuntimeLoopTests(unittest.TestCase):
             context_hint="ask_more_info paused",
         )
 
-    def test_stream_visible_text_with_json_pause_hides_incomplete_json_fence(self):
+    def test_stream_visible_text_with_json_pause_keeps_incomplete_json_fence(self):
         raw = "先做检查\n```json\n{\"tool\":\"shell\",\"args\":{"
         out = _stream_visible_text_with_json_pause(raw, final=False)
-        self.assertEqual(out, "先做检查\n")
+        self.assertEqual(out, raw)
 
-    def test_stream_visible_text_with_json_pause_buffers_partial_json_fence_opener(self):
+    def test_stream_visible_text_with_json_pause_keeps_partial_json_fence_opener(self):
         raw = "先做检查\n```"
         out = _stream_visible_text_with_json_pause(raw, final=False)
-        self.assertEqual(out, "先做检查\n")
+        self.assertEqual(out, raw)
 
-    def test_stream_visible_text_with_json_pause_omits_tool_json_fence_when_complete(self):
+    def test_stream_visible_text_with_json_pause_keeps_tool_json_fence_when_complete(self):
         raw = (
             "准备执行\n"
             "```json\n"
@@ -386,7 +385,7 @@ class RuntimeLoopTests(unittest.TestCase):
             "继续"
         )
         out = _stream_visible_text_with_json_pause(raw, final=True)
-        self.assertEqual(out, "准备执行\n\n继续")
+        self.assertEqual(out, raw)
 
     def test_stream_visible_text_with_json_pause_keeps_non_tool_json_fence(self):
         raw = (
@@ -399,29 +398,29 @@ class RuntimeLoopTests(unittest.TestCase):
         out = _stream_visible_text_with_json_pause(raw, final=True)
         self.assertEqual(out, raw)
 
-    def test_stream_visible_text_with_json_pause_hides_trailing_plain_tool_json(self):
+    def test_stream_visible_text_with_json_pause_keeps_trailing_plain_tool_json(self):
         raw = (
             "我先说明一下。\n\n"
             "{\"tool\":\"done\",\"args\":{}}\n"
         )
         out = _stream_visible_text_with_json_pause(raw, final=False)
-        self.assertEqual(out, "我先说明一下。")
+        self.assertEqual(out, raw)
 
-    def test_stream_visible_text_with_json_pause_omits_trailing_plain_tool_json_when_final(self):
+    def test_stream_visible_text_with_json_pause_keeps_trailing_plain_tool_json_when_final(self):
         raw = (
             "我先说明一下。\n\n"
             "{\"tool\":\"done\",\"args\":{}}\n"
         )
         out = _stream_visible_text_with_json_pause(raw, final=True)
-        self.assertEqual(out, "我先说明一下。")
+        self.assertEqual(out, raw)
 
-    def test_stream_visible_text_with_json_pause_hides_partial_plain_tool_json(self):
+    def test_stream_visible_text_with_json_pause_keeps_partial_plain_tool_json(self):
         raw = (
             "我先说明一下。\n\n"
             "{\"tool"
         )
         out = _stream_visible_text_with_json_pause(raw, final=False)
-        self.assertEqual(out, "我先说明一下。")
+        self.assertEqual(out, raw)
 
     def test_stream_visible_text_with_json_pause_keeps_plain_non_tool_json(self):
         raw = (
@@ -431,7 +430,7 @@ class RuntimeLoopTests(unittest.TestCase):
         out = _stream_visible_text_with_json_pause(raw, final=False)
         self.assertEqual(out, raw)
 
-    def test_stream_visible_text_hides_pseudo_tool_calls_block(self):
+    def test_stream_visible_text_keeps_pseudo_tool_calls_block(self):
         raw = (
             "准备执行\n\n"
             "<tool_calls>\n"
@@ -439,18 +438,18 @@ class RuntimeLoopTests(unittest.TestCase):
             "</tool_calls>"
         )
         out = _stream_visible_text_with_json_pause(raw, final=False)
-        self.assertEqual(out, "准备执行")
+        self.assertEqual(out, raw)
 
-    def test_stream_visible_text_buffers_unclosed_pseudo_tool_calls_block(self):
+    def test_stream_visible_text_keeps_unclosed_pseudo_tool_calls_block(self):
         raw = (
             "准备执行\n\n"
             "<tool_calls>\n"
             "{\"tool\":\"shell\""
         )
-        out = _strip_or_buffer_pseudo_tool_calls_for_stream(raw)
-        self.assertEqual(out, "准备执行\n\n")
+        out = _stream_visible_text_with_json_pause(raw, final=False)
+        self.assertEqual(out, raw)
 
-    def test_stream_visible_text_with_json_pause_omits_tool_json_array_fence_when_complete(self):
+    def test_stream_visible_text_with_json_pause_keeps_tool_json_array_fence_when_complete(self):
         raw = (
             "准备执行\n"
             "```json\n"
@@ -462,7 +461,7 @@ class RuntimeLoopTests(unittest.TestCase):
             "继续"
         )
         out = _stream_visible_text_with_json_pause(raw, final=True)
-        self.assertEqual(out, "准备执行\n\n继续")
+        self.assertEqual(out, raw)
 
     def test_consume_streaming_ai_response_calls_callback_before_first_visible_output(self):
         class _FakeStream:
@@ -663,8 +662,8 @@ class RuntimeLoopTests(unittest.TestCase):
         self.assertIn("\"tool\":\"done\"", ai_response)
         self.assertTrue(streamed_any)
         self.assertEqual(rendered.count("你好，我是小雨，很高兴为你服务！"), 1)
-        self.assertNotIn('{"tool', rendered)
-        self.assertNotIn("\n\n", rendered)
+        self.assertIn('{"tool', rendered)
+        self.assertIn("\n\n", rendered)
 
     def test_consume_streaming_ai_response_buffers_blank_lines_before_plain_tool_json(self):
         class _FakeStdout:
@@ -699,9 +698,10 @@ class RuntimeLoopTests(unittest.TestCase):
         rendered = "".join(fake_out.writes)
         self.assertIn("\"tool\":\"done\"", ai_response)
         self.assertTrue(streamed_any)
-        self.assertEqual(rendered, "你好！\n")
+        self.assertIn("你好！", rendered)
+        self.assertIn("\"tool\":\"done\"", rendered)
 
-    def test_consume_streaming_ai_response_hides_assistant_tool_call_marker(self):
+    def test_consume_streaming_ai_response_keeps_assistant_tool_call_marker_text(self):
         class _FakeStdout:
             def __init__(self):
                 self.writes = []
@@ -736,8 +736,8 @@ class RuntimeLoopTests(unittest.TestCase):
         self.assertIn("<|assistant tool_calls|>", ai_response)
         self.assertTrue(streamed_any)
         self.assertIn("你好！有什么我可以帮您处理的任务吗？", rendered)
-        self.assertNotIn("<|assistant", rendered)
-        self.assertNotIn('{"tool"', rendered)
+        self.assertIn("<|assistant", rendered)
+        self.assertIn('{"tool"', rendered)
 
     def test_streamed_final_message_tool_calls_can_be_parsed_after_text_stream(self):
         class _FakeStream:
