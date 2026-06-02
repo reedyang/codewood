@@ -1868,6 +1868,33 @@ class SessionMemoryService:
                     return
             expected_key = str(expected_state_key or "").strip()
             budgets = self._context_token_budgets()
+            if self._should_use_simple_chat_context(budgets):
+                user_text = str(user_input_hint or "")
+                history_messages, _stats = self._build_history_messages_by_budget(
+                    int(budgets["history_budget"]),
+                    int(budgets["history_summary_budget"]),
+                    int(budgets["assistant_clip_tokens"]),
+                    source_history=self.history_for_regular_context(),
+                )
+                history_tokens = sum(
+                    self._estimate_message_tokens(str(m.get("role") or ""), str(m.get("content") or ""))
+                    for m in history_messages
+                )
+                user_tokens = self._estimate_message_tokens("user", user_text)
+                total_input_tokens = int(history_tokens + user_tokens)
+                if expected:
+                    current = str(getattr(self.agent, "active_chat_id", "") or "").strip()
+                    if current != expected:
+                        return
+                if expected_key and self._context_usage_state_key() != expected_key:
+                    return
+                self._store_context_usage_snapshot(
+                    int(budgets.get("context_window") or DEFAULT_CONTEXT_WINDOW),
+                    total_input_tokens,
+                )
+                self._persist_context_usage_snapshot()
+                return
+
             filtered_history = self.history_for_regular_context()
             history_messages, _stats = self._build_history_messages_by_budget(
                 int(budgets["history_budget"]),
