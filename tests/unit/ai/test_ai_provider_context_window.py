@@ -79,13 +79,19 @@ class _FakeResponsesToolsApiResponse:
 
 
 class _FakeOllama:
-    def __init__(self):
+    def __init__(self, *, response=None, stream_chunks=None):
         self.calls = []
+        self.response = response
+        self.stream_chunks = stream_chunks
 
     def chat(self, **kwargs):
         self.calls.append(kwargs)
         if kwargs.get("stream"):
+            if self.stream_chunks is not None:
+                return self.stream_chunks
             return [{"message": {"content": "hello"}}, {"message": {"content": " world"}}]
+        if self.response is not None:
+            return self.response
         return {"message": {"content": "ok"}}
 
 
@@ -641,6 +647,56 @@ class ProviderContextWindowTests(unittest.TestCase):
         self.assertEqual(out, "ok")
         self.assertEqual(fake_ollama.calls[0]["options"]["num_ctx"], 96000)
 
+    def test_ollama_supports_standard_tools_call(self):
+        fake_ollama = _FakeOllama(
+            response={
+                "message": {
+                    "role": "assistant",
+                    "content": "Reading",
+                    "tool_calls": [
+                        {
+                            "function": {
+                                "name": "read_file",
+                                "arguments": {"path": "README.md"},
+                            }
+                        }
+                    ],
+                }
+            }
+        )
+        out = call_ai_with_provider(
+            context=ProviderCallContext(
+                provider="ollama",
+                model_name="qwen2.5:14b",
+                model_params={"context_window": "96K"},
+                openai_conf=None,
+                messages=[{"role": "user", "content": "please read readme"}],
+                stream=False,
+                return_message=True,
+                image_data=None,
+                image_user_idx=None,
+                image_user_text="",
+                session_summary_mode=False,
+                memory_query_expansion_mode=False,
+                tool_schemas=self._sample_tool_schema(),
+                tool_choice="required",
+            ),
+            append_history=lambda _s: None,
+            ollama_importer=lambda: fake_ollama,
+        )
+        self.assertEqual(out.get("content"), "Reading")
+        self.assertEqual(
+            out.get("tool_calls", [])[0].get("function", {}).get("name"),
+            "read_file",
+        )
+        self.assertEqual(
+            out.get("tool_calls", [])[0].get("function", {}).get("arguments"),
+            '{"path": "README.md"}',
+        )
+        sent_tools = fake_ollama.calls[0].get("tools") or []
+        self.assertTrue(sent_tools)
+        self.assertEqual(sent_tools[0].get("function", {}).get("name"), "read_file")
+
     def test_ollama_stream_summary_keeps_num_ctx_and_summary_options(self):
         fake_ollama = _FakeOllama()
         chunks = call_ai_with_provider(
@@ -666,6 +722,60 @@ class ProviderContextWindowTests(unittest.TestCase):
         self.assertEqual(options["num_ctx"], 128000)
         self.assertEqual(options["num_predict"], 512)
         self.assertEqual(options["temperature"], 0.3)
+
+    def test_ollama_stream_tools_assembles_final_tool_calls(self):
+        fake_ollama = _FakeOllama(
+            stream_chunks=[
+                {"message": {"role": "assistant", "content": "I will "}},
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": "check",
+                        "tool_calls": [
+                            {
+                                "id": "call_1",
+                                "function": {
+                                    "name": "read_file",
+                                    "arguments": {"path": "README.md"},
+                                },
+                            }
+                        ],
+                    }
+                },
+            ]
+        )
+        chunks = call_ai_with_provider(
+            context=ProviderCallContext(
+                provider="ollama",
+                model_name="qwen2.5:14b",
+                model_params={"context_window": 128000},
+                openai_conf=None,
+                messages=[{"role": "user", "content": "please read readme"}],
+                stream=True,
+                return_message=True,
+                image_data=None,
+                image_user_idx=None,
+                image_user_text="",
+                session_summary_mode=False,
+                memory_query_expansion_mode=False,
+                tool_schemas=self._sample_tool_schema(),
+                tool_choice="required",
+            ),
+            append_history=lambda _s: None,
+            ollama_importer=lambda: fake_ollama,
+        )
+        self.assertEqual("".join(list(chunks)), "I will check")
+        final_message = getattr(chunks, "final_message", None)
+        self.assertIsInstance(final_message, dict)
+        self.assertEqual(final_message.get("content"), "I will check")
+        self.assertEqual(
+            final_message.get("tool_calls", [])[0].get("function", {}).get("name"),
+            "read_file",
+        )
+        self.assertEqual(
+            final_message.get("tool_calls", [])[0].get("function", {}).get("arguments"),
+            '{"path": "README.md"}',
+        )
 
     def test_openai_stream_ignores_reasoning_delta_and_only_records_output_text(self):
         stream_resp = _FakeStreamResponse(

@@ -525,7 +525,7 @@ class Agent:
 
     def _use_standard_openai_tools_call(self) -> bool:
         provider = str(getattr(self, "provider", "") or "").strip().lower()
-        return provider == "openai" and (not self._use_simulated_tools_call())
+        return provider in {"openai", "ollama"} and (not self._use_simulated_tools_call())
 
     def _streaming_enabled_for_current_model(self) -> bool:
         params = getattr(self, "params", {}) or {}

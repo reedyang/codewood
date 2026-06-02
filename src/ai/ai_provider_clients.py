@@ -460,6 +460,66 @@ def _extract_text_from_response_content(content: Any) -> str:
     return "".join(parts)
 
 
+def _normalize_tool_call_arguments(raw_args: Any) -> str:
+    if isinstance(raw_args, str):
+        return raw_args or "{}"
+    if raw_args is None:
+        return "{}"
+    try:
+        return json.dumps(raw_args, ensure_ascii=False)
+    except Exception:
+        return "{}"
+
+
+def _normalize_ollama_tool_calls(raw_tool_calls: Any) -> List[Dict[str, Any]]:
+    if not isinstance(raw_tool_calls, list):
+        return []
+    out: List[Dict[str, Any]] = []
+    for idx, item in enumerate(raw_tool_calls, start=1):
+        if not isinstance(item, dict):
+            continue
+        fn = item.get("function")
+        if isinstance(fn, dict):
+            fn_name = str(fn.get("name") or item.get("name") or "").strip()
+            raw_args = fn.get("arguments")
+            if raw_args is None:
+                raw_args = item.get("arguments")
+        else:
+            fn_name = str(item.get("name") or "").strip()
+            raw_args = item.get("arguments")
+        if not fn_name:
+            continue
+        call_id = str(item.get("id") or item.get("call_id") or "").strip() or f"call_{idx}"
+        out.append(
+            {
+                "id": call_id,
+                "type": "function",
+                "function": {
+                    "name": fn_name,
+                    "arguments": _normalize_tool_call_arguments(raw_args),
+                },
+            }
+        )
+    return out
+
+
+def _extract_message_from_ollama_response_data(data: Any) -> Dict[str, Any]:
+    if not isinstance(data, dict):
+        raise ValueError("Ollama response JSON root must be an object.")
+    message = data.get("message")
+    if not isinstance(message, dict):
+        message = {}
+    ai_response = _sanitize_assistant_text(message.get("content", "") or "")
+    out: Dict[str, Any] = {
+        "role": str(message.get("role") or "assistant"),
+        "content": ai_response,
+    }
+    tool_calls = _normalize_ollama_tool_calls(message.get("tool_calls"))
+    if tool_calls:
+        out["tool_calls"] = tool_calls
+    return out
+
+
 def _normalize_openai_message_for_request(message: Any) -> Optional[Dict[str, Any]]:
     if not isinstance(message, dict):
         return None
@@ -1195,6 +1255,8 @@ def _call_with_ollama(
     image_user_text: str,
     session_summary_mode: bool,
     memory_query_expansion_mode: bool,
+    tool_schemas: Optional[List[Dict[str, Any]]],
+    tool_choice: Any,
     append_history: Callable[[str], None],
     ollama_importer: Callable[[], Any],
     context_window: int,
@@ -1215,34 +1277,61 @@ def _call_with_ollama(
         provider_messages = messages
 
     ollama_options: Dict[str, Any] = {"num_ctx": int(context_window)}
+    ollama_tools = _normalize_openai_tool_schemas(tool_schemas, api_kind="chat")
     if session_summary_mode:
         ollama_options.update({"num_predict": 512, "temperature": 0.3})
     elif memory_query_expansion_mode:
         ollama_options.update({"num_predict": 512, "temperature": 0.2})
 
     if stream:
+        chat_kwargs: Dict[str, Any] = {
+            "model": model_name,
+            "messages": provider_messages,
+            "stream": True,
+            "options": ollama_options,
+        }
+        if ollama_tools:
+            chat_kwargs["tools"] = ollama_tools
         response = ollama.chat(
-            model=model_name,
-            messages=provider_messages,
-            stream=True,
-            options=ollama_options,
+            **chat_kwargs,
         )
 
-        def gen():
-            buffer = ""
-            first_chunk = True
-            for chunk in response:
-                delta = _sanitize_assistant_text(chunk.get("message", {}).get("content", ""))
-                if delta:
-                    if first_chunk:
-                        delta = delta.lstrip()
-                        first_chunk = False
-                    if delta:
-                        buffer += delta
-                        yield delta
-            append_history(buffer)
+        class _OllamaStreamResult:
+            def __init__(self) -> None:
+                self.final_message: Optional[Dict[str, Any]] = None
 
-        return gen()
+            def __iter__(self):
+                buffer = ""
+                first_chunk = True
+                final_role = "assistant"
+                tool_calls: List[Dict[str, Any]] = []
+                for chunk in response:
+                    if not isinstance(chunk, dict):
+                        continue
+                    message = chunk.get("message")
+                    if not isinstance(message, dict):
+                        message = {}
+                    final_role = str(message.get("role") or final_role)
+                    current_tool_calls = _normalize_ollama_tool_calls(message.get("tool_calls"))
+                    if current_tool_calls:
+                        tool_calls = current_tool_calls
+                    delta = _sanitize_assistant_text(message.get("content", "") or "")
+                    if delta:
+                        if first_chunk:
+                            delta = delta.lstrip()
+                            first_chunk = False
+                        if delta:
+                            buffer += delta
+                            yield delta
+                self.final_message = {
+                    "role": final_role,
+                    "content": buffer,
+                }
+                if tool_calls:
+                    self.final_message["tool_calls"] = tool_calls
+                append_history(buffer)
+
+        return _OllamaStreamResult()
 
     chat_kwargs: Dict[str, Any] = {
         "model": model_name,
@@ -1250,11 +1339,11 @@ def _call_with_ollama(
         "stream": False,
         "options": ollama_options,
     }
+    if ollama_tools:
+        chat_kwargs["tools"] = ollama_tools
     response = ollama.chat(**chat_kwargs)
-    message = response.get("message", {}) or {}
-    ai_response = _sanitize_assistant_text(message.get("content", "") or "")
-    message = dict(message)
-    message["content"] = ai_response
+    message = _extract_message_from_ollama_response_data(response)
+    ai_response = str(message.get("content", "") or "")
     append_history(ai_response)
     return message if return_message else ai_response
 
@@ -1298,6 +1387,8 @@ def call_ai_with_provider(
             image_user_text=context.image_user_text,
             session_summary_mode=context.session_summary_mode,
             memory_query_expansion_mode=context.memory_query_expansion_mode,
+            tool_schemas=context.tool_schemas,
+            tool_choice=context.tool_choice,
             append_history=append_history,
             ollama_importer=ollama_importer,
             context_window=context_window,
