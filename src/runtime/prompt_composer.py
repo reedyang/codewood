@@ -363,7 +363,13 @@ def build_tools_prompt_append(agent: Any) -> str:
             "并把代码块放在回复末尾；代码块前不要留空行。"
         )
 
-    lines: List[str] = [template, "", "Available tools:"]
+    lines: List[str] = [
+        template,
+        "",
+        _build_tool_call_mode_prompt(use_standard_tools=use_standard_tools),
+        "",
+        "Available tools:",
+    ]
     if use_standard_tools:
         lines.insert(
             1,
@@ -402,6 +408,22 @@ def build_tools_prompt_append(agent: Any) -> str:
         arg_keys = ", ".join(sorted(str(k) for k in props.keys())) if props else "-"
         lines.append(f"- {name}: {desc} | args: {arg_keys}")
     return "\n".join(lines)
+
+
+def _build_tool_call_mode_prompt(*, use_standard_tools: bool) -> str:
+    if use_standard_tools:
+        return (
+            "## Tool Call Mode: Standard API tool_calls\n"
+            "- 当前模型必须使用 API 标准 `tool_calls` 字段发起工具调用。\n"
+            "- 回复正文只允许写用户可见的自然语言说明、步骤状态或结果总结。\n"
+            "- 禁止在回复正文中输出任何工具调用表示，包括 JSON 工具对象、`<tool_calls>...</tool_calls>`、Markdown 代码块、"
+            "`tool`/`args` 示例或其它伪工具调用格式。\n"
+            "- 如果无需工具，直接自然语言回答；如果需要工具，不要把工具调用写成文本。"
+        )
+    return (
+        "## Tool Call Mode: Simulated JSON\n"
+        "- 当前模型使用模拟 JSON tool call。若需要输出工具调用，必须放入回复末尾的 ```json ... ``` 代码块。"
+    )
 
 
 def build_os_file_ops_prompt_append() -> str:
@@ -589,6 +611,7 @@ def render_skill_section_payload(
     requested_section: Optional[int],
     full: bool,
     initial_sections: int,
+    use_standard_tools: bool = False,
 ) -> Tuple[str, Dict[str, Any]]:
     total = len(sections)
     if total <= 0:
@@ -606,13 +629,23 @@ def render_skill_section_payload(
         f"[Skill 分段注入] 当前仅注入第 {idx}/{total} 段，以控制 prompt 体积。",
     ]
     if idx < total:
+        if use_standard_tools:
+            hint_lines.append(
+                f"如需下一段，请通过标准 tools 调用 `request_skill_prompt`，参数包含 `skill_id` 与 `section={idx + 1}`。"
+            )
+        else:
+            hint_lines.append(
+                "如需下一段，请调用 "
+                f"```json\n{{\"tool\":\"request_skill_prompt\",\"args\":{{\"skill_id\":\"...\",\"section\":{idx + 1}}}}}\n```。"
+            )
+    if use_standard_tools:
         hint_lines.append(
-            "如需下一段，请调用 "
-            f"```json\n{{\"tool\":\"request_skill_prompt\",\"args\":{{\"skill_id\":\"...\",\"section\":{idx + 1}}}}}\n```。"
+            "如需完整正文，请通过标准 tools 调用 `request_skill_prompt`，参数包含 `skill_id` 与 `full=true`。"
         )
-    hint_lines.append(
-        '如需完整正文，可调用 ```json\n{"tool":"request_skill_prompt","args":{"skill_id":"...","full":true}}\n```。'
-    )
+    else:
+        hint_lines.append(
+            '如需完整正文，可调用 ```json\n{"tool":"request_skill_prompt","args":{"skill_id":"...","full":true}}\n```。'
+        )
     return payload + "\n" + "\n".join(hint_lines), {
         "chunked": True,
         "section": idx,
@@ -637,6 +670,9 @@ def build_single_skill_prompt(
     2) MCP prompts fallback
     """
     sid = (skill_id or "").strip().lower()
+    use_standard_tools = bool(
+        getattr(agent, "_use_standard_openai_tools_call", lambda: False)()
+    )
     if not sid:
         return None, {"chunked": False, "section": 0, "total": 0, "full": True}
     target = None
@@ -715,6 +751,7 @@ def build_single_skill_prompt(
                     requested_section=requested_section,
                     full=full,
                     initial_sections=initial_sections,
+                    use_standard_tools=use_standard_tools,
                 )
                 lines = [
                     "",
@@ -747,6 +784,7 @@ def build_single_skill_prompt(
         requested_section=requested_section,
         full=full,
         initial_sections=initial_sections,
+        use_standard_tools=use_standard_tools,
     )
     lines = [
         "",

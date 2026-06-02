@@ -87,6 +87,16 @@ class AiOutputDisplayTests(unittest.TestCase):
         out = aoh.strip_tool_json_blocks_for_display(text)
         self.assertEqual(out, "你好！有什么我可以帮您处理的任务吗？")
 
+    def test_strip_pseudo_tool_calls_block_keeps_narrative(self):
+        text = (
+            "我将执行 ping 检测。\n\n"
+            "<tool_calls>\n"
+            "{\"tool\":\"shell\",\"name\":\"shell\",\"arguments\":{\"command\":\"ping www.baidu.com -n 4\"}}\n"
+            "</tool_calls>"
+        )
+        out = aoh.strip_tool_json_blocks_for_display(text)
+        self.assertEqual(out, "我将执行 ping 检测。")
+
     def test_parse_tool_plans_from_response_supports_multiple_json_objects(self):
         text = (
             "先读文件再检索。\n\n"

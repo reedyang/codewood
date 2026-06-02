@@ -21,6 +21,7 @@ from src.runtime.runtime_loop import (
     _should_record_command_input_history,
     _shell_command_indicates_verification,
     _stream_visible_text_with_json_pause,
+    _strip_or_buffer_pseudo_tool_calls_for_stream,
     _stop_pre_task_status_ticker_for_console_output,
     _try_record_user_task_message,
     _tool_change_and_verification_hints,
@@ -425,6 +426,25 @@ class RuntimeLoopTests(unittest.TestCase):
         out = _stream_visible_text_with_json_pause(raw, final=False)
         self.assertEqual(out, raw)
 
+    def test_stream_visible_text_hides_pseudo_tool_calls_block(self):
+        raw = (
+            "准备执行\n\n"
+            "<tool_calls>\n"
+            "{\"tool\":\"shell\",\"name\":\"shell\",\"arguments\":{\"command\":\"ping www.baidu.com -n 4\"}}\n"
+            "</tool_calls>"
+        )
+        out = _stream_visible_text_with_json_pause(raw, final=False)
+        self.assertEqual(out, "准备执行")
+
+    def test_stream_visible_text_buffers_unclosed_pseudo_tool_calls_block(self):
+        raw = (
+            "准备执行\n\n"
+            "<tool_calls>\n"
+            "{\"tool\":\"shell\""
+        )
+        out = _strip_or_buffer_pseudo_tool_calls_for_stream(raw)
+        self.assertEqual(out, "准备执行\n\n")
+
     def test_stream_visible_text_with_json_pause_omits_tool_json_array_fence_when_complete(self):
         raw = (
             "准备执行\n"
@@ -795,6 +815,17 @@ class RuntimeLoopTests(unittest.TestCase):
             _parse_tool_plan_from_model_message(message),
             ("read_file", {"path": "README.md"}),
         )
+
+    def test_parse_tool_plans_from_model_message_ignores_text_pseudo_tool_calls(self):
+        message = {
+            "role": "assistant",
+            "content": (
+                "<tool_calls>\n"
+                "{\"tool\":\"shell\",\"name\":\"shell\",\"arguments\":{\"command\":\"ping www.baidu.com -n 4\"}}\n"
+                "</tool_calls>"
+            ),
+        }
+        self.assertEqual(_parse_tool_plans_from_model_message(message), [])
 
     def test_textless_done_only_tool_call_detection(self):
         self.assertTrue(

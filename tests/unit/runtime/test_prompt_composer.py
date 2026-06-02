@@ -1,5 +1,6 @@
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from src.runtime import prompt_composer
@@ -54,6 +55,60 @@ class PromptComposerTests(unittest.TestCase):
             text = prompt_composer.build_os_file_ops_prompt_append()
         self.assertIn("必须先检索命中位置", text)
         self.assertNotIn("必须先用 `rg` 检索命中位置", text)
+
+    def test_standard_tools_prompt_strips_simulated_json_examples(self):
+        agent = SimpleNamespace(
+            tools_prompt_template=prompt_composer.load_tools_prompt_template(),
+            tool_specs=[
+                {
+                    "function": {
+                        "name": "shell",
+                        "description": "Run command",
+                        "parameters": {"properties": {"command": {}}},
+                    }
+                }
+            ],
+            _project_context_tool_allowed=lambda: True,
+            _use_standard_openai_tools_call=lambda: True,
+        )
+
+        text = prompt_composer.build_tools_prompt_append(agent)
+
+        self.assertIn("Tool Call Mode: Standard API tool_calls", text)
+        self.assertIn("回复正文只允许写用户可见", text)
+        self.assertIn("禁止在回复正文中输出任何工具调用表示", text)
+        self.assertIn("Available tools:", text)
+        self.assertNotIn('{"tool"', text)
+        self.assertNotIn("```json", text)
+
+    def test_simulated_tools_prompt_keeps_json_examples(self):
+        agent = SimpleNamespace(
+            tools_prompt_template=prompt_composer.load_tools_prompt_template(),
+            tool_specs=[],
+            _project_context_tool_allowed=lambda: True,
+            _use_standard_openai_tools_call=lambda: False,
+        )
+
+        text = prompt_composer.build_tools_prompt_append(agent)
+
+        self.assertIn("模拟 JSON tool call 模式", text)
+        self.assertIn('{"tool":"request_skill_prompt"', text)
+        self.assertIn("```json", text)
+
+    def test_standard_skill_section_hint_uses_standard_tools_not_json(self):
+        text, meta = prompt_composer.render_skill_section_payload(
+            sections=["part 1", "part 2"],
+            requested_section=1,
+            full=False,
+            initial_sections=1,
+            use_standard_tools=True,
+        )
+
+        self.assertFalse(meta.get("full"))
+        self.assertIn("标准 tools", text)
+        self.assertIn("section=2", text)
+        self.assertNotIn('{"tool"', text)
+        self.assertNotIn("```json", text)
 
 
 if __name__ == "__main__":
