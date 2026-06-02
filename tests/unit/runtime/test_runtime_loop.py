@@ -372,6 +372,11 @@ class RuntimeLoopTests(unittest.TestCase):
         out = _stream_visible_text_with_json_pause(raw, final=False)
         self.assertEqual(out, "先做检查\n")
 
+    def test_stream_visible_text_with_json_pause_buffers_partial_json_fence_opener(self):
+        raw = "先做检查\n```"
+        out = _stream_visible_text_with_json_pause(raw, final=False)
+        self.assertEqual(out, "先做检查\n")
+
     def test_stream_visible_text_with_json_pause_omits_tool_json_fence_when_complete(self):
         raw = (
             "准备执行\n"
