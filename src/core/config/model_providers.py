@@ -4,6 +4,10 @@ from typing import Any, Dict, List
 
 DEFAULT_CONTEXT_WINDOW = 128_000
 DEFAULT_OLLAMA_PORT = 11_434
+SIMPLE_CHAT_SYSTEM_PROMPT_MIN_CONTEXT_WINDOW = 64_000
+SMALL_CONTEXT_WINDOW_BASIC_CHAT_WARNING = (
+    "⚠️ Model context window is too small; only basic chat is supported."
+)
 _CTX_WINDOW_PATTERN = re.compile(r"^(\d+)([kK]?)$")
 
 
@@ -56,6 +60,15 @@ def parse_port(value: Any, default_value: int = DEFAULT_OLLAMA_PORT) -> int:
         port = int(raw)
         return port if 0 < port <= 65535 else default_value
     return default_value
+
+
+def is_basic_chat_only_context_window(value: Any) -> bool:
+    context_window = parse_context_window(value, default_value=DEFAULT_CONTEXT_WINDOW)
+    return context_window < SIMPLE_CHAT_SYSTEM_PROMPT_MIN_CONTEXT_WINDOW
+
+
+def basic_chat_only_context_warning(value: Any) -> str:
+    return SMALL_CONTEXT_WINDOW_BASIC_CHAT_WARNING if is_basic_chat_only_context_window(value) else ""
 
 
 def parse_configured_models(

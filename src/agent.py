@@ -42,6 +42,7 @@ from .core.config.config_jsonc import (
 )
 from .core.config.model_providers import (
     DEFAULT_OLLAMA_PORT,
+    basic_chat_only_context_warning,
     parse_bool_flag,
     parse_configured_models,
     parse_port,
@@ -528,6 +529,30 @@ class Agent:
         raw = params.get("streaming", True) if isinstance(params, dict) else True
         return parse_bool_flag(raw, default_value=True)
 
+    def _basic_chat_only_context_warning_for_params(
+        self,
+        params: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        model_params = params if isinstance(params, dict) else (getattr(self, "params", {}) or {})
+        raw = model_params.get("context_window") if isinstance(model_params, dict) else None
+        return basic_chat_only_context_warning(raw)
+
+    def _set_pending_prompt_warning(self, text: str) -> None:
+        warning = str(text or "").strip()
+        if warning:
+            self._pending_prompt_warning_line = warning
+
+    def _consume_pending_prompt_warning(self) -> str:
+        warning = str(getattr(self, "_pending_prompt_warning_line", "") or "").strip()
+        self._pending_prompt_warning_line = ""
+        return warning
+
+    def _print_pending_prompt_warning(self) -> None:
+        warning = self._consume_pending_prompt_warning()
+        if warning:
+            print(_ansi_yellow(warning))
+            print("")
+
     def _find_configured_model_choice(self, selector: str) -> Optional[Dict[str, Any]]:
         needle = str(selector or "").strip().lower()
         if not needle:
@@ -639,12 +664,14 @@ class Agent:
                 save_state=True,
             )
             self._refresh_status_context_usage_snapshot()
-            return f"ℹ️ Current model already in use: {target}"
+            warning = self._basic_chat_only_context_warning_for_params(choice.get("params"))
+            return f"ℹ️ Current model already in use: {target}" + (f"\n\n{warning}\n" if warning else "")
 
         self._apply_runtime_model_choice(choice, validate=True)
         self._set_active_chat_model(self.provider, self.model_name, save_state=True)
         self._refresh_status_context_usage_snapshot()
-        return f"✅ Switched model: {target}"
+        warning = self._basic_chat_only_context_warning_for_params()
+        return f"✅ Switched model: {target}" + (f"\n\n{warning}\n" if warning else "")
 
     def _handle_model_builtin_command(self, builtin_line: str) -> bool:
         return handle_model_builtin_command(self, builtin_line)
@@ -5485,6 +5512,8 @@ class Agent:
             getattr(self.input_handler, "renders_prompt_separator_inline", False)
         ):
             self._print_prompt_separator()
+
+        self._print_pending_prompt_warning()
         
         # 重置历史记录索引
         self.history_manager.reset_index()

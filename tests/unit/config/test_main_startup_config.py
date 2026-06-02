@@ -223,6 +223,63 @@ class MainStartupConfigTests(unittest.TestCase):
                 ["openai:Gemma-4-31B"],
             )
 
+    def test_startup_warns_when_selected_model_context_window_is_below_64k(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as td_home, tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as td_project:
+            self._write_template_file(Path(td_project))
+            user_cfg_dir = Path(td_home) / get_app_config_dirname()
+            user_cfg_dir.mkdir(parents=True, exist_ok=True)
+            cfg_path = user_cfg_dir / "config.jsonc"
+            cfg_path.write_text(
+                json.dumps(
+                    {
+                        "model_providers": [
+                            {
+                                "provider": "openai",
+                                "params": {
+                                    "api_key": "real-key",
+                                    "base_url": "https://api.openai.com/v1",
+                                    "models": [
+                                        {"name": "tiny-chat", "context_window": 32000},
+                                    ],
+                                },
+                            }
+                        ]
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            class FakeAgent:
+                last_instance = None
+
+                def __init__(self, model_name=None, work_directory=None, provider=None, params=None, model_config=None, config_dir=None, builtin_skills_dir=None):
+                    _ = (model_name, work_directory, provider, model_config, config_dir, builtin_skills_dir)
+                    self.params = dict(params or {})
+                    self._pending_prompt_warning_line = ""
+                    FakeAgent.last_instance = self
+
+                def run(self):
+                    return None
+
+                def shutdown(self, wait=False):
+                    _ = wait
+                    return None
+
+            with patch.object(main_module, "project_root", Path(td_project)), patch(
+                "src.main.Path.home", return_value=Path(td_home)
+            ), patch("src.agent.Agent", FakeAgent):
+                buf = io.StringIO()
+                with redirect_stdout(buf):
+                    code = main_module.main()
+
+            self.assertEqual(code, 0)
+            self.assertIsNotNone(FakeAgent.last_instance)
+            self.assertEqual(
+                getattr(FakeAgent.last_instance, "_pending_prompt_warning_line", ""),
+                "⚠️ Model context window is too small; only basic chat is supported.",
+            )
+
 
 if __name__ == "__main__":
     unittest.main()
