@@ -1198,10 +1198,11 @@ class Agent:
                         pass
                     self._last_terminal_block_kind = "assistant"
                     self._terminal_cursor_at_line_start = True
-                tool_plan = self._find_tool_plan_anywhere(content)
-                if tool_plan:
-                    tool_name, args = tool_plan
-                    if tool_name != "done":
+                tool_plans = self._find_tool_plans_anywhere(content)
+                if tool_plans:
+                    for tool_name, args in tool_plans:
+                        if tool_name == "done":
+                            continue
                         if tool_name == "shell" and (idx + 1) < len(hist):
                             nxt = hist[idx + 1]
                             nxt_role = str(nxt.get("role") or "").strip().lower()
@@ -4876,34 +4877,36 @@ class Agent:
         lines.append("")
         return "\n".join(lines)
 
-    def _parse_tool_plan_from_response(self, text: str) -> Optional[Tuple[str, Dict[str, Any]]]:
-        """Parse model response into tool plan under strict rule: exactly one tool JSON at reply end."""
-        if not isinstance(text, str):
-            return None
-        text = text.strip()
-        if not text:
-            return None
-        # Prefer fenced payloads first, supporting:
-        # ```json\n{"tool":"...","args":{...}}\n```
-        # ```\n`{"tool":"...","args":{...}}`\n```
-        fence_payloads: List[str] = []
-        for fm in re.finditer(r"```(?:json)?\s*(.*?)\s*```", text, flags=re.IGNORECASE | re.DOTALL):
-            body = (fm.group(1) or "").strip()
-            if body.startswith("`") and body.endswith("`") and len(body) >= 2:
-                body = body[1:-1].strip()
-            if body:
-                fence_payloads.append(body)
+    def _extract_tool_plans_from_json_value(
+        self,
+        value: Any,
+    ) -> List[Tuple[str, Dict[str, Any]]]:
+        out: List[Tuple[str, Dict[str, Any]]] = []
+        if isinstance(value, dict):
+            tool_name = value.get("tool") or value.get("action")
+            args = value.get("args") or value.get("params") or {}
+            if isinstance(tool_name, str) and tool_name.strip():
+                out.append((tool_name.strip(), args if isinstance(args, dict) else {}))
+            return out
+        if isinstance(value, list):
+            for item in value:
+                out.extend(self._extract_tool_plans_from_json_value(item))
+        return out
 
-        # Collect balanced JSON objects with their byte ranges.
-        spans: List[Tuple[int, int, str]] = []
-        for m_obj in re.finditer(r"\{", text):
-            start = m_obj.start()
-            depth = 0
+    def _collect_json_value_spans(self, text: str) -> List[Tuple[int, int, Any]]:
+        spans: List[Tuple[int, int, Any]] = []
+        if not isinstance(text, str) or not text:
+            return spans
+        n = len(text)
+        for idx, ch0 in enumerate(text):
+            if ch0 not in "{[":
+                continue
+            stack: List[str] = []
             in_str = False
             esc = False
             end = -1
-            i = start
-            while i < len(text):
+            i = idx
+            while i < n:
                 ch = text[i]
                 if in_str:
                     if esc:
@@ -4918,108 +4921,105 @@ class Agent:
                     in_str = True
                     i += 1
                     continue
-                if ch == "{":
-                    depth += 1
-                elif ch == "}":
-                    depth -= 1
-                    if depth == 0:
-                        end = i
+                if ch in "{[":
+                    stack.append("}" if ch == "{" else "]")
+                elif ch in "}]":
+                    if not stack or stack[-1] != ch:
+                        stack = []
                         break
-                i += 1
-            if end != -1:
-                chunk = text[start : end + 1].strip()
-                spans.append((start, end + 1, chunk))
-
-        valid: List[Tuple[int, int, Tuple[str, Dict[str, Any]]]] = []
-        for payload in fence_payloads:
-            try:
-                obj = json.loads(payload)
-            except Exception:
-                continue
-            if not isinstance(obj, dict):
-                continue
-            tool_name = obj.get("tool") or obj.get("action")
-            args = obj.get("args") or obj.get("params") or {}
-            if isinstance(tool_name, str) and tool_name.strip():
-                if not isinstance(args, dict):
-                    args = {}
-                # Fenced payload has highest priority when valid.
-                return (tool_name.strip(), args)
-
-        for start, end, c in spans:
-            try:
-                obj = json.loads(c)
-            except Exception:
-                continue
-            if not isinstance(obj, dict):
-                continue
-            tool_name = obj.get("tool") or obj.get("action")
-            args = obj.get("args") or obj.get("params") or {}
-            if isinstance(tool_name, str) and tool_name.strip():
-                if not isinstance(args, dict):
-                    args = {}
-                valid.append((start, end, (tool_name.strip(), args)))
-
-        if not valid:
-            return None
-
-        # Prefer the last valid JSON whose tail is only harmless closers.
-        for start, end, plan in sorted(valid, key=lambda x: x[1], reverse=True):
-            tail = text[end:].strip()
-            if not tail or re.fullmatch(r"[\s`\-]*", tail):
-                return plan
-        return None
-
-    def _find_tool_plan_anywhere(self, text: str) -> Optional[Tuple[str, Dict[str, Any]]]:
-        """Find any valid tool plan JSON in response, regardless of position."""
-        if not isinstance(text, str):
-            return None
-        for m_obj in re.finditer(r"\{", text):
-            start = m_obj.start()
-            depth = 0
-            in_str = False
-            esc = False
-            end = -1
-            i = start
-            while i < len(text):
-                ch = text[i]
-                if in_str:
-                    if esc:
-                        esc = False
-                    elif ch == "\\":
-                        esc = True
-                    elif ch == '"':
-                        in_str = False
-                    i += 1
-                    continue
-                if ch == '"':
-                    in_str = True
-                    i += 1
-                    continue
-                if ch == "{":
-                    depth += 1
-                elif ch == "}":
-                    depth -= 1
-                    if depth == 0:
-                        end = i
+                    stack.pop()
+                    if not stack:
+                        end = i + 1
                         break
                 i += 1
             if end == -1:
                 continue
-            chunk = text[start : end + 1].strip()
+            chunk = text[idx:end].strip()
             try:
-                obj = json.loads(chunk)
+                value = json.loads(chunk)
             except Exception:
                 continue
-            if not isinstance(obj, dict):
+            spans.append((idx, end, value))
+        return spans
+
+    def _parse_tool_plans_from_response(self, text: str) -> List[Tuple[str, Dict[str, Any]]]:
+        """Parse one or more trailing tool-plan JSON values from model response."""
+        if not isinstance(text, str):
+            return []
+        text = text.strip()
+        if not text:
+            return []
+
+        fence_matches = list(
+            re.finditer(r"```(?:json)?\s*(.*?)\s*```", text, flags=re.IGNORECASE | re.DOTALL)
+        )
+        for fm in reversed(fence_matches):
+            body = (fm.group(1) or "").strip()
+            if body.startswith("`") and body.endswith("`") and len(body) >= 2:
+                body = body[1:-1].strip()
+            if not body:
                 continue
-            tool_name = obj.get("tool") or obj.get("action")
-            args = obj.get("args") or obj.get("params") or {}
-            if isinstance(tool_name, str) and tool_name.strip():
-                if not isinstance(args, dict):
-                    args = {}
-                return (tool_name.strip(), args)
-        return None
+            try:
+                value = json.loads(body)
+            except Exception:
+                continue
+            plans = self._extract_tool_plans_from_json_value(value)
+            if not plans:
+                continue
+            tail = text[fm.end() :].strip()
+            if not tail or re.fullmatch(r"[\s`\-]*", tail):
+                return plans
+
+        valid: List[Tuple[int, int, List[Tuple[str, Dict[str, Any]]]]] = []
+        for start, end, value in self._collect_json_value_spans(text):
+            plans = self._extract_tool_plans_from_json_value(value)
+            if plans:
+                valid.append((start, end, plans))
+        if not valid:
+            return []
+
+        collected: List[Tuple[int, int, List[Tuple[str, Dict[str, Any]]]]] = []
+        cursor = len(text)
+        while True:
+            matched: Optional[Tuple[int, int, List[Tuple[str, Dict[str, Any]]]]] = None
+            for start, end, plans in sorted(valid, key=lambda item: item[1], reverse=True):
+                if end > cursor:
+                    continue
+                middle = text[end:cursor].strip()
+                if middle and not re.fullmatch(r"[\s`\-]*", middle):
+                    continue
+                matched = (start, end, plans)
+                break
+            if matched is None:
+                break
+            collected.append(matched)
+            cursor = matched[0]
+
+        if not collected:
+            return []
+
+        collected.reverse()
+        out: List[Tuple[str, Dict[str, Any]]] = []
+        for _, _, plans in collected:
+            out.extend(plans)
+        return out
+
+    def _parse_tool_plan_from_response(self, text: str) -> Optional[Tuple[str, Dict[str, Any]]]:
+        plans = self._parse_tool_plans_from_response(text)
+        return plans[0] if plans else None
+
+    def _find_tool_plans_anywhere(self, text: str) -> List[Tuple[str, Dict[str, Any]]]:
+        """Find one or more valid tool plan JSON values anywhere in response."""
+        if not isinstance(text, str):
+            return []
+        out: List[Tuple[str, Dict[str, Any]]] = []
+        for _, _, value in self._collect_json_value_spans(text):
+            out.extend(self._extract_tool_plans_from_json_value(value))
+        return out
+
+    def _find_tool_plan_anywhere(self, text: str) -> Optional[Tuple[str, Dict[str, Any]]]:
+        plans = self._find_tool_plans_anywhere(text)
+        return plans[0] if plans else None
 
     def _strip_tool_json_blocks_for_display(self, text: str) -> str:
         return strip_tool_json_blocks_for_display(text)

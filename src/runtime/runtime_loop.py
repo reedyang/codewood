@@ -126,6 +126,14 @@ def _parse_tool_call_json_payload(raw: str) -> Optional[Dict[str, Any]]:
     except Exception:
         return None
     if not isinstance(obj, dict):
+        if isinstance(obj, list) and obj:
+            for item in obj:
+                if not isinstance(item, dict):
+                    return None
+                tool_name = item.get("tool") or item.get("action")
+                if not (isinstance(tool_name, str) and tool_name.strip()):
+                    return None
+            return {"tool": "__multi__", "args": {"count": len(obj)}}
         return None
     tool_name = obj.get("tool") or obj.get("action")
     if isinstance(tool_name, str) and tool_name.strip():
@@ -1667,7 +1675,7 @@ def run_agent_loop(agent: Any):
             first_round_contract = (
                 "\n\n【首轮回复硬性要求（必须遵守）】\n"
                 "1) 对于需要两步及以上完成的任务，先简要说明“将要完成哪些事情”，紧随其后再输出任务编排：Step 1..N，并为每步标注状态（pending/in_progress/completed/failed）。\n"
-                "2) 在同一条回复结尾输出且仅输出一个工具调用 JSON。\n"
+                "2) 在同一条回复结尾输出工具调用 JSON；可输出一个或多个工具调用对象，或输出一个包含多个工具调用对象的 JSON 数组。\n"
                 "3) 仅当当前会话尚未注入目标 skill 正文时，优先请求 skill 提示；"
                 "若该 skill 已注入（例如用户通过 `/skills/<skill-name>` 显式启用），通常不应重复调用 request_skill_prompt。"
                 "但若系统提示明确为「分段注入」且你确需后续段，可调用带 section/full 参数的 request_skill_prompt。"
@@ -1887,9 +1895,7 @@ def run_agent_loop(agent: Any):
 
                 fallback_plans = list(message_tool_plans)
                 if not fallback_plans:
-                    fallback_plan = self._parse_tool_plan_from_response(ai_response)
-                    if fallback_plan is not None:
-                        fallback_plans = [fallback_plan]
+                    fallback_plans = list(self._parse_tool_plans_from_response(ai_response) or [])
                 if fallback_plans:
                     for tool_name, args in fallback_plans:
                         if tool_name != "done":
@@ -1912,7 +1918,7 @@ def run_agent_loop(agent: Any):
                             context_hint="task finished direct answer",
                         )
                         break
-                    misplaced_plan = self._find_tool_plan_anywhere(ai_response)
+                    misplaced_plans = list(self._find_tool_plans_anywhere(ai_response) or [])
                     no_tool_rounds += 1
                     if no_tool_rounds >= max_no_tool_rounds:
                         if task_uses_standard_openai_tools:
@@ -1930,8 +1936,8 @@ def run_agent_loop(agent: Any):
                             f"⚠️ No executable JSON tool plan detected (retry {no_tool_rounds}/{max_no_tool_rounds}): "
                             "the model will be asked again to output {\"tool\":\"...\",\"args\":{...}}."
                         )
-                    if misplaced_plan:
-                        m_tool, m_args = misplaced_plan
+                    if misplaced_plans:
+                        m_tool, m_args = misplaced_plans[0]
                         if task_uses_standard_openai_tools:
                             next_input = (
                                 f"【用户原始需求】\n{original_user_task}\n\n"
@@ -1939,11 +1945,19 @@ def run_agent_loop(agent: Any):
                                 f"请直接调用工具 `{m_tool}`，参数保持为 {json.dumps(m_args, ensure_ascii=False)}。"
                             )
                         else:
+                            serialized_plans = "\n".join(
+                                json.dumps(
+                                    {"tool": tool_name, "args": plan_args},
+                                    ensure_ascii=False,
+                                )
+                                for tool_name, plan_args in misplaced_plans
+                            )
                             next_input = (
                                 f"【用户原始需求】\n{original_user_task}\n\n"
                                 "你上一条回复包含工具调用 JSON，但它不在回复结尾（后面仍有文本），因此被判无效。\n"
-                                "请在下一条回复中把该工具调用原样放在最后一行，且其后不要再有任何文本。\n"
-                                f"请输出：{{\"tool\":\"{m_tool}\",\"args\":{json.dumps(m_args, ensure_ascii=False)} }}"
+                                "请在下一条回复中把这些工具调用原样放在回复结尾，且其后不要再有任何文本。\n"
+                                "可直接连续输出多个 JSON 对象，或输出一个 JSON 数组。\n"
+                                f"请输出：\n{serialized_plans}"
                             )
                     else:
                         if task_uses_standard_openai_tools:
@@ -1956,7 +1970,7 @@ def run_agent_loop(agent: Any):
                             next_input = (
                                 f"【用户原始需求】\n{original_user_task}\n\n"
                                 "你上一条回复没有给出可执行 JSON。\n"
-                                "请只输出一个 JSON 对象：{\"tool\":\"工具名\",\"args\":{...}}；"
+                                "请只输出工具调用 JSON：可连续输出一个或多个 JSON 对象，或只输出一个 JSON 数组；"
                                 "任务完成时输出 done JSON（若本轮改过文件，args 需包含 reviewed_files 覆盖全部已修改文件）。"
                                 "若你判断任务已完成，下一条必须直接输出 done，禁止再调用无关工具。"
                             )
@@ -2016,7 +2030,7 @@ def run_agent_loop(agent: Any):
                                 + (
                                     "禁止再次调用 request_skill_prompt。请直接继续调用标准 tools。"
                                     if task_uses_standard_openai_tools
-                                    else "禁止再次调用 request_skill_prompt。请直接输出下一条业务工具调用 JSON。"
+                                    else "禁止再次调用 request_skill_prompt。请直接输出后续业务工具调用 JSON（可一个或多个对象，或一个数组）。"
                                 )
                             )
                             no_tool_rounds = 0
@@ -2036,7 +2050,7 @@ def run_agent_loop(agent: Any):
                                 + (
                                     "禁止重复调用 request_skill_prompt。请直接继续调用标准 tools。"
                                     if task_uses_standard_openai_tools
-                                    else "禁止重复调用 request_skill_prompt。请直接输出下一条业务工具调用 JSON。"
+                                    else "禁止重复调用 request_skill_prompt。请直接输出后续业务工具调用 JSON（可一个或多个对象，或一个数组）。"
                                 )
                             )
                             no_tool_rounds = 0
@@ -2066,7 +2080,7 @@ def run_agent_loop(agent: Any):
                                 + (
                                     "请基于已加载技能索引重试，输出有效的 request_skill_prompt，或直接继续调用标准 tools。"
                                     if task_uses_standard_openai_tools
-                                    else "请基于已加载技能索引重试，输出有效的 request_skill_prompt，或直接继续输出业务工具调用 JSON。"
+                                    else "请基于已加载技能索引重试，输出有效的 request_skill_prompt，或直接继续输出业务工具调用 JSON（可一个或多个对象，或一个数组）。"
                                 )
                             )
                             continue_after_batch = True
@@ -2086,7 +2100,7 @@ def run_agent_loop(agent: Any):
                             + (
                                 "请继续调用标准 tools；可一次调用一个或多个工具。"
                                 if task_uses_standard_openai_tools
-                                else "请继续输出下一条工具调用 JSON。"
+                                else "请继续输出工具调用 JSON；可连续输出一个或多个对象，或输出一个数组。"
                             )
                         )
                         no_tool_rounds = 0
@@ -2105,7 +2119,7 @@ def run_agent_loop(agent: Any):
                             + (
                                 "下一条请继续调用标准 tools，并避免重复；可一次调用一个或多个工具。"
                                 if task_uses_standard_openai_tools
-                                else "下一条请输出一个新的 JSON 工具计划。"
+                                else "下一条请输出新的 JSON 工具计划；可连续输出一个或多个对象，或输出一个数组。"
                             )
                         )
                         no_tool_rounds = 0
@@ -2238,7 +2252,7 @@ def run_agent_loop(agent: Any):
                             + (
                                 "请基于新的原始需求继续调用标准 tools；可一次调用一个或多个工具。"
                                 if task_uses_standard_openai_tools
-                                else "请基于新的原始需求继续输出下一条 JSON 工具计划。"
+                                else "请基于新的原始需求继续输出工具调用 JSON；可连续输出一个或多个对象，或输出一个数组。"
                             )
                         )
                         continue_after_batch = True
@@ -2298,7 +2312,7 @@ def run_agent_loop(agent: Any):
                                 if task_uses_standard_openai_tools
                                 else "请判断该补充信息是否与原始需求相关：\n"
                                 "- 若完全无关：调用 {\"tool\":\"task_changed\",\"args\":{\"new_task\":\"<用户补充信息提炼后的新需求>\",\"reason\":\"...\"}}；\n"
-                                "- 若相关：继续输出下一条工具调用 JSON；若信息仍不充分，可再次调用 ask_more_info。"
+                                "- 若相关：继续输出工具调用 JSON；可连续输出一个或多个对象，或输出一个数组；若信息仍不充分，可再次调用 ask_more_info。"
                             )
                         )
                         continue_after_batch = True
@@ -2373,7 +2387,7 @@ def run_agent_loop(agent: Any):
                         "任务全部完成时请直接调用 done（若本轮改过文件，args.reviewed_files 需覆盖全部已修改文件）。"
                         "若上一批结果已满足原始需求，下一条必须直接调用 done。"
                         if task_uses_standard_openai_tools
-                        else "请继续输出下一条 JSON 工具计划：{\"tool\":\"工具名\",\"args\":{...}}；"
+                        else "请继续输出 JSON 工具计划：可连续输出一个或多个 {\"tool\":\"工具名\",\"args\":{...}} 对象，或输出一个数组；"
                         "任务全部完成时输出 done JSON（若本轮改过文件，args 需包含 reviewed_files 覆盖全部已修改文件）。"
                         "若上一条结果已满足原始需求，下一条必须直接输出 done。"
                     )

@@ -22,7 +22,7 @@ class AiOutputDisplayTests(unittest.TestCase):
         text = (
             "我将先读取文件。\n\n"
             "```json\n"
-            "{\"tool\":\"read\",\"args\":{\"path\":\"a.py\"}}\n"
+            "{\"tool\":\"shell\",\"args\":{\"command\":\"Get-Content a.py\"}}\n"
             "```\n"
         )
         out = aoh.strip_tool_json_blocks_for_display(text)
@@ -43,8 +43,8 @@ class AiOutputDisplayTests(unittest.TestCase):
             "Step 2 [in_progress]: 继续读取文件。\n\n"
             "```json\n"
             "{\n"
-            '  "tool": "read",\n'
-            '  "args": {"path": "src/main.py", "start_line": 101}\n'
+            '  "tool": "shell",\n'
+            '  "args": {"command": "Get-Content src/main.py"}\n'
             "}\n"
         )
         out = aoh.strip_tool_json_blocks_for_display(text)
@@ -65,6 +65,51 @@ class AiOutputDisplayTests(unittest.TestCase):
         )
         out = aoh.strip_tool_json_blocks_for_display(text)
         self.assertEqual(out, "Step 1 [in_progress]: 应用补丁。")
+
+    def test_strip_tool_json_array_fence_keeps_narrative(self):
+        text = (
+            "先分两步处理。\n\n"
+            "```json\n"
+            "[\n"
+            "  {\"tool\":\"shell\",\"args\":{\"command\":\"Get-Content a.py\"}},\n"
+            "  {\"tool\":\"project_context_search\",\"args\":{\"query\":\"foo\"}}\n"
+            "]\n"
+            "```\n"
+        )
+        out = aoh.strip_tool_json_blocks_for_display(text)
+        self.assertEqual(out, "先分两步处理。")
+
+    def test_parse_tool_plans_from_response_supports_multiple_json_objects(self):
+        text = (
+            "先读文件再检索。\n\n"
+            "{\"tool\":\"shell\",\"args\":{\"command\":\"Get-Content a.py\"}}\n"
+            "{\"tool\":\"project_context_search\",\"args\":{\"query\":\"foo\"}}"
+        )
+        plans = self.agent._parse_tool_plans_from_response(text)
+        self.assertEqual(
+            plans,
+            [
+                ("shell", {"command": "Get-Content a.py"}),
+                ("project_context_search", {"query": "foo"}),
+            ],
+        )
+        self.assertEqual(self.agent._parse_tool_plan_from_response(text), plans[0])
+
+    def test_parse_tool_plans_from_response_supports_json_array(self):
+        text = (
+            "先读文件再检索。\n\n"
+            "["
+            "{\"tool\":\"shell\",\"args\":{\"command\":\"Get-Content a.py\"}},"
+            "{\"tool\":\"project_context_search\",\"args\":{\"query\":\"foo\"}}"
+            "]"
+        )
+        self.assertEqual(
+            self.agent._parse_tool_plans_from_response(text),
+            [
+                ("shell", {"command": "Get-Content a.py"}),
+                ("project_context_search", {"query": "foo"}),
+            ],
+        )
 
     def test_format_assistant_display_response_highlights_key_tokens(self):
         text = (
