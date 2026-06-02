@@ -124,6 +124,18 @@ class ChatStateManager:
         }
         if bool(raw.get("exclude_from_model_context", False)):
             out["exclude_from_model_context"] = True
+        pseudo_tool_call_text = str(raw.get("pseudo_tool_call_text") or "").strip()
+        if pseudo_tool_call_text:
+            out["pseudo_tool_call_text"] = pseudo_tool_call_text
+            pseudo_tools = raw.get("pseudo_tool_call_tools")
+            if isinstance(pseudo_tools, list):
+                cleaned_tools = [
+                    str(x).strip()
+                    for x in pseudo_tools
+                    if str(x).strip()
+                ]
+                if cleaned_tools:
+                    out["pseudo_tool_call_tools"] = cleaned_tools
         return out
 
     def _validate_task(self, raw: Dict[str, Any]) -> Dict[str, Any]:
@@ -448,6 +460,18 @@ class ChatStateManager:
                 }
                 if bool(m.get("exclude_from_model_context", False)):
                     entry["exclude_from_model_context"] = True
+                pseudo_tool_call_text = str(m.get("pseudo_tool_call_text") or "").strip()
+                if pseudo_tool_call_text:
+                    entry["pseudo_tool_call_text"] = pseudo_tool_call_text
+                    pseudo_tools = m.get("pseudo_tool_call_tools")
+                    if isinstance(pseudo_tools, list):
+                        cleaned_tools = [
+                            str(x).strip()
+                            for x in pseudo_tools
+                            if str(x).strip()
+                        ]
+                        if cleaned_tools:
+                            entry["pseudo_tool_call_tools"] = cleaned_tools
                 msgs.append(entry)
             chat["messages"] = msgs
             chat["active_task_id"] = fallback_task_id

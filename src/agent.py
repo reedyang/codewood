@@ -43,6 +43,7 @@ from .core.config.config_jsonc import (
 from .core.config.model_providers import (
     DEFAULT_OLLAMA_PORT,
     basic_chat_only_context_warning,
+    is_basic_chat_only_context_window,
     parse_bool_flag,
     parse_configured_models,
     parse_port,
@@ -514,6 +515,10 @@ class Agent:
 
     def _use_standard_openai_tools_call(self) -> bool:
         provider = str(getattr(self, "provider", "") or "").strip().lower()
+        params = getattr(self, "params", {}) or {}
+        raw_context_window = params.get("context_window") if isinstance(params, dict) else None
+        if is_basic_chat_only_context_window(raw_context_window):
+            return False
         return provider in {"openai", "ollama"}
 
     def _streaming_enabled_for_current_model(self) -> bool:

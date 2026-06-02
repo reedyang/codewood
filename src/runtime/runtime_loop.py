@@ -44,6 +44,7 @@ _CODE_MUTATION_TOOLS = {
 _WORKING_STATUS_MARQUEE_FPS = 10.0
 _STREAM_ATTR_TERMINAL_COLUMNS = get_app_runtime_attr_name("terminal_columns")
 _STREAM_ATTR_OUTPUT_INDENT_WIDTH = get_app_runtime_attr_name("output_indent_width")
+_MODEL_TOOL_RESULT_HISTORY_PREFIX = "[MODEL_TOOL_RESULT]"
 
 
 class _TeeTextStream:
@@ -121,6 +122,31 @@ def _parse_tool_plans_from_model_message(
     if not isinstance(message, dict):
         return []
     tool_calls = message.get("tool_calls")
+    plans = _parse_tool_plans_from_tool_calls_node(tool_calls)
+    if plans:
+        return plans
+    _visible, pseudo_plans = _split_trailing_pseudo_tool_calls_text(message.get("content"))
+    return pseudo_plans
+
+
+def _parse_tool_args_node(raw_args: Any) -> Dict[str, Any]:
+    if isinstance(raw_args, dict):
+        return raw_args
+    if isinstance(raw_args, str):
+        raw_text = raw_args.strip()
+        if not raw_text:
+            return {}
+        try:
+            parsed = json.loads(raw_text)
+        except Exception:
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+    return {}
+
+
+def _parse_tool_plans_from_tool_calls_node(
+    tool_calls: Any,
+) -> List[Tuple[str, Dict[str, Any]]]:
     if not isinstance(tool_calls, list) or not tool_calls:
         return []
     plans: List[Tuple[str, Dict[str, Any]]] = []
@@ -128,30 +154,38 @@ def _parse_tool_plans_from_model_message(
         if not isinstance(tool_call, dict):
             continue
         fn = tool_call.get("function")
-        if not isinstance(fn, dict):
-            continue
-        tool_name = str(fn.get("name") or "").strip()
+        if isinstance(fn, dict):
+            tool_name = str(fn.get("name") or "").strip()
+            raw_args = fn.get("arguments")
+        else:
+            tool_name = str(
+                tool_call.get("tool")
+                or tool_call.get("name")
+                or tool_call.get("tool_name")
+                or ""
+            ).strip()
+            raw_args = (
+                tool_call.get("args")
+                if "args" in tool_call
+                else tool_call.get("arguments")
+            )
         if not tool_name:
             continue
-        raw_args = fn.get("arguments")
-        if isinstance(raw_args, dict):
-            plans.append((tool_name, raw_args))
-            continue
-        if isinstance(raw_args, str):
-            raw_text = raw_args.strip()
-            if not raw_text:
-                plans.append((tool_name, {}))
-                continue
-            try:
-                parsed = json.loads(raw_text)
-                if isinstance(parsed, dict):
-                    plans.append((tool_name, parsed))
-                    continue
-            except Exception:
-                plans.append((tool_name, {}))
-                continue
-        plans.append((tool_name, {}))
+        plans.append((tool_name, _parse_tool_args_node(raw_args)))
     return plans
+
+
+def _parse_tool_plans_from_pseudo_tool_payload(
+    payload: Any,
+) -> List[Tuple[str, Dict[str, Any]]]:
+    if isinstance(payload, dict):
+        plans = _parse_tool_plans_from_tool_calls_node(payload.get("tool_calls"))
+        if plans:
+            return plans
+        return _parse_tool_plans_from_tool_calls_node([payload])
+    if isinstance(payload, list):
+        return _parse_tool_plans_from_tool_calls_node(payload)
+    return []
 
 
 def _parse_tool_plan_from_model_message(
@@ -159,6 +193,52 @@ def _parse_tool_plan_from_model_message(
 ) -> Optional[Tuple[str, Dict[str, Any]]]:
     plans = _parse_tool_plans_from_model_message(message)
     return plans[0] if plans else None
+
+
+def _split_trailing_pseudo_tool_calls_text(
+    text: Any,
+) -> Tuple[str, List[Tuple[str, Dict[str, Any]]]]:
+    visible, plans, _pseudo_text = _split_trailing_pseudo_tool_calls_text_details(text)
+    return visible, plans
+
+
+def _split_trailing_pseudo_tool_calls_text_details(
+    text: Any,
+) -> Tuple[str, List[Tuple[str, Dict[str, Any]]], str]:
+    raw = str(text or "")
+    if not raw.strip():
+        return raw, [], ""
+    rstripped = raw.rstrip()
+
+    candidates: List[Tuple[int, str]] = []
+    if rstripped.endswith("```"):
+        fence_matches = list(re.finditer(r"(?im)^[ \t]*```(?:json|javascript|js)?[ \t]*\n", rstripped))
+        if fence_matches:
+            fence = fence_matches[-1]
+            body_start = fence.end()
+            body_end = rstripped.rfind("```")
+            if body_end > body_start:
+                candidates.append((fence.start(), rstripped[body_start:body_end].strip()))
+
+    for m in reversed(list(re.finditer(r"(?m)^[ \t]*(?:\{|\[)", rstripped))):
+        candidates.append((m.start(), rstripped[m.start():].strip()))
+
+    for start, candidate in candidates:
+        try:
+            payload = json.loads(candidate)
+        except Exception:
+            continue
+        plans = _parse_tool_plans_from_pseudo_tool_payload(payload)
+        if not plans:
+            continue
+        visible = rstripped[:start].rstrip()
+        if not visible and isinstance(payload, dict):
+            content = payload.get("content")
+            if isinstance(content, str):
+                visible = content.rstrip()
+        pseudo_text = rstripped[start:].strip()
+        return visible, plans, pseudo_text
+    return raw, [], ""
 
 
 def _is_textless_done_only_tool_call(
@@ -172,9 +252,124 @@ def _is_textless_done_only_tool_call(
     return all(str(tool_name or "").strip() == "done" for tool_name, _args in plans)
 
 
+def _can_finish_without_tool_calls(
+    task_uses_standard_openai_tools: bool,
+    ai_response: Any,
+) -> bool:
+    if task_uses_standard_openai_tools:
+        return False
+    return bool(str(ai_response or "").strip())
+
+
+def _looks_like_pseudo_tool_call_text(ai_response: Any) -> bool:
+    """
+    Detect common signs that the model wrote a tool call in assistant text instead
+    of using the API tool_calls field. This is a protocol guard, not a display
+    filter: matching text is rejected and the model is asked to resend tool_calls.
+    """
+    text = str(ai_response or "").strip()
+    if not text:
+        return False
+    lowered = text.lower()
+    if "<tool_calls" in lowered or "assistant tool_calls" in lowered:
+        return True
+    if re.search(r"""(?is)(["']?\btool_calls\b["']?)\s*[:=]\s*\[""", text):
+        return True
+    if re.search(r"""(?is)```[^\n]*\n.*(["']?\b(?:tool|tool_calls|args|arguments)\b["']?)\s*[:=]""", text):
+        return True
+    if re.search(r"(?im)^\s*tool\s*[:=]\s*[\w.-]+\s*$", text):
+        return True
+    has_tool_name = bool(
+        re.search(r"""(?is)(["']?\btool\b["']?|["']?\bname\b["']?)\s*[:=]\s*["']?[\w.-]+""", text)
+    )
+    has_args = bool(
+        re.search(r"""(?is)(["']?\bargs\b["']?|["']?\barguments\b["']?)\s*[:=]""", text)
+    )
+    if has_tool_name and has_args:
+        return True
+    return False
+
+
+def _strip_leaked_internal_history_markers(text: Any) -> str:
+    s = str(text or "")
+    if not s:
+        return ""
+    idx = s.find(_MODEL_TOOL_RESULT_HISTORY_PREFIX)
+    if idx < 0:
+        return s
+    return s[:idx].rstrip()
+
+
 def _stream_visible_text_with_json_pause(text: str, *, final: bool) -> str:
-    _ = final
-    return str(text or "")
+    s = str(text or "")
+    if not s:
+        return ""
+
+    starts: List[int] = []
+
+    def _json_container_start_before(pos: int) -> int:
+        prefix = s[: max(0, int(pos))]
+        matches = list(re.finditer(r"(?m)^[ \t]*(?:\{|\[)\s*$", prefix))
+        if matches:
+            start = matches[-1].start()
+            for prev in reversed(matches[:-1]):
+                between = s[prev.end() : start]
+                if between.strip():
+                    break
+                start = prev.start()
+            return start
+        return pos
+
+    lowered = s.lower()
+    internal_marker_idx = s.find(_MODEL_TOOL_RESULT_HISTORY_PREFIX)
+    if internal_marker_idx >= 0:
+        starts.append(internal_marker_idx)
+    for marker in ("<tool_calls", "<|assistant"):
+        idx = lowered.find(marker)
+        if idx >= 0:
+            starts.append(idx)
+
+    toolish_key_pattern = r"""(?is)(["']?\b(?:tool|tool_calls|args|arguments)\b["']?)\s*[:=]"""
+    for m in re.finditer(r"(?im)^[ \t]*```[^\n]*\n", s):
+        fence_header = m.group(0)
+        block = s[m.start() :]
+        fence_body = block[len(fence_header) :]
+        fence_closed = bool(re.search(r"(?m)^```", fence_body))
+        jsonish_fence = bool(re.search(r"(?i)```\s*(?:json|javascript|js)?\s*\n", fence_header))
+        jsonish_body = bool(re.match(r"\s*(?:\{|\[)", fence_body))
+        if re.search(toolish_key_pattern, block):
+            starts.append(m.start())
+        elif (not final) and (not fence_closed) and (jsonish_fence or jsonish_body):
+            starts.append(m.start())
+
+    for m in re.finditer(r"""(?im)^[ \t]*(?:\{|\[)?[ \t]*(?:"tool"|'tool'|tool)\s*[:=]""", s):
+        starts.append(_json_container_start_before(m.start()))
+    for m in re.finditer(r"""(?im)^[ \t]*(?:\{|\[)[^\n]*(?:"tool"|'tool')""", s):
+        starts.append(m.start())
+    for m in re.finditer(r"""(?im)^[ \t]*(?:\{|\[)?[ \t]*(?:"tool_calls"|'tool_calls'|tool_calls)\s*[:=]""", s):
+        starts.append(_json_container_start_before(m.start()))
+    for m in re.finditer(r"""(?im)^[ \t]*\{[ \t]*(?:"content"|'content')\s*:""", s):
+        candidate = s[m.start() :]
+        if (not final) or re.search(r"""(?is)(?:"tool_calls"|'tool_calls')\s*:""", candidate):
+            starts.append(m.start())
+
+    if not final:
+        # Partial starts are kept in a tiny cache until they either become a
+        # normal word/text fragment or complete into a pseudo tool call.
+        for m in re.finditer(r"(?m)^[ \t]*(?:\{|\[)\s*$", s):
+            starts.append(_json_container_start_before(m.start()))
+        for m in re.finditer(r"""(?im)^[ \t]*(?:\{|\[)?[ \t]*(?:"?t(?:o(?:o(?:l)?)?)?|'?t(?:o(?:o(?:l)?)?)?)$""", s):
+            starts.append(_json_container_start_before(m.start()))
+        for m in re.finditer(r"""(?im)^[ \t]*(?:\{|\[)?[ \t]*(?:"?tool_?(?:c(?:a(?:l(?:l(?:s)?)?)?)?)?|'?tool_?(?:c(?:a(?:l(?:l(?:s)?)?)?)?)?)$""", s):
+            starts.append(_json_container_start_before(m.start()))
+        for m in re.finditer(r"(?im)^[ \t]*<\|?assistant(?:\s+tool_calls?)?$", s):
+            starts.append(m.start())
+        for m in re.finditer(r"(?im)^[ \t]*<tool_calls?$", s):
+            starts.append(m.start())
+
+    if not starts:
+        return s
+    return s[: min(starts)].rstrip()
 
 
 def _consume_streaming_ai_response(
@@ -451,6 +646,45 @@ def _consume_streaming_ai_response(
         except Exception:
             pass
     return ai_response, streamed_any
+
+
+def _replace_latest_assistant_history_content(
+    agent: Any,
+    old_content: Any,
+    new_content: Any,
+    *,
+    pseudo_tool_call_text: str = "",
+    pseudo_tool_call_tools: Optional[List[str]] = None,
+) -> None:
+    old_text = str(old_content or "")
+    new_text = str(new_content or "")
+    pseudo_text = str(pseudo_tool_call_text or "").strip()
+    if old_text == new_text and not pseudo_text:
+        return
+    hist = getattr(agent, "conversation_history", None)
+    if not isinstance(hist, list):
+        return
+    for msg in reversed(hist):
+        if not isinstance(msg, dict):
+            continue
+        if str(msg.get("role") or "").strip().lower() != "assistant":
+            continue
+        if str(msg.get("content") or "") != old_text:
+            continue
+        msg["content"] = new_text
+        if pseudo_text:
+            msg["pseudo_tool_call_text"] = pseudo_text
+            if pseudo_tool_call_tools:
+                msg["pseudo_tool_call_tools"] = [
+                    str(x).strip()
+                    for x in pseudo_tool_call_tools
+                    if str(x).strip()
+                ]
+        try:
+            agent._sync_active_chat_messages()
+        except Exception:
+            pass
+        return
 
 
 def _shell_command_indicates_verification(command: str) -> bool:
@@ -1678,18 +1912,19 @@ def run_agent_loop(agent: Any):
                     "- 用户若请求“指定 MCP server 的信息/详情”，首个查询工具必须是 mcp_server_info。\n"
                     "- mcp_status/mcp_status_refresh 仅用于全局 MCP 状态总览，不可替代指定 server 的详情查询。\n\n"
                 )
-            task_uses_standard_openai_tools = True
+            task_uses_standard_openai_tools = bool(self._use_standard_openai_tools_call())
             first_round_contract = (
+                "0) STANDARD TOOL MODE HARD REQUIREMENT: every assistant message MUST include at least one API-standard `tool_calls` entry. Content-only replies are invalid in this mode; if the task is complete, call `done`; otherwise call the next required tool.\n"
                 "\n\n【首轮回复硬性要求（必须遵守）】\n"
                 "1) 对于需要两步及以上完成的任务，先简要说明“将要完成哪些事情”，紧随其后再输出任务编排：Step 1..N，并为每步标注状态（pending/in_progress/completed/failed）。\n"
-                "2) 不要输出工具调用 JSON 文本；若需要调用工具，请直接使用标准 tools 调用（tool_calls），可在同一条 assistant 回复中一次调用一个或多个工具。若无需工具可直接自然语言回答。\n"
-                "3) 对于需要两步及以上完成的任务，禁止首轮直接只给工具调用而不做“事项简述 + 步骤编排”。\n"
-                "4) 禁止在回复正文中书写 `<tool_calls>...</tool_calls>`、JSON 工具对象或其它伪工具调用格式；正文只写用户可见说明，工具必须走 API tool_calls 字段。\n"
+                "2) 若需要工具，同一条 assistant message 必须同时包含：content=上述自然语言计划/状态；tool_calls=标准 API 工具调用字段。不要拆成两条消息，也不要先计划后等待下一轮再调用。\n"
+                "3) 禁止在 content 正文中输出或序列化 `tool_calls`、`content/tool_calls` 消息对象、工具 JSON/YAML、XML/标签形式、Markdown 工具调用代码块或其它伪工具调用格式。\n"
+                "4) 对于需要两步及以上完成的任务，禁止首轮只有 tool_calls 而没有“事项简述 + 步骤编排”；也禁止只有计划正文而缺少必要的标准 API tool_calls。\n"
                 "5) 若用户问题可被上一条 system 开头的【经验记忆】单独完整回答，"
-                "首轮应直接给出简短自然语言并结束，不要调用 done、不要输出 Step 编排或 memory_search。\n"
+                "首轮应在 content 给出简短自然语言答复，并通过标准 API tool_calls 调用 done。\n"
                 "6) 若任务需要把自然语言指称解析为稳定标识符/映射：先阅读【经验记忆】，仍不足则首轮或次轮使用 memory_search，再执行检索、shell 或 request_skill_prompt；禁止在未核对记忆时先猜标识符再搜网。\n"
                 "7) 只要调用了网络检索相关的工具、命令、脚本或 skill（网页搜索、联网抓取、在线查询等），调用 done 前必须先输出一次检索结果总结（关键信息、来源要点、与用户问题的对应关系）；禁止检索后直接 done。\n"
-                "8) done 只能在已经给出用户可见的最终答复、总结或结果说明之后调用；简单问候、闲聊、概念解释、直接可回答的问题，必须只输出自然语言，不要调用 done。\n\n"
+                "8) done 只能在已经给出用户可见的最终答复、总结或结果说明之后调用；简单问候、闲聊、概念解释、直接可回答的问题，也必须在 content 给出自然语言答复并通过标准 API tool_calls 调用 done。\n\n"
                 + mcp_tool_selection_constraint
                 + "【经验记忆 memory_* 使用规则】\n"
                 "- memory_search：若 system 开头【经验记忆】已含作答所需信息，不要为走流程而调用；"
@@ -1697,8 +1932,14 @@ def run_agent_loop(agent: Any):
                 "- memory_add：用户明确要求「记住某事」「以后按某偏好」且属于个人经验而非文档时；"
                 "若你认为用户观点明显有误，仍可按工具说明在内容中记录你的判断（system_note）。\n"
             )
+            if not task_uses_standard_openai_tools:
+                first_round_contract = (
+                    "\n\n【基础聊天模式】\n"
+                    "当前模型 context window 小于 64k；本轮禁止使用标准 API tool_calls，也不要在正文中模拟、书写或序列化任何工具调用。\n"
+                    "请只用自然语言回答用户；如果任务需要读取文件、执行命令、加载 skill、调用 MCP 或其它工具能力，请说明当前小上下文模型仅支持基础聊天，建议切换到 64k 及以上上下文模型后再执行。\n"
+                )
             first_round_evidence = ""
-            if self._project_context_feature_enabled():
+            if task_uses_standard_openai_tools and self._project_context_feature_enabled():
                 project_context_ready = False
                 project_context_files_total = 0
                 project_context_inflight = False
@@ -1816,6 +2057,8 @@ def run_agent_loop(agent: Any):
                 try:
                     standard_tool_schemas = (
                         list(getattr(self, "tool_specs", []) or [])
+                        if task_uses_standard_openai_tools
+                        else []
                     )
                     ai_result = self.call_ai(
                         next_input,
@@ -1825,7 +2068,7 @@ def run_agent_loop(agent: Any):
                         history_user_input=original_user_task if not user_message_recorded else None,
                         history_skip_user=user_message_recorded,
                         tool_schemas=standard_tool_schemas,
-                        tool_choice=None,
+                        tool_choice="required" if task_uses_standard_openai_tools else None,
                     )
                 except Exception:
                     _stop_status_ticker_before_first_output()
@@ -1839,7 +2082,11 @@ def run_agent_loop(agent: Any):
                     msg_content = ai_result.get("content", "")
                     ai_response = msg_content if isinstance(msg_content, str) else str(msg_content or "")
                     streamed_assistant_output = False
-                    message_tool_plans = _parse_tool_plans_from_model_message(ai_result)
+                    message_tool_plans = (
+                        _parse_tool_plans_from_model_message(ai_result)
+                        if task_uses_standard_openai_tools
+                        else []
+                    )
                 else:
                     ai_response, streamed_assistant_output = _consume_streaming_ai_response(
                         self,
@@ -1851,17 +2098,78 @@ def run_agent_loop(agent: Any):
                         if not ai_response:
                             msg_content = stream_final_message.get("content", "")
                             ai_response = msg_content if isinstance(msg_content, str) else str(msg_content or "")
-                        message_tool_plans = _parse_tool_plans_from_model_message(
-                            stream_final_message
+                        message_tool_plans = (
+                            _parse_tool_plans_from_model_message(stream_final_message)
+                            if task_uses_standard_openai_tools
+                            else []
                         )
                 if not status_ticker_stopped:
                     _stop_status_ticker_before_first_output()
                 if not isinstance(ai_response, str):
                     print(f"❌ AI returned invalid response: {ai_response}")
                     break
+                cleaned_internal_ai_response = _strip_leaked_internal_history_markers(ai_response)
+                if cleaned_internal_ai_response != ai_response:
+                    _replace_latest_assistant_history_content(
+                        self,
+                        ai_response,
+                        cleaned_internal_ai_response,
+                    )
+                    ai_response = cleaned_internal_ai_response
                 if not user_message_recorded:
                     user_message_recorded = True
-                if ai_response and not streamed_assistant_output:
+
+                visible_ai_response, pseudo_text_tool_plans, pseudo_tool_call_text = (
+                    _split_trailing_pseudo_tool_calls_text_details(ai_response)
+                    if task_uses_standard_openai_tools
+                    else (ai_response, [], "")
+                )
+                if pseudo_text_tool_plans:
+                    if not message_tool_plans:
+                        message_tool_plans = pseudo_text_tool_plans
+                    _replace_latest_assistant_history_content(
+                        self,
+                        ai_response,
+                        visible_ai_response,
+                        pseudo_tool_call_text=pseudo_tool_call_text,
+                        pseudo_tool_call_tools=[
+                            tool_name
+                            for tool_name, _args in pseudo_text_tool_plans
+                        ],
+                    )
+                    ai_response = visible_ai_response
+
+                fallback_plans = list(message_tool_plans)
+                ai_response_looks_like_pseudo_tool = _looks_like_pseudo_tool_call_text(ai_response)
+                if (
+                    task_uses_standard_openai_tools
+                    and not fallback_plans
+                    and ai_response_looks_like_pseudo_tool
+                ):
+                    no_tool_rounds += 1
+                    if no_tool_rounds >= max_no_tool_rounds:
+                        print("ERROR: The model repeatedly wrote tool calls as assistant text instead of standard tool_calls. Auto-execution has stopped for this round.")
+                        break
+                    print(
+                        f"Warning: Pseudo tool-call text rejected (retry {no_tool_rounds}/{max_no_tool_rounds}): "
+                        "the model will be asked again to use standard API tool_calls."
+                    )
+                    next_input = (
+                        f"[Original user request]\n{original_user_task}\n\n"
+                        "Your previous assistant text contained a pseudo tool call, "
+                        "but no API-standard `tool_calls` were sent.\n"
+                        "Tool calls written as JSON/YAML/tags/pseudocode in assistant text are invalid; "
+                        "they are not shown to the user and will not be executed.\n"
+                        "Retry with one assistant message that has content and tool_calls together: "
+                        "content should contain only the short visible plan/status/result, "
+                        "and tool_calls should contain the actual API-standard tool call(s). "
+                        "Do not print or serialize a JSON/YAML/message object containing `content`, "
+                        "`tool_calls`, `tool`, `args`, or `arguments` in assistant text. "
+                        "If the task is complete, include the visible final result in content and call `done` via standard `tool_calls`."
+                    )
+                    is_first_round = False
+                    continue
+                if ai_response and not streamed_assistant_output and not ai_response_looks_like_pseudo_tool:
                     try:
                         self._hide_previous_shell_output_if_needed()
                     except Exception:
@@ -1875,7 +2183,6 @@ def run_agent_loop(agent: Any):
                         self._last_terminal_block_kind = "assistant"
                         self._terminal_cursor_at_line_start = True
 
-                fallback_plans = list(message_tool_plans)
                 if task_uses_standard_openai_tools and _is_textless_done_only_tool_call(ai_response, fallback_plans):
                     no_tool_rounds += 1
                     if no_tool_rounds >= max_no_tool_rounds:
@@ -1884,7 +2191,7 @@ def run_agent_loop(agent: Any):
                     next_input = (
                         f"【用户原始需求】\n{original_user_task}\n\n"
                         "你上一条回复只调用了 done，但没有给用户可见的自然语言答复。\n"
-                        "请直接用简短自然语言回答用户；本轮不要调用任何工具，也不要调用 done。"
+                        "请用同一条 assistant message 重试：content 里给出简短自然语言最终答复，并通过标准 API tool_calls 调用 done。"
                     )
                     is_first_round = False
                     continue
@@ -1901,13 +2208,13 @@ def run_agent_loop(agent: Any):
                         sys.stdout.write("\n")
                     sys.stdout.flush()
                 if not fallback_plans:
-                    if task_uses_standard_openai_tools and str(ai_response or "").strip():
+                    if _can_finish_without_tool_calls(task_uses_standard_openai_tools, ai_response):
                         if current_task_id:
                             self._close_chat_task(current_task_id, "done")
                         _refresh_context_usage_after_task_boundary(
                             self,
                             user_input_hint=str(original_user_task or ""),
-                            context_hint="task finished direct answer",
+                            context_hint="basic chat direct answer",
                         )
                         break
                     no_tool_rounds += 1
@@ -1920,8 +2227,13 @@ def run_agent_loop(agent: Any):
                     )
                     next_input = (
                         f"【用户原始需求】\n{original_user_task}\n\n"
-                        "你上一条回复没有给出有效的标准 tool_calls。\n"
-                        "请直接调用一个或多个最合适的工具；若任务已完成，请直接调用 done。"
+                        "HARD REQUIREMENT: your next assistant message MUST include standard API `tool_calls`; content-only replies are invalid in this mode.\n"
+                        "If the task is complete, put the final visible answer in content and call `done` via API `tool_calls` in the same message.\n"
+                        "If the task is not complete, put the next visible status in content and call the next real tool via API `tool_calls` in the same message.\n"
+                        "你上一条回复没有给出有效的标准 API tool_calls。\n"
+                        "请用同一条 assistant message 重试：content 里保留简短计划/状态/结果，真实工具动作放入 API `tool_calls` 字段。\n"
+                        "禁止在正文中打印或序列化包含 `content`、`tool_calls`、`tool`、`args` 或 `arguments` 的 JSON/YAML/message 对象。\n"
+                        "若用户目标已经完成，请先在 content 给出可见最终结果，再通过标准 `tool_calls` 调用 done。"
                     )
                     is_first_round = False
                     continue

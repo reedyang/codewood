@@ -3,9 +3,9 @@
 工具调用格式由当前轮系统/运行时指令明确给出，必须严格按当前指令执行。
 下文只描述工具名与参数语义；实际调用格式始终以当前轮系统/运行时指令为准。
 其中 **`name` 只能**来自本文件末尾 **Available tools** 列表（对应 `src/tools/tools.jsonc`）或通过 `mcp_call_tool` 调用的 MCP 工具名。**禁止**虚构名称（如 `weather`、`get_forecast`），也**禁止**把 Agent Skills 的目录名 `skill_id` 当作 `tool`：若任务命中技能且当前会话尚未注入该 skill 的正文，先用 **`request_skill_prompt`** 加载该 `skill_id`；若已注入（例如用户通过 `/skills/<skill-name>` 显式启用），默认不要重复调用 `request_skill_prompt`，直接按 SKILL 执行 `shell` 等业务工具。仅当系统提示明确为「分段注入」且确需后续内容时，才可按需调用 `request_skill_prompt`（携带 `section` / `full`）。
-首轮回复是硬约束：对于需要两步及以上完成的任务，首轮必须先简要说明将要完成的目标事项，再给出 Step 1..N 的步骤编排和状态，最后给本轮唯一工具调用。
-多步任务必须先输出“将要完成哪些目标”的简要说明，再输出任务编排（Step 1..N + 状态），再给本轮唯一工具调用。
-每次收到工具结果后，先更新步骤状态，再给出下一条工具调用。
+对需要工具的多步任务：同一条 assistant message 可以同时包含自然语言计划正文和 API 标准 `tool_calls`。正文只写计划、Step 状态或结果；真实工具调用只能放在消息的 `tool_calls` 字段中。
+禁止在正文中写、模拟、转述或序列化 `tool_calls`、工具 JSON/YAML、XML/标签、Markdown 工具调用代码块、`content/tool_calls` 消息对象或任何工具占位符。
+每次收到工具结果后，可以先用简短自然语言更新步骤状态；若还需要继续执行，下一步仍必须通过同一条 assistant message 的标准 `tool_calls` 发起。
 若本轮编排了 Step 1..N 且后续步涉及已点名的 skill（例如已 `request_skill_prompt` 的 `skill-a`/`skill-b`）或其它工具/MCP，**禁止**在前几步成功后就 `done`；须执行完所列步骤，或显式说明修订计划的原因后再结束。
 对于大工程代码理解/修改任务（跨模块、定位调用链、涉及多个候选目录），若当前不在 Default workspace 且该工具可用，优先先调用 `project_context_search` 获取候选文件与符号，再决定 `shell` 的下一步，避免盲目全局扫描。
 当任务完成时调用 `done`。若本轮修改了文件，必须在参数中提供 `reviewed_files`，且覆盖所有已修改文件。
@@ -127,11 +127,11 @@
 只有当用户明确提出“导出/保存/写入文件”时，才允许创建文件。
 
 多步任务输出模板（强制）：
-我将先<事项A>，再<事项B>，最后<事项C>。
-Step 1 [completed]: <已完成步骤>
-Step 2 [in_progress]: <当前步骤>
+我将先加载目标 skill，再按说明执行查询，最后汇总结果。
+Step 1 [in_progress]: 加载目标 skill
+Step 2 [pending]: 执行查询并展示结果
 
-随后给出本轮唯一工具调用（格式以当前轮系统/运行时指令为准）。
+若当前步骤需要工具，在同一条 assistant message 中附带标准 API `tool_calls` 发起真实工具调用；正文里不要写 JSON、标签、`content/tool_calls` 消息对象或工具占位符。
 
 ## `shell` 与技能包 `SKILL.md` frontmatter（扩展输出 / 宿主无关约定）
 

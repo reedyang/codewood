@@ -782,7 +782,9 @@ class ProviderContextWindowTests(unittest.TestCase):
         first_payload = mock_post.call_args_list[0].kwargs.get("json", {})
         second_payload = mock_post.call_args_list[1].kwargs.get("json", {})
         self.assertIn("tools", first_payload)
+        self.assertEqual(first_payload.get("tool_choice"), "required")
         self.assertNotIn("tools", second_payload)
+        self.assertNotIn("tool_choice", second_payload)
 
     def test_ollama_supports_standard_tools_call(self):
         fake_response = _FakeOllamaHttpResponse(
@@ -823,6 +825,8 @@ class ProviderContextWindowTests(unittest.TestCase):
                 ollama_importer=lambda: None,
             )
         self.assertEqual(out.get("content"), "Reading")
+        payload = mock_post.call_args.kwargs.get("json", {})
+        self.assertEqual(payload.get("tool_choice"), "required")
         self.assertEqual(
             out.get("tool_calls", [])[0].get("function", {}).get("name"),
             "read_file",
@@ -879,7 +883,7 @@ class ProviderContextWindowTests(unittest.TestCase):
                 ),
             ]
         )
-        with patch("requests.post", return_value=fake_response):
+        with patch("requests.post", return_value=fake_response) as mock_post:
             chunks = call_ai_with_provider(
                 context=ProviderCallContext(
                     provider="ollama",
@@ -900,6 +904,8 @@ class ProviderContextWindowTests(unittest.TestCase):
                 append_history=lambda _s: None,
                 ollama_importer=lambda: None,
             )
+        payload = mock_post.call_args.kwargs.get("json", {})
+        self.assertEqual(payload.get("tool_choice"), "required")
         self.assertEqual("".join(list(chunks)), "I will check")
         final_message = getattr(chunks, "final_message", None)
         self.assertIsInstance(final_message, dict)
