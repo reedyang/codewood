@@ -243,6 +243,7 @@ def _extract_model_runtime_config(config: dict, requested_model: str | None = No
                         model_item.get("use_simulated_tools", False)
                     ),
                     "streaming": bool(model_item.get("streaming", True)),
+                    "extra_headers": dict(model_item.get("extra_headers") or {}),
                     "params_raw": params_raw,
                     "provider_models": parsed_models,
                 }
@@ -265,6 +266,7 @@ def _extract_model_runtime_config(config: dict, requested_model: str | None = No
                 first_model.get("use_simulated_tools", False)
             ),
             "streaming": bool(first_model.get("streaming", True)),
+            "extra_headers": dict(first_model.get("extra_headers") or {}),
             "params_raw": first_provider["params_raw"],
             "provider_models": first_provider["models"],
         }
@@ -350,6 +352,7 @@ def _extract_model_runtime_config(config: dict, requested_model: str | None = No
         selected.get("use_simulated_tools", False)
     )
     params["streaming"] = bool(selected.get("streaming", True))
+    params["extra_headers"] = dict(selected.get("extra_headers") or {})
     if provider.strip().lower() == "ollama":
         params["port"] = parse_port(params.get("port"), default_value=DEFAULT_OLLAMA_PORT)
 

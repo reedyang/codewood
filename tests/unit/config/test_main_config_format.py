@@ -137,6 +137,37 @@ class MainConfigFormatTests(unittest.TestCase):
         self.assertIsNone(error)
         self.assertFalse(model_config["params"]["streaming"])
 
+    def test_supports_model_level_extra_headers(self):
+        _, _, model_config, error = _extract_model_runtime_config(
+            {
+                "model_providers": [
+                    {
+                        "provider": "openai",
+                        "params": {
+                            "models": [
+                                {
+                                    "name": "gpt-oss-120b",
+                                    "context_window": 128000,
+                                    "extra_headers": {
+                                        "X-Model": "gpt-oss-120b",
+                                        "X-Test-Route": "enabled",
+                                    },
+                                },
+                            ]
+                        },
+                    }
+                ]
+            }
+        )
+        self.assertIsNone(error)
+        self.assertEqual(
+            model_config["params"]["extra_headers"],
+            {
+                "X-Model": "gpt-oss-120b",
+                "X-Test-Route": "enabled",
+            },
+        )
+
     def test_ollama_port_defaults_and_can_be_configured(self):
         _, _, default_config, default_error = _extract_model_runtime_config(
             {
