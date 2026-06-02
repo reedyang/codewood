@@ -366,7 +366,7 @@ class RuntimeLoopTests(unittest.TestCase):
         )
 
     def test_stream_visible_text_with_json_pause_hides_incomplete_json_fence(self):
-        raw = "先做检查\n```json\n{\"tool\":\"read\",\"args\":{"
+        raw = "先做检查\n```json\n{\"tool\":\"shell\",\"args\":{"
         out = _stream_visible_text_with_json_pause(raw, final=False)
         self.assertEqual(out, "先做检查\n")
 
@@ -374,7 +374,7 @@ class RuntimeLoopTests(unittest.TestCase):
         raw = (
             "准备执行\n"
             "```json\n"
-            "{\"tool\":\"read\",\"args\":{\"path\":\"a.py\"}}\n"
+            "{\"tool\":\"shell\",\"args\":{\"command\":\"Get-Content a.py\"}}\n"
             "```\n"
             "继续"
         )
@@ -391,6 +391,20 @@ class RuntimeLoopTests(unittest.TestCase):
         )
         out = _stream_visible_text_with_json_pause(raw, final=True)
         self.assertEqual(out, raw)
+
+    def test_stream_visible_text_with_json_pause_omits_tool_json_array_fence_when_complete(self):
+        raw = (
+            "准备执行\n"
+            "```json\n"
+            "[\n"
+            "  {\"tool\":\"shell\",\"args\":{\"command\":\"Get-Content a.py\"}},\n"
+            "  {\"tool\":\"project_context_search\",\"args\":{\"query\":\"foo\"}}\n"
+            "]\n"
+            "```\n"
+            "继续"
+        )
+        out = _stream_visible_text_with_json_pause(raw, final=True)
+        self.assertEqual(out, "准备执行\n\n继续")
 
     def test_consume_streaming_ai_response_calls_callback_before_first_visible_output(self):
         class _FakeStream:
@@ -581,10 +595,9 @@ class RuntimeLoopTests(unittest.TestCase):
                     "id": "call_2",
                     "type": "function",
                     "function": {
-                        "name": "grep",
+                        "name": "project_context_search",
                         "arguments": {
-                            "pattern": "streaming",
-                            "path": "src",
+                            "query": "streaming",
                         },
                     },
                 },
@@ -594,7 +607,7 @@ class RuntimeLoopTests(unittest.TestCase):
             _parse_tool_plans_from_model_message(message),
             [
                 ("read_file", {"path": "README.md"}),
-                ("grep", {"pattern": "streaming", "path": "src"}),
+                ("project_context_search", {"query": "streaming"}),
             ],
         )
         self.assertEqual(

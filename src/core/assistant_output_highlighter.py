@@ -54,7 +54,7 @@ def strip_tool_json_blocks_for_display(text: str) -> str:
     if not isinstance(text, str) or not text:
         return ""
 
-    def _parse_tool_call_obj(raw: str) -> dict | None:
+    def _parse_tool_call_obj(raw: str) -> dict | list | None:
         body = str(raw or "").strip()
         if body.startswith("`") and body.endswith("`") and len(body) >= 2:
             body = body[1:-1].strip()
@@ -66,6 +66,14 @@ def strip_tool_json_blocks_for_display(text: str) -> str:
             return None
         if isinstance(obj, dict) and isinstance((obj.get("tool") or obj.get("action")), str):
             return obj
+        if isinstance(obj, list):
+            valid_items = []
+            for item in obj:
+                if not (isinstance(item, dict) and isinstance((item.get("tool") or item.get("action")), str)):
+                    return None
+                valid_items.append(item)
+            if valid_items:
+                return valid_items
         return None
 
     # Parse fenced blocks line-by-line so inline "```" inside JSON string values
@@ -115,9 +123,11 @@ def strip_tool_json_blocks_for_display(text: str) -> str:
         if not s:
             return None
         n = len(s)
-        for m_obj in re.finditer(r"\{", s):
-            start = m_obj.start()
-            depth = 0
+        valid: List[Tuple[int, int]] = []
+        for start, ch0 in enumerate(s):
+            if ch0 not in "{[":
+                continue
+            stack: List[str] = []
             in_str = False
             esc = False
             end = -1
@@ -137,20 +147,43 @@ def strip_tool_json_blocks_for_display(text: str) -> str:
                     in_str = True
                     i += 1
                     continue
-                if ch == "{":
-                    depth += 1
-                elif ch == "}":
-                    depth -= 1
-                    if depth == 0:
+                if ch in "{[":
+                    stack.append("}" if ch == "{" else "]")
+                elif ch in "}]":
+                    if not stack or stack[-1] != ch:
+                        stack = []
+                        break
+                    stack.pop()
+                    if not stack:
                         end = i + 1
                         break
                 i += 1
-            if end == -1 or end != n:
+            if end == -1:
                 continue
             chunk = s[start:end].strip()
             if _parse_tool_call_obj(chunk) is not None:
-                return (start, end)
-        return None
+                valid.append((start, end))
+        if not valid:
+            return None
+        cursor = n
+        first_start: int | None = None
+        while True:
+            matched: Tuple[int, int] | None = None
+            for start, end in sorted(valid, key=lambda item: item[1], reverse=True):
+                if end > cursor:
+                    continue
+                middle = s[end:cursor].strip()
+                if middle and not re.fullmatch(r"[\s`\-]*", middle):
+                    continue
+                matched = (start, end)
+                break
+            if matched is None:
+                break
+            first_start = matched[0]
+            cursor = matched[0]
+        if first_start is None:
+            return None
+        return (first_start, n)
 
     trailing_span = _find_trailing_tool_json_span(stripped)
     if trailing_span:
