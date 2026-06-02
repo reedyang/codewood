@@ -421,6 +421,56 @@ class SessionMemoryService:
         text = cmd if cmd else raw
         return str(text or "").strip().startswith("/")
 
+    def _extract_tool_names_from_json_value(self, value: Any) -> List[str]:
+        if isinstance(value, dict):
+            tool_name = value.get("tool") or value.get("action")
+            if isinstance(tool_name, str) and tool_name.strip():
+                return [tool_name.strip()]
+            return []
+        if isinstance(value, list):
+            out: List[str] = []
+            for item in value:
+                names = self._extract_tool_names_from_json_value(item)
+                if not names:
+                    return []
+                out.extend(names)
+            return out
+        return []
+
+    def _is_done_tool_call_only_assistant_content(self, content: str) -> bool:
+        text = str(content or "").strip()
+        if not text:
+            return False
+        matches = list(
+            re.finditer(
+                r"```\s*(?:json)?\s*\n?(.*?)\s*```",
+                text,
+                flags=re.IGNORECASE | re.DOTALL,
+            )
+        )
+        if not matches:
+            return False
+        cursor = 0
+        tool_names: List[str] = []
+        for match in matches:
+            if text[cursor : match.start()].strip():
+                return False
+            cursor = match.end()
+            body = str(match.group(1) or "").strip()
+            if not body:
+                return False
+            try:
+                value = json.loads(body)
+            except Exception:
+                return False
+            names = self._extract_tool_names_from_json_value(value)
+            if not names:
+                return False
+            tool_names.extend(names)
+        if text[cursor:].strip():
+            return False
+        return bool(tool_names) and all(name.lower() == "done" for name in tool_names)
+
     def _context_eligible_history(self) -> List[Dict[str, Any]]:
         hist = list(getattr(self.agent, "conversation_history", None) or [])
 
@@ -435,6 +485,10 @@ class SessionMemoryService:
                 if role == "user" and self._is_excluded_user_message_for_model_context(item):
                     continue
                 if self._is_builtin_slash_user_message(role, str(item.get("content") or "")):
+                    continue
+                if role == "assistant" and self._is_done_tool_call_only_assistant_content(
+                    str(item.get("content") or "")
+                ):
                     continue
                 out.append(item)
             return out
@@ -462,6 +516,10 @@ class SessionMemoryService:
             if role == "user" and self._is_excluded_user_message_for_model_context(item):
                 continue
             if self._is_builtin_slash_user_message(role, str(item.get("content") or "")):
+                continue
+            if role == "assistant" and self._is_done_tool_call_only_assistant_content(
+                str(item.get("content") or "")
+            ):
                 continue
             out.append((idx, item))
         return out

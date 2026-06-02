@@ -525,6 +525,40 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
         self.assertIn("A2", joined)
         self.assertNotIn("/chat list", joined)
 
+    def test_context_eligible_history_skips_done_tool_call_only_assistant_message(self):
+        agent = _FakeAgent()
+        done_only = (
+            "```json\n"
+            "{\n"
+            '  "tool": "done",\n'
+            '  "args": {\n'
+            '    "reviewed_files": []\n'
+            "  }\n"
+            "}\n"
+            "```"
+        )
+        agent._chat_state = {
+            "chats": [
+                {
+                    "id": "chat-1",
+                    "messages": [
+                        {"role": "user", "content": "A1", "task_id": "task-a"},
+                        {"role": "assistant", "content": done_only, "task_id": "task-a"},
+                        {"role": "assistant", "content": "A2", "task_id": "task-a"},
+                    ],
+                }
+            ]
+        }
+        agent.conversation_history = list(agent._chat_state["chats"][0]["messages"])
+        svc = SessionMemoryService(agent)
+
+        filtered = svc._context_eligible_history()
+        joined = " | ".join(str(x.get("content") or "") for x in filtered)
+
+        self.assertIn("A1", joined)
+        self.assertIn("A2", joined)
+        self.assertNotIn('"tool": "done"', joined)
+
     def test_context_eligible_history_skips_cancelled_unanswered_user_message(self):
         agent = _FakeAgent()
         agent._active_runtime_task_id = "task-b"
