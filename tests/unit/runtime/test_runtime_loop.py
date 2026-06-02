@@ -481,6 +481,43 @@ class RuntimeLoopTests(unittest.TestCase):
         self.assertFalse(streamed_any)
         self.assertEqual(callback_calls, 0)
 
+    def test_consume_streaming_ai_response_closes_stream_on_interrupt(self):
+        class _FakeAiStream:
+            def __init__(self):
+                self.closed = False
+
+            def __iter__(self):
+                yield "hello"
+
+            def close(self):
+                self.closed = True
+
+        class _FakeStdout:
+            def write(self, text):
+                return len(str(text or ""))
+
+            def flush(self):
+                return None
+
+            def isatty(self):
+                return False
+
+        class _Agent:
+            def _consume_task_interrupt_requested(self):
+                return True
+
+            def _hide_previous_shell_output_if_needed(self):
+                return None
+
+            def _ensure_terminal_line_start(self):
+                return None
+
+        stream = _FakeAiStream()
+        with patch("src.runtime.runtime_loop.sys.stdout", _FakeStdout()):
+            with self.assertRaises(KeyboardInterrupt):
+                _consume_streaming_ai_response(_Agent(), stream)
+        self.assertTrue(stream.closed)
+
     def test_consume_streaming_ai_response_tty_append_mode_avoids_block_clear_redraw(self):
         class _FakeTtyStream:
             def __init__(self):

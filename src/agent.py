@@ -5,7 +5,6 @@ import re
 import shlex
 import time
 import threading
-import importlib
 import warnings
 import unicodedata
 import contextlib
@@ -41,7 +40,12 @@ from .core.config.config_jsonc import (
     load_config_jsonc,
     save_config_jsonc,
 )
-from .core.config.model_providers import parse_bool_flag, parse_configured_models
+from .core.config.model_providers import (
+    DEFAULT_OLLAMA_PORT,
+    parse_bool_flag,
+    parse_configured_models,
+    parse_port,
+)
 from .core.assistant_output_highlighter import (
     format_assistant_display_response,
     highlight_assistant_display_line,
@@ -155,14 +159,6 @@ else:
         INPUT_HANDLER_TYPE = "none"
 
 
-def _import_ollama_client():
-    """
-    惰性加载 ollama Python 包；仅在调用方已确认使用 ollama provider 时使用。
-    避免仅配置 openai 时启动阶段执行 import ollama。
-    """
-    return importlib.import_module("ollama")
-
-
 # 经验记忆主检索 query：仅本轮用户输入（上限见 MEMORY_RETRIEVAL_QUERY_MAX_CHARS）。
 # 以下两项仍用于查询扩展 LLM 的「近期对话摘录」参考块，不用于关键词检索 query。
 MEMORY_RETRIEVAL_ROUNDS = 3
@@ -251,7 +247,7 @@ class Agent:
             openai_conf=openai_conf,
             params=params,
             model_config=model_config,
-            ollama_importer=_import_ollama_client,
+            ollama_importer=lambda: None,
         )
         self._restore_active_chat_model()
 
@@ -4634,8 +4630,16 @@ class Agent:
         if provider != "ollama":
             return
         try:
-            ollama = _import_ollama_client()
-            models = ollama.list()
+            import requests
+
+            params = getattr(self, "params", {}) or {}
+            port = parse_port(
+                params.get("port") if isinstance(params, dict) else None,
+                default_value=DEFAULT_OLLAMA_PORT,
+            )
+            resp = requests.get(f"http://127.0.0.1:{port}/api/tags", timeout=10)
+            resp.raise_for_status()
+            models = resp.json()
             available_models = []
             for model in models.get('models', []):
                 if hasattr(model, 'model'):
@@ -4650,8 +4654,6 @@ class Agent:
                 if available_models:
                     print(f"💡 Suggested model: {available_models[0]}")
                 print("💡 Please check model configuration in config.jsonc")
-        except ImportError:
-            print(f"❌ Error: 'ollama' package is not installed, cannot validate {model_type}. Please run: pip install ollama")
         except Exception as e:
             print(f"⚠️ Error validating {model_type}: {e}")
             print(f"💡 Please ensure the Ollama service is running")

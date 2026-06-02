@@ -169,6 +169,7 @@ smart-shell/
     {
       "provider": "ollama",
       "params": {
+        "port": 11434,
         "models": [
           { "name": "qwen2.5vl:3b", "context_window": "96k", "streaming": true }
         ]
@@ -187,6 +188,7 @@ smart-shell/
 **配置说明**:
 - `model_providers`: 多模型提供方列表；启动时默认使用第一个 provider
 - `model_providers[i].provider`: 支持 `ollama`、`openai`
+- `model_providers[i].params.port`: 仅 `ollama` provider 生效，本机 Ollama HTTP 服务端口，默认 `11434`
 - `model_providers[i].params.api_mode`: 仅 `openai` provider 生效，支持 `auto`（默认）、`chat`、`responses`
   - `auto`: 自动在 Chat Completions 与 Responses API 间选择；若 `base_url` 以 `/chat/completions` 或 `/responses` 结尾，会优先按该类型调用
   - `chat`: 按 Chat Completions API 调用（默认补全 `.../chat/completions`）

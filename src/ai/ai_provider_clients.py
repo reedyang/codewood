@@ -6,7 +6,12 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from ..config.app_info import get_app_config_dirname, get_app_logger_root
-from ..core.config.model_providers import DEFAULT_CONTEXT_WINDOW, parse_context_window
+from ..core.config.model_providers import (
+    DEFAULT_CONTEXT_WINDOW,
+    DEFAULT_OLLAMA_PORT,
+    parse_context_window,
+    parse_port,
+)
 from ..core.logging.app_logging import get_logger
 
 
@@ -1246,6 +1251,25 @@ def _call_with_openai_compatible(
     raise RuntimeError("OpenAI request failed: no API mode candidates were available.")
 
 
+def _format_ollama_http_error(url: str, error: Exception, response: Any) -> str:
+    detail = ""
+    if response is not None:
+        body = ""
+        text = getattr(response, "text", None)
+        if isinstance(text, str) and text.strip():
+            body = text.strip()
+        else:
+            try:
+                body = json.dumps(response.json(), ensure_ascii=False)
+            except Exception:
+                body = ""
+        if body:
+            if len(body) > 1000:
+                body = f"{body[:1000]}..."
+            detail = f" Response body: {body}"
+    return f"❌ Error calling Ollama HTTP API at {url}: {str(error)}.{detail}"
+
+
 def _call_with_ollama(
     *,
     model_name: str,
@@ -1262,12 +1286,8 @@ def _call_with_ollama(
     append_history: Callable[[str], None],
     ollama_importer: Callable[[], Any],
     context_window: int,
+    model_params: Optional[Dict[str, Any]],
 ):
-    try:
-        ollama = ollama_importer()
-    except ImportError:
-        return "❌ Error: the 'ollama' package is not installed. Please run: pip install ollama"
-
     if image_data is not None and image_user_idx is not None:
         provider_messages = [dict(m) for m in messages]
         provider_messages[image_user_idx] = {
@@ -1285,66 +1305,121 @@ def _call_with_ollama(
     elif memory_query_expansion_mode:
         ollama_options.update({"num_predict": 512, "temperature": 0.2})
 
+    params_for_port = model_params if isinstance(model_params, dict) else {}
+    port = parse_port(params_for_port.get("port"), default_value=DEFAULT_OLLAMA_PORT)
+    url = f"http://127.0.0.1:{port}/api/chat"
+
+    payload: Dict[str, Any] = {
+        "model": model_name,
+        "messages": provider_messages,
+        "stream": bool(stream),
+        "options": ollama_options,
+    }
+    if ollama_tools:
+        payload["tools"] = ollama_tools
+
+    import requests
+
+    def _post_ollama_chat(request_payload: Dict[str, Any]):
+        response_obj = None
+        try:
+            response_obj = requests.post(
+                url,
+                json=request_payload,
+                timeout=120,
+                stream=bool(stream),
+            )
+            response_obj.raise_for_status()
+            return response_obj, None
+        except requests.RequestException as e:
+            return response_obj, e
+
+    response, request_error = _post_ollama_chat(payload)
+    if request_error is not None and payload.get("tools"):
+        tool_request_response = response
+        fallback_payload = dict(payload)
+        fallback_payload.pop("tools", None)
+        response, fallback_error = _post_ollama_chat(fallback_payload)
+        if fallback_error is not None:
+            return _format_ollama_http_error(url, request_error, tool_request_response)
+    elif request_error is not None:
+        return _format_ollama_http_error(url, request_error, response)
+
     if stream:
-        chat_kwargs: Dict[str, Any] = {
-            "model": model_name,
-            "messages": provider_messages,
-            "stream": True,
-            "options": ollama_options,
-        }
-        if ollama_tools:
-            chat_kwargs["tools"] = ollama_tools
-        response = ollama.chat(
-            **chat_kwargs,
-        )
+        def _iter_stream_payloads():
+            for raw_line in response.iter_lines():
+                if not raw_line:
+                    continue
+                if isinstance(raw_line, (bytes, bytearray)):
+                    line = raw_line.decode("utf-8", errors="replace").strip()
+                else:
+                    line = str(raw_line or "").strip()
+                if not line:
+                    continue
+                if line.startswith("data: "):
+                    line = line[6:].strip()
+                if line == "[DONE]":
+                    break
+                try:
+                    payload_obj = json.loads(line)
+                except Exception:
+                    continue
+                if isinstance(payload_obj, dict):
+                    yield payload_obj
 
         class _OllamaStreamResult:
             def __init__(self) -> None:
                 self.final_message: Optional[Dict[str, Any]] = None
+                self._response = response
+
+            def close(self) -> None:
+                try:
+                    self._response.close()
+                except Exception:
+                    pass
 
             def __iter__(self):
                 buffer = ""
                 first_chunk = True
                 final_role = "assistant"
                 tool_calls: List[Dict[str, Any]] = []
-                for chunk in response:
-                    if not isinstance(chunk, dict):
-                        continue
-                    message = chunk.get("message")
-                    if not isinstance(message, dict):
-                        message = {}
-                    final_role = str(message.get("role") or final_role)
-                    current_tool_calls = _normalize_ollama_tool_calls(message.get("tool_calls"))
-                    if current_tool_calls:
-                        tool_calls = current_tool_calls
-                    delta = _sanitize_assistant_text(message.get("content", "") or "")
-                    if delta:
-                        if first_chunk:
-                            delta = delta.lstrip()
-                            first_chunk = False
+                completed = False
+                try:
+                    for chunk in _iter_stream_payloads():
+                        message = chunk.get("message")
+                        if not isinstance(message, dict):
+                            message = {}
+                        final_role = str(message.get("role") or final_role)
+                        current_tool_calls = _normalize_ollama_tool_calls(message.get("tool_calls"))
+                        if current_tool_calls:
+                            tool_calls = current_tool_calls
+                        delta = _sanitize_assistant_text(message.get("content", "") or "")
                         if delta:
-                            buffer += delta
-                            yield delta
-                self.final_message = {
-                    "role": final_role,
-                    "content": buffer,
-                }
-                if tool_calls:
-                    self.final_message["tool_calls"] = tool_calls
-                append_history(buffer)
+                            if first_chunk:
+                                delta = delta.lstrip()
+                                first_chunk = False
+                            if delta:
+                                buffer += delta
+                                yield delta
+                    completed = True
+                finally:
+                    self.final_message = {
+                        "role": final_role,
+                        "content": buffer,
+                    }
+                    if tool_calls:
+                        self.final_message["tool_calls"] = tool_calls
+                    if completed:
+                        append_history(buffer)
+                    self.close()
 
         return _OllamaStreamResult()
 
-    chat_kwargs: Dict[str, Any] = {
-        "model": model_name,
-        "messages": provider_messages,
-        "stream": False,
-        "options": ollama_options,
-    }
-    if ollama_tools:
-        chat_kwargs["tools"] = ollama_tools
-    response = ollama.chat(**chat_kwargs)
-    message = _extract_message_from_ollama_response_data(response)
+    try:
+        response_data = response.json()
+    except Exception as e:
+        return f"❌ Error parsing Ollama HTTP response at {url}: {str(e)}"
+    message = _extract_message_from_ollama_response_data(response_data)
     ai_response = str(message.get("content", "") or "")
     append_history(ai_response)
     return message if return_message else ai_response
@@ -1394,5 +1469,6 @@ def call_ai_with_provider(
             append_history=append_history,
             ollama_importer=ollama_importer,
             context_window=context_window,
+            model_params=context.model_params,
         )
     return f"❌ Error: unsupported model provider '{context.provider}'. Supported providers: ollama, openai"

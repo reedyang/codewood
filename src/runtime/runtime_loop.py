@@ -335,58 +335,73 @@ def _consume_streaming_ai_response(
             pass
         return append_stream
 
-    for chunk in ai_result:
-        piece = str(chunk or "")
-        if not piece:
-            continue
-        raw_chunks.append(piece)
-        visible_now = _stream_visible_text_with_json_pause("".join(raw_chunks), final=False)
-        if visible_now == shown_visible:
-            continue
-        if not streamed_any:
-            _on_before_first_visible_output()
+    def _close_ai_result() -> None:
+        close_fn = getattr(ai_result, "close", None)
+        if callable(close_fn):
             try:
-                agent._hide_previous_shell_output_if_needed()
+                close_fn()
             except Exception:
                 pass
-            try:
-                agent._ensure_terminal_line_start()
-            except Exception:
-                pass
-        if can_append_stream:
-            delta = visible_now[len(shown_visible) :] if visible_now.startswith(shown_visible) else visible_now
-            if delta:
-                target_stream = _ensure_append_stream()
-                if target_stream is not None:
-                    try:
-                        target_stream.write(delta)
-                        target_stream.flush()
-                        streamed_any = True
-                    except Exception:
+
+    consume_interrupt = getattr(agent, "_consume_task_interrupt_requested", None)
+    try:
+        for chunk in ai_result:
+            if callable(consume_interrupt) and bool(consume_interrupt()):
+                raise KeyboardInterrupt
+            piece = str(chunk or "")
+            if not piece:
+                continue
+            raw_chunks.append(piece)
+            visible_now = _stream_visible_text_with_json_pause("".join(raw_chunks), final=False)
+            if visible_now == shown_visible:
+                continue
+            if not streamed_any:
+                _on_before_first_visible_output()
+                try:
+                    agent._hide_previous_shell_output_if_needed()
+                except Exception:
+                    pass
+                try:
+                    agent._ensure_terminal_line_start()
+                except Exception:
+                    pass
+            if can_append_stream:
+                delta = visible_now[len(shown_visible) :] if visible_now.startswith(shown_visible) else visible_now
+                if delta:
+                    target_stream = _ensure_append_stream()
+                    if target_stream is not None:
+                        try:
+                            target_stream.write(delta)
+                            target_stream.flush()
+                            streamed_any = True
+                        except Exception:
+                            sys.stdout.write(delta)
+                            sys.stdout.flush()
+                            streamed_any = True
+                    else:
                         sys.stdout.write(delta)
                         sys.stdout.flush()
                         streamed_any = True
-                else:
-                    sys.stdout.write(delta)
-                    sys.stdout.flush()
+            elif can_format_render:
+                rendered_ok = _render_visible_block(visible_now)
+                if rendered_ok:
                     streamed_any = True
-        elif can_format_render:
-            rendered_ok = _render_visible_block(visible_now)
-            if rendered_ok:
-                streamed_any = True
-            elif visible_now:
+                elif visible_now:
+                    delta = visible_now[len(shown_visible) :] if visible_now.startswith(shown_visible) else visible_now
+                    if delta:
+                        sys.stdout.write(delta)
+                        sys.stdout.flush()
+                        streamed_any = True
+            else:
                 delta = visible_now[len(shown_visible) :] if visible_now.startswith(shown_visible) else visible_now
                 if delta:
                     sys.stdout.write(delta)
                     sys.stdout.flush()
                     streamed_any = True
-        else:
-            delta = visible_now[len(shown_visible) :] if visible_now.startswith(shown_visible) else visible_now
-            if delta:
-                sys.stdout.write(delta)
-                sys.stdout.flush()
-                streamed_any = True
-        shown_visible = visible_now
+            shown_visible = visible_now
+    except KeyboardInterrupt:
+        _close_ai_result()
+        raise
 
     ai_response = "".join(raw_chunks)
     visible_final = _stream_visible_text_with_json_pause(ai_response, final=True)

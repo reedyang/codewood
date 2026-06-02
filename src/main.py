@@ -24,7 +24,9 @@ from src.core.config.config_jsonc import (
     save_config_jsonc,
 )
 from src.config.app_info import get_app_config_dirname, get_app_name, get_app_version
+from src.core.config.model_providers import DEFAULT_OLLAMA_PORT
 from src.core.config.model_providers import parse_configured_models
+from src.core.config.model_providers import parse_port
 from src.core.console_utils import _ansi_red
 from src.core.console_title import restore_app_console_title
 
@@ -334,6 +336,8 @@ def _extract_model_runtime_config(config: dict, requested_model: str | None = No
         selected.get("use_simulated_tools", False)
     )
     params["streaming"] = bool(selected.get("streaming", True))
+    if provider.strip().lower() == "ollama":
+        params["port"] = parse_port(params.get("port"), default_value=DEFAULT_OLLAMA_PORT)
 
     model_config = {
         "provider": provider,

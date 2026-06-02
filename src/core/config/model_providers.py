@@ -3,6 +3,7 @@ from typing import Any, Dict, List
 
 
 DEFAULT_CONTEXT_WINDOW = 128_000
+DEFAULT_OLLAMA_PORT = 11_434
 _CTX_WINDOW_PATTERN = re.compile(r"^(\d+)([kK]?)$")
 
 
@@ -38,6 +39,22 @@ def parse_bool_flag(value: Any, default_value: bool = False) -> bool:
             return True
         if text in ("0", "false", "no", "off"):
             return False
+    return default_value
+
+
+def parse_port(value: Any, default_value: int = DEFAULT_OLLAMA_PORT) -> int:
+    if isinstance(value, bool):
+        return default_value
+    if isinstance(value, int):
+        return value if 0 < value <= 65535 else default_value
+    if isinstance(value, str):
+        raw = value.strip()
+        if not raw:
+            return default_value
+        if not raw.isdigit():
+            return default_value
+        port = int(raw)
+        return port if 0 < port <= 65535 else default_value
     return default_value
 
 
