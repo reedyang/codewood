@@ -24,6 +24,7 @@ from src.runtime.runtime_loop import (
     _stop_pre_task_status_ticker_for_console_output,
     _try_record_user_task_message,
     _tool_change_and_verification_hints,
+    _parse_tool_plan_from_model_message,
 )
 
 
@@ -516,6 +517,52 @@ class RuntimeLoopTests(unittest.TestCase):
         self.assertTrue(streamed_any)
         self.assertNotIn("\x1b[1A\r\x1b[2K", merged)
         self.assertIn("hello", re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", merged))
+
+    def test_streamed_final_message_tool_calls_can_be_parsed_after_text_stream(self):
+        class _FakeStream:
+            final_message = {
+                "role": "assistant",
+                "content": "Reading",
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {
+                            "name": "read_file",
+                            "arguments": '{"path":"README.md"}',
+                        },
+                    }
+                ],
+            }
+
+            def __iter__(self):
+                yield "Read"
+                yield "ing"
+
+        class _FakeStdout:
+            def write(self, text):
+                return len(str(text or ""))
+
+            def flush(self):
+                return None
+
+            def isatty(self):
+                return False
+
+        class _Agent:
+            def _hide_previous_shell_output_if_needed(self):
+                return None
+
+            def _ensure_terminal_line_start(self):
+                return None
+
+        stream = _FakeStream()
+        with patch("src.runtime.runtime_loop.sys.stdout", _FakeStdout()):
+            ai_response, streamed_any = _consume_streaming_ai_response(_Agent(), stream)
+        self.assertEqual(ai_response, "Reading")
+        self.assertTrue(streamed_any)
+        tool_plan = _parse_tool_plan_from_model_message(stream.final_message)
+        self.assertEqual(tool_plan, ("read_file", {"path": "README.md"}))
 
 
 if __name__ == "__main__":

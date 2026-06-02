@@ -226,6 +226,7 @@ def _extract_model_runtime_config(config: dict, requested_model: str | None = No
                     "use_simulated_tools": bool(
                         model_item.get("use_simulated_tools", False)
                     ),
+                    "streaming": bool(model_item.get("streaming", True)),
                     "params_raw": params_raw,
                     "provider_models": parsed_models,
                 }
@@ -247,6 +248,7 @@ def _extract_model_runtime_config(config: dict, requested_model: str | None = No
             "use_simulated_tools": bool(
                 first_model.get("use_simulated_tools", False)
             ),
+            "streaming": bool(first_model.get("streaming", True)),
             "params_raw": first_provider["params_raw"],
             "provider_models": first_provider["models"],
         }
@@ -331,6 +333,7 @@ def _extract_model_runtime_config(config: dict, requested_model: str | None = No
     params["use_simulated_tools"] = bool(
         selected.get("use_simulated_tools", False)
     )
+    params["streaming"] = bool(selected.get("streaming", True))
 
     model_config = {
         "provider": provider,

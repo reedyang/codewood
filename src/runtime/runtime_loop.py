@@ -1817,7 +1817,7 @@ def run_agent_loop(agent: Any):
                     ai_result = self.call_ai(
                         next_input,
                         context=json.dumps(last_result, ensure_ascii=False) if last_result else "",
-                        stream=(not task_uses_standard_openai_tools),
+                        stream=None,
                         return_message=task_uses_standard_openai_tools,
                         history_user_input=original_user_task if not user_message_recorded else None,
                         history_skip_user=user_message_recorded,
@@ -1843,6 +1843,14 @@ def run_agent_loop(agent: Any):
                         ai_result,
                         before_first_visible_output=_stop_status_ticker_before_first_output,
                     )
+                    stream_final_message = getattr(ai_result, "final_message", None)
+                    if isinstance(stream_final_message, dict):
+                        if not ai_response:
+                            msg_content = stream_final_message.get("content", "")
+                            ai_response = msg_content if isinstance(msg_content, str) else str(msg_content or "")
+                        message_tool_plan = _parse_tool_plan_from_model_message(
+                            stream_final_message
+                        )
                 if not status_ticker_stopped:
                     _stop_status_ticker_before_first_output()
                 if not isinstance(ai_response, str):

@@ -487,6 +487,7 @@ class Agent:
                 use_simulated_tools = bool(
                     model_item.get("use_simulated_tools", False)
                 )
+                streaming = bool(model_item.get("streaming", True))
                 selector = f"{provider}:{model_name}"
                 key = selector.lower()
                 if key in seen:
@@ -496,6 +497,7 @@ class Agent:
                 params["model"] = model_name
                 params["context_window"] = context_window
                 params["use_simulated_tools"] = use_simulated_tools
+                params["streaming"] = streaming
                 out.append(
                     {
                         "provider": provider,
@@ -524,6 +526,11 @@ class Agent:
     def _use_standard_openai_tools_call(self) -> bool:
         provider = str(getattr(self, "provider", "") or "").strip().lower()
         return provider == "openai" and (not self._use_simulated_tools_call())
+
+    def _streaming_enabled_for_current_model(self) -> bool:
+        params = getattr(self, "params", {}) or {}
+        raw = params.get("streaming", True) if isinstance(params, dict) else True
+        return parse_bool_flag(raw, default_value=True)
 
     def _find_configured_model_choice(self, selector: str) -> Optional[Dict[str, Any]]:
         needle = str(selector or "").strip().lower()
@@ -4604,7 +4611,7 @@ class Agent:
         self,
         user_input: str,
         context: str = "",
-        stream: bool = False,
+        stream: Optional[bool] = None,
         minimal_classifier: bool = False,
         freedom_combined_review: bool = False,
         return_message: bool = False,
@@ -4618,10 +4625,11 @@ class Agent:
         tool_choice: Any = None,
     ):
         """调用大模型 API 获取回复；支持流式输出。"""
+        effective_stream = self._streaming_enabled_for_current_model() if stream is None else bool(stream)
         call_ctx = AICallContext(
             user_input=user_input,
             context=context,
-            stream=stream,
+            stream=effective_stream,
             minimal_classifier=minimal_classifier,
             freedom_combined_review=freedom_combined_review,
             return_message=return_message,

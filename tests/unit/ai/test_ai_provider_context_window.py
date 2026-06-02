@@ -115,6 +115,36 @@ class _FakeStreamResponse:
             yield line
 
 
+class _FakeChatToolsStreamResponse:
+    def raise_for_status(self):
+        return None
+
+    def iter_lines(self):
+        lines = [
+            b'data: {"choices":[{"delta":{"content":" I will ","tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"read_file","arguments":"{\\"path\\":\\""}}]}}]}',
+            b'data: {"choices":[{"delta":{"content":"check","tool_calls":[{"index":0,"function":{"arguments":"README.md\\"}"}}]}}]}',
+            b"data: [DONE]",
+        ]
+        for line in lines:
+            yield line
+
+
+class _FakeResponsesToolsStreamResponse:
+    def raise_for_status(self):
+        return None
+
+    def iter_lines(self):
+        lines = [
+            b'data: {"type":"response.output_text.delta","delta":" Reading"}',
+            b'data: {"type":"response.output_item.added","item":{"type":"function_call","call_id":"call_resp_1","name":"read_file","arguments":""}}',
+            b'data: {"type":"response.function_call_arguments.delta","call_id":"call_resp_1","delta":"{\\"path\\":\\"README"}',
+            b'data: {"type":"response.function_call_arguments.delta","call_id":"call_resp_1","delta":".md\\"}"}',
+            b"data: [DONE]",
+        ]
+        for line in lines:
+            yield line
+
+
 class ProviderContextWindowTests(unittest.TestCase):
     @staticmethod
     def _sample_tool_schema():
@@ -672,6 +702,81 @@ class ProviderContextWindowTests(unittest.TestCase):
             )
         self.assertEqual("".join(list(chunks)), "Hello")
         self.assertEqual(history, ["Hello"])
+
+    def test_openai_chat_tools_stream_assembles_final_tool_calls(self):
+        with patch("requests.post", return_value=_FakeChatToolsStreamResponse()):
+            chunks = call_ai_with_provider(
+                context=ProviderCallContext(
+                    provider="openai",
+                    model_name="gpt-4o-mini",
+                    model_params={},
+                    openai_conf={
+                        "api_key": "k",
+                        "base_url": "https://example.com/v1",
+                        "api_mode": "chat",
+                    },
+                    messages=[{"role": "user", "content": "read readme"}],
+                    stream=True,
+                    return_message=True,
+                    image_data=None,
+                    image_user_idx=None,
+                    image_user_text="",
+                    session_summary_mode=False,
+                    memory_query_expansion_mode=False,
+                    tool_schemas=self._sample_tool_schema(),
+                    tool_choice="required",
+                ),
+                append_history=lambda _s: None,
+                ollama_importer=lambda: None,
+            )
+        self.assertEqual("".join(list(chunks)), "I will check")
+        final_message = getattr(chunks, "final_message", None)
+        self.assertIsInstance(final_message, dict)
+        tool_calls = final_message.get("tool_calls") or []
+        self.assertTrue(tool_calls)
+        self.assertEqual(tool_calls[0].get("function", {}).get("name"), "read_file")
+        self.assertEqual(
+            tool_calls[0].get("function", {}).get("arguments"),
+            '{"path":"README.md"}',
+        )
+
+    def test_openai_responses_tools_stream_assembles_final_tool_calls(self):
+        with patch("requests.post", return_value=_FakeResponsesToolsStreamResponse()):
+            chunks = call_ai_with_provider(
+                context=ProviderCallContext(
+                    provider="openai",
+                    model_name="gpt-4o-mini",
+                    model_params={},
+                    openai_conf={
+                        "api_key": "k",
+                        "base_url": "https://example.com/v1",
+                        "api_mode": "responses",
+                    },
+                    messages=[{"role": "user", "content": "read readme"}],
+                    stream=True,
+                    return_message=True,
+                    image_data=None,
+                    image_user_idx=None,
+                    image_user_text="",
+                    session_summary_mode=False,
+                    memory_query_expansion_mode=False,
+                    tool_schemas=self._sample_tool_schema(),
+                    tool_choice="required",
+                ),
+                append_history=lambda _s: None,
+                ollama_importer=lambda: None,
+            )
+        self.assertEqual("".join(list(chunks)), "Reading")
+        final_message = getattr(chunks, "final_message", None)
+        self.assertIsInstance(final_message, dict)
+        tool_calls = final_message.get("tool_calls") or []
+        self.assertTrue(tool_calls)
+        self.assertEqual(tool_calls[0].get("id"), "call_resp_1")
+        self.assertEqual(tool_calls[0].get("function", {}).get("name"), "read_file")
+        self.assertEqual(
+            tool_calls[0].get("function", {}).get("arguments"),
+            '{"path":"README.md"}',
+        )
 
 
 if __name__ == "__main__":
