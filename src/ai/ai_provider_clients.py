@@ -35,7 +35,6 @@ class AICallContext:
     reflection_mode: bool = False
     session_summary_mode: bool = False
     memory_query_expansion_mode: bool = False
-    domain_classifier_mode: bool = False
     image_path: Optional[str] = None
     history_user_input: Optional[str] = None
     history_skip_user: bool = False
@@ -57,7 +56,6 @@ class ProviderCallContext:
     image_user_text: str
     session_summary_mode: bool
     memory_query_expansion_mode: bool
-    domain_classifier_mode: bool
     tool_schemas: Optional[List[Dict[str, Any]]] = None
     tool_choice: Any = None
 
@@ -550,7 +548,6 @@ def _build_openai_payload(
     image_user_text: str,
     session_summary_mode: bool,
     memory_query_expansion_mode: bool,
-    domain_classifier_mode: bool,
     additional_drop_params: List[str],
     tool_schemas: Optional[List[Dict[str, Any]]],
     tool_choice: Any,
@@ -573,9 +570,9 @@ def _build_openai_payload(
             payload["tools"] = tools_payload
             if tool_choice_payload is not None:
                 payload["tool_choice"] = tool_choice_payload
-        if session_summary_mode or memory_query_expansion_mode or domain_classifier_mode:
+        if session_summary_mode or memory_query_expansion_mode:
             payload["max_output_tokens"] = 512
-        if memory_query_expansion_mode or domain_classifier_mode:
+        if memory_query_expansion_mode:
             payload["temperature"] = 0.2
         if isinstance(payload.get("tools"), list) and not payload.get("tools"):
             payload.pop("tools", None)
@@ -591,9 +588,9 @@ def _build_openai_payload(
         payload["tools"] = tools_payload
         if tool_choice_payload is not None:
             payload["tool_choice"] = tool_choice_payload
-    if session_summary_mode or memory_query_expansion_mode or domain_classifier_mode:
+    if session_summary_mode or memory_query_expansion_mode:
         payload["max_tokens"] = 512
-    if memory_query_expansion_mode or domain_classifier_mode:
+    if memory_query_expansion_mode:
         payload["temperature"] = 0.2
     if isinstance(payload.get("tools"), list) and not payload.get("tools"):
         payload.pop("tools", None)
@@ -656,7 +653,6 @@ def _call_openai_once(
     image_user_text: str,
     session_summary_mode: bool,
     memory_query_expansion_mode: bool,
-    domain_classifier_mode: bool,
     additional_drop_params: List[str],
     tool_schemas: Optional[List[Dict[str, Any]]],
     tool_choice: Any,
@@ -672,7 +668,6 @@ def _call_openai_once(
         image_user_text=image_user_text,
         session_summary_mode=session_summary_mode,
         memory_query_expansion_mode=memory_query_expansion_mode,
-        domain_classifier_mode=domain_classifier_mode,
         additional_drop_params=additional_drop_params,
         tool_schemas=tool_schemas,
         tool_choice=tool_choice,
@@ -711,7 +706,6 @@ def _call_openai_with_suffix_strategy(
     image_user_text: str,
     session_summary_mode: bool,
     memory_query_expansion_mode: bool,
-    domain_classifier_mode: bool,
     additional_drop_params: List[str],
     tool_schemas: Optional[List[Dict[str, Any]]],
     tool_choice: Any,
@@ -752,7 +746,6 @@ def _call_openai_with_suffix_strategy(
             image_user_text=image_user_text,
             session_summary_mode=session_summary_mode,
             memory_query_expansion_mode=memory_query_expansion_mode,
-            domain_classifier_mode=domain_classifier_mode,
             additional_drop_params=additional_drop_params,
             tool_schemas=tool_schemas,
             tool_choice=tool_choice,
@@ -795,7 +788,6 @@ def _call_openai_with_suffix_strategy(
             image_user_text=image_user_text,
             session_summary_mode=session_summary_mode,
             memory_query_expansion_mode=memory_query_expansion_mode,
-            domain_classifier_mode=domain_classifier_mode,
             additional_drop_params=additional_drop_params,
             tool_schemas=tool_schemas,
             tool_choice=tool_choice,
@@ -931,7 +923,6 @@ def _call_with_openai_compatible(
     image_user_text: str,
     session_summary_mode: bool,
     memory_query_expansion_mode: bool,
-    domain_classifier_mode: bool,
     tool_schemas: Optional[List[Dict[str, Any]]],
     tool_choice: Any,
     append_history: Callable[[str], None],
@@ -996,7 +987,6 @@ def _call_with_openai_compatible(
                 image_user_text=image_user_text,
                 session_summary_mode=session_summary_mode,
                 memory_query_expansion_mode=memory_query_expansion_mode,
-                domain_classifier_mode=domain_classifier_mode,
                 additional_drop_params=additional_drop_params,
                 tool_schemas=tool_schemas,
                 tool_choice=tool_choice,
@@ -1028,7 +1018,6 @@ def _call_with_ollama(
     image_user_text: str,
     session_summary_mode: bool,
     memory_query_expansion_mode: bool,
-    domain_classifier_mode: bool,
     append_history: Callable[[str], None],
     ollama_importer: Callable[[], Any],
     context_window: int,
@@ -1051,7 +1040,7 @@ def _call_with_ollama(
     ollama_options: Dict[str, Any] = {"num_ctx": int(context_window)}
     if session_summary_mode:
         ollama_options.update({"num_predict": 512, "temperature": 0.3})
-    elif memory_query_expansion_mode or domain_classifier_mode:
+    elif memory_query_expansion_mode:
         ollama_options.update({"num_predict": 512, "temperature": 0.2})
 
     if stream:
@@ -1111,7 +1100,6 @@ def call_ai_with_provider(
             image_user_text=context.image_user_text,
             session_summary_mode=context.session_summary_mode,
             memory_query_expansion_mode=context.memory_query_expansion_mode,
-            domain_classifier_mode=context.domain_classifier_mode,
             tool_schemas=context.tool_schemas,
             tool_choice=context.tool_choice,
             append_history=append_history,
@@ -1133,7 +1121,6 @@ def call_ai_with_provider(
             image_user_text=context.image_user_text,
             session_summary_mode=context.session_summary_mode,
             memory_query_expansion_mode=context.memory_query_expansion_mode,
-            domain_classifier_mode=context.domain_classifier_mode,
             append_history=append_history,
             ollama_importer=ollama_importer,
             context_window=context_window,

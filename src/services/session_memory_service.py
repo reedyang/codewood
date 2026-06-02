@@ -6,7 +6,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
-from ..config.app_info import get_app_config_dirname, get_app_logger_root
+from ..config.app_info import get_app_config_dirname, get_app_logger_root, get_app_slug_kebab
 from ..core.config.model_providers import DEFAULT_CONTEXT_WINDOW, parse_context_window
 from ..core.logging.app_logging import get_logger
 
@@ -279,7 +279,7 @@ class SessionMemoryService:
         text = cmd if cmd else raw
         return str(text or "").strip().startswith("/")
 
-    def _domain_filtered_history(self) -> List[Dict[str, Any]]:
+    def _context_eligible_history(self) -> List[Dict[str, Any]]:
         hist = list(getattr(self.agent, "conversation_history", None) or [])
 
         def _context_eligible_messages(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -291,6 +291,8 @@ class SessionMemoryService:
                 if role not in ("user", "assistant"):
                     continue
                 if role == "user" and self._is_excluded_user_message_for_model_context(item):
+                    continue
+                if self._is_builtin_slash_user_message(role, str(item.get("content") or "")):
                     continue
                 out.append(item)
             return out
@@ -304,70 +306,7 @@ class SessionMemoryService:
         chat_messages = chat.get("messages")
         if not isinstance(chat_messages, list) or not chat_messages:
             return _context_eligible_messages(hist)
-        tasks = chat.get("tasks")
-        if not isinstance(tasks, list):
-            return _context_eligible_messages(chat_messages)
-        task_domains_by_id: Dict[str, Set[str]] = {}
-        for t in tasks:
-            if not isinstance(t, dict):
-                continue
-            tid = str(t.get("id") or "").strip()
-            if not tid:
-                continue
-            domains = t.get("domains")
-            if not isinstance(domains, list):
-                continue
-            dset = {str(x).strip() for x in domains if str(x).strip()}
-            if dset:
-                task_domains_by_id[tid] = dset
-
-        # Use the domain classification of the last valid message that can enter model context
-        # (slash built-in commands are ignored as non-context messages).
-        anchor_domains: Set[str] = set()
-        for m in reversed(chat_messages):
-            if not isinstance(m, dict):
-                continue
-            role = str(m.get("role") or "").strip().lower()
-            if role not in ("user", "assistant"):
-                continue
-            if role == "user" and self._is_excluded_user_message_for_model_context(m):
-                continue
-            if role == "assistant" and self._is_internal_assistant_history_message(
-                str(m.get("content") or "")
-            ):
-                continue
-            if self._is_builtin_slash_user_message(role, str(m.get("content") or "")):
-                continue
-            tid = str(m.get("task_id") or "").strip()
-            if not tid:
-                continue
-            dset = task_domains_by_id.get(tid)
-            if dset:
-                anchor_domains = set(dset)
-                break
-
-        cur_set = set(anchor_domains)
-        if not cur_set and not chat_messages:
-            current_domains = list(getattr(self.agent, "_active_runtime_task_domains", None) or [])
-            cur_set = {str(x).strip() for x in current_domains if str(x).strip()}
-        if not cur_set:
-            return _context_eligible_messages(chat_messages)
-        matched_task_ids: Set[str] = set()
-        for tid, dset in task_domains_by_id.items():
-            if dset & cur_set:
-                matched_task_ids.add(tid)
-        if not matched_task_ids:
-            return hist
-        filtered: List[Dict[str, Any]] = []
-        for m in chat_messages:
-            if not isinstance(m, dict):
-                continue
-            if str(m.get("role") or "").strip().lower() == "user" and self._is_excluded_user_message_for_model_context(m):
-                continue
-            tid = str(m.get("task_id") or "").strip()
-            if tid and tid in matched_task_ids:
-                filtered.append(m)
-        return filtered or _context_eligible_messages(chat_messages)
+        return _context_eligible_messages(chat_messages)
 
     def _normalize_history_content_for_model(self, role: str, content: str) -> str:
         text = str(content or "")
@@ -493,7 +432,7 @@ class SessionMemoryService:
     def _latest_interruption_context_line(
         self, source_history: Optional[List[Dict[str, Any]]] = None
     ) -> str:
-        rows = list(source_history if source_history is not None else self._domain_filtered_history())
+        rows = list(source_history if source_history is not None else self._context_eligible_history())
         parse_direct_result = getattr(self.agent, "_parse_direct_shell_result_history_content", None)
         is_direct_aborted = getattr(self.agent, "_is_direct_shell_result_aborted", None)
         parse_interrupted = getattr(self.agent, "_parse_conversation_interrupted_history_content", None)
@@ -1100,7 +1039,7 @@ class SessionMemoryService:
                     if root:
                         return root
                     break
-        hist = self._domain_filtered_history()
+        hist = self._context_eligible_history()
         for msg in hist:
             if str(msg.get("role") or "").strip().lower() != "user":
                 continue
@@ -1154,15 +1093,19 @@ class SessionMemoryService:
             "assistant_clip_tokens": assistant_clip_tokens,
         }
 
-    def _domain_prompt_append(self) -> str:
-        fn = getattr(self.agent, "_domain_specific_system_prompt_append", None)
-        if not callable(fn):
-            return ""
+    def _software_development_prompt_append(self) -> str:
+        cached = getattr(self, "_software_development_prompt_cache", None)
+        if isinstance(cached, str):
+            return cached
+        prompt_path = Path(__file__).resolve().parents[1] / "prompts" / "domain_software_development.md"
         try:
-            extra = fn()
+            text = prompt_path.read_text(encoding="utf-8").strip()
         except Exception:
-            return ""
-        return str(extra or "")
+            text = ""
+        if text:
+            text = "\n\n" + text + "\n"
+        self._software_development_prompt_cache = text
+        return text
 
     def _summarize_history_excerpt(self, rows: List[Dict[str, Any]], summary_budget: int) -> str:
         if not rows or summary_budget <= 0:
@@ -1188,7 +1131,7 @@ class SessionMemoryService:
         assistant_clip_tokens: int,
         source_history: Optional[List[Dict[str, Any]]] = None,
     ) -> Tuple[List[Dict[str, Any]], Dict[str, int]]:
-        hist = list(source_history if source_history is not None else self._domain_filtered_history())
+        hist = list(source_history if source_history is not None else self._context_eligible_history())
         if not hist or history_budget <= 0:
             return [], {"assistant_trimmed": 0, "summary_messages": 0, "dropped_messages": 0}
 
@@ -1302,7 +1245,7 @@ class SessionMemoryService:
                     return
             expected_key = str(expected_state_key or "").strip()
             budgets = self._context_token_budgets()
-            filtered_history = self._domain_filtered_history()
+            filtered_history = self._context_eligible_history()
             history_messages, _stats = self._build_history_messages_by_budget(
                 int(budgets["history_budget"]),
                 int(budgets["history_summary_budget"]),
@@ -1324,7 +1267,7 @@ class SessionMemoryService:
             sys_text = (
                 f"{str(getattr(self.agent, '_skills_routing_prefix', '') or '')}"
                 f"{system_prompt_snapshot}\n"
-                f"{self._domain_prompt_append()}"
+                f"{self._software_development_prompt_append()}"
                 f"当前 workspace 名称：{str(getattr(self.agent, 'workspace_name', '') or '')}\n"
                 f"当前 chat 名称：{str(getattr(self.agent, 'active_chat_name', '') or '')}\n"
             )
@@ -1466,13 +1409,14 @@ class SessionMemoryService:
             )
         immutable_system_core = (
             f"{self.agent._skills_routing_prefix}{self.agent.system_prompt}\n"
-            f"{self._domain_prompt_append()}"
+            f"{self._software_development_prompt_append()}"
         )
         # Key runtime metadata is intentionally non-clippable.
         workspace_skills_dir = (Path(self.agent.workspace_config_dir) / "skills").resolve()
         default_install_skills_dir = (Path.home() / get_app_config_dirname() / "skills").resolve()
         runtime_tail_raw = (
             f"当前操作系统信息：{os_info}\n"
+            f"当前 {get_app_slug_kebab()} 根目录（绝对路径）：{self.agent._self_repo_root}\n"
             f"当前 config 目录（绝对路径）：{self.agent.config_dir}\n"
             f"当前 workspace 名称：{self.agent.workspace_name}\n"
             f"当前 chat 名称（弱提示，仅会话标签，不代表本轮任务目标）：{self.agent.active_chat_name}\n"
@@ -1495,7 +1439,7 @@ class SessionMemoryService:
         messages: List[Dict[str, Any]] = [{"role": "system", "content": sys_prefix}]
         if skill_front_system_content:
             messages.append({"role": "system", "content": skill_front_system_content})
-        filtered_history = self._domain_filtered_history()
+        filtered_history = self._context_eligible_history()
         history_messages, history_stats = self._build_history_messages_by_budget(
             int(budgets["history_budget"]),
             int(budgets["history_summary_budget"]),
@@ -1637,17 +1581,20 @@ class SessionMemoryService:
                         current_input2_head += f"最近被取消的任务: {last_cancelled_task}\n"
                 if interruption_line:
                     current_input2_head += f"最近的中断状态: {interruption_line}\n"
-                current_input2_optional = (
-                    f"当前 workspace: {self.agent.workspace_name}\n"
-                    f"当前目录（workspace）: {workspace_directory}\n"
-                )
                 if self.agent.operation_results:
                     latest_op2 = self.agent.operation_results[-1]
                     if isinstance(latest_op2, dict) and ("timestamp" in latest_op2):
                         latest_op2 = dict(latest_op2)
                         latest_op2.pop("timestamp", None)
                     op_line2 = f"最近的操作结果: {latest_op2}\n"
-                    current_input2_optional += self._clip_text_to_token_budget(op_line2, aggressive_op_context_budget)
+                    current_input2_head += self._clip_text_to_token_budget(
+                        op_line2,
+                        max(48, aggressive_op_context_budget),
+                    )
+                current_input2_optional = (
+                    f"当前 workspace: {self.agent.workspace_name}\n"
+                    f"当前目录（workspace）: {workspace_directory}\n"
+                )
                 if context:
                     ctx_line2 = f"操作上下文: {context}\n"
                     current_input2_optional += self._clip_text_to_token_budget(ctx_line2, aggressive_op_context_budget)

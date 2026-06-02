@@ -203,27 +203,6 @@ ANSI_OSC_RE = re.compile(r"\x1b\][^\a\x1b]*(?:\a|\x1b\\)")
 DIRECT_SHELL_WORKING_STATUS_MARQUEE_FPS = 10.0
 CONVERSATION_INTERRUPT_BANNER_RECENT_WINDOW_SECONDS = 5.0
 INPUT_PROMPT = "› "
-TASK_DOMAIN_VALUES = frozenset(
-    {
-        "software_development",
-        "documentation_writing",
-        "visual_design",
-        "data_analysis",
-        "finance",
-        "lifestyle",
-        "project_coordination",
-        "general_other",
-    }
-)
-DOMAIN_PROMPT_FILE_MAP: Dict[str, str] = {
-    "software_development": "domain_software_development.md",
-    "documentation_writing": "domain_documentation_writing.md",
-    "visual_design": "domain_visual_design.md",
-    "data_analysis": "domain_data_analysis.md",
-    "finance": "domain_finance.md",
-    "lifestyle": "domain_lifestyle.md",
-    "project_coordination": "domain_project_coordination.md",
-}
 
 
 class Agent:
@@ -702,7 +681,6 @@ class Agent:
         self._session_summary_rolling = ""
         self._last_llm_summary_pair_count = 0
         self._active_runtime_task_id = ""
-        self._active_runtime_task_domains = []
         self._last_context_usage_percent = 0
         self._last_context_input_tokens = 0
         self._chat_state_manager.clear_chat_context_and_tasks(self.active_chat_id)
@@ -714,21 +692,15 @@ class Agent:
     def _start_chat_task(
         self,
         root_user_input: str,
-        domains: List[str],
-        classifier: Optional[Dict[str, Any]] = None,
         switched_from_task_id: str = "",
     ) -> str:
         tid = self._chat_state_manager.start_task(
             self.active_chat_id,
             root_user_input=root_user_input,
-            domains=domains,
-            classifier=classifier,
             switched_from_task_id=switched_from_task_id,
         )
         task_id = str(tid or "").strip()
         self._active_runtime_task_id = task_id
-        dvals = [str(x).strip() for x in (domains or []) if str(x).strip()]
-        self._active_runtime_task_domains = dvals if dvals else ["general_other"]
         try:
             self._refresh_status_context_usage_snapshot(
                 user_input_hint=str(root_user_input or ""),
@@ -756,7 +728,6 @@ class Agent:
         if closed and str(status or "").strip().lower() != "open":
             if str(getattr(self, "_active_runtime_task_id", "") or "").strip() == tid:
                 self._active_runtime_task_id = ""
-                self._active_runtime_task_domains = []
         if str(status or "").strip().lower() == "cancelled":
             try:
                 svc = getattr(self, "session_memory_service", None)
@@ -801,175 +772,6 @@ class Agent:
                 )
         except Exception:
             pass
-
-    def _classify_and_update_direct_shell_task(
-        self,
-        chat_id: str,
-        task_id: str,
-        raw_user_command: str,
-    ) -> None:
-        cid = str(chat_id or "").strip()
-        tid = str(task_id or "").strip()
-        raw_cmd = str(raw_user_command or "").strip()
-        if not cid or not tid or not raw_cmd:
-            return
-        try:
-            domain_info = self._classify_task_domains(raw_cmd)
-        except Exception:
-            return
-        try:
-            domains = list(domain_info.get("domains") or [])
-        except Exception:
-            domains = []
-        if not domains:
-            domains = ["general_other"]
-        try:
-            updater = getattr(self._chat_state_manager, "update_task_classification", None)
-            if callable(updater):
-                updater(
-                    cid,
-                    tid,
-                    domains=domains,
-                    classifier=domain_info if isinstance(domain_info, dict) else {},
-                )
-        except Exception:
-            pass
-
-    def _schedule_direct_shell_task_classification(
-        self,
-        chat_id: str,
-        task_id: str,
-        raw_user_command: str,
-    ) -> None:
-        cid = str(chat_id or "").strip()
-        tid = str(task_id or "").strip()
-        raw_cmd = str(raw_user_command or "").strip()
-        if not cid or not tid or not raw_cmd:
-            return
-
-        def _worker() -> None:
-            self._classify_and_update_direct_shell_task(
-                chat_id=cid,
-                task_id=tid,
-                raw_user_command=raw_cmd,
-            )
-
-        try:
-            t = threading.Thread(target=_worker, daemon=True)
-            t.start()
-        except Exception:
-            pass
-
-    @staticmethod
-    def _parse_domain_classifier_json(text: str) -> Optional[Dict[str, Any]]:
-        raw = str(text or "").strip()
-        if not raw or raw.startswith("❌") or raw.startswith("Error calling LLM"):
-            return None
-        if raw.startswith("```"):
-            raw = re.sub(r"^```(?:json)?\s*", "", raw, flags=re.IGNORECASE)
-            raw = re.sub(r"\s*```\s*$", "", raw)
-        data = None
-        try:
-            data = json.loads(raw)
-        except Exception:
-            start = raw.find("{")
-            if start >= 0:
-                depth = 0
-                for i in range(start, len(raw)):
-                    if raw[i] == "{":
-                        depth += 1
-                    elif raw[i] == "}":
-                        depth -= 1
-                        if depth == 0:
-                            try:
-                                data = json.loads(raw[start : i + 1])
-                            except Exception:
-                                data = None
-                            break
-        if not isinstance(data, dict):
-            return None
-        return data
-
-    def _classify_task_domains(self, user_input: str) -> Dict[str, Any]:
-        default = {
-            "primary_domain": "general_other",
-            "secondary_domains": [],
-            "confidence": 0.0,
-            "reason": "fallback",
-            "domains": ["general_other"],
-        }
-        try:
-            raw = self.call_ai(
-                str(user_input or ""),
-                context="",
-                stream=False,
-                domain_classifier_mode=True,
-                history_skip_user=True,
-            )
-        except Exception:
-            return default
-        if not isinstance(raw, str):
-            return default
-        parsed = self._parse_domain_classifier_json(raw)
-        if not isinstance(parsed, dict):
-            return default
-        primary = str(parsed.get("primary_domain") or "").strip()
-        if primary not in TASK_DOMAIN_VALUES:
-            primary = "general_other"
-        secondary_raw = parsed.get("secondary_domains")
-        secondary: List[str] = []
-        if isinstance(secondary_raw, list):
-            for item in secondary_raw:
-                dom = str(item or "").strip()
-                if dom and dom in TASK_DOMAIN_VALUES and dom != primary and dom not in secondary:
-                    secondary.append(dom)
-        try:
-            confidence = float(parsed.get("confidence") or 0.0)
-        except Exception:
-            confidence = 0.0
-        confidence = max(0.0, min(1.0, confidence))
-        reason = str(parsed.get("reason") or "").strip()
-        domains = [primary] + [d for d in secondary if d != primary]
-        return {
-            "primary_domain": primary,
-            "secondary_domains": secondary,
-            "confidence": confidence,
-            "reason": reason,
-            "domains": domains or ["general_other"],
-        }
-
-    def _domain_specific_system_prompt_append(self) -> str:
-        domains = list(getattr(self, "_active_runtime_task_domains", None) or [])
-        if not domains:
-            return ""
-        cache = getattr(self, "_domain_prompt_cache", None)
-        if not isinstance(cache, dict):
-            cache = {}
-            self._domain_prompt_cache = cache
-        blocks: List[str] = []
-        seen: Set[str] = set()
-        for d in domains:
-            dom = str(d or "").strip()
-            if not dom or dom in seen or dom == "general_other":
-                continue
-            seen.add(dom)
-            text = ""
-            path_name = DOMAIN_PROMPT_FILE_MAP.get(dom, "")
-            if path_name:
-                if path_name in cache:
-                    text = str(cache.get(path_name) or "")
-                else:
-                    p = Path(__file__).resolve().parent / "prompts" / path_name
-                    try:
-                        text = p.read_text(encoding="utf-8").strip()
-                    except Exception:
-                        text = ""
-                    cache[path_name] = text
-            if text:
-                blocks.append(text.strip())
-        if not blocks:
-            return ""
-        return "\n\n" + "\n\n".join(blocks) + "\n"
 
     def _activate_chat(
         self,
@@ -2373,20 +2175,11 @@ class Agent:
         raw_cmd = str(raw_user_command or "").strip()
         if not raw_cmd:
             return
-        active_chat_id = str(getattr(self, "active_chat_id", "") or "").strip()
         direct_task_id = ""
         if not bool(aborted_by_user):
             try:
                 direct_task_id = self._start_chat_task(
                     root_user_input=raw_cmd,
-                    domains=["general_other"],
-                    classifier={
-                        "primary_domain": "general_other",
-                        "secondary_domains": [],
-                        "confidence": 0.0,
-                        "reason": "deferred_direct_shell_classification",
-                        "domains": ["general_other"],
-                    },
                 )
             except Exception:
                 direct_task_id = ""
@@ -2410,12 +2203,6 @@ class Agent:
             except Exception:
                 pass
         if not bool(aborted_by_user):
-            if direct_task_id and active_chat_id:
-                self._schedule_direct_shell_task_classification(
-                    chat_id=active_chat_id,
-                    task_id=direct_task_id,
-                    raw_user_command=raw_cmd,
-                )
             self._refresh_context_usage_after_task_boundary(
                 user_input_hint=raw_cmd,
                 context_hint="direct shell completed",
@@ -4824,7 +4611,6 @@ class Agent:
         reflection_mode: bool = False,
         session_summary_mode: bool = False,
         memory_query_expansion_mode: bool = False,
-        domain_classifier_mode: bool = False,
         image_path: Optional[str] = None,
         history_user_input: Optional[str] = None,
         history_skip_user: bool = False,
@@ -4842,7 +4628,6 @@ class Agent:
             reflection_mode=reflection_mode,
             session_summary_mode=session_summary_mode,
             memory_query_expansion_mode=memory_query_expansion_mode,
-            domain_classifier_mode=domain_classifier_mode,
             image_path=image_path,
             history_user_input=history_user_input,
             history_skip_user=history_skip_user,

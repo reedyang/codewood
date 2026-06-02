@@ -75,22 +75,6 @@ SESSION_SUMMARY_SYSTEM_PROMPT = (
     "Output body text only: no markdown, no title, no JSON, and do not repeat these instructions."
 )
 
-DOMAIN_CLASSIFIER_SYSTEM_PROMPT = (
-    "You are a task domain classifier. Based on user input, output major software-work domain labels. "
-    "Output exactly one JSON object: no markdown, no code fences, no extra explanation.\n"
-    "Allowed domain values are only: "
-    "software_development, documentation_writing, visual_design, data_analysis, finance, lifestyle, project_coordination, general_other.\n"
-    "Required output format:\n"
-    '{"primary_domain":"...","secondary_domains":["..."],"confidence":0.0,"reason":"..."}\n'
-    "Constraints:\n"
-    "1) primary_domain must be one of the allowed values.\n"
-    "2) secondary_domains must be deduplicated; it may be empty, but every value must be in the allowed set and cannot include primary_domain.\n"
-    "3) confidence must be in [0,1].\n"
-    "4) If uncertain, use primary_domain=general_other.\n"
-    "5) Prefer broader recall over over-segmentation."
-)
-
-
 def build_special_mode_messages(
     user_input: str,
     stream: bool,
@@ -99,7 +83,6 @@ def build_special_mode_messages(
     reflection_mode: bool,
     session_summary_mode: bool,
     memory_query_expansion_mode: bool,
-    domain_classifier_mode: bool,
     work_directory: str,
 ) -> Tuple[Optional[List[Dict[str, Any]]], bool, Optional[str]]:
     os_info = os.uname() if hasattr(os, "uname") else os.name
@@ -156,14 +139,6 @@ def build_special_mode_messages(
             return None, False, "❌ Error: streaming mode is not supported for session summary."
         return [
             {"role": "system", "content": SESSION_SUMMARY_SYSTEM_PROMPT},
-            {"role": "user", "content": user_input},
-        ], False, None
-
-    if domain_classifier_mode:
-        if stream:
-            return None, False, "❌ Error: streaming mode is not supported for domain classification."
-        return [
-            {"role": "system", "content": DOMAIN_CLASSIFIER_SYSTEM_PROMPT},
             {"role": "user", "content": user_input},
         ], False, None
 
