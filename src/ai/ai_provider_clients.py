@@ -188,6 +188,167 @@ def prepare_image_input(
     return image_data, image_user_idx, image_user_text, None
 
 
+def _stringify_tool_arguments(value: Any) -> str:
+    if isinstance(value, str):
+        return value
+    if value is None:
+        return ""
+    try:
+        return json.dumps(value, ensure_ascii=False)
+    except Exception:
+        return ""
+
+
+def _stream_tool_call_state_key(item: Dict[str, Any], fallback_index: int = 0) -> str:
+    idx = item.get("index")
+    if isinstance(idx, int) and idx >= 0:
+        return f"idx:{idx}"
+    output_index = item.get("output_index")
+    if isinstance(output_index, int) and output_index >= 0:
+        return f"idx:{output_index}"
+    for key in ("call_id", "id", "item_id"):
+        value = str(item.get(key) or "").strip()
+        if value:
+            return f"id:{value}"
+    return f"idx:{max(0, int(fallback_index or 0))}"
+
+
+def _ensure_stream_tool_call_state(
+    states: Dict[str, Dict[str, Any]],
+    order: List[str],
+    key: str,
+) -> Dict[str, Any]:
+    state = states.get(key)
+    if state is None:
+        state = {"id": "", "name": "", "arguments": "", "type": "function"}
+        states[key] = state
+        order.append(key)
+    return state
+
+
+def _update_stream_tool_call_state(
+    state: Dict[str, Any],
+    *,
+    item: Dict[str, Any],
+    append_arguments: bool,
+) -> None:
+    call_id = str(item.get("call_id") or item.get("id") or item.get("item_id") or "").strip()
+    if call_id:
+        state["id"] = call_id
+    fn = item.get("function")
+    fn_name = ""
+    fn_args: Any = None
+    if isinstance(fn, dict):
+        fn_name = str(fn.get("name") or "").strip()
+        fn_args = fn.get("arguments")
+    name = str(item.get("name") or fn_name or "").strip()
+    if name:
+        state["name"] = name
+    raw_args = fn_args if fn_args is not None else item.get("arguments")
+    args_text = _stringify_tool_arguments(raw_args)
+    if not args_text:
+        return
+    if append_arguments:
+        state["arguments"] = str(state.get("arguments") or "") + args_text
+    else:
+        state["arguments"] = args_text
+
+
+def _collect_stream_tool_calls_from_payload(
+    payload: Any,
+    *,
+    states: Dict[str, Dict[str, Any]],
+    order: List[str],
+) -> None:
+    if not isinstance(payload, dict):
+        return
+
+    try:
+        choices = payload.get("choices")
+        if isinstance(choices, list) and choices:
+            first = choices[0]
+            if isinstance(first, dict):
+                delta_obj = first.get("delta")
+                if isinstance(delta_obj, dict):
+                    tool_calls = delta_obj.get("tool_calls")
+                    if isinstance(tool_calls, list):
+                        for idx, item in enumerate(tool_calls):
+                            if not isinstance(item, dict):
+                                continue
+                            key = _stream_tool_call_state_key(item, fallback_index=idx)
+                            state = _ensure_stream_tool_call_state(states, order, key)
+                            _update_stream_tool_call_state(
+                                state,
+                                item=item,
+                                append_arguments=True,
+                            )
+    except Exception:
+        pass
+
+    event_type = str(payload.get("type") or "").strip().lower()
+    if "function_call_arguments.delta" in event_type:
+        key = _stream_tool_call_state_key(payload)
+        state = _ensure_stream_tool_call_state(states, order, key)
+        delta = payload.get("delta")
+        if isinstance(delta, str) and delta:
+            state["arguments"] = str(state.get("arguments") or "") + delta
+        for key_name in ("name",):
+            value = str(payload.get(key_name) or "").strip()
+            if value:
+                state[key_name] = value
+    if "function_call_arguments.done" in event_type:
+        key = _stream_tool_call_state_key(payload)
+        state = _ensure_stream_tool_call_state(states, order, key)
+        _update_stream_tool_call_state(state, item=payload, append_arguments=False)
+
+    candidate_items: List[Dict[str, Any]] = []
+    for field in ("item", "output_item"):
+        value = payload.get(field)
+        if isinstance(value, dict):
+            candidate_items.append(value)
+    if str(payload.get("type") or "").strip().lower() == "function_call":
+        candidate_items.append(payload)
+
+    for idx, item in enumerate(candidate_items):
+        item_type = str(item.get("type") or "").strip().lower()
+        if item_type != "function_call":
+            continue
+        key = _stream_tool_call_state_key(item, fallback_index=idx)
+        state = _ensure_stream_tool_call_state(states, order, key)
+        # Responses API item snapshots are authoritative; prefer overwrite.
+        _update_stream_tool_call_state(state, item=item, append_arguments=False)
+
+
+def _build_stream_tool_calls_message(
+    *,
+    content: str,
+    states: Dict[str, Dict[str, Any]],
+    order: List[str],
+) -> Dict[str, Any]:
+    message: Dict[str, Any] = {"role": "assistant", "content": str(content or "")}
+    tool_calls: List[Dict[str, Any]] = []
+    for idx, key in enumerate(order, start=1):
+        state = states.get(key) or {}
+        name = str(state.get("name") or "").strip()
+        if not name:
+            continue
+        call_id = str(state.get("id") or "").strip() or f"call_{idx}"
+        arguments = str(state.get("arguments") or "")
+        tool_calls.append(
+            {
+                "id": call_id,
+                "type": "function",
+                "function": {
+                    "name": name,
+                    "arguments": arguments if arguments else "{}",
+                },
+            }
+        )
+    if tool_calls:
+        message["tool_calls"] = tool_calls
+    return message
+
+
 def _stream_openai_like_response(
     resp: Any,
     append_history: Callable[[str], None],
@@ -237,20 +398,33 @@ def _stream_openai_like_response(
             return out
         return ""
 
-    def gen():
-        buffer = ""
-        first_chunk = True
-        for line in resp.iter_lines():
-            if not line:
-                continue
-            if not isinstance(line, (bytes, bytearray)) or not line.startswith(b"data: "):
-                continue
-            data = line[6:]
-            if data.strip() == b"[DONE]":
-                break
-            data_str = data.decode("utf-8", errors="replace")
-            try:
-                payload = json.loads(data_str)
+    class _OpenAIStreamResult:
+        def __init__(self) -> None:
+            self.final_message: Optional[Dict[str, Any]] = None
+
+        def __iter__(self):
+            buffer = ""
+            first_chunk = True
+            tool_call_states: Dict[str, Dict[str, Any]] = {}
+            tool_call_order: List[str] = []
+            for line in resp.iter_lines():
+                if not line:
+                    continue
+                if not isinstance(line, (bytes, bytearray)) or not line.startswith(b"data: "):
+                    continue
+                data = line[6:]
+                if data.strip() == b"[DONE]":
+                    break
+                data_str = data.decode("utf-8", errors="replace")
+                try:
+                    payload = json.loads(data_str)
+                except Exception:
+                    continue
+                _collect_stream_tool_calls_from_payload(
+                    payload,
+                    states=tool_call_states,
+                    order=tool_call_order,
+                )
                 delta = _sanitize_assistant_text(_extract_stream_text_delta(payload))
                 if delta:
                     if first_chunk:
@@ -259,11 +433,14 @@ def _stream_openai_like_response(
                     if delta:
                         buffer += delta
                         yield delta
-            except Exception:
-                continue
-        append_history(buffer)
+            self.final_message = _build_stream_tool_calls_message(
+                content=buffer,
+                states=tool_call_states,
+                order=tool_call_order,
+            )
+            append_history(buffer)
 
-    return gen()
+    return _OpenAIStreamResult()
 
 
 def _extract_text_from_response_content(content: Any) -> str:

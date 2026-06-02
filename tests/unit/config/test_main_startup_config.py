@@ -24,6 +24,7 @@ class MainStartupConfigTests(unittest.TestCase):
                             {
                                 "name": "<YOUR MODEL NAME>",
                                 "context_window": 131072,
+                                "streaming": True,
                             }
                         ],
                     },

@@ -10,7 +10,8 @@
           {
             "name": "<YOUR MODEL NAME>",
             "context_window": 131072,
-            "use_simulated_tools": false
+            "streaming": true,              // optional, default is true
+            "use_simulated_tools": false    // optional, default is false
           }
         ]
       }
