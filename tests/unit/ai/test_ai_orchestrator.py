@@ -45,6 +45,42 @@ class AIOrchestratorTests(unittest.TestCase):
         self.assertEqual(result, "compact summary")
         self.assertEqual(history, [])
 
+    def test_minimal_classifier_uses_real_work_directory(self):
+        captured_messages = []
+
+        def _regular_builder(_user_input, _context):
+            raise AssertionError("regular builder should not be called")
+
+        ctx = AgentAIContext(
+            provider="openai",
+            model_name="test-model",
+            model_params={},
+            openai_conf={"api_key": "x"},
+            work_directory="D:/SourceCode/opensource/smart-shell",
+            history_writer=lambda _role, _content: None,
+            regular_message_builder=_regular_builder,
+            ollama_importer=lambda: None,
+        )
+        orchestrator = AIOrchestrator(ctx)
+
+        def _fake_provider_call(*, context, append_history, ollama_importer):
+            _ = append_history, ollama_importer
+            captured_messages.extend(context.messages)
+            return "ok"
+
+        with patch("src.ai.ai_orchestrator.call_ai_with_provider", _fake_provider_call):
+            result = orchestrator.call(
+                call_ctx=AICallContext(
+                    user_input='{"command":"python -c \\"print(1)\\""}',
+                    minimal_classifier=True,
+                    stream=False,
+                )
+            )
+
+        self.assertEqual(result, "ok")
+        joined = "\n".join(str(msg.get("content") or "") for msg in captured_messages)
+        self.assertIn("Current working directory: D:/SourceCode/opensource/smart-shell", joined)
+
 
 if __name__ == "__main__":
     unittest.main()
