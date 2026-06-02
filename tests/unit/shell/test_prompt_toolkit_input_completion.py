@@ -912,6 +912,7 @@ class PromptToolkitInputCompletionTests(unittest.TestCase):
 
     def test_sync_shell_mode_from_history_non_bang_disables_auto_mode(self):
         handler = pti.PromptToolkitInputHandler.__new__(pti.PromptToolkitInputHandler)
+        handler.history = ["git status"]
         handler._shell_mode_active = True
         handler._shell_mode_auto_by_history = True
         handler._shell_mode_last_working_index = 8
@@ -927,6 +928,7 @@ class PromptToolkitInputCompletionTests(unittest.TestCase):
 
     def test_sync_shell_mode_from_history_non_bang_disables_manual_shell_mode(self):
         handler = pti.PromptToolkitInputHandler.__new__(pti.PromptToolkitInputHandler)
+        handler.history = ["git status"]
         handler._shell_mode_active = True
         handler._shell_mode_auto_by_history = False
         handler._shell_mode_last_working_index = 8
@@ -942,6 +944,7 @@ class PromptToolkitInputCompletionTests(unittest.TestCase):
 
     def test_sync_shell_mode_from_slash_history_clears_stale_shell_index(self):
         handler = pti.PromptToolkitInputHandler.__new__(pti.PromptToolkitInputHandler)
+        handler.history = ["/chat reload"]
         handler._shell_mode_active = True
         handler._shell_mode_auto_by_history = True
         handler._shell_mode_last_working_index = 9
@@ -978,6 +981,7 @@ class PromptToolkitInputCompletionTests(unittest.TestCase):
 
     def test_sync_shell_mode_remembers_normalized_bang_history_index(self):
         handler = pti.PromptToolkitInputHandler.__new__(pti.PromptToolkitInputHandler)
+        handler.history = ["!ping www.baidu.com", "git status"]
         handler._shell_mode_active = False
         handler._shell_mode_auto_by_history = False
         handler._shell_mode_last_working_index = 9
@@ -1007,7 +1011,24 @@ class PromptToolkitInputCompletionTests(unittest.TestCase):
         handler._shell_mode_last_working_index = 8
         handler._shell_mode_history_indices = set()
         handler._shell_mode_sync_guard = False
+        handler.history = []
         buf = type("Buffer", (), {"text": "git status", "cursor_position": 10, "working_index": 8})()
+
+        changed = handler._sync_shell_mode_from_buffer(buf)
+
+        self.assertFalse(changed)
+        self.assertTrue(handler._shell_mode_active)
+        self.assertFalse(handler._shell_mode_auto_by_history)
+
+    def test_sync_shell_mode_keeps_manual_mode_on_first_non_history_input(self):
+        handler = pti.PromptToolkitInputHandler.__new__(pti.PromptToolkitInputHandler)
+        handler._shell_mode_active = True
+        handler._shell_mode_auto_by_history = False
+        handler._shell_mode_last_working_index = 8
+        handler._shell_mode_history_indices = set()
+        handler._shell_mode_sync_guard = False
+        handler.history = ["git status", "!ping example.com"]
+        buf = type("Buffer", (), {"text": "p", "cursor_position": 1, "working_index": 7})()
 
         changed = handler._sync_shell_mode_from_buffer(buf)
 

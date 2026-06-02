@@ -1424,7 +1424,16 @@ class PromptToolkitInputHandler:
             shell_history_indices.add(working_index)
             known_shell_index = True
 
-        if starts_with_bang or known_shell_index:
+        shell_history_match = bool(
+            starts_with_bang
+            or known_shell_index
+            or (
+                bool(history_navigated)
+                and self._buffer_matches_shell_history_entry(text)
+            )
+        )
+
+        if shell_history_match:
             if (not active) or bool(history_navigated):
                 self._shell_mode_active = True
                 self._shell_mode_auto_by_history = True
@@ -1453,13 +1462,45 @@ class PromptToolkitInputHandler:
                     changed = True
         else:
             # When history navigation lands on a non-shell entry, sync back to
-            # normal mode regardless of how shell mode was entered.
-            if bool(history_navigated) and active:
+            # normal mode when the new buffer contents actually look like a
+            # recalled history entry. Fresh manual typing can also move the
+            # working index on first edit, and should stay in shell mode.
+            if bool(history_navigated) and active and (
+                auto_by_history or self._buffer_matches_history_entry(text)
+            ):
                 self._shell_mode_active = False
                 self._shell_mode_auto_by_history = False
                 changed = True
 
         return changed
+
+    def _buffer_matches_history_entry(self, text: str) -> bool:
+        candidate = str(text or "").strip()
+        if not candidate:
+            return False
+
+        for entry in getattr(self, "history", []) or []:
+            normalized = str(entry or "").strip()
+            if not normalized:
+                continue
+            if normalized == candidate:
+                return True
+            if self._strip_one_leading_bang(normalized).strip() == candidate:
+                return True
+        return False
+
+    def _buffer_matches_shell_history_entry(self, text: str) -> bool:
+        candidate = str(text or "").strip()
+        if not candidate:
+            return False
+
+        for entry in getattr(self, "history", []) or []:
+            normalized = str(entry or "").strip()
+            if not normalized or not normalized.lstrip().startswith("!"):
+                continue
+            if self._strip_one_leading_bang(normalized).strip() == candidate:
+                return True
+        return False
 
     def _install_shell_mode_sync_handler(self, buf: Any) -> None:
         if buf is None:
