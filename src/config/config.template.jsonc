@@ -15,6 +15,20 @@
           }
         ]
       }
+    },
+    {
+      "provider": "ollama",
+      "params": {
+        "port": 11434,                    // optional, default is 11434
+        "models": [
+          {
+            "name": "<YOUR OLLAMA MODEL NAME>",
+            "context_window": 128000,
+            "streaming": true,             // optional, default is true
+            "use_simulated_tools": false   // optional, default is false
+          }
+        ]
+      }
     }
   ],
   "execution_policy": "moderate",

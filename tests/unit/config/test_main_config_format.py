@@ -137,6 +137,33 @@ class MainConfigFormatTests(unittest.TestCase):
         self.assertIsNone(error)
         self.assertFalse(model_config["params"]["streaming"])
 
+    def test_ollama_port_defaults_and_can_be_configured(self):
+        _, _, default_config, default_error = _extract_model_runtime_config(
+            {
+                "model_providers": [
+                    {
+                        "provider": "ollama",
+                        "params": {"models": ["qwen2.5:14b"]},
+                    }
+                ]
+            }
+        )
+        self.assertIsNone(default_error)
+        self.assertEqual(default_config["params"]["port"], 11434)
+
+        _, _, custom_config, custom_error = _extract_model_runtime_config(
+            {
+                "model_providers": [
+                    {
+                        "provider": "ollama",
+                        "params": {"port": "11555", "models": ["qwen2.5:14b"]},
+                    }
+                ]
+            }
+        )
+        self.assertIsNone(custom_error)
+        self.assertEqual(custom_config["params"]["port"], 11555)
+
     def test_requires_model_providers(self):
         provider, model_name, model_config, error = _extract_model_runtime_config({})
         self.assertIsNone(provider)

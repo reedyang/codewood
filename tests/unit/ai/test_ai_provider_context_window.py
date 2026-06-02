@@ -78,21 +78,24 @@ class _FakeResponsesToolsApiResponse:
         }
 
 
-class _FakeOllama:
-    def __init__(self, *, response=None, stream_chunks=None):
-        self.calls = []
-        self.response = response
-        self.stream_chunks = stream_chunks
+class _FakeOllamaHttpResponse:
+    def __init__(self, *, data=None, lines=None):
+        self._data = data if data is not None else {"message": {"content": "ok"}}
+        self._lines = list(lines or [])
+        self.closed = False
 
-    def chat(self, **kwargs):
-        self.calls.append(kwargs)
-        if kwargs.get("stream"):
-            if self.stream_chunks is not None:
-                return self.stream_chunks
-            return [{"message": {"content": "hello"}}, {"message": {"content": " world"}}]
-        if self.response is not None:
-            return self.response
-        return {"message": {"content": "ok"}}
+    def raise_for_status(self):
+        return None
+
+    def json(self):
+        return self._data
+
+    def iter_lines(self):
+        for line in self._lines:
+            yield line
+
+    def close(self):
+        self.closed = True
 
 
 class _FakeHttpErrorResponse:
@@ -625,31 +628,125 @@ class ProviderContextWindowTests(unittest.TestCase):
         )
 
     def test_ollama_passes_num_ctx(self):
-        fake_ollama = _FakeOllama()
-        out = call_ai_with_provider(
-            context=ProviderCallContext(
-                provider="ollama",
-                model_name="qwen2.5:14b",
-                model_params={"context_window": "96K"},
-                openai_conf=None,
-                messages=[{"role": "user", "content": "hi"}],
-                stream=False,
-                return_message=False,
-                image_data=None,
-                image_user_idx=None,
-                image_user_text="",
-                session_summary_mode=False,
-                memory_query_expansion_mode=False,
-            ),
-            append_history=lambda _s: None,
-            ollama_importer=lambda: fake_ollama,
-        )
+        with patch("requests.post", return_value=_FakeOllamaHttpResponse()) as mock_post:
+            out = call_ai_with_provider(
+                context=ProviderCallContext(
+                    provider="ollama",
+                    model_name="qwen2.5:14b",
+                    model_params={"context_window": "96K"},
+                    openai_conf=None,
+                    messages=[{"role": "user", "content": "hi"}],
+                    stream=False,
+                    return_message=False,
+                    image_data=None,
+                    image_user_idx=None,
+                    image_user_text="",
+                    session_summary_mode=False,
+                    memory_query_expansion_mode=False,
+                ),
+                append_history=lambda _s: None,
+                ollama_importer=lambda: None,
+            )
         self.assertEqual(out, "ok")
-        self.assertEqual(fake_ollama.calls[0]["options"]["num_ctx"], 96000)
+        self.assertEqual(mock_post.call_args.args[0], "http://127.0.0.1:11434/api/chat")
+        payload = mock_post.call_args.kwargs.get("json", {})
+        self.assertEqual(payload.get("options", {}).get("num_ctx"), 96000)
+        self.assertFalse(payload.get("stream"))
+
+    def test_ollama_uses_configured_http_port(self):
+        with patch("requests.post", return_value=_FakeOllamaHttpResponse()) as mock_post:
+            call_ai_with_provider(
+                context=ProviderCallContext(
+                    provider="ollama",
+                    model_name="qwen2.5:14b",
+                    model_params={"context_window": "96K", "port": "11555"},
+                    openai_conf=None,
+                    messages=[{"role": "user", "content": "hi"}],
+                    stream=False,
+                    return_message=False,
+                    image_data=None,
+                    image_user_idx=None,
+                    image_user_text="",
+                    session_summary_mode=False,
+                    memory_query_expansion_mode=False,
+                ),
+                append_history=lambda _s: None,
+                ollama_importer=lambda: None,
+            )
+        self.assertEqual(mock_post.call_args.args[0], "http://127.0.0.1:11555/api/chat")
+
+    def test_ollama_http_error_includes_response_body(self):
+        response = _FakeHttpErrorResponse(
+            status_code=400,
+            body='{"error":"model does not support tools"}',
+        )
+        with patch("requests.post", return_value=response):
+            out = call_ai_with_provider(
+                context=ProviderCallContext(
+                    provider="ollama",
+                    model_name="qwen2.5:14b",
+                    model_params={"context_window": "96K"},
+                    openai_conf=None,
+                    messages=[{"role": "user", "content": "hi"}],
+                    stream=False,
+                    return_message=False,
+                    image_data=None,
+                    image_user_idx=None,
+                    image_user_text="",
+                    session_summary_mode=False,
+                    memory_query_expansion_mode=False,
+                ),
+                append_history=lambda _s: None,
+                ollama_importer=lambda: None,
+            )
+
+        self.assertIn("Ollama HTTP API", out)
+        self.assertIn("model does not support tools", out)
+
+    def test_ollama_retries_without_tools_when_tool_payload_is_rejected(self):
+        responses = [
+            _FakeHttpErrorResponse(
+                status_code=400,
+                body='{"error":"tools are not supported by this model"}',
+            ),
+            _FakeOllamaHttpResponse(data={"message": {"content": "你好"}}),
+        ]
+
+        def _fake_post(*args, **kwargs):
+            return responses.pop(0)
+
+        with patch("requests.post", side_effect=_fake_post) as mock_post:
+            out = call_ai_with_provider(
+                context=ProviderCallContext(
+                    provider="ollama",
+                    model_name="qwen2.5:14b",
+                    model_params={"context_window": "96K"},
+                    openai_conf=None,
+                    messages=[{"role": "user", "content": "hi"}],
+                    stream=False,
+                    return_message=False,
+                    image_data=None,
+                    image_user_idx=None,
+                    image_user_text="",
+                    session_summary_mode=False,
+                    memory_query_expansion_mode=False,
+                    tool_schemas=self._sample_tool_schema(),
+                    tool_choice="required",
+                ),
+                append_history=lambda _s: None,
+                ollama_importer=lambda: None,
+            )
+
+        self.assertEqual(out, "你好")
+        self.assertEqual(mock_post.call_count, 2)
+        first_payload = mock_post.call_args_list[0].kwargs.get("json", {})
+        second_payload = mock_post.call_args_list[1].kwargs.get("json", {})
+        self.assertIn("tools", first_payload)
+        self.assertNotIn("tools", second_payload)
 
     def test_ollama_supports_standard_tools_call(self):
-        fake_ollama = _FakeOllama(
-            response={
+        fake_response = _FakeOllamaHttpResponse(
+            data={
                 "message": {
                     "role": "assistant",
                     "content": "Reading",
@@ -664,26 +761,27 @@ class ProviderContextWindowTests(unittest.TestCase):
                 }
             }
         )
-        out = call_ai_with_provider(
-            context=ProviderCallContext(
-                provider="ollama",
-                model_name="qwen2.5:14b",
-                model_params={"context_window": "96K"},
-                openai_conf=None,
-                messages=[{"role": "user", "content": "please read readme"}],
-                stream=False,
-                return_message=True,
-                image_data=None,
-                image_user_idx=None,
-                image_user_text="",
-                session_summary_mode=False,
-                memory_query_expansion_mode=False,
-                tool_schemas=self._sample_tool_schema(),
-                tool_choice="required",
-            ),
-            append_history=lambda _s: None,
-            ollama_importer=lambda: fake_ollama,
-        )
+        with patch("requests.post", return_value=fake_response) as mock_post:
+            out = call_ai_with_provider(
+                context=ProviderCallContext(
+                    provider="ollama",
+                    model_name="qwen2.5:14b",
+                    model_params={"context_window": "96K"},
+                    openai_conf=None,
+                    messages=[{"role": "user", "content": "please read readme"}],
+                    stream=False,
+                    return_message=True,
+                    image_data=None,
+                    image_user_idx=None,
+                    image_user_text="",
+                    session_summary_mode=False,
+                    memory_query_expansion_mode=False,
+                    tool_schemas=self._sample_tool_schema(),
+                    tool_choice="required",
+                ),
+                append_history=lambda _s: None,
+                ollama_importer=lambda: None,
+            )
         self.assertEqual(out.get("content"), "Reading")
         self.assertEqual(
             out.get("tool_calls", [])[0].get("function", {}).get("name"),
@@ -693,77 +791,75 @@ class ProviderContextWindowTests(unittest.TestCase):
             out.get("tool_calls", [])[0].get("function", {}).get("arguments"),
             '{"path": "README.md"}',
         )
-        sent_tools = fake_ollama.calls[0].get("tools") or []
+        sent_tools = mock_post.call_args.kwargs.get("json", {}).get("tools") or []
         self.assertTrue(sent_tools)
         self.assertEqual(sent_tools[0].get("function", {}).get("name"), "read_file")
 
     def test_ollama_stream_summary_keeps_num_ctx_and_summary_options(self):
-        fake_ollama = _FakeOllama()
-        chunks = call_ai_with_provider(
-            context=ProviderCallContext(
-                provider="ollama",
-                model_name="qwen2.5:14b",
-                model_params={"context_window": 128000},
-                openai_conf=None,
-                messages=[{"role": "user", "content": "hi"}],
-                stream=True,
-                return_message=False,
-                image_data=None,
-                image_user_idx=None,
-                image_user_text="",
-                session_summary_mode=True,
-                memory_query_expansion_mode=False,
-            ),
-            append_history=lambda _s: None,
-            ollama_importer=lambda: fake_ollama,
+        fake_response = _FakeOllamaHttpResponse(
+            lines=[
+                b'{"message":{"content":"hello"}}',
+                b'{"message":{"content":" world"},"done":true}',
+            ]
         )
+        with patch("requests.post", return_value=fake_response) as mock_post:
+            chunks = call_ai_with_provider(
+                context=ProviderCallContext(
+                    provider="ollama",
+                    model_name="qwen2.5:14b",
+                    model_params={"context_window": 128000},
+                    openai_conf=None,
+                    messages=[{"role": "user", "content": "hi"}],
+                    stream=True,
+                    return_message=False,
+                    image_data=None,
+                    image_user_idx=None,
+                    image_user_text="",
+                    session_summary_mode=True,
+                    memory_query_expansion_mode=False,
+                ),
+                append_history=lambda _s: None,
+                ollama_importer=lambda: None,
+            )
         self.assertEqual("".join(list(chunks)), "hello world")
-        options = fake_ollama.calls[0]["options"]
+        options = mock_post.call_args.kwargs.get("json", {}).get("options", {})
         self.assertEqual(options["num_ctx"], 128000)
         self.assertEqual(options["num_predict"], 512)
         self.assertEqual(options["temperature"], 0.3)
+        self.assertTrue(fake_response.closed)
 
     def test_ollama_stream_tools_assembles_final_tool_calls(self):
-        fake_ollama = _FakeOllama(
-            stream_chunks=[
-                {"message": {"role": "assistant", "content": "I will "}},
-                {
-                    "message": {
-                        "role": "assistant",
-                        "content": "check",
-                        "tool_calls": [
-                            {
-                                "id": "call_1",
-                                "function": {
-                                    "name": "read_file",
-                                    "arguments": {"path": "README.md"},
-                                },
-                            }
-                        ],
-                    }
-                },
+        fake_response = _FakeOllamaHttpResponse(
+            lines=[
+                b'{"message":{"role":"assistant","content":"I will "}}',
+                (
+                    b'{"message":{"role":"assistant","content":"check","tool_calls":['
+                    b'{"id":"call_1","function":{"name":"read_file","arguments":{"path":"README.md"}}}'
+                    b']}}'
+                ),
             ]
         )
-        chunks = call_ai_with_provider(
-            context=ProviderCallContext(
-                provider="ollama",
-                model_name="qwen2.5:14b",
-                model_params={"context_window": 128000},
-                openai_conf=None,
-                messages=[{"role": "user", "content": "please read readme"}],
-                stream=True,
-                return_message=True,
-                image_data=None,
-                image_user_idx=None,
-                image_user_text="",
-                session_summary_mode=False,
-                memory_query_expansion_mode=False,
-                tool_schemas=self._sample_tool_schema(),
-                tool_choice="required",
-            ),
-            append_history=lambda _s: None,
-            ollama_importer=lambda: fake_ollama,
-        )
+        with patch("requests.post", return_value=fake_response):
+            chunks = call_ai_with_provider(
+                context=ProviderCallContext(
+                    provider="ollama",
+                    model_name="qwen2.5:14b",
+                    model_params={"context_window": 128000},
+                    openai_conf=None,
+                    messages=[{"role": "user", "content": "please read readme"}],
+                    stream=True,
+                    return_message=True,
+                    image_data=None,
+                    image_user_idx=None,
+                    image_user_text="",
+                    session_summary_mode=False,
+                    memory_query_expansion_mode=False,
+                    tool_schemas=self._sample_tool_schema(),
+                    tool_choice="required",
+                ),
+                append_history=lambda _s: None,
+                ollama_importer=lambda: None,
+            )
         self.assertEqual("".join(list(chunks)), "I will check")
         final_message = getattr(chunks, "final_message", None)
         self.assertIsInstance(final_message, dict)
