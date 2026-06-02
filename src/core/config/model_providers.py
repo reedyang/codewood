@@ -1,5 +1,4 @@
 import re
-import re
 from typing import Any, Dict, List
 
 
@@ -101,7 +100,6 @@ def parse_configured_models(
     for item in models:
         model_name = ""
         context_window_raw: Any = None
-        use_simulated_tools_raw: Any = False
         streaming_raw: Any = True
         extra_headers_raw: Any = {}
         if isinstance(item, str):
@@ -109,7 +107,6 @@ def parse_configured_models(
         elif isinstance(item, dict):
             model_name = str(item.get("name") or "").strip()
             context_window_raw = item.get("context_window")
-            use_simulated_tools_raw = item.get("use_simulated_tools", False)
             streaming_raw = item.get("streaming", True)
             extra_headers_raw = item.get("extra_headers", {})
         else:
@@ -121,9 +118,6 @@ def parse_configured_models(
                 "name": model_name,
                 "context_window": parse_context_window(
                     context_window_raw, default_value=default_context_window
-                ),
-                "use_simulated_tools": parse_bool_flag(
-                    use_simulated_tools_raw, default_value=False
                 ),
                 "streaming": parse_bool_flag(
                     streaming_raw, default_value=True

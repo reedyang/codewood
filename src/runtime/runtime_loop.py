@@ -27,7 +27,6 @@ from ..config.startup_tips import (
 from ..core.config.config_jsonc import CONFIG_JSONC_FILENAME
 from ..core.assistant_output_highlighter import (
     format_assistant_display_response,
-    strip_tool_json_blocks_for_display,
 )
 from ..core.logging.app_logging import get_logger
 from ..controllers.builtin_command_router import dispatch_builtin_command
@@ -45,9 +44,6 @@ _CODE_MUTATION_TOOLS = {
 _WORKING_STATUS_MARQUEE_FPS = 10.0
 _STREAM_ATTR_TERMINAL_COLUMNS = get_app_runtime_attr_name("terminal_columns")
 _STREAM_ATTR_OUTPUT_INDENT_WIDTH = get_app_runtime_attr_name("output_indent_width")
-_ASSISTANT_TOOL_CALL_MARKER = "<|assistant tool_calls|>"
-_PSEUDO_TOOL_CALLS_OPEN = "<tool_calls>"
-_PSEUDO_TOOL_CALLS_CLOSE = "</tool_calls>"
 
 
 class _TeeTextStream:
@@ -119,34 +115,6 @@ def _stop_pre_task_status_ticker_for_console_output(
     return None
 
 
-def _parse_tool_call_json_payload(raw: str) -> Optional[Dict[str, Any]]:
-    body = str(raw or "").strip()
-    if not body:
-        return None
-    if body.startswith("`") and body.endswith("`") and len(body) >= 2:
-        body = body[1:-1].strip()
-    if not body:
-        return None
-    try:
-        obj = json.loads(body)
-    except Exception:
-        return None
-    if not isinstance(obj, dict):
-        if isinstance(obj, list) and obj:
-            for item in obj:
-                if not isinstance(item, dict):
-                    return None
-                tool_name = item.get("tool") or item.get("action")
-                if not (isinstance(tool_name, str) and tool_name.strip()):
-                    return None
-            return {"tool": "__multi__", "args": {"count": len(obj)}}
-        return None
-    tool_name = obj.get("tool") or obj.get("action")
-    if isinstance(tool_name, str) and tool_name.strip():
-        return obj
-    return None
-
-
 def _parse_tool_plans_from_model_message(
     message: Any,
 ) -> List[Tuple[str, Dict[str, Any]]]:
@@ -205,175 +173,8 @@ def _is_textless_done_only_tool_call(
 
 
 def _stream_visible_text_with_json_pause(text: str, *, final: bool) -> str:
-    raw = str(text or "")
-    if not raw:
-        return ""
-    out: List[str] = []
-    i = 0
-    n = len(raw)
-    lower = raw.lower()
-    while i < n:
-        start = lower.find("```json", i)
-        if start < 0:
-            out.append(raw[i:])
-            break
-        out.append(raw[i:start])
-        close = raw.find("```", start + 7)
-        if close < 0:
-            # JSON fence is incomplete; keep it buffered until completed.
-            break
-        block = raw[start : close + 3]
-        body = raw[start + 7 : close]
-        if _parse_tool_call_json_payload(body) is None:
-            out.append(block)
-        i = close + 3
-    merged = "".join(out)
-    if not merged:
-        return ""
-    if final:
-        return strip_tool_json_blocks_for_display(merged)
-    else:
-        merged = _buffer_trailing_partial_json_fence_for_stream(merged)
-        merged = _strip_or_buffer_assistant_tool_call_markers_for_stream(merged)
-        merged = _strip_or_buffer_pseudo_tool_calls_for_stream(merged)
-        pending_span = _find_trailing_plain_tool_json_span(merged)
-        if pending_span is not None:
-            start, _ = pending_span
-            merged = merged[:start].rstrip()
-        else:
-            merged = _trim_trailing_blank_paragraph_for_stream(merged)
-    return merged
-
-
-def _buffer_trailing_partial_json_fence_for_stream(text: str) -> str:
-    raw = str(text or "")
-    if not raw:
-        return ""
-    line_start = max(raw.rfind("\n"), raw.rfind("\r")) + 1
-    tail = raw[line_start:]
-    stripped_tail = tail.lstrip()
-    leading_ws = len(tail) - len(stripped_tail)
-    if not stripped_tail:
-        return raw
-    opener = "```json"
-    lowered = stripped_tail.lower()
-    if len(lowered) >= len(opener):
-        return raw
-    if opener.startswith(lowered):
-        return raw[: line_start + leading_ws]
-    return raw
-
-
-def _strip_or_buffer_pseudo_tool_calls_for_stream(text: str) -> str:
-    raw = str(text or "")
-    if not raw:
-        return ""
-    lower = raw.lower()
-    out: List[str] = []
-    i = 0
-    while i < len(raw):
-        start = lower.find(_PSEUDO_TOOL_CALLS_OPEN, i)
-        if start < 0:
-            out.append(raw[i:])
-            break
-        out.append(raw[i:start])
-        body_start = start + len(_PSEUDO_TOOL_CALLS_OPEN)
-        end = lower.find(_PSEUDO_TOOL_CALLS_CLOSE, body_start)
-        if end < 0:
-            # Buffer the pseudo tool block until it closes.
-            break
-        body = raw[body_start:end]
-        if _parse_tool_call_json_payload(body) is None:
-            out.append(raw[start : end + len(_PSEUDO_TOOL_CALLS_CLOSE)])
-        i = end + len(_PSEUDO_TOOL_CALLS_CLOSE)
-
-    merged = "".join(out)
-    tail_limit = min(len(_PSEUDO_TOOL_CALLS_OPEN) - 1, len(merged))
-    lower_merged = merged.lower()
-    for size in range(tail_limit, 0, -1):
-        if _PSEUDO_TOOL_CALLS_OPEN.startswith(lower_merged[-size:]):
-            return merged[:-size]
-    return merged
-
-
-def _strip_or_buffer_assistant_tool_call_markers_for_stream(text: str) -> str:
-    raw = str(text or "")
-    if not raw:
-        return ""
-    marker = _ASSISTANT_TOOL_CALL_MARKER
-    out: List[str] = []
-    i = 0
-    while i < len(raw):
-        start = raw.find(marker, i)
-        if start < 0:
-            out.append(raw[i:])
-            break
-        out.append(raw[i:start])
-        body_start = start + len(marker)
-        end = raw.find(marker, body_start)
-        if end < 0:
-            # Once the internal marker appears, keep the whole tail buffered
-            # until we can tell whether it is a tool-call payload.
-            break
-        i = end + len(marker)
-
-    merged = "".join(out)
-    tail_limit = min(len(marker) - 1, len(merged))
-    for size in range(tail_limit, 0, -1):
-        if marker.startswith(merged[-size:]):
-            return merged[:-size]
-    return merged
-
-
-def _trim_trailing_blank_paragraph_for_stream(text: str) -> str:
-    raw = str(text or "")
-    if not raw:
-        return ""
-    return re.sub(r"(?:[ \t]*\n){2,}[ \t]*$", "", raw)
-
-
-def _find_trailing_plain_tool_json_span(text: str) -> Optional[Tuple[int, int]]:
-    raw = str(text or "")
-    if not raw.strip():
-        return None
-    normalized = raw.replace("\r\n", "\n").replace("\r", "\n")
-    lines = normalized.splitlines(keepends=True)
-    if not lines:
-        return None
-
-    end = len(lines)
-    while end > 0 and lines[end - 1].strip() == "":
-        end -= 1
-    if end <= 0:
-        return None
-
-    start = end - 1
-    while start > 0 and lines[start - 1].strip() != "":
-        start -= 1
-
-    def _looks_like_tool_key_prefix(candidate: str) -> bool:
-        probe = candidate.lstrip()
-        if not probe.startswith("{"):
-            return False
-        probe = probe[1:].lstrip()
-        if not probe:
-            return True
-        if probe.startswith('"'):
-            probe = probe[1:]
-        key_prefix = re.split(r'["\s:,\]}]', probe, maxsplit=1)[0].lower()
-        if not key_prefix:
-            return True
-        return "tool".startswith(key_prefix) or "action".startswith(key_prefix)
-
-    block = "".join(lines[start:end]).lstrip()
-    if not (
-        _looks_like_tool_key_prefix(block)
-        or (block.startswith("[") and _looks_like_tool_key_prefix(block[1:]))
-    ):
-        return None
-
-    prefix_len = len("".join(lines[:start]))
-    return prefix_len, prefix_len + len("".join(lines[start:end]))
+    _ = final
+    return str(text or "")
 
 
 def _consume_streaming_ai_response(
@@ -1877,51 +1678,25 @@ def run_agent_loop(agent: Any):
                     "- 用户若请求“指定 MCP server 的信息/详情”，首个查询工具必须是 mcp_server_info。\n"
                     "- mcp_status/mcp_status_refresh 仅用于全局 MCP 状态总览，不可替代指定 server 的详情查询。\n\n"
                 )
-            task_uses_standard_openai_tools = bool(self._use_standard_openai_tools_call())
+            task_uses_standard_openai_tools = True
             first_round_contract = (
                 "\n\n【首轮回复硬性要求（必须遵守）】\n"
                 "1) 对于需要两步及以上完成的任务，先简要说明“将要完成哪些事情”，紧随其后再输出任务编排：Step 1..N，并为每步标注状态（pending/in_progress/completed/failed）。\n"
-                "2) 在同一条回复结尾输出位于 ```json ... ``` 代码块中的工具调用 JSON；可输出一个或多个工具调用对象，或输出一个包含多个工具调用对象的 JSON 数组。\n"
-                "3) 仅当当前会话尚未注入目标 skill 正文时，优先请求 skill 提示；"
-                "若该 skill 已注入（例如用户通过 `/skills/<skill-name>` 显式启用），通常不应重复调用 request_skill_prompt。"
-                "但若系统提示明确为「分段注入」且你确需后续段，可调用带 section/full 参数的 request_skill_prompt。"
-                "如确需请求，也必须先给出上述步骤编排，再在结尾输出位于 ```json ... ``` 代码块中的 "
-                "{\"tool\":\"request_skill_prompt\",\"args\":{\"skill_id\":\"...\"}}。\n"
-                "4) 对于需要两步及以上完成的任务，禁止首轮直接只给位于 ```json ... ``` 代码块中的工具调用 JSON 而不做“事项简述 + 步骤编排”。\n"
+                "2) 不要输出工具调用 JSON 文本；若需要调用工具，请直接使用标准 tools 调用（tool_calls），可在同一条 assistant 回复中一次调用一个或多个工具。若无需工具可直接自然语言回答。\n"
+                "3) 对于需要两步及以上完成的任务，禁止首轮直接只给工具调用而不做“事项简述 + 步骤编排”。\n"
+                "4) 禁止在回复正文中书写 `<tool_calls>...</tool_calls>`、JSON 工具对象或其它伪工具调用格式；正文只写用户可见说明，工具必须走 API tool_calls 字段。\n"
                 "5) 若用户问题可被上一条 system 开头的【经验记忆】单独完整回答，"
-                "首轮应直接给出简短自然语言并结束（若本轮无文件改动可用 {\"tool\":\"done\",\"args\":{}}）。不要输出 Step 编排或 memory_search。\n"
+                "首轮应直接给出简短自然语言并结束，不要调用 done、不要输出 Step 编排或 memory_search。\n"
                 "6) 若任务需要把自然语言指称解析为稳定标识符/映射：先阅读【经验记忆】，仍不足则首轮或次轮使用 memory_search，再执行检索、shell 或 request_skill_prompt；禁止在未核对记忆时先猜标识符再搜网。\n"
-                "7) 若你已输出 Step 1..N 且含「检索/搜索」与后续「分析、再跑脚本、再请求其它 skill」等，禁止在仅完成靠前步骤且仍有 pending 时 {\"tool\":\"done\"}；须继续直至各步完成或显式说明改计划原因。\n\n"
-                "8) 只要调用了网络检索相关的工具、命令、脚本或 skill（网页搜索、联网抓取、在线查询等），调用 done 前必须先输出一次检索结果总结（关键信息、来源要点、与用户问题的对应关系）；禁止检索后直接 done。\n\n"
-                "9) 若上一任务已被用户取消，而本轮用户输入是新任务，禁止主动恢复或重做被取消任务；仅当用户明确要求“继续/重做”时才可恢复。\n\n"
+                "7) 只要调用了网络检索相关的工具、命令、脚本或 skill（网页搜索、联网抓取、在线查询等），调用 done 前必须先输出一次检索结果总结（关键信息、来源要点、与用户问题的对应关系）；禁止检索后直接 done。\n"
+                "8) done 只能在已经给出用户可见的最终答复、总结或结果说明之后调用；简单问候、闲聊、概念解释、直接可回答的问题，必须只输出自然语言，不要调用 done。\n\n"
                 + mcp_tool_selection_constraint
                 + "【经验记忆 memory_* 使用规则】\n"
                 "- memory_search：若 system 开头【经验记忆】已含作答所需信息，不要为走流程而调用；"
                 "但若任务依赖「仅可能存在于记忆中的实体标识/别名映射」而当前看不出可靠值，必须先 memory_search 再调用下游取数或脚本，禁止臆造标识符。\n"
                 "- memory_add：用户明确要求「记住某事」「以后按某偏好」且属于个人经验而非文档时；"
-                "若你认为用户观点明显有误，仍可按工具说明在内容中记录你的判断（system_note）。\n\n"
-                "首轮输出模板示例：\n"
-                "我将帮你获取并显示 playwright MCP 最新状态。\n"
-                "Step 1 [in_progress]: <当前要执行的步骤>\n"
-                "Step 2 [pending]: <后续步骤>\n\n"
-                "若你当前采用的是模拟 JSON tool call，请务必把 JSON 放进 ```json ... ``` 代码块，并放在回复末尾；代码块前不要留空行。\n"
-                "```json\n"
-                "{\"tool\":\"<tool_name>\",\"args\":{...}}\n"
-                "```"
+                "若你认为用户观点明显有误，仍可按工具说明在内容中记录你的判断（system_note）。\n"
             )
-            if task_uses_standard_openai_tools:
-                first_round_contract = (
-                    "\n\n【首轮回复硬性要求（必须遵守）】\n"
-                    "1) 对于需要两步及以上完成的任务，先简要说明“将要完成哪些事情”，紧随其后再输出任务编排：Step 1..N，并为每步标注状态（pending/in_progress/completed/failed）。\n"
-                    "2) 不要输出工具调用 JSON 文本；若需要调用工具，请直接使用标准 tools 调用（tool_calls），可在同一条 assistant 回复中一次调用一个或多个工具。若无需工具可直接自然语言回答。\n"
-                    "3) 对于需要两步及以上完成的任务，禁止首轮直接只给工具调用而不做“事项简述 + 步骤编排”。\n"
-                    "4) 禁止在回复正文中书写 `<tool_calls>...</tool_calls>`、JSON 工具对象或其它伪工具调用格式；正文只写用户可见说明，工具必须走 API tool_calls 字段。\n"
-                    "5) 若用户问题可被上一条 system 开头的【经验记忆】单独完整回答，"
-                    "首轮应直接给出简短自然语言并结束，不要调用 done、不要输出 Step 编排或 memory_search。\n"
-                    "6) 若任务需要把自然语言指称解析为稳定标识符/映射：先阅读【经验记忆】，仍不足则首轮或次轮使用 memory_search，再执行检索、shell 或 request_skill_prompt；禁止在未核对记忆时先猜标识符再搜网。\n"
-                    "7) 只要调用了网络检索相关的工具、命令、脚本或 skill（网页搜索、联网抓取、在线查询等），调用 done 前必须先输出一次检索结果总结（关键信息、来源要点、与用户问题的对应关系）；禁止检索后直接 done。\n"
-                    "8) done 只能在已经给出用户可见的最终答复、总结或结果说明之后调用；简单问候、闲聊、概念解释、直接可回答的问题，必须只输出自然语言，不要调用 done。\n"
-                )
             first_round_evidence = ""
             if self._project_context_feature_enabled():
                 project_context_ready = False
@@ -2041,8 +1816,6 @@ def run_agent_loop(agent: Any):
                 try:
                     standard_tool_schemas = (
                         list(getattr(self, "tool_specs", []) or [])
-                        if task_uses_standard_openai_tools
-                        else None
                     )
                     ai_result = self.call_ai(
                         next_input,
@@ -2103,8 +1876,6 @@ def run_agent_loop(agent: Any):
                         self._terminal_cursor_at_line_start = True
 
                 fallback_plans = list(message_tool_plans)
-                if (not fallback_plans) and (not task_uses_standard_openai_tools):
-                    fallback_plans = list(self._parse_tool_plans_from_response(ai_response) or [])
                 if task_uses_standard_openai_tools and _is_textless_done_only_tool_call(ai_response, fallback_plans):
                     no_tool_rounds += 1
                     if no_tool_rounds >= max_no_tool_rounds:
@@ -2139,63 +1910,19 @@ def run_agent_loop(agent: Any):
                             context_hint="task finished direct answer",
                         )
                         break
-                    misplaced_plans = list(self._find_tool_plans_anywhere(ai_response) or [])
                     no_tool_rounds += 1
                     if no_tool_rounds >= max_no_tool_rounds:
-                        if task_uses_standard_openai_tools:
-                            print("❌ The model repeatedly failed to produce a valid tool_calls response. Auto-execution has stopped for this round.")
-                        else:
-                            print("❌ The model repeatedly failed to produce an executable JSON tool plan. Auto-execution has stopped for this round.")
+                        print("❌ The model repeatedly failed to produce a valid tool_calls response. Auto-execution has stopped for this round.")
                         break
-                    if task_uses_standard_openai_tools:
-                        print(
-                            f"⚠️ No valid tool_calls detected (retry {no_tool_rounds}/{max_no_tool_rounds}): "
-                            "the model will be asked again to call one or more tools via standard tool_calls."
-                        )
-                    else:
-                        print(
-                            f"⚠️ No executable JSON tool plan detected (retry {no_tool_rounds}/{max_no_tool_rounds}): "
-                            "the model will be asked again to output {\"tool\":\"...\",\"args\":{...}}."
-                        )
-                    if misplaced_plans:
-                        m_tool, m_args = misplaced_plans[0]
-                        if task_uses_standard_openai_tools:
-                            next_input = (
-                                f"【用户原始需求】\n{original_user_task}\n\n"
-                                "你上一条回复包含文本形式的工具计划（例如 JSON 或 <tool_calls> 伪标签），但当前模式要求使用 API 标准 tool_calls 字段。\n"
-                                "不要把工具调用写在回复正文中。"
-                                f"请直接调用工具 `{m_tool}`，参数保持为 {json.dumps(m_args, ensure_ascii=False)}。"
-                            )
-                        else:
-                            serialized_plans = "\n".join(
-                                json.dumps(
-                                    {"tool": tool_name, "args": plan_args},
-                                    ensure_ascii=False,
-                                )
-                                for tool_name, plan_args in misplaced_plans
-                            )
-                            next_input = (
-                                f"【用户原始需求】\n{original_user_task}\n\n"
-                                "你上一条回复包含工具调用 JSON，但它不在回复结尾（后面仍有文本），因此被判无效。\n"
-                                "请在下一条回复中把这些工具调用原样放在回复末尾，并放入 ```json ... ``` 代码块中；代码块前不要留空行，且其后不要再有任何文本。\n"
-                                "可直接连续输出多个 JSON 对象，或输出一个 JSON 数组。\n"
-                                f"请输出以下内容，并确保整体被 ```json ... ``` 代码块包裹：\n{serialized_plans}"
-                            )
-                    else:
-                        if task_uses_standard_openai_tools:
-                            next_input = (
-                                f"【用户原始需求】\n{original_user_task}\n\n"
-                                "你上一条回复没有给出有效的标准 tool_calls。\n"
-                                "请直接调用一个或多个最合适的工具；若任务已完成，请直接调用 done。"
-                            )
-                        else:
-                            next_input = (
-                                f"【用户原始需求】\n{original_user_task}\n\n"
-                                "你上一条回复没有给出可执行 JSON。\n"
-                                "请只输出位于回复末尾的 ```json ... ``` 代码块：可连续输出一个或多个 JSON 对象，或只输出一个 JSON 数组；"
-                                "任务完成时输出 done 的 JSON 计划（若本轮改过文件，args 需包含 reviewed_files 覆盖全部已修改文件）。"
-                                "若你判断任务已完成，下一条必须直接输出 done，禁止再调用无关工具。"
-                            )
+                    print(
+                        f"⚠️ No valid tool_calls detected (retry {no_tool_rounds}/{max_no_tool_rounds}): "
+                        "the model will be asked again to call one or more tools via standard tool_calls."
+                    )
+                    next_input = (
+                        f"【用户原始需求】\n{original_user_task}\n\n"
+                        "你上一条回复没有给出有效的标准 tool_calls。\n"
+                        "请直接调用一个或多个最合适的工具；若任务已完成，请直接调用 done。"
+                    )
                     is_first_round = False
                     continue
 
@@ -2249,11 +1976,7 @@ def run_agent_loop(agent: Any):
                             next_input = (
                                 f"【用户原始需求】\n{original_user_task}\n\n"
                                 f"skill_id=`{sid}` 已由本轮显式 `/skills/<skill-name>` 引用预注入。"
-                                + (
-                                    "禁止再次调用 request_skill_prompt。请直接继续调用标准 tools。"
-                                    if task_uses_standard_openai_tools
-                                    else "禁止再次调用 request_skill_prompt。请直接输出后续业务工具计划，并把 JSON 放进 ```json ... ``` 代码块（可一个或多个对象，或一个数组），代码块前不要留空行。"
-                                )
+                                "禁止再次调用 request_skill_prompt。请直接继续调用标准 tools。"
                             )
                             no_tool_rounds = 0
                             continue_after_batch = True
@@ -2269,11 +1992,7 @@ def run_agent_loop(agent: Any):
                             next_input = (
                                 f"【用户原始需求】\n{original_user_task}\n\n"
                                 f"skill_id=`{sid}` 的完整提示已在当前会话中注入。"
-                                + (
-                                    "禁止重复调用 request_skill_prompt。请直接继续调用标准 tools。"
-                                    if task_uses_standard_openai_tools
-                                    else "禁止重复调用 request_skill_prompt。请直接输出后续业务工具计划，并把 JSON 放进 ```json ... ``` 代码块（可一个或多个对象，或一个数组），代码块前不要留空行。"
-                                )
+                                "禁止重复调用 request_skill_prompt。请直接继续调用标准 tools。"
                             )
                             no_tool_rounds = 0
                             continue_after_batch = True
@@ -2299,11 +2018,7 @@ def run_agent_loop(agent: Any):
                             next_input = (
                                 f"【用户原始需求】\n{original_user_task}\n\n"
                                 f"你请求的 skill_id=`{sid}` 不存在。"
-                                + (
-                                    "请基于已加载技能索引重试，输出有效的 request_skill_prompt，或直接继续调用标准 tools。"
-                                    if task_uses_standard_openai_tools
-                                    else "请基于已加载技能索引重试，输出有效的 request_skill_prompt，或直接继续输出业务工具计划，并把 JSON 放进 ```json ... ``` 代码块（可一个或多个对象，或一个数组），代码块前不要留空行。"
-                                )
+                                "请基于已加载技能索引重试，输出有效的 request_skill_prompt，或直接继续调用标准 tools。"
                             )
                             continue_after_batch = True
                             break
@@ -2319,11 +2034,7 @@ def run_agent_loop(agent: Any):
                             f"【用户原始需求】\n{original_user_task}\n\n"
                             f"已注入 skill_id=`{sid}` 的 skill 提示。"
                             f"当前段进度：{self._active_skill_section}/{self._active_skill_total_sections if self._active_skill_total_sections else 1}。"
-                            + (
-                                "请继续调用标准 tools；可一次调用一个或多个工具。"
-                                if task_uses_standard_openai_tools
-                                else "请继续输出位于回复末尾的 ```json ... ``` 代码块中的工具调用 JSON；代码块前不要留空行，可连续输出一个或多个对象，或输出一个数组。"
-                            )
+                            "请继续调用标准 tools；可一次调用一个或多个工具。"
                         )
                         no_tool_rounds = 0
                         continue_after_batch = True
@@ -2338,11 +2049,7 @@ def run_agent_loop(agent: Any):
                             "1) 基于现有结果先给出阶段性结论；\n"
                             "2) 若证据不足，仅补充一次更有针对性的工具调用；\n"
                             "3) 若已足够，直接输出 done。\n"
-                            + (
-                                "下一条请继续调用标准 tools，并避免重复；可一次调用一个或多个工具。"
-                                if task_uses_standard_openai_tools
-                                else "下一条请输出新的 JSON 工具计划，并把它放进 ```json ... ``` 代码块；代码块前不要留空行，可连续输出一个或多个对象，或输出一个数组。"
-                            )
+                            "下一条请继续调用标准 tools，并避免重复；可一次调用一个或多个工具。"
                         )
                         no_tool_rounds = 0
                         continue_after_batch = True
@@ -2471,11 +2178,7 @@ def run_agent_loop(agent: Any):
                             f"【用户原始需求】\n{original_user_task}\n\n"
                             "你刚调用了 task_changed，系统已将原始需求切换为“新任务”。\n"
                             + (f"切换原因：{reason}\n" if reason else "")
-                            + (
-                                "请基于新的原始需求继续调用标准 tools；可一次调用一个或多个工具。"
-                                if task_uses_standard_openai_tools
-                                else "请基于新的原始需求继续输出位于 ```json ... ``` 代码块中的工具调用 JSON；代码块前不要留空行，可连续输出一个或多个对象，或输出一个数组。"
-                            )
+                            + "请基于新的原始需求继续调用标准 tools；可一次调用一个或多个工具。"
                         )
                         continue_after_batch = True
                         break
@@ -2527,15 +2230,9 @@ def run_agent_loop(agent: Any):
                         next_input = (
                             f"【用户原始需求】\n{original_user_task}\n\n"
                             f"【用户补充信息】\n{supplement_text}\n\n"
-                            + (
-                                "请判断该补充信息是否与原始需求相关：\n"
-                                "- 若完全无关：调用 task_changed（new_task 填提炼后的新需求，reason 填原因）；\n"
-                                "- 若相关：继续调用标准 tools；可一次调用一个或多个工具；若信息仍不充分，可再次调用 ask_more_info。"
-                                if task_uses_standard_openai_tools
-                                else "请判断该补充信息是否与原始需求相关：\n"
-                                "- 若完全无关：调用 {\"tool\":\"task_changed\",\"args\":{\"new_task\":\"<用户补充信息提炼后的新需求>\",\"reason\":\"...\"}}；\n"
-                                "- 若相关：继续输出位于 ```json ... ``` 代码块中的工具调用 JSON；代码块前不要留空行，可连续输出一个或多个对象，或输出一个数组；若信息仍不充分，可再次调用 ask_more_info。"
-                            )
+                            + "请判断该补充信息是否与原始需求相关：\n"
+                            "- 若完全无关：调用 task_changed（new_task 填提炼后的新需求，reason 填原因）；\n"
+                            "- 若相关：继续调用标准 tools；可一次调用一个或多个工具；若信息仍不充分，可再次调用 ask_more_info。"
                         )
                         continue_after_batch = True
                         break
@@ -2604,15 +2301,9 @@ def run_agent_loop(agent: Any):
                     f"【用户原始需求】\n{original_user_task}\n\n"
                     f"{step_progress}\n\n"
                     f"【上一批工具执行结果（压缩）】\n{self._compact_result_for_next_input(result_for_next_input)}\n\n"
-                    + (
-                        "请继续调用标准 tools；可一次调用一个或多个工具；"
-                        "任务全部完成时请直接调用 done（若本轮改过文件，args.reviewed_files 需覆盖全部已修改文件）。"
-                        "若上一批结果已满足原始需求，下一条必须直接调用 done。"
-                        if task_uses_standard_openai_tools
-                        else "请继续输出位于 ```json ... ``` 代码块中的 JSON 工具计划：代码块前不要留空行，可连续输出一个或多个 {\"tool\":\"工具名\",\"args\":{...}} 对象，或输出一个数组；"
-                        "任务全部完成时输出 done 的 JSON 计划（若本轮改过文件，args 需包含 reviewed_files 覆盖全部已修改文件）。"
-                        "若上一条结果已满足原始需求，下一条必须直接输出 done。"
-                    )
+                    + "请继续调用标准 tools；可一次调用一个或多个工具；"
+                    "任务全部完成时请直接调用 done（若本轮改过文件，args.reviewed_files 需覆盖全部已修改文件）。"
+                    "若上一批结果已满足原始需求，下一条必须直接调用 done。"
                     + (f"\n{post_status_rule}" if post_status_rule else "")
                     + (f"\n{post_result_synthesis_rule}" if post_result_synthesis_rule else "")
                 )

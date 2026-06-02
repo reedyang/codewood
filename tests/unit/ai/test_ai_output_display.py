@@ -18,7 +18,7 @@ class AiOutputDisplayTests(unittest.TestCase):
     def setUp(self):
         self.agent = Agent.__new__(Agent)
 
-    def test_strip_tool_json_fence_keeps_narrative(self):
+    def test_strip_tool_json_fence_keeps_text(self):
         text = (
             "我将先读取文件。\n\n"
             "```json\n"
@@ -26,7 +26,7 @@ class AiOutputDisplayTests(unittest.TestCase):
             "```\n"
         )
         out = aoh.strip_tool_json_blocks_for_display(text)
-        self.assertEqual(out, "我将先读取文件。")
+        self.assertEqual(out, text.strip())
 
     def test_tool_call_summary_prefers_path_like_fields(self):
         s = self.agent._tool_call_summary(
@@ -38,7 +38,7 @@ class AiOutputDisplayTests(unittest.TestCase):
         self.assertNotIn("line_count=10", s)
         self.assertNotIn("start_line=101", s)
 
-    def test_strip_tool_json_unclosed_fence_keeps_narrative(self):
+    def test_strip_tool_json_unclosed_fence_keeps_text(self):
         text = (
             "Step 2 [in_progress]: 继续读取文件。\n\n"
             "```json\n"
@@ -48,9 +48,9 @@ class AiOutputDisplayTests(unittest.TestCase):
             "}\n"
         )
         out = aoh.strip_tool_json_blocks_for_display(text)
-        self.assertEqual(out, "Step 2 [in_progress]: 继续读取文件。")
+        self.assertEqual(out, text.strip())
 
-    def test_strip_tool_json_fence_with_patch_text_containing_fence_markers(self):
+    def test_strip_tool_json_fence_with_patch_text_containing_fence_markers_keeps_text(self):
         text = (
             "Step 1 [in_progress]: 应用补丁。\n\n"
             "```json\n"
@@ -64,9 +64,9 @@ class AiOutputDisplayTests(unittest.TestCase):
             "```\n"
         )
         out = aoh.strip_tool_json_blocks_for_display(text)
-        self.assertEqual(out, "Step 1 [in_progress]: 应用补丁。")
+        self.assertEqual(out, text.strip())
 
-    def test_strip_tool_json_array_fence_keeps_narrative(self):
+    def test_strip_tool_json_array_fence_keeps_text(self):
         text = (
             "先分两步处理。\n\n"
             "```json\n"
@@ -77,17 +77,17 @@ class AiOutputDisplayTests(unittest.TestCase):
             "```\n"
         )
         out = aoh.strip_tool_json_blocks_for_display(text)
-        self.assertEqual(out, "先分两步处理。")
+        self.assertEqual(out, text.strip())
 
-    def test_strip_assistant_tool_call_marker_block_keeps_narrative(self):
+    def test_strip_assistant_tool_call_marker_block_keeps_text(self):
         text = (
             "你好！有什么我可以帮您处理的任务吗？\n"
             "<|assistant tool_calls|>{\"tool\":\"done\",\"args\":{}}<|assistant tool_calls|>"
         )
         out = aoh.strip_tool_json_blocks_for_display(text)
-        self.assertEqual(out, "你好！有什么我可以帮您处理的任务吗？")
+        self.assertEqual(out, text.strip())
 
-    def test_strip_pseudo_tool_calls_block_keeps_narrative(self):
+    def test_strip_pseudo_tool_calls_block_keeps_text(self):
         text = (
             "我将执行 ping 检测。\n\n"
             "<tool_calls>\n"
@@ -95,46 +95,7 @@ class AiOutputDisplayTests(unittest.TestCase):
             "</tool_calls>"
         )
         out = aoh.strip_tool_json_blocks_for_display(text)
-        self.assertEqual(out, "我将执行 ping 检测。")
-
-    def test_parse_tool_plans_from_response_supports_multiple_json_objects(self):
-        text = (
-            "先读文件再检索。\n\n"
-            "{\"tool\":\"shell\",\"args\":{\"command\":\"Get-Content a.py\"}}\n"
-            "{\"tool\":\"project_context_search\",\"args\":{\"query\":\"foo\"}}"
-        )
-        plans = self.agent._parse_tool_plans_from_response(text)
-        self.assertEqual(
-            plans,
-            [
-                ("shell", {"command": "Get-Content a.py"}),
-                ("project_context_search", {"query": "foo"}),
-            ],
-        )
-        self.assertEqual(self.agent._parse_tool_plan_from_response(text), plans[0])
-
-    def test_parse_tool_plans_from_response_supports_json_array(self):
-        text = (
-            "先读文件再检索。\n\n"
-            "["
-            "{\"tool\":\"shell\",\"args\":{\"command\":\"Get-Content a.py\"}},"
-            "{\"tool\":\"project_context_search\",\"args\":{\"query\":\"foo\"}}"
-            "]"
-        )
-        self.assertEqual(
-            self.agent._parse_tool_plans_from_response(text),
-            [
-                ("shell", {"command": "Get-Content a.py"}),
-                ("project_context_search", {"query": "foo"}),
-            ],
-        )
-
-    def test_parse_tool_plans_from_response_supports_assistant_tool_call_marker(self):
-        text = (
-            "你好！有什么我可以帮您处理的任务吗？\n"
-            "<|assistant tool_calls|>{\"tool\":\"done\",\"args\":{}}<|assistant tool_calls|>"
-        )
-        self.assertEqual(self.agent._parse_tool_plans_from_response(text), [("done", {})])
+        self.assertEqual(out, text.strip())
 
     def test_format_assistant_display_response_highlights_key_tokens(self):
         text = (

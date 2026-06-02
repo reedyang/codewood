@@ -56,10 +56,10 @@ class AgentCallAiStreamingTests(unittest.TestCase):
         self.agent.params = {}
         self.assertTrue(self.agent._use_standard_openai_tools_call())
 
-    def test_standard_tools_mode_is_disabled_for_ollama_when_simulated_tools_enabled(self):
-        self.agent.provider = "ollama"
-        self.agent.params = {"use_simulated_tools": True}
-        self.assertFalse(self.agent._use_standard_openai_tools_call())
+    def test_standard_tools_mode_is_enabled_for_openai(self):
+        self.agent.provider = "openai"
+        self.agent.params = {}
+        self.assertTrue(self.agent._use_standard_openai_tools_call())
 
     def test_model_switch_warns_when_context_window_is_below_64k(self):
         agent = Agent.__new__(Agent)
