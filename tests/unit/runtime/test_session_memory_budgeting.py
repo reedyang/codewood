@@ -1072,6 +1072,24 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
         self.assertGreaterEqual(compose_calls["n"], 2)
         self.assertEqual(first, second)
 
+    def test_refresh_context_usage_snapshot_skips_system_prompt_for_basic_chat_models(self):
+        agent = _FakeAgent()
+        agent.params = {"context_window": 32000}
+        compose_calls = {"n": 0}
+
+        def _compose(include_tools=True):
+            _ = include_tools
+            compose_calls["n"] += 1
+            return "PROMPT-" + ("X" * 40000)
+
+        agent._compose_system_prompt_snapshot = _compose
+        svc = SessionMemoryService(agent)
+
+        svc.refresh_context_usage_snapshot(user_input_hint="继续", context_hint="ctx")
+
+        self.assertEqual(compose_calls["n"], 0)
+        self.assertLessEqual(int(getattr(agent, "_last_context_usage_percent", 0) or 0), 1)
+
     def test_refresh_context_usage_snapshot_skips_when_state_key_mismatch(self):
         agent = _FakeAgent()
         agent.active_chat_id = "chat-1"
