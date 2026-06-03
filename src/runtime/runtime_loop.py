@@ -1070,7 +1070,7 @@ def _format_worked_for_summary_line(elapsed_seconds: int, terminal_width: int, l
     else:
         elapsed = f"{minutes}m {seconds}s"
     lang = normalize_display_language(language) or DEFAULT_DISPLAY_LANGUAGE
-    head = f"─ {text('Worked for', '已运行', lang)} {elapsed} "
+    head = f"─ {text('status.worked_for', lang)} {elapsed} "
     width = max(20, int(terminal_width or 80))
     head_width = _startup_text_display_width(head)
     if head_width >= width:
@@ -1315,10 +1315,10 @@ def _try_record_user_task_message(agent: Any, user_task: str, already_recorded: 
 
 
 def _print_startup_overview(agent: Any) -> None:
-    from ..core.localization import get_display_language, text
+    from ..core.localization import get_display_language, translate
 
     lang = get_display_language(agent)
-    t = lambda en, zh: text(en, zh, lang)
+    t = lambda key, **kwargs: translate(key, lang, **kwargs)
 
     model_name = str(getattr(agent, "model_name", "") or "")
     workspace_name = str(getattr(agent, "workspace_name", "") or "")
@@ -1327,9 +1327,9 @@ def _print_startup_overview(agent: Any) -> None:
     version = get_app_display_version()
 
     line1 = f">_ {app_name} ({version})"
-    line2 = f"{t('model:     ', '模型：     ')}{model_name}  {t('/model to change', '使用 /model 切换')}"
-    line3 = f"{t('workspace: ', '工作区：')}{workspace_name}"
-    line4 = f"{t('directory: ', '目录：')}{workspace_dir}"
+    line2 = f"{t('startup.model_prefix')}{model_name}  {t('startup.model_change_hint')}"
+    line3 = f"{t('startup.workspace_prefix')}{workspace_name}"
+    line4 = f"{t('startup.directory_prefix')}{workspace_dir}"
 
     term_cols = _startup_terminal_columns(default=80)
     prefix_width = _startup_output_prefix_width()
@@ -1365,27 +1365,27 @@ def _print_startup_overview(agent: Any) -> None:
     print(_ansi_gray("│ ") + line1_rendered + _ansi_gray(_pad_startup_text(line1_fit, content_width)) + _ansi_gray("│"))
     print(_ansi_gray(mid2))
     # model line
-    prefix_model = t("model:     ", "模型：     ")
+    prefix_model = t("startup.model_prefix")
     if line2_fit == line2:
         line2_rendered = (
             _ansi_gray(prefix_model)
             + model_name
             + _ansi_gray("  ")
             + _ansi_cyan("/model")
-            + _ansi_gray(t(" to change", " 切换"))
+            + _ansi_gray(t("startup.model_change_suffix"))
         )
     else:
         line2_rendered = line2_fit
     print(_ansi_gray("│ ") + line2_rendered + _ansi_gray(_pad_startup_text(line2_fit, content_width)) + _ansi_gray("│"))
     # workspace line
-    prefix_workspace = t("workspace: ", "工作区：")
+    prefix_workspace = t("startup.workspace_prefix")
     if line3_fit == line3:
         line3_rendered = _ansi_gray(prefix_workspace) + workspace_name
     else:
         line3_rendered = line3_fit
     print(_ansi_gray("│ ") + line3_rendered + _ansi_gray(_pad_startup_text(line3_fit, content_width)) + _ansi_gray("│"))
     # directory line
-    prefix_directory = t("directory: ", "目录：")
+    prefix_directory = t("startup.directory_prefix")
     if line4_fit == line4:
         line4_rendered = _ansi_gray(prefix_directory) + workspace_dir
     else:
@@ -1405,17 +1405,17 @@ def _print_startup_overview(agent: Any) -> None:
         highlights=[str(h or "") for h in highlights],
         highlight_formatter=_ansi_cyan,
     )
-    print("  " + _ansi_bold(t("Tip: ", "提示：")) + rendered_tip)
+    print("  " + _ansi_bold(t("common.tip")) + rendered_tip)
     print("")
 
 
 def run_agent_loop(agent: Any):
     """Run the AI Agent main loop with multi-step tool execution until done."""
     self = agent
-    from ..core.localization import get_display_language, text
+    from ..core.localization import get_display_language, translate
 
     lang = get_display_language(agent)
-    t = lambda en, zh: text(en, zh, lang)
+    t = lambda key, **kwargs: translate(key, lang, **kwargs)
     import sys
     import os
     os_name = os.name
@@ -1558,7 +1558,7 @@ def run_agent_loop(agent: Any):
                             self._suppress_next_separator = True
                             continue
                         if bl == "clear":
-                            print(t("Usage: /clear <screen|input history|context>", "用法：/clear <screen|input history|context>"))
+                            print(t("builtin.clear_usage"))
                             continue
                         if bl == 'clear input history':
                             self.history_manager.clear_history()
@@ -1585,10 +1585,7 @@ def run_agent_loop(agent: Any):
                             continue
                         if bl == "memory":
                             print(
-                                t(
-                                    "Usage: /memory <enable|disable|status|stats|list|search <query>|remember <text>|delete <id>>",
-                                    "用法：/memory <enable|disable|status|stats|list|search <query>|remember <text>|delete <id>>",
-                                )
+                                t("builtin.memory_usage")
                             )
                             continue
                         if bl == "memory enable":
@@ -1671,20 +1668,14 @@ def run_agent_loop(agent: Any):
                                 continue
                             if not policy:
                                 print(
-                                    t(
-                                        "Usage: /execution-policy <show|unlimited|moderate|confirmation>",
-                                        "用法：/execution-policy <show|unlimited|moderate|confirmation>",
-                                    )
+                                    t("builtin.execution_policy_usage")
                                 )
                             else:
                                 self.execute_tool_call("execution_policy_set", {"policy": policy})
                             continue
                         if bl == "execution-policy":
                             print(
-                                t(
-                                    "Usage: /execution-policy <show|unlimited|moderate|confirmation>",
-                                    "用法：/execution-policy <show|unlimited|moderate|confirmation>",
-                                )
+                                t("builtin.execution_policy_usage")
                             )
                             continue
 

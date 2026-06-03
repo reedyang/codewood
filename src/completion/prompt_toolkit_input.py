@@ -42,7 +42,7 @@ _SHELL_MODE_SYNC_HANDLER_ATTR = get_app_runtime_attr_name(
 )
 
 from .builtin_slash_commands import slash_builtin_completions
-from ..config.i18n import DEFAULT_DISPLAY_LANGUAGE, language_display_name, normalize_display_language, text
+from ..config.i18n import DEFAULT_DISPLAY_LANGUAGE, language_display_name, normalize_display_language, translate
 from ..core.console_utils import _ansi_gray, _ansi_rgb
 
 try:
@@ -1620,7 +1620,7 @@ class PromptToolkitInputHandler:
         bullet = _ansi_gray("•")
         example = _ansi_gray("Example: !ls")
         lang = self._ui_language()
-        print(f"{bullet} {text('Prefix a command with ! to run it locally', '使用 ! 前缀在本地运行命令', lang)} {example}\n")
+        print(f"{bullet} {translate('input.shell_mode_hint', lang)} {example}\n")
 
     def get_terminal_columns(self, default: int = 80) -> int:
         if self.session is not None:
@@ -1777,7 +1777,7 @@ class PromptToolkitInputHandler:
             raise KeyboardInterrupt
         except Exception as e:
             lang = self._ui_language()
-            print(f"\n{text('Input error: {error}', '输入错误：{error}', lang).format(error=e)}")
+            print(f"\n{translate('input.error', lang, error=e)}")
             return ""
 
     def _create_key_bindings(self):

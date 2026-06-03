@@ -6,13 +6,17 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from ..config.app_info import get_app_config_dirname
-from ..core.localization import get_display_language, text
+from ..core.localization import DEFAULT_DISPLAY_LANGUAGE, get_display_language, translate
 from ..core.config.skills_loader import _list_bundled_script_paths
 from ..tooling.handlers.mcp_handlers import MCP_MANAGEMENT_GATED_TOOLS
 
 
-def _t(language: Any, en: str, zh: str) -> str:
-    return text(en, zh, get_display_language(language) if not isinstance(language, str) else language)
+def _t(language: Any, key: str, **kwargs: Any) -> str:
+    return translate(
+        key,
+        get_display_language(language) if not isinstance(language, str) else language,
+        **kwargs,
+    )
 
 
 def _src_root() -> Path:
@@ -262,7 +266,7 @@ def load_tools_spec_from_jsonc(agent: Any) -> List[Dict[str, Any]]:
 
         return specs
     except Exception as e:
-        print(_t(agent, "⚠️ Failed to load tools.jsonc: {error}", "⚠️ 读取 tools.jsonc 失败：{error}").format(error=e))
+        print(_t(agent, "prompt_composer.tools_jsonc_load_failed", error=e))
         return []
 
 
@@ -634,7 +638,7 @@ def load_tools_prompt_template() -> str:
     try:
         return path.read_text(encoding="utf-8")
     except Exception as e:
-        print(_t(agent, "⚠️ Failed to load tools_prompt.md: {error}", "⚠️ 读取 tools_prompt.md 失败：{error}").format(error=e))
+        print(_t(DEFAULT_DISPLAY_LANGUAGE, "prompt_composer.tools_prompt_load_failed", error=e))
         return "## Tool Catalog (prompt-injected)"
 
 

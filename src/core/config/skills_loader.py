@@ -19,11 +19,11 @@ from typing import Dict, List, Optional, Tuple
 
 import yaml
 from ...config.app_info import get_app_config_dirname, get_app_name
-from ..localization import DEFAULT_DISPLAY_LANGUAGE, normalize_display_language, text
+from ..localization import DEFAULT_DISPLAY_LANGUAGE, normalize_display_language, translate
 
 
-def _t(language: Optional[str], en: str, zh: str) -> str:
-    return text(en, zh, normalize_display_language(language) or DEFAULT_DISPLAY_LANGUAGE)
+def _t(language: Optional[str], key: str, **kwargs: object) -> str:
+    return translate(key, normalize_display_language(language) or DEFAULT_DISPLAY_LANGUAGE, **kwargs)
 
 
 def _parse_model_context_file_env_from_meta(meta: Optional[dict], language: Optional[str] = None) -> Optional[str]:
@@ -43,7 +43,7 @@ def _parse_model_context_file_env_from_meta(meta: Optional[dict], language: Opti
     if not s:
         return None
     if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", s):
-        print(_t(language, "⚠️ Invalid model_context_file_env in SKILL.md frontmatter: {value}; ignored", "⚠️ SKILL.md frontmatter 中的 model_context_file_env 无效：{value}；已忽略").format(value=repr(s)))
+        print(_t(language, "skills_loader.invalid_model_context_file_env", value=repr(s)))
         return None
     return s
 
@@ -125,7 +125,7 @@ def _scan_skills_root(skills_root: Path, language: Optional[str] = None) -> List
         try:
             raw = skill_md.read_text(encoding="utf-8")
         except OSError as e:
-            print(_t(language, "⚠️ Failed to read skill file {path}: {error}", "⚠️ 读取技能文件失败 {path}：{error}").format(path=skill_md, error=e))
+            print(_t(language, "skills_loader.read_failed", path=skill_md, error=e))
             continue
 
         meta, body = _split_frontmatter(raw)

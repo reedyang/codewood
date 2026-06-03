@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Any, Dict
 
-from ..core.localization import get_display_language, text
+from ..core.localization import get_display_language, translate
 from ..core.security.git_guard import guard_git_clone_precheck
 from .handlers.agent_state_handlers import dispatch_agent_state_tool
 from .handlers.core_handlers import dispatch_core_tool
@@ -17,8 +17,8 @@ def _print_with_auto_hide_tracking(agent: Any, text: str) -> None:
     print(msg)
 
 
-def _t(agent: Any, en: str, zh: str) -> str:
-    return text(en, zh, get_display_language(agent))
+def _t(agent: Any, key: str, **kwargs: Any) -> str:
+    return translate(key, get_display_language(agent), **kwargs)
 
 
 def execute_tool_call_legacy(agent: Any, tool_name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
@@ -155,7 +155,7 @@ def execute_tool_call_legacy(agent: Any, tool_name: str, arguments: Dict[str, An
                 _print_with_auto_hide_tracking(self, f"❌ System command failed: {result.get('error', 'Unknown error')}")
             return result
         else:
-            print(_t(self, "❌ shell command is missing the command parameter", "❌ shell 命令缺少 command 参数"))
+            print(_t(self, "tool.shell.missing_command"))
             return {"success": False, "error": "Missing command parameter"}
 
     elif action == "apply_patch":
@@ -175,7 +175,7 @@ def execute_tool_call_legacy(agent: Any, tool_name: str, arguments: Dict[str, An
             else:
                 print(f"❌ {result['error']}")
             return result
-        print(_t(self, "❌ apply_patch command is missing the path/patch parameters", "❌ apply_patch 命令缺少 path/patch 参数"))
+        print(_t(self, "tool.apply_patch.missing_path_patch"))
         return {"success": False, "error": "Missing path/patch parameters"}
 
     elif action == "read_image":
@@ -184,7 +184,7 @@ def execute_tool_call_legacy(agent: Any, tool_name: str, arguments: Dict[str, An
         if file_path:
             result = self.action_read_image(file_path, prompt)
             if result["success"]:
-                print(_t(self, "\n🖼️ Image read result ({file}):", "\n🖼️ 图片读取结果（{file}）：").format(file=result["file"]))
+                print(_t(self, "tool.read_image.result_header", file=result["file"]))
                 print("=" * 60)
                 print(result["analysis"])
                 print("=" * 60)
@@ -192,7 +192,7 @@ def execute_tool_call_legacy(agent: Any, tool_name: str, arguments: Dict[str, An
                 print(f"❌ {result['error']}")
             return result
         else:
-            print(_t(self, "❌ read_image command is missing the path parameter", "❌ read_image 命令缺少 path 参数"))
+            print(_t(self, "tool.read_image.missing_path"))
             return {"success": False, "error": "Missing path parameter"}
 
     elif action == "project_context_search":
@@ -202,12 +202,14 @@ def execute_tool_call_legacy(agent: Any, tool_name: str, arguments: Dict[str, An
             print(
                 _t(
                     self,
-                    "🧭 project context: query=`{query}` matches={matches} top={top}",
-                    "🧭 项目上下文：query=`{query}` matches={matches} top={top}",
-                ).format(query=result.get("query", ""), matches=result.get("total_matches", 0), top=len(cand))
+                    "tool.project_context.summary",
+                    query=result.get("query", ""),
+                    matches=result.get("total_matches", 0),
+                    top=len(cand),
+                )
             )
         else:
-            print(_t(self, "❌ project_context_search failed: {error}", "❌ project_context_search 失败：{error}").format(error=result.get("error", "")))
+            print(_t(self, "tool.project_context.failed", error=result.get("error", "")))
         return result
 
     # mcp_* tool branches are dispatched by dispatch_mcp_tool above.

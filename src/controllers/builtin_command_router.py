@@ -5,12 +5,13 @@ from typing import Any, Tuple
 
 from ..config.app_info import get_app_name
 from .language_command_controller import handle_language_builtin_command
+from .mcp_shortcut_controller import format_mcp_shortcut_error
 
 
-def _t(agent: Any, en: str, zh: str) -> str:
-    from ..core.localization import get_display_language, text
+def _t(agent: Any, key: str, **kwargs: Any) -> str:
+    from ..core.localization import get_display_language, translate
 
-    return text(en, zh, get_display_language(agent))
+    return translate(key, get_display_language(agent), **kwargs)
 
 
 def dispatch_builtin_command(
@@ -38,13 +39,13 @@ def dispatch_builtin_command(
         return True, False
 
     if bl == "mcp" or bl.startswith("mcp "):
-        print(_t(agent, "Error: {error}", "错误：{error}").format(error=mcp_err))
+        print(_t(agent, "common.error", error=format_mcp_shortcut_error(agent, mcp_err)))
         return True, False
 
     if bl in ("exit", "quit"):
         agent._save_current_workspace_position()
         if wait_for_supplement:
-            print(f"Exiting {get_app_name()}.")
+            print(_t(agent, "builtin.exiting_app", app_name=get_app_name()))
         return True, True
 
     if bl == "clear screen":
@@ -53,7 +54,7 @@ def dispatch_builtin_command(
         return True, False
 
     if bl == "clear":
-        print(_t(agent, "Usage: /clear <screen|input history|context>", "用法：/clear <screen|input history|context>"))
+        print(_t(agent, "builtin.clear_usage"))
         return True, False
 
     if bl == "clear input history":
@@ -64,12 +65,12 @@ def dispatch_builtin_command(
             agent.input_handler.reset_command_history(
                 agent.history_manager.get_all_history()
             )
-        print(_t(agent, "History cleared.", "历史记录已清除。"))
+        print(_t(agent, "builtin.history_cleared"))
         return True, False
 
     if bl == "clear context":
         agent._clear_active_chat_context_and_tasks()
-        print(_t(agent, "AI context and recorded tasks cleared.", "AI 上下文和已记录的任务已清除。"))
+        print(_t(agent, "builtin.context_cleared"))
         try:
             agent._handle_chat_builtin_command("chat reload")
         except Exception:
@@ -82,7 +83,7 @@ def dispatch_builtin_command(
         if callable(compact_fn):
             compact_fn(mode="manual")
         else:
-            print(_t(agent, "Context compaction is unavailable.", "当前无法进行上下文压缩。"))
+            print(_t(agent, "builtin.compaction_unavailable"))
         return True, False
 
     if handle_language_builtin_command(agent, builtin_line):
@@ -104,11 +105,11 @@ def dispatch_builtin_command(
         elif policy:
             agent.execute_tool_call("execution_policy_set", {"policy": policy})
         else:
-            print("Usage: /execution-policy <show|unlimited|moderate|confirmation>")
+            print(_t(agent, "builtin.execution_policy_usage"))
         return True, False
 
     if bl == "execution-policy":
-        print("Usage: /execution-policy <show|unlimited|moderate|confirmation>")
+        print(_t(agent, "builtin.execution_policy_usage"))
         return True, False
 
     if bl == "always_confirm-reset":
@@ -122,29 +123,21 @@ def dispatch_builtin_command(
     if bl == "memory enable":
         agent.memory_enabled = True
         ok = agent._save_memory_enabled_to_config()
-        print(
-            "Memory enabled" + (
-                "; saved to config.jsonc" if ok else " (failed to persist; session-only)"
-            )
-        )
+        print(_t(agent, "builtin.memory_enabled_saved" if ok else "builtin.memory_enabled_session_only"))
         return True, False
 
     if bl == "memory disable":
         agent.memory_enabled = False
         ok = agent._save_memory_enabled_to_config()
-        print(
-            "Memory disabled" + (
-                "; saved to config.jsonc" if ok else " (failed to persist; session-only)"
-            )
-        )
+        print(_t(agent, "builtin.memory_disabled_saved" if ok else "builtin.memory_disabled_session_only"))
         return True, False
 
     if wait_for_supplement and bl == "help":
-        print(_t(agent, "/help is available. Enter normal text to continue the paused task.", "/help 可用。请输入普通文本以继续暂停的任务。"))
+        print(_t(agent, "builtin.help_available_for_paused_task"))
         return True, False
 
     if consume_unknown:
-        print(_t(agent, "Unknown built-in command. Use /help.", "无法识别的内置命令。请使用 /help。"))
+        print(_t(agent, "builtin.unknown_command"))
         return True, False
 
     return False, False

@@ -220,10 +220,10 @@ def _render_working_status_line(
     lang = normalize_display_language(language) or DEFAULT_DISPLAY_LANGUAGE
     work_label = str(label or "Working...")
     if work_label == "Working...":
-        work_label = text("Working...", "工作中...", lang)
+        work_label = text("status.working", lang)
     interrupt = str(interrupt_hint or "esc to interrupt")
     if interrupt == "esc to interrupt":
-        interrupt = text("esc to interrupt", "按 Esc 中断", lang)
+        interrupt = text("status.esc_to_interrupt", lang)
     elapsed = _format_elapsed_minutes_seconds(elapsed_seconds)
     plain = f"• {work_label} ({elapsed} • {interrupt})"
     if not _stdout_color_enabled():
