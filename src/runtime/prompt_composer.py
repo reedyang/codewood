@@ -29,6 +29,9 @@ _TOOLS_FILE_SEARCH_NEARBY_RULE_FALLBACK = (
 _TOOLS_FILE_SEARCH_NEARBY_RULE_RG_ONLY = (
     "first use `rg` to locate matches, then read nearby snippets by line range; do not read the whole file at once."
 )
+_AGENTS_OVERRIDE_FILENAME = "AGENTS.override.md"
+_AGENTS_FILENAME = "AGENTS.md"
+_AGENTS_APPEND_MAX_BYTES = 32 * 1024
 
 
 def _workspace_bin_dir() -> Path:
@@ -259,46 +262,166 @@ def build_user_preferences_system_append(agent: Any) -> str:
         return ""
 
 
-def build_agents_md_system_append(agent: Any) -> str:
-    """Inject AGENTS.md content from config/workspace-related locations."""
-    candidates: List[Tuple[str, Path]] = []
+def _resolve_prompt_path(path: Path) -> Path:
     try:
-        candidates.append(("config", Path(agent.config_dir) / "AGENTS.md"))
+        return path.expanduser().resolve()
     except Exception:
-        pass
+        return path.expanduser()
+
+
+def _normalized_path_key(path: Path) -> str:
     try:
-        candidates.append(("workspace", Path(agent.workspace_config_dir) / "AGENTS.md"))
+        raw = str(_resolve_prompt_path(path))
     except Exception:
-        pass
+        raw = str(path)
+    return raw.casefold() if os.name == "nt" else raw
+
+
+def _agents_workspace_anchor(agent: Any) -> Path:
+    anchor = getattr(agent, "workspace_root", None) or getattr(agent, "work_directory", None)
+    if anchor is None:
+        anchor = getattr(agent, "config_dir", Path.cwd())
+    return _resolve_prompt_path(Path(anchor))
+
+
+def _find_git_repo_root(anchor: Path) -> Optional[Path]:
+    current = _resolve_prompt_path(anchor)
+    for candidate in (current, *current.parents):
+        git_marker = candidate / ".git"
+        try:
+            if git_marker.exists():
+                return candidate
+        except Exception:
+            continue
+    return None
+
+
+def _agents_project_dirs(anchor: Path) -> List[Path]:
+    repo_root = _find_git_repo_root(anchor)
+    if repo_root is None:
+        return [anchor]
+
+    chain: List[Path] = []
+    current = repo_root
+    while True:
+        chain.append(current)
+        if _normalized_path_key(current) == _normalized_path_key(anchor):
+            break
+        try:
+            rel_parts = anchor.relative_to(repo_root).parts
+        except Exception:
+            return [anchor]
+        next_index = len(chain)
+        if next_index > len(rel_parts):
+            break
+        current = repo_root.joinpath(*rel_parts[:next_index])
+    return chain
+
+
+def _agents_candidate_dirs(agent: Any) -> Tuple[Path, List[Path]]:
+    config_dir = _resolve_prompt_path(Path(agent.config_dir))
+    workspace_anchor = _agents_workspace_anchor(agent)
+    dirs: List[Path] = []
+    seen: set[str] = set()
+    for directory in [config_dir, *_agents_project_dirs(workspace_anchor)]:
+        key = _normalized_path_key(directory)
+        if key in seen:
+            continue
+        seen.add(key)
+        dirs.append(directory)
+    return workspace_anchor, dirs
+
+
+def _agents_candidate_paths(directory: Path) -> List[Path]:
+    return [directory / _AGENTS_OVERRIDE_FILENAME, directory / _AGENTS_FILENAME]
+
+
+def _agents_path_state(path: Path) -> Dict[str, Any]:
+    resolved = _resolve_prompt_path(path)
+    try:
+        exists = resolved.exists()
+    except Exception:
+        exists = False
+    is_file = False
+    mtime_ns = None
+    size = None
+    if exists:
+        try:
+            is_file = resolved.is_file()
+        except Exception:
+            is_file = False
+        try:
+            st = resolved.stat()
+            mtime_ns = int(getattr(st, "st_mtime_ns", 0) or 0)
+            size = int(getattr(st, "st_size", 0) or 0)
+        except Exception:
+            pass
+    return {
+        "path": str(resolved),
+        "exists": exists,
+        "is_file": is_file,
+        "mtime_ns": mtime_ns,
+        "size": size,
+    }
+
+
+def _select_agents_file_for_dir(directory: Path) -> Optional[Path]:
+    for candidate in _agents_candidate_paths(directory):
+        state = _agents_path_state(candidate)
+        if state["exists"] and state["is_file"]:
+            return _resolve_prompt_path(candidate)
+    return None
+
+
+def _truncate_utf8_text(text: str, max_bytes: int) -> str:
+    raw = str(text or "").encode("utf-8")
+    if len(raw) <= max_bytes:
+        return str(text or "")
+    return raw[:max_bytes].decode("utf-8", errors="ignore")
+
+
+def _render_agents_sections(
+    workspace_anchor: Path,
+    candidate_dirs: List[Path],
+    selected_files: List[Path],
+) -> str:
     sections: List[str] = []
-    seen_keys: set = set()
-    for scope, file_path in candidates:
-        try:
-            resolved = file_path.expanduser().resolve()
-        except Exception:
-            resolved = file_path
-        key = str(resolved).casefold() if os.name == "nt" else str(resolved)
-        if key in seen_keys:
+    seen_files: set[str] = set()
+    global_dir = candidate_dirs[0] if candidate_dirs else None
+    repo_root = candidate_dirs[1] if len(candidate_dirs) > 1 else workspace_anchor
+    for resolved in selected_files:
+        key = _normalized_path_key(resolved)
+        if key in seen_files:
             continue
-        seen_keys.add(key)
-        if not resolved.is_file():
-            continue
+        seen_files.add(key)
         try:
-            content = resolved.read_text(encoding="utf-8", errors="replace").strip()
+            content = resolved.read_text(encoding="utf-8", errors="replace")
         except Exception:
             continue
-        if not content:
-            continue
+        scope = (
+            "global"
+            if global_dir is not None
+            and _normalized_path_key(resolved.parent) == _normalized_path_key(global_dir)
+            else "project"
+        )
+        if scope == "global":
+            section_title = f"### global \u00b7 {resolved.name}"
+        else:
+            try:
+                rel_dir = resolved.parent.relative_to(repo_root)
+                rel_label = "." if not rel_dir.parts else rel_dir.as_posix()
+            except Exception:
+                rel_label = resolved.parent.name or "."
+            section_title = f"### project \u00b7 {rel_label} \u00b7 {resolved.name}"
         sections.append(
             "\n".join(
                 [
-                    f"### {scope} AGENTS.md",
+                    section_title,
                     f"Source: `{resolved}`",
                     content,
                 ]
             )
         )
-
     if not sections:
         return ""
     header = (
@@ -307,7 +430,62 @@ def build_agents_md_system_append(agent: Any) -> str:
         "(for example `/skills/<skill-name>` or a triggered `request_skill_prompt`) and conflicts with this section, "
         "the explicitly selected skill body takes precedence.\n\n"
     )
-    return header + "\n\n".join(sections) + "\n"
+    return _truncate_utf8_text(header + "\n\n".join(sections) + "\n", _AGENTS_APPEND_MAX_BYTES)
+
+
+def _refresh_agents_prompt_cache(agent: Any) -> Dict[str, Any]:
+    workspace_anchor, candidate_dirs = _agents_candidate_dirs(agent)
+    candidate_paths: List[Path] = []
+    path_state: Dict[str, Dict[str, Any]] = {}
+    selected_files: List[Path] = []
+    for directory in candidate_dirs:
+        for candidate in _agents_candidate_paths(directory):
+            resolved = _resolve_prompt_path(candidate)
+            candidate_paths.append(resolved)
+            path_state[_normalized_path_key(resolved)] = _agents_path_state(resolved)
+        selected = _select_agents_file_for_dir(directory)
+        if selected is not None:
+            selected_files.append(selected)
+    return {
+        "workspace_anchor": str(workspace_anchor),
+        "candidate_dirs": [str(p) for p in candidate_dirs],
+        "candidate_paths": [str(p) for p in candidate_paths],
+        "selected_files": [str(p) for p in selected_files],
+        "path_state": path_state,
+        "rendered_append": _render_agents_sections(workspace_anchor, candidate_dirs, selected_files),
+    }
+
+
+def _agents_prompt_cache_changed(agent: Any, cache: Dict[str, Any]) -> bool:
+    workspace_anchor, candidate_dirs = _agents_candidate_dirs(agent)
+    if str(workspace_anchor) != str(cache.get("workspace_anchor") or ""):
+        return True
+    cached_dirs = [str(x) for x in (cache.get("candidate_dirs") or [])]
+    current_dirs = [str(p) for p in candidate_dirs]
+    if cached_dirs != current_dirs:
+        return True
+    cached_state = cache.get("path_state")
+    if not isinstance(cached_state, dict):
+        return True
+    for directory in candidate_dirs:
+        for candidate in _agents_candidate_paths(directory):
+            resolved = _resolve_prompt_path(candidate)
+            key = _normalized_path_key(resolved)
+            if cached_state.get(key) != _agents_path_state(resolved):
+                return True
+    return False
+
+
+def build_agents_md_system_append(agent: Any) -> str:
+    """Inject AGENTS prompt content from config and project directories."""
+    cache = getattr(agent, "_agents_prompt_cache", None)
+    if not isinstance(cache, dict) or _agents_prompt_cache_changed(agent, cache):
+        cache = _refresh_agents_prompt_cache(agent)
+        try:
+            agent._agents_prompt_cache = cache
+        except Exception:
+            pass
+    return str(cache.get("rendered_append") or "")
 
 
 def compose_system_prompt_snapshot(agent: Any, include_tools: bool) -> str:
@@ -757,4 +935,3 @@ def build_single_skill_prompt(
         "",
     ]
     return "\n".join(lines), meta
-
