@@ -181,9 +181,9 @@ MEMORY_IDENTITY_CLUSTER_TYPES = frozenset(
     }
 )
 
-# Session-level summary: cheap rolling excerpts plus optional periodic LLM compression, merged into the experiential-memory retrieval query.
-SESSION_SUMMARY_ROLLING_MAX_CHARS = 600
-SESSION_SUMMARY_MSG_SNIPPET = 120
+# Session-level summary: fielded rolling excerpts plus optional periodic LLM compression, merged into the experiential-memory retrieval query.
+SESSION_SUMMARY_ROLLING_MAX_CHARS = 900
+SESSION_SUMMARY_MSG_SNIPPET = 160
 SESSION_SUMMARY_LLM_INTERVAL_PAIRS = 6
 SESSION_SUMMARY_LLM_MAX_CHARS = 1200
 SESSION_SUMMARY_LLM_HISTORY_MSGS = 16

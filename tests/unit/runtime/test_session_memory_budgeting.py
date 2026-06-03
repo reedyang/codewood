@@ -8,6 +8,7 @@ from contextlib import redirect_stdout
 from unittest.mock import MagicMock, patch
 
 from src.config.app_info import get_app_config_dirname, get_app_runtime_attr_name, get_app_slug_kebab
+from src.ai.ai_special_mode_prompts import SESSION_SUMMARY_SYSTEM_PROMPT
 from src.services.session_memory_service import SessionMemoryService
 
 DIRECT_SHELL_USER_HISTORY_PREFIX = "[DIRECT_SHELL_USER_COMMAND]"
@@ -970,6 +971,96 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
         joined = "\n".join(str(m.get("content") or "") for m in history_messages)
         self.assertIn("[History summary]", joined)
         self.assertIn("msg-99", joined)
+
+    def test_session_summary_prompt_is_experience_dense(self):
+        self.assertIn("dense, retrieval-friendly summary", SESSION_SUMMARY_SYSTEM_PROMPT)
+        self.assertIn("Goals: ...", SESSION_SUMMARY_SYSTEM_PROMPT)
+        self.assertIn(
+            "Facts: Paths/Commands/Tool results: ...; Environment/Workspace: ...; Errors/Fixes: ...",
+            SESSION_SUMMARY_SYSTEM_PROMPT,
+        )
+        self.assertIn("Preferences: ...", SESSION_SUMMARY_SYSTEM_PROMPT)
+        self.assertIn("Decisions: ...", SESSION_SUMMARY_SYSTEM_PROMPT)
+        self.assertIn("Errors: ...", SESSION_SUMMARY_SYSTEM_PROMPT)
+        self.assertIn("Next steps: ...", SESSION_SUMMARY_SYSTEM_PROMPT)
+        self.assertIn("Tools, commands, files, paths", SESSION_SUMMARY_SYSTEM_PROMPT)
+        self.assertIn("one-off details that could change future behavior or retrieval results", SESSION_SUMMARY_SYSTEM_PROMPT)
+
+    def test_compaction_system_prompt_requests_concrete_experience_details(self):
+        agent = _FakeAgent()
+        agent._compose_system_prompt_snapshot = lambda include_tools=True: "SYSTEM"
+        svc = SessionMemoryService(agent)
+
+        messages = svc.build_compaction_messages("manual", [{"role": "user", "content": "Hello"}], 0)
+        system_content = str(messages[0].get("content") or "")
+
+        self.assertIn("retrieval-friendly summary", system_content)
+        self.assertIn("Goals: ...", system_content)
+        self.assertIn(
+            "Facts: Paths/Commands/Tool results: ...; Environment/Workspace: ...; Errors/Fixes: ...",
+            system_content,
+        )
+        self.assertIn("Preferences: ...", system_content)
+        self.assertIn("Decisions: ...", system_content)
+        self.assertIn("Errors: ...", system_content)
+        self.assertIn("Next steps: ...", system_content)
+        self.assertIn("do not compress away useful specifics", system_content)
+
+    def test_rolling_session_summary_uses_fixed_fields_and_preserves_details(self):
+        agent = _FakeAgent()
+        agent.conversation_history = [
+            {
+                "role": "user",
+                "content": "Goal: improve cache hit rate for DeepSeek prompts; command: python -m unittest tests.unit.runtime.test_session_memory_budgeting -q",
+            },
+            {
+                "role": "assistant",
+                "content": "Workspace: C:/Users/reed/SourceCode/smart-shell; OS: Windows; repository path: src/services/session_memory_service.py",
+            },
+            {
+                "role": "user",
+                "content": "Preference: keep summaries fielded and avoid losing error details",
+            },
+            {
+                "role": "assistant",
+                "content": "Error: the old summary was too generic; fix tried: rewrite the summary prompt",
+            },
+            {
+                "role": "assistant",
+                "content": "Next steps: add more structured fact buckets and rerun tests",
+            },
+        ]
+        svc = SessionMemoryService(agent)
+
+        svc.update_session_summary_rolling()
+        roll = agent._session_summary_rolling
+
+        self.assertTrue(roll.startswith("[Session excerpt]\n"))
+        self.assertIn("Goals:", roll)
+        self.assertIn("Facts:", roll)
+        self.assertIn("Paths/Commands/Tool results:", roll)
+        self.assertIn("Environment/Workspace:", roll)
+        self.assertIn("Errors/Fixes:", roll)
+        self.assertIn("Preferences:", roll)
+        self.assertIn("Decisions:", roll)
+        self.assertIn("Errors:", roll)
+        self.assertIn("Next steps:", roll)
+        self.assertIn("cache hit rate", roll)
+        self.assertIn("python -m unittest tests.unit.runtime.test_session_memory_budgeting -q", roll)
+        self.assertIn("C:/Users/reed/SourceCode/smart-shell", roll)
+        self.assertIn("too generic", roll)
+
+    def test_session_summary_for_retrieval_uses_full_llm_budget(self):
+        agent = _FakeAgent()
+        agent._session_summary_llm = "S" * 1400
+        svc = SessionMemoryService(agent)
+
+        summary = svc.session_summary_for_retrieval()
+        prefix, body = summary.split("\n", 1)
+
+        self.assertEqual(prefix, "[Session summary]")
+        self.assertEqual(len(body), 1200)
+        self.assertTrue(body.endswith("S"))
 
     def test_large_context_keeps_more_history_than_small_context(self):
         small = _FakeAgent()

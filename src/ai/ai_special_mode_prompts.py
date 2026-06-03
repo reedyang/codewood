@@ -70,9 +70,20 @@ REFLECTION_SYSTEM_PROMPT = (
 )
 
 SESSION_SUMMARY_SYSTEM_PROMPT = (
-    "You are a session-compression module. Output a concise summary for experiential-memory vector retrieval (not a user-facing response).\n"
-    "Based on the multi-turn dialogue excerpt below, summarize in 3-10 short sentences: the user's main goals, confirmed facts, and any names/nicknames/preferences/conventions.\n"
-    "Output body text only: no markdown, no title, no JSON, and do not repeat these instructions."
+    "You are a session-compression module. Output a dense, retrieval-friendly summary for experiential-memory retrieval (not a user-facing response).\n"
+    "Write exactly six lines in this order, using the fixed field names below:\n"
+    "Goals: ...\n"
+    "Facts: Paths/Commands/Tool results: ...; Environment/Workspace: ...; Errors/Fixes: ...\n"
+    "Preferences: ...\n"
+    "Decisions: ...\n"
+    "Errors: ...\n"
+    "Next steps: ...\n"
+    "Use compact semicolon-separated clauses, not paragraphs. Preserve concrete, reusable details instead of only broad themes.\n"
+    "In Facts, prioritize three buckets: Paths/Commands/Tool results, Environment/Workspace, and Errors/Fixes.\n"
+    "Include Tools, commands, files, paths, repo names, environment details, exact flags/values, exact errors, and one-off details that could change future behavior or retrieval results.\n"
+    "Merge duplicates, but do not drop useful specifics. If a detail is uncertain, mark it as tentative instead of omitting it.\n"
+    "Use None for any field with no useful content.\n"
+    "Output body text only: no markdown title, no JSON, and do not repeat these instructions."
 )
 
 def build_special_mode_messages(
