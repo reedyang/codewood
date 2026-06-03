@@ -1,6 +1,8 @@
 import re
 from typing import Any, Dict, List, Set, Tuple
 
+from ..config.i18n import SUPPORTED_DISPLAY_LANGUAGES
+
 
 def _sorted_unique_ci(values: List[str]) -> List[str]:
     out: List[str] = []
@@ -227,6 +229,10 @@ def build_slash_dynamic_rules(
         mcp_root_server_commands = []
 
     return [
+        {
+            "trigger": "/language ",
+            "candidates": [f"/language {lang}" for lang in SUPPORTED_DISPLAY_LANGUAGES],
+        },
         {
             "trigger": "/mcp server-info ",
             "candidates": build_mcp_server_target_commands(mcp_config, "server-info"),

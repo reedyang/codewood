@@ -1303,6 +1303,11 @@ def _try_record_user_task_message(agent: Any, user_task: str, already_recorded: 
 
 
 def _print_startup_overview(agent: Any) -> None:
+    from ..core.localization import get_display_language, text
+
+    lang = get_display_language(agent)
+    t = lambda en, zh: text(en, zh, lang)
+
     model_name = str(getattr(agent, "model_name", "") or "")
     workspace_name = str(getattr(agent, "workspace_name", "") or "")
     workspace_dir = _format_startup_directory(getattr(agent, "workspace_root", "") or "")
@@ -1310,9 +1315,9 @@ def _print_startup_overview(agent: Any) -> None:
     version = get_app_display_version()
 
     line1 = f">_ {app_name} ({version})"
-    line2 = f"model:     {model_name}  /model to change"
-    line3 = f"workspace: {workspace_name}"
-    line4 = f"directory: {workspace_dir}"
+    line2 = f"{t('model:     ', '模型：     ')}{model_name}  {t('/model to change', '使用 /model 切换')}"
+    line3 = f"{t('workspace: ', '工作区：')}{workspace_name}"
+    line4 = f"{t('directory: ', '目录：')}{workspace_dir}"
 
     term_cols = _startup_terminal_columns(default=80)
     prefix_width = _startup_output_prefix_width()
@@ -1348,27 +1353,27 @@ def _print_startup_overview(agent: Any) -> None:
     print(_ansi_gray("│ ") + line1_rendered + _ansi_gray(_pad_startup_text(line1_fit, content_width)) + _ansi_gray("│"))
     print(_ansi_gray(mid2))
     # model line
-    prefix_model = "model:     "
+    prefix_model = t("model:     ", "模型：     ")
     if line2_fit == line2:
         line2_rendered = (
             _ansi_gray(prefix_model)
             + model_name
             + _ansi_gray("  ")
             + _ansi_cyan("/model")
-            + _ansi_gray(" to change")
+            + _ansi_gray(t(" to change", " 切换"))
         )
     else:
         line2_rendered = line2_fit
     print(_ansi_gray("│ ") + line2_rendered + _ansi_gray(_pad_startup_text(line2_fit, content_width)) + _ansi_gray("│"))
     # workspace line
-    prefix_workspace = "workspace: "
+    prefix_workspace = t("workspace: ", "工作区：")
     if line3_fit == line3:
         line3_rendered = _ansi_gray(prefix_workspace) + workspace_name
     else:
         line3_rendered = line3_fit
     print(_ansi_gray("│ ") + line3_rendered + _ansi_gray(_pad_startup_text(line3_fit, content_width)) + _ansi_gray("│"))
     # directory line
-    prefix_directory = "directory: "
+    prefix_directory = t("directory: ", "目录：")
     if line4_fit == line4:
         line4_rendered = _ansi_gray(prefix_directory) + workspace_dir
     else:
@@ -1379,7 +1384,7 @@ def _print_startup_overview(agent: Any) -> None:
     if startup_chat_warning:
         print(_ansi_yellow(startup_chat_warning))
     print("")
-    tip_entry = get_random_startup_tip_entry()
+    tip_entry = get_random_startup_tip_entry(language=lang)
     tip_text = str(tip_entry.get("text") or "")
     highlights_raw = tip_entry.get("highlights", [])
     highlights = highlights_raw if isinstance(highlights_raw, list) else []
@@ -1388,7 +1393,7 @@ def _print_startup_overview(agent: Any) -> None:
         highlights=[str(h or "") for h in highlights],
         highlight_formatter=_ansi_cyan,
     )
-    print("  " + _ansi_bold("Tip: ") + rendered_tip)
+    print("  " + _ansi_bold(t("Tip: ", "提示：")) + rendered_tip)
     print("")
 
 

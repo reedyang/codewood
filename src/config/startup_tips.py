@@ -42,14 +42,24 @@ def _normalize_tip_entry(item: Any) -> Optional[Dict[str, Any]]:
     return {"text": text, "highlights": highlights}
 
 
-def load_startup_tip_entries(path: Optional[Path] = None) -> List[Dict[str, Any]]:
+def _default_startup_tip_entry(language: Optional[str] = None) -> Dict[str, Any]:
+    try:
+        from ..core.localization import translate
+
+        tip_text = translate(DEFAULT_STARTUP_TIP, language, fallback=DEFAULT_STARTUP_TIP)
+    except Exception:
+        tip_text = DEFAULT_STARTUP_TIP
+    return {"text": tip_text, "highlights": ["/workspace"]}
+
+
+def load_startup_tip_entries(path: Optional[Path] = None, language: Optional[str] = None) -> List[Dict[str, Any]]:
     cfg_path = Path(path) if path is not None else startup_tips_config_path()
     raw: object = {}
     try:
         with open(cfg_path, "r", encoding="utf-8") as f:
             raw = json.load(f)
     except Exception:
-        return [dict(DEFAULT_STARTUP_TIP_ENTRY)]
+        return [_default_startup_tip_entry(language)]
 
     tips_raw: object
     if isinstance(raw, list):
@@ -64,21 +74,21 @@ def load_startup_tip_entries(path: Optional[Path] = None) -> List[Dict[str, Any]
         normalized = _normalize_tip_entry(item)
         if normalized:
             tips.append(normalized)
-    return tips or [dict(DEFAULT_STARTUP_TIP_ENTRY)]
+    return tips or [_default_startup_tip_entry(language)]
 
 
-def load_startup_tips(path: Optional[Path] = None) -> List[str]:
-    return [str(item.get("text") or "") for item in load_startup_tip_entries(path=path)]
+def load_startup_tips(path: Optional[Path] = None, language: Optional[str] = None) -> List[str]:
+    return [str(item.get("text") or "") for item in load_startup_tip_entries(path=path, language=language)]
 
 
-def get_random_startup_tip(path: Optional[Path] = None) -> str:
-    return str(get_random_startup_tip_entry(path=path).get("text") or DEFAULT_STARTUP_TIP)
+def get_random_startup_tip(path: Optional[Path] = None, language: Optional[str] = None) -> str:
+    return str(get_random_startup_tip_entry(path=path, language=language).get("text") or DEFAULT_STARTUP_TIP)
 
 
-def get_random_startup_tip_entry(path: Optional[Path] = None) -> Dict[str, Any]:
-    tips = load_startup_tip_entries(path=path)
+def get_random_startup_tip_entry(path: Optional[Path] = None, language: Optional[str] = None) -> Dict[str, Any]:
+    tips = load_startup_tip_entries(path=path, language=language)
     if not tips:
-        return dict(DEFAULT_STARTUP_TIP_ENTRY)
+        return _default_startup_tip_entry(language)
     return dict(random.choice(tips))
 
 

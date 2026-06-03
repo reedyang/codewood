@@ -42,6 +42,7 @@ _SHELL_MODE_SYNC_HANDLER_ATTR = get_app_runtime_attr_name(
 )
 
 from .builtin_slash_commands import slash_builtin_completions
+from ..config.i18n import language_display_name
 from ..core.console_utils import _ansi_gray, _ansi_rgb
 
 try:
@@ -656,6 +657,10 @@ class FileCompleter(Completer):
                 continue
             if not c_l.startswith(trig_l):
                 continue
+            if trig_l == "/language ":
+                lang_code = c[len(trig):].strip()
+                if lang_code:
+                    return language_display_name(lang_code)
             rest = c[len(trig):]
             # For '/mcp/' second-layer completion, display only server name.
             if trig_l == "/mcp/" and rest.endswith("/"):

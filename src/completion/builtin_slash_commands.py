@@ -27,6 +27,7 @@ SLASH_BUILTIN_COMMANDS: List[str] = [
     "/execution-policy unlimited",
     "/exit",
     "/help",
+    "/language",
     "/mcp ",
     "/mcp disable-tools ",
     "/mcp enable-tools ",

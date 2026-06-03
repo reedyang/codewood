@@ -4,6 +4,13 @@ import os
 from typing import Any, Tuple
 
 from ..config.app_info import get_app_name
+from .language_command_controller import handle_language_builtin_command
+
+
+def _t(agent: Any, en: str, zh: str) -> str:
+    from ..core.localization import get_display_language, text
+
+    return text(en, zh, get_display_language(agent))
 
 
 def dispatch_builtin_command(
@@ -46,7 +53,7 @@ def dispatch_builtin_command(
         return True, False
 
     if bl == "clear":
-        print("Usage: /clear <screen|input history|context>")
+        print(_t(agent, "Usage: /clear <screen|input history|context>", "用法：/clear <screen|input history|context>"))
         return True, False
 
     if bl == "clear input history":
@@ -57,12 +64,12 @@ def dispatch_builtin_command(
             agent.input_handler.reset_command_history(
                 agent.history_manager.get_all_history()
             )
-        print("History cleared.")
+        print(_t(agent, "History cleared.", "历史记录已清除。"))
         return True, False
 
     if bl == "clear context":
         agent._clear_active_chat_context_and_tasks()
-        print("AI context and recorded tasks cleared.")
+        print(_t(agent, "AI context and recorded tasks cleared.", "AI 上下文和已记录的任务已清除。"))
         try:
             agent._handle_chat_builtin_command("chat reload")
         except Exception:
@@ -75,7 +82,10 @@ def dispatch_builtin_command(
         if callable(compact_fn):
             compact_fn(mode="manual")
         else:
-            print("Context compaction is unavailable.")
+            print(_t(agent, "Context compaction is unavailable.", "当前无法进行上下文压缩。"))
+        return True, False
+
+    if handle_language_builtin_command(agent, builtin_line):
         return True, False
 
     if agent._handle_model_builtin_command(builtin_line):
@@ -130,11 +140,11 @@ def dispatch_builtin_command(
         return True, False
 
     if wait_for_supplement and bl == "help":
-        print("/help is available. Enter normal text to continue the paused task.")
+        print(_t(agent, "/help is available. Enter normal text to continue the paused task.", "/help 可用。请输入普通文本以继续暂停的任务。"))
         return True, False
 
     if consume_unknown:
-        print("Unknown built-in command. Use /help.")
+        print(_t(agent, "Unknown built-in command. Use /help.", "无法识别的内置命令。请使用 /help。"))
         return True, False
 
     return False, False

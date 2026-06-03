@@ -45,6 +45,19 @@ class RuntimePreferencesTests(unittest.TestCase):
 
             self.assertEqual(agent.auto_compact_trigger_percent, 75)
 
+    def test_language_is_loaded_from_config(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as td:
+            cfg_dir = Path(td)
+            (cfg_dir / CONFIG_JSONC_FILENAME).write_text(
+                json.dumps({"language": "zh-CN"}) + "\n",
+                encoding="utf-8",
+            )
+            agent = _FakeAgent(cfg_dir)
+
+            setup_runtime_preferences(agent)
+
+            self.assertEqual(agent.display_language, "zh-CN")
+
 
 if __name__ == "__main__":
     unittest.main()
