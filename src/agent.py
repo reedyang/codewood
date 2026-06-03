@@ -290,8 +290,8 @@ class Agent:
     def _bind_project_index_workspace(self) -> None:
         try:
             self._project_context_index.bind_workspace(
-                self.work_directory,
-                storage_dir=(self.workspace_config_dir / "project_context_db"),
+                self.workspace_root,
+                storage_dir=(self.workspace_config_dir / "indexes"),
             )
         except Exception:
             pass
@@ -310,8 +310,8 @@ class Agent:
             if bool(getattr(self, "_project_context_refresh_inflight", False)):
                 return False
             self._project_context_refresh_inflight = True
-        target_root = Path(self.work_directory)
-        target_storage = Path(self.workspace_config_dir) / "project_context_db"
+        target_root = Path(self.workspace_root)
+        target_storage = Path(self.workspace_config_dir) / "indexes"
         reason_text = str(reason or "background")
         pc_logger = get_logger(f"{get_app_logger_root()}.project_context")
         started_at = datetime.now()

@@ -544,6 +544,11 @@ def build_tools_prompt_append(agent: Any) -> str:
         "If the skill was already injected, for example by `/skills/<skill-name>`, do not repeat `request_skill_prompt`; continue the business steps directly. "
         "If the skill body was chunked, you may call `request_skill_prompt` for a specific section or for the full body as needed.",
     )
+    if getattr(agent, "_project_context_tool_allowed", None) and agent._project_context_tool_allowed():
+        lines.insert(
+            2,
+            "For software development tasks (debugging, implementation, refactoring, tests, source browsing, or change-impact analysis), use `project_context_search` as the first retrieval step before shell search or file reads. If the index is empty or stale, refresh it and retry once before falling back.",
+        )
     for t in (agent.tool_specs or []):
         fn = (t or {}).get("function", {})
         name = str(fn.get("name") or "").strip()

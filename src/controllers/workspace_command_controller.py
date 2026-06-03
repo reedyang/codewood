@@ -77,7 +77,7 @@ def workspace_usage() -> str:
         "  /workspace rename <name|id|path> <new name>\n"
         "  /workspace delete <name|id|path> [--remove-files]\n"
         f"    --remove-files: Deletes {config_dirname}/ under this custom workspace root, "
-        f"including {app_name} data such as history, temp, skills, memory, and project_context_db; "
+        f"including {app_name} data such as history, temp, skills, memory, and indexes; "
         "it will not delete the workspace root or other project files."
     )
 
