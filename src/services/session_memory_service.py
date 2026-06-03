@@ -1697,13 +1697,13 @@ class SessionMemoryService:
         if not rows:
             return []
         normalized_mode = str(mode or "").strip().lower()
+        _ = normalized_mode
         compact_until_pos = len(rows) - 1
-        if normalized_mode == "auto":
-            budgets = self._context_token_budgets()
-            ctx_window = int(budgets.get("context_window") or DEFAULT_CONTEXT_WINDOW)
-            tail_budget = max(1, int(ctx_window * AUTO_COMPACT_TAIL_WINDOW_RATIO))
-            tail_count = self._auto_tail_count_within_budget(rows, tail_budget)
-            compact_until_pos = len(rows) - tail_count - 1
+        budgets = self._context_token_budgets()
+        ctx_window = int(budgets.get("context_window") or DEFAULT_CONTEXT_WINDOW)
+        tail_budget = max(1, int(ctx_window * AUTO_COMPACT_TAIL_WINDOW_RATIO))
+        tail_count = self._auto_tail_count_within_budget(rows, tail_budget)
+        compact_until_pos = len(rows) - tail_count - 1
         if compact_until_pos < 0:
             return []
         candidates = rows[:compact_until_pos + 1]
@@ -1712,7 +1712,38 @@ class SessionMemoryService:
             and not self.is_context_compaction_notice_message(m)
             for _idx, m in candidates
         )
+        if normalized_mode == "manual" and not has_new_dialogue and tail_count > 0:
+            last_group_size = 0
+            pos = len(rows) - 1
+            while pos >= 0:
+                if self.is_context_compaction_summary_message(rows[pos][1]):
+                    break
+                group_start = pos
+                role = str(rows[pos][1].get("role") or "").strip().lower()
+                if role == "assistant" and pos - 1 >= 0:
+                    prev = rows[pos - 1][1]
+                    if (
+                        str(prev.get("role") or "").strip().lower() == "user"
+                        and not self.is_context_compaction_summary_message(prev)
+                    ):
+                        group_start = pos - 1
+                group = rows[group_start:pos + 1]
+                if any(self.is_context_compaction_summary_message(m) for _idx, m in group):
+                    break
+                last_group_size = len(group)
+                break
+            if last_group_size > 0 and tail_count > last_group_size:
+                compact_until_pos = len(rows) - last_group_size - 1
+                if compact_until_pos >= 0:
+                    candidates = rows[:compact_until_pos + 1]
+                    has_new_dialogue = any(
+                        not self.is_context_compaction_summary_message(m)
+                        and not self.is_context_compaction_notice_message(m)
+                        for _idx, m in candidates
+                    )
         if not has_new_dialogue:
+            if normalized_mode == "manual" and compact_until_pos < len(rows) - 1:
+                return candidates
             return []
         return candidates
 
