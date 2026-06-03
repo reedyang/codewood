@@ -121,6 +121,44 @@ class PromptComposerTests(unittest.TestCase):
         visible_text = prompt_composer.build_tools_prompt_append(agent)
         self.assertIn("- mcp_server_info:", visible_text)
 
+    def test_build_mcp_system_append_includes_initialize_instructions(self):
+        class _FakeMcpManager:
+            def get_status(self):
+                return {"servers": {"codegraph": {"state": "success"}}}
+
+            def cached_initialize_instructions_for_prompt(self):
+                return "- codegraph:\n  CodeGraph instructions\n  Use codegraph_explore first"
+
+            def cached_tools_for_prompt(self):
+                return "No cached MCP tools yet (run mcp_list_tools first)."
+
+            def cached_resources_for_prompt(self):
+                return "No cached MCP resources yet (run mcp_list_resources first)."
+
+            def cached_prompts_for_prompt(self):
+                return "No cached MCP prompts yet (run mcp_list_prompts first)."
+
+        agent = self._make_agent(config_dir=Path("D:/config"), workspace_root=Path("D:/workspace"))
+        agent.mcp_config = {
+            "mcpServers": {
+                "codegraph": {
+                    "type": "stdio",
+                    "command": "codegraph",
+                    "args": ["serve", "--mcp"],
+                }
+            }
+        }
+        agent.mcp_manager = _FakeMcpManager()
+
+        text = prompt_composer.build_mcp_system_append(agent)
+
+        self.assertIn("MCP initialize instructions from connected servers", text)
+        self.assertIn("active guidance", text)
+        self.assertIn("follow its instructions", text)
+        self.assertIn("codegraph", text)
+        self.assertIn("CodeGraph instructions", text)
+        self.assertIn("Use codegraph_explore first", text)
+
     def test_standard_skill_section_hint_uses_standard_tools_not_json(self):
         text, meta = prompt_composer.render_skill_section_payload(
             sections=["part 1", "part 2"],

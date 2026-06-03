@@ -105,6 +105,9 @@ class FakeMcpServerE2ETests(unittest.TestCase):
     def _assert_tools_resources_prompts_sampling_completion(self, manager, server_name: str):
         tools, _ = manager.list_tools(server_name, use_cache=False, timeout_s=8.0)
         self.assertIn("echo", [str(t.get("name", "")) for t in tools if isinstance(t, dict)])
+        instructions_text = manager.cached_initialize_instructions_for_prompt()
+        self.assertIn(server_name, instructions_text)
+        self.assertIn("instructions", instructions_text.lower())
         tool_result = manager.call_tool(server_name, "echo", {"message": "hi"}, timeout_s=10.0)
         self.assertIn("echo:hi", str(tool_result.get("content", [{}])[0].get("text", "")))
         batch_result = manager.call_tools_batch(

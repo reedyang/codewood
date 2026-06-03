@@ -134,6 +134,11 @@ def _handle_method(method: str, params: Optional[Dict[str, Any]]) -> Tuple[bool,
             "protocolVersion": "2024-11-05",
             "serverInfo": {"name": "fake-mcp-server", "version": "1.0.0"},
             "capabilities": {"tools": {}, "resources": {}, "prompts": {}, "elicitation": {}},
+            "instructions": (
+                "Fake MCP server instructions\n"
+                "- Use echo for quick checks\n"
+                "- Use summarize_text for prompt lookups"
+            ),
         }
     if method == "notifications/initialized":
         return True, {}
