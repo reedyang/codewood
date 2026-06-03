@@ -1318,7 +1318,7 @@ def _print_startup_overview(agent: Any) -> None:
     from ..core.localization import get_display_language, translate
 
     lang = get_display_language(agent)
-    t = lambda key, **kwargs: translate(key, lang, **kwargs)
+    t = lambda key, fallback=None, **kwargs: translate(key, lang, fallback, **kwargs)
 
     model_name = str(getattr(agent, "model_name", "") or "")
     workspace_name = str(getattr(agent, "workspace_name", "") or "")
@@ -1415,7 +1415,7 @@ def run_agent_loop(agent: Any):
     from ..core.localization import get_display_language, translate
 
     lang = get_display_language(agent)
-    t = lambda key, **kwargs: translate(key, lang, **kwargs)
+    t = lambda key, fallback=None, **kwargs: translate(key, lang, fallback, **kwargs)
     import sys
     import os
     os_name = os.name
