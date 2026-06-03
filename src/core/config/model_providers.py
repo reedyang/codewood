@@ -8,7 +8,7 @@ SIMPLE_CHAT_SYSTEM_PROMPT_MIN_CONTEXT_WINDOW = 64_000
 SMALL_CONTEXT_WINDOW_BASIC_CHAT_WARNING = (
     "⚠️ Model context window is too small; only basic chat is supported."
 )
-_CTX_WINDOW_PATTERN = re.compile(r"^(\d+)([kK]?)$")
+_CTX_WINDOW_PATTERN = re.compile(r"^(\d+)([kKmM]?)$")
 
 
 def parse_context_window(value: Any, default_value: int = DEFAULT_CONTEXT_WINDOW) -> int:
@@ -26,8 +26,12 @@ def parse_context_window(value: Any, default_value: int = DEFAULT_CONTEXT_WINDOW
         num = int(m.group(1))
         if num <= 0:
             return default_value
-        if m.group(2):
-            num *= 1000
+        suffix = m.group(2)
+        if suffix:
+            if suffix in ("k", "K"):
+                num *= 1000
+            elif suffix in ("m", "M"):
+                num *= 1_000_000
         return num
     return default_value
 

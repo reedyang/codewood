@@ -202,8 +202,8 @@ smart-shell/
   - `responses`: 按 Responses API 调用（默认补全 `.../responses`）
 - `model_providers[i].params.models`: 模型列表；默认使用第一个模型。每项支持两种写法：
   - 字符串：`"gpt-oss-120b"`（使用默认 `context_window=128000`、`streaming=true`）
-  - 对象：`{"name":"gpt-oss-120b","context_window":"128K","streaming":true,"extra_headers":{"X-Model":"gpt-oss-120b"}}`（`context_window` 可为数字，或带 `k/K` 后缀的字符串）
-- `context_window`: 仅接受正整数，或形如 `^\d+[kK]?$` 的字符串（`k/K` 表示乘以 1000）；无效值会自动回退到默认 `128000`
+  - 对象：`{"name":"gpt-oss-120b","context_window":"128K","streaming":true,"extra_headers":{"X-Model":"gpt-oss-120b"}}`（`context_window` 可为数字，或带 `k/K/m/M` 后缀的字符串）
+- `context_window`: 仅接受正整数，或形如 `^\d+[kKmM]?$` 的字符串（`k/K` 表示乘以 1000，`m/M` 表示乘以 1000000）；无效值会自动回退到默认 `128000`
 - 当模型 `context_window < 64000` 时，Smart Shell 不注入系统提示词、工具提示、技能提示、记忆或操作上下文，只发送历史消息和当前用户输入，用于支持小上下文模型的简单聊天
 - `streaming`: 模型级流式输出开关，默认 `true`；可按模型单独配置是否启用流式输出
 - `extra_headers`: 模型级自定义请求头，仅 `openai` provider 生效；适合需要 `X-Model` 之类网关路由头的环境
