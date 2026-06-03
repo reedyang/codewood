@@ -945,7 +945,7 @@ def action_shell_command(
                         last_rendered_chunk = out
                 # Keep next assistant/status lines on a fresh line even when command
                 # output does not end with newline. This avoids off-by-one over-clear
-                # caused by mixing "正在思考..." into the output's last visual line.
+                # caused by mixing "Thinking..." into the output's last visual line.
                 if last_rendered_chunk and not str(last_rendered_chunk).endswith("\n"):
                     _safe_console_write("\n", sys.stdout, append_newline=False)
                     replay_out_text = str(replay_out_text) + "\n"

@@ -1,11 +1,11 @@
 """
-应用包
+Application package
 
-这个包包含 AI Agent，具有以下功能：
-- 文件和目录管理
-- 智能目录切换
-- 操作结果反馈
-- 自然语言交互
+This package contains the AI Agent with the following capabilities:
+- File and directory management
+- Smart directory switching
+- Operation result feedback
+- Natural language interaction
 """
 
 import importlib

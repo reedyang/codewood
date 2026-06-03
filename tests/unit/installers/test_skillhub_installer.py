@@ -119,11 +119,11 @@ class SkillHubInstallerTests(unittest.TestCase):
         <h2>SKILL.md</h2>
         ```markdown
         ---
-        name: 数据 分析助手 v2
+        name: Data Analysis Helper v2
         description: unicode name
         ---
 
-        # 数据 分析助手 v2
+        # Data Analysis Helper v2
         ```
         """
         with tempfile.TemporaryDirectory() as td:
@@ -143,7 +143,7 @@ class SkillHubInstallerTests(unittest.TestCase):
                 with patch("sys.stdout", new=captured):
                     rc = self.mod.cmd_install(args)
             self.assertEqual(rc, 0)
-            self.assertTrue((Path(td) / "skills" / "数据 分析助手 v2" / "SKILL.md").is_file())
+            self.assertTrue((Path(td) / "skills" / "Data Analysis Helper v2" / "SKILL.md").is_file())
 
     def test_install_config_conflict_aborts_without_prompt(self):
         detail_html = """

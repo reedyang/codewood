@@ -1,8 +1,8 @@
 """
-经验记忆（内化经验与偏好）。
+Experiential memory (internalized lessons and preferences).
 
-存储：Markdown 文件 + 每作用域 manifest.json（机器可读）与 INDEX.md（人类可读清单）。
-不使用 Chroma / 嵌入模型，避免首包加载延迟。
+Storage: Markdown files plus one manifest.json per scope (machine-readable) and INDEX.md (human-readable index).
+No Chroma / embedding model is used to avoid first-load latency.
 """
 
 from __future__ import annotations
@@ -24,13 +24,13 @@ from ...config.app_info import get_app_logger_root, get_app_name
 
 _mem_log = logging.getLogger(f"{get_app_logger_root()}.memory")
 
-# 无重型依赖，默认可用；仅当初始化抛错时 MemoryService 会标记不可用
+# No heavy dependency; enabled by default. MemoryService only marks it unavailable if initialization raises.
 MEMORY_AVAILABLE = True
 
 MANIFEST_VERSION = 1
 INDEX_HEADER = (
-    "# 经验记忆索引\n\n"
-    f"本文件由 {get_app_name()} 根据 `manifest.json` 自动生成，可阅读、勿手改结构行。\n\n"
+    "# Experiential Memory Index\n\n"
+    f"This file is generated automatically by {get_app_name()} from `manifest.json`. It is readable, but do not edit the structure lines by hand.\n\n"
 )
 
 
@@ -50,7 +50,7 @@ def _tier_expires_at(tier: str, now_ts: float) -> Optional[float]:
 
 
 def _query_tokens(query: str) -> List[str]:
-    """中英文轻量分词：空白/标点切分 + 短词过滤。"""
+    """Lightweight Chinese/English tokenization: split on whitespace/punctuation plus short-token filtering."""
     q = (query or "").strip()
     if not q:
         return []
@@ -62,7 +62,7 @@ def _query_tokens(query: str) -> List[str]:
             out.append(s)
     if not out and len(q) >= 1:
         out = [q]
-    # 去重保序
+    # Deduplicate while preserving order.
     seen: Set[str] = set()
     uniq: List[str] = []
     for t in out:
@@ -105,14 +105,14 @@ def _write_md_document(path: Path, meta: Dict[str, Any], body: str) -> None:
 
 class MemoryManager:
     """
-    经验记忆：按 scope_key 分目录；entries/*.md 为真源；manifest.json 为检索索引；INDEX.md 供人工浏览。
+    Experiential memory: directories are organized by scope_key; entries/*.md are the source of truth; manifest.json is the retrieval index; INDEX.md is for manual browsing.
     """
 
     def __init__(self, config_dir: str, embedding_model: str = ""):
         self.config_dir = Path(config_dir)
         self.memory_root = self.config_dir / "memory"
         self.memory_root.mkdir(parents=True, exist_ok=True)
-        self._embedding_model_legacy = embedding_model  # 兼容 stats 字段
+        self._embedding_model_legacy = embedding_model  # Compatibility field for stats
         self._lock = threading.Lock()
 
     def _scopes_base(self) -> Path:
@@ -147,7 +147,7 @@ class MemoryManager:
             data.setdefault("scope_key", scope_key or "global")
             return data
         except Exception as e:
-            _mem_log.warning("读取 manifest 失败，将使用空 manifest: %s", e)
+            _mem_log.warning("Failed to read manifest; using an empty manifest: %s", e)
             return {
                 "version": MANIFEST_VERSION,
                 "scope_key": scope_key or "global",
@@ -171,8 +171,8 @@ class MemoryManager:
         scope_dir = self._scope_dir(scope_key)
         lines = [
             INDEX_HEADER,
-            f"**作用域 scope_key**：`{data.get('scope_key', '')}`\n\n",
-            "| id | 类型 | tier | 标题 | 摘要 | 文件 |\n",
+            f"**Scope scope_key**: `{data.get('scope_key', '')}`\n\n",
+            "| id | type | tier | title | summary | file |\n",
             "| --- | --- | --- | --- | --- | --- |\n",
         ]
         for e in data.get("entries") or []:
@@ -254,7 +254,7 @@ class MemoryManager:
             title = (title or "untitled").strip()[:500]
             content = (content or "").strip()
             if not content:
-                raise ValueError("content 不能为空")
+                raise ValueError("content must not be empty")
             exp = expires_at_override
             if exp is None:
                 exp = _tier_expires_at(tier, cr)
@@ -479,7 +479,7 @@ class MemoryManager:
                 res = run_pool(candidates)
                 if res:
                     return res
-            # 全库回退（与旧版 Chroma「无命中则放宽 scope」一致）
+            # Global fallback (matches the old Chroma behavior of relaxing scope when nothing matches).
             return run_pool(self._collect_all_entries())
 
     def touch_memory(self, memory_id: str, delta_strength: float = 0.05) -> None:
@@ -577,7 +577,7 @@ class MemoryManager:
 
 
 class MemoryService:
-    """单线程执行 MemoryManager。"""
+    """Run MemoryManager on a single worker thread."""
 
     def __init__(self, config_dir: str, embedding_model: str = ""):
         self._config_dir = str(Path(config_dir))
@@ -623,18 +623,18 @@ class MemoryService:
 
     def _submit(self, fn: Callable[[], Any], timeout: float) -> Any:
         if self._closed.is_set():
-            raise RuntimeError("MemoryService 已关闭")
+            raise RuntimeError("MemoryService is closed")
         future: concurrent.futures.Future = concurrent.futures.Future()
         self._task_queue.put((fn, future))
         return future.result(timeout=timeout)
 
     def _bootstrap(self) -> None:
         try:
-            _mem_log.info("经验记忆线程开始初始化, config_dir=%s", self._config_dir)
+            _mem_log.info("Experiential memory thread initialization started, config_dir=%s", self._config_dir)
             self._mm = MemoryManager(self._config_dir, self._embedding_model)
-            _mem_log.info("经验记忆线程初始化完成（Markdown 后端）")
+            _mem_log.info("Experiential memory thread initialization completed (Markdown backend)")
         except Exception:
-            _mem_log.exception("经验记忆线程初始化失败")
+            _mem_log.exception("Experiential memory thread initialization failed")
             self._mm = None
         finally:
             self._ready.set()
@@ -650,13 +650,13 @@ class MemoryService:
     def add_memory(self, **kwargs: Any) -> str:
         def _do() -> str:
             if self._mm is None:
-                raise RuntimeError("MemoryManager 不可用")
+                raise RuntimeError("MemoryManager is unavailable")
             return self._mm.add_memory(**kwargs)
 
         if not self.wait_ready(120.0):
-            raise RuntimeError("记忆服务未就绪")
+            raise RuntimeError("Memory service is not ready")
         if self._mm is None:
-            raise RuntimeError("记忆服务不可用")
+            raise RuntimeError("Memory service is unavailable")
         return self._submit(_do, timeout=60.0)
 
     def search_memories(self, query: str, top_k: int = 6, scope_key: Optional[str] = None) -> List[Dict[str, Any]]:

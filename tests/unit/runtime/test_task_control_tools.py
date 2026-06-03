@@ -54,12 +54,12 @@ class TaskControlToolTests(unittest.TestCase):
     def test_cancel_detection_does_not_scan_success_output_text(self):
         result = {
             "success": True,
-            "output": "这里是文件内容，包含关键词：用户取消，但这不是取消操作。",
+            "output": "This is file content and contains the keyword: user cancelled, but this is not a cancellation.",
         }
         self.assertFalse(self.agent._result_indicates_user_cancelled(result))
 
     def test_cancel_detection_uses_error_message_on_failure(self):
-        result = {"success": False, "error": "用户取消了操作"}
+        result = {"success": False, "error": "The operation was cancelled by the user"}
         self.assertTrue(self.agent._result_indicates_user_cancelled(result))
 
     def test_start_chat_task_refreshes_context_usage_snapshot(self):

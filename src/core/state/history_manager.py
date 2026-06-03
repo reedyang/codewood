@@ -8,25 +8,25 @@ from ...config.app_info import get_app_config_dirname, get_app_name
 class HistoryManager:
     def __init__(self, config_dir: str = get_app_config_dirname(), max_entries: int = 50):
         """
-        初始化历史记录管理器
+        Initialize the history manager.
         Args:
-            config_dir: 存放 history.json 的目录（通常为 {get_app_name()} 配置目录下的 workspace/）
-            max_entries: 最大记录数
+            config_dir: Directory that stores history.json (typically workspace/ under the {get_app_name()} config directory).
+            max_entries: Maximum number of entries.
         """
         self.config_dir = Path(config_dir)
         self.history_file = self.config_dir / "history.json"
         self.max_entries = max_entries
         self.history: List[str] = []
-        self.current_index = -1  # 当前在历史记录中的位置
+        self.current_index = -1  # Current position in the history list
         
-        # 确保配置目录存在
+        # Ensure the config directory exists.
         self.config_dir.mkdir(exist_ok=True)
         
-        # 加载历史记录
+        # Load history.
         self.load_history()
 
     def load_history(self):
-        """从文件加载历史记录"""
+        """Load history from disk."""
         try:
             if self.history_file.exists():
                 with open(self.history_file, 'r', encoding='utf-8') as f:
@@ -37,17 +37,17 @@ class HistoryManager:
                         for entry in raw_history
                         if str(entry or "").strip()
                     ]
-                    # 确保不超过最大记录数
+                    # Ensure we do not exceed the maximum number of entries.
                     if len(self.history) > self.max_entries:
                         self.history = self.history[-self.max_entries:]
             else:
                 self.history = []
         except Exception as e:
-            print(f"⚠️ 加载历史记录失败: {e}")
+            print(f"⚠️ Failed to load history: {e}")
             self.history = []
     
     def save_history(self):
-        """保存历史记录到文件"""
+        """Save history to disk."""
         try:
             data = {
                 'history': [
@@ -59,82 +59,82 @@ class HistoryManager:
             with open(self.history_file, 'w', encoding='utf-8') as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
         except Exception as e:
-            print(f"⚠️ 保存历史记录失败: {e}")
+            print(f"⚠️ Failed to save history: {e}")
     
     def add_entry(self, command: str):
         """
-        添加新的历史记录
+        Add a new history entry.
         Args:
-            command: 用户输入的命令
+            command: The command entered by the user.
         """
         cleaned_command = command.strip()
         if not cleaned_command:
             return
 
-        # 追加前先清理历史中的同内容旧记录，确保同一命令仅保留最新一条。
+        # Remove older entries with the same content so only the latest copy remains.
         self.history = [entry for entry in self.history if entry != cleaned_command]
 
-        # 添加新记录
+        # Add the new entry.
         self.history.append(cleaned_command)
         
-        # 维护最大记录数
+        # Enforce the maximum entry count.
         if len(self.history) > self.max_entries:
             self.history = self.history[-self.max_entries:]
 
         self.save_history()
 
-        # 重置当前索引
+        # Reset the current index.
         self.current_index = -1
     
     def get_previous(self) -> Optional[str]:
         """
-        获取上一条历史记录
+        Get the previous history entry.
         Returns:
-            上一条历史记录，如果没有则返回None
+            The previous history entry, or None if there is none.
         """
         if not self.history:
             return None
         
         if self.current_index == -1:
-            # 第一次按上键，跳到最后一条记录
+            # First Up key press jumps to the last entry.
             self.current_index = len(self.history) - 1
         elif self.current_index > 0:
-            # 向上浏览历史记录
+            # Move up through history.
             self.current_index -= 1
         else:
-            # 已经到第一条记录
+            # Already at the first entry.
             return None
         
         return self.history[self.current_index]
     
     def get_next(self) -> Optional[str]:
         """
-        获取下一条历史记录
+        Get the next history entry.
         Returns:
-            下一条历史记录，如果没有则返回None
+            The next history entry, or None if there is none.
         """
         if not self.history or self.current_index == -1:
             return None
         
         if self.current_index < len(self.history) - 1:
-            # 向下浏览历史记录
+            # Move down through history.
             self.current_index += 1
             return self.history[self.current_index]
         else:
-            # 已经到最后一条记录，重置索引
+            # Already at the last entry; reset the index.
             self.current_index = -1
             return None
     
     def reset_index(self):
-        """重置当前索引"""
+        """Reset the current index."""
         self.current_index = -1
     
     def get_all_history(self) -> List[str]:
-        """获取所有历史记录"""
+        """Get all history entries."""
         return self.history.copy()
     
     def clear_history(self):
-        """清空历史记录"""
+        """Clear the history."""
         self.history = []
         self.current_index = -1
         self.save_history()

@@ -31,17 +31,17 @@ class SkillReferenceFormatTests(unittest.TestCase):
         self.assertNotIn("/skills alpha-skill", commands)
 
     def test_extract_forced_skill_reference_supports_new_format(self):
-        parsed = self.agent._extract_forced_skill_reference("/skills/alpha-skill 帮我做一次 code review")
+        parsed = self.agent._extract_forced_skill_reference("/skills/alpha-skill help me do a code review")
         self.assertIsNotNone(parsed)
         self.assertEqual(parsed["skills"][0]["skill_id"], "alpha-skill")
-        self.assertEqual(parsed["rest"], "帮我做一次 code review")
+        self.assertEqual(parsed["rest"], "help me do a code review")
 
     def test_extract_forced_skill_reference_deduplicates_new_format(self):
-        parsed = self.agent._extract_forced_skill_reference("/skills/alpha-skill /skills/alpha-skill 执行")
+        parsed = self.agent._extract_forced_skill_reference("/skills/alpha-skill /skills/alpha-skill run")
         self.assertIsNotNone(parsed)
         self.assertEqual(len(parsed["skills"]), 1)
         self.assertEqual(parsed["skills"][0]["skill_id"], "alpha-skill")
-        self.assertEqual(parsed["rest"], "执行")
+        self.assertEqual(parsed["rest"], "run")
 
     def test_dynamic_rules_include_skills_trigger_and_candidates(self):
         rules = build_slash_dynamic_rules(

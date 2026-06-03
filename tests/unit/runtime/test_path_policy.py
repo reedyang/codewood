@@ -61,7 +61,7 @@ class PathPolicyShellGuardTests(unittest.TestCase):
             )
 
         self.assertFalse(decision.get("allowed"))
-        self.assertIn("已拦截 shell 命令", str(decision.get("error") or ""))
+        self.assertIn("Blocked shell command", str(decision.get("error") or ""))
 
 
 if __name__ == "__main__":

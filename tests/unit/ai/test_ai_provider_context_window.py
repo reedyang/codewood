@@ -749,7 +749,7 @@ class ProviderContextWindowTests(unittest.TestCase):
                 status_code=400,
                 body='{"error":"tools are not supported by this model"}',
             ),
-            _FakeOllamaHttpResponse(data={"message": {"content": "你好"}}),
+            _FakeOllamaHttpResponse(data={"message": {"content": "Hello"}}),
         ]
 
         def _fake_post(*args, **kwargs):
@@ -777,7 +777,7 @@ class ProviderContextWindowTests(unittest.TestCase):
                 ollama_importer=lambda: None,
             )
 
-        self.assertEqual(out, "你好")
+        self.assertEqual(out, "Hello")
         self.assertEqual(mock_post.call_count, 2)
         first_payload = mock_post.call_args_list[0].kwargs.get("json", {})
         second_payload = mock_post.call_args_list[1].kwargs.get("json", {})

@@ -20,7 +20,7 @@ class AiOutputDisplayTests(unittest.TestCase):
 
     def test_strip_tool_json_fence_keeps_text(self):
         text = (
-            "我将先读取文件。\n\n"
+            "I will read the file first.\n\n"
             "```json\n"
             "{\"tool\":\"shell\",\"args\":{\"command\":\"Get-Content a.py\"}}\n"
             "```\n"
@@ -40,7 +40,7 @@ class AiOutputDisplayTests(unittest.TestCase):
 
     def test_strip_tool_json_unclosed_fence_keeps_text(self):
         text = (
-            "Step 2 [in_progress]: 继续读取文件。\n\n"
+            "Step 2 [in_progress]: Continue reading the file.\n\n"
             "```json\n"
             "{\n"
             '  "tool": "shell",\n'
@@ -52,7 +52,7 @@ class AiOutputDisplayTests(unittest.TestCase):
 
     def test_strip_tool_json_fence_with_patch_text_containing_fence_markers_keeps_text(self):
         text = (
-            "Step 1 [in_progress]: 应用补丁。\n\n"
+            "Step 1 [in_progress]: Apply the patch.\n\n"
             "```json\n"
             "{\n"
             '  "tool": "apply_patch",\n'
@@ -68,7 +68,7 @@ class AiOutputDisplayTests(unittest.TestCase):
 
     def test_strip_tool_json_array_fence_keeps_text(self):
         text = (
-            "先分两步处理。\n\n"
+            "Let's handle this in two steps first.\n\n"
             "```json\n"
             "[\n"
             "  {\"tool\":\"shell\",\"args\":{\"command\":\"Get-Content a.py\"}},\n"
@@ -81,7 +81,7 @@ class AiOutputDisplayTests(unittest.TestCase):
 
     def test_strip_assistant_tool_call_marker_block_keeps_text(self):
         text = (
-            "你好！有什么我可以帮您处理的任务吗？\n"
+            "Hello! What task can I help you with?\n"
             "<|assistant tool_calls|>{\"tool\":\"done\",\"args\":{}}<|assistant tool_calls|>"
         )
         out = aoh.strip_tool_json_blocks_for_display(text)
@@ -89,7 +89,7 @@ class AiOutputDisplayTests(unittest.TestCase):
 
     def test_strip_pseudo_tool_calls_block_keeps_text(self):
         text = (
-            "我将执行 ping 检测。\n\n"
+            "I will run a ping check.\n\n"
             "<tool_calls>\n"
             "{\"tool\":\"shell\",\"name\":\"shell\",\"arguments\":{\"command\":\"ping www.baidu.com -n 4\"}}\n"
             "</tool_calls>"
@@ -197,8 +197,8 @@ class AiOutputDisplayTests(unittest.TestCase):
 
     def test_chinese_narrative_with_inline_flags_is_not_treated_as_shell_command_line(self):
         text = (
-            "- 已使用 PowerShell `Get-Content -Path agent.py -Raw` 读取文件。\n"
-            "- 命令在 Windows 环境下通过 `powershell -ExecutionPolicy Bypass` 执行。"
+            "- Used PowerShell `Get-Content -Path agent.py -Raw` to read the file.\n"
+            "- The command ran on Windows via `powershell -ExecutionPolicy Bypass`."
         )
         with patch("src.core.assistant_output_highlighter._ansi_bright_blue", side_effect=lambda s: f"<BB>{s}</BB>"), patch(
             "src.core.assistant_output_highlighter._ansi_cyan", side_effect=lambda s: f"<C>{s}</C>"
@@ -206,8 +206,8 @@ class AiOutputDisplayTests(unittest.TestCase):
             out = aoh.format_assistant_display_response(text)
 
         self.assertIn("<BB>- </BB>", out)
-        self.assertNotIn("<BB>已使用</BB>", out)
-        self.assertNotIn("<BB>命令在</BB>", out)
+        self.assertNotIn("<BB>Used</BB>", out)
+        self.assertNotIn("<BB>The command</BB>", out)
         self.assertIn("<C>`Get-Content -Path agent.py -Raw`</C>", out)
         self.assertIn("<C>`powershell -ExecutionPolicy Bypass`</C>", out)
 
@@ -342,7 +342,7 @@ class AiOutputDisplayTests(unittest.TestCase):
         command = (
             "powershell -ExecutionPolicy Bypass -Command "
             '\\"(Get-Content helloworld.py) -replace \\"print(\\"Hello\\")\\",'
-            '\\"print(\\"爱丽丝开始感到非常厌倦，坐在河岸上和她的姐姐一起，却没有事可做\\")\\""'
+            '\\"print(\\"Alice was beginning to get very tired of sitting by her sister on the bank, and of having nothing to do\\")\\""'
         )
         with (
             patch.object(self.agent, "_terminal_columns_for_command_feedback", return_value=42),
@@ -377,8 +377,7 @@ class AiOutputDisplayTests(unittest.TestCase):
         command = (
             "!powershell -ExecutionPolicy Bypass -Command "
             '\\"(Get-Content helloworld.py) -replace \\"print(\\"Hello, world!\\")\\", '
-            '\\"print(\\"爱丽丝开始感到非常厌倦，坐在河岸上和她的姐姐一起，'
-            '却没有事可做；她瞥一两次偷看姐姐在读的书，但书里没有图片也没有对话\\")\\" '
+            '\\"print(\\"Alice was beginning to get very tired of sitting by her sister on the bank, and of having nothing to do; she had peeped into the book her sister was reading, but it had no pictures or conversations in it\\")\\" '
             '| Set-Content helloworld.py\\"'
         )
         fake_stdout = _FakeStdout()

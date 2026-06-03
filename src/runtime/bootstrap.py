@@ -180,7 +180,7 @@ def setup_runtime_preferences(agent: Any) -> None:
                 # Keep backward compatibility for explicit positive values.
                 agent.max_tool_rounds = parsed_rounds if parsed_rounds and parsed_rounds > 0 else None
     except Exception as e:
-        print(f"⚠️ 读取 {CONFIG_JSONC_FILENAME} 失败（执行策略等使用默认值）: {e}")
+        print(f"⚠️ Failed to read {CONFIG_JSONC_FILENAME} (execution policy and related settings will use defaults): {e}")
 
 
 def setup_policy_caches(agent: Any) -> None:
@@ -297,7 +297,7 @@ def setup_input_handler(
 ) -> None:
     agent.input_handler = None
     if not tab_completion_available:
-        print("⚠️ Tab补全功能不可用")
+        print("⚠️ Tab completion is unavailable")
         return
 
     try:
@@ -307,7 +307,7 @@ def setup_input_handler(
             except Exception:
                 initial_history = []
             if create_prompt_toolkit_input_handler is None:
-                raise RuntimeError("prompt_toolkit 输入处理器不可用")
+                raise RuntimeError("prompt_toolkit input handler is unavailable")
             agent.input_handler = create_prompt_toolkit_input_handler(
                 work_directory=agent.work_directory,
                 workspace_directory=agent.workspace_root,
@@ -320,9 +320,9 @@ def setup_input_handler(
                 ),
             )
         else:
-            print("⚠️ 未知的输入处理器类型")
+            print("⚠️ Unknown input handler type")
     except Exception as e:
-        print(f"⚠️ 输入处理器初始化失败: {e}")
+        print(f"⚠️ Failed to initialize the input handler: {e}")
 
 
 def setup_runtime_services(agent: Any) -> None:

@@ -489,22 +489,22 @@ def main(argv: list[str] | None = None):
     config = None
     config_path = None
     
-    # 优先查找用户主目录下的应用配置目录/config.jsonc
+    # Prefer the application config directory/config.jsonc under the user's home directory.
     user_home = str(Path.home())
     config_dirname = get_app_config_dirname()
     user_config = os.path.join(user_home, config_dirname, CONFIG_JSONC_FILENAME)
     local_config = os.path.join(str(project_root), config_dirname, CONFIG_JSONC_FILENAME)
     
-    config_dir = None  # 配置文件目录，用于历史记录保存
+    config_dir = None  # Config directory used for history persistence
     # Built-in Agent Skills live at the project root, outside src/.
     builtin_skills_dir = str(project_root / "skills")
 
     if os.path.exists(user_config):
         config_path = user_config
-        config_dir = os.path.dirname(user_config)  # 获取配置文件所在目录
+        config_dir = os.path.dirname(user_config)  # Get the directory that contains the config file.
     elif os.path.exists(local_config):
         config_path = local_config
-        config_dir = os.path.dirname(local_config)  # 获取配置文件所在目录
+        config_dir = os.path.dirname(local_config)  # Get the directory that contains the config file.
     
     if config_path:
         try:
@@ -561,7 +561,7 @@ def main(argv: list[str] | None = None):
     if model_selector:
         model_override_selector = f"{provider}:{model_name}"
 
-    # 配置就绪后再加载重型 agent 模块，缩短「启动」到「模型信息」之间的等待
+    # Load the heavy agent module only after configuration is ready to reduce the wait between startup and model info.
     from src.agent import Agent
 
     workspace_selector = ""
@@ -606,7 +606,7 @@ def main(argv: list[str] | None = None):
                 except Exception:
                     pass
     elif provider == "ollama" and params:
-        # ollama：不在此处 import ollama（未使用 ollama 的配置不会加载该包）；校验在 Agent 后台线程中完成
+        # ollama: do not import ollama here (configurations that do not use ollama will not load the package); validation is completed in the Agent background thread.
         agent = None
         try:
             agent = Agent(

@@ -1672,10 +1672,6 @@ class SessionMemoryService:
 
     def _terminal_columns_for_compaction_banner(self) -> int:
         stream = self._compaction_output_stream()
-        if stream is not sys.stdout:
-            width_raw = self._terminal_columns_from_compaction_streams(stream)
-            if width_raw > 0:
-                return max(1, width_raw - 1)
         fn_prompt = getattr(self.agent, "_terminal_columns_for_prompt_separator", None)
         if callable(fn_prompt):
             try:
@@ -1684,6 +1680,10 @@ class SessionMemoryService:
                     return max(1, width0)
             except Exception:
                 pass
+        if stream is not sys.stdout:
+            width_raw = self._terminal_columns_from_compaction_streams(stream)
+            if width_raw > 0:
+                return max(1, width_raw - 1)
         width_raw = self._terminal_columns_from_compaction_streams(stream)
         if width_raw > 0:
             return width_raw

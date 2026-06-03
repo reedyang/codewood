@@ -181,11 +181,11 @@ Installs a raw skill without frontmatter.
         detail_html = """
 ## SKILL.md
 ---
-name: 数据 分析助手 v2
+name: Data Analysis Helper v2
 description: unicode name
 ---
 
-# 数据 分析助手 v2
+# Data Analysis Helper v2
 content
 
 ### Files
@@ -207,7 +207,7 @@ content
                 with patch("sys.stdout", new=captured):
                     rc = self.mod.cmd_install(args)
             self.assertEqual(rc, 0)
-            self.assertTrue((Path(td) / "skills" / "数据 分析助手 v2" / "SKILL.md").is_file())
+            self.assertTrue((Path(td) / "skills" / "Data Analysis Helper v2" / "SKILL.md").is_file())
 
     def test_install_config_conflict_aborts_without_prompt(self):
         detail_html = """

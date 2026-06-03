@@ -150,6 +150,35 @@ class PromptToolkitInputCompletionTests(unittest.TestCase):
         self.assertIn("\x1b[4B\r", app.output.raw_writes)
         self.assertNotIn("\x1b[2B\r", app.output.raw_writes)
 
+    def test_status_overlay_clears_old_position_when_history_grows_to_two_lines(self):
+        app = _FakeHookApp(columns=80)
+        app.current_buffer = _FakePromptBuffer(
+            "single line",
+            len("single line"),
+            _FakeDocument(cursor_position_row=0, line_count=1),
+        )
+        session = _FakeHookSession(app)
+
+        with patch.object(pti, "_get_system_terminal_columns", return_value=0):
+            pti._attach_blink_after_render_hook(
+                session,
+                status_provider=lambda: "status",
+            )
+            app.before_render.fire(app)
+            app.after_render.fire(app)
+            app.output.raw_writes.clear()
+
+            app.current_buffer = _FakePromptBuffer(
+                "line1\nline2",
+                len("line1\nline2"),
+                _FakeDocument(cursor_position_row=1, line_count=2),
+            )
+            app.before_render.fire(app)
+            app.after_render.fire(app)
+
+        self.assertEqual(app.output.raw_writes.count("\x1b[1B\r"), 1)
+        self.assertEqual(app.output.raw_writes.count("\x1b[2B\r"), 1)
+
     def test_status_overlay_clears_old_multiline_position_when_history_shrinks(self):
         app = _FakeHookApp(columns=80)
         app.current_buffer = _FakePromptBuffer(
@@ -461,7 +490,7 @@ class PromptToolkitInputCompletionTests(unittest.TestCase):
     def test_resize_interrupted_prompt_restores_unsent_draft_on_next_prompt(self):
         handler = pti.PromptToolkitInputHandler.__new__(pti.PromptToolkitInputHandler)
         interrupted_session = _FakeSessionWithHook("")
-        stable_session = _FakeSession("hello\n你好 world")
+        stable_session = _FakeSession("hello\nworld world")
         handler.session = interrupted_session
         handler.history = []
         handler.work_directory = Path.cwd()
@@ -473,22 +502,22 @@ class PromptToolkitInputCompletionTests(unittest.TestCase):
 
         def _simulate_resize_interrupt():
             setattr(interrupted_session, _RESIZE_ATTR_INTERRUPTED, True)
-            setattr(interrupted_session, _RESIZE_ATTR_DRAFT, "hello\r\n你好")
+            setattr(interrupted_session, _RESIZE_ATTR_DRAFT, "hello\r\nworld")
 
         interrupted_session.before_return = _simulate_resize_interrupt
 
         out1 = handler.get_input_with_completion("› ")
         self.assertEqual(out1, "")
-        self.assertEqual(handler._pending_prefill_text, "hello\n你好")
+        self.assertEqual(handler._pending_prefill_text, "hello\nworld")
         self.assertEqual(handler.history, [])
 
         handler.session = stable_session
         out2 = handler.get_input_with_completion("› ")
-        self.assertEqual(out2, "hello\n你好 world")
+        self.assertEqual(out2, "hello\nworld world")
         self.assertEqual(handler._pending_prefill_text, "")
         _, kwargs = stable_session.calls[0]
-        self.assertEqual(kwargs.get("default"), "hello\n你好")
-        self.assertEqual(handler.history, ["hello\n你好 world"])
+        self.assertEqual(kwargs.get("default"), "hello\nworld")
+        self.assertEqual(handler.history, ["hello\nworld world"])
 
     def test_shell_mode_is_preserved_after_resize_interrupted_reload(self):
         class _ResolvedPromptSession(_FakeSession):
@@ -604,7 +633,7 @@ class PromptToolkitInputCompletionTests(unittest.TestCase):
         s = _FakeSessionWithHook("")
         s.output = _FakeOutput(26)
         handler.session = s
-        rendered = handler._compose_shell_mode_status_line("  默认工作区 聊天(12%)")
+        rendered = handler._compose_shell_mode_status_line("  Default workspace Chat(12%)")
         self.assertIn("Shell mode", rendered)
         plain = pti._strip_ansi_sgr(rendered)
         self.assertEqual(

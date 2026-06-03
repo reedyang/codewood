@@ -1294,7 +1294,7 @@ def run_agent_loop(agent: Any):
         active_status_ticker: Optional[_WorkingStatusTicker] = None
         try:
             self._refresh_input_handler_skill_completions()
-            # 获取用户输入（含等待态回注输入），统一走主循环处理路径
+            # Get user input (including replayed waiting-state input) and route everything through the main loop.
             if getattr(self, "_queued_user_input", None) is not None:
                 user_input = str(self._queued_user_input or "")
                 self._queued_user_input = None
@@ -1306,7 +1306,7 @@ def run_agent_loop(agent: Any):
             user_input = _sanitize_prompt_pollution(user_input, self.work_directory)
             raw_user_input = str(user_input or "")
         
-            # 保存到历史记录（非空输入）
+            # Save non-empty input to history.
             if user_input.strip():
                 _sync_command_input_history(self, user_input)
 

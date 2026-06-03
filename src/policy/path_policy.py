@@ -75,9 +75,9 @@ class PathPolicy:
     def reject_ai_workspace_root_level_write(self, path: Path) -> Optional[str]:
         app_name = get_app_name()
         msg = (
-            f"禁止在 {app_name} workspace 根目录直接创建该路径。"
-            f"请使用子目录，例如 workspace/temp/…（临时）、workspace/{get_app_config_dirname()}/skills/…（技能），"
-            "不要直接写入 workspace 根目录。"
+            f"Do not create this path directly in the {app_name} workspace root."
+            f"Use a subdirectory instead, such as workspace/temp/… (temporary) or workspace/{get_app_config_dirname()}/skills/… (skills),"
+            " and do not write directly into the workspace root."
         )
         try:
             r = path.resolve()
@@ -166,8 +166,8 @@ class PathPolicy:
             if not (is_dependency_install or is_ai_workspace_script):
                 return self._deny(
                     (
-                        f"已拦截 shell 命令：当前位于 {get_app_slug_kebab()} 目录内，仅允许依赖安装命令"
-                        "或执行 workspace_config_dir 下的 AI 临时脚本。"
+                        f"Blocked shell command: when running inside the {get_app_slug_kebab()} directory, only dependency-install commands"
+                        " or AI temporary scripts under workspace_config_dir are allowed."
                     )
                 )
         return self._allow()
@@ -191,10 +191,10 @@ class PathPolicy:
             aw = self.agent.workspace_config_dir.resolve()
             tmp = Path(tempfile.gettempdir()).resolve()
         except OSError:
-            return self._deny("output_path 必须位于当前工作目录、AI 工作区或系统临时目录下")
+            return self._deny("output_path must be under the current working directory, the AI workspace, or the system temp directory.")
         if self.is_path_under(r, wd) or self.is_path_under(r, aw) or self.is_path_under(r, tmp):
             return self._allow()
-        return self._deny("output_path 必须位于当前工作目录、AI 工作区或系统临时目录下")
+        return self._deny("output_path must be under the current working directory, the AI workspace, or the system temp directory.")
 
     @staticmethod
     def blocked_by_self_protection(action: str) -> Dict[str, Any]:
@@ -203,8 +203,8 @@ class PathPolicy:
         return {
             "success": False,
             "error": (
-                f"已拦截操作 '{action}'：运行时保护已启用，"
-                f"AI 不可修改 {app_slug_kebab} 自身（代码/配置）；`workspace/{config_dirname}/skills` 子目录除外。"
+                f"Blocked action '{action}': runtime protection is enabled, "
+                f"and AI may not modify {app_slug_kebab} itself (code/config) except for the `workspace/{config_dirname}/skills` subdirectory."
             ),
         }
 
