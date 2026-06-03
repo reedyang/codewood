@@ -291,14 +291,16 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
         self.assertEqual(captured.get("record_history_override"), False)
         override_joined = "\n".join(str(m.get("content") or "") for m in captured["messages_override"])
         self.assertIn("Previous summary", override_joined)
-        self.assertIn("Subsequent user message", override_joined)
-        self.assertIn("Subsequent assistant message", override_joined)
+        self.assertNotIn("Subsequent user message", override_joined)
+        self.assertNotIn("Subsequent assistant message", override_joined)
         self.assertNotIn("Older message", override_joined)
-        inserted = agent.conversation_history[4]
+        inserted = agent.conversation_history[2]
         payload = svc.parse_context_compaction_summary_content(str(inserted.get("content") or ""))
         self.assertIsInstance(payload, dict)
         self.assertEqual(payload.get("summary"), "New merged summary")
         self.assertEqual(payload.get("mode"), "manual")
+        self.assertEqual(str(agent.conversation_history[4].get("content") or ""), "Subsequent user message")
+        self.assertEqual(str(agent.conversation_history[5].get("content") or ""), "Subsequent assistant message")
 
     def test_compact_inserts_completed_notice_but_excludes_notice_from_model_context(self):
         agent = _FakeAgent()
@@ -306,6 +308,15 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
         agent._compose_system_prompt_snapshot = lambda include_tools=True: "SYSTEM"
         svc = SessionMemoryService(agent)
         agent.conversation_history = [
+            {"role": "user", "content": "Older message"},
+            {
+                "role": "assistant",
+                "content": svc.build_context_compaction_summary_content(
+                    summary="Previous summary",
+                    mode="auto",
+                    covered_message_count=2,
+                ),
+            },
             {"role": "user", "content": "Message needing summarization"},
             {"role": "assistant", "content": "Answer needing summarization"},
         ]
@@ -325,6 +336,8 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
         joined = "\n".join(str(m.get("content") or "") for m in messages)
         self.assertIn("Summary body", joined)
         self.assertNotIn("Context automatically compacted", joined)
+        self.assertIn("Message needing summarization", joined)
+        self.assertIn("Answer needing summarization", joined)
 
     def test_auto_compact_candidate_selection_preserves_recent_tail_within_five_percent(self):
         agent = _FakeAgent()
@@ -346,6 +359,34 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
         ]
 
         candidates = svc._compaction_candidate_rows("auto")
+        candidate_text = "\n".join(str(m.get("content") or "") for _idx, m in candidates)
+
+        self.assertIn("Previous summary", candidate_text)
+        self.assertIn("Earlier user message to be summarized", candidate_text)
+        self.assertIn("Earlier assistant message to be summarized", candidate_text)
+        self.assertNotIn("Short tail", candidate_text)
+        self.assertNotIn("Short reply", candidate_text)
+
+    def test_manual_compact_candidate_selection_preserves_recent_tail_like_auto(self):
+        agent = _FakeAgent()
+        agent.params = {"context_window": 1000}
+        agent._compose_system_prompt_snapshot = lambda include_tools=True: "SYSTEM"
+        agent.token_estimator = lambda s: len(str(s or ""))
+        svc = SessionMemoryService(agent)
+        previous = svc.build_context_compaction_summary_content(
+            summary="Previous summary",
+            mode="manual",
+            covered_message_count=2,
+        )
+        agent.conversation_history = [
+            {"role": "assistant", "content": previous},
+            {"role": "user", "content": "Earlier user message to be summarized " + ("x" * 80)},
+            {"role": "assistant", "content": "Earlier assistant message to be summarized " + ("y" * 80)},
+            {"role": "user", "content": "Short tail"},
+            {"role": "assistant", "content": "Short reply"},
+        ]
+
+        candidates = svc._compaction_candidate_rows("manual")
         candidate_text = "\n".join(str(m.get("content") or "") for _idx, m in candidates)
 
         self.assertIn("Previous summary", candidate_text)
