@@ -115,7 +115,7 @@ class ChatCommandControllerTests(unittest.TestCase):
 
     def test_reload_prints_activate_error(self):
         agent = _FakeChatAgent()
-        agent.activate_result = "❌ 未找到 chat: chat-2"
+        agent.activate_result = "❌ chat not found: chat-2"
         buf = io.StringIO()
         with (
             patch("src.controllers.chat_command_controller._clear_terminal_screen"),
@@ -125,7 +125,7 @@ class ChatCommandControllerTests(unittest.TestCase):
             handled = handle_chat_builtin_command(agent, "chat reload")
         self.assertTrue(handled)
         self.assertEqual(agent.load_chat_state_calls, 1)
-        self.assertIn("❌ 未找到 chat: chat-2", buf.getvalue())
+        self.assertIn("❌ chat not found: chat-2", buf.getvalue())
 
     def test_reload_is_in_slash_completions(self):
         out = slash_builtin_completions("/chat re")

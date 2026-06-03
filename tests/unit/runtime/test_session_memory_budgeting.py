@@ -236,27 +236,27 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
         agent._compose_system_prompt_snapshot = lambda include_tools=True: "SYSTEM"
         svc = SessionMemoryService(agent)
         summary = svc.build_context_compaction_summary_content(
-            summary="旧内容已经被压缩到这里",
+            summary="The old content has been compressed here",
             mode="manual",
             covered_message_count=2,
         )
         agent.conversation_history = [
-            {"role": "user", "content": "旧需求不应直接进入上下文"},
-            {"role": "assistant", "content": "旧回答不应直接进入上下文"},
+            {"role": "user", "content": "The old request should not enter the context directly"},
+            {"role": "assistant", "content": "The old reply should not enter the context directly"},
             {"role": "assistant", "content": summary},
-            {"role": "user", "content": "摘要后的用户消息"},
-            {"role": "assistant", "content": "摘要后的助手消息"},
+            {"role": "user", "content": "User message after summarization"},
+            {"role": "assistant", "content": "Assistant message after summarization"},
         ]
 
-        messages, _ = svc.build_regular_task_messages("继续")
+        messages, _ = svc.build_regular_task_messages("Continue")
         joined = "\n".join(str(m.get("content") or "") for m in messages)
 
         self.assertIn("[Context summary]", joined)
-        self.assertIn("旧内容已经被压缩到这里", joined)
-        self.assertIn("摘要后的用户消息", joined)
-        self.assertIn("摘要后的助手消息", joined)
-        self.assertNotIn("旧需求不应直接进入上下文", joined)
-        self.assertNotIn("旧回答不应直接进入上下文", joined)
+        self.assertIn("The old content has been compressed here", joined)
+        self.assertIn("User message after summarization", joined)
+        self.assertIn("Assistant message after summarization", joined)
+        self.assertNotIn("The old request should not enter the context directly", joined)
+        self.assertNotIn("The old reply should not enter the context directly", joined)
 
     def test_manual_compact_inserts_summary_after_covered_tail_and_uses_override_messages(self):
         agent = _FakeAgent()
@@ -264,22 +264,22 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
         agent._compose_system_prompt_snapshot = lambda include_tools=True: "SYSTEM"
         svc = SessionMemoryService(agent)
         previous = svc.build_context_compaction_summary_content(
-            summary="前一次摘要",
+            summary="Previous summary",
             mode="auto",
             covered_message_count=4,
         )
         agent.conversation_history = [
-            {"role": "user", "content": "更旧消息"},
+            {"role": "user", "content": "Older message"},
             {"role": "assistant", "content": previous},
-            {"role": "user", "content": "后续用户消息"},
-            {"role": "assistant", "content": "后续助手消息"},
+            {"role": "user", "content": "Subsequent user message"},
+            {"role": "assistant", "content": "Subsequent assistant message"},
         ]
         captured = {}
 
         def _fake_call_ai(*args, **kwargs):
             captured["messages_override"] = kwargs.get("messages_override")
             captured["record_history_override"] = kwargs.get("record_history_override")
-            return "新的合并摘要"
+            return "New merged summary"
 
         agent.call_ai = _fake_call_ai  # type: ignore[attr-defined]
 
@@ -289,14 +289,14 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
         self.assertTrue(ok)
         self.assertEqual(captured.get("record_history_override"), False)
         override_joined = "\n".join(str(m.get("content") or "") for m in captured["messages_override"])
-        self.assertIn("前一次摘要", override_joined)
-        self.assertIn("后续用户消息", override_joined)
-        self.assertIn("后续助手消息", override_joined)
-        self.assertNotIn("更旧消息", override_joined)
+        self.assertIn("Previous summary", override_joined)
+        self.assertIn("Subsequent user message", override_joined)
+        self.assertIn("Subsequent assistant message", override_joined)
+        self.assertNotIn("Older message", override_joined)
         inserted = agent.conversation_history[4]
         payload = svc.parse_context_compaction_summary_content(str(inserted.get("content") or ""))
         self.assertIsInstance(payload, dict)
-        self.assertEqual(payload.get("summary"), "新的合并摘要")
+        self.assertEqual(payload.get("summary"), "New merged summary")
         self.assertEqual(payload.get("mode"), "manual")
 
     def test_compact_inserts_completed_notice_but_excludes_notice_from_model_context(self):
@@ -305,10 +305,10 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
         agent._compose_system_prompt_snapshot = lambda include_tools=True: "SYSTEM"
         svc = SessionMemoryService(agent)
         agent.conversation_history = [
-            {"role": "user", "content": "需要摘要的消息"},
-            {"role": "assistant", "content": "需要摘要的回答"},
+            {"role": "user", "content": "Message needing summarization"},
+            {"role": "assistant", "content": "Answer needing summarization"},
         ]
-        agent.call_ai = lambda *args, **kwargs: "摘要正文"  # type: ignore[attr-defined]
+        agent.call_ai = lambda *args, **kwargs: "Summary body"  # type: ignore[attr-defined]
 
         with redirect_stdout(io.StringIO()):
             ok = svc.compact_context("manual")
@@ -320,9 +320,9 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
         self.assertIsInstance(notice_payload, dict)
         self.assertEqual(notice_payload.get("message"), "Context automatically compacted")
 
-        messages, _ = svc.build_regular_task_messages("继续")
+        messages, _ = svc.build_regular_task_messages("Continue")
         joined = "\n".join(str(m.get("content") or "") for m in messages)
-        self.assertIn("摘要正文", joined)
+        self.assertIn("Summary body", joined)
         self.assertNotIn("Context automatically compacted", joined)
 
     def test_auto_compact_candidate_selection_preserves_recent_tail_within_five_percent(self):
@@ -332,26 +332,26 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
         agent.token_estimator = lambda s: len(str(s or ""))
         svc = SessionMemoryService(agent)
         previous = svc.build_context_compaction_summary_content(
-            summary="前一次摘要",
+            summary="Previous summary",
             mode="manual",
             covered_message_count=2,
         )
         agent.conversation_history = [
             {"role": "assistant", "content": previous},
-            {"role": "user", "content": "需要被摘要的较早用户消息 " + ("x" * 80)},
-            {"role": "assistant", "content": "需要被摘要的较早助手消息 " + ("y" * 80)},
-            {"role": "user", "content": "短尾"},
-            {"role": "assistant", "content": "短答"},
+            {"role": "user", "content": "Earlier user message to be summarized " + ("x" * 80)},
+            {"role": "assistant", "content": "Earlier assistant message to be summarized " + ("y" * 80)},
+            {"role": "user", "content": "Short tail"},
+            {"role": "assistant", "content": "Short reply"},
         ]
 
         candidates = svc._compaction_candidate_rows("auto")
         candidate_text = "\n".join(str(m.get("content") or "") for _idx, m in candidates)
 
-        self.assertIn("前一次摘要", candidate_text)
-        self.assertIn("需要被摘要的较早用户消息", candidate_text)
-        self.assertIn("需要被摘要的较早助手消息", candidate_text)
-        self.assertNotIn("短尾", candidate_text)
-        self.assertNotIn("短答", candidate_text)
+        self.assertIn("Previous summary", candidate_text)
+        self.assertIn("Earlier user message to be summarized", candidate_text)
+        self.assertIn("Earlier assistant message to be summarized", candidate_text)
+        self.assertNotIn("Short tail", candidate_text)
+        self.assertNotIn("Short reply", candidate_text)
 
     def test_compaction_banner_line_is_centered_and_full_width(self):
         agent = _FakeAgent()
@@ -404,19 +404,19 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
     def test_refresh_context_usage_snapshot_persists_chat_state_immediately(self):
         agent = _FakeAgent()
         agent.conversation_history = [
-            {"role": "user", "content": "请实现功能A"},
-            {"role": "assistant", "content": "收到，我先看下结构"},
+            {"role": "user", "content": "Implement feature A"},
+            {"role": "assistant", "content": "Got it, I will inspect the structure first"},
         ]
         svc = SessionMemoryService(agent)
 
-        svc.refresh_context_usage_snapshot(user_input_hint="继续", context_hint="ctx")
+        svc.refresh_context_usage_snapshot(user_input_hint="Continue", context_hint="ctx")
 
         self.assertGreater(agent.sync_active_chat_messages_calls, 0)
 
     def test_software_development_prompt_is_always_appended(self):
         agent = _FakeAgent()
         svc = SessionMemoryService(agent)
-        messages, _ = svc.build_regular_task_messages("请修复构建错误")
+        messages, _ = svc.build_regular_task_messages("Please fix the build error")
         system_content = str(messages[0].get("content") or "")
         self.assertIn("Domain Prompt: Software Development", system_content)
 
@@ -434,7 +434,7 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
         )
         svc = SessionMemoryService(agent)
 
-        messages, _ = svc.build_regular_task_messages("查看我的codex用量")
+        messages, _ = svc.build_regular_task_messages("Check my Codex usage")
         joined = "\n".join(str(m.get("content") or "") for m in messages)
 
         self.assertIn("[Dynamic skill body (front-loaded full injection)]", joined)
@@ -460,18 +460,18 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
         agent._compose_system_prompt_snapshot = _compose
         agent.operation_results = [{"secret": "operation-context"}]
         agent.conversation_history = [
-            {"role": "user", "content": "上一轮问题"},
-            {"role": "assistant", "content": "上一轮回答"},
+            {"role": "user", "content": "Previous round question"},
+            {"role": "assistant", "content": "Previous round answer"},
         ]
         svc = SessionMemoryService(agent)
 
-        messages, _ = svc.build_regular_task_messages("你好", context="ctx-should-not-be-sent")
+        messages, _ = svc.build_regular_task_messages("Hello", context="ctx-should-not-be-sent")
         joined = "\n".join(str(m.get("content") or "") for m in messages)
 
         self.assertFalse(any(str(m.get("role") or "") == "system" for m in messages))
-        self.assertEqual(messages[-1], {"role": "user", "content": "你好"})
-        self.assertIn("上一轮问题", joined)
-        self.assertIn("上一轮回答", joined)
+        self.assertEqual(messages[-1], {"role": "user", "content": "Hello"})
+        self.assertIn("Previous round question", joined)
+        self.assertIn("Previous round answer", joined)
         self.assertNotIn("SYSTEM SHOULD NOT BE SENT", joined)
         self.assertNotIn("Original user request:", joined)
         self.assertNotIn("ctx-should-not-be-sent", joined)
@@ -484,12 +484,12 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
         agent._compose_system_prompt_snapshot = lambda include_tools=True: "SYSTEM AT 64K"
         svc = SessionMemoryService(agent)
 
-        messages, _ = svc.build_regular_task_messages("你好")
+        messages, _ = svc.build_regular_task_messages("Hello")
         joined = "\n".join(str(m.get("content") or "") for m in messages)
 
         self.assertEqual(messages[0].get("role"), "system")
         self.assertIn("SYSTEM AT 64K", joined)
-        self.assertIn("Original user request: 你好", str(messages[-1].get("content") or ""))
+        self.assertIn("Original user request: Hello", str(messages[-1].get("content") or ""))
 
     def test_context_eligible_history_returns_all_context_eligible_messages(self):
         agent = _FakeAgent()
@@ -771,7 +771,7 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
     def test_context_window_budget_prefers_recent_history(self):
         agent = _FakeAgent()
         # First requirement should be preserved explicitly.
-        agent.conversation_history.append({"role": "user", "content": "最初需求：做一个任务规划器"})
+        agent.conversation_history.append({"role": "user", "content": "Initial request: build a task planner"})
         # Create long history to trigger budget trimming.
         for i in range(1, 24):
             role = "assistant" if i % 2 == 0 else "user"
@@ -779,7 +779,7 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
                 {"role": role, "content": f"msg-{i} " + ("z" * 180)}
             )
         svc = SessionMemoryService(agent)
-        messages, _ = svc.build_regular_task_messages("现在请继续实现第2步", context="ctx-" + ("c" * 400))
+        messages, _ = svc.build_regular_task_messages("Now please continue with step 2", context="ctx-" + ("c" * 400))
 
         self.assertGreaterEqual(len(messages), 2)
         self.assertEqual(messages[0]["role"], "system")
@@ -788,8 +788,8 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
         joined = "\n".join(str(m.get("content") or "") for m in messages[1:-1])
         self.assertIn("msg-23", joined)
         # User original requirement must be explicitly injected.
-        self.assertIn("Original user request: 最初需求：做一个任务规划器", messages[-1]["content"])
-        self.assertIn("User input: 现在请继续实现第2步", messages[-1]["content"])
+        self.assertIn("Original user request: Initial request: build a task planner", messages[-1]["content"])
+        self.assertIn("User input: Now please continue with step 2", messages[-1]["content"])
 
     def test_regular_task_messages_include_recent_aborted_command_context(self):
         agent = _FakeAgent()
@@ -809,7 +809,7 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
             },
         ]
         svc = SessionMemoryService(agent)
-        messages, _ = svc.build_regular_task_messages("继续处理后续步骤")
+        messages, _ = svc.build_regular_task_messages("Continue processing the follow-up steps")
         history_joined = "\n".join(str(m.get("content") or "") for m in messages[1:-1])
         self.assertIn("[Command result]", history_joined)
         self.assertIn("executed_success=false", history_joined)
@@ -834,7 +834,7 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
             },
         ]
         svc = SessionMemoryService(agent)
-        messages, _ = svc.build_regular_task_messages("继续")
+        messages, _ = svc.build_regular_task_messages("Continue")
         history_joined = "\n".join(str(m.get("content") or "") for m in messages[1:-1])
         self.assertIn("[Command result]", history_joined)
         self.assertIn("executed_success=true", history_joined)
@@ -843,18 +843,18 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
     def test_regular_task_messages_include_recent_interrupted_task_context(self):
         agent = _FakeAgent()
         agent.conversation_history = [
-            {"role": "user", "content": "请继续修复构建"},
+            {"role": "user", "content": "Please continue fixing the build"},
             {
                 "role": "assistant",
                 "content": agent._build_conversation_interrupted_history_content(
                     interrupted_kind="task",
                     reason="user_interrupt",
-                    detail="修复构建脚本",
+                    detail="Fix the build script",
                 ),
             },
         ]
         svc = SessionMemoryService(agent)
-        messages, _ = svc.build_regular_task_messages("继续")
+        messages, _ = svc.build_regular_task_messages("Continue")
         history_joined = "\n".join(str(m.get("content") or "") for m in messages[1:-1])
         self.assertIn("[Session interruption event]", history_joined)
         self.assertIn("The most recent task execution was interrupted by the user (ESC)", str(messages[-1]["content"]))
@@ -870,39 +870,39 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
                     "reloaded\n",
                 ),
             },
-            {"role": "user", "content": "最初需求：修复构建"},
-            {"role": "assistant", "content": "收到"},
+            {"role": "user", "content": "Initial request: fix the build"},
+            {"role": "assistant", "content": "Got it"},
         ]
         svc = SessionMemoryService(agent)
-        messages, _ = svc.build_regular_task_messages("继续执行")
+        messages, _ = svc.build_regular_task_messages("Continue execution")
         history_joined = "\n".join(str(m.get("content") or "") for m in messages[1:-1])
         self.assertNotIn("/chat reload", history_joined)
         self.assertNotIn("reloaded", history_joined)
-        self.assertIn("Original user request: 最初需求：修复构建", str(messages[-1]["content"]))
+        self.assertIn("Original user request: Initial request: fix the build", str(messages[-1]["content"]))
 
     def test_raw_slash_builtin_user_message_is_excluded_from_model_context_and_requirement(self):
         agent = _FakeAgent()
         agent.conversation_history = [
             {"role": "user", "content": "/chat reload"},
             {"role": "assistant", "content": "reloaded"},
-            {"role": "user", "content": "最初需求：修复构建"},
-            {"role": "assistant", "content": "收到"},
+            {"role": "user", "content": "Initial request: fix the build"},
+            {"role": "assistant", "content": "Got it"},
         ]
         svc = SessionMemoryService(agent)
-        messages, _ = svc.build_regular_task_messages("继续执行")
+        messages, _ = svc.build_regular_task_messages("Continue execution")
         history_joined = "\n".join(str(m.get("content") or "") for m in messages[1:-1])
         self.assertNotIn("/chat reload", history_joined)
-        self.assertIn("Original user request: 最初需求：修复构建", str(messages[-1]["content"]))
+        self.assertIn("Original user request: Initial request: fix the build", str(messages[-1]["content"]))
 
     def test_task_worked_summary_history_is_excluded_from_model_context(self):
         agent = _FakeAgent()
         agent.conversation_history = [
-            {"role": "user", "content": "最初需求：修复构建"},
-            {"role": "assistant", "content": "收到"},
+            {"role": "user", "content": "Initial request: fix the build"},
+            {"role": "assistant", "content": "Got it"},
             {"role": "assistant", "content": agent._build_task_worked_summary_history_content(95)},
         ]
         svc = SessionMemoryService(agent)
-        messages, _ = svc.build_regular_task_messages("继续执行")
+        messages, _ = svc.build_regular_task_messages("Continue execution")
         history_joined = "\n".join(str(m.get("content") or "") for m in messages[1:-1])
         self.assertNotIn("TASK_WORKED_SUMMARY", history_joined)
         self.assertNotIn("Worked for", history_joined)
@@ -910,38 +910,38 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
     def test_original_requirement_falls_back_to_current_input(self):
         agent = _FakeAgent()
         svc = SessionMemoryService(agent)
-        messages, _ = svc.build_regular_task_messages("请写一个脚本")
-        self.assertIn("Original user request: 请写一个脚本", messages[-1]["content"])
-        self.assertIn("User input: 请写一个脚本", messages[-1]["content"])
+        messages, _ = svc.build_regular_task_messages("Please write a script")
+        self.assertIn("Original user request: Please write a script", messages[-1]["content"])
+        self.assertIn("User input: Please write a script", messages[-1]["content"])
 
     def test_cancelled_previous_task_forces_new_requirement_once(self):
         agent = _FakeAgent()
-        agent.conversation_history.append({"role": "user", "content": "旧任务：修复A模块"})
+        agent.conversation_history.append({"role": "user", "content": "Old task: fix module A"})
         agent._force_current_input_as_requirement_once = True
-        agent._last_cancelled_task = "旧任务：修复A模块"
+        agent._last_cancelled_task = "Old task: fix module A"
         svc = SessionMemoryService(agent)
 
-        messages, _ = svc.build_regular_task_messages("新任务：实现B功能")
+        messages, _ = svc.build_regular_task_messages("New task: implement feature B")
         user_block = messages[-1]["content"]
-        self.assertIn("Original user request: 新任务：实现B功能", user_block)
-        self.assertIn("Recently cancelled task: 旧任务：修复A模块", user_block)
+        self.assertIn("Original user request: New task: implement feature B", user_block)
+        self.assertIn("Recently cancelled task: Old task: fix module A", user_block)
         self.assertIn("do not proactively resume or redo the cancelled task", user_block)
         self.assertFalse(bool(getattr(agent, "_force_current_input_as_requirement_once", True)))
 
-        messages2, _ = svc.build_regular_task_messages("继续")
-        self.assertIn("Original user request: 旧任务：修复A模块", messages2[-1]["content"])
+        messages2, _ = svc.build_regular_task_messages("Continue")
+        self.assertIn("Original user request: Old task: fix module A", messages2[-1]["content"])
 
     def test_degradation_adds_history_summary_before_full_drop(self):
         agent = _FakeAgent()
         agent.params = {"context_window": 64000}
         agent.token_estimator = lambda s: len(str(s or ""))
-        agent.conversation_history.append({"role": "user", "content": "最初需求：做一个任务规划器"})
+        agent.conversation_history.append({"role": "user", "content": "Initial request: build a task planner"})
         for i in range(1, 100):
             role = "assistant" if i % 2 == 0 else "user"
             content = f"msg-{i} " + ("assistant-long " * 700 if role == "assistant" else ("user-long " * 450))
             agent.conversation_history.append({"role": role, "content": content})
         svc = SessionMemoryService(agent)
-        messages, _ = svc.build_regular_task_messages("继续", context="ctx")
+        messages, _ = svc.build_regular_task_messages("Continue", context="ctx")
         history_messages = messages[1:-1]
         joined = "\n".join(str(m.get("content") or "") for m in history_messages)
         self.assertIn("[History summary]", joined)
@@ -959,8 +959,8 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
             large.conversation_history.append(dict(item))
         sm_svc = SessionMemoryService(small)
         lg_svc = SessionMemoryService(large)
-        small_messages, _ = sm_svc.build_regular_task_messages("继续")
-        large_messages, _ = lg_svc.build_regular_task_messages("继续")
+        small_messages, _ = sm_svc.build_regular_task_messages("Continue")
+        large_messages, _ = lg_svc.build_regular_task_messages("Continue")
         small_hist_count = len(small_messages[1:-1])
         large_hist_count = len(large_messages[1:-1])
         self.assertGreaterEqual(large_hist_count, small_hist_count)
@@ -978,8 +978,8 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
             custom.conversation_history.append(dict(item))
         base_svc = SessionMemoryService(base)
         custom_svc = SessionMemoryService(custom)
-        base_messages, _ = base_svc.build_regular_task_messages("继续")
-        custom_messages, _ = custom_svc.build_regular_task_messages("继续")
+        base_messages, _ = base_svc.build_regular_task_messages("Continue")
+        custom_messages, _ = custom_svc.build_regular_task_messages("Continue")
         self.assertLessEqual(len(custom_messages[1:-1]), len(base_messages[1:-1]))
 
     def test_token_counter_resolution_is_non_blocking_before_warmup_ready(self):
@@ -1061,12 +1061,12 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
         agent._compose_system_prompt_snapshot = _compose
         svc = SessionMemoryService(agent)
 
-        svc.refresh_context_usage_snapshot(user_input_hint="继续", context_hint="ctx")
+        svc.refresh_context_usage_snapshot(user_input_hint="Continue", context_hint="ctx")
         first = int(getattr(agent, "_last_context_input_tokens", 0) or 0)
 
         # Mutate global system_prompt again; refresh should stay stable because it uses composed snapshot.
         agent.system_prompt = "MUTATED-2-" + ("Y" * 8000)
-        svc.refresh_context_usage_snapshot(user_input_hint="继续", context_hint="ctx")
+        svc.refresh_context_usage_snapshot(user_input_hint="Continue", context_hint="ctx")
         second = int(getattr(agent, "_last_context_input_tokens", 0) or 0)
 
         self.assertGreaterEqual(compose_calls["n"], 2)
@@ -1085,7 +1085,7 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
         agent._compose_system_prompt_snapshot = _compose
         svc = SessionMemoryService(agent)
 
-        svc.refresh_context_usage_snapshot(user_input_hint="继续", context_hint="ctx")
+        svc.refresh_context_usage_snapshot(user_input_hint="Continue", context_hint="ctx")
 
         self.assertEqual(compose_calls["n"], 0)
         self.assertLessEqual(int(getattr(agent, "_last_context_usage_percent", 0) or 0), 1)
@@ -1101,7 +1101,7 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
         agent.conversation_history.append({"role": "user", "content": "state changed"})
 
         svc.refresh_context_usage_snapshot(
-            user_input_hint="继续",
+            user_input_hint="Continue",
             context_hint="ctx",
             expected_chat_id="chat-1",
             expected_state_key=stale_key,
@@ -1123,7 +1123,7 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
             return f"key-{calls['n']}"
 
         svc._context_usage_state_key = _unstable_state_key  # type: ignore[assignment]
-        svc.refresh_context_usage_snapshot(user_input_hint="继续", context_hint="ctx")
+        svc.refresh_context_usage_snapshot(user_input_hint="Continue", context_hint="ctx")
         self.assertGreater(int(getattr(agent, "_last_context_input_tokens", 0) or 0), 0)
 
     def test_schedule_context_usage_refresh_async_captures_chat_id_at_schedule_time(self):
@@ -1152,18 +1152,18 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
     def test_logs_budget_and_keeps_hard_anchors(self):
         agent = _FakeAgent()
         agent.operation_results = [{"ok": True, "detail": "tool done", "blob": "x" * 400}]
-        agent.conversation_history.append({"role": "user", "content": "最初需求：修复构建脚本"})
+        agent.conversation_history.append({"role": "user", "content": "Initial request: fix the build script"})
         svc = SessionMemoryService(agent)
         with patch("src.services.session_memory_service.get_logger") as mock_get_logger:
             logger = MagicMock()
             mock_get_logger.return_value = logger
-            messages, _ = svc.build_regular_task_messages("现在执行修复", context="操作上下文-" + ("c" * 300))
+            messages, _ = svc.build_regular_task_messages("Now execute the fix", context="operation-context-" + ("c" * 300))
         self.assertTrue(logger.info.called)
         user_block = messages[-1]["content"]
         self.assertIn("[Key constraints]", user_block)
         self.assertIn("Most recent operation result:", user_block)
-        self.assertIn("Original user request: 最初需求：修复构建脚本", user_block)
-        self.assertIn("User input: 现在执行修复", user_block)
+        self.assertIn("Original user request: Initial request: fix the build script", user_block)
+        self.assertIn("User input: Now execute the fix", user_block)
         self.assertTrue(hasattr(agent, "_last_context_usage_percent"))
         self.assertGreaterEqual(int(getattr(agent, "_last_context_usage_percent", -1)), 0)
 
@@ -1171,7 +1171,7 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
         agent = _FakeAgent()
         agent.params = {"context_window": 64000}
         agent.token_estimator = lambda s: len(str(s or ""))  # deterministic pressure
-        agent.conversation_history.append({"role": "user", "content": "最初需求：完成复杂重构"})
+        agent.conversation_history.append({"role": "user", "content": "Initial request: complete a complex refactor"})
         for i in range(1, 80):
             role = "assistant" if i % 2 == 0 else "user"
             agent.conversation_history.append(
@@ -1189,7 +1189,7 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
             "memory_share_ratio": 45,
             "assistant_clip_tokens": 1800,
         }
-        _messages, _ = svc.build_regular_task_messages("继续推进", context="ctx-" + ("y" * 1200))
+        _messages, _ = svc.build_regular_task_messages("Continue moving forward", context="ctx-" + ("y" * 1200))
         pre = int(getattr(agent, "_last_context_usage_percent_precompression", 0))
         post = int(getattr(agent, "_last_context_usage_percent", 0))
         self.assertGreater(pre, 80)
@@ -1215,7 +1215,7 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
             "memory_share_ratio": 45,
             "assistant_clip_tokens": 1800,
         }
-        messages, _ = svc.build_regular_task_messages("继续推进", context="ctx-" + ("q" * 1200))
+        messages, _ = svc.build_regular_task_messages("Continue moving forward", context="ctx-" + ("q" * 1200))
         system_content = str(messages[0].get("content") or "")
         self.assertIn("[SYSTEM_PROMPT_END_MARK]", system_content)
         self.assertIn("Current workspace name: Default", system_content)

@@ -50,7 +50,7 @@ class ShellOutputAutoHideTests(unittest.TestCase):
         with patch.object(self.agent, "_terminal_columns_for_line_estimate", return_value=10):
             self.assertEqual(self.agent._estimate_rendered_line_count("12345678901"), 2)
             self.assertEqual(self.agent._estimate_rendered_line_count("a\n\nb"), 3)
-            self.assertEqual(self.agent._estimate_rendered_line_count("中" * 6), 2)
+            self.assertEqual(self.agent._estimate_rendered_line_count("🙂" * 6), 2)
 
     def test_register_shell_output_for_auto_hide_accumulates_stdout_stderr(self):
         with patch.object(self.agent, "_terminal_columns_for_line_estimate", return_value=80):

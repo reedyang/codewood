@@ -76,16 +76,16 @@ class McpReferenceFormatTests(unittest.TestCase):
         self.assertIn("/mcp/playwright/summarize_page", candidates)
 
     def test_extract_forced_mcp_reference_supports_new_format(self):
-        parsed = self.agent._extract_forced_mcp_reference("/mcp/playwright/browser_click 执行这个工具")
+        parsed = self.agent._extract_forced_mcp_reference("/mcp/playwright/browser_click run this tool")
         self.assertIsNotNone(parsed)
         self.assertEqual(len(parsed["entries"]), 1)
         self.assertEqual(parsed["entries"][0]["server"], "playwright")
         self.assertEqual(parsed["entries"][0]["name"], "browser_click")
         self.assertEqual(parsed["entries"][0]["kind"], "tool")
-        self.assertEqual(parsed["rest"], "执行这个工具")
+        self.assertEqual(parsed["rest"], "run this tool")
 
     def test_extract_forced_mcp_reference_rejects_old_format(self):
-        parsed = self.agent._extract_forced_mcp_reference("/playwright/browser_click 执行这个工具")
+        parsed = self.agent._extract_forced_mcp_reference("/playwright/browser_click run this tool")
         self.assertIsNone(parsed)
 
     def test_mcp_server_candidates_are_second_level_dynamic(self):

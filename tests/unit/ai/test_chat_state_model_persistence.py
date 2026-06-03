@@ -230,10 +230,10 @@ class ChatStateModelPersistenceTests(unittest.TestCase):
             agent = _FakeAgent(Path(td))
             manager = ChatStateManager(agent, "chats.json")
             messages = [
-                {"role": "user", "content": "你好"},
+                {"role": "user", "content": "Hello"},
                 {"role": "assistant", "content": '{"tool":"noop"}'},
-                {"role": "user", "content": "你好"},
-                {"role": "assistant", "content": "你好！有什么我可以帮助您的？"},
+                {"role": "user", "content": "Hello"},
+                {"role": "assistant", "content": "Hello! How can I help you?"},
             ]
             chat = {
                 "id": "chat-1",
@@ -247,7 +247,7 @@ class ChatStateModelPersistenceTests(unittest.TestCase):
                     {
                         "id": "task-1",
                         "status": "open",
-                        "root_user_input": "你好",
+                        "root_user_input": "Hello",
                         "created_at": "",
                         "updated_at": "",
                         "closed_at": "",

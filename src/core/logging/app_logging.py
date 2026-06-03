@@ -1,5 +1,5 @@
 """
-应用主流程日志：默认写入配置目录下应用日志文件（UTF-8），子 logger 使用应用前缀。
+Application main-process logging: by default writes UTF-8 application log files under the config directory, and child loggers use the application prefix.
 """
 
 from __future__ import annotations
@@ -17,14 +17,14 @@ _log_file_path: Optional[Path] = None
 
 def setup_app_logging(config_dir: Optional[Path] = None, *, level: int = logging.INFO) -> logging.Logger:
     """
-    配置根 logger：向配置目录写入应用日志文件。
-    可重复调用；同一进程内仅挂载一次文件 Handler。
+    Configure the root logger to write the application log file into the config directory.
+    Safe to call repeatedly; only one file handler is attached per process.
     """
     global _file_handler_installed, _log_file_path
 
     root = logging.getLogger(_LOGGER_NAME)
     root.setLevel(level)
-    # 不向 root logger 冒泡，避免污染全局 logging
+    # Do not bubble up to the root logger to avoid polluting global logging.
     root.propagate = False
 
     if config_dir is None or _file_handler_installed:
@@ -54,19 +54,19 @@ def setup_app_logging(config_dir: Optional[Path] = None, *, level: int = logging
 
 
 def get_logger(name: str = _LOGGER_NAME) -> logging.Logger:
-    """获取 logger，常用子模块名：<app>.knowledge、<app>.agent。"""
+    """Get a logger; common child logger names are <app>.knowledge and <app>.agent."""
     return logging.getLogger(name)
 
 
 def get_log_file_path() -> Optional[Path]:
-    """当前应用日志文件路径（未配置或失败时为 None）。"""
+    """Current application log file path (None when not configured or on failure)."""
     return _log_file_path
 
 
 def shutdown_app_logging_handlers() -> None:
     """
-    关闭应用 logger 已挂载的 Handler（测试在删除临时 config 目录前调用，避免 Windows 下占用日志文件）。
-    之后可再次调用 setup_app_logging 重新挂载。
+    Close any handlers attached to the application logger (tests call this before deleting a temporary config directory to avoid Windows file locks).
+    You can call setup_app_logging again afterward to reattach them.
     """
     global _file_handler_installed, _log_file_path
 

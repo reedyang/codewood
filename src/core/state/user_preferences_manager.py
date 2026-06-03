@@ -1,6 +1,6 @@
 """
-用户偏好持久化：单文件 Markdown + YAML frontmatter，固定注入 system（与经验记忆库分工）。
-路径：<config_dir>/user_preferences.md
+User preference persistence: a single Markdown file with YAML frontmatter, always injected into system context (separate from the experiential memory store).
+Path: <config_dir>/user_preferences.md
 """
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ DEFAULT_FILENAME = "user_preferences.md"
 MAX_BODY_CHARS = 12000
 SCHEMA_VERSION = 1
 
-# 简单拒绝明显密钥行写入（防误录）
+# Reject obviously secret-like lines to avoid accidental capture.
 _SECRET_LINE_PAT = re.compile(
     r"(api[_-]?key|secret|token|password|passwd|authorization)\s*[:=]\s*\S{8,}",
     re.I,
@@ -80,7 +80,7 @@ def _reject_secrets(text: str) -> Optional[str]:
 
 
 def parse_sections(body: str) -> Tuple[str, List[Tuple[str, str]]]:
-    """拆成 (前言, [(小节标题不含 #, 小节正文)])。"""
+    """Split into (preamble, [(section title without #, section body)])."""
     lines = (body or "").splitlines()
     preamble_lines: List[str] = []
     i = 0
@@ -110,7 +110,7 @@ def merge_sections(
     heading: str,
     new_content: str,
 ) -> str:
-    """插入或替换同名小节（标题按 strip 后匹配，忽略大小写）。"""
+    """Insert or replace a section with the same title (matched after strip(), case-insensitive)."""
     h = (heading or "").strip()
     if h.startswith("#"):
         h = re.sub(r"^#+\s*", "", h).strip()

@@ -386,19 +386,19 @@ class RuntimeLoopTests(unittest.TestCase):
         self.assertFalse(_should_retry_missing_standard_tool_call_response(3, 2))
 
     def test_missing_standard_tool_call_retry_prompt_requests_tool_calls(self):
-        prompt = _build_missing_standard_tool_call_retry_input("修复测试")
-        self.assertIn("[Original user request]\n修复测试", prompt)
+        prompt = _build_missing_standard_tool_call_retry_input("Fix tests")
+        self.assertIn("[Original user request]\nFix tests", prompt)
         self.assertIn("your next assistant message MUST include standard API `tool_calls`", prompt)
         self.assertIn("Your previous response did not include valid standard API tool_calls.", prompt)
         self.assertIn("call `done` through standard `tool_calls`", prompt)
 
     def test_stream_visible_text_with_json_pause_caches_incomplete_tool_json_fence(self):
-        raw = "先做检查\n```json\n{\"tool\":\"shell\",\"args\":{"
+        raw = "Run a quick check first\n```json\n{\"tool\":\"shell\",\"args\":{"
         out = _stream_visible_text_with_json_pause(raw, final=False)
         self.assertEqual(out, raw.split("```json", 1)[0].rstrip())
 
     def test_stream_visible_text_with_json_pause_keeps_partial_json_fence_opener(self):
-        raw = "先做检查\n```"
+        raw = "Run a quick check first\n```"
         out = _stream_visible_text_with_json_pause(raw, final=False)
         self.assertEqual(out, raw)
 
@@ -414,22 +414,22 @@ class RuntimeLoopTests(unittest.TestCase):
 
     def test_stream_visible_text_with_json_pause_hides_tool_json_fence_when_complete(self):
         raw = (
-            "准备执行\n"
+            "Preparing to run\n"
             "```json\n"
             "{\"tool\":\"shell\",\"args\":{\"command\":\"Get-Content a.py\"}}\n"
             "```\n"
-            "继续"
+            "Continue"
         )
         out = _stream_visible_text_with_json_pause(raw, final=True)
         self.assertEqual(out, raw.split("```json", 1)[0].rstrip())
 
     def test_stream_visible_text_with_json_pause_keeps_non_tool_json_fence(self):
         raw = (
-            "说明\n"
+            "Explanation\n"
             "```json\n"
             "{\"foo\":1}\n"
             "```\n"
-            "完成"
+            "Done"
         )
         out = _stream_visible_text_with_json_pause(raw, final=True)
         self.assertEqual(out, raw)
@@ -479,7 +479,7 @@ class RuntimeLoopTests(unittest.TestCase):
 
     def test_stream_visible_text_with_json_pause_caches_trailing_plain_tool_json(self):
         raw = (
-            "我先说明一下。\n\n"
+            "Let me explain first.\n\n"
             "{\"tool\":\"done\",\"args\":{}}\n"
         )
         out = _stream_visible_text_with_json_pause(raw, final=False)
@@ -487,7 +487,7 @@ class RuntimeLoopTests(unittest.TestCase):
 
     def test_stream_visible_text_with_json_pause_hides_trailing_plain_tool_json_when_final(self):
         raw = (
-            "我先说明一下。\n\n"
+            "Let me explain first.\n\n"
             "{\"tool\":\"done\",\"args\":{}}\n"
         )
         out = _stream_visible_text_with_json_pause(raw, final=True)
@@ -513,7 +513,7 @@ class RuntimeLoopTests(unittest.TestCase):
 
     def test_stream_visible_text_with_json_pause_caches_partial_plain_tool_json(self):
         raw = (
-            "我先说明一下。\n\n"
+            "Let me explain first.\n\n"
             "{\"tool"
         )
         out = _stream_visible_text_with_json_pause(raw, final=False)
@@ -521,7 +521,7 @@ class RuntimeLoopTests(unittest.TestCase):
 
     def test_stream_visible_text_with_json_pause_keeps_plain_non_tool_json(self):
         raw = (
-            "数据如下：\n\n"
+            "Here is the data:\n\n"
             "{\"foo\":1}"
         )
         out = _stream_visible_text_with_json_pause(raw, final=False)
@@ -556,7 +556,7 @@ class RuntimeLoopTests(unittest.TestCase):
 
     def test_stream_visible_text_hides_pseudo_tool_calls_block(self):
         raw = (
-            "准备执行\n\n"
+            "Preparing to run\n\n"
             "<tool_calls>\n"
             "{\"tool\":\"shell\",\"name\":\"shell\",\"arguments\":{\"command\":\"ping www.baidu.com -n 4\"}}\n"
             "</tool_calls>"
@@ -566,7 +566,7 @@ class RuntimeLoopTests(unittest.TestCase):
 
     def test_stream_visible_text_caches_unclosed_pseudo_tool_calls_block(self):
         raw = (
-            "准备执行\n\n"
+            "Preparing to run\n\n"
             "<tool_calls>\n"
             "{\"tool\":\"shell\""
         )
@@ -575,14 +575,14 @@ class RuntimeLoopTests(unittest.TestCase):
 
     def test_stream_visible_text_with_json_pause_hides_tool_json_array_fence_when_complete(self):
         raw = (
-            "准备执行\n"
+            "Preparing to run\n"
             "```json\n"
             "[\n"
             "  {\"tool\":\"shell\",\"args\":{\"command\":\"Get-Content a.py\"}},\n"
             "  {\"tool\":\"project_context_search\",\"args\":{\"query\":\"foo\"}}\n"
             "]\n"
             "```\n"
-            "继续"
+            "Continue"
         )
         out = _stream_visible_text_with_json_pause(raw, final=True)
         self.assertEqual(out, raw.split("```json", 1)[0].rstrip())
@@ -798,7 +798,7 @@ class RuntimeLoopTests(unittest.TestCase):
 
         fake_out = _FakeStdout()
         chunks = [
-            "你好，我是小雨，很高兴为你服务！\n\n",
+            "Hello, I am Xiaoyu, and I'm happy to help!\n\n",
             "{\"tool",
             "\":\"done\",\"args\":{}}",
         ]
@@ -808,7 +808,7 @@ class RuntimeLoopTests(unittest.TestCase):
         rendered = "".join(fake_out.writes)
         self.assertIn("\"tool\":\"done\"", ai_response)
         self.assertTrue(streamed_any)
-        self.assertEqual(rendered.count("你好，我是小雨，很高兴为你服务！"), 1)
+        self.assertEqual(rendered.count("Hello, I am Xiaoyu, and I'm happy to help!"), 1)
         self.assertNotIn('{"tool', rendered)
         self.assertIn("\n\n", rendered)
 
@@ -836,7 +836,7 @@ class RuntimeLoopTests(unittest.TestCase):
 
         fake_out = _FakeStdout()
         chunks = [
-            "你好！\n\n",
+            "Hello!\n\n",
             "{\"tool\":\"done\",\"args\":{}}",
         ]
         with patch("src.runtime.runtime_loop.sys.stdout", fake_out):
@@ -845,7 +845,7 @@ class RuntimeLoopTests(unittest.TestCase):
         rendered = "".join(fake_out.writes)
         self.assertIn("\"tool\":\"done\"", ai_response)
         self.assertTrue(streamed_any)
-        self.assertIn("你好！", rendered)
+        self.assertIn("Hello!", rendered)
         self.assertNotIn("\"tool\":\"done\"", rendered)
 
     def test_consume_streaming_ai_response_keeps_assistant_tool_call_marker_text(self):
@@ -872,7 +872,7 @@ class RuntimeLoopTests(unittest.TestCase):
 
         fake_out = _FakeStdout()
         chunks = [
-            "你好！有什么我可以帮您处理的任务吗？\n",
+            "Hello! What task can I help you with?\n",
             "<|assistant",
             " tool_calls|>{\"tool\":\"done\",\"args\":{}}<|assistant tool_calls|>",
         ]
@@ -882,7 +882,7 @@ class RuntimeLoopTests(unittest.TestCase):
         rendered = "".join(fake_out.writes)
         self.assertIn("<|assistant tool_calls|>", ai_response)
         self.assertTrue(streamed_any)
-        self.assertIn("你好！有什么我可以帮您处理的任务吗？", rendered)
+        self.assertIn("Hello! What task can I help you with?", rendered)
         self.assertNotIn("<|assistant", rendered)
         self.assertNotIn('{"tool"', rendered)
 
@@ -983,8 +983,8 @@ class RuntimeLoopTests(unittest.TestCase):
         message = {
             "role": "assistant",
             "content": (
-                "我将查询 Codex 使用情况。\n\n"
-                "Step 1 [in_progress]: 查询 Codex 使用情况\n\n"
+                "I will query Codex usage.\n\n"
+                "Step 1 [in_progress]: Query Codex usage\n\n"
                 "{\n"
                 "  \"tool_calls\": [\n"
                 "    {\n"
@@ -1209,7 +1209,7 @@ class RuntimeLoopTests(unittest.TestCase):
             _is_textless_done_only_tool_call(None, [("done", {}), ("done", {"reviewed_files": []})])
         )
         self.assertFalse(
-            _is_textless_done_only_tool_call("已完成。", [("done", {})])
+            _is_textless_done_only_tool_call("Completed.", [("done", {})])
         )
         self.assertFalse(
             _is_textless_done_only_tool_call("", [("read_file", {"path": "README.md"})])

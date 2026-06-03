@@ -71,16 +71,16 @@ class ApplyPatchPreviewTests(unittest.TestCase):
             patch = (
                 "*** Begin Patch\n"
                 "*** Add File: prompts.md\n"
-                "+# Prompts 收集\n"
+                "+# Prompts Collection\n"
                 "+\n"
-                "+## System Prompt（完整）\n"
+                "+## System Prompt (Full)\n"
                 "*** End Patch\n"
             )
             result = action_apply_unified_patch(agent, str(target), patch, confirmed=False)
 
             self.assertTrue(result.get("success"), result.get("error"))
             self.assertTrue(target.exists())
-            self.assertEqual(target.read_text(encoding="utf-8"), "# Prompts 收集\n\n## System Prompt（完整）\n")
+            self.assertEqual(target.read_text(encoding="utf-8"), "# Prompts Collection\n\n## System Prompt (Full)\n")
 
     def test_apply_patch_legacy_repeated_end_patch_warns_but_succeeds(self):
         with tempfile.TemporaryDirectory() as td:
@@ -113,15 +113,15 @@ class ApplyPatchPreviewTests(unittest.TestCase):
                 "--- /dev/null\n"
                 "+++ b/prompts.md\n"
                 "@@ -0,0 +1,3 @@\n"
-                "+# Prompts 收集\n"
+                "+# Prompts Collection\n"
                 "+\n"
-                "+## System Prompt（完整）\n"
+                "+## System Prompt (Full)\n"
             )
             result = action_apply_unified_patch(agent, str(target), patch, confirmed=False)
 
             self.assertTrue(result.get("success"), result.get("error"))
             self.assertTrue(target.exists())
-            self.assertEqual(target.read_text(encoding="utf-8"), "# Prompts 收集\n\n## System Prompt（完整）\n")
+            self.assertEqual(target.read_text(encoding="utf-8"), "# Prompts Collection\n\n## System Prompt (Full)\n")
 
     def test_apply_patch_preview_includes_two_context_lines_when_available(self):
         with tempfile.TemporaryDirectory() as td:

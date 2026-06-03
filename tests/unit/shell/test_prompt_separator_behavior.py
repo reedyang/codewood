@@ -139,7 +139,7 @@ class PromptSeparatorBehaviorTests(unittest.TestCase):
         agent = self._build_agent()
         agent.session_memory_service = SessionMemoryService(agent)
         summary = agent.session_memory_service.build_context_compaction_summary_content(
-            summary="这段摘要只给模型上下文使用",
+            summary="This summary is for model context only",
             mode="manual",
             covered_message_count=2,
         )
@@ -147,10 +147,10 @@ class PromptSeparatorBehaviorTests(unittest.TestCase):
             "Context automatically compacted"
         )
         agent.conversation_history = [
-            {"role": "user", "content": "reload 前的普通消息"},
+            {"role": "user", "content": "normal message before reload"},
             {"role": "assistant", "content": summary},
             {"role": "assistant", "content": notice},
-            {"role": "assistant", "content": "reload 后的普通回复"},
+            {"role": "assistant", "content": "normal reply after reload"},
         ]
 
         with (
@@ -161,15 +161,15 @@ class PromptSeparatorBehaviorTests(unittest.TestCase):
 
         mock_banner.assert_called_once_with("Context automatically compacted")
         rendered = "\n".join(str(call.args[0]) for call in mock_print.call_args_list if call.args)
-        self.assertIn("reload 前的普通消息", rendered)
-        self.assertIn("reload 后的普通回复", rendered)
-        self.assertNotIn("这段摘要只给模型上下文使用", rendered)
+        self.assertIn("normal message before reload", rendered)
+        self.assertIn("normal reply after reload", rendered)
+        self.assertNotIn("This summary is for model context only", rendered)
 
     def test_compact_slash_history_is_replayed_before_compacted_notice(self):
         agent = self._build_agent()
         agent.session_memory_service = SessionMemoryService(agent)
         summary = agent.session_memory_service.build_context_compaction_summary_content(
-            summary="压缩摘要",
+            summary="Compressed summary",
             mode="manual",
             covered_message_count=2,
         )
@@ -177,7 +177,7 @@ class PromptSeparatorBehaviorTests(unittest.TestCase):
             "Context automatically compacted"
         )
         agent.conversation_history = [
-            {"role": "user", "content": "旧消息"},
+            {"role": "user", "content": "old message"},
             {"role": "assistant", "content": summary},
             {"role": "assistant", "content": notice},
         ]
@@ -223,7 +223,7 @@ class PromptSeparatorBehaviorTests(unittest.TestCase):
         agent = self._build_agent()
         agent.session_memory_service = SessionMemoryService(agent)
         summary = agent.session_memory_service.build_context_compaction_summary_content(
-            summary="旧摘要",
+            summary="Old summary",
             mode="manual",
             covered_message_count=2,
         )
@@ -311,7 +311,7 @@ class PromptSeparatorBehaviorTests(unittest.TestCase):
                     "",
                 ),
             },
-            {"role": "user", "content": "普通消息"},
+            {"role": "user", "content": "normal message"},
             {
                 "role": "assistant",
                 "content": agent._build_direct_shell_result_history_content(
@@ -323,7 +323,7 @@ class PromptSeparatorBehaviorTests(unittest.TestCase):
                     "",
                 ),
             },
-            {"role": "assistant", "content": "普通回复"},
+            {"role": "assistant", "content": "normal reply"},
         ]
         with (
             patch("src.agent._ansi_gray", side_effect=lambda s: s),
@@ -457,13 +457,13 @@ class PromptSeparatorBehaviorTests(unittest.TestCase):
         agent = self._build_agent()
         agent.active_chat_name = "Demo Chat"
         agent.conversation_history = [
-            {"role": "user", "content": "继续执行上一个任务"},
+            {"role": "user", "content": "continue the previous task"},
             {
                 "role": "assistant",
                 "content": agent._build_conversation_interrupted_history_content(
                     interrupted_kind="task",
                     reason="user_interrupt",
-                    detail="修复构建脚本",
+                    detail="Fix the build script",
                 ),
             },
         ]
@@ -668,7 +668,7 @@ class PromptSeparatorBehaviorTests(unittest.TestCase):
         with patch("builtins.print") as mock_print:
             agent._print_chat_history(start_index=2)
         printed_text = "\n".join(str(call.args[0]) for call in mock_print.call_args_list if call.args)
-        self.assertNotIn("当前 Chat 暂无历史消息", printed_text)
+        self.assertNotIn("This chat has no history yet", printed_text)
 
     def test_resize_detection_uses_same_input_handler_width_source_as_separator(self):
         agent = self._build_agent()
@@ -763,11 +763,11 @@ class PromptSeparatorBehaviorTests(unittest.TestCase):
             patch("src.agent.sys.stdout", fake_stdout),
             patch.object(agent, "_estimate_rendered_line_count", return_value=2),
         ):
-            agent._rewrite_previous_prompt_as_user("hello\n你好")
+            agent._rewrite_previous_prompt_as_user("hello\nworld")
         out = "".join(fake_stdout.writes)
         self.assertIn("\x1b[1A\r\x1b[2K\x1b[1A\r\x1b[2K", out)
-        self.assertIn("› hello\n  你好\n", out)
-        self.assertNotIn("› hello\n你好\n", out)
+        self.assertIn("› hello\n  world\n", out)
+        self.assertNotIn("› hello\nworld\n", out)
 
     def test_chat_history_tool_feedback_marks_failed_from_operation_results(self):
         agent = self._build_agent()

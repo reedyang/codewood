@@ -169,7 +169,7 @@ class ShellCommandExecutionGuardsTests(unittest.TestCase):
     def _assert_cancelled_error(self, result):
         self.assertIn(
             result.get("error"),
-            {"用户取消了操作", "Operation cancelled by user"},
+            {"The operation was cancelled by the user", "Operation cancelled by user"},
         )
 
     def test_parse_shell_invoked_script_path_unwraps_powershell(self):

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-基于 prompt_toolkit 的跨平台输入处理模块
-提供稳定的 Tab 补全、状态栏渲染和中文输入支持
+Cross-platform input handling module built on prompt_toolkit.
+Provides stable Tab completion, status bar rendering, and CJK input support.
 """
 
 import os
@@ -141,6 +141,23 @@ def _get_status_overlay_position(app: Any) -> Tuple[int, int, int]:
     return rows_down, target_row, cursor_row
 
 
+def _write_overlay_line(output: Any, text: str, row_delta: int) -> None:
+    # Save cursor position, move to the target row, clear it, optionally write
+    # the overlay text, then restore the original cursor position.
+    row_delta = int(row_delta or 0)
+    output.write_raw("\x1b7")
+    if row_delta > 0:
+        output.write_raw(f"\x1b[{row_delta}B\r")
+    elif row_delta < 0:
+        output.write_raw(f"\x1b[{abs(row_delta)}A\r")
+    else:
+        output.write_raw("\r")
+    output.write_raw("\x1b[2K")
+    if text:
+        output.write_raw(text)
+    output.write_raw("\x1b8")
+
+
 def _attach_blink_after_render_hook(
     session,
     status_provider: Optional[Callable[[], str]] = None,
@@ -156,7 +173,7 @@ def _attach_blink_after_render_hook(
     if app is None:
         return
 
-    # `desired`: 当前渲染周期希望显示的状态栏文本（空串表示隐藏）
+    # `desired`: Status bar text the current render cycle wants to display (empty string means hidden).
     output = getattr(app, "output", None)
     initial_cols = _get_system_terminal_columns(default=0)
     if initial_cols <= 0:
@@ -174,21 +191,6 @@ def _attach_blink_after_render_hook(
         "pending_target_row": 2,
         "pending_cursor_row": 0,
     }
-
-    def _draw_overlay_line(output, text: str, row_delta: int) -> None:
-        # 使用保存/恢复光标，仅在提示符下方两行写入状态栏。
-        row_delta = int(row_delta or 0)
-        output.write_raw("\x1b7")
-        if row_delta > 0:
-            output.write_raw(f"\x1b[{row_delta}B\r")
-        elif row_delta < 0:
-            output.write_raw(f"\x1b[{abs(row_delta)}A\r")
-        else:
-            output.write_raw("\r")
-        output.write_raw("\x1b[2K")
-        if text:
-            output.write_raw(text)
-        output.write_raw("\x1b8")
 
     def _on_before_render(_app) -> None:
         try:
@@ -217,7 +219,7 @@ def _attach_blink_after_render_hook(
                         and hasattr(output, "write_raw")
                         and hasattr(output, "flush")
                     ):
-                        _draw_overlay_line(output, "", old_target_row - cursor_row)
+                        _write_overlay_line(output, "", old_target_row - cursor_row)
                         output.flush()
                 except Exception:
                     pass
@@ -285,20 +287,26 @@ def _attach_blink_after_render_hook(
                     old_target_row = int(state.get("target_row", target_row) or target_row)
                     if not menu_open:
                         if bool(state.get("visible")):
-                            if desired == "" and old_target_row >= target_row:
-                                _draw_overlay_line(output, "", old_target_row - cursor_row)
+                            if desired == "":
+                                if old_target_row != target_row and old_target_row > max(
+                                    0, target_row - 2
+                                ):
+                                    _write_overlay_line(
+                                        output, "", old_target_row - cursor_row
+                                    )
                                 state["visible"] = False
                                 state["text"] = ""
-                            elif desired and old_target_row > target_row:
-                                _draw_overlay_line(output, "", old_target_row - cursor_row)
-                            elif desired == "":
-                                state["visible"] = False
-                                state["text"] = ""
+                            elif (
+                                desired
+                                and old_target_row != target_row
+                                and old_target_row > max(0, target_row - 2)
+                            ):
+                                _write_overlay_line(output, "", old_target_row - cursor_row)
                         # Always redraw when desired text exists: external prints (e.g.
                         # /chat switch history) may scroll previous overlay away, while
                         # state still says "visible".
                         if desired:
-                            _draw_overlay_line(output, desired, rows_down)
+                            _write_overlay_line(output, desired, rows_down)
                             state["visible"] = True
                             state["text"] = desired
                         state["rows_down"] = rows_down
@@ -332,7 +340,7 @@ def _attach_blink_after_render_hook(
 
 def _get_output_columns(session: Any, default: int = 80) -> int:
     """
-    获取 prompt_toolkit 当前输出窗口列数（随窗口变化）。
+    Get the current output-window column count from prompt_toolkit (it changes with the window).
     """
     try:
         output = getattr(session, "output", None)
@@ -473,7 +481,7 @@ def _is_windows_shift_pressed() -> bool:
 
 
 class FileCompleter(Completer):
-    """文件补全器"""
+    """File completer."""
     
     def __init__(
         self,
@@ -657,7 +665,7 @@ class FileCompleter(Completer):
         return c
 
     def get_completions(self, document, complete_event):
-        """获取补全选项"""
+        """Get completion options."""
         text = document.text_before_cursor
 
         # Token-based path completion from the last whitespace boundary.
@@ -764,33 +772,33 @@ class FileCompleter(Completer):
         if not text or text.strip() == "":
             return
         
-        # 智能检测文件名部分
+        # Smartly detect the filename portion.
         file_part, prefix, suffix = self._extract_file_part(text)
         
-        # 获取文件补全选项
+        # Get file-completion options.
         if '/' in file_part or '\\' in file_part:
-            # 路径补全
+            # Path completion.
             completions = self._get_path_completions(file_part)
         else:
-            # 当前目录下的文件/文件夹补全
+            # Complete files/folders in the current directory.
             completions = self._get_local_completions(file_part)
         
-        # 确保每个补全选项只出现一次
+        # Ensure each completion option appears only once.
         seen = set()
         for completion in completions:
             if completion not in seen:
                 seen.add(completion)
-                # 构建完整的补全结果
+                # Build the full completion result.
                 full_completion = prefix + completion + suffix
                 yield Completion(full_completion, start_position=-len(text))
     
     def _extract_file_part(self, text: str) -> tuple:
         """
-        智能提取输入文本中的文件名部分
+        Smartly extract the filename portion from the input text.
         Args:
-            text: 输入文本
+            text: Input text
         Returns:
-            (file_part, prefix, suffix) - 文件名部分、前缀、后缀
+            (file_part, prefix, suffix) - filename portion, prefix, suffix
         """
         # Path completion: extract path part so "cd C:\Users\re" is completed as path "C:\Users\re"
         if '/' in text or '\\' in text:
@@ -805,19 +813,19 @@ class FileCompleter(Completer):
                     return path_part, prefix, ""
             return text, "", ""
         
-        # 获取当前目录的所有文件名
+        # Get all file names in the current directory.
         try:
             base_dir = self._matching_base_directory()
             current_files = [item.name for item in base_dir.iterdir() if not item.name.startswith('.')]
         except Exception:
             current_files = []
         
-        # 智能检测：查找可能匹配当前目录文件名的部分
+        # Smart detection: find the portion that may match a file name in the current directory.
         words = text.split()
         if not words:
             return "", "", ""
         
-        # 策略1：检查最后一个词是否匹配文件名开头
+        # Strategy 1: check whether the last word matches the start of a file name.
         last_word = words[-1]
         for filename in current_files:
             if filename.lower().startswith(last_word.lower()):
@@ -826,7 +834,7 @@ class FileCompleter(Completer):
                     prefix += " "
                 return last_word, prefix, ""
         
-        # 策略2：检查最后几个词组合是否匹配文件名
+        # Strategy 2: check whether a combination of the last few words matches a file name.
         for i in range(len(words), 0, -1):
             candidate = " ".join(words[i-1:])
             for filename in current_files:
@@ -836,10 +844,10 @@ class FileCompleter(Completer):
                         prefix += " "
                     return candidate, prefix, ""
         
-        # 策略3：检查是否包含完整的文件名（带扩展名）
+        # Strategy 3: check whether the full file name (including extension) is present.
         for filename in current_files:
             if filename.lower() in text.lower():
-                # 找到文件名在文本中的位置
+                # Find the file name position in the text.
                 filename_lower = filename.lower()
                 text_lower = text.lower()
                 start_pos = text_lower.find(filename_lower)
@@ -848,18 +856,18 @@ class FileCompleter(Completer):
                     suffix = text[start_pos + len(filename):]
                     return filename, prefix, suffix
         
-        # 策略4：如果没有找到匹配，使用最后一个词作为候选
+        # Strategy 4: if nothing matched, use the last word as the candidate.
         prefix = " ".join(words[:-1])
         if prefix:
             prefix += " "
         return last_word, prefix, ""
     
     def _get_directory_contents(self) -> List[str]:
-        """获取当前目录的内容"""
+        """Get the current directory contents."""
         try:
             items = []
             for item in self._matching_base_directory().iterdir():
-                # 只显示可见文件（不以.开头）
+                # Show only visible files (those not starting with .).
                 if not item.name.startswith('.'):
                     items.append(item.name)
             return sorted(items)
@@ -867,7 +875,7 @@ class FileCompleter(Completer):
             return []
     
     def _get_local_completions(self, text: str) -> List[str]:
-        """获取当前目录下的本地补全"""
+        """Get local completions in the current directory."""
         try:
             # Avoid noisy completion when fragment is exactly "."
             if text == ".":
@@ -877,26 +885,26 @@ class FileCompleter(Completer):
                 if item.name.lower().startswith(text.lower()):
                     matches.append(item.name)
             
-            # 如果没有找到匹配项，尝试智能补全
+            # If nothing matched, try smart completion.
             if not matches and text:
                 matches = self._smart_local_completion(text)
             
-            # 如果只有一个匹配项，直接返回
+            # If there is only one match, return it directly.
             if len(matches) == 1:
                 return matches
             
-            # 如果有多个匹配项，返回所有匹配项供用户选择
+            # If there are multiple matches, return them all for the user to choose from.
             return sorted(matches)
         except Exception:
             return []
     
     def _smart_local_completion(self, text: str) -> List[str]:
         """
-        智能本地补全，包括自动添加常见文件扩展名
+        Smart local completion, including automatic addition of common file extensions.
         Args:
-            text: 要补全的文本
+            text: Text to complete
         Returns:
-            智能补全的文件/文件夹名列表
+            List of files/folders for smart completion
         """
         matches = []
 
@@ -904,31 +912,31 @@ class FileCompleter(Completer):
         if text == ".":
             return matches
         
-        # 常见文件扩展名
+        # Common file extensions.
         common_extensions = ['.txt', '.py', '.js', '.html', '.css', '.json', '.xml', '.md', '.log', '.ini', '.cfg', '.conf']
         
-        # 1. 尝试直接匹配（不区分大小写）
+        # 1. Try a direct match (case-insensitive).
         base_dir = self._matching_base_directory()
         for item in base_dir.iterdir():
             if item.name.lower().startswith(text.lower()):
                 matches.append(item.name)
         
-        # 2. 如果没有直接匹配，尝试添加常见扩展名
+        # 2. If there is no direct match, try adding common extensions.
         if not matches:
             for ext in common_extensions:
                 potential_file = base_dir / (text + ext)
                 if potential_file.exists() and potential_file.is_file():
                     matches.append(text + ext)
         
-        # 3. 如果还是没有，尝试模糊匹配（包含子字符串）
+        # 3. If still nothing matches, try fuzzy matching (substring match).
         if not matches:
             for item in base_dir.iterdir():
                 if text.lower() in item.name.lower():
                     matches.append(item.name)
         
-        # 4. 如果文件名部分看起来像是不完整的扩展名，尝试补全
+        # 4. If the file-name fragment looks like an incomplete extension, try to complete it.
         if not matches and '.' in text:
-            # 例如：输入"test.t"时，尝试匹配"test.txt"
+            # Example: when input is "test.t", try matching "test.txt".
             base_name, partial_ext = text.rsplit('.', 1)
             for ext in common_extensions:
                 if ext.startswith('.' + partial_ext):
@@ -940,16 +948,16 @@ class FileCompleter(Completer):
     
     def _get_root_directory_completions(self, separator: str, file_part: str = "") -> List[str]:
         """
-        获取根目录补全
+        Get root-directory completion.
         Args:
-            separator: 路径分隔符
-            file_part: 文件名部分（可选）
+            separator: Path separator
+            file_part: File-name fragment (optional)
         Returns:
-            根目录下的文件/文件夹列表
+            List of files/folders under the root directory
         """
         try:
             # Drive-root completion: use current drive root.
-            current_drive = self._matching_base_directory().anchor  # 例如 'C:\\'
+            current_drive = self._matching_base_directory().anchor  # e.g. 'C:\\'
             root_dir = Path(current_drive)
             
             if not root_dir.exists() or not root_dir.is_dir():
@@ -958,21 +966,21 @@ class FileCompleter(Completer):
             matches = []
             try:
                 for item in root_dir.iterdir():
-                    # 跳过隐藏文件和系统文件
+                    # Skip hidden and system files.
                     if item.name.startswith('.'):
                         continue
                     
-                    # 如果指定了file_part，只返回匹配的文件
+                    # If file_part is specified, return only matching files.
                     if file_part and not item.name.lower().startswith(file_part.lower()):
                         continue
                     
-                    # 构建反斜杠风格路径
+                    # Build a backslash-style path.
                     path = f"\\{item.name}"
                     
                     matches.append(path)
                     
             except PermissionError:
-                # 如果没有权限访问根目录，返回空列表
+                # Return an empty list if the root directory is not accessible.
                 return []
             
             return sorted(matches)
@@ -1094,7 +1102,7 @@ class FileCompleter(Completer):
         return cleaned.replace("/", "\\").split("\\")[-1]
     
     def _get_path_completions(self, text: str) -> List[str]:
-        """获取路径补全"""
+        """Get path completion."""
         try:
             # Normalize to backslash separator for workspace-style suggestions.
             text = text.replace("/", "\\")
@@ -1108,15 +1116,15 @@ class FileCompleter(Completer):
             if len(parts) == 1:
                 return self._get_local_completions(text)
             
-            # 构建目录路径
+            # Build the directory path.
             dir_part = separator.join(parts[:-1])
             file_part = parts[-1]
             
-            # 特殊处理：如果dir_part为空，表示根目录
+            # Special case: if dir_part is empty, it means the root directory.
             if dir_part == '':
                 return self._get_root_directory_completions(separator, file_part)
             
-            # 解析目录路径
+            # Resolve the directory path.
             if dir_part.startswith("\\") or (len(dir_part) > 1 and dir_part[1] == ':'):
                 # Absolute path with drive letter:
                 # - leading "\" is drive-root relative (map to current drive root)
@@ -1129,17 +1137,17 @@ class FileCompleter(Completer):
                 else:
                     base_dir = Path(dir_part)
             else:
-                # 相对路径
+                # Relative path.
                 base_dir = self._matching_base_directory() / dir_part
             
             if not base_dir.exists() or not base_dir.is_dir():
                 return []
             
-            # 在指定目录下查找匹配的文件/文件夹
+            # Find matching files/folders in the specified directory.
             matches = []
             for item in base_dir.iterdir():
                 if item.name.lower().startswith(file_part.lower()):
-                    # 构建反斜杠风格路径
+                    # Build a backslash-style path.
                     relative_path = f"{dir_part}\\{item.name}"
                     
                     # Only append separator for directories when input ends with separator
@@ -1148,43 +1156,43 @@ class FileCompleter(Completer):
                     else:
                         matches.append(relative_path)
             
-            # 如果没有找到匹配项，尝试智能补全
+            # If no match is found, try smart completion.
             if not matches and file_part:
                 smart_matches = self._smart_path_completion(base_dir, file_part, separator, dir_part)
                 matches.extend(smart_matches)
             
-            # 如果只有一个匹配项，直接返回
+            # If there is only one match, return it directly.
             if len(matches) == 1:
                 return matches
             
-            # 如果有多个匹配项，返回所有匹配项供用户选择
+            # If there are multiple matches, return them all for the user to choose from.
             return sorted(matches)
         except Exception:
             return []
     
     def _smart_path_completion(self, base_dir: Path, file_part: str, separator: str, dir_part: str) -> List[str]:
         """
-        智能路径补全，包括自动添加常见文件扩展名
+        Smart path completion, including automatic addition of common file extensions.
         Args:
-            base_dir: 基础目录
-            file_part: 文件名部分
-            separator: 路径分隔符
-            dir_part: 当前目录路径部分
+            base_dir: Base directory
+            file_part: File-name fragment
+            separator: Path separator
+            dir_part: Current directory path fragment
         Returns:
-            智能补全的路径列表
+            List of paths produced by smart completion
         """
         matches = []
         
-        # 常见文件扩展名
+        # Common file extensions.
         common_extensions = ['.txt', '.py', '.js', '.html', '.css', '.json', '.xml', '.md', '.log', '.ini', '.cfg', '.conf']
         
-        # 1. 尝试直接匹配（不区分大小写）
+        # 1. Try a direct match (case-insensitive).
         for item in base_dir.iterdir():
             if item.name.lower().startswith(file_part.lower()):
                 relative_path = f"{dir_part}\\{item.name}"
                 matches.append(relative_path)
         
-        # 2. 如果没有直接匹配，尝试添加常见扩展名
+        # 2. If there is no direct match, try adding common extensions.
         if not matches:
             for ext in common_extensions:
                 potential_file = base_dir / (file_part + ext)
@@ -1192,16 +1200,16 @@ class FileCompleter(Completer):
                     relative_path = f"{dir_part}\\{file_part}{ext}"
                     matches.append(relative_path)
         
-        # 3. 如果还是没有，尝试模糊匹配（包含子字符串）
+        # 3. If still nothing matches, try fuzzy matching (substring match).
         if not matches:
             for item in base_dir.iterdir():
                 if file_part.lower() in item.name.lower():
                     relative_path = f"{dir_part}\\{item.name}"
                     matches.append(relative_path)
         
-        # 4. 如果文件名部分看起来像是不完整的扩展名，尝试补全
+        # 4. If the file-name fragment looks like an incomplete extension, try to complete it.
         if not matches and '.' in file_part:
-            # 例如：输入"test.t"时，尝试匹配"test.txt"
+            # Example: when input is "test.t", try matching "test.txt".
             base_name, partial_ext = file_part.rsplit('.', 1)
             for ext in common_extensions:
                 if ext.startswith('.' + partial_ext):
@@ -1213,14 +1221,14 @@ class FileCompleter(Completer):
         return matches
     
     def _find_common_prefix(self, strings: List[str]) -> str:
-        """找到字符串列表的共同前缀"""
+        """Find the common prefix for a list of strings."""
         if not strings:
             return ""
         
-        # 找到最短字符串的长度
+        # Find the length of the shortest string.
         min_len = min(len(s) for s in strings)
         
-        # 逐字符比较
+        # Compare character by character.
         for i in range(min_len):
             char = strings[0][i]
             for s in strings[1:]:
@@ -1231,7 +1239,7 @@ class FileCompleter(Completer):
 
 
 class PromptToolkitInputHandler:
-    """prompt_toolkit 输入处理器（跨平台）"""
+    """prompt_toolkit input handler (cross-platform)."""
     
     def __init__(
         self,
@@ -1244,10 +1252,10 @@ class PromptToolkitInputHandler:
         terminal_resize_callback: Optional[Callable[[int, int], bool]] = None,
     ):
         """
-        初始化输入处理器
+        Initialize the input handler.
         Args:
-            work_directory: 当前工作目录
-            initial_history: 预置的历史命令列表（通常来自持久化的HistoryManager）
+            work_directory: Current working directory
+            initial_history: Preloaded history command list (usually from the persistent HistoryManager)
         """
         self.work_directory = work_directory
         self.workspace_directory = workspace_directory or work_directory
@@ -1288,7 +1296,7 @@ class PromptToolkitInputHandler:
                 )
             except Exception:
                 self._pt_style = None
-            # 使用prompt_toolkit，并将历史记录注入到会话中
+            # Use prompt_toolkit and inject history into the session.
             self.completer = FileCompleter(
                 work_directory,
                 self.workspace_directory,
@@ -1329,7 +1337,7 @@ class PromptToolkitInputHandler:
                 terminal_resize_callback=self._terminal_resize_callback,
             )
         else:
-            # 回退到标准input
+            # Fall back to standard input.
             self.session = None
 
     def _render_bottom_toolbar(self):
@@ -1544,7 +1552,14 @@ class PromptToolkitInputHandler:
                 if output is None:
                     output = getattr(self.session, "output", None)
             if output is not None and hasattr(output, "write_raw") and hasattr(output, "flush"):
-                output.write_raw("\x1b7\x1b[2B\r\x1b[2K\x1b8")
+                rows_down = 2
+                try:
+                    app = getattr(self.session, "app", None)
+                    if app is not None:
+                        rows_down, _, _ = _get_status_overlay_position(app)
+                except Exception:
+                    rows_down = 2
+                _write_overlay_line(output, "", rows_down)
                 output.flush()
                 return
             if hasattr(sys.stdout, "isatty") and sys.stdout.isatty():
@@ -1610,14 +1625,14 @@ class PromptToolkitInputHandler:
         show_separator: bool = True,
     ) -> str:
         """
-        获取带自动补全的用户输入
+        Get user input with auto-completion.
         Args:
-            prompt: 输入提示
-            status_bar_text: 状态栏文本（显示在控制台最底部）
-            status_bar_fragments: 状态栏分段样式文本（prompt_toolkit formatted text）
-            show_status_bar: 是否显示状态栏
+            prompt: Input prompt
+            status_bar_text: Status bar text (shown at the bottom of the console)
+            status_bar_fragments: Status bar fragment style text (prompt_toolkit formatted text)
+            show_status_bar: Whether to show the status bar
         Returns:
-            用户输入的文本
+            The user-entered text
         """
         if not hasattr(self, "_shell_mode_active"):
             self._shell_mode_active = False
@@ -1714,7 +1729,7 @@ class PromptToolkitInputHandler:
                 self._pending_prefill_cursor_position = 0
                 self._pending_shell_mode_active = False
             else:
-                # 回退到标准input
+                # Fall back to standard input.
                 user_input = input(prompt).strip()
 
             user_input = _normalize_newlines(user_input)
@@ -1732,7 +1747,7 @@ class PromptToolkitInputHandler:
                 else:
                     user_input = f"!{shell_text}"
             
-            # 保存到历史记录
+            # Save to history.
             if user_input:
                 self.history.append(user_input)
 
@@ -1745,7 +1760,7 @@ class PromptToolkitInputHandler:
             print()
             raise KeyboardInterrupt
         except Exception as e:
-            print(f"\n输入错误: {e}")
+            print(f"\nInput error: {e}")
             return ""
 
     def _create_key_bindings(self):
@@ -2039,13 +2054,13 @@ class PromptToolkitInputHandler:
         return kb
     
     def update_work_directory(self, new_directory: Path):
-        """更新工作目录"""
+        """Update the working directory."""
         self.work_directory = new_directory
         if self.session and hasattr(self, 'completer'):
             self.completer.work_directory = new_directory
 
     def update_workspace_directory(self, new_directory: Path):
-        """更新用于路径匹配/补全的 workspace 根目录。"""
+        """Update the workspace root used for path matching/completion."""
         self.workspace_directory = new_directory
         if self.session and hasattr(self, "completer"):
             self.completer.workspace_directory = new_directory
@@ -2116,7 +2131,7 @@ def create_prompt_toolkit_input_handler(
     slash_dynamic_rules: Optional[List[Dict[str, Any]]] = None,
     terminal_resize_callback: Optional[Callable[[int, int], bool]] = None,
 ) -> PromptToolkitInputHandler:
-    """创建 prompt_toolkit 输入处理器"""
+    """Create a prompt_toolkit input handler."""
     return PromptToolkitInputHandler(
         work_directory,
         workspace_directory,

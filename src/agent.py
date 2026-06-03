@@ -14,8 +14,8 @@ import shutil
 import subprocess
 from datetime import datetime
 
-# call_ai 对 OpenAI 使用 verify=False 时 urllib3 会对每条请求发出 InsecureRequestWarning；
-# 进程启动时关闭该类告警，避免打断终端输出（企业内网自签证书场景常见）。
+# When call_ai uses verify=False with OpenAI, urllib3 emits an InsecureRequestWarning for each request.
+# Disable that warning at process startup so it does not interrupt terminal output (common with internal self-signed certificates).
 try:
     import urllib3
 
@@ -26,7 +26,7 @@ try:
 except Exception:
     pass
 
-# 导入历史记录管理器
+# Import the history manager.
 from .core.logging.app_logging import get_logger
 from .core.state.history_manager import HistoryManager
 from .core.config.skills_loader import (
@@ -126,7 +126,7 @@ from .services import execution_policy_service
 from .runtime import prompt_composer
 from .managers import WorkspaceStateManager, ChatStateManager
 
-# memory_manager 在后台线程中导入（见 _schedule_memory_service_background），避免阻塞主线程初始化。
+# Import memory_manager in a background thread (see _schedule_memory_service_background) to avoid blocking main-thread initialization.
 MEMORY_AVAILABLE = False  # type: ignore[misc, assignment]
 MemoryService = None  # type: ignore[misc, assignment]
 
@@ -140,7 +140,7 @@ TASK_WORKED_SUMMARY_HISTORY_PREFIX = "[TASK_WORKED_SUMMARY]"
 _STREAM_ATTR_TERMINAL_COLUMNS = get_app_runtime_attr_name("terminal_columns")
 _STREAM_ATTR_OUTPUT_INDENT_WIDTH = get_app_runtime_attr_name("output_indent_width")
 
-# 根据操作系统选择合适的输入处理器
+# Choose the appropriate input handler for the current operating system.
 import platform
 
 if platform.system() == "Windows":
@@ -161,15 +161,15 @@ else:
         INPUT_HANDLER_TYPE = "none"
 
 
-# 经验记忆主检索 query：仅本轮用户输入（上限见 MEMORY_RETRIEVAL_QUERY_MAX_CHARS）。
-# 以下两项仍用于查询扩展 LLM 的「近期对话摘录」参考块，不用于关键词检索 query。
+# Primary experiential-memory query: only the current user input (see MEMORY_RETRIEVAL_QUERY_MAX_CHARS for the limit).
+# These two values still support the query-expansion LLM's "recent conversation excerpts" reference block and are not used as keyword search queries.
 MEMORY_RETRIEVAL_ROUNDS = 3
 MEMORY_RETRIEVAL_MSG_MAX_CHARS = 400
 MEMORY_RETRIEVAL_QUERY_MAX_CHARS = 2000
-# 主检索（关键词打分）偏弱时触发 LLM 查询扩展；raw_score 为 memory_manager 未归一化得分
+# Trigger LLM query expansion when the main retrieval (keyword scoring) is weak; raw_score is the unnormalized score from memory_manager.
 MEMORY_FALLBACK_MIN_RAW_SCORE = 4.0
 MEMORY_EXPANSION_MAX_KEYWORD_CHARS = 600
-# 与身份/称呼相关的 memory_type，排序时与 preference 同簇，便于新写入的更正与旧 durable 公平竞争
+# memory_type values related to identity/name are grouped with preference during ranking so newly written corrections can compete fairly with older durable entries.
 MEMORY_IDENTITY_CLUSTER_TYPES = frozenset(
     {
         "preference",
@@ -181,7 +181,7 @@ MEMORY_IDENTITY_CLUSTER_TYPES = frozenset(
     }
 )
 
-# 会话级摘要：cheap 滚动摘录 + 可选周期性 LLM 压缩，并入经验记忆检索 query。
+# Session-level summary: cheap rolling excerpts plus optional periodic LLM compression, merged into the experiential-memory retrieval query.
 SESSION_SUMMARY_ROLLING_MAX_CHARS = 600
 SESSION_SUMMARY_MSG_SNIPPET = 120
 SESSION_SUMMARY_LLM_INTERVAL_PAIRS = 6
@@ -206,16 +206,16 @@ INPUT_PROMPT = "› "
 class Agent:
     def __init__(self, model_name: str = "gemma3:4b", work_directory: Optional[str] = None, provider: str = "ollama", openai_conf: Optional[dict] = None, params: Optional[dict] = None, model_config: Optional[dict] = None, config_dir: Optional[str] = None, builtin_skills_dir: Optional[str] = None):
         """
-        初始化应用 Agent
+        Initialize the application Agent.
         Args:
-            model_name: 模型名称（兼容旧格式）
-            work_directory: 工作目录
-            provider: 模型服务提供方
-            openai_conf: openai参数
-            params: 通用参数
-            model_config: 模型配置（provider + params）
-            config_dir: 配置文件目录（可选）；持久化状态位于该目录下的 workspace/
-            builtin_skills_dir: 内建 Agent Skills 根目录；未传则使用项目根目录下的 skills/
+            model_name: Model name (legacy-compatible format).
+            work_directory: Working directory.
+            provider: Model service provider.
+            openai_conf: OpenAI parameters.
+            params: General parameters.
+            model_config: Model configuration (provider + params).
+            config_dir: Optional config directory; persistent state lives in workspace/ under that directory.
+            builtin_skills_dir: Root directory for built-in Agent Skills; if omitted, uses skills/ at the project root.
         """
         startup_work_directory = Path(work_directory) if work_directory else Path.cwd()
 
@@ -317,7 +317,7 @@ class Agent:
         started_at = datetime.now()
         try:
             pc_logger.info(
-                "项目上下文后台刷新已调度: reason=%s force=%s workspace=%s storage=%s",
+                        "Project context background refresh scheduled: reason=%s force=%s workspace=%s storage=%s",
                 reason_text,
                 bool(force),
                 str(target_root),
@@ -342,7 +342,7 @@ class Agent:
                 try:
                     elapsed_ms = int((datetime.now() - started_at).total_seconds() * 1000)
                     pc_logger.info(
-                        "项目上下文后台刷新完成: reason=%s force=%s elapsed_ms=%s timed_out=%s files_total=%s scanned=%s processed=%s",
+                        "Project context background refresh completed: reason=%s force=%s elapsed_ms=%s timed_out=%s files_total=%s scanned=%s processed=%s",
                         reason_text,
                         bool(force),
                         elapsed_ms,
@@ -1202,6 +1202,45 @@ class Agent:
                         elapsed_seconds = 0
                     self._print_task_worked_summary_line(elapsed_seconds)
                     continue
+                model_tool_plan = self._parse_model_tool_plan_history_content(content)
+                if model_tool_plan is not None:
+                    model_tool = str(model_tool_plan.get("tool") or "").strip()
+                    model_args = model_tool_plan.get("args")
+                    if not isinstance(model_args, dict):
+                        model_args = {}
+                    prev_cursor = tool_result_cursor
+                    result, tool_result_cursor = self._consume_tool_call_result_from_operation_results(
+                        operation_results,
+                        tool_result_cursor,
+                        model_tool,
+                        model_args,
+                    )
+                    has_result = tool_result_cursor != prev_cursor
+                    if has_result:
+                        failed = not bool(result.get("success", True))
+                        self._print_tool_call_feedback(model_tool, model_args, failed=failed)
+                        if model_tool == "shell":
+                            next_item = hist[idx + 1] if (idx + 1) < len(hist) else None
+                            suppress_shell_output = False
+                            if next_item is not None:
+                                next_payload = self._parse_model_tool_result_history_content(
+                                    str(next_item.get("content") or "")
+                                )
+                                suppress_shell_output = bool(
+                                    next_payload is not None
+                                    and self._model_tool_result_matches_plan(model_tool, model_args, next_payload)
+                                )
+                            if not suppress_shell_output:
+                                out_text, err_text = self._extract_model_shell_replay_output(result)
+                                if out_text or err_text:
+                                    self._print_direct_shell_history_output(out_text, err_text)
+                                if self._is_model_shell_result_aborted(result) and (
+                                    not self._history_item_is_conversation_interrupted(
+                                        hist[idx + 1] if (idx + 1) < len(hist) else None
+                                    )
+                                ):
+                                    self._print_conversation_interrupted_banner()
+                    continue
                 model_tool_result = self._parse_model_tool_result_history_content(content)
                 if model_tool_result is not None:
                     model_tool = str(model_tool_result.get("tool") or "").strip()
@@ -1444,7 +1483,7 @@ class Agent:
 
     def _print_prompt_separator(self) -> None:
         """
-        在命令提示符前输出一行分隔符，宽度随终端窗口实时变化。
+        Print a separator line before the prompt; its width follows the terminal size in real time.
         """
         if not hasattr(sys.stdout, "isatty") or not sys.stdout.isatty():
             return
@@ -1547,8 +1586,8 @@ class Agent:
 
     def _clear_prompt_separator(self) -> None:
         """
-        清理上一轮输入前显示的分隔符（不清理提示符行）。
-        该方法应在用户按回车后、开始输出新消息前调用。
+        Clear the separator shown before the previous input (but not the prompt line).
+        Call this after the user presses Enter and before the next message starts printing.
         """
         if not bool(getattr(self, "_prompt_separator_rendered", False)):
             return
@@ -2057,6 +2096,53 @@ class Agent:
         if str(payload.get("kind") or "").strip() != "model_tool_result":
             return None
         return payload
+
+    def _parse_model_tool_plan_history_content(self, content: str) -> Optional[Dict[str, Any]]:
+        text = str(content or "").strip()
+        if not text or text.startswith(MODEL_TOOL_RESULT_HISTORY_PREFIX):
+            return None
+        if not text.startswith("{") and not text.startswith("["):
+            return None
+        try:
+            payload = json.loads(text)
+        except Exception:
+            return None
+        if isinstance(payload, dict):
+            tool_name = str(payload.get("tool") or "").strip()
+            if tool_name:
+                args = payload.get("args")
+                if not isinstance(args, dict):
+                    args = {}
+                return {"tool": tool_name, "args": args}
+            tool_calls = payload.get("tool_calls")
+            if isinstance(tool_calls, list) and tool_calls:
+                first = tool_calls[0]
+                if isinstance(first, dict):
+                    fn = first.get("function")
+                    if isinstance(fn, dict):
+                        tool_name = str(fn.get("name") or "").strip()
+                        args = fn.get("arguments")
+                        if isinstance(args, str):
+                            try:
+                                args = json.loads(args)
+                            except Exception:
+                                args = {}
+                        if not isinstance(args, dict):
+                            args = {}
+                        if tool_name:
+                            return {"tool": tool_name, "args": args}
+        if isinstance(payload, list) and payload:
+            first = payload[0]
+            if isinstance(first, dict):
+                tool_name = str(first.get("tool") or first.get("name") or "").strip()
+                args = first.get("args")
+                if not isinstance(args, dict):
+                    args = first.get("arguments") if isinstance(first.get("arguments"), dict) else {}
+                if not isinstance(args, dict):
+                    args = {}
+                if tool_name:
+                    return {"tool": tool_name, "args": args}
+        return None
 
     def _is_model_shell_result_aborted(self, result: Any) -> bool:
         if not isinstance(result, dict):
@@ -3258,13 +3344,11 @@ class Agent:
             if is_down and not was_down:
                 state["esc_down"] = True
                 state["esc_down_since"] = now_ts
-                state["esc_emitted"] = False
-                return False
+                state["esc_emitted"] = True
+                return True
             if is_down and was_down:
-                # Require a short hold in fallback mode to avoid noise/ghost events.
-                down_since = float(state.get("esc_down_since", 0.0) or 0.0)
                 emitted = bool(state.get("esc_emitted", False))
-                if (not emitted) and down_since > 0.0 and (now_ts - down_since) >= 0.03:
+                if not emitted:
                     state["esc_emitted"] = True
                     return True
                 return False
@@ -3336,7 +3420,7 @@ class Agent:
                         return False
                     if ch == b"\x1b":
                         state["pending_esc_at"] = now_ts
-                        return False
+                        return True
                     state["pending_esc_at"] = 0.0
             except Exception:
                 pass
@@ -4024,7 +4108,7 @@ class Agent:
         self._schedule_project_context_refresh_background(force=False, reason="workspace-refresh")
 
     def _schedule_memory_service_background(self) -> None:
-        """后台初始化经验记忆：在本线程内 import memory_manager，再构造 MemoryService（Markdown 后端，无重型依赖）。"""
+        """Initialize experiential memory in the background: import memory_manager in this thread, then construct MemoryService (Markdown backend, no heavy dependency)."""
         _mod = sys.modules[__name__]
         workspace_dir = str(self.workspace_config_dir)
         generation = getattr(self, "_workspace_runtime_generation", 0)
@@ -4083,8 +4167,8 @@ class Agent:
 
     def _schedule_model_validation_background(self) -> None:
         """
-        Ollama 模型列表探测可能阻塞；在后台线程执行，缩短 main 打印模型信息后到出现提示符的等待。
-        非 ollama provider 不启动线程。
+        Ollama model-list probing can block; run it in a background thread to shorten the wait between main printing model info and showing the prompt.
+        Non-ollama providers do not start a thread.
         """
         ollama_needed = getattr(self, "provider", "") == "ollama"
         if not ollama_needed:
@@ -4449,7 +4533,7 @@ class Agent:
         return "\n".join(lines) + "\n\n"
 
     def _save_execution_policy_to_config(self) -> bool:
-        """将执行策略保存到 config.jsonc"""
+        """Save the execution policy to config.jsonc."""
         try:
             cfg_path = self.config_dir / CONFIG_JSONC_FILENAME
             cfg_data = {}
@@ -4466,7 +4550,7 @@ class Agent:
             return False
 
     def _save_memory_enabled_to_config(self) -> bool:
-        """将 memory_enabled 开关写入 config.jsonc。"""
+        """Write the memory_enabled toggle to config.jsonc."""
         try:
             cfg_path = self.config_dir / CONFIG_JSONC_FILENAME
             cfg_data: Dict[str, Any] = {}
@@ -4483,7 +4567,7 @@ class Agent:
             return False
 
     def _enable_freedom(self) -> Dict[str, Any]:
-        """兼容命令：设置 execution_policy=moderate"""
+        """Compatibility command: set execution_policy=moderate."""
         if self.execution_policy == "moderate":
             return {"success": True, "message": "execution_policy is already set to moderate"}
         self.execution_policy = "moderate"
@@ -4494,7 +4578,7 @@ class Agent:
         }
 
     def _disable_freedom(self) -> Dict[str, Any]:
-        """兼容命令：设置 execution_policy=confirmation"""
+        """Compatibility command: set execution_policy=confirmation."""
         if self.execution_policy == "confirmation":
             return {"success": True, "message": "execution_policy is already set to confirmation"}
         self.execution_policy = "confirmation"
@@ -4614,11 +4698,11 @@ class Agent:
     def _freedom_auto_confirm(self, command: Dict[str, Any]) -> bool:
         return execution_policy_service.freedom_auto_confirm(self, command)
     def _validate_model(self) -> None:
-        """验证模型是否可用（仅 ollama 模式）。"""
+        """Verify that the model is available (ollama mode only)."""
         self._validate_single_model(self.provider, self.model_name, "model")
 
     def _validate_single_model(self, provider: str, model_name: str, model_type: str):
-        """验证单个模型是否可用"""
+        """Verify whether a single model is available."""
         if provider != "ollama":
             return
         try:
@@ -4672,7 +4756,7 @@ class Agent:
         messages_override: Optional[List[Dict[str, Any]]] = None,
         record_history_override: Optional[bool] = None,
     ):
-        """调用大模型 API 获取回复；支持流式输出。"""
+        """Call the large-model API to obtain a reply; streaming output is supported."""
         effective_stream = self._streaming_enabled_for_current_model() if stream is None else bool(stream)
         call_ctx = AICallContext(
             user_input=user_input,
@@ -4710,7 +4794,7 @@ class Agent:
         return s
 
     def _workspace_relative_script_triple(self, rel: Path) -> Tuple[Path, Path, Path]:
-        """相对路径在 shell 解析时的三个候选根：当前工作目录、workspace/temp、workspace 根（兼容旧路径）。"""
+        """Three candidate roots for relative-path resolution during shell parsing: current working directory, workspace/temp, and the workspace root (for legacy compatibility)."""
         p_wd = (self.work_directory / rel).resolve()
         p_temp = (self.ai_workspace_temp_dir / rel).resolve()
         p_ws = (self.workspace_config_dir / rel).resolve()
@@ -4824,7 +4908,7 @@ class Agent:
                 return True
         success_flag = result.get("success")
         if isinstance(success_flag, bool) and success_flag:
-            # Successful tool calls may legitimately contain words like "用户取消" in
+            # Successful tool calls may legitimately contain words like "user cancelled" in
             # file content; do not treat normal output as cancellation.
             return False
         text_parts = [
@@ -4837,8 +4921,8 @@ class Agent:
             "cancelled operation",
             "cancelled by user",
             "aborted by user",
-            "用户取消",
-            "用户取消了操作",
+            "user cancelled",
+            "the operation was cancelled by the user",
             "installation aborted",
             "confirm installation yes(y)/no(n): n",
         ]
@@ -4882,13 +4966,13 @@ class Agent:
     def action_apply_unified_patch(
         self, file_path: str, patch: str, confirmed: bool = False
     ) -> dict:
-        """对指定文本文件应用 unified patch。"""
+        """Apply a unified patch to the specified text file."""
         return filesystem_actions.action_apply_unified_patch(
             self, file_path=file_path, patch=patch, confirmed=confirmed
         )
 
     def action_read_image(self, file_path: str, prompt: str = "") -> dict:
-        """读取图片内容，支持多种图片格式"""
+        """Read image contents and support multiple image formats."""
         return filesystem_actions.action_read_image(self, file_path=file_path, prompt=prompt)
 
     def action_project_context_search(self, params: Dict[str, Any]) -> dict:
@@ -5081,7 +5165,7 @@ class Agent:
 
     def shutdown(self, wait: bool = False) -> None:
         """
-        统一关闭运行期资源。默认非阻塞，避免退出流程被后台线程池/任务拖住。
+        Shut down runtime resources in a unified way. Non-blocking by default so background thread pools/tasks do not delay exit.
         """
         try:
             self._shutdown_workspace_services(wait=wait)
@@ -5236,40 +5320,40 @@ class Agent:
 
     def _is_executable_file(self, user_input: str) -> bool:
         """
-        检查输入是否为可执行文件
+        Check whether the input refers to an executable file.
         Args:
-            user_input: 用户输入
+            user_input: User input
         Returns:
             True if executable, False otherwise
         """
         import shutil
         import os
         
-        # 去除可能的参数
+        # Strip any trailing arguments.
         command = user_input.split()[0] if user_input.strip() else ""
         if not command:
             return False
             
-        # 检查是否为绝对路径或相对路径的可执行文件
+        # Check whether the command is an executable by absolute or relative path.
         if os.path.isabs(command):
-            # 绝对路径
+            # Absolute path.
             if os.path.isfile(command) and os.access(command, os.X_OK):
                 return True
         else:
-            # 相对路径或文件名
+            # Relative path or filename.
             execution_cwd = self._shell_execution_cwd()
-            # 1. 检查当前目录
+            # 1. Check the current directory.
             current_path = execution_cwd / command
             if current_path.is_file() and os.access(current_path, os.X_OK):
                 return True
                 
-            # 2. 检查当前目录下的常见可执行文件扩展名
+            # 2. Check common executable extensions in the current directory.
             for ext in ['.exe', '.bat', '.cmd', '.com', '.py', '.ps1']:
                 current_path_with_ext = execution_cwd / (command + ext)
                 if current_path_with_ext.is_file():
                     return True
                     
-            # 3. 检查PATH环境变量
+            # 3. Check the PATH environment variable.
             if shutil.which(command):
                 return True
                 
@@ -5295,9 +5379,9 @@ class Agent:
 
     def _get_user_input_with_history(self) -> str:
         """
-        获取用户输入，支持历史记录导航
+        Get user input with history navigation support.
         Returns:
-            用户输入的字符串
+            The user-entered string.
         """
         import platform
 
@@ -5336,10 +5420,10 @@ class Agent:
 
         self._print_pending_prompt_warning()
         
-        # 重置历史记录索引
+        # Reset the history index.
         self.history_manager.reset_index()
 
-        # 优先使用已初始化的输入处理器（例如 Windows 下的 prompt_toolkit 补全）
+        # Prefer an already-initialized input handler (for example, prompt_toolkit completion on Windows).
         if self.input_handler is not None:
             try:
                 try:
@@ -5354,12 +5438,12 @@ class Agent:
                 except TypeError:
                     # Legacy handlers may not support status bar kwargs.
                     user_input = self.input_handler.get_input_with_completion(prompt)
-                # 这里不直接写入 HistoryManager，交由上层 run() 统一处理，避免重复
+                # Do not write to HistoryManager here; let the upper-level run() flow handle it to avoid duplication.
                 return user_input
             except Exception as e:
                 print(f"⚠️ Input handler error; falling back to platform-specific input mode: {e}")
         
-        # 在Windows系统上，优先使用prompt_toolkit以获得更好的中文输入支持
+        # On Windows, prefer prompt_toolkit for a better interactive input experience.
         if platform.system() == "Windows":
             try:
                 from prompt_toolkit import PromptSession
@@ -5371,12 +5455,12 @@ class Agent:
                     CursorShape = None  # type: ignore[assignment]
                     SimpleCursorShapeConfig = None  # type: ignore[assignment]
                 
-                # 创建历史记录
+                # Create the history object.
                 history = InMemoryHistory()
                 for entry in self.history_manager.get_all_history():
                     history.append_string(entry)
                 
-                # 创建会话
+                # Create the session.
                 session_kwargs = {"history": history}
                 if CursorShape is not None and SimpleCursorShapeConfig is not None:
                     try:
@@ -5384,7 +5468,7 @@ class Agent:
                     except Exception:
                         pass
                 session = PromptSession(**session_kwargs)
-                # 对 Windows Terminal 维持闪烁；Cursor 内置终端不强制发闪烁序列。
+                # Maintain cursor blinking in Windows Terminal; the built-in Cursor terminal does not force blink sequences.
                 try:
                     _app = getattr(session, "app", None)
                     if _app is not None:
@@ -5416,14 +5500,14 @@ class Agent:
                 
                 user_input = session.prompt(prompt).strip()
                 
-                # 保存到历史记录
+                # Save to history.
                 if user_input:
                     self.history_manager.add_entry(user_input)
                 
                 return user_input
                 
             except ImportError:
-                # 如果没有prompt_toolkit，回退到标准input
+                # Fall back to standard input if prompt_toolkit is unavailable.
                 print("⚠️ Tip: install prompt_toolkit for a better input experience: pip install prompt_toolkit")
                 try:
                     print("")
@@ -5435,7 +5519,7 @@ class Agent:
                 except KeyboardInterrupt:
                     raise KeyboardInterrupt
             except Exception as e:
-                # 如果prompt_toolkit出错，回退到标准input
+                # Fall back to standard input if prompt_toolkit fails.
                 print(f"⚠️ prompt_toolkit error; falling back to standard input: {e}")
                 try:
                     print("")
@@ -5447,7 +5531,7 @@ class Agent:
                 except KeyboardInterrupt:
                     raise KeyboardInterrupt
         else:
-            # 非Windows系统使用简单的input
+            # Use plain input on non-Windows systems.
             try:
                 print("")
                 print(status_bar_plain)
@@ -5572,9 +5656,9 @@ class Agent:
 
     def _execute_file_directly(self, user_input: str) -> bool:
         """
-        直接执行可执行文件，实时显示输出并支持交互输入
+        Execute an executable directly, stream output in real time, and support interactive input.
         Args:
-            user_input: 用户输入
+            user_input: User input
         Returns:
             True if executed successfully, False otherwise
         """
@@ -5608,7 +5692,7 @@ class Agent:
                 cmd = raw
             
             try:
-                # 通过父进程重放 stdout/stderr，确保输出前缀格式一致生效。
+                # Replay stdout/stderr through the parent process so the output-prefix format is applied consistently.
                 return_code = self._run_direct_shell_with_prefixed_output(
                     cmd,
                     self._shell_execution_cwd(),

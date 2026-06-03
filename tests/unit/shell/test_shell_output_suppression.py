@@ -134,11 +134,11 @@ class ShellOutputSuppressionTests(unittest.TestCase):
         self.assertNotIn("omitted 5 lines", out)
 
     def test_build_tail_output_accounts_for_cjk_visual_width(self):
-        text = ("中" * 40) + "\n"
+        text = ("🙂" * 40) + "\n"
         with patch("src.actions.command_actions._terminal_columns_for_tail_display", return_value=30):
             out = _build_tail_output_for_display(text, _FakePipe(), 2)
         self.assertIn("omitted 1 lines", out)
-        self.assertTrue(out.endswith(("中" * 10) + "\n"))
+        self.assertTrue(out.endswith(("🙂" * 10) + "\n"))
 
 
 if __name__ == "__main__":

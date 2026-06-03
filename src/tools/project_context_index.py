@@ -277,7 +277,7 @@ class ProjectContextIndex:
         with self._lock:
             root = self.workspace_root
             if not root.is_dir():
-                return {"success": False, "error": f"workspace 不存在: {root}"}
+                return {"success": False, "error": f"workspace does not exist: {root}"}
 
             scanned, discovery_timed_out = self._iter_code_files(deadline_ts=deadline)
             base_files = self.files
@@ -373,7 +373,7 @@ class ProjectContextIndex:
     ) -> Dict[str, Any]:
         q = str(query or "").strip()
         if not q:
-            return {"success": False, "error": "query 不能为空"}
+            return {"success": False, "error": "query must not be empty"}
         refresh_result: Optional[Dict[str, Any]] = None
         if auto_refresh:
             # incremental refresh (non-force) keeps cost acceptable for M1.
