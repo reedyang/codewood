@@ -16,17 +16,6 @@ MCP_MANAGEMENT_GATED_TOOLS = {
 
 
 def dispatch_mcp_tool(agent: Any, action: str, params: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    if action in MCP_MANAGEMENT_GATED_TOOLS and not bool(
-        getattr(agent, "mcp_tools_enabled", False)
-    ):
-        return {
-            "success": False,
-            "error": (
-                f"tool '{action}' is disabled by config "
-                "(set mcp_tools_enabled=true in config.jsonc to enable)"
-            ),
-        }
-
     if action == "mcp_list_disabled_tools":
         server = params.get("server")
         try:

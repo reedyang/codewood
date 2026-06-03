@@ -30,6 +30,7 @@ from ..core.assistant_output_highlighter import (
 )
 from ..core.logging.app_logging import get_logger
 from ..controllers.builtin_command_router import dispatch_builtin_command
+from ..tooling.handlers.mcp_handlers import MCP_MANAGEMENT_GATED_TOOLS
 from ..core.console_utils import (
     _ansi_bold,
     _ansi_gray,
@@ -2262,11 +2263,18 @@ def run_agent_loop(agent: Any):
                     status_ticker_stopped = True
                     active_status_ticker = None
                 try:
-                    standard_tool_schemas = (
-                        list(getattr(self, "tool_specs", []) or [])
-                        if task_uses_standard_openai_tools
-                        else []
-                    )
+                    standard_tool_schemas = []
+                    if task_uses_standard_openai_tools:
+                        standard_tool_schemas = list(getattr(self, "tool_specs", []) or [])
+                        if not bool(getattr(self, "mcp_tools_enabled", False)):
+                            standard_tool_schemas = [
+                                item
+                                for item in standard_tool_schemas
+                                if str(
+                                    ((item or {}).get("function", {}) or {}).get("name", "")
+                                ).strip()
+                                not in MCP_MANAGEMENT_GATED_TOOLS
+                            ]
                     ai_result = self.call_ai(
                         next_input,
                         context=json.dumps(last_result, ensure_ascii=False) if last_result else "",

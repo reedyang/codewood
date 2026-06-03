@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from ..config.app_info import get_app_config_dirname
 from ..core.config.skills_loader import _list_bundled_script_paths
+from ..tooling.handlers.mcp_handlers import MCP_MANAGEMENT_GATED_TOOLS
 
 
 def _src_root() -> Path:
@@ -549,10 +550,13 @@ def build_tools_prompt_append(agent: Any) -> str:
             2,
             "For software development tasks (debugging, implementation, refactoring, tests, source browsing, or change-impact analysis), use `project_context_search` as the first retrieval step before shell search or file reads. If the index is empty or stale, refresh it and retry once before falling back.",
         )
+    mcp_tools_enabled = bool(getattr(agent, "mcp_tools_enabled", False))
     for t in (agent.tool_specs or []):
         fn = (t or {}).get("function", {})
         name = str(fn.get("name") or "").strip()
         if not name:
+            continue
+        if name in MCP_MANAGEMENT_GATED_TOOLS and not mcp_tools_enabled:
             continue
         if name == "project_context_search" and not agent._project_context_tool_allowed():
             continue

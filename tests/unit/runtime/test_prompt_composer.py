@@ -88,10 +88,18 @@ class PromptComposerTests(unittest.TestCase):
                         "description": "Run command",
                         "parameters": {"properties": {"command": {}}},
                     }
+                },
+                {
+                    "function": {
+                        "name": "mcp_server_info",
+                        "description": "Show MCP server details",
+                        "parameters": {"properties": {"server": {}}},
+                    }
                 }
             ],
             _project_context_tool_allowed=lambda: True,
             _use_standard_openai_tools_call=lambda: True,
+            mcp_tools_enabled=False,
         )
 
         text = prompt_composer.build_tools_prompt_append(agent)
@@ -105,8 +113,13 @@ class PromptComposerTests(unittest.TestCase):
         self.assertIn("Available tools:", text)
         self.assertIn("For software development tasks", text)
         self.assertIn("project_context_search", text)
+        self.assertNotIn("- mcp_server_info:", text)
         self.assertNotIn('{"tool"', text)
         self.assertNotIn("```json", text)
+
+        agent.mcp_tools_enabled = True
+        visible_text = prompt_composer.build_tools_prompt_append(agent)
+        self.assertIn("- mcp_server_info:", visible_text)
 
     def test_standard_skill_section_hint_uses_standard_tools_not_json(self):
         text, meta = prompt_composer.render_skill_section_payload(
