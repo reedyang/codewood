@@ -289,6 +289,145 @@ def _build_missing_standard_tool_call_retry_input(original_user_task: Any) -> st
     )
 
 
+def _should_prioritize_project_context_for_task(user_task: Any) -> bool:
+    text = re.sub(r"\s+", " ", str(user_task or "").strip())
+    if not text:
+        return False
+
+    lowered = text.casefold()
+    score = 0
+
+    strong_terms = (
+        "code",
+        "source code",
+        "source",
+        "codebase",
+        "repo",
+        "repository",
+        "project",
+        "workspace",
+        "file",
+        "function",
+        "method",
+        "class",
+        "module",
+        "package",
+        "dependency",
+        "library",
+        "api",
+        "bug",
+        "error",
+        "exception",
+        "traceback",
+        "stack trace",
+        "test",
+        "tests",
+        "build",
+        "compile",
+        "debug",
+        "fix",
+        "refactor",
+        "implement",
+        "call chain",
+        "call graph",
+    )
+    action_terms = (
+        "debug",
+        "fix",
+        "repair",
+        "refactor",
+        "implement",
+        "add",
+        "remove",
+        "update",
+        "modify",
+        "change",
+        "analyze",
+        "analyse",
+        "explain",
+        "review",
+        "optimize",
+        "investigate",
+        "trace",
+        "locate",
+        "find",
+        "where",
+        "how",
+        "why",
+        "test",
+        "build",
+        "compile",
+        "migrate",
+        "port",
+    )
+    chinese_strong_terms = (
+        "代码",
+        "源码",
+        "代码库",
+        "项目",
+        "仓库",
+        "工作区",
+        "文件",
+        "函数",
+        "方法",
+        "类",
+        "模块",
+        "包",
+        "依赖",
+        "接口",
+        "api",
+        "调用链",
+        "调用图",
+        "错误",
+        "异常",
+        "报错",
+        "测试",
+        "编译",
+        "构建",
+    )
+    chinese_action_terms = (
+        "修复",
+        "调试",
+        "重构",
+        "实现",
+        "优化",
+        "修改",
+        "更新",
+        "分析",
+        "解释",
+        "排查",
+        "定位",
+        "查找",
+        "新增",
+        "删除",
+        "测试",
+        "编译",
+        "构建",
+        "迁移",
+        "移植",
+    )
+
+    for term in strong_terms:
+        if term in lowered:
+            score += 2
+    for term in action_terms:
+        if term in lowered:
+            score += 1
+    for term in chinese_strong_terms:
+        if term in text:
+            score += 2
+    for term in chinese_action_terms:
+        if term in text:
+            score += 1
+
+    if re.search(r"(?i)(?:`[^`]+`|[\w./\\-]+\.(?:py|pyi|js|jsx|ts|tsx|java|go|rs|c|cc|cpp|h|hpp|cs|md|json|ya?ml|toml))", text):
+        score += 2
+    if re.search(r"(?i)\b(src|tests?|docs?|lib|app|pkg|cmd|module|package|class|function|method|api)\b", lowered):
+        score += 1
+
+    return score >= 3
+
+
 def _looks_like_pseudo_tool_call_text(ai_response: Any) -> bool:
     """
     Detect common signs that the model wrote a tool call in assistant text instead
@@ -1966,12 +2105,27 @@ def run_agent_loop(agent: Any):
                     "The current model context window is under 64k. This turn must not use standard API tool_calls and must not simulate, write, or serialize any tool call in visible text.\n"
                     "Answer only in natural language. If the task requires reading files, running commands, loading skills, calling MCP, or other tool capabilities, explain that this small-context model supports only basic chat and suggest switching to a 64k+ context model before executing it.\n"
                 )
+            project_context_task = (
+                task_uses_standard_openai_tools
+                and self._project_context_feature_enabled()
+                and _should_prioritize_project_context_for_task(original_user_task)
+            )
+            project_context_contract = ""
+            if project_context_task:
+                project_context_contract = (
+                    "\n\n[Project context retrieval policy]\n"
+                    "- This is a software development task. Use `project_context_search` as the first retrieval step before shell search or file reads.\n"
+                    "- If the index is empty or stale, refresh it once and retry the search before falling back to broader search.\n"
+                )
+            first_round_contract = first_round_contract + project_context_contract
+
             first_round_evidence = ""
-            if task_uses_standard_openai_tools and self._project_context_feature_enabled():
+            if project_context_task:
                 project_context_ready = False
                 project_context_files_total = 0
                 project_context_inflight = False
                 project_context_skip_reason = "unknown"
+                project_context_refreshed_now = False
                 try:
                     project_context_inflight = bool(
                         getattr(self, "_project_context_refresh_inflight", False)
@@ -1981,14 +2135,36 @@ def run_agent_loop(agent: Any):
                         project_context_skip_reason = "refresh_inflight"
                     else:
                         idx = getattr(self, "_project_context_index", None)
-                        files_map = getattr(idx, "files", None) if idx is not None else None
-                        project_context_files_total = (
-                            len(files_map) if isinstance(files_map, dict) else 0
-                        )
-                        project_context_ready = project_context_files_total > 0
-                        project_context_skip_reason = (
-                            "ready" if project_context_ready else "index_empty"
-                        )
+                        if idx is None:
+                            project_context_skip_reason = "index_missing"
+                        else:
+                            files_map = getattr(idx, "files", None)
+                            project_context_files_total = (
+                                len(files_map) if isinstance(files_map, dict) else 0
+                            )
+                            if project_context_files_total <= 0:
+                                project_context_skip_reason = "index_empty"
+                                try:
+                                    refresh_result = idx.refresh_index(force=False, timeout_ms=2000)
+                                    project_context_refreshed_now = bool(refresh_result.get("success", False))
+                                except Exception as e:
+                                    refresh_result = {"success": False, "error": f"{type(e).__name__}: {e}"}
+                                files_map = getattr(idx, "files", None)
+                                project_context_files_total = (
+                                    len(files_map) if isinstance(files_map, dict) else 0
+                                )
+                                if project_context_files_total <= 0:
+                                    project_context_skip_reason = (
+                                        "refresh_failed"
+                                        if not bool(refresh_result.get("success", False))
+                                        else "index_empty_after_refresh"
+                                    )
+                                else:
+                                    project_context_ready = True
+                                    project_context_skip_reason = "ready_after_refresh"
+                            else:
+                                project_context_ready = True
+                                project_context_skip_reason = "ready"
                 except Exception as e:
                     project_context_ready = False
                     project_context_skip_reason = f"status_check_failed:{type(e).__name__}"
@@ -2003,7 +2179,7 @@ def run_agent_loop(agent: Any):
                         "query": original_user_task,
                         "max_files": 8,
                         "refresh": False,
-                        "refresh_async": True,
+                        "refresh_async": not project_context_refreshed_now,
                     }
                     ev_res = self.execute_tool_call("project_context_search", ev_args)
                     self.operation_results.append(
@@ -2022,13 +2198,14 @@ def run_agent_loop(agent: Any):
                         f"elapsed_ms={project_context_elapsed_ms}"
                     )
                 else:
-                    try:
-                        self._schedule_project_context_refresh_background(
-                            force=False,
-                            reason="first-round-evidence-not-ready",
-                        )
-                    except Exception:
-                        pass
+                    if not project_context_inflight:
+                        try:
+                            self._schedule_project_context_refresh_background(
+                                force=False,
+                                reason="first-round-evidence-not-ready",
+                            )
+                        except Exception:
+                            pass
                     _emit_flow_log(
                         "First-round project context retrieval preparation finished: "
                         f"skipped(not_ready:{project_context_skip_reason}), "
@@ -2184,10 +2361,7 @@ def run_agent_loop(agent: Any):
                     if no_tool_rounds >= max_no_tool_rounds:
                         print("ERROR: The model repeatedly wrote tool calls as assistant text instead of standard tool_calls. Auto-execution has stopped for this round.")
                         break
-                    print(
-                        f"Warning: Pseudo tool-call text rejected (retry {no_tool_rounds}/{max_no_tool_rounds}): "
-                        "the model will be asked again to use standard API tool_calls."
-                    )
+
                     next_input = (
                         f"[Original user request]\n{original_user_task}\n\n"
                         "Your previous assistant text contained a pseudo tool call, "

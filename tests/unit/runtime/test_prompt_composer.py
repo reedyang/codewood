@@ -103,6 +103,8 @@ class PromptComposerTests(unittest.TestCase):
         self.assertIn("Visible text may contain only user-visible", text)
         self.assertIn("Never print any tool-call representation", text)
         self.assertIn("Available tools:", text)
+        self.assertIn("For software development tasks", text)
+        self.assertIn("project_context_search", text)
         self.assertNotIn('{"tool"', text)
         self.assertNotIn("```json", text)
 

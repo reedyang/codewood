@@ -279,6 +279,7 @@ class ProjectContextIndex:
             if not root.is_dir():
                 return {"success": False, "error": f"workspace does not exist: {root}"}
 
+            index_existed_before_refresh = self.index_path.is_file()
             scanned, discovery_timed_out = self._iter_code_files(deadline_ts=deadline)
             base_files = self.files
             next_files: Dict[str, _FileEntry] = dict(base_files)
@@ -332,10 +333,14 @@ class ProjectContextIndex:
                     or force
                     or len(next_files) != len(base_files)
                 )
-                self.files = next_files
-                self.last_index_at = _now_ts()
-                if changed:
-                    self._save()
+            else:
+                changed = added > 0 or updated > 0 or force or len(next_files) != len(base_files)
+
+            self.files = next_files
+            self.last_index_at = _now_ts()
+            should_save = changed or (not index_existed_before_refresh) or (timed_out and (added > 0 or updated > 0))
+            if should_save:
+                self._save()
 
             return {
                 "success": True,

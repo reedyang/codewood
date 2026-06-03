@@ -20,6 +20,7 @@ from src.runtime.runtime_loop import (
     _resolve_worked_summary_terminal_width,
     _sanitize_prompt_pollution,
     _should_retry_missing_standard_tool_call_response,
+    _should_prioritize_project_context_for_task,
     _sync_command_input_history,
     _should_record_command_input_history,
     _shell_command_indicates_verification,
@@ -391,6 +392,13 @@ class RuntimeLoopTests(unittest.TestCase):
         self.assertIn("your next assistant message MUST include standard API `tool_calls`", prompt)
         self.assertIn("Your previous response did not include valid standard API tool_calls.", prompt)
         self.assertIn("call `done` through standard `tool_calls`", prompt)
+
+    def test_project_context_priority_detection_targets_software_development_tasks(self):
+        self.assertTrue(_should_prioritize_project_context_for_task("请帮我修复这个 bug"))
+        self.assertTrue(_should_prioritize_project_context_for_task("Explain this function in src/runtime/runtime_loop.py"))
+        self.assertTrue(_should_prioritize_project_context_for_task("帮我重构这个模块并补测试"))
+        self.assertFalse(_should_prioritize_project_context_for_task("帮我写一封邮件"))
+        self.assertFalse(_should_prioritize_project_context_for_task("今天上海天气怎么样"))
 
     def test_stream_visible_text_with_json_pause_caches_incomplete_tool_json_fence(self):
         raw = "Run a quick check first\n```json\n{\"tool\":\"shell\",\"args\":{"

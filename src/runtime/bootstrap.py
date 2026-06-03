@@ -330,8 +330,8 @@ def setup_runtime_services(agent: Any) -> None:
     agent._project_context_refresh_gate = threading.Lock()
     agent._project_context_refresh_inflight = False
     agent._project_context_index = ProjectContextIndex(
-        workspace_root=agent.work_directory,
-        storage_dir=(agent.workspace_config_dir / "project_context_db"),
+        workspace_root=agent.workspace_root,
+        storage_dir=(agent.workspace_config_dir / "indexes"),
     )
     try:
         agent._schedule_project_context_refresh_background(force=False, reason="startup")
