@@ -1,166 +1,166 @@
 ---
 name: stock-daily-analysis
-description: 【股票分析必经本技能】凡用户要「分析个股/ETF/指数/大盘表现、技术面、买卖点、复盘、盯盘、仓位与止损建议」等，必须通过本 skill 调用 `scripts/analyzer.py` 完成；禁止仅用联网摘录、闲聊或复述行情代替本技能的分析管线。股票/基金/指数专用；支持 A/H/美股、技术面（MA/MACD/RSI 等）、趋势与 AI 操作建议。强触发：股票分析、个股分析、行情分析、技术分析、买点卖点、复盘、盯盘、自选股等。
+description: [Stock analysis must pass through this skill] When the user asks to analyze an individual stock, ETF, index, or broad market performance; discuss technicals, buy or sell points, review performance, monitor a position, or suggest position sizing and stop losses, you must call `scripts/analyzer.py` through this skill. Do not replace this analysis pipeline with web snippets, casual conversation, or quote repetition. This skill is dedicated to stocks, funds, and indexes; it supports A/H/US markets, technical indicators such as MA, MACD, and RSI, trends, and AI-style action advice. Strong triggers include stock analysis, single-stock analysis, market analysis, technical analysis, entry and exit points, reviews, monitoring, and watchlists.
 ---
 
 # Daily Stock Analysis
 
-面向股票相关任务的高优先级 Skill，覆盖 A/H/美股、ETF 与指数场景，提供技术面分析、趋势研判与结构化交易建议。
+High-priority skill for stock-related tasks, covering A/H/US stocks, ETFs, and indexes. It provides technical analysis, trend interpretation, and structured trading guidance.
 
-## Bundle 与脚本路径（可移植）
+## Bundle and Script Path (Portable)
 
-本技能以 **bundle** 形式分发：`scripts/analyzer.py` 与本 `SKILL.md` 同属该 bundle。占位符 **`<skill_root>`** 表示**本 bundle 根目录的绝对路径**，须由**运行环境在调用前**解析并填入（勿自行猜测目录层级）。与上游行情脚本管道联调时，上游 bundle 的根目录记为 `<stock_data_skill_root>`，同样以环境提供的绝对路径为准。
+This skill is distributed as a **bundle**: `scripts/analyzer.py` and this `SKILL.md` belong to the same bundle. The placeholder **`<skill_root>`** means the **absolute path to this bundle’s root** and must be resolved by the runtime before invocation. Do not guess the directory hierarchy. When wiring this skill to an upstream market-data pipeline, the upstream bundle root is represented as `<stock_data_skill_root>`, and it should also come from a runtime-provided absolute path.
 
-## 强制路由（必须先读本段）
+## Mandatory Routing (Read This First)
 
-- **任何**涉及「对股票/基金/指数做分析、诊断、操作建议」的用户目标，**必须**通过本 bundle 内的 `scripts/analyzer.py` 产出结论；若运行环境支持按需加载完整 `SKILL.md`，应先加载再按下文调用脚本（通常与上游行情抓取脚本管道串联，或由上游注入 JSON）。
-- **禁止**用仅联网检索摘录、纯自然语言臆测、或不经 `analyzer.py` 的输出，冒充「股票分析已完成」；摘录可以来自搜索或行情接口，但**分析结论与技术面要点必须来自本技能管线**。
-- 若编排里同时出现「搜索/拉行情」与「分析」，搜索/取数只是**前置步骤**，**不能**在取数后直接结束；必须再执行 `analyzer.py` 并按「输出模板」回复用户。
+- Any user goal involving analysis, diagnosis, or trading advice for a stock, fund, or index must produce its conclusion through `scripts/analyzer.py` in this bundle. If the runtime supports loading the full `SKILL.md` on demand, load it first and then call the script as described below, usually as a pipeline with upstream market-data fetching or injected JSON.
+- Do not claim that stock analysis is complete using only web snippets, pure speculation, or output that bypasses `analyzer.py`. Snippets may come from search or market APIs, but the analysis conclusion and technical highlights must come from this skill pipeline.
+- If the orchestration includes both search or quote retrieval and analysis, retrieval is only a prerequisite step. Do not stop after fetching data; you must still run `analyzer.py` and answer the user according to the output template.
 
-## 功能特性
+## Capabilities
 
-1. **多市场支持** - A股、港股、美股
-2. **技术面分析** - MA5/10/20、MACD、RSI、乖离率
-3. **趋势交易** - 多头排列判断、买入信号评分
-4. **AI 决策** - 由AI分析决策
-5. **数据源集成** - 通过标准多-skill 编排由上游注入行情快照（推荐上游为 `stock-data` 或 `baidu` skill）
+1. **Multi-market support** - A-shares, Hong Kong stocks, and US stocks
+2. **Technical analysis** - MA5/10/20, MACD, RSI, and bias from moving averages
+3. **Trend trading** - Bullish alignment detection and buy-signal scoring
+4. **AI decision support** - Structured AI-style analysis
+5. **Data source integration** - Upstream market snapshots injected through standard multi-skill orchestration, with `stock-data` or `baidu` recommended upstream skills
 
-本技能的分析管线**依赖**行情快照（`data_fetcher` 不单独拉网），但**不要求**也**不应**让 AI 在工作区创建临时 JSON 文件再喂给脚本。优先用 **标准输入输出管道** 或 **命令行内联 JSON**，见下文。
+This skill’s analysis pipeline **depends** on market snapshots, and `data_fetcher` does not fetch from the web on its own. It also does **not** require or encourage the AI to create temporary JSON files in the workspace before feeding the script. Prefer **stdin/stdout pipelines** or **inline JSON on the command line**, as shown below.
 
-## 快速使用
+## Quick Start
 
 ```python
 from scripts.analyzer import analyze_stock, analyze_stocks
 
-# 单只分析
+# Single-stock analysis
 result = analyze_stock('600519')
 print(result['ai_analysis']['operation_advice'])
 
-# 批量分析
+# Batch analysis
 results = analyze_stocks(['600362', '601318', '159892'])
 ```
 
-### 直接命令行调用
+### Direct CLI Usage
 
-优先直接调用 skill 内置脚本，避免在 workspace 里创建临时 Python 脚本。**仅股票代码、无行情快照时，分析会因缺数据失败**——须按下面「协调调用」注入快照。
+Prefer calling the built-in script directly to avoid creating temporary Python scripts in the workspace. **If you only provide stock codes and no market snapshot, the analysis will fail due to missing data**. Inject a snapshot using the orchestration patterns below.
 
 ```bash
 python "<skill_root>/scripts/analyzer.py" 600519 601318 00700
 ```
 
-或输出 JSON：
+Or output JSON:
 
 ```bash
 python "<skill_root>/scripts/analyzer.py" 600519,601318 --json
 ```
 
-> 其中 `<skill_root>` 为本技能目录绝对路径。
+> Here, `<skill_root>` is the absolute path to this skill’s directory.
 
-### 标准 skill 协调调用（推荐：管道，不落盘）
+### Standard Skill Orchestration (Recommended: Pipe, Do Not Write Files)
 
-不要在本 skill 内通过 `subprocess` 去调其他 skill。应由编排侧 **先跑上游脚本、再管道接入本 skill**，或 **单行内联 `--quote-json`**（数据量很小时）。
+Do not call other skills from within this skill via `subprocess`. The orchestrator should **run the upstream script first and then pipe it into this skill**, or use **single-line inline `--quote-json`** when the payload is small.
 
-**首选（A 股 + `stock-data`）：一条管道，无需中间文件**
+**Preferred (A-shares + `stock-data`): one pipeline, no intermediate file**
 
 ```bash
 python "<stock_data_skill_root>/scripts/fetch_realtime_snapshot.py" 688795 --compact | python "<skill_root>/scripts/analyzer.py" 688795 --quote-stdin --json
 ```
 
-多代码时两边代码列表保持一致，例如：
+When using multiple codes, keep the code lists aligned on both sides, for example:
 
 ```bash
 python "<stock_data_skill_root>/scripts/fetch_realtime_snapshot.py" 600519 601318 --compact | python "<skill_root>/scripts/analyzer.py" 600519 601318 --quote-stdin --json
 ```
 
-**次选：内联 `--quote-json`**（适合 JSON 很短、避免管道时）
+**Second choice: inline `--quote-json`** (good for short JSON or when piping is inconvenient)
 
 ```bash
-python "<skill_root>/scripts/analyzer.py" 688795 --quote-json "{\"688795\":{\"name\":\"摩尔线程-U\",\"price\":548.81,\"change_pct\":8.61,\"change_amount\":43.49,\"open_price\":515.99,\"high\":555.00,\"low\":506.03,\"volume\":2666188,\"amount\":1422998000,\"pre_close\":505.32,\"turnover_rate\":9.07,\"pb_ratio\":65.50}}" --json
+python "<skill_root>/scripts/analyzer.py" 688795 --quote-json "{\"688795\":{\"name\":\"Moore Threads-U\",\"price\":548.81,\"change_pct\":8.61,\"change_amount\":43.49,\"open_price\":515.99,\"high\":555.00,\"low\":506.03,\"volume\":2666188,\"amount\":1422998000,\"pre_close\":505.32,\"turnover_rate\":9.07,\"pb_ratio\":65.50}}" --json
 ```
 
-由 `baidu` 等拿到结构化行情时，同样优先 **拼进 `--quote-json`** 或 **经 stdin 传入**（可把 JSON 作为 here-string/管道上游脚本的 stdout），**不要**先 `text_file` 写入工作区再 `--quote-file`。
+When structured market data comes from `baidu` or another source, prefer to **embed it in `--quote-json`** or **pass it through stdin**. You can feed JSON as a here-string or as the upstream script’s stdout. Do **not** write a `text_file` into the workspace first and then use `--quote-file`.
 
-支持单标的简写（自动绑定到第一个 code）：
+Single-symbol shorthand is supported and automatically binds to the first code:
 
 ```bash
-python "<skill_root>/scripts/analyzer.py" 688795 --quote-json "{\"name\":\"摩尔线程-U\",\"price\":548.81,\"change_pct\":8.61}" --json
+python "<skill_root>/scripts/analyzer.py" 688795 --quote-json "{\"name\":\"Moore Threads-U\",\"price\":548.81,\"change_pct\":8.61}" --json
 ```
 
-**不推荐：`--quote-file`** — 仅当运行环境无法使用管道且命令行长度不足以容纳 JSON 时再考虑从路径读入；**禁止**为走 `--quote-file` 而在工作区主动创建临时 JSON 文件，除非用户明确要求生成文件。
+**Not recommended: `--quote-file`**. Use it only when the runtime cannot use a pipeline and the command line is too short for the JSON payload. Do **not** create temporary JSON files in the workspace just to use `--quote-file`, unless the user explicitly asks for a file.
 
-## 配置
+## Configuration
 
-本内建 skill 无需配置文件，开箱即用。
+This built-in skill requires no configuration file and works out of the box.
 
-## 执行约束（路由）
+## Execution Constraints (Routing)
 
-- **分析类任务必经本技能**：当任务是「分析股票/ETF/指数」或同义需求时，**必须**通过本 bundle 的 `scripts/analyzer.py` 产出结论；不得省略本技能仅用其它渠道凑答案。优先通过命令行/子进程直接调用 `analyzer.py`（与上游行情管道或 `--quote-json` 组合见上文）。
-- 上游实时行情优先使用 `stock-data` skill 的抓取脚本；若不可用可退回其它已约定的行情来源。
-- 禁止为此 skill 在 workspace 额外创建临时 Python 脚本做二次封装，除非用户明确要求“生成脚本文件”。
-- 禁止为注入行情而在 workspace **创建中间 JSON 文件**（不要用 `text_file` 写快照再 `--quote-file`），除非用户明确要求落盘。编排时应 **上游抓取脚本 stdout 管道接入 `analyzer.py --quote-stdin`**，或 **单行 `--quote-json`**。
-- 禁止在本 skill 代码内再嵌套调用其它 bundle 的脚本；应由编排侧分步执行上游，将数据经 **管道 stdin** 或 **`--quote-json`** 交给 `analyzer.py`。
-- 当 `analyzer.py` 返回结构化结果（尤其是 `--json`）后，必须先输出「自然语言分析结论」，再结束面向用户的任务；禁止只回传原始 JSON 后直接结束。
-- 对用户的最终可见回复必须是“结论优先 + 关键依据 + 风险提示 + 操作建议”的摘要形式，禁止粘贴大段原始日志/原始 JSON。
+- Analysis tasks must always go through this skill: when the task is to analyze a stock, ETF, or index, you must produce the conclusion through this bundle’s `scripts/analyzer.py`. Do not skip this skill and answer from other channels. Prefer direct command-line or subprocess calls to `analyzer.py`, combined with upstream market-data pipelines or `--quote-json` as described above.
+- Prefer the `stock-data` skill’s fetch script for upstream live market data. If it is unavailable, fall back to another agreed-upon market-data source.
+- Do not create extra temporary Python scripts in the workspace to wrap this skill unless the user explicitly asks for a script file.
+- Do not create intermediate JSON files in the workspace just to inject market data. Avoid writing snapshots with `text_file` and then using `--quote-file`, unless the user explicitly wants a file. Use **upstream script stdout piped into `analyzer.py --quote-stdin`** or a **single-line `--quote-json`** instead.
+- Do not nest calls to other bundle scripts inside this skill. The orchestrator should run upstream steps separately and pass the data to `analyzer.py` through **stdin piping** or **`--quote-json`**.
+- After `analyzer.py` returns structured output, especially `--json`, you must first produce a natural-language analysis conclusion before ending the user-facing task. Do not return raw JSON alone and stop.
+- The final user-visible reply must be a summary in the order: conclusion first, then key evidence, then risk warnings, then actionable advice. Do not paste large raw logs or raw JSON.
 
-## 输出模板（强制）
+## Output Template (Mandatory)
 
-当拿到 `analyzer.py` 结果后，AI 必须按下列模板组织自然语言输出（可多标的逐个展开）：
+After receiving the `analyzer.py` result, the AI must organize the response using the following template, with one section per symbol when needed:
 
 ```markdown
-【结论】
-<1-2 句直接回答用户：当前趋势/是否偏强或偏弱/建议动作（买入-持有-减仓-观望）>
+【Conclusion】
+<1-2 sentences that directly answer the user: current trend, whether it is relatively strong or weak, and the recommended action (buy, hold, reduce, or wait)>
 
-【关键信号】
-- 趋势：<trend_status>；均线：<ma_alignment>
-- 动量：MACD=<macd_status>，RSI=<rsi_status>
-- 量能：<volume_status 或 volume_trend>
+【Key Signals】
+- Trend: <trend_status>; moving averages: <ma_alignment>
+- Momentum: MACD=<macd_status>, RSI=<rsi_status>
+- Volume: <volume_status or volume_trend>
 
-【风险与不确定性】
-- 风险点：<risk_warning / risk_factors>
-- 置信度：<confidence_level>（若低，说明原因）
+【Risks and Uncertainty】
+- Risks: <risk_warning / risk_factors>
+- Confidence: <confidence_level> (if low, explain why)
 
-【操作建议（仅供参考）】
-- 建议：<operation_advice>
-- 若有：目标价 <target_price>；止损位 <stop_loss>
+【Actionable Advice (For Reference Only)】
+- Recommendation: <operation_advice>
+- If available: target price <target_price>; stop loss <stop_loss>
 ```
 
-补充约束：
+Additional constraints:
 
-- 若 `confidence_level` 为“低”或信号冲突，必须明确提示“观望/轻仓/等待确认”。
-- 若字段缺失（如 `target_price`、`stop_loss` 为空），应明确写“暂无有效目标价/止损位”，不得编造。
-- 输出模板完成后，若任务目标已满足，再由编排侧按运行环境的约定结束本轮（勿在本技能文档中假设具体宿主 API）。
+- If `confidence_level` is low or signals conflict, you must explicitly advise waiting, using a small position, or waiting for confirmation.
+- If a field is missing, such as `target_price` or `stop_loss`, write that there is no valid target price or stop loss instead of inventing one.
+- Once the template is complete and the task goal is satisfied, the orchestrator should end the turn according to the runtime’s conventions. Do not assume a specific host API in this skill document.
 
-## 返回数据
+## Returned Data
 
 ```python
 {
     'code': '600519',
-    'name': '贵州茅台',
+    'name': 'Kweichow Moutai',
     'technical_indicators': {
-        'trend_status': '强势多头',
+        'trend_status': 'strong_bull',
         'ma5': 1500.0, 'ma10': 1480.0, 'ma20': 1450.0,
         'bias_ma5': 2.5,
-        'macd_status': '金叉',
-        'rsi_status': '强势买入',
-        'buy_signal': '买入',
+        'macd_status': 'golden_cross',
+        'rsi_status': 'strong_buy',
+        'buy_signal': 'buy',
         'signal_score': 75
     },
     'ai_analysis': {
         'sentiment_score': 75,
-        'operation_advice': '买入',
-        'confidence_level': '高',
+        'operation_advice': 'buy',
+        'confidence_level': 'high',
         'target_price': '1550',
         'stop_loss': '1420'
     }
 }
 ```
 
-## 项目信息
+## Project Information
 
-- **开源协议**: MIT
-- **项目地址**: https://github.com/yourusername/stock-daily-analysis
-- **原项目**: https://github.com/ZhuLinsen/daily_stock_analysis
+- **License**: MIT
+- **Project URL**: https://github.com/yourusername/stock-daily-analysis
+- **Original project**: https://github.com/ZhuLinsen/daily_stock_analysis
 
 ---
 
-⚠️ **免责声明**: 本项目仅供学习研究，不构成投资建议。股市有风险，投资需谨慎。
+⚠️ **Disclaimer**: This project is for study and research only and does not constitute investment advice. Stock markets are risky; invest carefully.

@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
-通知/输出处理模块
-负责格式化分析报告并输出结果
+Notification and output formatting module.
+Formats analysis reports and outputs the results.
 """
 
 import logging
@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class AnalysisReport:
-    """分析报告数据结构"""
+    """Analysis report data structure."""
     code: str
     name: str
     sentiment_score: int
@@ -37,45 +37,45 @@ class AnalysisReport:
 
 def format_analysis_report(report: AnalysisReport) -> str:
     """
-    格式化分析报告为文本
-    
+    Format an analysis report as plain text.
+
     Args:
-        report: 分析报告数据
-        
+        report: analysis report data
+
     Returns:
-        格式化后的报告文本
+        Formatted report text
     """
     lines = [
         f"{'='*50}",
-        f"📊 {report.name} ({report.code}) 分析报告",
+        f"📊 {report.name} ({report.code}) Analysis Report",
         f"{'='*50}",
         "",
-        f"【核心结论】",
-        f"  操作建议: {report.operation_advice}",
-        f"  趋势预测: {report.trend_prediction}",
-        f"  情绪评分: {report.sentiment_score}/100",
-        f"  置信度: {report.confidence_level}",
+        f"【Core Summary】",
+        f"  Recommendation: {report.operation_advice}",
+        f"  Trend outlook: {report.trend_prediction}",
+        f"  Sentiment score: {report.sentiment_score}/100",
+        f"  Confidence: {report.confidence_level}",
         "",
-        f"【技术面分析】",
+        f"【Technical Analysis】",
     ]
     
-    # 技术指标
+    # Technical indicators
     tech = report.technical_summary
     if 'current_price' in tech:
-        lines.append(f"  当前价格: {tech.get('current_price', 'N/A')}")
+        lines.append(f"  Current price: {tech.get('current_price', 'N/A')}")
     
     if 'ma5' in tech:
-        lines.append(f"  MA5: {tech.get('ma5', 'N/A'):.2f} (乖离率: {tech.get('bias_ma5', 0):+.2f}%)")
+        lines.append(f"  MA5: {tech.get('ma5', 'N/A'):.2f} (bias: {tech.get('bias_ma5', 0):+.2f}%)")
     if 'ma10' in tech:
-        lines.append(f"  MA10: {tech.get('ma10', 'N/A'):.2f} (乖离率: {tech.get('bias_ma10', 0):+.2f}%)")
+        lines.append(f"  MA10: {tech.get('ma10', 'N/A'):.2f} (bias: {tech.get('bias_ma10', 0):+.2f}%)")
     if 'ma20' in tech:
         lines.append(f"  MA20: {tech.get('ma20', 'N/A'):.2f}")
     
     if 'trend_status' in tech:
-        lines.append(f"  趋势状态: {tech.get('trend_status', 'N/A')}")
+        lines.append(f"  Trend status: {tech.get('trend_status', 'N/A')}")
     
     if 'volume_status' in tech:
-        lines.append(f"  量能状态: {tech.get('volume_status', 'N/A')}")
+        lines.append(f"  Volume status: {tech.get('volume_status', 'N/A')}")
     
     if 'macd_status' in tech:
         lines.append(f"  MACD: {tech.get('macd_status', 'N/A')}")
@@ -85,34 +85,34 @@ def format_analysis_report(report: AnalysisReport) -> str:
     
     lines.append("")
     
-    # 支撑压力位
+    # Support and resistance levels
     if report.support_levels:
-        lines.append(f"【支撑位】")
+        lines.append(f"【Support Levels】")
         for level in report.support_levels[:3]:
             lines.append(f"  - {level:.2f}")
         lines.append("")
     
     if report.resistance_levels:
-        lines.append(f"【压力位】")
+        lines.append(f"【Resistance Levels】")
         for level in report.resistance_levels[:3]:
             lines.append(f"  - {level:.2f}")
         lines.append("")
     
-    # 买入理由
+    # Buy reasons
     if report.buy_reason:
-        lines.append(f"【买入理由】")
+        lines.append(f"【Buy Reasons】")
         lines.append(f"  {report.buy_reason}")
         lines.append("")
     
-    # 风险警告
+    # Risk warnings
     if report.risk_warning:
-        lines.append(f"【风险提示】")
+        lines.append(f"【Risk Warnings】")
         lines.append(f"  {report.risk_warning}")
         lines.append("")
     
-    # AI 分析
+    # AI analysis
     if report.ai_analysis:
-        lines.append(f"【AI 分析】")
+        lines.append(f"【AI Analysis】")
         lines.append(f"  {report.ai_analysis}")
         lines.append("")
     
@@ -123,29 +123,29 @@ def format_analysis_report(report: AnalysisReport) -> str:
 
 def format_dashboard_report(reports: List[AnalysisReport]) -> str:
     """
-    格式化决策仪表盘报告（多股票汇总）
-    
+    Format a decision dashboard report that summarizes multiple stocks.
+
     Args:
-        reports: 分析报告列表
-        
+        reports: list of analysis reports
+
     Returns:
-        格式化的仪表盘报告
+        Formatted dashboard report
     """
     if not reports:
-        return "暂无分析报告"
+        return "No analysis reports available"
     
-    # 统计
+    # Summary counts
     buy_count = sum(1 for r in reports if r.decision_type == 'buy')
     hold_count = sum(1 for r in reports if r.decision_type == 'hold')
     sell_count = sum(1 for r in reports if r.decision_type == 'sell')
     
     lines = [
         f"{'='*60}",
-        f"📊 股票分析决策仪表盘",
+        f"📊 Stock Analysis Decision Dashboard",
         f"{'='*60}",
         "",
-        f"分析股票数: {len(reports)} 只",
-        f"🟢 买入: {buy_count}  🟡 观望: {hold_count}  🔴 卖出: {sell_count}",
+        f"Number of stocks analyzed: {len(reports)}",
+        f"🟢 Buy: {buy_count}  🟡 Hold: {hold_count}  🔴 Sell: {sell_count}",
         "",
         f"{'='*60}",
     ]
@@ -153,20 +153,20 @@ def format_dashboard_report(reports: List[AnalysisReport]) -> str:
     for report in reports:
         emoji = "🟢" if report.decision_type == 'buy' else "🟡" if report.decision_type == 'hold' else "🔴"
         lines.append(f"{emoji} {report.name} ({report.code})")
-        lines.append(f"   建议: {report.operation_advice} | 评分: {report.sentiment_score}/100")
-        lines.append(f"   趋势: {report.trend_prediction}")
+        lines.append(f"   Recommendation: {report.operation_advice} | Score: {report.sentiment_score}/100")
+        lines.append(f"   Trend: {report.trend_prediction}")
         
-        # 添加关键技术指标
+        # Add key technical indicators
         tech = report.technical_summary
         key_info = []
         
         if 'bias_ma5' in tech:
-            key_info.append(f"乖离率: {tech['bias_ma5']:+.1f}%")
+            key_info.append(f"Bias: {tech['bias_ma5']:+.1f}%")
         if 'macd_status' in tech:
             key_info.append(f"MACD: {tech['macd_status']}")
         
         if key_info:
-            lines.append(f"   关键指标: {' | '.join(key_info)}")
+            lines.append(f"   Key indicators: {' | '.join(key_info)}")
         
         lines.append("")
     
@@ -177,22 +177,22 @@ def format_dashboard_report(reports: List[AnalysisReport]) -> str:
 
 def create_report_from_result(result: Dict[str, Any]) -> AnalysisReport:
     """
-    从分析结果字典创建报告对象
-    
+    Create a report object from an analysis result dictionary.
+
     Args:
-        result: 分析结果字典
-        
+        result: analysis result dictionary
+
     Returns:
-        AnalysisReport 对象
+        AnalysisReport object
     """
     technical = result.get('technical_indicators', {})
     ai_result = result.get('ai_analysis', {})
     
-    # 确定决策类型
-    advice = ai_result.get('operation_advice', '观望')
-    if advice in ['买入', '加仓', '强烈买入']:
+    # Determine decision type
+    advice = ai_result.get('operation_advice', 'hold')
+    if advice in ['buy', 'add_position', 'strong_buy']:
         decision_type = 'buy'
-    elif advice in ['卖出', '减仓', '强烈卖出']:
+    elif advice in ['sell', 'reduce_position', 'strong_sell']:
         decision_type = 'sell'
     else:
         decision_type = 'hold'
@@ -201,10 +201,10 @@ def create_report_from_result(result: Dict[str, Any]) -> AnalysisReport:
         code=result.get('code', ''),
         name=result.get('name', ''),
         sentiment_score=ai_result.get('sentiment_score', 50),
-        trend_prediction=ai_result.get('trend_prediction', '震荡'),
+        trend_prediction=ai_result.get('trend_prediction', 'sideways'),
         operation_advice=advice,
         decision_type=decision_type,
-        confidence_level=ai_result.get('confidence_level', '中'),
+        confidence_level=ai_result.get('confidence_level', 'medium'),
         technical_summary=technical,
         ai_analysis=ai_result.get('analysis_summary', ''),
         risk_warning=ai_result.get('risk_warning', ''),
@@ -215,10 +215,10 @@ def create_report_from_result(result: Dict[str, Any]) -> AnalysisReport:
 
 
 def print_report(report: AnalysisReport) -> None:
-    """打印分析报告到控制台"""
+    """Print the analysis report to the console."""
     print(format_analysis_report(report))
 
 
 def print_dashboard(reports: List[AnalysisReport]) -> None:
-    """打印决策仪表盘到控制台"""
+    """Print the decision dashboard to the console."""
     print(format_dashboard_report(reports))

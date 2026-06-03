@@ -49,20 +49,20 @@ DEFAULT_DAYS = 60
 
 def analyze_stock(code: str, quote_snapshot: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """Analyze one stock and return normalized result payload."""
-    logger.info("开始分析股票: %s", code)
+    logger.info("Starting stock analysis: %s", code)
 
     quote = build_quote_from_snapshot(code, quote_snapshot)
     name = (quote.name if quote else None) or get_stock_name(code)
 
     df = get_daily_data(code, days=DEFAULT_DAYS, quote_snapshot=quote_snapshot)
     if df is None or df.empty:
-        logger.error("获取 %s 数据失败", code)
+        logger.error("Failed to retrieve data for %s", code)
         return {
             "code": code,
             "name": name,
-            "error": "数据获取失败",
+            "error": "data_fetch_failed",
             "technical_indicators": {},
-            "ai_analysis": {"operation_advice": "观望", "sentiment_score": 0},
+            "ai_analysis": {"operation_advice": "hold", "sentiment_score": 0},
         }
 
     analyzer = StockTrendAnalyzer()
@@ -82,7 +82,7 @@ def analyze_stock(code: str, quote_snapshot: Optional[Dict[str, Any]] = None) ->
         "ai_analysis": ai_result,
     }
     logger.info(
-        "%s 分析完成，情绪分数: %s",
+        "%s analysis completed, sentiment score: %s",
         code,
         ai_result.get("sentiment_score", trend_result.signal_score),
     )
@@ -100,13 +100,13 @@ def analyze_stocks(
             snap = (quote_by_code or {}).get(code)
             results.append(analyze_stock(code, quote_snapshot=snap))
         except Exception as exc:
-            logger.error("分析 %s 失败: %s", code, exc)
+            logger.error("Analysis failed for %s: %s", code, exc)
             results.append(
                 {
                     "code": code,
                     "name": code,
                     "error": str(exc),
-                    "ai_analysis": {"operation_advice": "观望", "sentiment_score": 0},
+                    "ai_analysis": {"operation_advice": "hold", "sentiment_score": 0},
                 }
             )
     return results
@@ -126,7 +126,7 @@ def print_analysis(codes: List[str]) -> None:
         reports.append(create_report_from_result(result))
 
     if not reports:
-        print("没有可展示的分析结果")
+        print("No analysis results to display")
         return
 
     print("\n" + format_dashboard_report(reports))
@@ -168,15 +168,15 @@ def _load_quote_by_code(
             raw = json.load(f)
     elif quote_json:
         try:
-            raw = json.loads(quote_json)
+                raw = json.loads(quote_json)
         except json.JSONDecodeError:
             # PowerShell may pass single-quoted dict-like strings.
             import ast
             try:
                 raw = ast.literal_eval(quote_json)
             except Exception:
-                # Last-resort recovery for heavily escaped/quote-lost payloads
-                # like {\688795\:{\name\:\摩尔线程\,\price\:552.0}}.
+                # Last-resort recovery for heavily escaped or quote-lost payloads
+                # such as {\688795\:{\name\:\Moore Threads\,\price\:552.0}}.
                 compact = quote_json.replace("\\", "").strip()
                 try:
                     raw = json.loads(compact)
@@ -332,7 +332,7 @@ def main() -> int:
         reports.append(create_report_from_result(result))
 
     if not reports:
-        print("没有可展示的分析结果")
+        print("No analysis results to display")
         return 0
 
     print("\n" + format_dashboard_report(reports))

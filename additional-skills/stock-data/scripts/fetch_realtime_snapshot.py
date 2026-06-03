@@ -42,7 +42,7 @@ def _to_int(v: Any, default: int = 0) -> int:
 
 
 def _infer_sina_symbol_from_digits(code6: str) -> str:
-    """6 位数字代码：按首位推断上交所/深交所（与新浪常见规则一致）。"""
+    """Infer Shanghai or Shenzhen from a 6-digit code using the usual Sina rule."""
     if len(code6) != 6 or not code6.isdigit():
         return ""
     if code6[0] in ("5", "6", "9"):
@@ -52,12 +52,11 @@ def _infer_sina_symbol_from_digits(code6: str) -> str:
 
 def _parse_one_code_token(part: str) -> Optional[Tuple[str, str]]:
     """
-    解析单个代码片段，返回 (新浪 list 用 symbol, JSON 输出用的 key)。
+    Parse one code token and return (Sina list symbol, JSON output key).
 
-    - 若显式写出 sh/sz + 6 位数字（如 sh000001、sz399001），**保留交易所前缀**。
-      这与仅写 6 位数字不同：000001 默认识别为深交所个股（平安银行），
-      而上证指数必须写 sh000001，避免被误判为 sz000001。
-    - 若仅数字，则 zfill 后按首位推断市场，JSON key 为 6 位数字。
+    - If the input explicitly includes `sh` or `sz` plus 6 digits, such as `sh000001` or `sz399001`, keep the exchange prefix.
+      This differs from using digits only: `000001` is interpreted as a Shenzhen stock by default, while the Shanghai Composite Index must be written as `sh000001` to avoid being misread as `sz000001`.
+    - If the input is digits only, pad to 6 digits and infer the market from the first digit. The JSON key is the 6-digit code.
     """
     raw = (part or "").strip()
     if not raw:
@@ -80,7 +79,7 @@ def _parse_one_code_token(part: str) -> Optional[Tuple[str, str]]:
 
 
 def _parse_codes(raw_codes: List[str]) -> List[Tuple[str, str]]:
-    """返回 (sina_symbol, json_key) 列表，按首次出现去重（按 json_key）。"""
+    """Return a list of (sina_symbol, json_key), de-duplicated by first occurrence of the JSON key."""
     out: List[Tuple[str, str]] = []
     seen: set[str] = set()
     for item in raw_codes:
@@ -195,7 +194,7 @@ def main() -> int:
     parser.add_argument(
         "codes",
         nargs="*",
-        help="A-share codes, supports space-separated or comma-separated values",
+        help="A-share codes; supports space-separated or comma-separated values",
     )
     parser.add_argument(
         "--compact",
@@ -234,8 +233,8 @@ def main() -> int:
         msg = str(err)
         if "RemoteDisconnected" in msg or "Connection aborted" in msg:
             print(
-                "[stock-data] network error after retries: 远端连接中断。"
-                "请稍后重试，或在命令中增加 --retries/--retry-delay。",
+                "[stock-data] network error after retries: remote connection was interrupted. "
+                "Please try again later, or increase --retries/--retry-delay.",
                 file=sys.stderr,
             )
             return 2

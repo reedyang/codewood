@@ -1,64 +1,64 @@
 ---
 name: codex-usage
 description: |
-  用于查询 OpenAI Codex 的使用情况，提供的参数与当前 `ccusage` 版本保持一致。支持日期范围查询、JSON 输出、时区/语言环境设置、离线模式、紧凑与彩色输出等常用选项，并提供 `daily`、`monthly`、`session` 三个子命令以查看不同粒度的统计数据。
+  Use this skill to inspect OpenAI Codex usage. The supported arguments match the current `ccusage` version. It supports date-range queries, JSON output, timezone/locale settings, offline mode, compact output, color output, and the `daily`, `monthly`, and `session` subcommands for different reporting granularities.
 compatibility: []
 ---
 
 # Codex Usage Skill
 
-此 skill 用于查询 OpenAI Codex 的使用情况，提供的参数与当前 `@ccusage/codex@19.0.0` 版本保持一致。"npx ccusage"命令不可用时使用命令 "npm install @ccusage/codex@19.0.0" 安装。
+Use this skill to inspect OpenAI Codex usage. The supported arguments match `@ccusage/codex@19.0.0`. If `npx ccusage` is unavailable, install it with `npm install @ccusage/codex@19.0.0`.
 
-## 支持的调用方式
+## Supported Invocation Patterns
 
-- **按日期范围查询**
+- **Query by date range**
   ```bash
   npx ccusage codex --since <YYYY-MM-DD> --until <YYYY-MM-DD>
 
-> **注意**：如果用户查询 **指定日期** 或 **日期范围** 的 Codex 用量，必须在调用参数中显式提供日期信息（如 `--since`、`--until` 等）。
+> **Note**: If the user asks for Codex usage for a specific date or a date range, you must provide date arguments explicitly, such as `--since` and `--until`.
   ```
 
-- **指定时区**
+- **Specify timezone**
   ```bash
   npx ccusage codex -z <TIMEZONE>
   ```
 
-- **指定语言环境**
+- **Specify locale**
   ```bash
   npx ccusage codex -l <LOCALE>
   ```
 
-- **离线模式**
+- **Offline mode**
   ```bash
-  npx ccusage codex -O   # 开启离线
-  npx ccusage codex --no-offline   # 关闭离线
+  npx ccusage codex -O   # Enable offline mode
+  npx ccusage codex --no-offline   # Disable offline mode
   ```
 
-- **紧凑输出**
+- **Compact output**
   ```bash
   npx ccusage codex --compact
   ```
 
-- **彩色输出**
+- **Color output**
   ```bash
   npx ccusage codex --color
   npx ccusage codex --no-color
   ```
 
-- **帮助信息**
+- **Help**
   ```bash
   npx ccusage codex -h
   ```
 
-- **版本信息**
+- **Version**
   ```bash
   npx ccusage codex -v
   ```
 
-- **子命令**
-  - `daily`   查看最近几日的使用统计
-  - `monthly` 查看本月使用统计
-  - `session` 查看当前会话使用情况
+- **Subcommands**
+  - `daily`   View usage statistics for recent days
+  - `monthly` View usage statistics for the current month
+  - `session` View usage statistics for the current session
 
-> 所有参数均可组合使用，例如
+> All flags can be combined. For example:
 > `npx ccusage codex --since 2023-07-01 --until 2023-07-31 -j --compact`。
