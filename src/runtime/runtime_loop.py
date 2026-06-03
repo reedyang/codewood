@@ -261,11 +261,41 @@ def _can_finish_without_tool_calls(
     return bool(str(ai_response or "").strip())
 
 
+def _should_retry_missing_standard_tool_call_response(
+    missing_tool_call_rounds: int,
+    max_missing_tool_call_rounds: int,
+) -> bool:
+    try:
+        rounds = int(missing_tool_call_rounds)
+    except Exception:
+        rounds = 0
+    try:
+        max_rounds = int(max_missing_tool_call_rounds)
+    except Exception:
+        max_rounds = 1
+    return rounds < max(1, max_rounds)
+
+
+def _build_missing_standard_tool_call_retry_input(original_user_task: Any) -> str:
+    return (
+        f"[Original user request]\n{original_user_task}\n\n"
+        "HARD REQUIREMENT: your next assistant message MUST include standard API `tool_calls`; content-only replies are invalid in this mode.\n"
+        "If the task is complete, put the final visible answer in content and call `done` via API `tool_calls` in the same message.\n"
+        "If the task is not complete, put the next visible status in content and call the next real tool via API `tool_calls` in the same message.\n"
+        "Your previous response did not include valid standard API tool_calls.\n"
+        "Retry with one assistant message: content contains only a concise plan/status/result, and the real tool action goes in API `tool_calls`.\n"
+        "Never print or serialize JSON/YAML/message objects containing `content`, `tool_calls`, `tool`, `args`, or `arguments` in visible text.\n"
+        "If the user goal is complete, first put the visible final result in content, then call `done` through standard `tool_calls`."
+    )
+
+
 def _looks_like_pseudo_tool_call_text(ai_response: Any) -> bool:
     """
     Detect common signs that the model wrote a tool call in assistant text instead
-    of using the API tool_calls field. This is a protocol guard, not a display
-    filter: matching text is rejected and the model is asked to resend tool_calls.
+    of using the API tool_calls field. The runtime first tries to recover
+    executable trailing pseudo tool calls from assistant text; this detector is a
+    fallback guard for pseudo tool-call text that could not be recovered into
+    executable plans and therefore must be retried with standard API tool_calls.
     """
     text = str(ai_response or "").strip()
     if not text:
@@ -355,7 +385,8 @@ def _stream_visible_text_with_json_pause(text: str, *, final: bool) -> str:
 
     if not final:
         # Partial starts are kept in a tiny cache until they either become a
-        # normal word/text fragment or complete into a pseudo tool call.
+        # normal word/text fragment or complete into a recoverable pseudo tool
+        # call suffix.
         for m in re.finditer(r"(?m)^[ \t]*(?:\{|\[)\s*$", s):
             starts.append(_json_container_start_before(m.start()))
         for m in re.finditer(r"""(?im)^[ \t]*(?:\{|\[)?[ \t]*(?:"?t(?:o(?:o(?:l)?)?)?|'?t(?:o(?:o(?:l)?)?)?)$""", s):
@@ -2026,7 +2057,9 @@ def run_agent_loop(agent: Any):
                 parsed_max_tool_rounds if parsed_max_tool_rounds and parsed_max_tool_rounds > 0 else None
             )
             max_no_tool_rounds = 3
+            max_missing_tool_call_rounds = 2
             no_tool_rounds = 0
+            missing_tool_call_rounds = 0
             tool_round = 0
             while max_tool_rounds is None or tool_round < max_tool_rounds:
                 if self._consume_task_interrupt_requested():
@@ -2143,6 +2176,10 @@ def run_agent_loop(agent: Any):
                     and not fallback_plans
                     and ai_response_looks_like_pseudo_tool
                 ):
+                    # We only reject pseudo tool-call text here after the
+                    # compatibility parser failed to recover executable plans
+                    # from the assistant text.
+                    missing_tool_call_rounds = 0
                     no_tool_rounds += 1
                     if no_tool_rounds >= max_no_tool_rounds:
                         print("ERROR: The model repeatedly wrote tool calls as assistant text instead of standard tool_calls. Auto-execution has stopped for this round.")
@@ -2154,9 +2191,9 @@ def run_agent_loop(agent: Any):
                     next_input = (
                         f"[Original user request]\n{original_user_task}\n\n"
                         "Your previous assistant text contained a pseudo tool call, "
-                        "but no API-standard `tool_calls` were sent.\n"
+                        "but no API-standard `tool_calls` were sent and the runtime could not recover it into executable tool plans.\n"
                         "Tool calls written as JSON/YAML/tags/pseudocode in assistant text are invalid; "
-                        "they are not shown to the user and will not be executed.\n"
+                        "this unrecoverable pseudo tool-call text will not be executed.\n"
                         "Retry with one assistant message that has content and tool_calls together: "
                         "content should contain only the short visible plan/status/result, "
                         "and tool_calls should contain the actual API-standard tool call(s). "
@@ -2190,6 +2227,7 @@ def run_agent_loop(agent: Any):
                     )
                     break
                 if fallback_plans:
+                    missing_tool_call_rounds = 0
                     for tool_name, args in fallback_plans:
                         if tool_name != "done":
                             self._print_tool_call_feedback(tool_name, args, failed=False)
@@ -2211,23 +2249,15 @@ def run_agent_loop(agent: Any):
                             context_hint="basic chat direct answer",
                         )
                         break
-                    no_tool_rounds += 1
-                    if no_tool_rounds >= max_no_tool_rounds:
+                    missing_tool_call_rounds += 1
+                    if not _should_retry_missing_standard_tool_call_response(
+                        missing_tool_call_rounds,
+                        max_missing_tool_call_rounds,
+                    ):
                         print("❌ The model repeatedly failed to produce a valid tool_calls response. Auto-execution has stopped for this round.")
                         break
-                    print(
-                        f"⚠️ No valid tool_calls detected (retry {no_tool_rounds}/{max_no_tool_rounds}): "
-                        "the model will be asked again to call one or more tools via standard tool_calls."
-                    )
-                    next_input = (
-                        f"[Original user request]\n{original_user_task}\n\n"
-                        "HARD REQUIREMENT: your next assistant message MUST include standard API `tool_calls`; content-only replies are invalid in this mode.\n"
-                        "If the task is complete, put the final visible answer in content and call `done` via API `tool_calls` in the same message.\n"
-                        "If the task is not complete, put the next visible status in content and call the next real tool via API `tool_calls` in the same message.\n"
-                        "Your previous response did not include valid standard API tool_calls.\n"
-                        "Retry with one assistant message: content contains only a concise plan/status/result, and the real tool action goes in API `tool_calls`.\n"
-                        "Never print or serialize JSON/YAML/message objects containing `content`, `tool_calls`, `tool`, `args`, or `arguments` in visible text.\n"
-                        "If the user goal is complete, first put the visible final result in content, then call `done` through standard `tool_calls`."
+                    next_input = _build_missing_standard_tool_call_retry_input(
+                        original_user_task
                     )
                     is_first_round = False
                     continue
@@ -2395,6 +2425,7 @@ def run_agent_loop(agent: Any):
                     except Exception:
                         pass
                     no_tool_rounds = 0
+                    missing_tool_call_rounds = 0
                     self.operation_results.append({
                         "command": pseudo_command,
                         "result": result,

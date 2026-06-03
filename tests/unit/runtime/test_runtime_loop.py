@@ -6,6 +6,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from src.runtime.runtime_loop import (
+    _build_missing_standard_tool_call_retry_input,
     _can_finish_without_tool_calls,
     _consume_streaming_ai_response,
     _compute_unreviewed_changed_files,
@@ -18,6 +19,7 @@ from src.runtime.runtime_loop import (
     _refresh_context_usage_after_task_boundary,
     _resolve_worked_summary_terminal_width,
     _sanitize_prompt_pollution,
+    _should_retry_missing_standard_tool_call_response,
     _sync_command_input_history,
     _should_record_command_input_history,
     _shell_command_indicates_verification,
@@ -377,6 +379,18 @@ class RuntimeLoopTests(unittest.TestCase):
         self.assertFalse(_can_finish_without_tool_calls(True, ""))
         self.assertTrue(_can_finish_without_tool_calls(False, "final answer"))
         self.assertFalse(_can_finish_without_tool_calls(False, ""))
+
+    def test_missing_standard_tool_call_response_retries_only_once(self):
+        self.assertTrue(_should_retry_missing_standard_tool_call_response(1, 2))
+        self.assertFalse(_should_retry_missing_standard_tool_call_response(2, 2))
+        self.assertFalse(_should_retry_missing_standard_tool_call_response(3, 2))
+
+    def test_missing_standard_tool_call_retry_prompt_requests_tool_calls(self):
+        prompt = _build_missing_standard_tool_call_retry_input("修复测试")
+        self.assertIn("[Original user request]\n修复测试", prompt)
+        self.assertIn("your next assistant message MUST include standard API `tool_calls`", prompt)
+        self.assertIn("Your previous response did not include valid standard API tool_calls.", prompt)
+        self.assertIn("call `done` through standard `tool_calls`", prompt)
 
     def test_stream_visible_text_with_json_pause_caches_incomplete_tool_json_fence(self):
         raw = "先做检查\n```json\n{\"tool\":\"shell\",\"args\":{"
@@ -954,7 +968,7 @@ class RuntimeLoopTests(unittest.TestCase):
             ("read_file", {"path": "README.md"}),
         )
 
-    def test_parse_tool_plans_from_model_message_ignores_text_pseudo_tool_calls(self):
+    def test_parse_tool_plans_from_model_message_ignores_non_suffix_pseudo_tool_calls(self):
         message = {
             "role": "assistant",
             "content": (
