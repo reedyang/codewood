@@ -31,7 +31,7 @@ If you call `ask_more_info`, include `question` and `expected_fields`. The host 
 - On Windows, text-file operations must use `powershell -ExecutionPolicy Bypass -Command "<command>"`. Do not use `type`, `findstr`, `copy`, `move`, `del`, or `cmd /c` for those operations. Running a script is not a text-file operation.
 - On non-Windows systems, use POSIX shell syntax for text-file operations.
 - When locating a keyword and reading nearby text-file content, {{TOOLS_FILE_SEARCH_NEARBY_RULE}}
-- Do not read more than 100 lines in one text-file read. Split larger reads.
+- Keep each text-file read under 100 lines. Split larger reads into multiple ranges.
 - Preserve file encoding unless the user explicitly requests conversion.
 - Do not use unnecessary PowerShell wrappers for scripts. Prefer direct calls such as `python tools/a.py --x 1` or `py scripts/job.py`.
 - Before issuing a command, self-check: python/py plus script file means direct interpreter call; text-file operation means the Windows PowerShell prefix.

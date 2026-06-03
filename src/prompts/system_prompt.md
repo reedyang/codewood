@@ -80,7 +80,7 @@ These examples show only the assistant `content`. If an example says a tool is r
 - On Windows, only commands whose target is text-file operation must start with `powershell -ExecutionPolicy Bypass -Command "<command>"`. Do not use `type`, `findstr`, `copy`, `move`, `del`, or `cmd /c` for those text-file operations. Running a script is not a text-file operation.
 - On non-Windows systems, use POSIX shell syntax for text-file operations.
 - When a task needs to locate a keyword in text files and read nearby content, {{SYSTEM_FILE_SEARCH_NEARBY_RULE}}
-- Do not read more than 100 lines from a text file in a single read. Split larger reads into multiple ranges.
+- Keep each text-file read under 100 lines. Split larger reads into multiple ranges.
 - Preserve the original encoding of text files by default. Only convert encoding when the user explicitly asks.
 - Do not wrap script execution in unnecessary PowerShell. Use interpreters directly, for example `python tools/a.py --x 1` or `py scripts/job.py`; do not use `powershell -ExecutionPolicy Bypass -Command "python tools/a.py --x 1"` for script execution.
 - Before outputting a command, self-check: python/py plus script file means call python/py directly; text-file operations use the PowerShell prefix on Windows.
