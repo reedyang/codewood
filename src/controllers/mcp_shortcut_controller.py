@@ -3,6 +3,12 @@ from __future__ import annotations
 from typing import Any, Dict, Optional, Tuple
 
 
+def _t(agent: Any, en: str, zh: str) -> str:
+    from ..core.localization import get_display_language, text
+
+    return text(en, zh, get_display_language(agent))
+
+
 def parse_mcp_shortcut_command(
     builtin_line: str,
 ) -> Tuple[Optional[str], Dict[str, Any], Optional[str]]:
@@ -119,82 +125,101 @@ def mcp_item_label(item: Any) -> str:
 
 
 def print_mcp_shortcut_result(
+    agent: Any,
     tool_name: str,
     args: Dict[str, Any],
     result: Dict[str, Any],
 ) -> None:
-    print("\n=== MCP Command Result ===")
-    print(f"Command: {tool_name}")
+    print(_t(agent, "\n=== MCP Command Result ===", "\n=== MCP 命令结果 ==="))
+    print(_t(agent, "Command: {tool_name}", "命令：{tool_name}").format(tool_name=tool_name))
     if not result.get("success", False):
-        print("Status : FAILED")
-        print(f"Error  : {result.get('error', 'Unknown error')}")
-        print("==========================\n")
+        print(_t(agent, "Status : FAILED", "状态：失败"))
+        print(
+            _t(agent, "Error  : {error}", "错误：{error}").format(
+                error=result.get("error", "Unknown error")
+            )
+        )
+        print(_t(agent, "==========================\n", "==========================\n"))
         return
 
-    print("Status : OK")
+    print(_t(agent, "Status : OK", "状态：成功"))
     if tool_name == "mcp_reload_config":
-        print(f"Changed: {bool(result.get('changed', False))}")
+        print(_t(agent, "Changed: {changed}", "已变更：{changed}").format(changed=bool(result.get("changed", False))))
         summary = result.get("summary", {}) if isinstance(result.get("summary"), dict) else {}
         added = ", ".join(summary.get("added", [])) or "None"
         changed = ", ".join(summary.get("changed", [])) or "None"
         removed = ", ".join(summary.get("removed", [])) or "None"
-        print(f"Added  : {added}")
-        print(f"Updated: {changed}")
-        print(f"Removed: {removed}")
+        print(_t(agent, "Added  : {value}", "新增：{value}").format(value=added))
+        print(_t(agent, "Updated: {value}", "更新：{value}").format(value=changed))
+        print(_t(agent, "Removed: {value}", "移除：{value}").format(value=removed))
     elif tool_name in ("mcp_status", "mcp_status_refresh"):
         status = result.get("status", {}) if isinstance(result.get("status"), dict) else {}
-        print(f"Total  : {status.get('total', 0)}")
-        print(f"Success: {status.get('success', 0)}")
-        print(f"Failed : {status.get('failed', 0)}")
-        print(f"Loading: {status.get('loading_count', 0)}")
-        print(f"Loaded : {status.get('all_loaded', False)}")
+        print(_t(agent, "Total  : {value}", "总计：{value}").format(value=status.get("total", 0)))
+        print(_t(agent, "Success: {value}", "成功：{value}").format(value=status.get("success", 0)))
+        print(_t(agent, "Failed : {value}", "失败：{value}").format(value=status.get("failed", 0)))
+        print(_t(agent, "Loading: {value}", "加载中：{value}").format(value=status.get("loading_count", 0)))
+        print(_t(agent, "Loaded : {value}", "已加载：{value}").format(value=status.get("all_loaded", False)))
         servers = status.get("servers", {}) if isinstance(status.get("servers"), dict) else {}
         if servers:
-            print("Servers:")
+            print(_t(agent, "Servers:", "服务端："))
             for s, st in servers.items():
                 if not isinstance(st, dict):
                     continue
                 print(
-                    f"- {s}: state={st.get('state','')}, tools={st.get('tool_count',0)}, source={st.get('source','')}"
+                    _t(
+                        agent,
+                        "- {server}: state={state}, tools={tools}, source={source}",
+                        "- {server}：状态={state}，工具数={tools}，来源={source}",
+                    ).format(
+                        server=s,
+                        state=st.get("state", ""),
+                        tools=st.get("tool_count", 0),
+                        source=st.get("source", ""),
+                    )
                 )
     elif tool_name == "mcp_reconnect":
-        print(f"Server : {result.get('server', args.get('server', ''))}")
-        print(f"Source : {result.get('source', '')}")
-        print(f"Tools  : {result.get('count', 0)}")
+        print(_t(agent, "Server : {value}", "服务端：{value}").format(value=result.get("server", args.get("server", ""))))
+        print(_t(agent, "Source : {value}", "来源：{value}").format(value=result.get("source", "")))
+        print(_t(agent, "Tools  : {value}", "工具：{value}").format(value=result.get("count", 0)))
     elif tool_name == "mcp_server_info":
         info = result.get("info", {}) if isinstance(result.get("info"), dict) else {}
         status = info.get("status", {}) if isinstance(info.get("status"), dict) else {}
-        print(f"Server : {result.get('server', args.get('server', ''))}")
-        print(f"State  : {status.get('state', '')}")
-        print(f"Source : {status.get('source', '')}")
+        print(_t(agent, "Server : {value}", "服务端：{value}").format(value=result.get("server", args.get("server", ""))))
+        print(_t(agent, "State  : {value}", "状态：{value}").format(value=status.get("state", "")))
+        print(_t(agent, "Source : {value}", "来源：{value}").format(value=status.get("source", "")))
         sections = info.get("sections", {}) if isinstance(info.get("sections"), dict) else {}
         for sec_key, title in (
-            ("tools", "Tools"),
-            ("resources", "Resources"),
-            ("resource_templates", "ResourceTemplates"),
-            ("prompts", "Prompts"),
+            ("tools", _t(agent, "Tools", "工具")),
+            ("resources", _t(agent, "Resources", "资源")),
+            ("resource_templates", _t(agent, "ResourceTemplates", "资源模板")),
+            ("prompts", _t(agent, "Prompts", "提示词")),
         ):
             sec = sections.get(sec_key, {}) if isinstance(sections.get(sec_key), dict) else {}
             count = sec.get("count", 0)
-            print(f"{title:<16}: {count}")
+            print(_t(agent, "{title:<16}: {count}", "{title:<16}：{count}").format(title=title, count=count))
             items = sec.get("items", []) if isinstance(sec.get("items"), list) else []
             if items and sec_key in ("tools", "resources", "prompts"):
                 labels = [mcp_item_label(x) for x in items]
-                print(f"  - {', '.join(labels)}")
+                print(_t(agent, "  - {items}", "  - {items}").format(items=", ".join(labels)))
     elif tool_name in ("mcp_disable_tools", "mcp_enable_tools"):
-        print(f"Server : {result.get('server', args.get('server', ''))}")
+        print(_t(agent, "Server : {value}", "服务端：{value}").format(value=result.get("server", args.get("server", ""))))
         disabled = result.get("disabled_tools", [])
         if not isinstance(disabled, list):
             disabled = []
-        print(f"Disabled tools ({len(disabled)}): {', '.join(disabled) if disabled else 'None'}")
+        print(
+            _t(agent, "Disabled tools ({count}): {items}", "已禁用工具（{count}）：{items}").format(
+                count=len(disabled),
+                items=", ".join(disabled) if disabled else "None",
+            )
+        )
     elif tool_name == "mcp_list_disabled_tools":
         data = result.get("disabled_tools", {})
         if isinstance(data, dict):
             for s, arr in data.items():
                 tools = arr if isinstance(arr, list) else []
-                print(f"- {s}: {', '.join(tools) if tools else 'None'}")
+                print(_t(agent, "- {server}: {items}", "- {server}：{items}").format(server=s, items=", ".join(tools) if tools else "None"))
         else:
-            print("Disabled tools: None")
+            print(_t(agent, "Disabled tools: None", "已禁用工具：无"))
     elif tool_name in (
         "mcp_list_tools",
         "mcp_list_resources",
@@ -203,8 +228,8 @@ def print_mcp_shortcut_result(
     ):
         server = result.get("server", args.get("server", ""))
         count = result.get("count", 0)
-        print(f"Server : {server}")
-        print(f"Count  : {count}")
+        print(_t(agent, "Server : {value}", "服务端：{value}").format(value=server))
+        print(_t(agent, "Count  : {value}", "数量：{value}").format(value=count))
         key = {
             "mcp_list_tools": "tools",
             "mcp_list_resources": "resources",
@@ -214,9 +239,9 @@ def print_mcp_shortcut_result(
         items = result.get(key, []) if isinstance(result.get(key), list) else []
         if items:
             labels = [mcp_item_label(x) for x in items]
-            print(f"Items  : {', '.join(labels)}")
+            print(_t(agent, "Items  : {value}", "条目：{value}").format(value=", ".join(labels)))
     else:
         msg = result.get("message", "")
         if msg:
-            print(f"Message: {msg}")
-    print("==========================\n")
+            print(_t(agent, "Message: {value}", "消息：{value}").format(value=msg))
+    print(_t(agent, "==========================\n", "==========================\n"))

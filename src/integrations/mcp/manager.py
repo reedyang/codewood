@@ -30,6 +30,7 @@ from ...config.app_info import (
     get_app_slug_snake,
     get_app_version,
 )
+from ...core.localization import DEFAULT_DISPLAY_LANGUAGE, normalize_display_language, text
 
 
 class McpError(Exception):
@@ -1036,11 +1037,11 @@ class McpUrlClient:
                 return False
         except Exception:
             return False
-        print("\nDetected MCP returned 401 without an available challenge.")
-        print(f"server={self.name} url={mcp_url}")
-        print("Please complete provider login in your browser first, then paste:")
-        print("- Authorization: Bearer <token>")
-        print("- Or directly paste <token>")
+        print(text("\nDetected MCP returned 401 without an available challenge.", "\n检测到 MCP 返回 401，但没有可用的挑战信息。", self.display_language))
+        print(text("server={name} url={url}", "server={name} url={url}", self.display_language).format(name=self.name, url=mcp_url))
+        print(text("Please complete provider login in your browser first, then paste:", "请先在浏览器中完成提供方登录，然后粘贴：", self.display_language))
+        print(text("- Authorization: Bearer <token>", "- Authorization: Bearer <token>", self.display_language))
+        print(text("- Or directly paste <token>", "- 或直接粘贴 <token>", self.display_language))
         # Do not echo token back to terminal output.
         raw = getpass.getpass("Enter token (press Enter to cancel): ").strip()
         token = self._extract_bearer_token(raw)
@@ -1048,7 +1049,7 @@ class McpUrlClient:
             return False
         fp = self._token_fp(token)
         if fp and fp in self._manual_rejected_token_fps:
-            print("This token was previously verified as failed. Please provide a new token.")
+            print(text("This token was previously verified as failed. Please provide a new token.", "该令牌之前已验证失败。请提供新的令牌。", self.display_language))
             return False
         self.oauth_token = {
             "access_token": token,
@@ -1430,14 +1431,14 @@ class McpUrlClient:
                 )
             )
             if oauth.get("open_browser", True) is False:
-                print(f"\nPlease complete OAuth authorization in your browser:\n{auth_url}\n")
+                print(text("\nPlease complete OAuth authorization in your browser:\n{url}\n", "\n请在浏览器中完成 OAuth 授权：\n{url}\n", self.display_language).format(url=auth_url))
             else:
                 try:
                     webbrowser.open(auth_url)
-                    print("\nTried to open the browser for OAuth authorization. If it did not open automatically, visit this link manually:")
+                    print(text("\nTried to open the browser for OAuth authorization. If it did not open automatically, visit this link manually:", "\n已尝试打开浏览器进行 OAuth 授权。如果未自动打开，请手动访问此链接：", self.display_language))
                     print(auth_url)
                 except Exception:
-                    print("\nPlease complete OAuth authorization in your browser:")
+                    print(text("\nPlease complete OAuth authorization in your browser:", "\n请在浏览器中完成 OAuth 授权：", self.display_language))
                     print(auth_url)
             t = threading.Thread(target=srv.serve_forever, daemon=True)
             t.start()
@@ -2467,10 +2468,12 @@ class McpManager:
         mcp_config: Dict[str, Any],
         workspace_dir: Optional[Path] = None,
         tool_policy_parent: Optional[Path] = None,
+        language: str = DEFAULT_DISPLAY_LANGUAGE,
     ):
         self.config_dir = Path(config_dir)
         self.workspace_dir = Path(workspace_dir) if workspace_dir else self.config_dir / "workspace"
         self.mcp_config = mcp_config or {}
+        self.display_language = normalize_display_language(language) or DEFAULT_DISPLAY_LANGUAGE
         self._clients: Dict[str, McpServerClient] = {}
         self._tools_cache: Dict[str, Dict[str, Any]] = {}
         self._resources_cache: Dict[str, Dict[str, Any]] = {}

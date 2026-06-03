@@ -42,7 +42,7 @@ _SHELL_MODE_SYNC_HANDLER_ATTR = get_app_runtime_attr_name(
 )
 
 from .builtin_slash_commands import slash_builtin_completions
-from ..config.i18n import language_display_name
+from ..config.i18n import DEFAULT_DISPLAY_LANGUAGE, language_display_name, normalize_display_language, text
 from ..core.console_utils import _ansi_gray, _ansi_rgb
 
 try:
@@ -1255,6 +1255,7 @@ class PromptToolkitInputHandler:
         slash_mcp_commands: Optional[List[str]] = None,
         slash_dynamic_rules: Optional[List[Dict[str, Any]]] = None,
         terminal_resize_callback: Optional[Callable[[int, int], bool]] = None,
+        language_provider: Optional[Callable[[], Any]] = None,
     ):
         """
         Initialize the input handler.
@@ -1279,6 +1280,7 @@ class PromptToolkitInputHandler:
         self._pending_shell_mode_active = False
         self.renders_prompt_separator_inline = False
         self._terminal_resize_callback = terminal_resize_callback
+        self._language_provider = language_provider
         self._pt_style = None
         self._pt_cursor_shape = None
         if (
@@ -1605,11 +1607,20 @@ class PromptToolkitInputHandler:
         except Exception:
             pass
 
-    @staticmethod
-    def _print_shell_mode_empty_command_hint() -> None:
+    def _ui_language(self) -> str:
+        provider = getattr(self, "_language_provider", None)
+        if not callable(provider):
+            return DEFAULT_DISPLAY_LANGUAGE
+        try:
+            return normalize_display_language(provider()) or DEFAULT_DISPLAY_LANGUAGE
+        except Exception:
+            return DEFAULT_DISPLAY_LANGUAGE
+
+    def _print_shell_mode_empty_command_hint(self) -> None:
         bullet = _ansi_gray("•")
         example = _ansi_gray("Example: !ls")
-        print(f"{bullet} Prefix a command with ! to run it locally {example}\n")
+        lang = self._ui_language()
+        print(f"{bullet} {text('Prefix a command with ! to run it locally', '使用 ! 前缀在本地运行命令', lang)} {example}\n")
 
     def get_terminal_columns(self, default: int = 80) -> int:
         if self.session is not None:
@@ -1671,7 +1682,7 @@ class PromptToolkitInputHandler:
                 # charge of prompt/cursor layout to avoid corruption.
                 if "\n" in prompt:
                     first, rest = prompt.split("\n", 1)
-                    print(f"\x1b[90m{first}\x1b[0m")
+                    sys.stdout.write(f"\x1b[90m{first}\x1b[0m\n")
                     prompt_line = rest
                 else:
                     prompt_line = prompt
@@ -1759,13 +1770,14 @@ class PromptToolkitInputHandler:
             return user_input
             
         except KeyboardInterrupt:
-            print("^C")
+            sys.stdout.write("^C\n")
             raise
         except EOFError:
             print()
             raise KeyboardInterrupt
         except Exception as e:
-            print(f"\nInput error: {e}")
+            lang = self._ui_language()
+            print(f"\n{text('Input error: {error}', '输入错误：{error}', lang).format(error=e)}")
             return ""
 
     def _create_key_bindings(self):
@@ -2135,6 +2147,7 @@ def create_prompt_toolkit_input_handler(
     slash_mcp_commands: Optional[List[str]] = None,
     slash_dynamic_rules: Optional[List[Dict[str, Any]]] = None,
     terminal_resize_callback: Optional[Callable[[int, int], bool]] = None,
+    language_provider: Optional[Callable[[], Any]] = None,
 ) -> PromptToolkitInputHandler:
     """Create a prompt_toolkit input handler."""
     return PromptToolkitInputHandler(
@@ -2145,4 +2158,5 @@ def create_prompt_toolkit_input_handler(
         slash_mcp_commands,
         slash_dynamic_rules,
         terminal_resize_callback,
+        language_provider,
     )

@@ -101,7 +101,7 @@ def setup_workspace_and_history(
         agent._workspaces_state["active"] = default_workspace_id
     agent._apply_workspace_entry(active_workspace, startup_work_directory)
 
-    agent.history_manager = HistoryManager(str(agent.workspace_config_dir))
+    agent.history_manager = HistoryManager(str(agent.workspace_config_dir), language=getattr(agent, "display_language", "en") or "en")
     agent._load_chat_state()
     setup_app_logging(agent.config_dir)
 
@@ -255,6 +255,7 @@ def setup_prompt_and_mcp(agent: Any) -> None:
         agent.mcp_config,
         agent.workspace_config_dir,
         tool_policy_parent=agent.workspace_config_dir,
+        language=getattr(agent, "display_language", "en") or "en",
     )
     agent.mcp_manager.register_client_method_handler(
         "elicitation/create",
@@ -282,6 +283,7 @@ def setup_skills(agent: Any, builtin_skills_dir: Optional[str]) -> None:
         agent.config_dir,
         agent._builtin_skills_root,
         agent.workspace_config_dir,
+        language=getattr(agent, "display_language", "en") or "en",
     )
     agent._skills_dirs_fingerprint = calc_skills_dirs_fingerprint(
         agent.config_dir,
@@ -327,6 +329,7 @@ def setup_input_handler(
                 terminal_resize_callback=getattr(
                     agent, "_handle_terminal_columns_changed_during_input", None
                 ),
+                language_provider=lambda: getattr(agent, "display_language", None),
             )
         else:
             print("⚠️ Unknown input handler type")

@@ -3,11 +3,13 @@ import re
 import sys
 import threading
 import time
+import unicodedata
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 from ..config.app_info import get_app_config_dirname, get_app_logger_root, get_app_runtime_attr_name
+from ..core.localization import get_display_language, text
 from ..core.config.model_providers import (
     DEFAULT_CONTEXT_WINDOW,
     SIMPLE_CHAT_SYSTEM_PROMPT_MIN_CONTEXT_WINDOW,
@@ -62,6 +64,80 @@ class SessionMemoryService:
         self._context_usage_refresh_pending: Optional[Dict[str, str]] = None
         self._context_compaction_lock = threading.Lock()
         self._start_token_counter_warmup()
+
+    def _t(self, en: str, zh: str) -> str:
+        return text(en, zh, get_display_language(self.agent))
+
+    @staticmethod
+    def _text_display_width(value: Any) -> int:
+        total = 0
+        for ch in str(value or ""):
+            if not ch or unicodedata.combining(ch):
+                continue
+            cat = unicodedata.category(ch)
+            if cat in ("Cc", "Cf"):
+                continue
+            total += 2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1
+        return total
+
+    @classmethod
+    def _truncate_text_to_display_width(cls, value: Any, max_width: int) -> str:
+        limit = max(1, int(max_width or 1))
+        out: List[str] = []
+        used = 0
+        for ch in str(value or ""):
+            if not ch:
+                continue
+            if unicodedata.combining(ch):
+                if out:
+                    out.append(ch)
+                continue
+            cat = unicodedata.category(ch)
+            ch_w = 0 if cat in ("Cc", "Cf") else (2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1)
+            if used + ch_w > limit:
+                break
+            out.append(ch)
+            used += ch_w
+        return "".join(out)
+
+    @staticmethod
+    def _normalize_context_compaction_notice_mode(mode: Any) -> str:
+        normalized = str(mode or "").strip().lower()
+        return normalized if normalized in {"auto", "manual"} else ""
+
+    def _default_context_compaction_notice_message(self, mode: str) -> str:
+        return (
+            self._t("Context automatically compacted", "上下文已自动压缩")
+            if mode == "auto"
+            else self._t("Context compacted", "上下文已压缩")
+        )
+
+    def _infer_context_compaction_notice_mode(self, message: Any) -> str:
+        raw = str(message or "").strip()
+        normalized = re.sub(r"\s+", " ", raw.lower())
+        if normalized == "context compacted":
+            return "manual"
+        if normalized == "context automatically compacted":
+            return "auto"
+        if "已自动压缩" in raw:
+            return "auto"
+        if "已压缩" in raw:
+            return "manual"
+        return ""
+
+    def format_context_compaction_notice_message(self, payload_or_message: Any) -> str:
+        raw_message = ""
+        mode = ""
+        if isinstance(payload_or_message, dict):
+            raw_message = str(payload_or_message.get("message") or "").strip()
+            mode = self._normalize_context_compaction_notice_mode(payload_or_message.get("mode"))
+        else:
+            raw_message = str(payload_or_message or "").strip()
+        if not mode:
+            mode = self._infer_context_compaction_notice_mode(raw_message)
+        if mode:
+            return self._default_context_compaction_notice_message(mode)
+        return raw_message or self._default_context_compaction_notice_message("auto")
 
     def _model_visible_path_text(self, raw_path: Any) -> str:
         fallback = "(hidden internal runtime directory)"
@@ -340,10 +416,19 @@ class SessionMemoryService:
             dict,
         )
 
-    def build_context_compaction_notice_content(self, message: str = "Context automatically compacted") -> str:
+    def build_context_compaction_notice_content(
+        self,
+        message: Optional[str] = None,
+        mode: str = "auto",
+    ) -> str:
+        normalized_mode = self._normalize_context_compaction_notice_mode(mode) or "auto"
+        resolved_message = str(message or "").strip() or (
+            "Context automatically compacted" if normalized_mode == "auto" else "Context compacted"
+        )
         payload = {
             "kind": "context_compaction_notice",
-            "message": str(message or "Context automatically compacted").strip(),
+            "message": resolved_message,
+            "mode": normalized_mode,
             "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         }
         return CONTEXT_COMPACTION_NOTICE_PREFIX + json.dumps(payload, ensure_ascii=False)
@@ -1818,9 +1903,10 @@ class SessionMemoryService:
     def _format_compaction_banner_line(self, text: str) -> str:
         label = f" {str(text or '').strip()} "
         width = self._terminal_columns_for_compaction_banner()
-        if len(label) >= width:
-            return label.strip()
-        pad = width - len(label)
+        label_width = self._text_display_width(label)
+        if label_width >= width:
+            return self._truncate_text_to_display_width(label.strip(), width)
+        pad = width - label_width
         left = pad // 2
         right = pad - left
         return ("─" * left) + label + ("─" * right)
@@ -1930,7 +2016,7 @@ class SessionMemoryService:
             normalized_mode = "manual"
         if not self._context_compaction_lock.acquire(blocking=False):
             if normalized_mode == "manual":
-                print("Context compaction is already running.")
+                print(self._t("Context compaction is already running.", "上下文压缩已在运行。"))
             return False
         try:
             return self._compact_context_locked(normalized_mode)
@@ -1941,9 +2027,9 @@ class SessionMemoryService:
         candidates_with_idx = self._compaction_candidate_rows(mode)
         if not candidates_with_idx:
             if mode == "manual":
-                print("No context available to compact.")
+                print(self._t("No context available to compact.", "没有可供压缩的上下文。"))
             return False
-        start_text = "Automatically compacting context" if mode == "auto" else "Compacting context"
+        start_text = self._t("Automatically compacting context", "正在自动压缩上下文") if mode == "auto" else self._t("Compacting context", "正在压缩上下文")
         start_banner_lines = self._print_compaction_banner(start_text)
         source_history = [m for _idx, m in candidates_with_idx]
         insert_after_idx = int(candidates_with_idx[-1][0])
@@ -1960,12 +2046,12 @@ class SessionMemoryService:
         except Exception as e:
             get_logger().exception("context compact: model call failed")
             if mode == "manual":
-                print(f"Context compaction failed: {e}")
+                print(self._t("Context compaction failed: {error}", "上下文压缩失败：{error}").format(error=e))
             return False
         summary = str(raw or "").strip() if isinstance(raw, str) else ""
         if summary.startswith("❌") or summary.startswith("Error calling LLM API") or not summary:
             if mode == "manual":
-                print(summary or "Context compaction failed: empty summary.")
+                print(summary or self._t("Context compaction failed: empty summary.", "上下文压缩失败：摘要为空。"))
             return False
         summary = summary.replace("```", "").strip()
         content = self.build_context_compaction_summary_content(
@@ -1983,7 +2069,7 @@ class SessionMemoryService:
         }
         notice_msg = {
             "role": "assistant",
-            "content": self.build_context_compaction_notice_content("Context automatically compacted"),
+            "content": self.build_context_compaction_notice_content(mode=mode),
             "task_id": task_id,
             "created_at": created_at,
         }
@@ -1995,10 +2081,10 @@ class SessionMemoryService:
         except Exception:
             get_logger().exception("context compact: failed to persist summary")
             if mode == "manual":
-                print("Context compaction failed while saving summary.")
+                print(self._t("Context compaction failed while saving summary.", "保存摘要时上下文压缩失败。"))
             return False
         self._clear_compaction_banner(start_banner_lines)
-        self._print_compaction_banner("Context automatically compacted")
+        self._print_compaction_banner(self._default_context_compaction_notice_message(mode))
         return True
 
     def maybe_auto_compact_before_user_message(self, user_input: str) -> bool:

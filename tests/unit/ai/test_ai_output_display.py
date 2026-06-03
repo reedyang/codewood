@@ -265,6 +265,15 @@ class AiOutputDisplayTests(unittest.TestCase):
         self.assertTrue(line.startswith("<RGB:19,161,14>•</RGB> Ran "))
         self.assertIn("<H>read (path=a.txt)</H>", line)
 
+    def test_format_tool_call_feedback_line_uses_language_specific_prefix(self):
+        self.agent.display_language = "zh-CN"
+        with patch("src.agent._ansi_rgb", side_effect=lambda text, r, g, b: f"<RGB:{r},{g},{b}>{text}</RGB>"), patch(
+            "src.agent.highlight_assistant_display_line", side_effect=lambda s: f"<H>{s}</H>"
+        ):
+            line = self.agent._format_tool_call_feedback_line("read", {"path": "a.txt"}, failed=False)
+        self.assertTrue(line.startswith("<RGB:19,161,14>•</RGB> 已执行 "))
+        self.assertIn("<H>read (path=a.txt)</H>", line)
+
     def test_format_tool_call_feedback_line_switches_bullet_color_when_failed(self):
         with patch("src.agent._ansi_rgb", side_effect=lambda text, r, g, b: f"<RGB:{r},{g},{b}>{text}</RGB>"), patch(
             "src.agent.highlight_assistant_display_line", side_effect=lambda s: f"<H>{s}</H>"
@@ -279,6 +288,15 @@ class AiOutputDisplayTests(unittest.TestCase):
         ):
             line = self.agent._format_direct_shell_command_feedback_line("git status", failed=False)
         self.assertTrue(line.startswith("<RGB:19,161,14>•</RGB> You ran "))
+        self.assertIn("<H>git status</H>", line)
+
+    def test_format_direct_shell_command_feedback_line_uses_language_specific_prefix(self):
+        self.agent.display_language = "zh-CN"
+        with patch("src.agent._ansi_rgb", side_effect=lambda text, r, g, b: f"<RGB:{r},{g},{b}>{text}</RGB>"), patch(
+            "src.agent.highlight_assistant_display_line", side_effect=lambda s: f"<H>{s}</H>"
+        ):
+            line = self.agent._format_direct_shell_command_feedback_line("git status", failed=False)
+        self.assertTrue(line.startswith("<RGB:19,161,14>•</RGB> 已运行 "))
         self.assertIn("<H>git status</H>", line)
 
     def test_format_tool_call_feedback_line_wraps_long_command_with_gray_pipe_prefix(self):

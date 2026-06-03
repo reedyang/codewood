@@ -1,6 +1,6 @@
 import difflib
 import unicodedata
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 
 class ChangePreviewFormatter:
@@ -30,7 +30,11 @@ class ChangePreviewFormatter:
     def format_side_by_side_segments(
         segments: List[Dict[str, object]],
         preview_text_max_width: int = 72,
+        language: Any = None,
     ) -> List[str]:
+        from .localization import DEFAULT_DISPLAY_LANGUAGE, normalize_display_language, text as _text
+
+        lang = normalize_display_language(language) or DEFAULT_DISPLAY_LANGUAGE
         raw_rows: List[Tuple[str, Optional[int], str, str, Optional[int], str]] = []
         prev_old_end: Optional[int] = None
         prev_new_end: Optional[int] = None
@@ -49,7 +53,9 @@ class ChangePreviewFormatter:
                     new_gap = new_start_line - prev_new_end - 1
                 omitted = max(old_gap, new_gap)
                 if omitted > 0:
-                    marker = f"... omitted {omitted} lines ..."
+                    marker = _text("... omitted {count} lines ...", "... 已省略 {count} 行 ...", lang).format(
+                        count=omitted
+                    )
                     raw_rows.append((" ", None, marker, " ", None, marker))
 
             seg_rows = ChangePreviewFormatter._build_raw_rows(

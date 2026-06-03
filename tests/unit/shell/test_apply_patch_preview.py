@@ -204,6 +204,26 @@ class ApplyPatchPreviewTests(unittest.TestCase):
             self.assertTrue(add_row_raw)
             self.assertRegex(add_row_raw, r"\x1b\[90m\+\s+\d+│ \x1b\[0m")
 
+    def test_apply_patch_preview_uses_chinese_omitted_marker_when_language_is_zh_cn(self):
+        segments = [
+            {
+                "old_lines": ["l1"],
+                "new_lines": ["l1"],
+                "old_start_line": 1,
+                "new_start_line": 1,
+            },
+            {
+                "old_lines": ["l12"],
+                "new_lines": ["l12"],
+                "old_start_line": 12,
+                "new_start_line": 12,
+            },
+        ]
+
+        rows = ChangePreviewFormatter.format_side_by_side_segments(segments, language="zh-CN")
+
+        self.assertTrue(any("已省略 10 行" in _strip_ansi(row) for row in rows))
+
     def test_moderate_mode_workspace_text_patch_skips_confirm(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)

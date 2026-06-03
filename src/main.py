@@ -24,6 +24,7 @@ from src.core.config.config_jsonc import (
     save_config_jsonc,
 )
 from src.config.app_info import get_app_config_dirname, get_app_name, get_app_version
+from src.core.localization import DEFAULT_DISPLAY_LANGUAGE, normalize_display_language, text
 from src.core.config.model_providers import DEFAULT_OLLAMA_PORT
 from src.core.config.model_providers import basic_chat_only_context_warning
 from src.core.config.model_providers import parse_configured_models
@@ -164,9 +165,9 @@ def _create_user_config_template(user_home: Path) -> Path:
     return config_path
 
 
-def _print_model_settings_update_notice(config_path: str | Path) -> None:
+def _print_model_settings_update_notice(config_path: str | Path, language: str = DEFAULT_DISPLAY_LANGUAGE) -> None:
     normalized_path = str(Path(str(config_path)).expanduser())
-    print(_ansi_red(f"Please update the model settings in: {normalized_path}"))
+    print(_ansi_red(text("Please update the model settings in: {path}", "请更新以下位置的模型设置：{path}", language).format(path=normalized_path)))
 
 
 def _set_basic_chat_only_context_prompt_warning_for_agent(agent: Any) -> None:
@@ -488,6 +489,7 @@ def main(argv: list[str] | None = None):
     work_directory = None
     config = None
     config_path = None
+    ui_language = DEFAULT_DISPLAY_LANGUAGE
     
     # Prefer the application config directory/config.jsonc under the user's home directory.
     user_home = str(Path.home())
@@ -510,8 +512,10 @@ def main(argv: list[str] | None = None):
         try:
             config = load_config_jsonc(Path(config_path))
             config = resolve_string_values_in_data(config)
+            if isinstance(config, dict):
+                ui_language = normalize_display_language(config.get("language")) or DEFAULT_DISPLAY_LANGUAGE
         except Exception as e:
-            print(_ansi_red(f"Failed to read config file: {e}"))
+            print(_ansi_red(text("Failed to read config file: {error}", "读取配置文件失败：{error}", ui_language).format(error=e)))
             config = None
 
     if config_dir:
@@ -524,13 +528,13 @@ def main(argv: list[str] | None = None):
         if not config_path:
             try:
                 created_path = _create_user_config_template(Path.home())
-                print(_ansi_red("Config file not found. Created template successfully."))
-                _print_model_settings_update_notice(created_path)
+                print(_ansi_red(text("Config file not found. Created template successfully.", "未找到配置文件。已成功创建模板。", ui_language)))
+                _print_model_settings_update_notice(created_path, ui_language)
             except Exception as e:
-                print(_ansi_red(f"Config file not found, and failed to create template: {e}"))
-                _print_model_settings_update_notice(Path.home() / get_app_config_dirname() / CONFIG_JSONC_FILENAME)
+                print(_ansi_red(text("Config file not found, and failed to create template: {error}", "未找到配置文件，且创建模板失败：{error}", ui_language).format(error=e)))
+                _print_model_settings_update_notice(Path.home() / get_app_config_dirname() / CONFIG_JSONC_FILENAME, ui_language)
         else:
-            _print_model_settings_update_notice(config_path)
+            _print_model_settings_update_notice(config_path, ui_language)
         return 1
     model_selector = ""
     if isinstance(cli_args, dict):
@@ -544,7 +548,7 @@ def main(argv: list[str] | None = None):
     )
     if config_error:
         _print_startup_basic_overview()
-        _print_model_settings_update_notice(config_path or (Path.home() / get_app_config_dirname() / CONFIG_JSONC_FILENAME))
+        _print_model_settings_update_notice(config_path or (Path.home() / get_app_config_dirname() / CONFIG_JSONC_FILENAME), ui_language)
         return 1
     template_value_error = _validate_template_placeholder_values(
         provider=provider,
@@ -553,7 +557,7 @@ def main(argv: list[str] | None = None):
     )
     if template_value_error:
         _print_startup_basic_overview(model_name=model_name)
-        _print_model_settings_update_notice(config_path or (Path.home() / get_app_config_dirname() / CONFIG_JSONC_FILENAME))
+        _print_model_settings_update_notice(config_path or (Path.home() / get_app_config_dirname() / CONFIG_JSONC_FILENAME), ui_language)
         return 1
 
     params = model_config.get("params", {})
@@ -584,11 +588,11 @@ def main(argv: list[str] | None = None):
             )
             ok, ws_error = _apply_startup_workspace(agent, workspace_selector or None)
             if not ok:
-                print(str(ws_error or "❌ Failed to apply startup workspace."))
+                print(text("❌ Failed to apply startup workspace.", "❌ 应用启动工作区失败。", ui_language) if not ws_error else str(ws_error))
                 return 1
             ok, model_error = _apply_startup_model_override(agent, model_override_selector or None)
             if not ok:
-                print(str(model_error or "❌ Failed to apply startup model override."))
+                print(text("❌ Failed to apply startup model override.", "❌ 应用启动模型覆盖失败。", ui_language) if not model_error else str(model_error))
                 return 1
             _set_basic_chat_only_context_prompt_warning_for_agent(agent)
             if exec_task:
@@ -597,7 +601,7 @@ def main(argv: list[str] | None = None):
             agent.run()
             return 0
         except Exception as e:
-            print(f"❌ OpenAI API mode runtime error: {str(e)}")
+            print(text("❌ OpenAI API mode runtime error: {error}", "❌ OpenAI API 模式运行时错误：{error}", ui_language).format(error=str(e)))
             return 1
         finally:
             if agent is not None:
@@ -620,11 +624,11 @@ def main(argv: list[str] | None = None):
             )
             ok, ws_error = _apply_startup_workspace(agent, workspace_selector or None)
             if not ok:
-                print(str(ws_error or "❌ Failed to apply startup workspace."))
+                print(text("❌ Failed to apply startup workspace.", "❌ 应用启动工作区失败。", ui_language) if not ws_error else str(ws_error))
                 return 1
             ok, model_error = _apply_startup_model_override(agent, model_override_selector or None)
             if not ok:
-                print(str(model_error or "❌ Failed to apply startup model override."))
+                print(text("❌ Failed to apply startup model override.", "❌ 应用启动模型覆盖失败。", ui_language) if not model_error else str(model_error))
                 return 1
             _set_basic_chat_only_context_prompt_warning_for_agent(agent)
             if exec_task:
@@ -633,10 +637,10 @@ def main(argv: list[str] | None = None):
             agent.run()
             return 0
         except KeyboardInterrupt:
-            print("\n👋 Program exited")
+            print(text("\n👋 Program exited", "\n👋 程序已退出", ui_language))
             return 0
         except Exception as e:
-            print(f"❌ Runtime error: {str(e)}")
+            print(text("❌ Runtime error: {error}", "❌ 运行时错误：{error}", ui_language).format(error=str(e)))
             return 1
         finally:
             if agent is not None:
@@ -645,7 +649,7 @@ def main(argv: list[str] | None = None):
                 except Exception:
                     pass
     else:
-        print(f"Model provider '{provider}' is not supported")
+        print(text("Model provider '{provider}' is not supported", "不支持模型提供方“{provider}”", ui_language).format(provider=provider))
         return 1
 
 if __name__ == "__main__":

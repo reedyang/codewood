@@ -19,9 +19,14 @@ from typing import Dict, List, Optional, Tuple
 
 import yaml
 from ...config.app_info import get_app_config_dirname, get_app_name
+from ..localization import DEFAULT_DISPLAY_LANGUAGE, normalize_display_language, text
 
 
-def _parse_model_context_file_env_from_meta(meta: Optional[dict]) -> Optional[str]:
+def _t(language: Optional[str], en: str, zh: str) -> str:
+    return text(en, zh, normalize_display_language(language) or DEFAULT_DISPLAY_LANGUAGE)
+
+
+def _parse_model_context_file_env_from_meta(meta: Optional[dict], language: Optional[str] = None) -> Optional[str]:
     """
     Optional YAML frontmatter in ``SKILL.md`` may declare how a host passes a temp
     file path to child processes (extended model context). Keys
@@ -38,7 +43,7 @@ def _parse_model_context_file_env_from_meta(meta: Optional[dict]) -> Optional[st
     if not s:
         return None
     if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", s):
-        print(f"⚠️ Invalid model_context_file_env in SKILL.md frontmatter: {s!r}; ignored")
+        print(_t(language, "⚠️ Invalid model_context_file_env in SKILL.md frontmatter: {value}; ignored", "⚠️ SKILL.md frontmatter 中的 model_context_file_env 无效：{value}；已忽略").format(value=repr(s)))
         return None
     return s
 
@@ -104,7 +109,7 @@ def _split_frontmatter(text: str) -> Tuple[Optional[dict], str]:
         return meta, body
 
 
-def _scan_skills_root(skills_root: Path) -> List[SkillRecord]:
+def _scan_skills_root(skills_root: Path, language: Optional[str] = None) -> List[SkillRecord]:
     """Scan <skills_root>/*/SKILL.md and return SkillRecord list (sorted by folder name)."""
     root = Path(skills_root).expanduser().resolve()
     if not root.is_dir():
@@ -120,7 +125,7 @@ def _scan_skills_root(skills_root: Path) -> List[SkillRecord]:
         try:
             raw = skill_md.read_text(encoding="utf-8")
         except OSError as e:
-            print(f"⚠️ Failed to read skill file {skill_md}: {e}")
+            print(_t(language, "⚠️ Failed to read skill file {path}: {error}", "⚠️ 读取技能文件失败 {path}：{error}").format(path=skill_md, error=e))
             continue
 
         meta, body = _split_frontmatter(raw)
@@ -150,7 +155,7 @@ def _scan_skills_root(skills_root: Path) -> List[SkillRecord]:
         else:
             desc_s = str(desc).strip()
 
-        bridge_env = _parse_model_context_file_env_from_meta(meta)
+        bridge_env = _parse_model_context_file_env_from_meta(meta, language=language)
         out.append(
             SkillRecord(
                 name=name,
@@ -164,9 +169,9 @@ def _scan_skills_root(skills_root: Path) -> List[SkillRecord]:
     return out
 
 
-def load_skills_from_config_dir(config_dir: Path) -> List[SkillRecord]:
+def load_skills_from_config_dir(config_dir: Path, language: Optional[str] = None) -> List[SkillRecord]:
     """Load only external skills: config_dir/skills/."""
-    return _scan_skills_root(Path(config_dir).expanduser().resolve() / "skills")
+    return _scan_skills_root(Path(config_dir).expanduser().resolve() / "skills", language=language)
 
 
 def _workspace_config_skills_root(workspace_dir: Path) -> Path:
@@ -177,6 +182,7 @@ def load_skills_merged(
     config_dir: Path,
     builtin_skills_dir: Optional[Path] = None,
     workspace_dir: Optional[Path] = None,
+    language: Optional[str] = None,
 ) -> List[SkillRecord]:
     """
     Merge builtin, global external, and workspace external Agent Skills.
@@ -190,11 +196,11 @@ def load_skills_merged(
     """
     workspace: List[SkillRecord] = []
     if workspace_dir is not None:
-        workspace = _scan_skills_root(_workspace_config_skills_root(Path(workspace_dir)))
-    external = _scan_skills_root(Path(config_dir).expanduser().resolve() / "skills")
+        workspace = _scan_skills_root(_workspace_config_skills_root(Path(workspace_dir)), language=language)
+    external = _scan_skills_root(Path(config_dir).expanduser().resolve() / "skills", language=language)
     builtin: List[SkillRecord] = []
     if builtin_skills_dir is not None:
-        builtin = _scan_skills_root(builtin_skills_dir)
+        builtin = _scan_skills_root(builtin_skills_dir, language=language)
 
     by_id: Dict[str, SkillRecord] = {}
     for s in builtin:

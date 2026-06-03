@@ -112,8 +112,13 @@ def _clear_streamed_output_window(
         pass
 
 
-def _format_omitted_lines_notice(omitted_lines: int, stream: Any) -> str:
-    msg = f"... omitted {int(omitted_lines)} lines ..."
+def _format_omitted_lines_notice(omitted_lines: int, stream: Any, language: Any = None) -> str:
+    from ..core.localization import DEFAULT_DISPLAY_LANGUAGE, normalize_display_language, text
+
+    lang = normalize_display_language(language) or DEFAULT_DISPLAY_LANGUAGE
+    msg = text("... omitted {count} lines ...", "... 已省略 {count} 行 ...", lang).format(
+        count=int(omitted_lines)
+    )
     try:
         if hasattr(stream, "isatty") and stream.isatty():
             return f"\x1b[90;3m{msg}\x1b[0m\n"
@@ -220,10 +225,14 @@ def _build_tail_output_for_display(
     tail_lines: int = SHELL_OUTPUT_DISPLAY_TAIL_LINES,
     display_indent_width: int = 0,
     allow_partial_start_line: bool = True,
+    language: Any = None,
 ) -> str:
+    from ..core.localization import DEFAULT_DISPLAY_LANGUAGE, normalize_display_language, text as _text
+
     raw = str(text or "")
     if not raw:
         return ""
+    lang = normalize_display_language(language) or DEFAULT_DISPLAY_LANGUAGE
     normalized = raw.replace("\r\n", "\n").replace("\r", "\n")
     trailing_newline = normalized.endswith("\n")
     lines = normalized.split("\n")
@@ -279,7 +288,7 @@ def _build_tail_output_for_display(
     tail = "\n".join(selected_lines)
     if tail and trailing_newline:
         tail += "\n"
-    return _format_omitted_lines_notice(omitted, stream) + tail
+    return _format_omitted_lines_notice(omitted, stream, language=language) + tail
 
 
 def _select_logical_tail_output_for_live_replay(
@@ -346,6 +355,7 @@ def _build_logical_tail_output_for_live_replay(
     stream: Any,
     tail_lines: int,
     display_indent_width: int = 0,
+    language: Any = None,
 ) -> str:
     tail, omitted = _select_logical_tail_output_for_live_replay(
         text,
@@ -355,7 +365,10 @@ def _build_logical_tail_output_for_live_replay(
     )
     if omitted <= 0:
         return tail
-    return f"... omitted {omitted} lines ...\n{tail}"
+    from ..core.localization import DEFAULT_DISPLAY_LANGUAGE, normalize_display_language, text as _text
+
+    lang = normalize_display_language(language) or DEFAULT_DISPLAY_LANGUAGE
+    return f"{_text('... omitted {count} lines ...', '... 已省略 {count} 行 ...', lang).format(count=omitted)}\n{tail}"
 
 
 def _append_completed_output_lines(
@@ -900,7 +913,12 @@ def action_shell_command(
 
             out = append_shell_merge_output_path(out, return_code, merge_path)
             out_tail_limit = _dynamic_tail_line_limit(sys.stdout)
-            displayed_out = _build_tail_output_for_display(out, sys.stdout, out_tail_limit)
+            displayed_out = _build_tail_output_for_display(
+                out,
+                sys.stdout,
+                out_tail_limit,
+                language=getattr(agent, "display_language", None),
+            )
             displayed_out_plain = _strip_console_color_controls(displayed_out)
             should_replay_out = True
             if interactive:
