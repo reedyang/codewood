@@ -309,8 +309,13 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
         self.assertIsInstance(payload, dict)
         self.assertEqual(payload.get("summary"), "New merged summary")
         self.assertEqual(payload.get("mode"), "manual")
-        self.assertEqual(str(agent.conversation_history[4].get("content") or ""), "Subsequent user message")
-        self.assertEqual(str(agent.conversation_history[5].get("content") or ""), "Subsequent assistant message")
+        self.assertEqual(str(agent.conversation_history[3].get("content") or ""), "Subsequent user message")
+        self.assertEqual(str(agent.conversation_history[4].get("content") or ""), "Subsequent assistant message")
+        notice_payload = svc.parse_context_compaction_notice_content(
+            str(agent.conversation_history[-1].get("content") or "")
+        )
+        self.assertIsInstance(notice_payload, dict)
+        self.assertEqual(notice_payload.get("mode"), "manual")
 
     def test_compact_inserts_completed_notice_but_excludes_notice_from_model_context(self):
         agent = _FakeAgent()
@@ -336,9 +341,7 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
             ok = svc.compact_context("manual")
 
         self.assertTrue(ok)
-        notice_payload = svc.parse_context_compaction_notice_content(
-            str(agent.conversation_history[3].get("content") or "")
-        )
+        notice_payload = svc.parse_context_compaction_notice_content(str(agent.conversation_history[-1].get("content") or ""))
         self.assertIsInstance(notice_payload, dict)
         self.assertEqual(notice_payload.get("message"), "Context compacted")
         self.assertEqual(notice_payload.get("mode"), "manual")

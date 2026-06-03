@@ -190,7 +190,7 @@ class PromptSeparatorBehaviorTests(unittest.TestCase):
 
         mock_banner.assert_called_once_with("上下文已自动压缩")
 
-    def test_compact_slash_history_is_replayed_before_compacted_notice(self):
+    def test_manual_compaction_notice_replays_at_history_tail(self):
         agent = self._build_agent()
         agent.session_memory_service = SessionMemoryService(agent)
         summary = agent.session_memory_service.build_context_compaction_summary_content(
@@ -198,30 +198,13 @@ class PromptSeparatorBehaviorTests(unittest.TestCase):
             mode="manual",
             covered_message_count=2,
         )
-        notice = agent.session_memory_service.build_context_compaction_notice_content(
-            "Context automatically compacted"
-        )
+        notice = agent.session_memory_service.build_context_compaction_notice_content(mode="manual")
         agent.conversation_history = [
             {"role": "user", "content": "old message"},
             {"role": "assistant", "content": summary},
+            {"role": "assistant", "content": "reply after compact"},
             {"role": "assistant", "content": notice},
         ]
-
-        agent._record_internal_slash_execution_history("/compact", "")
-
-        roles_and_contents = [
-            (msg.get("role"), str(msg.get("content") or ""))
-            for msg in agent.conversation_history
-        ]
-        compact_idx = next(
-            idx for idx, (_role, content) in enumerate(roles_and_contents) if "/compact" in content
-        )
-        notice_idx = next(
-            idx
-            for idx, (_role, content) in enumerate(roles_and_contents)
-            if "CONTEXT_COMPACTION_NOTICE" in content
-        )
-        self.assertLess(compact_idx, notice_idx)
 
         events = []
 
@@ -238,11 +221,19 @@ class PromptSeparatorBehaviorTests(unittest.TestCase):
         ):
             agent._print_chat_history()
 
-        compact_event_idx = next(idx for idx, text in enumerate(events) if "/compact" in text)
-        compacted_event_idx = next(
-            idx for idx, text in enumerate(events) if "Context automatically compacted" in text
-        )
-        self.assertLess(compact_event_idx, compacted_event_idx)
+        reply_idx = next(idx for idx, text in enumerate(events) if "reply after compact" in text)
+        compacted_event_idx = next(idx for idx, text in enumerate(events) if "Context compacted" in text)
+        self.assertLess(reply_idx, compacted_event_idx)
+
+    def test_record_internal_slash_execution_history_skips_compact(self):
+        agent = self._build_agent()
+        with patch.object(agent, "_append_chat_message") as mock_append:
+            agent._record_internal_slash_execution_history(
+                raw_user_command="/compact",
+                output_text="",
+            )
+        mock_append.assert_not_called()
+        self.assertEqual(agent.conversation_history, [])
 
     def test_failed_compact_slash_history_is_not_moved_before_old_notice(self):
         agent = self._build_agent()
@@ -261,18 +252,7 @@ class PromptSeparatorBehaviorTests(unittest.TestCase):
         ]
 
         agent._record_internal_slash_execution_history("/compact", "No context available to compact.\n")
-
-        compact_idx = next(
-            idx
-            for idx, msg in enumerate(agent.conversation_history)
-            if "/compact" in str(msg.get("content") or "")
-        )
-        notice_idx = next(
-            idx
-            for idx, msg in enumerate(agent.conversation_history)
-            if "CONTEXT_COMPACTION_NOTICE" in str(msg.get("content") or "")
-        )
-        self.assertGreater(compact_idx, notice_idx)
+        self.assertEqual(len(agent.conversation_history), 2)
 
     def test_separator_has_blank_line_above_and_below(self):
         agent = self._build_agent()

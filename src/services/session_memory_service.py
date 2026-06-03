@@ -2075,7 +2075,7 @@ class SessionMemoryService:
         }
         try:
             self.agent.conversation_history.insert(insert_after_idx + 1, msg)
-            self.agent.conversation_history.insert(insert_after_idx + 2, notice_msg)
+            self.agent.conversation_history.append(notice_msg)
             self.agent._sync_active_chat_messages()
             self.refresh_context_usage_snapshot(context_hint="context compacted")
         except Exception:
