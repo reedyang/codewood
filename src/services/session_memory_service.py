@@ -22,8 +22,11 @@ MEMORY_RETRIEVAL_QUERY_MAX_CHARS = 2000
 MEMORY_FALLBACK_MIN_RAW_SCORE = 4.0
 MEMORY_EXPANSION_MAX_KEYWORD_CHARS = 600
 MEMORY_IDENTITY_CLUSTER_TYPES = frozenset({"preference", "identity"})
-SESSION_SUMMARY_ROLLING_MAX_CHARS = 600
-SESSION_SUMMARY_MSG_SNIPPET = 120
+SESSION_SUMMARY_FIELD_NAMES = ("Goals", "Facts", "Preferences", "Decisions", "Errors", "Next steps")
+SESSION_SUMMARY_FACT_SUBFIELDS = ("Paths/Commands/Tool results", "Environment/Workspace", "Errors/Fixes")
+SESSION_SUMMARY_FIELD_ITEM_LIMIT = 3
+SESSION_SUMMARY_ROLLING_MAX_CHARS = 900
+SESSION_SUMMARY_MSG_SNIPPET = 160
 SESSION_SUMMARY_LLM_INTERVAL_PAIRS = 6
 SESSION_SUMMARY_LLM_MAX_CHARS = 1200
 SESSION_SUMMARY_LLM_HISTORY_MSGS = 16
@@ -110,6 +113,150 @@ class SessionMemoryService:
                     last_content = last_content[-120:]
                 last_task_id = str(last.get("task_id") or "").strip()
         return f"{chat_id}|{task_id}|{size}|{last_role}|{last_task_id}|{last_content}"
+
+    @staticmethod
+    def _normalize_summary_fragment(text: str, max_chars: int = SESSION_SUMMARY_MSG_SNIPPET) -> str:
+        value = re.sub(r"\s+", " ", str(text or "")).strip()
+        if not value:
+            return ""
+        value = value.strip(" \t\r\n-•*")
+        value = re.sub(r"^[\[(]{1,2}", "", value).strip()
+        value = re.sub(r"[\])]{1,2}$", "", value).strip()
+        if len(value) > max_chars:
+            value = value[: max(1, max_chars - 1)].rstrip() + "…"
+        return value
+
+    @staticmethod
+    def _summary_fragment_buckets(fragment: str, role: str) -> List[str]:
+        text = str(fragment or "").strip().lower()
+        if not text:
+            return []
+
+        buckets: List[str] = []
+
+        def _push(name: str) -> None:
+            if name not in buckets:
+                buckets.append(name)
+
+        if re.search(r"(path|paths|file|files|folder|directory|repo|command|commands|tool|tools|result|results|output|stdout|stderr|flag|flags|arg|args|shell|script|rg\b|cat\b|ls\b|find\b|python -m|git\b|powershell|cmd\.exe|bash\b|terminal)", text, re.I):
+            _push("Paths/Commands/Tool results")
+
+        if re.search(r"(workspace|workdir|work directory|cwd|directory|absolute path|current workspace|repo root|project root|os info|operating system|windows|linux|macos|environment|env|config dir|workspace root|workspace data|skills directory|chat name|chat id|context window)", text, re.I):
+            _push("Environment/Workspace")
+
+        if re.search(r"(error|failed|failure|exception|traceback|timeout|not found|cannot|can't|permission denied|denied|invalid|crash|bug|报错|失败|异常|错误|超时|找不到|无法|权限|冲突|阻塞)", text, re.I):
+            _push("Errors/Fixes")
+
+        if re.search(r"(fix|fixed|resolve|resolved|repair|repairing|workaround|debug|debugging|retry|retrying|troubleshoot|troubleshooting|patch|patched|change to|moved|revert|rewrite|redesign|调整|修复|解决|改掉|排查|尝试)", text, re.I):
+            _push("Errors/Fixes")
+
+        if re.search(r"(next step|next steps|follow up|todo|plan to|going to|will\s|need to|should\s|接下来|下一步|后续|待办|之后|随后|我会|我们将)", text, re.I):
+            _push("Next steps")
+
+        if re.search(r"(decided|decision|choose|chose|went with|switched|changed to|moved|fixed|resolved|completed|done|now use|kept|removed|added|改成|决定|选择|切到|挪到|统一|已改|已完成|解决)", text, re.I):
+            _push("Decisions")
+
+        if re.search(r"(prefer|avoid|don't want|do not want|must|always|never|prefer to|keep using|stick with|最好|不要|偏好|习惯|约定|默认|固定|统一|请用|请保持)", text, re.I):
+            _push("Preferences")
+
+        if re.search(r"(goal|goal:|want to|need to|trying to|task|objective|aim|目标|想要|希望|需要|要把|任务|做)", text, re.I):
+            _push("Goals")
+
+        if not buckets:
+            if role == "user":
+                if re.search(r"(please|please\s|could you|can you|help me|let's|let us|i want|i need|we need|我要|请|帮我|希望|需要|想要)", text, re.I):
+                    _push("Goals")
+            if not buckets:
+                _push("Paths/Commands/Tool results")
+
+        if "Errors/Fixes" in buckets and "Next steps" in buckets:
+            return ["Errors/Fixes", "Next steps"]
+        return buckets
+
+    def _summarize_recent_message_for_rolling(self, msg: Dict[str, Any]) -> List[Tuple[str, str]]:
+        role = str(msg.get("role") or "").strip().lower()
+        if role not in ("user", "assistant"):
+            return []
+        raw_content = str(msg.get("content") or "")
+        if not raw_content.strip():
+            return []
+        if role == "assistant" and self._is_internal_assistant_history_message(raw_content):
+            return []
+        if role == "user" and self._is_excluded_user_message_for_model_context(msg):
+            return []
+        if self._is_builtin_slash_user_message(role, raw_content):
+            return []
+        fragments = re.split(r"(?:\r?\n|\s*\|\s*|[。！？!?；;]+)", raw_content)
+        out: List[Tuple[str, str]] = []
+        seen_local: Set[Tuple[str, str]] = set()
+        for fragment in fragments:
+            normalized = self._normalize_summary_fragment(fragment)
+            if not normalized:
+                continue
+            buckets = self._summary_fragment_buckets(normalized, role)
+            if not buckets:
+                continue
+            for bucket in buckets:
+                key = (bucket, normalized.lower())
+                if key in seen_local:
+                    continue
+                seen_local.add(key)
+                out.append((bucket, normalized))
+                if len(out) >= 2:
+                    return out
+        if not out:
+            fallback = self._normalize_summary_fragment(raw_content, SESSION_SUMMARY_MSG_SNIPPET)
+            if fallback:
+                out.append(("Facts", fallback))
+        return out
+
+    def _render_fixed_field_summary(
+        self,
+        field_values: Dict[str, List[str]],
+        fact_values: Dict[str, List[str]],
+        header: str,
+    ) -> str:
+        lines = [header]
+        for field in SESSION_SUMMARY_FIELD_NAMES:
+            if field == "Facts":
+                fact_parts = []
+                for subfield in SESSION_SUMMARY_FACT_SUBFIELDS:
+                    values = [v for v in fact_values.get(subfield, []) if str(v or "").strip()]
+                    fact_parts.append(f"{subfield}: {'; '.join(values) if values else 'None'}")
+                line = f"Facts: {'; '.join(fact_parts)}"
+            else:
+                values = [v for v in field_values.get(field, []) if str(v or "").strip()]
+                line = f"{field}: {'; '.join(values) if values else 'None'}"
+            lines.append(line)
+        text = "\n".join(lines).strip()
+        return self._clip_text_to_token_budget(text, SESSION_SUMMARY_ROLLING_MAX_CHARS)
+
+    def _build_fixed_field_summary_from_history(self, rows: List[Dict[str, Any]], *, header: str) -> str:
+        field_values: Dict[str, List[str]] = {field: [] for field in SESSION_SUMMARY_FIELD_NAMES}
+        field_seen: Dict[str, Set[str]] = {field: set() for field in SESSION_SUMMARY_FIELD_NAMES}
+        fact_values: Dict[str, List[str]] = {field: [] for field in SESSION_SUMMARY_FACT_SUBFIELDS}
+        fact_seen: Dict[str, Set[str]] = {field: set() for field in SESSION_SUMMARY_FACT_SUBFIELDS}
+        for msg in rows[-8:]:
+            for field, fragment in self._summarize_recent_message_for_rolling(msg):
+                if field in fact_values:
+                    if len(fact_values[field]) >= SESSION_SUMMARY_FIELD_ITEM_LIMIT:
+                        continue
+                    fragment_key = fragment.lower()
+                    if fragment_key in fact_seen[field]:
+                        continue
+                    fact_values[field].append(fragment)
+                    fact_seen[field].add(fragment_key)
+                    continue
+                if field not in field_values or field == "Facts":
+                    continue
+                if len(field_values[field]) >= SESSION_SUMMARY_FIELD_ITEM_LIMIT:
+                    continue
+                fragment_key = fragment.lower()
+                if fragment_key in field_seen[field]:
+                    continue
+                field_values[field].append(fragment)
+                field_seen[field].add(fragment_key)
+        return self._render_fixed_field_summary(field_values, fact_values, header=header)
 
     def _start_token_counter_warmup(self) -> None:
         with self._token_counter_lock:
@@ -720,32 +867,14 @@ class SessionMemoryService:
         return ""
 
     def update_session_summary_rolling(self) -> None:
-        hist = list(getattr(self.agent, "conversation_history", None) or [])
-        chunks: List[str] = []
-        snip = SESSION_SUMMARY_MSG_SNIPPET
-        for msg in hist[-8:]:
-            role = (msg.get("role") or "").strip().lower()
-            if role not in ("user", "assistant"):
-                continue
-            c_raw = str(msg.get("content") or "")
-            if self._is_internal_slash_history_message(role, c_raw):
-                continue
-            c = c_raw.replace("\n", " ").strip()
-            if len(c) > snip:
-                c = c[: max(1, snip - 1)] + "…"
-            tag = "U" if role == "user" else "A"
-            if c:
-                chunks.append(f"{tag}:{c}")
-        s = " | ".join(chunks)
-        maxc = SESSION_SUMMARY_ROLLING_MAX_CHARS
-        if len(s) > maxc:
-            s = s[-maxc:]
+        hist = list(self._context_eligible_history() or [])
+        s = self._build_fixed_field_summary_from_history(hist, header="[Session excerpt]")
         self.agent._session_summary_rolling = s
 
     def session_summary_for_retrieval(self) -> str:
         llm = (self.agent._session_summary_llm or "").strip()
         if llm:
-            cap = min(800, SESSION_SUMMARY_LLM_MAX_CHARS)
+            cap = min(1200, SESSION_SUMMARY_LLM_MAX_CHARS)
             return f"[Session summary]\n{llm[:cap]}"
         roll = (self.agent._session_summary_rolling or "").strip()
         if roll:
@@ -781,7 +910,8 @@ class SessionMemoryService:
             return
         try:
             raw = self.agent.call_ai(
-                "Below is a recent excerpt from this session. Produce the summary according to the system instructions.\n\n" + blob,
+                "Below is a recent excerpt from this session. Produce a dense six-field summary using Goals / Facts / Preferences / Decisions / Errors / Next steps, and make Facts use the three buckets Paths/Commands/Tool results, Environment/Workspace, and Errors/Fixes, then follow the system instructions.\n\n"
+                + blob,
                 context="",
                 stream=False,
                 session_summary_mode=True,
@@ -1634,13 +1764,23 @@ class SessionMemoryService:
             f"{self._software_development_prompt_append()}"
             f"{runtime_tail_raw}"
             "\n[Context compaction summary task]\n"
-            "You are generating a durable context summary for later turns in the same chat. Output only the summary body; do not include greetings, tool calls, or Markdown code blocks.\n"
-            "The summary must preserve: the original user goal, completed and unfinished items, key constraints, important decisions, file/command/tool results, errors and interruption status, and facts required to continue later.\n"
-            "If a previous [Context summary] exists, merge it with subsequent messages into one updated summary without repeating irrelevant details.\n"
+            "You are generating a durable, retrieval-friendly summary for later turns in the same chat. Output only the summary body; do not include greetings, tool calls, or Markdown code blocks.\n"
+            "Write exactly six lines in this order, using the fixed field names below:\n"
+            "Goals: ...\n"
+            "Facts: Paths/Commands/Tool results: ...; Environment/Workspace: ...; Errors/Fixes: ...\n"
+            "Preferences: ...\n"
+            "Decisions: ...\n"
+            "Errors: ...\n"
+            "Next steps: ...\n"
+            "Use compact semicolon-separated clauses, not paragraphs. Preserve concrete experience details instead of only a broad overview.\n"
+            "In Facts, prioritize three buckets: Paths/Commands/Tool results, Environment/Workspace, and Errors/Fixes.\n"
+            "Include the original user goal, completed items, unfinished items, explicit next steps, key constraints, decisions and reasons, user preferences, stable behavior patterns, file paths, commands, tool calls, options, flags, exact outputs or error messages, environment details, warnings, failures, interruptions, and any one-off facts that could change future behavior or retrieval.\n"
+            "If a previous [Context summary] exists, merge it with subsequent messages into one updated summary, but do not compress away useful specifics.\n"
+            "Prefer dense factual coverage over elegant prose. If a detail is uncertain, mark it as tentative instead of omitting it.\n"
         )
         user_content = (
             f"compact_mode={str(mode or '').strip().lower() or 'manual'}\n"
-            "Based on the history above, generate a context summary that can replace those messages."
+            "Based on the history above, generate a context summary that can replace those messages using the same six-field format from the system instructions."
         )
         return [{"role": "system", "content": sys_content}] + history_messages + [{"role": "user", "content": user_content}]
 
