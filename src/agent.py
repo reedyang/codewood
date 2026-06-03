@@ -2386,7 +2386,7 @@ class Agent:
             return False
         normalized = cmd.lower()
         normalized = re.sub(r"\s+", " ", normalized)
-        if normalized in {"/chat reload", "/clear context", "/clear screen"}:
+        if normalized in {"/chat reload", "/clear context", "/clear screen", "/compact"}:
             return False
         if normalized == "/chat switch" or normalized.startswith("/chat switch "):
             return False
@@ -2423,11 +2423,6 @@ class Agent:
             "role": "assistant",
             "content": assistant_content,
         }
-        insert_idx = self._internal_slash_history_insert_index(raw_cmd, output_text)
-        if insert_idx is not None:
-            self.conversation_history.insert(insert_idx, user_msg)
-            self.conversation_history.insert(insert_idx + 1, assistant_msg)
-            return
         self.conversation_history.append(user_msg)
         self.conversation_history.append(assistant_msg)
 
@@ -2449,13 +2444,13 @@ class Agent:
         hist = self.conversation_history
         if not isinstance(hist, list) or len(hist) < 2:
             return None
-        notice_idx = len(hist) - 1
-        summary_idx = notice_idx - 1
-        try:
-            if is_notice(hist[notice_idx]) and is_summary(hist[summary_idx]):
-                return summary_idx
-        except Exception:
-            return None
+        for notice_idx in range(len(hist) - 1, 0, -1):
+            summary_idx = notice_idx - 1
+            try:
+                if is_notice(hist[notice_idx]) and is_summary(hist[summary_idx]):
+                    return summary_idx
+            except Exception:
+                continue
         return None
 
     def _is_direct_shell_result_aborted(self, result: Any) -> bool:
