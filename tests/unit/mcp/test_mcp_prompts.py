@@ -11,8 +11,13 @@ def _load_mcp_manager_module():
 
 class _FakeClient:
     def __init__(self):
+        self.list_tools_calls = 0
         self.list_prompts_calls = 0
         self.get_prompt_calls = 0
+
+    def list_tools(self, timeout_s=8.0):
+        self.list_tools_calls += 1
+        return []
 
     def list_prompts(self, timeout_s=8.0):
         self.list_prompts_calls += 1
@@ -77,6 +82,20 @@ class McpPromptsTests(unittest.TestCase):
     def test_list_prompts_cache_miss_raises(self):
         with self.assertRaises(self.McpError):
             self.manager.list_prompts("fake", use_cache=True)
+
+    def test_reconnect_warms_prompts_cache(self):
+        self.manager._client = lambda server: self.fake_client
+
+        tools = self.manager.reconnect_server("fake", timeout_s=1.0)
+
+        self.assertEqual(tools, [])
+        self.assertEqual(self.fake_client.list_prompts_calls, 1)
+        self.assertIn("fake", self.manager._prompts_cache)
+
+        prompts, from_cache = self.manager.list_prompts("fake", use_cache=True)
+        self.assertTrue(from_cache)
+        self.assertEqual(len(prompts), 1)
+        self.assertEqual(self.fake_client.list_prompts_calls, 1)
 
     def test_get_prompt_validates_and_returns_payload(self):
         result = self.manager.get_prompt("fake", "summarize_text", {"text": "abc"})

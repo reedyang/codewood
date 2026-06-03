@@ -3602,7 +3602,17 @@ class McpManager:
         self._resources_cache.pop(server, None)
         self._resource_templates_cache.pop(server, None)
         self._prompts_cache.pop(server, None)
+        conf = self._server_conf(server)
         tools, _ = self.list_tools(server, timeout_s=timeout_s, use_cache=False)
+        try:
+            prompts, _ = self.list_prompts(server, timeout_s=timeout_s, use_cache=False)
+            self._prompts_cache[server] = {
+                "prompts": prompts if isinstance(prompts, list) else [],
+                "ts": time.time(),
+                "source": "url" if "url" in conf else "stdio",
+            }
+        except Exception as e:
+            self._log("WARNING", f"prompt warmup failed during reconnect for {server}: {e}")
         return tools
 
     def refresh_status_sync(
