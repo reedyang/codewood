@@ -46,7 +46,7 @@ def _default_startup_tip_entry(language: Optional[str] = None) -> Dict[str, Any]
     try:
         from ..core.localization import translate
 
-        tip_text = translate(DEFAULT_STARTUP_TIP, language, fallback=DEFAULT_STARTUP_TIP)
+        tip_text = translate("startup.tip.manage_workspaces", language, fallback=DEFAULT_STARTUP_TIP)
     except Exception:
         tip_text = DEFAULT_STARTUP_TIP
     return {"text": tip_text, "highlights": ["/workspace"]}

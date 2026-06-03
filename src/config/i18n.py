@@ -62,22 +62,21 @@ def _lookup(language: Any, key: str, fallback: str) -> str:
     return str(value)
 
 
-def text(en_text: str, zh_text: str, language: Any) -> str:
-    key = str(en_text or "")
-    normalized = normalize_display_language(language) or DEFAULT_DISPLAY_LANGUAGE
-    if normalized == "zh-CN":
-        return _lookup(normalized, key, str(zh_text or en_text or ""))
-    return _lookup(DEFAULT_DISPLAY_LANGUAGE, key, str(en_text or zh_text or ""))
-
-
-def translate(key: str, language: Any, fallback: Optional[str] = None, **kwargs: Any) -> str:
-    raw = _lookup(language, str(key or ""), str(fallback or key or ""))
+def translate(key: str, locale: Any, fallback: Optional[str] = None, **kwargs: Any) -> str:
+    raw = _lookup(locale, str(key or ""), str(fallback or key or ""))
     if kwargs:
         try:
             return raw.format(**kwargs)
         except Exception:
             return raw
     return raw
+
+
+def text(key: str, locale: Any, fallback: Optional[str] = None, **kwargs: Any) -> str:
+    normalized = normalize_display_language(locale)
+    if normalized is None and fallback is not None and normalize_display_language(fallback) is not None:
+        raise TypeError("text() now expects (key, language, fallback=None, **kwargs)")
+    return translate(str(key or ""), locale, fallback=fallback, **kwargs)
 
 
 def language_display_name(language: Any) -> str:

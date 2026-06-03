@@ -113,12 +113,10 @@ def _clear_streamed_output_window(
 
 
 def _format_omitted_lines_notice(omitted_lines: int, stream: Any, language: Any = None) -> str:
-    from ..core.localization import DEFAULT_DISPLAY_LANGUAGE, normalize_display_language, text
+    from ..core.localization import DEFAULT_DISPLAY_LANGUAGE, normalize_display_language, translate
 
     lang = normalize_display_language(language) or DEFAULT_DISPLAY_LANGUAGE
-    msg = text("... omitted {count} lines ...", "... 已省略 {count} 行 ...", lang).format(
-        count=int(omitted_lines)
-    )
+    msg = translate("output.omitted_lines", lang, count=int(omitted_lines))
     try:
         if hasattr(stream, "isatty") and stream.isatty():
             return f"\x1b[90;3m{msg}\x1b[0m\n"
@@ -365,10 +363,10 @@ def _build_logical_tail_output_for_live_replay(
     )
     if omitted <= 0:
         return tail
-    from ..core.localization import DEFAULT_DISPLAY_LANGUAGE, normalize_display_language, text as _text
+    from ..core.localization import DEFAULT_DISPLAY_LANGUAGE, normalize_display_language, translate as _translate
 
     lang = normalize_display_language(language) or DEFAULT_DISPLAY_LANGUAGE
-    return f"{_text('... omitted {count} lines ...', '... 已省略 {count} 行 ...', lang).format(count=omitted)}\n{tail}"
+    return f"{_translate('output.omitted_lines', lang, count=omitted)}\n{tail}"
 
 
 def _append_completed_output_lines(

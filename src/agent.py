@@ -1307,9 +1307,9 @@ class Agent:
             elapsed = f"{seconds}s"
         else:
             elapsed = f"{minutes}m {seconds}s"
-        from .core.localization import text
+        from .core.localization import translate
 
-        head = f"─ {text('Worked for', '已运行', self._ui_language())} {elapsed} "
+        head = f"─ {translate('status.worked_for', self._ui_language())} {elapsed} "
         width = max(20, int(terminal_width or self._terminal_columns_for_line_estimate()))
         head_width = self._feedback_text_display_width(head)
         if head_width >= width:
@@ -1673,12 +1673,12 @@ class Agent:
         args: Dict[str, Any],
         failed: bool = False,
     ) -> str:
-        from .core.localization import text
+        from .core.localization import translate
 
         summary = self._tool_call_summary(tool_name, args)
         bullet = _ansi_rgb("•", 197, 15, 31) if bool(failed) else _ansi_rgb("•", 19, 161, 14)
         return self._format_wrapped_command_feedback_line(
-            f"{bullet} {text('Ran', '已执行', self._ui_language())} ",
+            f"{bullet} {translate('status.ran', self._ui_language())} ",
             summary,
         )
 
@@ -1989,12 +1989,12 @@ class Agent:
             pass
 
     def _format_direct_shell_command_feedback_line(self, command: str, failed: bool = False) -> str:
-        from .core.localization import text
+        from .core.localization import translate
 
         cmd = str(command or "").replace("\r", " ").replace("\n", " ").strip()
         bullet = _ansi_rgb("•", 197, 15, 31) if bool(failed) else _ansi_rgb("•", 19, 161, 14)
         return self._format_wrapped_command_feedback_line(
-            f"{bullet} {text('You ran', '已运行', self._ui_language())} ",
+            f"{bullet} {translate('status.you_ran', self._ui_language())} ",
             cmd,
         )
 
@@ -2975,13 +2975,13 @@ class Agent:
                 # Keep at most n rows on screen: one notice row + latest n-1 rows.
                 tail_keep = max(0, max_visible_lines - 1)
                 omitted_rows = max(1, omitted_base + max(0, total_rows - tail_keep))
-                from .core.localization import text
+                from .core.localization import translate
 
-                notice = text(
-                    "  └ ... omitted {count} lines ...",
-                    "  └ ... 已省略 {count} 行 ...",
+                notice = "  └ " + translate(
+                    "output.omitted_lines",
                     self._ui_language(),
-                ).format(count=int(omitted_rows))
+                    count=int(omitted_rows),
+                )
                 visible_rows = rows[-tail_keep:] if tail_keep > 0 else []
                 display_rows = [notice, *visible_rows]
                 display_text = "\n".join(display_rows)
@@ -5143,40 +5143,28 @@ class Agent:
         print_mcp_shortcut_result(self, tool_name, args, result)
 
     def _print_main_help(self) -> None:
-        from .core.localization import get_display_language, text
+        from .core.localization import get_display_language, translate
 
         lang = get_display_language(self)
-        t = lambda en, zh: text(en, zh, lang)
-        print(f"\n{get_app_name()} {t('Help', '帮助')}")
+        t = lambda key, **kwargs: translate(key, lang, **kwargs)
+        print(f"\n{get_app_name()} {t('common.help')}")
         print("=" * 80)
-        print(t("\nBuilt-in commands:", "\n内置命令："))
+        print(t("help.section.builtin_commands"))
         print("  /exit, /quit")
         print("  /clear screen")
         print("  /clear input history")
         print("  /clear context")
         print("  /compact")
         print("  /help")
-        print(t("  /language <language code>", "  /language <语言代码>"))
+        print(t("help.command.language"))
         print("  /model [<model_provider>:<name>]")
-        print(t("\nChat commands:", "\n聊天命令："))
-        print(
-            t(
-                "  /chat list | current | reload | new [name] | switch <selector> | rename <selector> <new> | delete <selector> | delete all",
-                "  /chat list | current | reload | new [名称] | switch <选择器> | rename <选择器> <新名称> | delete <选择器> | delete all",
-                lang,
-            )
-        )
-        print(t("\nWorkspace commands:", "\n工作区命令："))
-        print(
-            t(
-                "  /workspace current | list | create <path> [--name <name>] | switch <selector>",
-                "  /workspace current | list | create <path> [--name <名称>] | switch <选择器>",
-                lang,
-            )
-        )
-        print(t("  /workspace update <selector> [--name <name>] [--path <path>]", "  /workspace update <选择器> [--name <名称>] [--path <路径>]"))
-        print(t("  /workspace delete <selector> [--remove-files]", "  /workspace delete <选择器> [--remove-files]"))
-        print(t("\nMCP commands:", "\nMCP 命令："))
+        print(t("help.section.chat_commands"))
+        print(t("help.command.chat"))
+        print(t("help.section.workspace_commands"))
+        print(t("help.command.workspace.primary"))
+        print(t("help.command.workspace.update"))
+        print(t("help.command.workspace.delete"))
+        print(t("help.section.mcp_commands"))
         print("  /mcp status | status-refresh | reload-config")
         print("  /mcp reconnect <server> | server-info <server>")
         print("  /mcp list-tools <server> | list-resources <server>")
@@ -5184,31 +5172,25 @@ class Agent:
         print("  /mcp list-disabled-tools [server]")
         print("  /mcp disable-tools <server> <tool1,tool2>")
         print("  /mcp enable-tools <server> <tool1,tool2>")
-        print(t("\nMemory:", "\n记忆："))
-        print(
-            t(
-                "  /memory status | enable | disable | stats | list | search <query> | remember <text> | delete <id>",
-                "  /memory status | enable | disable | stats | list | search <查询> | remember <内容> | delete <id>",
-                lang,
-            )
-        )
-        print(t("  /execution-policy show|unlimited|moderate|confirmation", "  /execution-policy show|unlimited|moderate|confirmation"))
+        print(t("help.section.memory"))
+        print(t("help.command.memory"))
+        print(t("help.command.execution_policy"))
         print("  /always_confirm-reset")
-        print(t("\nDirect shell (bypass AI):", "\n直接 shell（绕过 AI）："))
-        print(t("  Use ! prefix, e.g. !ls, !dir, !git status, !python script.py", "  使用 ! 前缀，例如 !ls、!dir、!git status、!python script.py"))
+        print(t("help.section.direct_shell"))
+        print(t("help.command.direct_shell_hint"))
         if self.skills:
             print(
                 t(
-                    f"\nLoaded Agent Skills: {len(self.skills)} "
-                    f"(builtin: {self._builtin_skills_root}, external: {self.config_dir / 'skills'})",
-                    f"\n已加载 Agent Skills：{len(self.skills)} "
-                    f"(内置：{self._builtin_skills_root}，外部：{self.config_dir / 'skills'})",
+                    "help.skills.loaded_summary",
+                    count=len(self.skills),
+                    builtin=self._builtin_skills_root,
+                    external=self.config_dir / "skills",
                 )
             )
-            print(t("  Use /skills/<skill-name> <task> to force a skill in current turn.", "  使用 /skills/<skill-name> <任务> 在当前轮强制使用某个 skill。"))
+            print(t("help.command.skills_force"))
             skill_cmds = self._get_slash_skill_commands()
             if skill_cmds:
-                print(t("  Skill shortcuts:", "  Skill 快捷方式："))
+                print(t("help.skills.shortcuts"))
                 print("    " + ", ".join(skill_cmds))
         print("=" * 80)
 

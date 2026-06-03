@@ -50,7 +50,7 @@ class HistoryManager:
             else:
                 self.history = []
         except Exception as e:
-            print(text("⚠️ Failed to load history: {error}", "⚠️ 加载历史记录失败：{error}", self.language).format(error=e))
+            print(text("history.load_failed", self.language, error=e))
             self.history = []
     
     def save_history(self):
@@ -66,7 +66,7 @@ class HistoryManager:
             with open(self.history_file, 'w', encoding='utf-8') as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
         except Exception as e:
-            print(text("⚠️ Failed to save history: {error}", "⚠️ 保存历史记录失败：{error}", self.language).format(error=e))
+            print(text("history.save_failed", self.language, error=e))
     
     def add_entry(self, command: str):
         """
