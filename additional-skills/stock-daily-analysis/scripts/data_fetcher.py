@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
 """
-数据获取模块 - 纯行情适配层（不直接调用其他 skill 脚本）
+Data access module - a pure market-data adapter layer that does not call other skill scripts directly.
 
-约束：
-1) 本模块不发起 shell/subprocess 调用；
-2) 行情数据由上层 Agent 先通过其他 skill（如 baidu）获取后注入。
+Constraints:
+1) This module does not start shell or subprocess calls.
+2) Market data is fetched by the upstream agent through another skill first and then injected here.
 """
 
 import logging
@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class StockQuote:
-    """统一实时行情数据结构"""
+    """Unified real-time quote data structure."""
     code: str
     name: str = ""
     price: float = 0.0
@@ -42,7 +42,7 @@ class StockQuote:
 
 @dataclass
 class ChipDistribution:
-    """筹码分布数据"""
+    """Chip distribution data."""
     profit_ratio: float = 0.0
     avg_cost: float = 0.0
     concentration_90: float = 0.0
@@ -65,13 +65,13 @@ def _to_int(v: Any) -> Optional[int]:
 
 
 def _is_us_code(stock_code: str) -> bool:
-    """判断是否为美股代码（1-5个大写字母）"""
+    """Return True when the code looks like a US stock symbol (1 to 5 uppercase letters)."""
     code = stock_code.strip().upper()
     return bool(re.match(r'^[A-Z]{1,5}(\.[A-Z])?$', code))
 
 
 def _is_hk_code(stock_code: str) -> bool:
-    """判断是否为港股代码（5位数字）"""
+    """Return True when the code looks like a Hong Kong stock code (5 digits)."""
     code = stock_code.lower()
     if code.startswith('hk'):
         numeric_part = code[2:]
@@ -80,19 +80,19 @@ def _is_hk_code(stock_code: str) -> bool:
 
 
 def _is_etf_code(stock_code: str) -> bool:
-    """判断是否为 ETF 代码"""
+    """Return True when the code looks like an ETF symbol."""
     etf_prefixes = ('51', '52', '56', '58', '15', '16', '18')
     return stock_code.startswith(etf_prefixes) and len(stock_code) == 6
 
 
 def normalize_code(stock_code: str) -> tuple:
     """
-    标准化股票代码
-    
+    Normalize a stock code.
+
     Returns:
         tuple: (market, code)
         - market: 'a', 'hk', 'us'
-        - code: 标准化后的代码
+        - code: normalized code
     """
     code = stock_code.strip()
     
@@ -100,17 +100,17 @@ def normalize_code(stock_code: str) -> tuple:
         return 'us', code.upper()
     
     if _is_hk_code(code):
-        # 去除 hk 前缀，返回5位数字
+        # Strip the hk prefix and return a 5-digit code.
         if code.lower().startswith('hk'):
             code = code[2:]
         return 'hk', code.zfill(5)
     
-    # A股默认处理
+    # Default to A-shares.
     return 'a', code
 
 
 def build_quote_from_snapshot(stock_code: str, snapshot: Optional[Dict[str, Any]]) -> Optional[StockQuote]:
-    """Build StockQuote from externally provided snapshot dict."""
+    """Build a StockQuote from an externally provided snapshot dictionary."""
     if not snapshot:
         return None
     _, code = normalize_code(stock_code)
@@ -147,7 +147,7 @@ def build_quote_from_snapshot(stock_code: str, snapshot: Optional[Dict[str, Any]
 
 
 def _build_synthetic_daily_from_quote(quote: StockQuote, days: int = 60) -> pd.DataFrame:
-    """Build synthetic OHLCV from one quote snapshot for downstream indicators."""
+    """Build synthetic OHLCV data from a single quote snapshot for downstream indicators."""
     n = max(20, int(days))
     end = datetime.now().date()
     start_close = quote.pre_close if quote.pre_close and quote.pre_close > 0 else quote.price
@@ -180,54 +180,54 @@ def _build_synthetic_daily_from_quote(quote: StockQuote, days: int = 60) -> pd.D
 
 def get_daily_data(stock_code: str, days: int = 60, quote_snapshot: Optional[Dict[str, Any]] = None) -> Optional[pd.DataFrame]:
     """
-    获取股票日线数据
-    
+    Fetch daily data for a stock.
+
     Args:
-        stock_code: 股票代码
-        days: 获取天数
-        
+        stock_code: stock code
+        days: number of days to fetch
+
     Returns:
-        DataFrame 包含 OHLCV 数据，失败返回 None
+        A DataFrame containing OHLCV data, or None on failure.
     """
     quote = build_quote_from_snapshot(stock_code, quote_snapshot)
     if quote and quote.price > 0:
         return _build_synthetic_daily_from_quote(quote, days=days)
-    logger.error(f"获取 {stock_code} 数据失败: 未注入可用行情快照")
+    logger.error(f"Failed to fetch data for {stock_code}: no usable quote snapshot was injected")
     return None
 
 
 def get_realtime_quote(stock_code: str, quote_snapshot: Optional[Dict[str, Any]] = None) -> Optional[StockQuote]:
     """
-    获取实时行情
-    
+    Fetch the current quote.
+
     Args:
-        stock_code: 股票代码
-        
+        stock_code: stock code
+
     Returns:
-        StockQuote 对象，失败返回 None
+        StockQuote object, or None on failure.
     """
     return build_quote_from_snapshot(stock_code, quote_snapshot)
 
 
 def get_chip_distribution(stock_code: str) -> Optional[ChipDistribution]:
     """
-    获取筹码分布数据（仅 A 股）
-    
+    Fetch chip distribution data (A-shares only).
+
     Args:
-        stock_code: 股票代码
-        
+        stock_code: stock code
+
     Returns:
-        ChipDistribution 对象，失败返回 None
+        ChipDistribution object, or None on failure.
     """
-    logger.info(f"当前数据源模式仅使用 baidu skill，筹码分布暂不可用: {stock_code}")
+    logger.info(f"The current data source mode only uses the baidu skill; chip distribution is not available yet: {stock_code}")
     return None
 
 
 def get_stock_name(stock_code: str) -> str:
-    """获取股票名称"""
+    """Return the stock name."""
     quote = get_realtime_quote(stock_code)
     if quote and quote.name:
         return quote.name
     
-    # 默认返回代码
+    # Fall back to the code.
     return stock_code

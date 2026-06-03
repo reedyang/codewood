@@ -25,7 +25,7 @@ try:
     import requests
     import urllib3
 except ImportError as e:
-    print("【错误】需要 requests 库：pip install requests", file=sys.stderr)
+    print("[Error] requests is required: pip install requests", file=sys.stderr)
     raise SystemExit(1) from e
 
 # One-time stderr notice when falling back from TLS verify failure (corporate proxy / broken CA store)
@@ -157,7 +157,7 @@ def _http_headers() -> Dict[str, str]:
     return {
         "User-Agent": USER_AGENT,
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
     }
 
 
@@ -185,7 +185,7 @@ def _charset_from_content_type(content_type: str) -> Optional[str]:
 def _charset_from_html_meta(head: bytes) -> Optional[str]:
     """Parse charset from first bytes (meta charset / http-equiv)."""
     # <meta charset="utf-8">
-    m = re.search(rb'<meta\s+charset\s*=\s*["\']?([^"\'\s/>]+)', head, re.I)
+    m = re.search(rb'<meta\s+charset\s*=\s*["\']; ([^"\'\s/>]+)', head, re.I)
     if m:
         try:
             return _normalize_html_charset(
@@ -207,7 +207,7 @@ def _charset_from_html_meta(head: bytes) -> Optional[str]:
         except Exception:
             pass
     # Loose: charset= after meta or anywhere in head (Baidu / legacy)
-    m = re.search(rb'charset\s*=\s*["\']?([^"\'\s;>]+)', head[:16384], re.I)
+    m = re.search(rb'charset\s*=\s*["\']; ([^"\'\s;>]+)', head[:16384], re.I)
     if m:
         try:
             return _normalize_html_charset(
@@ -279,13 +279,13 @@ def _fetch(url: str, verify_ssl: bool = True) -> Tuple[str, str]:
         return _response_to_text(r)
     except requests.exceptions.SSLError as e:
         if not verify_ssl:
-            raise RuntimeError(f"请求失败: {e}") from e
+            raise RuntimeError(f"Request failed: {e}") from e
         if not _ssl_insecure_fallback_printed:
             if _env_verbose():
                 print(
-                    "【警告】HTTPS 证书校验失败（常见于 Python 未关联 CA、或企业代理替换证书），"
-                    "已自动改为不校验证书重试。可安装 certifi、配置系统/代理 CA，"
-                    "或设置环境变量 BAIDU_SKILL_INSECURE_SSL=1 以始终跳过校验。",
+                    "[Warning] HTTPS certificate verification failed (often because Python has no CA bundle or an enterprise proxy replaced the certificate). "
+                    "Retrying with certificate verification disabled. You can install certifi, configure the system or proxy CA, "
+                    "or set BAIDU_SKILL_INSECURE_SSL=1 to always skip verification.",
                     file=sys.stderr,
                 )
             _ssl_insecure_fallback_printed = True
@@ -295,9 +295,9 @@ def _fetch(url: str, verify_ssl: bool = True) -> Tuple[str, str]:
             r.raise_for_status()
             return _response_to_text(r)
         except requests.RequestException as e2:
-            raise RuntimeError(f"请求失败: {e2}") from e2
+            raise RuntimeError(f"Request failed: {e2}") from e2
     except requests.RequestException as e:
-        raise RuntimeError(f"请求失败: {e}") from e
+        raise RuntimeError(f"Request failed: {e}") from e
 
 
 def _html_to_text(html: str) -> str:
@@ -360,16 +360,15 @@ def _is_time_sensitive_query(query: str) -> bool:
     if not q:
         return False
     patterns = (
-        r"最近",
-        r"近期",
-        r"最新",
-        r"今日",
-        r"本月",
-        r"一个月",
-        r"近一个月",
-        r"行情",
-        r"走势",
-        r"预测",
+        r"recent",
+        r"latest",
+        r"today",
+        r"this month",
+        r"one month",
+        r"last month",
+        r"market",
+        r"trend",
+        r"forecast",
     )
     return any(re.search(p, q) for p in patterns)
 
@@ -379,7 +378,7 @@ def _extract_publish_datetime(text: str) -> Optional[datetime]:
         return None
     patterns = [
         r"(?P<y>20\d{2}|19\d{2})[-/\.](?P<m>0?[1-9]|1[0-2])[-/\.](?P<d>0?[1-9]|[12]\d|3[01])",
-        r"(?P<y>20\d{2}|19\d{2})年(?P<m>0?[1-9]|1[0-2])月(?P<d>0?[1-9]|[12]\d|3[01])日",
+        r"(?P<y>20\d{2}|19\d{2})[./-](?P<m>0?[1-9]|1[0-2])[./-](?P<d>0?[1-9]|[12]\d|3[01])",
     ]
     for p in patterns:
         m = re.search(p, text)
@@ -402,7 +401,7 @@ def _parse_serp(html: str) -> List[Dict[str, str]]:
 
     # Primary: h3.t > a
     block_re = re.compile(
-        r'<h3[^>]*class="[^"]*\bt\b[^"]*"[^>]*>\s*<a[^>]+href="([^"]+)"[^>]*>(.*?)</a>',
+        r'<h3[^>]*class="[^"]*\bt\b[^"]*"[^>]*>\s*<a[^>]+href="([^"]+)"[^>]*>(.*; )</a>',
         re.DOTALL | re.I,
     )
     for m in block_re.finditer(html):
@@ -412,7 +411,7 @@ def _parse_serp(html: str) -> List[Dict[str, str]]:
             continue
         if not href.startswith(("http://", "https://")):
             continue
-        if "baidu.com" in urlparse(href).netloc and "/link?" not in href:
+        if "baidu.com" in urlparse(href).netloc and "/link; " not in href:
             continue
         key = href[:200]
         if key in seen:
@@ -422,7 +421,7 @@ def _parse_serp(html: str) -> List[Dict[str, str]]:
 
     # Snippets: try c-abstract near results (best-effort)
     abs_re = re.compile(
-        r'class="c-abstract[^"]*"[^>]*>(.*?)</span>',
+        r'class="c-abstract[^"]*"[^>]*>(.*; )</span>',
         re.DOTALL | re.I,
     )
     abses = [ _html_to_text(x.group(1)) for x in abs_re.finditer(html) ]
@@ -434,7 +433,7 @@ def _parse_serp(html: str) -> List[Dict[str, str]]:
     # Fallback: any baidu link lines
     if not results:
         link_re = re.compile(
-            r'href="(https?://www\.baidu\.com/link\?[^"]+)"[^>]*>\s*([^<]{5,200})</a>',
+            r'href="(https; ://www\.baidu\.com/link\; [^"]+)"[^>]*>\s*([^<]{5,200})</a>',
             re.I,
         )
         for m in link_re.finditer(html):
@@ -483,8 +482,8 @@ def _enough_material(
 def _build_answer(sentences: List[str], query: str, serp_items: List[Dict[str, str]]) -> str:
     if not sentences:
         return (
-            "根据当前检索结果，未能从正文提取到足够可靠、与问题直接相关的语句。"
-            "可尝试缩短查询词、换关键词，或适当增加 --max-pages。"
+            "The current results did not provide enough reliable sentences directly related to the question. "
+            "Try shortening the query, changing keywords, or increasing --max-pages."
         )
     # Order sentences by score, keep top, restore reading order
     indexed = list(enumerate(sentences))
@@ -496,8 +495,8 @@ def _build_answer(sentences: List[str], query: str, serp_items: List[Dict[str, s
     ordered = [s for s in sentences if s in top_set]
     body = "\n\n".join(ordered[:8])
     if len(body) < 40 and serp_items:
-        titles = "；".join(x["title"] for x in serp_items[:4])
-        body = f"检索到的相关结果标题包括：{titles}。建议点开来源链接核对细节。"
+        titles = "; ".join(x["title"] for x in serp_items[:4])
+        body = f"Relevant result titles include: {titles}. Open the source links to verify details."
     return body
 
 
@@ -513,7 +512,7 @@ def run_search(
     local_now = datetime.now().astimezone()
     now_naive = datetime.now()
     time_sensitive = _is_time_sensitive_query(query)
-    lines.append(f"【当前本机时间】{local_now.isoformat(timespec='seconds')}")
+    lines.append(f"【Current Local Time】{local_now.isoformat(timespec='seconds')}")
     lines.append("")
 
     cache_key = _cache_key(query, max_pages)
@@ -536,17 +535,17 @@ def run_search(
         _, serp_html = _fetch(serp_url, verify_ssl=verify_ssl)
 
     if from_cache:
-        lines.append("（SERP 结果来自本技能目录下 .cache，仍在 TTL 内）")
+        lines.append("(SERP results came from this skill directory's .cache and are still within the TTL)")
         lines.append("")
 
-    if "安全验证" in serp_html or "请输入验证码" in serp_html:
-        lines.append("【检索摘要】百度搜索返回验证页，无法解析结果。请稍后重试或更换网络环境。")
+    if "security verification" in serp_html or "please enter captcha" in serp_html:
+        lines.append("【Search Summary】Baidu returned a verification page and the results could not be parsed. Please retry later or switch networks.")
         lines.append("")
-        lines.append("【回答】暂时无法完成检索。")
+        lines.append("【Answer】Search could not be completed for now.")
         lines.append("")
         lines.append(
-            "【AI 审核】请宿主模型核对：是否出现验证码或封禁；若有，勿重复同一脚本请求，"
-            "应提示用户更换网络或稍后再试。"
+            "【AI Review】Please verify whether a captcha or ban occurred. If so, do not repeat the same script request; "
+            "advise the user to switch networks or try again later."
         )
         return "\n".join(lines)
 
@@ -556,11 +555,11 @@ def run_search(
     summary_bits: List[str] = []
     for i, it in enumerate(serp_items[:10], 1):
         sn = it.get("snippet") or ""
-        summary_bits.append(f"{i}. {it['title']}\n   链接：{it['url']}\n   摘要：{sn or '（无摘要）'}")
+        summary_bits.append(f"{i}. {it['title']}\n   Link:{it['url']}\n   Snippet:{sn or '(no snippet)'}")
 
-    lines.append("【检索摘要】")
+    lines.append("【Search Summary】")
     if not serp_items:
-        lines.append("（未解析到常规结果条目，页面结构可能已变更或结果为空。）")
+        lines.append("(No standard result entries were parsed; the page structure may have changed or the result set may be empty.)")
     else:
         lines.append("\n\n".join(summary_bits))
     lines.append("")
@@ -587,21 +586,21 @@ def run_search(
             rel = _relevance_score(text, query)
             pub_dt = _extract_publish_datetime(text)
             if pub_dt is None:
-                date_note = "发布时间：未知"
+                date_note = "Publish date: unknown"
                 unknown_date_pages += 1
                 is_recent = False
             else:
                 age_days = (now_naive - pub_dt).days
                 if age_days <= RECENT_DAYS_FOR_TIME_QUERY:
-                    date_note = f"发布时间：{pub_dt.date().isoformat()}（近{RECENT_DAYS_FOR_TIME_QUERY}天内）"
+                    date_note = f"Publish date: {pub_dt.date().isoformat()} (within the last {RECENT_DAYS_FOR_TIME_QUERY} days)"
                     recent_pages += 1
                     is_recent = True
                 else:
-                    date_note = f"发布时间：{pub_dt.date().isoformat()}（较旧，距今约{age_days}天）"
+                    date_note = f"Publish date: {pub_dt.date().isoformat()} (older, about {age_days} days ago)"
                     stale_pages += 1
                     is_recent = False
             fetched_texts.append(
-                f"来源：{it.get('title','')}\n最终URL：{final_u}\n相关性得分（启发式）：{rel:.2f}\n{date_note}\n正文摘录：{text[:2800]}"
+                f"Source:{it.get('title','')}\nFinal URL:{final_u}\nHeuristic relevance score:{rel:.2f}\n{date_note}\nText excerpt:{text[:2800]}"
             )
             acc += "\n" + text
             if is_recent:
@@ -611,22 +610,22 @@ def run_search(
             if _enough_material(effective_acc, query, pages_done, max_pages):
                 break
         except RuntimeError as e:
-            fetched_texts.append(f"来源：{it.get('title','')} URL：{url}\n（抓取失败：{e}）")
+            fetched_texts.append(f"Source: {it.get('title','')} URL: {url}\n(fetch failed: {e})")
 
-    lines.append("【正文摘录与要点】")
+    lines.append("【Extracts and Key Points】")
     if not fetched_texts:
-        lines.append("（未抓取正文或未选择到可访问的 http(s) 链接；回答将主要依据检索摘要。）")
+        lines.append("(No body text was fetched or no accessible http(s) link was selected; the answer will rely mainly on the search summary.)")
     else:
         lines.append("\n\n---\n\n".join(fetched_texts))
     lines.append("")
 
-    lines.append("【时效性检查】")
+    lines.append("【Time Sensitivity Check】")
     if not time_sensitive:
-        lines.append("查询未命中强时效关键词，未启用近期待证据门槛。")
+        lines.append("The query did not match strong recency keywords, so the recent-evidence threshold is disabled.")
     else:
         lines.append(
-            f"已启用近期待证据门槛（近{RECENT_DAYS_FOR_TIME_QUERY}天）。"
-            f"近期待证据页：{recent_pages}；较旧页：{stale_pages}；发布时间未知页：{unknown_date_pages}。"
+            f"The recent-evidence threshold is enabled (within the last {RECENT_DAYS_FOR_TIME_QUERY} days). "
+            f"Recent pages: {recent_pages}; older pages: {stale_pages}; pages with unknown publish dates: {unknown_date_pages}."
         )
     lines.append("")
 
@@ -639,21 +638,20 @@ def run_search(
 
     if time_sensitive and recent_pages < MIN_RECENT_SOURCES_FOR_TIME_QUERY:
         answer = (
-            "当前检索结果里，近期待证据不足（发布时间满足“最近一段时间”的来源过少），"
-            "无法可靠支持“最近一个月/近期走势”的定量判断。"
-            "建议改用更具体且可验证的数据源关键词（例如：交易所官方、权威财经终端、"
-            "公司公告、财报日期）后再检索。"
+            "The current results do not provide enough recent evidence to support a quantitative judgment about the last month or recent trend. "
+            "Try more specific and verifiable source keywords, such as an exchange, an authoritative financial terminal, "
+            "company announcements, or filing dates, and search again."
         )
     else:
         answer = _build_answer(all_sents, query, serp_items)
-    lines.append("【回答】")
+    lines.append("【Answer】")
     lines.append(answer)
     lines.append("")
     lines.append(
-        "【AI 审核】请宿主模型在上下文中核对："
-        "【回答】中的事实是否可由上方【检索摘要】与【正文摘录】支持；"
-        "对强时效问题请对照【当前本机时间】判断是否需更新；"
-        "若已同时出现【回答】与本段【AI 审核】，请收束对话，勿重复执行同一 `baidu_search.py` 命令。"
+        "【AI Review】Please verify in context that"
+        "the facts in 【Answer】 are supported by the search summary and extracts above;"
+        "for strongly time-sensitive questions, compare against 【Current Local Time】 to decide whether an update is needed;"
+        "if both 【Answer】 and this 【AI Review】 block are present, wrap up the conversation and do not rerun the same `baidu_search.py` command."
     )
     return "\n".join(lines)
 
@@ -698,7 +696,7 @@ def main() -> None:
     )
     args = parser.parse_args()
     if args.max_pages < 1 or args.max_pages > 10:
-        print("【错误】--max-pages 必须在 1–10 之间。", file=sys.stderr)
+        print("[Error] --max-pages must be between 1 and 10.", file=sys.stderr)
         raise SystemExit(2)
 
     verify_ssl = not args.insecure

@@ -1,6 +1,6 @@
 ---
 name: skillhub-skill-installer
-description: Search skills from SkillHub and install a selected skill with explicit CLI confirmation. Callers must provide an explicit install target via --install-skills-root. Use whenever the user asks to browse/find/install skills from skillhub.club, especially for "检索并安装 skill". Installation must stop on name conflicts with currently loaded skills unless an explicit conflict policy is provided.
+description: Search skills from SkillHub and install a selected skill with explicit CLI confirmation. Callers must provide an explicit install target via `--install-skills-root`. Use this whenever the user asks to browse, find, or install skills from skillhub.club, especially for "search and install a skill". Installation must stop on name conflicts with currently loaded skills unless an explicit conflict policy is provided.
 license: Proprietary
 ---
 
@@ -29,13 +29,13 @@ python "<BUNDLE_ROOT>/scripts/skillhub_installer.py" install --detail-url "<skil
 - Installation target rule:
   - `--install-skills-root` is mandatory for every install command.
   - If user explicitly specifies install location, pass `--install-skills-root "<that absolute path>"`.
-  - If user asks to install into workspace, use the absolute path from system prompt line: `当前 workspace skills 目录（绝对路径）` as `--install-skills-root`.
-  - If user does not specify location, use the system prompt line `默认技能安装路径（绝对路径）` as `--install-skills-root`.
+  - If the user asks to install into the workspace, use the absolute path from the system prompt line `current workspace skills directory (absolute path)` as `--install-skills-root`.
+  - If the user does not specify a location, use the system prompt line `default skills installation path (absolute path)` as `--install-skills-root`.
   - Never treat workspace as default install target. Only use workspace path when the user explicitly asks for workspace installation.
 - For slash route `/skillhub-skill-installer <text>`, always treat `<text>` as the query.
 - `install` must use `--detail-url`; do not install by rerunning search with a query/index.
 - For an index selection, map the user's selected index to the `detail_url` printed by the immediately preceding `search` result for the same task.
-- If search returns multiple candidates and user did not explicitly authorize model-side selection (e.g. "你帮我选"), must ask user to pick one candidate once (index or exact URL) before running install; do not auto-pick.
+- If search returns multiple candidates and the user did not explicitly authorize model-side selection (for example, "you choose"), ask the user to pick one candidate once by index or exact URL before running install. Do not auto-pick.
 - For consecutive installations in one conversation, treat each new install request as a new selection round: do not reuse any previously chosen index, and ask again based on the current search result list.
 - Do not reuse stale search results, unrelated task results, or guessed URLs.
 - Confirmation must be supplied with `--confirm YES`.
@@ -60,8 +60,8 @@ python "<BUNDLE_ROOT>/scripts/skillhub_installer.py" install --detail-url "<skil
 {"tool":"shell","args":{"command":"python \"<BUNDLE_ROOT>/scripts/skillhub_installer.py\" install --detail-url \"<skill detail url>\" --install-skills-root \"<skills root>\" --confirm \"YES\" --on-conflict abort","interactive":false}}
 ```
 
-- If user explicitly gives a detail URL, skip search and use the same install command.
-- If a conflict abort occurs and the user asks to overwrite or rename, re-run the same install command with the same `--detail-url` and `--on-conflict overwrite` or `--on-conflict rename`.
+- If the user explicitly gives a detail URL, skip search and use the same install command.
+- If a conflict abort occurs and the user asks to overwrite or rename, rerun the same install command with the same `--detail-url` and `--on-conflict overwrite` or `--on-conflict rename`.
 
 ## Mandatory routing for slash usage
 
@@ -82,7 +82,7 @@ python "<BUNDLE_ROOT>/scripts/skillhub_installer.py" search --query "<text>"
 ```
 
 4. Present the search result list to the user and ask for an index.
-4.1 If there are multiple candidates and user has not explicitly asked you to choose, do not decide on user's behalf; require one explicit user selection before install.
+4.1 If there are multiple candidates and the user has not explicitly asked you to choose, do not decide on the user's behalf; require one explicit user selection before install.
 5. When the user replies with an index, find that numbered result in the immediately preceding search output and install by URL:
 
 ```text
@@ -133,9 +133,9 @@ normalized_frontmatter: yes
 
 ## Failure discipline
 
-- On any non-zero exit from installer script, output error summary and next actionable options only.
-- On any non-zero exit from installer script, after one concise error summary, immediately end with `{"tool":"done","args":{}}`.
-- If installer output reports an aborted installation, treat it as final terminal state and immediately end with `{"tool":"done","args":{}}`.
+- On any non-zero exit from the installer script, output only an error summary and the next actionable options.
+- On any non-zero exit from the installer script, after one concise error summary, immediately end with `{"tool":"done","args":{}}`.
+- If installer output reports an aborted installation, treat it as a final terminal state and immediately end with `{"tool":"done","args":{}}`.
 - Forbidden after failure:
   - switching to unrelated workflows
   - asking unrelated inputs
