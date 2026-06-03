@@ -19,16 +19,16 @@ _SYSTEM_FILE_SEARCH_NEARBY_RULE_KEY = "{{SYSTEM_FILE_SEARCH_NEARBY_RULE}}"
 _TOOLS_FILE_SEARCH_NEARBY_RULE_KEY = "{{TOOLS_FILE_SEARCH_NEARBY_RULE}}"
 
 _SYSTEM_FILE_SEARCH_NEARBY_RULE_FALLBACK = (
-    "first run a search such as `Select-String` or `rg`, then read nearby content by line range; do not read the whole file at once."
+    "first run a search such as `Select-String` or `rg`, then read nearby content by line range; do not read the whole file at once; keep the total file-content output under 4k characters."
 )
 _SYSTEM_FILE_SEARCH_NEARBY_RULE_RG_ONLY = (
-    "first run `rg`, then read nearby content by line range; do not read the whole file at once."
+    "first run `rg`, then read nearby content by line range; do not read the whole file at once; keep the total file-content output under 4k characters."
 )
 _TOOLS_FILE_SEARCH_NEARBY_RULE_FALLBACK = (
-    "first locate matches, then read nearby snippets by line range; do not read the whole file at once."
+    "first locate matches, then read nearby snippets by line range; do not read the whole file at once; keep the total file-content output under 4k characters."
 )
 _TOOLS_FILE_SEARCH_NEARBY_RULE_RG_ONLY = (
-    "first use `rg` to locate matches, then read nearby snippets by line range; do not read the whole file at once."
+    "first use `rg` to locate matches, then read nearby snippets by line range; do not read the whole file at once; keep the total file-content output under 4k characters."
 )
 _AGENTS_OVERRIDE_FILENAME = "AGENTS.override.md"
 _AGENTS_FILENAME = "AGENTS.md"
@@ -610,7 +610,7 @@ def build_os_file_ops_prompt_append() -> str:
             '- Current OS is Windows: only text-file operations (read, search, create, edit, replace) must use `powershell -ExecutionPolicy Bypass -Command "<command>"`; running scripts is not a text-file operation.\n'
             "- Do not use `type`, `findstr`, `copy`, `move`, `del`, `cmd /c`, or other non-prefix forms for those file operations.\n"
             + search_policy_line
-            + "- Do not read more than 100 lines from a text file in one call; split larger reads into ranges.\n"
+            + "- Do not read more than 100 lines from a text file in one call; split larger reads into ranges. Keep the total file-content output under 4k characters.\n"
             + '- Do not wrap script execution in unnecessary PowerShell. Allowed: `python tools/a.py --x 1`, `py scripts/job.py`; forbidden: `powershell -ExecutionPolicy Bypass -Command "python tools/a.py --x 1"`.\n'
             + "- Before issuing a command, self-check: python/py plus script file means direct python/py call; text-file operation means PowerShell prefix."
         )
@@ -619,7 +619,7 @@ def build_os_file_ops_prompt_append() -> str:
         "- File operations that can be done through OS commands (read, search, create, edit, bulk replace) must use `shell`.\n"
         "- Current OS is not Windows: `shell.command` uses POSIX shell conventions; prefer `cat`/`sed`/`awk`/`grep`/`find`, and prefer `sed -i` or redirection when editing files.\n"
         + search_policy_line
-        + "- Do not read more than 100 lines from a text file in one call; split larger reads into ranges.\n"
+        + "- Do not read more than 100 lines from a text file in one call; split larger reads into ranges. Keep the total file-content output under 4k characters.\n"
     )
 
 
