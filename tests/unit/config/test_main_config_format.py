@@ -73,6 +73,25 @@ class MainConfigFormatTests(unittest.TestCase):
         self.assertIsNone(error)
         self.assertEqual(model_config["params"]["context_window"], 128000)
 
+    def test_supports_m_suffix_context_window(self):
+        _, _, model_config, error = _extract_model_runtime_config(
+            {
+                "model_providers": [
+                    {
+                        "provider": "openai",
+                        "params": {
+                            "models": [
+                                {"name": "gpt-oss-120b", "context_window": "2M"},
+                                {"name": "gpt-4o-mini", "context_window": "1m"},
+                            ]
+                        },
+                    }
+                ]
+            }
+        )
+        self.assertIsNone(error)
+        self.assertEqual(model_config["params"]["context_window"], 2_000_000)
+
     def test_invalid_context_window_falls_back_to_default(self):
         _, _, model_config, error = _extract_model_runtime_config(
             {
