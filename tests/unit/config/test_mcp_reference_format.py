@@ -129,6 +129,42 @@ class McpReferenceFormatTests(unittest.TestCase):
         self.assertIn("/mcp/playwright/", mcp_out)
         self.assertNotIn("/mcp/figma/", mcp_out)
 
+    def test_language_code_candidates_only_show_after_trailing_space(self):
+        self.agent._workspaces_state = {}
+        self.agent._get_slash_mcp_scoped_groups = lambda: []
+        self.agent._get_configured_model_selectors = lambda: []
+        self.agent._get_slash_skill_target_commands = lambda: []
+        rules = build_slash_dynamic_rules(
+            workspaces_state=self.agent._workspaces_state,
+            mcp_config=self.agent.mcp_manager.mcp_config,
+            mcp_scoped_groups_provider=self.agent._get_slash_mcp_scoped_groups,
+            model_selectors_provider=self.agent._get_configured_model_selectors,
+            skill_targets_provider=self.agent._get_slash_skill_target_commands,
+            mcp_root_server_commands_provider=self.agent._get_slash_connected_mcp_server_commands,
+        )
+        delayed_groups = [
+            (str(rule["trigger"]), list(rule["candidates"]))
+            for rule in rules
+            if isinstance(rule, dict) and "trigger" in rule and "candidates" in rule
+        ]
+
+        root_out = slash_builtin_completions(
+            "/language",
+            dynamic_commands=[],
+            delayed_dynamic_groups=delayed_groups,
+        )
+        self.assertIn("/language", root_out)
+        self.assertNotIn("/language en", root_out)
+        self.assertNotIn("/language zh-CN", root_out)
+
+        lang_out = slash_builtin_completions(
+            "/language ",
+            dynamic_commands=[],
+            delayed_dynamic_groups=delayed_groups,
+        )
+        self.assertIn("/language en", lang_out)
+        self.assertIn("/language zh-CN", lang_out)
+
     def test_connected_mcp_server_commands_include_only_connected_servers(self):
         commands = self.agent._get_slash_connected_mcp_server_commands()
         self.assertIn("/mcp/playwright/", commands)

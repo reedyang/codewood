@@ -107,11 +107,14 @@ def setup_workspace_and_history(
 
 
 def setup_runtime_preferences(agent: Any) -> None:
+    from ..core.localization import DEFAULT_DISPLAY_LANGUAGE, normalize_display_language
+
     agent.execution_policy = "confirmation"
     agent.memory_enabled = True
     agent.memory_fallback_expansion_enabled = True
     agent.project_context_first_round_evidence_enabled = True
     agent.auto_compact_trigger_percent = DEFAULT_AUTO_COMPACT_TRIGGER_PERCENT
+    agent.display_language = DEFAULT_DISPLAY_LANGUAGE
     # Tool gates: default disabled so only core built-in coding tools are available.
     agent.mcp_tools_enabled = False
     # None means unlimited auto-execution rounds for a single task.
@@ -123,6 +126,12 @@ def setup_runtime_preferences(agent: Any) -> None:
             cfg_data = resolve_string_values_in_data(load_config_jsonc(cfg_path))
             if isinstance(cfg_data, dict):
                 agent._resolved_config_data = dict(cfg_data)
+            else:
+                cfg_data = {}
+            language_value = normalize_display_language(
+                cfg_data.get("language")
+            ) or DEFAULT_DISPLAY_LANGUAGE
+            agent.display_language = language_value
             pol = str(cfg_data.get("execution_policy", "confirmation")).strip().lower()
             if pol not in ("unlimited", "moderate", "confirmation"):
                 pol = "confirmation"
@@ -342,4 +351,3 @@ def setup_runtime_services(agent: Any) -> None:
     agent._last_memory_reflect_at = 0.0
     agent._schedule_memory_service_background()
     agent.tool_dispatcher = ToolDispatcher(agent, agent._execute_tool_call_legacy)
-

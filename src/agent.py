@@ -5117,23 +5117,40 @@ class Agent:
         print_mcp_shortcut_result(tool_name, args, result)
 
     def _print_main_help(self) -> None:
-        print(f"\n{get_app_name()} Help")
+        from .core.localization import get_display_language, text
+
+        lang = get_display_language(self)
+        t = lambda en, zh: text(en, zh, lang)
+        print(f"\n{get_app_name()} {t('Help', '帮助')}")
         print("=" * 80)
-        print("\nBuilt-in commands:")
+        print(t("\nBuilt-in commands:", "\n内置命令："))
         print("  /exit, /quit")
         print("  /clear screen")
         print("  /clear input history")
         print("  /clear context")
         print("  /compact")
         print("  /help")
+        print(t("  /language <language code>", "  /language <语言代码>"))
         print("  /model [<model_provider>:<name>]")
-        print("\nChat commands:")
-        print("  /chat list | current | reload | new [name] | switch <selector> | rename <selector> <new> | delete <selector> | delete all")
-        print("\nWorkspace commands:")
-        print("  /workspace current | list | create <path> [--name <name>] | switch <selector>")
-        print("  /workspace update <selector> [--name <name>] [--path <path>]")
-        print("  /workspace delete <selector> [--remove-files]")
-        print("\nMCP commands:")
+        print(t("\nChat commands:", "\n聊天命令："))
+        print(
+            t(
+                "  /chat list | current | reload | new [name] | switch <selector> | rename <selector> <new> | delete <selector> | delete all",
+                "  /chat list | current | reload | new [名称] | switch <选择器> | rename <选择器> <新名称> | delete <选择器> | delete all",
+                lang,
+            )
+        )
+        print(t("\nWorkspace commands:", "\n工作区命令："))
+        print(
+            t(
+                "  /workspace current | list | create <path> [--name <name>] | switch <selector>",
+                "  /workspace current | list | create <path> [--name <名称>] | switch <选择器>",
+                lang,
+            )
+        )
+        print(t("  /workspace update <selector> [--name <name>] [--path <path>]", "  /workspace update <选择器> [--name <名称>] [--path <路径>]"))
+        print(t("  /workspace delete <selector> [--remove-files]", "  /workspace delete <选择器> [--remove-files]"))
+        print(t("\nMCP commands:", "\nMCP 命令："))
         print("  /mcp status | status-refresh | reload-config")
         print("  /mcp reconnect <server> | server-info <server>")
         print("  /mcp list-tools <server> | list-resources <server>")
@@ -5141,21 +5158,31 @@ class Agent:
         print("  /mcp list-disabled-tools [server]")
         print("  /mcp disable-tools <server> <tool1,tool2>")
         print("  /mcp enable-tools <server> <tool1,tool2>")
-        print("\nMemory:")
-        print("  /memory status | enable | disable | stats | list | search <query> | remember <text> | delete <id>")
-        print("  /execution-policy show|unlimited|moderate|confirmation")
+        print(t("\nMemory:", "\n记忆："))
+        print(
+            t(
+                "  /memory status | enable | disable | stats | list | search <query> | remember <text> | delete <id>",
+                "  /memory status | enable | disable | stats | list | search <查询> | remember <内容> | delete <id>",
+                lang,
+            )
+        )
+        print(t("  /execution-policy show|unlimited|moderate|confirmation", "  /execution-policy show|unlimited|moderate|confirmation"))
         print("  /always_confirm-reset")
-        print("\nDirect shell (bypass AI):")
-        print("  Use ! prefix, e.g. !ls, !dir, !git status, !python script.py")
+        print(t("\nDirect shell (bypass AI):", "\n直接 shell（绕过 AI）："))
+        print(t("  Use ! prefix, e.g. !ls, !dir, !git status, !python script.py", "  使用 ! 前缀，例如 !ls、!dir、!git status、!python script.py"))
         if self.skills:
             print(
-                f"\nLoaded Agent Skills: {len(self.skills)} "
-                f"(builtin: {self._builtin_skills_root}, external: {self.config_dir / 'skills'})"
+                t(
+                    f"\nLoaded Agent Skills: {len(self.skills)} "
+                    f"(builtin: {self._builtin_skills_root}, external: {self.config_dir / 'skills'})",
+                    f"\n已加载 Agent Skills：{len(self.skills)} "
+                    f"(内置：{self._builtin_skills_root}，外部：{self.config_dir / 'skills'})",
+                )
             )
-            print("  Use /skills/<skill-name> <task> to force a skill in current turn.")
+            print(t("  Use /skills/<skill-name> <task> to force a skill in current turn.", "  使用 /skills/<skill-name> <任务> 在当前轮强制使用某个 skill。"))
             skill_cmds = self._get_slash_skill_commands()
             if skill_cmds:
-                print("  Skill shortcuts:")
+                print(t("  Skill shortcuts:", "  Skill 快捷方式："))
                 print("    " + ", ".join(skill_cmds))
         print("=" * 80)
 

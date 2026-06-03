@@ -436,6 +436,28 @@ class PromptToolkitInputCompletionTests(unittest.TestCase):
             out = list(completer.get_completions(_Doc("de"), None))
         self.assertTrue(any(getattr(c, "text", "") == "demo.txt" for c in out))
 
+    def test_language_completion_menu_shows_native_language_names(self):
+        with tempfile.TemporaryDirectory() as td:
+            completer = FileCompleter(
+                Path(td),
+                slash_dynamic_rules=[
+                    {
+                        "trigger": "/language ",
+                        "candidates": ["/language en", "/language zh-CN"],
+                    }
+                ],
+            )
+
+            root_out = list(completer.get_completions(_Doc("/language"), None))
+            self.assertTrue(any(getattr(c, "text", "") == "/language" for c in root_out))
+            self.assertFalse(any(getattr(c, "text", "") == "/language en" for c in root_out))
+
+            lang_out = list(completer.get_completions(_Doc("/language "), None))
+            en_item = next(c for c in lang_out if getattr(c, "text", "") == "/language en")
+            zh_item = next(c for c in lang_out if getattr(c, "text", "") == "/language zh-CN")
+            self.assertEqual(str(getattr(en_item, "display_text", "")), "English")
+            self.assertEqual(str(getattr(zh_item, "display_text", "")), "简体中文")
+
     def test_get_input_uses_multiline_prompt_and_two_space_continuation(self):
         handler = pti.PromptToolkitInputHandler.__new__(pti.PromptToolkitInputHandler)
         handler.session = _FakeSession("line1\nline2")
