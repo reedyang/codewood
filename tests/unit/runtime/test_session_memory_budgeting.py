@@ -1,6 +1,7 @@
 import unittest
 import io
 import json
+import unicodedata
 from pathlib import Path
 import threading
 import time
@@ -17,6 +18,15 @@ CONVERSATION_INTERRUPTED_HISTORY_PREFIX = "[CONVERSATION_INTERRUPTED]"
 INTERNAL_SLASH_USER_HISTORY_PREFIX = "[INTERNAL_SLASH_USER_COMMAND]"
 INTERNAL_SLASH_RESULT_HISTORY_PREFIX = "[INTERNAL_SLASH_RESULT]"
 TASK_WORKED_SUMMARY_HISTORY_PREFIX = "[TASK_WORKED_SUMMARY]"
+
+
+def _display_width(text: str) -> int:
+    total = 0
+    for ch in str(text or ""):
+        if not ch or unicodedata.combining(ch):
+            continue
+        total += 2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1
+    return total
 
 
 class _FakeAgent:
@@ -330,12 +340,13 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
             str(agent.conversation_history[3].get("content") or "")
         )
         self.assertIsInstance(notice_payload, dict)
-        self.assertEqual(notice_payload.get("message"), "Context automatically compacted")
+        self.assertEqual(notice_payload.get("message"), "Context compacted")
+        self.assertEqual(notice_payload.get("mode"), "manual")
 
         messages, _ = svc.build_regular_task_messages("Continue")
         joined = "\n".join(str(m.get("content") or "") for m in messages)
         self.assertIn("Summary body", joined)
-        self.assertNotIn("Context automatically compacted", joined)
+        self.assertNotIn("Context compacted", joined)
         self.assertIn("Message needing summarization", joined)
         self.assertIn("Answer needing summarization", joined)
 
@@ -407,6 +418,18 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
         self.assertTrue(line.startswith("─"))
         self.assertTrue(line.endswith("─"))
 
+    def test_compaction_banner_line_uses_display_width_for_chinese_text(self):
+        agent = _FakeAgent()
+        agent._terminal_columns_for_prompt_separator = lambda default=80: 41
+        svc = SessionMemoryService(agent)
+
+        line = svc._format_compaction_banner_line("上下文已压缩")
+
+        self.assertEqual(_display_width(line), 41)
+        self.assertIn(" 上下文已压缩 ", line)
+        self.assertTrue(line.startswith("─"))
+        self.assertTrue(line.endswith("─"))
+
     def test_compaction_banner_uses_same_width_as_prompt_separator(self):
         agent = _FakeAgent()
         agent._terminal_columns_for_prompt_separator = lambda default=80: 41
@@ -442,6 +465,17 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
         self.assertEqual(rendered, 3)
         self.assertIn("<gray>", out.getvalue())
         self.assertIn(" Automatically compacting context ", out.getvalue())
+
+    def test_format_context_compaction_notice_message_localizes_legacy_english_payload(self):
+        agent = _FakeAgent()
+        agent.display_language = "zh-CN"
+        svc = SessionMemoryService(agent)
+
+        msg = svc.format_context_compaction_notice_message(
+            {"message": "Context automatically compacted"}
+        )
+
+        self.assertEqual(msg, "上下文已自动压缩")
 
     def test_refresh_context_usage_snapshot_persists_chat_state_immediately(self):
         agent = _FakeAgent()

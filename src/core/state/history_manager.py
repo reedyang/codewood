@@ -4,9 +4,15 @@ from pathlib import Path
 from typing import List, Optional
 from datetime import datetime
 from ...config.app_info import get_app_config_dirname, get_app_name
+from ..localization import DEFAULT_DISPLAY_LANGUAGE, normalize_display_language, text
 
 class HistoryManager:
-    def __init__(self, config_dir: str = get_app_config_dirname(), max_entries: int = 50):
+    def __init__(
+        self,
+        config_dir: str = get_app_config_dirname(),
+        max_entries: int = 50,
+        language: str = DEFAULT_DISPLAY_LANGUAGE,
+    ):
         """
         Initialize the history manager.
         Args:
@@ -16,6 +22,7 @@ class HistoryManager:
         self.config_dir = Path(config_dir)
         self.history_file = self.config_dir / "history.json"
         self.max_entries = max_entries
+        self.language = normalize_display_language(language) or DEFAULT_DISPLAY_LANGUAGE
         self.history: List[str] = []
         self.current_index = -1  # Current position in the history list
         
@@ -43,7 +50,7 @@ class HistoryManager:
             else:
                 self.history = []
         except Exception as e:
-            print(f"⚠️ Failed to load history: {e}")
+            print(text("⚠️ Failed to load history: {error}", "⚠️ 加载历史记录失败：{error}", self.language).format(error=e))
             self.history = []
     
     def save_history(self):
@@ -59,7 +66,7 @@ class HistoryManager:
             with open(self.history_file, 'w', encoding='utf-8') as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
         except Exception as e:
-            print(f"⚠️ Failed to save history: {e}")
+            print(text("⚠️ Failed to save history: {error}", "⚠️ 保存历史记录失败：{error}", self.language).format(error=e))
     
     def add_entry(self, command: str):
         """

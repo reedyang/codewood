@@ -2,6 +2,7 @@ import os
 import re
 import tempfile
 import unittest
+import unicodedata
 from pathlib import Path
 from unittest.mock import patch
 
@@ -37,6 +38,15 @@ from src.runtime.runtime_loop import (
     _split_trailing_pseudo_tool_calls_text_details,
     _replace_latest_assistant_history_content,
 )
+
+
+def _display_width(text: str) -> int:
+    total = 0
+    for ch in str(text or ""):
+        if not ch or unicodedata.combining(ch):
+            continue
+        total += 2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1
+    return total
 
 
 class RuntimeLoopTests(unittest.TestCase):
@@ -279,13 +289,19 @@ class RuntimeLoopTests(unittest.TestCase):
 
     def test_format_worked_for_summary_line_fills_terminal_width(self):
         line = _format_worked_for_summary_line(elapsed_seconds=65, terminal_width=40)
-        self.assertEqual(len(line), 40)
+        self.assertEqual(_display_width(line), 40)
         self.assertTrue(line.startswith("─ Worked for 1m 5s "))
+        self.assertTrue(line.endswith("─"))
+
+    def test_format_worked_for_summary_line_uses_language_specific_label(self):
+        line = _format_worked_for_summary_line(elapsed_seconds=65, terminal_width=40, language="zh-CN")
+        self.assertEqual(_display_width(line), 40)
+        self.assertTrue(line.startswith("─ 已运行 1m 5s "))
         self.assertTrue(line.endswith("─"))
 
     def test_format_worked_for_summary_line_hides_minutes_when_under_one_minute(self):
         line = _format_worked_for_summary_line(elapsed_seconds=59, terminal_width=40)
-        self.assertEqual(len(line), 40)
+        self.assertEqual(_display_width(line), 40)
         self.assertTrue(line.startswith("─ Worked for 59s "))
         self.assertNotIn("m ", line)
 

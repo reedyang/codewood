@@ -38,7 +38,7 @@ def dispatch_builtin_command(
         return True, False
 
     if bl == "mcp" or bl.startswith("mcp "):
-        print(f"Error: {mcp_err}")
+        print(_t(agent, "Error: {error}", "错误：{error}").format(error=mcp_err))
         return True, False
 
     if bl in ("exit", "quit"):

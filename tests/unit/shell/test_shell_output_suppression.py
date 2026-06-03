@@ -71,6 +71,16 @@ class ShellOutputSuppressionTests(unittest.TestCase):
         out = _build_tail_output_for_display(text, _FakePipe(), SHELL_OUTPUT_DISPLAY_TAIL_LINES)
         self.assertTrue(out.startswith("... omitted 25 lines ...\n"))
 
+    def test_build_tail_output_uses_chinese_omitted_notice_when_language_is_zh_cn(self):
+        text = "\n".join(f"line{i}" for i in range(1, 55)) + "\n"
+        out = _build_tail_output_for_display(
+            text,
+            _FakePipe(),
+            SHELL_OUTPUT_DISPLAY_TAIL_LINES,
+            language="zh-CN",
+        )
+        self.assertTrue(out.startswith("... 已省略 25 行 ...\n"))
+
     def test_build_tail_output_keeps_display_within_visual_line_limit(self):
         text = "x" * 120 + "\n"
         with patch("src.actions.command_actions._terminal_columns_for_tail_display", return_value=10):

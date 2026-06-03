@@ -58,6 +58,19 @@ class ConsoleUtilsTests(unittest.TestCase):
         self.assertIn("\033[90m• \033[0mWor\033[90mking... (1m 5s • esc to interrupt)\033[0m", frame2)
         self.assertIn("\033[90m• W\033[0mork\033[90ming... (1m 5s • esc to interrupt)\033[0m", frame3)
 
+    def test_render_working_status_line_uses_language_specific_labels(self):
+        class DummyStdout:
+            def isatty(self):
+                return True
+
+        with patch.dict("src.core.console_utils.os.environ", {"FORCE_COLOR": "1"}, clear=False), patch(
+            "src.core.console_utils._enable_windows_console_vt"
+        ), patch.object(sys, "stdout", DummyStdout()):
+            line = _render_working_status_line(65, frame=0, language="zh-CN")
+
+        self.assertIn("作中... (1m 5s • 按 Esc 中断)", line)
+        self.assertIn("按 Esc 中断", line)
+
 
 if __name__ == "__main__":
     unittest.main()

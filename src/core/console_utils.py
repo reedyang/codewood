@@ -5,6 +5,7 @@ import time
 from typing import Any, List, Optional, Tuple
 
 from ..config.app_info import get_app_logger_root
+from .localization import DEFAULT_DISPLAY_LANGUAGE, normalize_display_language, text
 
 
 def _decode_subprocess_output(data: Optional[bytes]) -> str:
@@ -214,10 +215,17 @@ def _render_working_status_line(
     frame: int,
     label: str = "Working...",
     interrupt_hint: str = "esc to interrupt",
+    language: Any = None,
 ) -> str:
+    lang = normalize_display_language(language) or DEFAULT_DISPLAY_LANGUAGE
     work_label = str(label or "Working...")
+    if work_label == "Working...":
+        work_label = text("Working...", "工作中...", lang)
+    interrupt = str(interrupt_hint or "esc to interrupt")
+    if interrupt == "esc to interrupt":
+        interrupt = text("esc to interrupt", "按 Esc 中断", lang)
     elapsed = _format_elapsed_minutes_seconds(elapsed_seconds)
-    plain = f"• {work_label} ({elapsed} • {interrupt_hint})"
+    plain = f"• {work_label} ({elapsed} • {interrupt})"
     if not _stdout_color_enabled():
         return plain
 
@@ -243,6 +251,7 @@ class _WorkingStatusTicker:
         stream: Any,
         fps: float = 6.0,
         min_interval_seconds: float = 0.02,
+        language: Any = None,
     ) -> None:
         self._stream = stream
         safe_fps = float(fps or 0.0)
@@ -250,6 +259,7 @@ class _WorkingStatusTicker:
             safe_fps = 1.0
         safe_min_interval = max(0.001, float(min_interval_seconds or 0.02))
         self._interval_seconds = max(safe_min_interval, 1.0 / safe_fps)
+        self._language = normalize_display_language(language) or DEFAULT_DISPLAY_LANGUAGE
         self._stop_event = threading.Event()
         self._thread: Optional[threading.Thread] = None
         self._started = False
@@ -263,7 +273,11 @@ class _WorkingStatusTicker:
             return False
 
     def _render_frame(self, elapsed_seconds: int, frame: int) -> None:
-        line = _render_working_status_line(elapsed_seconds=elapsed_seconds, frame=frame)
+        line = _render_working_status_line(
+            elapsed_seconds=elapsed_seconds,
+            frame=frame,
+            language=self._language,
+        )
         try:
             self._stream.write(f"\r\x1b[2K{line}")
             self._stream.flush()
@@ -284,7 +298,13 @@ class _WorkingStatusTicker:
         self._start_ts = time.monotonic()
         if not self._is_tty():
             try:
-                self._stream.write(_render_working_status_line(elapsed_seconds=0, frame=0))
+                self._stream.write(
+                    _render_working_status_line(
+                        elapsed_seconds=0,
+                        frame=0,
+                        language=self._language,
+                    )
+                )
                 self._stream.write("\n")
                 self._stream.flush()
                 self._printed_plain_line = True

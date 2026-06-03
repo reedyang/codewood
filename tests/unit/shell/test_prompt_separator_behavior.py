@@ -165,6 +165,31 @@ class PromptSeparatorBehaviorTests(unittest.TestCase):
         self.assertIn("normal reply after reload", rendered)
         self.assertNotIn("This summary is for model context only", rendered)
 
+    def test_chat_history_replays_context_compaction_notice_banner_in_current_language(self):
+        agent = self._build_agent()
+        agent.display_language = "zh-CN"
+        agent.session_memory_service = SessionMemoryService(agent)
+        summary = agent.session_memory_service.build_context_compaction_summary_content(
+            summary="This summary is for model context only",
+            mode="manual",
+            covered_message_count=2,
+        )
+        notice = agent.session_memory_service.build_context_compaction_notice_content(
+            "Context automatically compacted"
+        )
+        agent.conversation_history = [
+            {"role": "assistant", "content": summary},
+            {"role": "assistant", "content": notice},
+        ]
+
+        with (
+            patch.object(agent.session_memory_service, "_print_compaction_banner") as mock_banner,
+            patch("builtins.print"),
+        ):
+            agent._print_chat_history()
+
+        mock_banner.assert_called_once_with("上下文已自动压缩")
+
     def test_compact_slash_history_is_replayed_before_compacted_notice(self):
         agent = self._build_agent()
         agent.session_memory_service = SessionMemoryService(agent)

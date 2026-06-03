@@ -1003,6 +1003,7 @@ class Agent:
                 sys.stdout,
                 out_limit,
                 display_indent_width=4,
+                language=self._ui_language(),
             )
             return (self._strip_console_color_controls(out_text), "")
         if has_output_field and bool(payload.get("success", True)):
@@ -1058,6 +1059,7 @@ class Agent:
                 sys.stdout,
                 out_limit,
                 display_indent_width=4,
+                language=self._ui_language(),
             )
             out_text = self._strip_console_color_controls(out_text)
         if raw_err:
@@ -1067,6 +1069,7 @@ class Agent:
                 sys.stderr,
                 err_limit,
                 display_indent_width=4,
+                language=self._ui_language(),
             )
             err_text = self._strip_console_color_controls(err_text)
         return out_text, err_text
@@ -1145,7 +1148,7 @@ class Agent:
                 except Exception:
                     compact_notice = None
                 if compact_notice is not None:
-                    msg_text = str(compact_notice.get("message") or "Context automatically compacted").strip()
+                    msg_text = self.session_memory_service.format_context_compaction_notice_message(compact_notice)
                     try:
                         self.session_memory_service._print_compaction_banner(msg_text)
                     except Exception:
@@ -1291,6 +1294,12 @@ class Agent:
             print(_ansi_gray("-" * width))
         print("")
 
+    def _ui_language(self) -> str:
+        from .core.localization import DEFAULT_DISPLAY_LANGUAGE, get_display_language, normalize_display_language
+
+        lang = normalize_display_language(get_display_language(self))
+        return lang or DEFAULT_DISPLAY_LANGUAGE
+
     def _format_task_worked_summary_line(self, elapsed_seconds: int, terminal_width: Optional[int] = None) -> str:
         total = max(0, int(elapsed_seconds or 0))
         minutes, seconds = divmod(total, 60)
@@ -1298,11 +1307,15 @@ class Agent:
             elapsed = f"{seconds}s"
         else:
             elapsed = f"{minutes}m {seconds}s"
-        head = f"─ Worked for {elapsed} "
+        from .core.localization import text
+
+        head = f"─ {text('Worked for', '已运行', self._ui_language())} {elapsed} "
         width = max(20, int(terminal_width or self._terminal_columns_for_line_estimate()))
-        if len(head) >= width:
-            return head[:width]
-        return head + ("─" * (width - len(head)))
+        head_width = self._feedback_text_display_width(head)
+        if head_width >= width:
+            chunks = self._wrap_feedback_text_by_display_width(head, width)
+            return chunks[0] if chunks else head[:width]
+        return head + ("─" * (width - head_width))
 
     def _print_task_worked_summary_line(self, elapsed_seconds: int) -> None:
         line = self._format_task_worked_summary_line(elapsed_seconds)
@@ -1660,10 +1673,12 @@ class Agent:
         args: Dict[str, Any],
         failed: bool = False,
     ) -> str:
+        from .core.localization import text
+
         summary = self._tool_call_summary(tool_name, args)
         bullet = _ansi_rgb("•", 197, 15, 31) if bool(failed) else _ansi_rgb("•", 19, 161, 14)
         return self._format_wrapped_command_feedback_line(
-            f"{bullet} Ran ",
+            f"{bullet} {text('Ran', '已执行', self._ui_language())} ",
             summary,
         )
 
@@ -1974,10 +1989,12 @@ class Agent:
             pass
 
     def _format_direct_shell_command_feedback_line(self, command: str, failed: bool = False) -> str:
+        from .core.localization import text
+
         cmd = str(command or "").replace("\r", " ").replace("\n", " ").strip()
         bullet = _ansi_rgb("•", 197, 15, 31) if bool(failed) else _ansi_rgb("•", 19, 161, 14)
         return self._format_wrapped_command_feedback_line(
-            f"{bullet} You ran ",
+            f"{bullet} {text('You ran', '已运行', self._ui_language())} ",
             cmd,
         )
 
@@ -2963,7 +2980,13 @@ class Agent:
                 # Keep at most n rows on screen: one notice row + latest n-1 rows.
                 tail_keep = max(0, max_visible_lines - 1)
                 omitted_rows = max(1, omitted_base + max(0, total_rows - tail_keep))
-                notice = f"  └ ... omitted {int(omitted_rows)} lines ..."
+                from .core.localization import text
+
+                notice = text(
+                    "  └ ... omitted {count} lines ...",
+                    "  └ ... 已省略 {count} 行 ...",
+                    self._ui_language(),
+                ).format(count=int(omitted_rows))
                 visible_rows = rows[-tail_keep:] if tail_keep > 0 else []
                 display_rows = [notice, *visible_rows]
                 display_text = "\n".join(display_rows)
@@ -3783,6 +3806,7 @@ class Agent:
         status_ticker = _WorkingStatusTicker(
             sys.stdout,
             fps=DIRECT_SHELL_WORKING_STATUS_MARQUEE_FPS,
+            language=getattr(self, "display_language", None),
         )
         self._start_interrupt_monitor(cancel_task_on_interrupt=False)
         status_ticker.start()
@@ -3871,6 +3895,7 @@ class Agent:
                     sys.stdout,
                     out_tail_limit,
                     display_indent_width=4,
+                    language=self._ui_language(),
                 )
                 displayed_stdout = command_actions._strip_console_color_controls(displayed_stdout)
             if stderr_text:
@@ -3880,6 +3905,7 @@ class Agent:
                     sys.stderr,
                     err_tail_limit,
                     display_indent_width=4,
+                    language=self._ui_language(),
                 )
                 displayed_stderr = command_actions._strip_console_color_controls(displayed_stderr)
             lock_obj = stream_state.get("_write_lock")
@@ -4070,7 +4096,7 @@ class Agent:
     def _refresh_workspace_runtime(self) -> None:
         self._shutdown_workspace_services(wait=True)
         self._ensure_workspace_dirs()
-        self.history_manager = HistoryManager(str(self.workspace_config_dir))
+        self.history_manager = HistoryManager(str(self.workspace_config_dir), language=getattr(self, "display_language", "en") or "en")
         self._load_chat_state()
         if self.input_handler is not None:
             try:
@@ -4097,6 +4123,7 @@ class Agent:
             self.mcp_config,
             self.workspace_config_dir,
             tool_policy_parent=self.workspace_config_dir,
+            language=getattr(self, "display_language", "en") or "en",
         )
         self.mcp_manager.register_client_method_handler("elicitation/create", self._handle_mcp_elicitation_create)
         self.mcp_manager.preload_all_async(timeout_s=12.0, force=False)
@@ -4200,6 +4227,7 @@ class Agent:
                 self.config_dir,
                 self._builtin_skills_root,
                 self.workspace_config_dir,
+                language=getattr(self, "display_language", "en") or "en",
             )
             self._skills_dirs_fingerprint = latest_fp
             self._skills_routing_prefix = build_skills_routing_prefix(self.skills)
@@ -5098,7 +5126,10 @@ class Agent:
         segments: List[Dict[str, Any]],
     ) -> List[str]:
         """Build side-by-side preview for multiple hunks with omitted-line markers."""
-        return ChangePreviewFormatter.format_side_by_side_segments(segments=segments)
+        return ChangePreviewFormatter.format_side_by_side_segments(
+            segments=segments,
+            language=self._ui_language(),
+        )
 
     def execute_tool_call(self, tool_name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
         dispatcher = getattr(self, "tool_dispatcher", None)
@@ -5114,7 +5145,7 @@ class Agent:
         return parse_mcp_shortcut_command(builtin_line)
 
     def _print_mcp_shortcut_result(self, tool_name: str, args: Dict[str, Any], result: Dict[str, Any]) -> None:
-        print_mcp_shortcut_result(tool_name, args, result)
+        print_mcp_shortcut_result(self, tool_name, args, result)
 
     def _print_main_help(self) -> None:
         from .core.localization import get_display_language, text
