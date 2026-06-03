@@ -2033,6 +2033,21 @@ class SessionMemoryService:
         mem_block = mem_block_raw
         if mem_block:
             mem_block = self._clip_text_to_token_budget(mem_block, mem_budget)
+        def _build_memory_system_content(block: str, compressed: bool = False) -> str:
+            if not block:
+                return ""
+            header = (
+                "[Experiential memory - compressed mode]"
+                if compressed
+                else "[Experiential memory - must be applied proactively]"
+            )
+            return (
+                f"{header}\n"
+                "The following entries are persisted for the current workspace. Before each subsequent reply, first decide whether they are relevant; "
+                "if relevant, natural-language output must follow this section and must not replace it with a generic cloud/provider default persona.\n\n"
+                f"{block}"
+            )
+        memory_system_content = _build_memory_system_content(mem_block)
         active_skill_prompt = str(getattr(self.agent, "_active_skill_full_prompt", "") or "").strip()
         active_skill_id = str(getattr(self.agent, "_active_skill_id", "") or "").strip()
         active_skill_source = str(getattr(self.agent, "_active_skill_source", "") or "").strip()
@@ -2086,15 +2101,7 @@ class SessionMemoryService:
             "use the Current workspace skills directory (absolute path) only when the user explicitly asks to install into the workspace.\n"
         )
         tail_context = immutable_system_core + runtime_tail_raw
-        if mem_block:
-            sys_prefix = (
-                "[Experiential memory - must be applied proactively]\n"
-                "The following entries are persisted for the current workspace. Before each subsequent reply, first decide whether they are relevant; "
-                "if relevant, natural-language output must follow this section and must not replace it with a generic cloud/provider default persona.\n\n"
-                + mem_block + "\n\n---\n\n" + tail_context
-            )
-        else:
-            sys_prefix = tail_context
+        sys_prefix = tail_context
         messages: List[Dict[str, Any]] = [{"role": "system", "content": sys_prefix}]
         if skill_front_system_content:
             messages.append({"role": "system", "content": skill_front_system_content})
@@ -2108,6 +2115,8 @@ class SessionMemoryService:
         interruption_line = self._latest_interruption_context_line(filtered_history)
         for msg in history_messages:
             messages.append(msg)
+        if memory_system_content:
+            messages.append({"role": "system", "content": memory_system_content})
 
         force_new_requirement = bool(
             getattr(self.agent, "_force_current_input_as_requirement_once", False)
@@ -2135,7 +2144,7 @@ class SessionMemoryService:
                 current_input += f"Recently cancelled task: {last_cancelled_task}\n"
         if mem_block:
             current_input += (
-                "[Hard requirement] Before answering, check the experiential memory in the first system message: "
+                "[Hard requirement] Before answering, check the experiential memory block placed after the history messages: "
                 "entries relevant to this turn's user question must be reflected in the answer; do not replace them with generic assistant or provider settings unrelated to those records.\n\n"
             )
         if skill_front_system_content:
@@ -2176,6 +2185,8 @@ class SessionMemoryService:
             system_tokens = self._estimate_message_tokens("system", sys_prefix)
             if skill_front_system_content:
                 system_tokens += self._estimate_message_tokens("system", skill_front_system_content)
+            if memory_system_content:
+                system_tokens += self._estimate_message_tokens("system", memory_system_content)
             if skill_tail_system_content:
                 system_tokens += self._estimate_message_tokens("system", skill_tail_system_content)
             history_tokens = sum(
@@ -2201,16 +2212,9 @@ class SessionMemoryService:
                 mem_block2 = ""
                 if mem_block_raw:
                     mem_block2 = self._clip_text_to_token_budget(mem_block_raw, aggressive_mem_budget)
+                memory_system_content2 = _build_memory_system_content(mem_block2, compressed=True)
                 tail_context2 = immutable_system_core + runtime_tail_raw
-                if mem_block2:
-                    sys_prefix2 = (
-                        "[Experiential memory - compressed mode]\n"
-                        + mem_block2
-                        + "\n\n---\n\n"
-                        + tail_context2
-                    )
-                else:
-                    sys_prefix2 = tail_context2
+                sys_prefix2 = tail_context2
 
                 history_messages2, history_stats2 = self._build_history_messages_by_budget(
                     aggressive_history_budget,
@@ -2240,6 +2244,11 @@ class SessionMemoryService:
                         current_input2_head += f"Recently cancelled task: {last_cancelled_task}\n"
                 if interruption_line:
                     current_input2_head += f"Most recent interruption status: {interruption_line}\n"
+                if mem_block2:
+                    current_input2_head += (
+                        "[Hard requirement] Before answering, check the experiential memory block placed after the history messages: "
+                        "entries relevant to this turn's user question must be reflected in the answer; do not replace them with generic assistant or provider settings unrelated to those records.\n\n"
+                    )
                 if self.agent.operation_results:
                     latest_op2 = self.agent.operation_results[-1]
                     if isinstance(latest_op2, dict) and ("timestamp" in latest_op2):
@@ -2271,6 +2280,8 @@ class SessionMemoryService:
                 system_tokens2 = self._estimate_message_tokens("system", sys_prefix2)
                 if skill_front_system_content:
                     system_tokens2 += self._estimate_message_tokens("system", skill_front_system_content)
+                if memory_system_content2:
+                    system_tokens2 += self._estimate_message_tokens("system", memory_system_content2)
                 if skill_tail_system_content:
                     system_tokens2 += self._estimate_message_tokens("system", skill_tail_system_content)
                 history_tokens2 = sum(
@@ -2285,6 +2296,8 @@ class SessionMemoryService:
                     if skill_front_system_content:
                         messages.append({"role": "system", "content": skill_front_system_content})
                     messages += list(history_messages2)
+                    if memory_system_content2:
+                        messages.append({"role": "system", "content": memory_system_content2})
                     if skill_tail_system_content:
                         messages.append({"role": "system", "content": skill_tail_system_content})
                     messages.append({"role": "user", "content": current_input2})
