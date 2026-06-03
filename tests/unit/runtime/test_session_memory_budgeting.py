@@ -420,6 +420,30 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
         system_content = str(messages[0].get("content") or "")
         self.assertIn("Domain Prompt: Software Development", system_content)
 
+    def test_experiential_memory_is_inserted_after_history_messages(self):
+        agent = _FakeAgent()
+        agent._compose_system_prompt_snapshot = lambda include_tools=True: "SYSTEM"
+        agent.conversation_history = [
+            {"role": "user", "content": "History user message"},
+            {"role": "assistant", "content": "History assistant message"},
+        ]
+        svc = SessionMemoryService(agent)
+        svc.memory_context_for_prompt = lambda user_input, max_chars=2400: (
+            "[Experiential memory test]\nRemember this"
+        )
+
+        messages, _ = svc.build_regular_task_messages("Current request")
+        joined = "\n".join(str(m.get("content") or "") for m in messages)
+        memory_index = next(
+            i for i, m in enumerate(messages) if "[Experiential memory test]" in str(m.get("content") or "")
+        )
+
+        self.assertIn("History user message", joined)
+        self.assertIn("History assistant message", joined)
+        self.assertNotIn("[Experiential memory test]", str(messages[0].get("content") or ""))
+        self.assertGreater(memory_index, 1)
+        self.assertLess(memory_index, len(messages) - 1)
+
     def test_regular_task_messages_include_full_active_skill_prompt(self):
         agent = _FakeAgent()
         agent._active_skill_id = "codex-usage"
