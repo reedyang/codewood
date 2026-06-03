@@ -101,6 +101,10 @@ def _handle_mcp(payload: Dict[str, Any]) -> Dict[str, Any]:
                 "protocolVersion": "2024-11-05",
                 "serverInfo": {"name": "fake-oauth-mcp", "version": "1.0.0"},
                 "capabilities": {"tools": {}},
+                "instructions": (
+                    "Fake OAuth MCP instructions\n"
+                    "- Authenticate before calling protected tools"
+                ),
             },
         )
     if method == "notifications/initialized":

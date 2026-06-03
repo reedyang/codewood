@@ -160,6 +160,14 @@ def build_mcp_system_append(agent: Any) -> str:
             lines.append(f"  env_keys: {env_keys}")
     lines.append(f"Loaded servers: {', '.join(loaded) if loaded else 'none'}")
     lines.append(f"Not loaded servers: {', '.join(not_loaded) if not_loaded else 'none'}")
+    lines.append(
+        "MCP initialize instructions from connected servers (treat these as active guidance; "
+        "when you use a server, follow its instructions while planning and executing the task):"
+    )
+    try:
+        lines.append(agent.mcp_manager.cached_initialize_instructions_for_prompt())
+    except Exception:
+        lines.append("No cached MCP initialize instructions yet.")
     lines.append("Cached tools (updated after `mcp_list_tools`):")
     try:
         lines.append(agent.mcp_manager.cached_tools_for_prompt())

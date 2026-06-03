@@ -206,6 +206,12 @@ def _parse_content_length(header_blob: bytes) -> int:
     raise McpError("MCP response is missing the Content-Length header")
 
 
+def _extract_initialize_instructions(result: Any) -> str:
+    if not isinstance(result, dict):
+        return ""
+    return str(result.get("instructions", "") or "").strip()
+
+
 @dataclass
 class McpServerClient:
     name: str
@@ -225,6 +231,7 @@ class McpServerClient:
     process_started_ts: float = 0.0
     _hs_last_raw_log_ts: float = 0.0
     peer_request_handler: Optional[Callable[[str, Dict[str, Any]], Dict[str, Any]]] = None
+    initialize_instructions: str = ""
 
     def _handshake_debug_enabled(self) -> bool:
         """Enable handshake debug by env or per-server config."""
@@ -757,14 +764,14 @@ class McpServerClient:
         for mode in wire_modes:
             self.wire_mode = mode
             for pv in protocol_candidates:
-            # Retry initialize multiple times on the SAME process first.
-            # npx startup chain may be slow; restarting too eagerly can starve readiness.
+                # Retry initialize multiple times on the SAME process first.
+                # npx startup chain may be slow; restarting too eagerly can starve readiness.
                 for attempt in range(4):
                     left = deadline - time.time()
                     if left <= 0:
                         break
                     try:
-                        self._request(
+                        result = self._request(
                             "initialize",
                             {
                                 "protocolVersion": pv,
@@ -773,6 +780,7 @@ class McpServerClient:
                             },
                             timeout_s=min(left, per_try_floor),
                         )
+                        self.initialize_instructions = _extract_initialize_instructions(result)
                         self.negotiated_protocol = pv
                         last_error = None
                         break
@@ -930,6 +938,7 @@ class McpUrlClient:
     config: Dict[str, Any]
     next_id: int = 1
     initialized: bool = False
+    initialize_instructions: str = ""
     session_id: Optional[str] = None
     lock: threading.Lock = field(default_factory=threading.Lock)
     peer_request_handler: Optional[Callable[[str, Dict[str, Any]], Dict[str, Any]]] = None
@@ -2239,7 +2248,7 @@ class McpUrlClient:
         last_error = None
         for pv in protocol_candidates:
             try:
-                self._post_jsonrpc(
+                result = self._post_jsonrpc(
                     "initialize",
                     {
                         "protocolVersion": pv,
@@ -2248,6 +2257,7 @@ class McpUrlClient:
                     },
                     timeout_s=timeout_s,
                 )
+                self.initialize_instructions = _extract_initialize_instructions(result)
                 self.initialized = True
                 # best-effort initialized notification
                 try:
@@ -3756,4 +3766,22 @@ class McpManager:
             if isinstance(prompts, list) and len(prompts) > 20:
                 show += f" | ... total={len(prompts)}"
             lines.append(f"- {server}: {show}")
+        return "\n".join(lines)
+
+    def cached_initialize_instructions_for_prompt(self) -> str:
+        items: List[Tuple[str, str]] = []
+        for server, client in self._clients.items():
+            if not bool(getattr(client, "initialized", False)):
+                continue
+            instructions = str(getattr(client, "initialize_instructions", "") or "").strip()
+            if not instructions:
+                continue
+            items.append((str(server), instructions))
+        if not items:
+            return "No cached MCP initialize instructions yet (connect an MCP server first)."
+        lines: List[str] = []
+        for server, instructions in sorted(items, key=lambda item: item[0].lower()):
+            lines.append(f"- {server}:")
+            for line in instructions.splitlines():
+                lines.append(f"  {line}" if line else "  ")
         return "\n".join(lines)
