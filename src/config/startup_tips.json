@@ -1,70 +1,87 @@
 {
   "tips": [
     {
+      "id": "model_switch",
       "text": "Use /model to switch model providers and model names quickly.",
       "highlights": ["/model"]
     },
     {
+      "id": "chat_new",
       "text": "Type /chat new to start a fresh thread while keeping workspace context.",
       "highlights": ["/chat new"]
     },
     {
+      "id": "chat_switch",
       "text": "Use /chat switch <name|id|index> to jump between task threads.",
       "highlights": ["/chat switch"]
     },
     {
+      "id": "chat_list",
       "text": "Run /chat list to view all chats in the current workspace.",
       "highlights": ["/chat list"]
     },
     {
+      "id": "workspace_list",
       "text": "Use /workspace list to see every registered workspace.",
       "highlights": ["/workspace list"]
     },
     {
+      "id": "workspace_switch",
       "text": "Run /workspace switch <name|id|path> before starting work on another project.",
       "highlights": ["/workspace switch"]
     },
     {
+      "id": "workspace_create",
       "text": "Use /workspace create <path> --name <name> to register a new project space.",
       "highlights": ["/workspace create", "--name"]
     },
     {
+      "id": "memory_status",
       "text": "Type /memory status to check whether memory is enabled and ready.",
       "highlights": ["/memory status"]
     },
     {
+      "id": "memory_remember",
       "text": "Use /memory remember <text> to save stable preferences for later sessions.",
       "highlights": ["/memory remember"]
     },
     {
+      "id": "memory_search",
       "text": "Run /memory search <query> when you want to recall prior decisions.",
       "highlights": ["/memory search"]
     },
     {
+      "id": "execution_policy_show",
       "text": "Use /execution-policy show to inspect current execution confirmation mode.",
       "highlights": ["/execution-policy show"]
     },
     {
+      "id": "shell_prefix",
       "text": "Prefix local shell commands with !, for example !git status.",
       "highlights": ["!", "!git status"]
     },
     {
+      "id": "clear_context",
       "text": "Use /clear context to reset AI context but keep command history.",
       "highlights": ["/clear context"]
     },
     {
+      "id": "clear_input_history",
       "text": "Use /clear input history to clear terminal input history.",
       "highlights": ["/clear input history"]
     },
     {
+      "id": "mcp_status",
       "text": "Use /mcp status to inspect MCP server health and loading state.",
       "highlights": ["/mcp status"]
     },
     {
+      "id": "shift_enter",
       "text": "Press Shift+Enter to insert a newline, and press Enter to send.",
       "highlights": ["Shift+Enter", "Enter"]
     },
     {
+      "id": "help",
       "text": "Use /help to view built-in commands whenever you are unsure.",
       "highlights": ["/help"]
     }

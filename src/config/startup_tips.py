@@ -32,6 +32,7 @@ def _normalize_tip_entry(item: Any) -> Optional[Dict[str, Any]]:
     text = str(item.get("text") or "").strip()
     if not text:
         return None
+    tip_id = str(item.get("id") or "").strip() or None
     highlights_raw = item.get("highlights", [])
     highlights: List[str] = []
     if isinstance(highlights_raw, list):
@@ -39,7 +40,26 @@ def _normalize_tip_entry(item: Any) -> Optional[Dict[str, Any]]:
             hs = str(h or "").strip()
             if hs:
                 highlights.append(hs)
-    return {"text": text, "highlights": highlights}
+
+    entry: Dict[str, Any] = {"text": text, "highlights": highlights}
+    if tip_id:
+        entry["id"] = tip_id
+    return entry
+
+
+def _translate_tip_entry(entry: Dict[str, Any], language: Optional[str] = None) -> Dict[str, Any]:
+    tip_text = str(entry.get("text") or "")
+    tip_id = str(entry.get("id") or "").strip()
+    if tip_id:
+        try:
+            from ..core.localization import translate
+
+            tip_text = translate(f"startup.tip.{tip_id}", language, fallback=tip_text)
+        except Exception:
+            pass
+    result = dict(entry)
+    result["text"] = tip_text
+    return result
 
 
 def _default_startup_tip_entry(language: Optional[str] = None) -> Dict[str, Any]:
@@ -49,7 +69,7 @@ def _default_startup_tip_entry(language: Optional[str] = None) -> Dict[str, Any]
         tip_text = translate("startup.tip.manage_workspaces", language, fallback=DEFAULT_STARTUP_TIP)
     except Exception:
         tip_text = DEFAULT_STARTUP_TIP
-    return {"text": tip_text, "highlights": ["/workspace"]}
+    return {"text": tip_text, "highlights": ["/workspace"], "id": "manage_workspaces"}
 
 
 def load_startup_tip_entries(path: Optional[Path] = None, language: Optional[str] = None) -> List[Dict[str, Any]]:
@@ -59,7 +79,7 @@ def load_startup_tip_entries(path: Optional[Path] = None, language: Optional[str
         with open(cfg_path, "r", encoding="utf-8") as f:
             raw = json.load(f)
     except Exception:
-        return [_default_startup_tip_entry(language)]
+        return [_translate_tip_entry(_default_startup_tip_entry(language), language)]
 
     tips_raw: object
     if isinstance(raw, list):
@@ -73,8 +93,8 @@ def load_startup_tip_entries(path: Optional[Path] = None, language: Optional[str
     for item in tips_raw if isinstance(tips_raw, list) else []:
         normalized = _normalize_tip_entry(item)
         if normalized:
-            tips.append(normalized)
-    return tips or [_default_startup_tip_entry(language)]
+            tips.append(_translate_tip_entry(normalized, language))
+    return tips or [_translate_tip_entry(_default_startup_tip_entry(language), language)]
 
 
 def load_startup_tips(path: Optional[Path] = None, language: Optional[str] = None) -> List[str]:
