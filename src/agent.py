@@ -1258,7 +1258,26 @@ class Agent:
                             model_args,
                         )
                     failed = not bool(model_tool_result.get("success", True))
-                    if model_tool:
+                    # The matching plan entry (if it appeared just before this
+                    # result) already printed the feedback line above; skip a
+                    # duplicate render in that case.
+                    prev_item = hist[idx - 1] if idx > 0 else None
+                    prev_plan_payload = (
+                        self._parse_model_tool_plan_history_content(
+                            str((prev_item or {}).get("content") or "")
+                        )
+                        if isinstance(prev_item, dict)
+                        and str(prev_item.get("role") or "").strip().lower() == "assistant"
+                        else None
+                    )
+                    plan_matches_result = bool(
+                        prev_plan_payload is not None
+                        and str(prev_plan_payload.get("tool") or "").strip() == model_tool
+                        and self._model_tool_result_matches_plan(
+                            model_tool, model_args, model_tool_result
+                        )
+                    )
+                    if model_tool and not plan_matches_result:
                         self._print_tool_call_feedback(model_tool, model_args, failed=failed)
                     if model_tool == "shell":
                         out_text, err_text = self._extract_model_shell_replay_output(model_tool_result)
@@ -2179,6 +2198,14 @@ class Agent:
             str(msg.get("content") or "")
         ) is not None
 
+    # Tools whose result is purely a control signal for the runtime loop and
+    # should not pollute chat history (no user-visible side effect).
+    _MODEL_TOOL_RESULT_HISTORY_SKIP_TOOLS = frozenset({
+        "",
+        "done",
+        "request_skill_prompt",
+    })
+
     def _record_model_tool_execution_history(
         self,
         tool_name: str,
@@ -2186,7 +2213,7 @@ class Agent:
         result: Dict[str, Any],
     ) -> None:
         t = str(tool_name or "").strip().lower()
-        if t != "shell":
+        if t in self._MODEL_TOOL_RESULT_HISTORY_SKIP_TOOLS:
             return
         content = self._build_model_tool_result_history_content(
             tool_name=str(tool_name or "").strip(),

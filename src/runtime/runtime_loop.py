@@ -2673,15 +2673,14 @@ def run_agent_loop(agent: Any):
                         "args": args,
                         "result": result,
                     })
-                    if tool_name == "shell":
-                        recorder = getattr(self, "_record_model_tool_execution_history", None)
-                        if callable(recorder):
-                            try:
-                                recorder(tool_name, args, result if isinstance(result, dict) else {})
-                            except Exception:
-                                pass
-                        if aborted_tool_result:
-                            _reload_chat_history_after_aborted_command(self)
+                    recorder = getattr(self, "_record_model_tool_execution_history", None)
+                    if callable(recorder):
+                        try:
+                            recorder(tool_name, args, result if isinstance(result, dict) else {})
+                        except Exception:
+                            pass
+                    if tool_name == "shell" and aborted_tool_result:
+                        _reload_chat_history_after_aborted_command(self)
                     last_result = result
                     last_tool_name = tool_name
                     last_tool_args = args if isinstance(args, dict) else {}
