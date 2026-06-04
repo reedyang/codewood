@@ -18,6 +18,12 @@ from ..core.console_utils import (
 )
 from ..core.console_title import restore_app_console_title
 
+
+def _t(agent: Any, key: str, fallback: Optional[str] = None, **kwargs: Any) -> str:
+    from ..core.localization import get_display_language, translate
+
+    return translate(key, get_display_language(agent), fallback=fallback, **kwargs)
+
 SHELL_OUTPUT_DISPLAY_TAIL_LINES = 30
 SHELL_OUTPUT_DISPLAY_RESERVED_LINES = 3
 SHELL_WORKING_STATUS_MARQUEE_FPS = 10.0
@@ -455,9 +461,19 @@ def action_shell_command(
         or ((not confirmed) and (not in_allowlist))
     )
     if should_prompt_confirm:
-        prompt_text = f"⚠️ Confirm executing system command: {command} ?"
+        prompt_text = _t(
+            agent,
+            "execution_policy.prompt.confirm_shell",
+            fallback="⚠️ Confirm executing system command: {command} ?",
+            command=command,
+        )
         if force_manual_confirm_by_policy:
-            prompt_text = f"⚠️ AI requires manual confirmation. Please confirm before continuing: {command} ?"
+            prompt_text = _t(
+                agent,
+                "execution_policy.prompt.manual_confirmation_required",
+                fallback="⚠️ AI requires manual confirmation. Please confirm before continuing: {command} ?",
+                command=command,
+            )
         ok = agent._prompt_confirm_yes_no_maybe_always(
             prompt_text,
             offer_always=agent._shell_confirm_should_offer_always(command),
