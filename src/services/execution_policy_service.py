@@ -20,6 +20,12 @@ def _print_with_auto_hide_tracking(agent: Any, text: str) -> None:
             pass
 
 
+def _t(agent: Any, key: str, fallback: Optional[str] = None, **kwargs: Any) -> str:
+    from ..core.localization import get_display_language, translate
+
+    return translate(key, get_display_language(agent), fallback=fallback, **kwargs)
+
+
 def confirm_allowlist_path(agent: Any) -> Path:
     return command_security.confirm_allowlist_path(agent)
 
@@ -43,7 +49,15 @@ def load_freedom_script_review_cache(agent: Any) -> None:
                 str(k): v for k, v in ent.items() if isinstance(v, dict)
             }
     except Exception as e:
-        print(f"⚠️ Failed to read freedom_script_review_cache.json: {e}")
+        _print_with_auto_hide_tracking(
+            agent,
+            _t(
+                agent,
+                "execution_policy.cache.read_failed",
+                fallback="⚠️ Failed to read freedom_script_review_cache.json: {error}",
+                error=e,
+            ),
+        )
 
 
 def save_freedom_script_review_cache(agent: Any) -> bool:
@@ -56,7 +70,15 @@ def save_freedom_script_review_cache(agent: Any) -> bool:
         p.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         return True
     except Exception as e:
-        print(f"⚠️ Failed to write freedom_script_review_cache.json: {e}")
+        _print_with_auto_hide_tracking(
+            agent,
+            _t(
+                agent,
+                "execution_policy.cache.write_failed",
+                fallback="⚠️ Failed to write freedom_script_review_cache.json: {error}",
+                error=e,
+            ),
+        )
         return False
 
 
@@ -92,7 +114,7 @@ def freedom_try_cached_user_script_review(
     skip = bool(rec.get("skip_confirm"))
     reason = rec.get("reason") if isinstance(rec.get("reason"), str) else ""
     if not reason:
-        reason = "(no cache reason provided)"
+        reason = _t(agent, "execution_policy.review.no_cache_reason", fallback="(no cache reason provided)")
     return (skip, reason)
 
 
@@ -190,26 +212,37 @@ def prompt_confirm_yes_no_maybe_always(
         agent, shell_command
     ):
         return True
+    yes_no_always_suffix = _t(
+        agent,
+        "execution_policy.prompt.yes_no_always_suffix",
+        fallback=" (y/n/a, a=add this entry to skip-confirm list): ",
+    )
+    yes_no_suffix = _t(agent, "execution_policy.prompt.yes_no_suffix", fallback=" (y/n): ")
     if offer_always:
-        line = f"{prompt_core} (y/n/a, a=add this entry to skip-confirm list): "
+        line = f"{prompt_core}{yes_no_always_suffix}"
     else:
-        line = f"{prompt_core} (y/n): "
+        line = f"{prompt_core}{yes_no_suffix}"
     raw = input(line).strip().lower()
     if offer_always and raw in ("a", "always"):
         if kind == "shell" and shell_command is not None:
             add_shell_command_allowlist(agent, shell_command)
-        print(
-            f"ℹ️ Saved to {confirm_allowlist_path(agent)}. "
-            "Use /always_confirm-reset to clear the list."
+        _print_with_auto_hide_tracking(
+            agent,
+            _t(
+                agent,
+                "execution_policy.prompt.saved_to_allowlist",
+                fallback="ℹ️ Saved to {path}. Use /always_confirm-reset to clear the list.",
+                path=confirm_allowlist_path(agent),
+            ),
         )
         return True
     return raw in ("y", "yes")
 
 
-def parse_reversibility_response(text: str) -> Tuple[bool, str]:
+def parse_reversibility_response(text: str, agent: Any = None) -> Tuple[bool, str]:
     """Parse model JSON; on failure treat as irreversible (still require confirm)."""
     if not text or not isinstance(text, str):
-        return False, "Empty response"
+        return False, _t(agent, "execution_policy.reversible.empty_response", fallback="Empty response")
     s = text.strip()
     fence = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", s, re.DOTALL)
     if fence:
@@ -237,15 +270,16 @@ def parse_reversibility_response(text: str) -> Tuple[bool, str]:
                     except json.JSONDecodeError:
                         pass
                     break
-    return False, "Unable to parse safety classification"
+    return False, _t(agent, "execution_policy.reversible.unable_to_parse", fallback="Unable to parse safety classification")
 
 
 def parse_combined_freedom_response(
     text: str,
+    agent: Any = None,
 ) -> Tuple[bool, bool, Optional[bool], str]:
     """Parse one-shot freedom JSON: safe_auto, reversible, manipulation (optional), reason."""
     if not text or not isinstance(text, str):
-        return False, False, True, "Empty response"
+        return False, False, True, _t(agent, "execution_policy.combined.empty_response", fallback="Empty response")
     s = text.strip()
     if s.startswith("❌"):
         return False, False, True, s[:120]
@@ -295,7 +329,7 @@ def parse_combined_freedom_response(
                     except json.JSONDecodeError:
                         pass
                     break
-    return False, False, True, "Unable to parse combined review result"
+    return False, False, True, _t(agent, "execution_policy.combined.unable_to_parse", fallback="Unable to parse combined review result")
 
 
 def freedom_script_quick_deny(content: str) -> bool:
@@ -391,17 +425,26 @@ def ai_assess_ephemeral_script_combined(
         freedom_combined_review=True,
     )
     if not isinstance(raw, str):
-        return combined_review_on_model_failure(content, "Model returned an invalid type")
+        return combined_review_on_model_failure(
+            content,
+            _t(agent, "execution_policy.review.model_invalid_type", fallback="Model returned an invalid type"),
+        )
     if raw.strip().startswith("❌"):
         return combined_review_on_model_failure(content, raw.strip()[:120])
-    safe_auto, reversible, manip, reason = parse_combined_freedom_response(raw)
+    safe_auto, reversible, manip, reason = parse_combined_freedom_response(raw, agent)
     if "Unable to parse" in reason:
         return combined_review_on_model_failure(content, reason)
     if manip is None:
         hit, tok = freedom_script_prompt_injection(content)
         manip = hit
         if hit:
-            reason = f"{reason}; keyword fallback (manipulation): {tok}"
+            reason = _t(
+                agent,
+                "execution_policy.review.keyword_fallback",
+                fallback="{reason}; keyword fallback (manipulation): {token}",
+                reason=reason,
+                token=tok,
+            )
     skip = (not manip) and (safe_auto or ((not safe_auto) and reversible))
     return skip, reason, bool(manip)
 
@@ -412,16 +455,30 @@ def ai_assess_reversible(agent: Any, command: Dict[str, Any]) -> Tuple[bool, str
         payload, context="", stream=False, minimal_classifier=True
     )
     if not isinstance(raw, str):
-        return False, "Model returned an invalid type"
+        return False, _t(agent, "execution_policy.review.model_invalid_type", fallback="Model returned an invalid type")
     if raw.strip().startswith("❌"):
         return False, raw.strip()[:120]
-    return parse_reversibility_response(raw)
+    return parse_reversibility_response(raw, agent)
 
 
 def freedom_auto_confirm(agent: Any, command: Dict[str, Any]) -> bool:
     """Return True to skip interactive confirmation (move/delete/shell/text_file/git write)."""
     policy = str(getattr(agent, "execution_policy", "confirmation")).lower()
-    mode_label = "Moderate mode" if policy == "moderate" else ("Unlimited mode" if policy == "unlimited" else "Execution policy")
+    mode_label_key = (
+        "execution_policy.mode_label.moderate"
+        if policy == "moderate"
+        else "execution_policy.mode_label.unlimited"
+        if policy == "unlimited"
+        else "execution_policy.mode_label.confirmation"
+    )
+    fallback_label = (
+        "Moderate mode"
+        if policy == "moderate"
+        else "Unlimited mode"
+        if policy == "unlimited"
+        else "Execution policy"
+    )
+    mode_label = _t(agent, mode_label_key, fallback=fallback_label)
     mode_prefix = f"🦅 {mode_label}:"
     if policy == "confirmation":
         return False
@@ -439,13 +496,19 @@ def freedom_auto_confirm(agent: Any, command: Dict[str, Any]) -> bool:
         # If user selected "always" before, skip AI reversibility review entirely.
         load_confirm_allowlist(agent)
         if shell_command_in_allowlist(agent, s):
-            _print_with_auto_hide_tracking(agent, f"{mode_prefix} matched skip-confirm list, skipped AI review and executed directly.")
+            _print_with_auto_hide_tracking(
+                agent,
+                f"{mode_prefix} {_t(agent, 'execution_policy.review.skip_confirm_list_skip', fallback='matched skip-confirm list, skipped AI review and executed directly.')}",
+            )
             return True
 
         if re.search(
             r"(?i)(?:^|[\s;&|])(?:py(?:thon)?(?:\d(?:\.\d)?)?|pythonw)\s+-\s*c\s+", s
         ):
-            _print_with_auto_hide_tracking(agent, f"{mode_prefix} inline Python (-c) in work directory, confirmation skipped.")
+            _print_with_auto_hide_tracking(
+                agent,
+                f"{mode_prefix} {_t(agent, 'execution_policy.review.inline_python_skip', fallback='inline Python (-c) in work directory, confirmation skipped.')}",
+            )
             agent._manual_confirm_required_shell_once = False
             return True
 
@@ -456,10 +519,10 @@ def freedom_auto_confirm(agent: Any, command: Dict[str, Any]) -> bool:
             if expected:
                 actual = shell_script_hash(agent, sp)
                 if actual and actual == expected:
-                    _print_with_auto_hide_tracking(agent, f"{mode_prefix} script hash matched skip-confirm entry, skipped AI review and executed directly.")
-                    agent._manual_confirm_required_shell_once = False
-                    return True
-
+                        _print_with_auto_hide_tracking(
+                            agent,
+                            f"{mode_prefix} {_t(agent, 'execution_policy.review.hash_skip', fallback='script hash matched skip-confirm entry, skipped AI review and executed directly.')}",
+                        )
             k = agent._ephemeral_path_key(sp)
             session_ephemeral = k in agent._ephemeral_script_paths
             combined_eligible = sp.is_file() and (
@@ -469,7 +532,15 @@ def freedom_auto_confirm(agent: Any, command: Dict[str, Any]) -> bool:
                 try:
                     body = sp.read_text(encoding="utf-8", errors="replace")
                 except OSError as e:
-                    _print_with_auto_hide_tracking(agent, f"⚠️ Unable to read script for review: {e}")
+                    _print_with_auto_hide_tracking(
+                        agent,
+                        _t(
+                            agent,
+                            "execution_policy.review.unable_to_read_script",
+                            fallback="⚠️ Unable to read script for review: {error}",
+                            error=e,
+                        ),
+                    )
                     body = ""
                 max_len = 200_000
                 if len(body) > max_len:
@@ -477,15 +548,20 @@ def freedom_auto_confirm(agent: Any, command: Dict[str, Any]) -> bool:
                 if freedom_script_quick_deny(body):
                     _print_with_auto_hide_tracking(
                         agent,
-                        f"{mode_prefix} script content matched high-risk heuristics (for example registry/system config related), "
-                        "falling back to operation safety classification.",
+                        f"{mode_prefix} {_t(agent, 'execution_policy.review.high_risk_heuristics', fallback='script content matched high-risk heuristics (for example registry/system config related), falling back to operation safety classification.')}",
                     )
                     reversible, reason = ai_assess_reversible(agent, command)
                     if reversible:
-                        _print_with_auto_hide_tracking(agent, f"{mode_prefix} classified as safe, auto-skipping confirmation - {reason}")
+                        _print_with_auto_hide_tracking(
+                            agent,
+                            f"{mode_prefix} {_t(agent, 'execution_policy.review.classified_safe', fallback='classified as safe, auto-skipping confirmation - {reason}', reason=reason)}",
+                        )
                         agent._manual_confirm_required_shell_once = False
                     else:
-                        _print_with_auto_hide_tracking(agent, f"{mode_prefix} classified as unsafe or uncertain, manual confirmation is still required - {reason}")
+                        _print_with_auto_hide_tracking(
+                            agent,
+                            f"{mode_prefix} {_t(agent, 'execution_policy.review.classified_unsafe', fallback='classified as unsafe or uncertain, manual confirmation is still required - {reason}', reason=reason)}",
+                        )
                         agent._manual_confirm_required_shell_once = True
                     return reversible
                 use_cache = not session_ephemeral
@@ -493,16 +569,22 @@ def freedom_auto_confirm(agent: Any, command: Dict[str, Any]) -> bool:
                     cached = freedom_try_cached_user_script_review(agent, k, body, command)
                     if cached is not None:
                         skip_c, reason_c = cached
-                        tag = "auto-confirm can be skipped" if skip_c else "manual confirmation required"
+                        tag = _t(
+                            agent,
+                            "execution_policy.review.cache.tag.skip"
+                            if skip_c
+                            else "execution_policy.review.cache.tag.manual",
+                            fallback="auto-confirm can be skipped" if skip_c else "manual confirmation required",
+                        )
                         _print_with_auto_hide_tracking(
                             agent,
-                            f"{mode_prefix} used script review cache from config file (script and command hashes match), {tag} - {reason_c}"
+                            f"{mode_prefix} {_t(agent, 'execution_policy.review.cache_used', fallback='used script review cache from config file (script and command hashes match), {tag} - {reason}', tag=tag, reason=reason_c)}",
                         )
                         agent._manual_confirm_required_shell_once = not bool(skip_c)
                         return skip_c
                 _print_with_auto_hide_tracking(
                     agent,
-                    f"{mode_prefix} reviewing script safety and manipulation content..."
+                    f"{mode_prefix} {_t(agent, 'execution_policy.review.reviewing_script_content', fallback='reviewing script safety and manipulation content...')}"
                 )
                 skip, reason, inj_risk = ai_assess_ephemeral_script_combined(
                     agent, sp, body, command
@@ -514,40 +596,73 @@ def freedom_auto_confirm(agent: Any, command: Dict[str, Any]) -> bool:
                 if inj_risk:
                     _print_with_auto_hide_tracking(
                         agent,
-                        f"🚫 {mode_label}: combined review detected script review-manipulation/prompt-injection risk - "
-                        f"{reason}",
+                        f"🚫 {mode_label}: {_t(agent, 'execution_policy.review.prompt_injection_risk', fallback='combined review detected script review-manipulation/prompt-injection risk - {reason}', reason=reason)}",
                     )
-                    _print_with_auto_hide_tracking(agent, "🚫 Recommended not to execute this script; if execution is required, perform manual review and confirm manually first.")
+                    _print_with_auto_hide_tracking(
+                        agent,
+                        _t(
+                            agent,
+                            "execution_policy.review.recommended_manual_review",
+                            fallback="🚫 Recommended not to execute this script; if execution is required, perform manual review and confirm manually first.",
+                        ),
+                    )
                     agent._manual_confirm_required_shell_once = True
                     return False
                 if skip:
-                    _print_with_auto_hide_tracking(agent, f"{mode_prefix} classified as auto-skippable confirmation - {reason}")
+                    _print_with_auto_hide_tracking(
+                        agent,
+                        f"{mode_prefix} {_t(agent, 'execution_policy.review.auto_skippable', fallback='classified as auto-skippable confirmation - {reason}', reason=reason)}"
+                    )
                     agent._manual_confirm_required_shell_once = False
                 else:
-                    _print_with_auto_hide_tracking(agent, f"{mode_prefix} classified as manual confirmation required - {reason}")
+                    _print_with_auto_hide_tracking(
+                        agent,
+                        f"{mode_prefix} {_t(agent, 'execution_policy.review.manual_confirmation', fallback='classified as manual confirmation required - {reason}', reason=reason)}"
+                    )
                     agent._manual_confirm_required_shell_once = True
                 return skip
 
             if k in agent._ai_created_path_keys:
-                _print_with_auto_hide_tracking(agent, f"{mode_prefix} command targets AI-generated paths tracked in this session, confirmation skipped.")
+                _print_with_auto_hide_tracking(
+                    agent,
+                    f"{mode_prefix} {_t(agent, 'execution_policy.review.ai_generated_paths', fallback='command targets AI-generated paths tracked in this session, confirmation skipped.')}",
+                )
                 agent._manual_confirm_required_shell_once = False
                 return True
 
-        _print_with_auto_hide_tracking(agent, f"{mode_prefix} asking AI to classify whether the operation is safe...")
+        _print_with_auto_hide_tracking(
+            agent,
+            f"{mode_prefix} {_t(agent, 'execution_policy.review.asking_safety', fallback='asking AI to classify whether the operation is safe...')}"
+        )
         reversible, reason = ai_assess_reversible(agent, command)
         if reversible:
-            _print_with_auto_hide_tracking(agent, f"{mode_prefix} classified as safe, auto-skipping confirmation - {reason}")
+            _print_with_auto_hide_tracking(
+                agent,
+                f"{mode_prefix} {_t(agent, 'execution_policy.review.classified_safe', fallback='classified as safe, auto-skipping confirmation - {reason}', reason=reason)}"
+            )
             agent._manual_confirm_required_shell_once = False
         else:
-            _print_with_auto_hide_tracking(agent, f"{mode_prefix} classified as unsafe or uncertain, manual confirmation is still required - {reason}")
+            _print_with_auto_hide_tracking(
+                agent,
+                f"{mode_prefix} {_t(agent, 'execution_policy.review.classified_unsafe', fallback='classified as unsafe or uncertain, manual confirmation is still required - {reason}', reason=reason)}"
+            )
             agent._manual_confirm_required_shell_once = True
         return reversible
 
-    _print_with_auto_hide_tracking(agent, f"{mode_prefix} asking AI to classify whether the operation is safe...")
+    _print_with_auto_hide_tracking(
+        agent,
+        f"{mode_prefix} {_t(agent, 'execution_policy.review.asking_safety', fallback='asking AI to classify whether the operation is safe...')}"
+    )
     reversible, reason = ai_assess_reversible(agent, command)
     if reversible:
-        _print_with_auto_hide_tracking(agent, f"{mode_prefix} classified as safe, auto-skipping confirmation - {reason}")
+        _print_with_auto_hide_tracking(
+            agent,
+            f"{mode_prefix} {_t(agent, 'execution_policy.review.classified_safe', fallback='classified as safe, auto-skipping confirmation - {reason}', reason=reason)}"
+        )
     else:
-        _print_with_auto_hide_tracking(agent, f"{mode_prefix} classified as unsafe or uncertain, manual confirmation is still required - {reason}")
+        _print_with_auto_hide_tracking(
+            agent,
+            f"{mode_prefix} {_t(agent, 'execution_policy.review.classified_unsafe', fallback='classified as unsafe or uncertain, manual confirmation is still required - {reason}', reason=reason)}"
+        )
     return reversible
 
