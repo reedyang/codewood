@@ -1,3 +1,4 @@
+import json
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -13,6 +14,56 @@ from .ai_special_mode_prompts import build_special_mode_messages
 
 
 _AI_HISTORY_LOG = get_logger(f"{get_app_logger_root()}.ai_history")
+
+
+def _build_tool_calls_plan_payload(message: Optional[Dict[str, Any]]) -> str:
+    """Serialize standard-API tool_calls into a JSON plan string for chat history.
+
+    Returns an empty string when ``message`` carries no usable tool_calls so
+    callers can fall back to the original empty-content handling.
+    """
+    if not isinstance(message, dict):
+        return ""
+    tool_calls = message.get("tool_calls")
+    if not isinstance(tool_calls, list) or not tool_calls:
+        return ""
+    serialized: List[Dict[str, Any]] = []
+    for entry in tool_calls:
+        if not isinstance(entry, dict):
+            continue
+        function = entry.get("function")
+        if not isinstance(function, dict):
+            continue
+        name = str(function.get("name") or "").strip()
+        if not name:
+            continue
+        raw_args: Any = function.get("arguments")
+        if isinstance(raw_args, str):
+            try:
+                parsed_args = json.loads(raw_args)
+            except Exception:
+                parsed_args = None
+            if not isinstance(parsed_args, dict):
+                parsed_args = {"_raw_arguments": raw_args}
+        elif isinstance(raw_args, dict):
+            parsed_args = raw_args
+        else:
+            parsed_args = {}
+        serialized.append({
+            "id": str(entry.get("id") or "").strip(),
+            "type": str(entry.get("type") or "function"),
+            "function": {
+                "name": name,
+                "arguments": json.dumps(parsed_args, ensure_ascii=False),
+            },
+        })
+    if not serialized:
+        return ""
+    payload = {"tool_calls": serialized}
+    try:
+        return json.dumps(payload, ensure_ascii=False)
+    except Exception:
+        return ""
 
 
 @dataclass
@@ -81,7 +132,10 @@ class AIOrchestrator:
             if image_error:
                 return image_error
 
-            def _append_history(ai_response: str) -> None:
+            def _append_history(
+                ai_response: str,
+                message: Optional[Dict[str, Any]] = None,
+            ) -> None:
                 if not record_history:
                     return
                 if not call_ctx.history_skip_user:
@@ -91,7 +145,18 @@ class AIOrchestrator:
                         else call_ctx.user_input
                     )
                     self.context.history_writer("user", _u)
-                if not str(ai_response or "").strip():
+                assistant_text = str(ai_response or "")
+                if not assistant_text.strip():
+                    # When the model returned only standard `tool_calls` (no visible
+                    # text content), persist a synthetic JSON plan so the chat
+                    # history replay (`_parse_model_tool_plan_history_content`)
+                    # can still surface the tool call. This keeps tools like
+                    # `apply_patch` from disappearing from chat history when the
+                    # provider omits a textual content payload.
+                    plan_payload = _build_tool_calls_plan_payload(message)
+                    if plan_payload:
+                        self.context.history_writer("assistant", plan_payload)
+                        return
                     _AI_HISTORY_LOG.warning(
                         "llm-history empty-assistant skipped provider=%s model=%s stream=%s return_message=%s history_skip_user=%s",
                         provider,
@@ -101,7 +166,7 @@ class AIOrchestrator:
                         bool(call_ctx.history_skip_user),
                     )
                     return
-                self.context.history_writer("assistant", ai_response)
+                self.context.history_writer("assistant", assistant_text)
 
             provider_ctx = ProviderCallContext(
                 provider=provider,

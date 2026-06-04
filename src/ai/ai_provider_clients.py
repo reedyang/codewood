@@ -465,7 +465,7 @@ def _build_stream_tool_calls_message(
 
 def _stream_openai_like_response(
     resp: Any,
-    append_history: Callable[[str], None],
+    append_history: Callable[..., None],
 ):
     def _extract_stream_text_delta(payload: Any) -> str:
         if not isinstance(payload, dict):
@@ -594,7 +594,7 @@ def _stream_openai_like_response(
                     bool(snapshot_message),
                     bool(self.final_message.get("tool_calls")),
                 )
-            append_history(buffer)
+            append_history(buffer, self.final_message)
 
     return _OpenAIStreamResult()
 
@@ -1049,7 +1049,7 @@ def _call_openai_once(
     additional_drop_params: List[str],
     tool_schemas: Optional[List[Dict[str, Any]]],
     tool_choice: Any,
-    append_history: Callable[[str], None],
+    append_history: Callable[..., None],
 ):
     payload = _build_openai_payload(
         api_kind=api_kind,
@@ -1089,7 +1089,7 @@ def _call_openai_once(
             ",".join(sorted([str(k) for k in message.keys()])),
             bool(message.get("tool_calls")),
         )
-    append_history(ai_response)
+    append_history(ai_response, message)
     return message if return_message else ai_response
 
 
@@ -1110,7 +1110,7 @@ def _call_openai_with_suffix_strategy(
     additional_drop_params: List[str],
     tool_schemas: Optional[List[Dict[str, Any]]],
     tool_choice: Any,
-    append_history: Callable[[str], None],
+    append_history: Callable[..., None],
 ):
     prefer_no_suffix = _openai_get_prefer_no_suffix(
         base_url=base_url, model_name=model_name, api_kind=api_kind
@@ -1326,7 +1326,7 @@ def _call_with_openai_compatible(
     memory_query_expansion_mode: bool,
     tool_schemas: Optional[List[Dict[str, Any]]],
     tool_choice: Any,
-    append_history: Callable[[str], None],
+    append_history: Callable[..., None],
     api_key_error_msg: str,
     default_base_url: str,
 ):
@@ -1451,7 +1451,7 @@ def _call_with_ollama(
     memory_query_expansion_mode: bool,
     tool_schemas: Optional[List[Dict[str, Any]]],
     tool_choice: Any,
-    append_history: Callable[[str], None],
+    append_history: Callable[..., None],
     ollama_importer: Callable[[], Any],
     context_window: int,
     model_params: Optional[Dict[str, Any]],
@@ -1582,7 +1582,7 @@ def _call_with_ollama(
                     if tool_calls:
                         self.final_message["tool_calls"] = tool_calls
                     if completed:
-                        append_history(buffer)
+                        append_history(buffer, self.final_message)
                     self.close()
 
         return _OllamaStreamResult()
@@ -1593,14 +1593,14 @@ def _call_with_ollama(
         return f"❌ Error parsing Ollama HTTP response at {url}: {str(e)}"
     message = _extract_message_from_ollama_response_data(response_data)
     ai_response = str(message.get("content", "") or "")
-    append_history(ai_response)
+    append_history(ai_response, message)
     return message if return_message else ai_response
 
 
 def call_ai_with_provider(
     *,
     context: ProviderCallContext,
-    append_history: Callable[[str], None],
+    append_history: Callable[..., None],
     ollama_importer: Callable[[], Any],
 ):
     if context.provider == "openai" and context.openai_conf:
