@@ -873,6 +873,18 @@ def _build_openai_request_url(base_url: str, api_kind: str, append_suffix: bool)
     return base + suffix
 
 
+def _should_disable_thinking_for_openai_compatible(
+    *,
+    model_name: str,
+    base_url: str,
+) -> bool:
+    model = str(model_name or "").strip().casefold()
+    base = str(base_url or "").strip().casefold()
+    if model.startswith("deepseek-"):
+        return True
+    return "deepseek" in base
+
+
 def _build_openai_responses_input_messages(
     messages: List[Dict[str, Any]],
     image_data: Optional[str],
@@ -944,6 +956,7 @@ def _build_openai_payload(
     additional_drop_params: List[str],
     tool_schemas: Optional[List[Dict[str, Any]]],
     tool_choice: Any,
+    force_disable_thinking: bool,
 ) -> Dict[str, Any]:
     tools_payload = _normalize_openai_tool_schemas(tool_schemas, api_kind=api_kind)
     tool_choice_payload = _normalize_openai_tool_choice(tool_choice, api_kind=api_kind)
@@ -967,6 +980,8 @@ def _build_openai_payload(
             payload["max_output_tokens"] = 512
         if memory_query_expansion_mode:
             payload["temperature"] = 0.2
+        if force_disable_thinking:
+            payload["thinking"] = {"type": "disabled"}
         if isinstance(payload.get("tools"), list) and not payload.get("tools"):
             payload.pop("tools", None)
         effective_drop_params = _merge_default_drop_params(
@@ -985,6 +1000,8 @@ def _build_openai_payload(
         payload["max_tokens"] = 512
     if memory_query_expansion_mode:
         payload["temperature"] = 0.2
+    if force_disable_thinking:
+        payload["thinking"] = {"type": "disabled"}
     if isinstance(payload.get("tools"), list) and not payload.get("tools"):
         payload.pop("tools", None)
     effective_drop_params = _merge_default_drop_params(
@@ -1049,6 +1066,7 @@ def _call_openai_once(
     additional_drop_params: List[str],
     tool_schemas: Optional[List[Dict[str, Any]]],
     tool_choice: Any,
+    force_disable_thinking: bool,
     append_history: Callable[..., None],
 ):
     payload = _build_openai_payload(
@@ -1064,6 +1082,7 @@ def _call_openai_once(
         additional_drop_params=additional_drop_params,
         tool_schemas=tool_schemas,
         tool_choice=tool_choice,
+        force_disable_thinking=force_disable_thinking,
     )
     resp = _post_openai_request(url=url, headers=headers, payload=payload, stream=stream)
     if stream:
@@ -1112,6 +1131,10 @@ def _call_openai_with_suffix_strategy(
     tool_choice: Any,
     append_history: Callable[..., None],
 ):
+    force_disable_thinking = _should_disable_thinking_for_openai_compatible(
+        model_name=model_name,
+        base_url=base_url,
+    )
     prefer_no_suffix = _openai_get_prefer_no_suffix(
         base_url=base_url, model_name=model_name, api_kind=api_kind
     )
@@ -1150,6 +1173,7 @@ def _call_openai_with_suffix_strategy(
             additional_drop_params=additional_drop_params,
             tool_schemas=tool_schemas,
             tool_choice=tool_choice,
+            force_disable_thinking=force_disable_thinking,
             append_history=append_history,
         )
     except Exception as e:
@@ -1192,6 +1216,7 @@ def _call_openai_with_suffix_strategy(
             additional_drop_params=additional_drop_params,
             tool_schemas=tool_schemas,
             tool_choice=tool_choice,
+            force_disable_thinking=force_disable_thinking,
             append_history=append_history,
         )
         if primary_append and not secondary_append:
