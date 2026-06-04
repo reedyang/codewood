@@ -797,6 +797,17 @@ def action_shell_command(
                 ) -> None:
                     decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
                     realtime_started = False
+
+                    def _write_display_chunk(text: str) -> None:
+                        try:
+                            target.write(text)
+                            target.flush()
+                        except Exception:
+                            # Rendering must not stop pipe draining. Keep the
+                            # bounded live window intact and let the final tail
+                            # replay come from the captured output.
+                            pass
+
                     try:
                         while True:
                             if hasattr(pipe, "read1"):
@@ -823,11 +834,7 @@ def action_shell_command(
                                             ensure_line()
                                         except Exception:
                                             pass
-                                try:
-                                    target.write(text_chunk)
-                                    target.flush()
-                                except Exception:
-                                    _safe_console_write(text_chunk, target, append_newline=False)
+                                _write_display_chunk(text_chunk)
                         tail = decoder.decode(b"", final=True)
                         if tail:
                             with stream_chunks_lock:
@@ -846,11 +853,7 @@ def action_shell_command(
                                         ensure_line()
                                     except Exception:
                                         pass
-                            try:
-                                target.write(tail)
-                                target.flush()
-                            except Exception:
-                                _safe_console_write(tail, target, append_newline=False)
+                            _write_display_chunk(tail)
                     except Exception:
                         pass
                     finally:
