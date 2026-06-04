@@ -204,6 +204,13 @@ def workspace_create_command(agent: Any, arg_text: str) -> str:
     }
     agent._save_workspace_state()
     agent._refresh_input_handler_skill_completions()
+
+    # Switch immediately to the newly created workspace.
+    agent._save_current_workspace_position()
+    agent._apply_workspace_entry(workspaces[workspace_id], agent.work_directory)
+    agent._refresh_workspace_runtime()
+    agent._save_current_workspace_position()
+
     return (
         _t(agent, "workspace.create.success", name=name, workspace_id=workspace_id, root=root, storage=storage)
     )
