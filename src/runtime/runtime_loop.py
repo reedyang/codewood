@@ -416,7 +416,13 @@ def _strip_leaked_internal_history_markers(text: Any) -> str:
         return ""
     idx = s.find(_MODEL_TOOL_RESULT_HISTORY_PREFIX)
     if idx < 0:
-        return s
+        # Also catch malformed sentinels where the model echoed the prefix
+        # without the closing bracket (e.g. "[MODEL_TOOL_RESULT接下来..."),
+        # which the live-stream filter likewise treats as a leak.
+        bare_prefix = _MODEL_TOOL_RESULT_HISTORY_PREFIX.rstrip("]")
+        idx = s.find(bare_prefix)
+        if idx < 0:
+            return s
     return s[:idx].rstrip()
 
 
@@ -444,6 +450,31 @@ def _stream_visible_text_with_json_pause(text: str, *, final: bool) -> str:
     internal_marker_idx = s.find(_MODEL_TOOL_RESULT_HISTORY_PREFIX)
     if internal_marker_idx >= 0:
         starts.append(internal_marker_idx)
+    else:
+        # ``[MODEL_TOOL_RESULT`` (without the trailing ``]``) is a unique enough
+        # literal that it is virtually never produced by natural prose. Cut at
+        # any occurrence so that malformed sentinels — e.g. when the model
+        # echoes the prefix without the closing bracket, or when the bracket
+        # arrives in a later chunk — never leak to the terminal.
+        bare_prefix = _MODEL_TOOL_RESULT_HISTORY_PREFIX.rstrip("]")
+        bare_idx = s.find(bare_prefix)
+        if bare_idx >= 0:
+            starts.append(bare_idx)
+        elif not final:
+            # Withhold the tail of the buffer while it still looks like the
+            # beginning of an internal "[MODEL_TOOL_RESULT]" sentinel that may
+            # have been split across streaming chunks. Without this, partial
+            # prefixes such as "[MODEL_TOOL_RES" would leak to the terminal
+            # before the full sentinel arrives.
+            marker = _MODEL_TOOL_RESULT_HISTORY_PREFIX
+            # Find the longest non-empty prefix of ``marker`` that is also a
+            # suffix of ``s``. We require length >= 2 so a lone "[" inside
+            # normal prose (e.g. a markdown link) is not silently withheld.
+            max_check = min(len(marker) - 1, len(s))
+            for prefix_len in range(max_check, 1, -1):
+                if s.endswith(marker[:prefix_len]):
+                    starts.append(len(s) - prefix_len)
+                    break
     for marker in ("<tool_calls", "<|assistant"):
         idx = lowered.find(marker)
         if idx >= 0:
