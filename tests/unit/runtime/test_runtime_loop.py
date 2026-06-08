@@ -1294,6 +1294,27 @@ class ActivePlanReminderTests(unittest.TestCase):
         self.assertIn("`update_plan`", text)
         self.assertIn("completed", text)
 
+    def test_format_active_plan_reminder_allows_ask_more_info_escape_when_pending(self):
+        """The pending-plan reminder must explicitly allow the model to call
+        ``ask_more_info`` instead of finalizing the plan. Otherwise the
+        finalization pressure can starve out a legitimate clarifying
+        question and force the model to mark pending steps ``completed``
+        prematurely just to end the turn."""
+        summary = {
+            "items": [
+                {"step": "Investigate ambiguity", "status": "in_progress"},
+                {"step": "Implement decision", "status": "pending"},
+            ],
+            "has_pending": True,
+            "in_progress_step": "Investigate ambiguity",
+        }
+        text = _format_active_plan_reminder(summary)
+        self.assertIn("`ask_more_info`", text)
+        self.assertIn(
+            "do not mark pending steps as `completed` just to end the turn",
+            text,
+        )
+
     def test_format_active_plan_reminder_emits_done_hint_when_all_completed(self):
         summary = {
             "items": [
