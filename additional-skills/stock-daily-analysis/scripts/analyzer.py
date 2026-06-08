@@ -168,7 +168,7 @@ def _load_quote_by_code(
             raw = json.load(f)
     elif quote_json:
         try:
-                raw = json.loads(quote_json)
+            raw = json.loads(quote_json)
         except json.JSONDecodeError:
             # PowerShell may pass single-quoted dict-like strings.
             import ast
