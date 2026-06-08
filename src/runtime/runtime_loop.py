@@ -586,9 +586,32 @@ def _stream_visible_text_with_json_pause(text: str, *, final: bool) -> str:
         starts.append(m.start())
     for m in re.finditer(r"""(?im)^[ \t]*(?:\{|\[)?[ \t]*(?:"tool_calls"|'tool_calls'|tool_calls)\s*[:=]""", s):
         starts.append(_json_container_start_before(m.start()))
+    # Catch fully-serialized message envelopes where the model emits a
+    # whole JSON object such as ``{"role":"assistant","content":"...","tool_calls":[...]}``
+    # on a single line. The earlier patterns require ``"tool_calls"`` /
+    # ``"tool"`` to be the *first* key after ``{``; this one allows other
+    # keys (``role``, ``content``, ...) to appear before the toolish key
+    # so the JSON tail is still cut off rather than streamed to the user.
+    for m in re.finditer(
+        r"""(?im)^[ \t]*(?:\{|\[)[^\n]*?(?:"tool_calls"|'tool_calls'|"arguments"|'arguments')""",
+        s,
+    ):
+        starts.append(m.start())
     for m in re.finditer(r"""(?im)^[ \t]*\{[ \t]*(?:"content"|'content')\s*:""", s):
         candidate = s[m.start() :]
         if (not final) or re.search(r"""(?is)(?:"tool_calls"|'tool_calls')\s*:""", candidate):
+            starts.append(m.start())
+    # When ``final=True`` and a single line begins with ``{`` and is
+    # already long enough that *no* prose would naturally start that
+    # way (e.g. the assistant accidentally dumped a serialized message
+    # envelope), be aggressive: cut at that ``{`` if the line also
+    # contains the canonical envelope markers ``"role":`` or ``"name":``
+    # alongside any toolish key indicator we expect from the API surface.
+    if final:
+        for m in re.finditer(
+            r"""(?im)^[ \t]*\{[^\n]*?(?:"role"|'role'|"name"|'name')[^\n]*?(?:"tool_calls"|'tool_calls'|"function"|'function'|"arguments"|'arguments')""",
+            s,
+        ):
             starts.append(m.start())
 
     if not final:
@@ -605,6 +628,30 @@ def _stream_visible_text_with_json_pause(text: str, *, final: bool) -> str:
             starts.append(m.start())
         for m in re.finditer(r"(?im)^[ \t]*<tool_calls?$", s):
             starts.append(m.start())
+        # While streaming, withhold any paragraph that starts with a JSON
+        # object opener ``{"`` after a blank-line separator when the body
+        # carries a serialized-message-envelope tell. Natural prose JSON
+        # blobs (``{"foo":1}``) are usually small and self-contained, so
+        # we only withhold once the streaming buffer has grown past a
+        # natural-prose JSON length without closing, or once an envelope
+        # marker key (``"role"``, ``"content"``, ``"tool_calls"``, ...)
+        # has appeared. ``final=True`` will then cut or release the rest
+        # via the toolish/envelope regexes above.
+        for m in re.finditer(r"""(?m)(?:\n\n|^)[ \t]*\{[ \t]*["']""", s):
+            brace_idx = s.find("{", m.start())
+            if brace_idx < 0:
+                continue
+            tail = s[brace_idx:]
+            if "}" in tail and len(tail) < 80:
+                # Benign-looking short JSON that already closed; let the
+                # final pass decide.
+                continue
+            envelope_signal = re.search(
+                r"""(?i)["'](?:role|name|content|tool|tool_calls|arguments|function)["']\s*:""",
+                tail,
+            )
+            if envelope_signal or len(tail) >= 60:
+                starts.append(brace_idx)
 
     if not starts:
         return s
@@ -2399,9 +2446,27 @@ def run_agent_loop(agent: Any):
                     and not fallback_plans
                     and ai_response_looks_like_pseudo_tool
                 ):
-                    # We only reject pseudo tool-call text here after the
-                    # compatibility parser failed to recover executable plans
-                    # from the assistant text.
+                    # The compatibility parser could not recover executable
+                    # plans from the assistant text (e.g. the inner JSON was
+                    # malformed by over-escaping). The streaming sanitizer
+                    # already withheld the JSON envelope from the live
+                    # terminal, but the persisted ``content`` still carries
+                    # the raw pseudo-tool-call JSON. Run the same final-mode
+                    # cutter over the recorded content and rewrite history
+                    # so ``/chat reload`` shows only the natural-language
+                    # prose, matching what the user saw live.
+                    cleaned_for_history = _stream_visible_text_with_json_pause(
+                        ai_response, final=True
+                    )
+                    if cleaned_for_history and cleaned_for_history != ai_response:
+                        pseudo_tail = ai_response[len(cleaned_for_history):].strip()
+                        _replace_latest_assistant_history_content(
+                            self,
+                            ai_response,
+                            cleaned_for_history,
+                            pseudo_tool_call_text=pseudo_tail,
+                        )
+                        ai_response = cleaned_for_history
                     no_tool_rounds += 1
                     if no_tool_rounds >= max_no_tool_rounds:
                         print(
