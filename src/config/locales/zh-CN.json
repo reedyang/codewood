@@ -196,7 +196,7 @@
   "help.skills.loaded_summary": "\n已加载 Agent Skills：{count}（内置：{builtin}，外部：{external}）",
   "help.command.skills_force": "  使用 /skills/<skill-name> <任务> 在当前轮强制使用某个 skill。",
   "help.skills.shortcuts": "  Skill 快捷方式：",
-  "startup.model_prefix": "模型：     ",
+  "startup.model_prefix": "模型：",
   "startup.model_change_hint": "使用 /model 切换",
   "startup.model_change_suffix": " 切换",
   "startup.workspace_prefix": "工作区：",
