@@ -1164,7 +1164,15 @@ def _print_startup_overview(agent: Any) -> None:
     version = get_app_display_version()
 
     line1 = f">_ {app_name} ({version})"
-    line2 = f"{t('startup.model_prefix')}{model_name}  {t('startup.model_change_hint')}"
+    # Build line2 from the same visible glyphs that the colorized renderer
+    # below emits ("/model" + model_change_suffix), so that the plain-text
+    # width used for pad/truncate calculations matches the actual on-screen
+    # width. Using the longer ``model_change_hint`` here would over-pad the
+    # plain measurement and shift the right border for line2 only.
+    line2 = (
+        f"{t('startup.model_prefix')}{model_name}  /model"
+        f"{t('startup.model_change_suffix')}"
+    )
     line3 = f"{t('startup.workspace_prefix')}{workspace_name}"
     line4 = f"{t('startup.directory_prefix')}{workspace_dir}"
 
