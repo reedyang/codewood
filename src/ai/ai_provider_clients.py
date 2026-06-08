@@ -22,12 +22,17 @@ _OPENAI_API_ROUTE_CACHE_LOADED = False
 _OPENAI_API_ROUTE_CACHE: Dict[str, Any] = {"prefer_no_suffix": {}}
 _OPENAI_ROUTE_LOG = get_logger(f"{get_app_logger_root()}.openai_route")
 _THINK_TAG_RE = re.compile(r"<think>.*?</think>", flags=re.IGNORECASE | re.DOTALL)
+_CHANNEL_THOUGHT_RE = re.compile(
+    r"<\|channel\>\s*thought[\s\S]*?<channel\|>", flags=re.IGNORECASE
+)
 
 
 def _sanitize_assistant_text(text: Any) -> str:
     if not isinstance(text, str) or not text:
         return ""
-    return _THINK_TAG_RE.sub("", text)
+    text = _THINK_TAG_RE.sub("", text)
+    text = _CHANNEL_THOUGHT_RE.sub("", text)
+    return text
 
 
 @dataclass(frozen=True)
