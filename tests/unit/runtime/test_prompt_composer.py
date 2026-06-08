@@ -29,54 +29,28 @@ class PromptComposerTests(unittest.TestCase):
             _use_standard_openai_tools_call=lambda: True,
         )
 
-    def test_has_usable_workspace_rg_bin_true_when_candidate_is_usable(self):
-        candidate = Path("D:/repo/bin/rg.exe")
-        with patch("src.runtime.prompt_composer._rg_bin_candidates", return_value=[candidate]):
-            with patch(
-                "src.runtime.prompt_composer._is_usable_rg_executable",
-                side_effect=lambda p: p == candidate,
-            ):
-                self.assertTrue(prompt_composer.has_usable_workspace_rg_bin())
-
-    def test_has_usable_workspace_rg_bin_false_when_all_candidates_unusable(self):
-        candidates = [Path("D:/repo/bin/rg.exe"), Path("D:/repo/bin/rg.cmd")]
-        with patch("src.runtime.prompt_composer._rg_bin_candidates", return_value=candidates):
-            with patch("src.runtime.prompt_composer._is_usable_rg_executable", return_value=False):
-                self.assertFalse(prompt_composer.has_usable_workspace_rg_bin())
-
-    def test_render_workspace_prompt_variables_uses_rg_rules_when_rg_available(self):
-        original = (
-            "A\n"
-            "{{SYSTEM_FILE_SEARCH_NEARBY_RULE}}\n"
-            "{{TOOLS_FILE_SEARCH_NEARBY_RULE}}\n"
-            "B"
-        )
-        with patch("src.runtime.prompt_composer.has_usable_workspace_rg_bin", return_value=True):
-            updated = prompt_composer.render_workspace_prompt_variables(original)
-        self.assertIn("first run `rg`", updated)
-        self.assertIn("first use `rg` to locate matches", updated)
-        self.assertNotIn("{{SYSTEM_FILE_SEARCH_NEARBY_RULE}}", updated)
-        self.assertNotIn("{{TOOLS_FILE_SEARCH_NEARBY_RULE}}", updated)
-
-    def test_render_workspace_prompt_variables_uses_fallback_rules_when_rg_unavailable(self):
-        original = (
-            "{{SYSTEM_FILE_SEARCH_NEARBY_RULE}}\n{{TOOLS_FILE_SEARCH_NEARBY_RULE}}"
-        )
-        with patch("src.runtime.prompt_composer.has_usable_workspace_rg_bin", return_value=False):
-            updated = prompt_composer.render_workspace_prompt_variables(original)
-        self.assertIn("first run a search such as `Select-String` or `rg`", updated)
-        self.assertIn("first locate matches", updated)
-
-    def test_build_os_file_ops_prompt_append_uses_rg_search_line_when_available(self):
-        with patch("src.runtime.prompt_composer.has_usable_workspace_rg_bin", return_value=True):
-            text = prompt_composer.build_os_file_ops_prompt_append()
-        self.assertIn("first use `rg` to locate matches", text)
-
-    def test_build_os_file_ops_prompt_append_uses_generic_search_line_when_rg_unavailable(self):
-        with patch("src.runtime.prompt_composer.has_usable_workspace_rg_bin", return_value=False):
-            text = prompt_composer.build_os_file_ops_prompt_append()
-        self.assertIn("first locate matches", text)
-        self.assertNotIn("first use `rg` to locate matches", text)
+    def test_prompt_composer_no_longer_exposes_file_ops_or_rg_helpers(self):
+        """The OS-specific file-operation prompt append and the entire
+        ripgrep-detection chain that powered it have been removed.
+        Guard against accidental reintroduction by asserting none of
+        those symbols (including the legacy anchor substitution
+        helpers) are exposed on the module surface."""
+        for removed_attr in (
+            "render_workspace_prompt_variables",
+            "_rg_prompt_variables",
+            "build_os_file_ops_prompt_append",
+            "has_usable_workspace_rg_bin",
+            "_usable_workspace_rg_bin_path",
+            "_rg_bin_candidates",
+            "_is_usable_rg_executable",
+            "_workspace_bin_dir",
+            "_TOOLS_FILE_SEARCH_NEARBY_RULE_FALLBACK",
+            "_TOOLS_FILE_SEARCH_NEARBY_RULE_RG_ONLY",
+        ):
+            self.assertFalse(
+                hasattr(prompt_composer, removed_attr),
+                f"{removed_attr!r} should have been removed from prompt_composer",
+            )
 
     def test_standard_tools_prompt_strips_simulated_json_examples(self):
         agent = SimpleNamespace(
@@ -429,9 +403,7 @@ class PromptComposerTests(unittest.TestCase):
 
             with patch("src.runtime.prompt_composer.build_user_preferences_system_append", return_value=""), patch(
                 "src.runtime.prompt_composer.build_mcp_system_append", return_value=""
-            ), patch("src.runtime.prompt_composer.build_runtime_cache_prompt_append", return_value=""), patch(
-                "src.runtime.prompt_composer.build_os_file_ops_prompt_append", return_value=""
-            ):
+            ), patch("src.runtime.prompt_composer.build_runtime_cache_prompt_append", return_value=""):
                 first = prompt_composer.compose_system_prompt_snapshot(agent, include_tools=False)
                 agents_file.write_text("beta-different-size", encoding="utf-8")
                 second = prompt_composer.compose_system_prompt_snapshot(agent, include_tools=False)
