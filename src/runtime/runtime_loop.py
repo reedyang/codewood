@@ -613,6 +613,32 @@ def _stream_visible_text_with_json_pause(text: str, *, final: bool) -> str:
             s,
         ):
             starts.append(m.start())
+        # Additional final-mode aggressive cut: ``\n\n{"`` whose opening
+        # quote is immediately followed by a non-ASCII / non-identifier
+        # character cannot be valid prose JSON (JSON keys are typically
+        # ASCII identifiers). This pattern catches the case where the
+        # model echoes its visible prose back inside a malformed
+        # ``{"<prose>...`` envelope with no surrounding key=value
+        # structure. Without this, the dangling JSON tail leaks into
+        # the persisted history even though the streaming cutter
+        # already hid it from the live terminal.
+        for m in re.finditer(r"""(?m)(?:\n\n|\A)[ \t]*\{[ \t]*["']""", s):
+            brace_idx = s.find("{", m.start())
+            if brace_idx < 0:
+                continue
+            tail = s[brace_idx:]
+            after_open = re.match(r"""[ \t]*\{[ \t]*["']""", tail)
+            if not after_open:
+                continue
+            rest = tail[after_open.end():]
+            if not rest:
+                continue
+            first_char = rest[0]
+            if first_char.isascii() and (first_char.isalnum() or first_char == "_"):
+                # Looks like a real JSON key opener; rely on the
+                # envelope/toolish patterns above to handle it.
+                continue
+            starts.append(brace_idx)
 
     if not final:
         # Partial starts are kept in a tiny cache until they either become a
@@ -629,28 +655,41 @@ def _stream_visible_text_with_json_pause(text: str, *, final: bool) -> str:
         for m in re.finditer(r"(?im)^[ \t]*<tool_calls?$", s):
             starts.append(m.start())
         # While streaming, withhold any paragraph that starts with a JSON
-        # object opener ``{"`` after a blank-line separator when the body
-        # carries a serialized-message-envelope tell. Natural prose JSON
-        # blobs (``{"foo":1}``) are usually small and self-contained, so
-        # we only withhold once the streaming buffer has grown past a
-        # natural-prose JSON length without closing, or once an envelope
-        # marker key (``"role"``, ``"content"``, ``"tool_calls"``, ...)
-        # has appeared. ``final=True`` will then cut or release the rest
-        # via the toolish/envelope regexes above.
+        # object opener ``{"`` after a blank-line separator when the
+        # body shows ANY of the following "this is a serialized
+        # message-envelope leak rather than legitimate prose JSON"
+        # signals. Hold the tail back until ``final=True`` so the
+        # aggressive envelope/toolish patterns above can decide whether
+        # to cut or release.
         for m in re.finditer(r"""(?m)(?:\n\n|^)[ \t]*\{[ \t]*["']""", s):
             brace_idx = s.find("{", m.start())
             if brace_idx < 0:
                 continue
             tail = s[brace_idx:]
+            # If a short, well-formed JSON object has already closed in
+            # the buffer, treat it as benign prose JSON.
             if "}" in tail and len(tail) < 80:
-                # Benign-looking short JSON that already closed; let the
-                # final pass decide.
                 continue
             envelope_signal = re.search(
                 r"""(?i)["'](?:role|name|content|tool|tool_calls|arguments|function)["']\s*:""",
                 tail,
             )
-            if envelope_signal or len(tail) >= 60:
+            # Detect a "string-keyed object whose first key character is
+            # non-ASCII or otherwise non-key-like". Legitimate prose
+            # JSON has ASCII-letter/underscore keys (``{"foo":1}``);
+            # when the character right after ``{"`` is CJK, whitespace,
+            # punctuation, or anything that cannot start a sane key,
+            # this is almost always the model echoing its visible prose
+            # back inside a malformed JSON envelope.
+            non_key_after_open = False
+            after_open = re.match(r"""[ \t]*\{[ \t]*["']""", tail)
+            if after_open:
+                rest = tail[after_open.end():]
+                if rest:
+                    first_char = rest[0]
+                    if not (first_char.isascii() and (first_char.isalnum() or first_char == "_")):
+                        non_key_after_open = True
+            if envelope_signal or non_key_after_open or len(tail) >= 60:
                 starts.append(brace_idx)
 
     if not starts:
