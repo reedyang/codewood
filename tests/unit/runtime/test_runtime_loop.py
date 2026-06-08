@@ -510,6 +510,50 @@ class RuntimeLoopTests(unittest.TestCase):
         out = _stream_visible_text_with_json_pause(raw, final=True)
         self.assertEqual(out, raw)
 
+    def test_stream_visible_text_hides_envelope_starting_with_role_key(self):
+        """Models occasionally dump a fully-serialized message object
+        (``{"role":"assistant","content":"...","tool_calls":[...]}``)
+        after the visible prose. The earlier ``"tool_calls"`` /
+        ``"content"`` patterns only fired when those keys were the
+        *first* key after ``{``; when ``"role":"assistant"`` led the
+        envelope, the JSON tail used to leak verbatim to the terminal
+        and into the persisted chat history. This regression test
+        guards the more permissive envelope matcher that scans the
+        opening line for any toolish key."""
+        raw = (
+            "刚才的分析尝试由于数据格式问题失败了，我将调整命令。\n\n"
+            "{\"role\":\"assistant\","
+            "\"content\":\"刚才的分析尝试由于数据格式问题失败了，我将调整命令。\","
+            "\"tool_calls\":[{\"id\":\"abc\",\"type\":\"function\","
+            "\"function\":{\"name\":\"shell\",\"arguments\":\"{}\"}}]}"
+        )
+        out = _stream_visible_text_with_json_pause(raw, final=True)
+        self.assertEqual(out, "刚才的分析尝试由于数据格式问题失败了，我将调整命令。")
+
+    def test_stream_visible_text_withholds_envelope_during_streaming(self):
+        """During streaming (``final=False``) the cutter must withhold
+        a JSON envelope as soon as we can recognise it — i.e. once the
+        body carries an envelope-marker key or grows past a benign
+        prose-JSON length. This prevents the leak the user reported
+        where a paragraph break followed by ``{"role":"assistant",...``
+        printed character-by-character to the terminal until the late-
+        arriving ``"tool_calls":`` key finally tripped a cut."""
+        raw = (
+            "刚才的分析尝试由于数据格式问题失败了。\n\n"
+            "{\"role\":\"assistant\",\"content\":\"刚才的分析尝试"
+        )
+        out = _stream_visible_text_with_json_pause(raw, final=False)
+        self.assertEqual(out, "刚才的分析尝试由于数据格式问题失败了。")
+
+    def test_stream_visible_text_does_not_withhold_short_benign_prose_json(self):
+        """The withholding logic must not catch ordinary short JSON
+        blobs the model prints alongside prose. A self-contained
+        ``{"foo":1}`` after a blank line is benign and should be
+        released to the terminal during streaming."""
+        raw = "Here is the data:\n\n{\"foo\":1}"
+        out = _stream_visible_text_with_json_pause(raw, final=False)
+        self.assertEqual(out, raw)
+
     def test_stream_visible_text_hides_pseudo_tool_calls_block(self):
         raw = (
             "Preparing to run\n\n"
