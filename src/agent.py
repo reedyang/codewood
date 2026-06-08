@@ -1060,10 +1060,26 @@ class Agent:
         hist = all_hist[start:]
         operation_results = list(getattr(self, "operation_results", None) or [])
         tool_result_cursor = 0
+        # Track whether the assistant message at index ``i-1`` was a model
+        # tool-call plan that already rendered its own feedback line.
+        # This lets the matching result message know whether printing the
+        # feedback again would be a duplicate (plan already drew it) or
+        # whether the plan stayed silent (no matching operation_results
+        # entry was available) and the result must draw it instead.
+        last_plan_index: int = -1
+        last_plan_emitted_feedback: bool = False
         if not hist:
             self._show_separator_next_prompt = False
             return
+
+        def _reset_plan_tracker_if_stale(current_idx: int) -> None:
+            nonlocal last_plan_index, last_plan_emitted_feedback
+            if last_plan_index >= 0 and current_idx - last_plan_index > 1:
+                last_plan_index = -1
+                last_plan_emitted_feedback = False
+
         for idx, msg in enumerate(hist):
+            _reset_plan_tracker_if_stale(idx)
             role = str(msg.get("role") or "").strip().lower()
             content = str(msg.get("content") or "")
             if role == "user":
@@ -1171,30 +1187,67 @@ class Agent:
                         model_args,
                     )
                     has_result = tool_result_cursor != prev_cursor
+                    last_plan_index = idx
+                    # Decide whether the plan or the matching result
+                    # message should render the feedback line.
+                    #
+                    # When operation_results carries a matching entry
+                    # we can determine ``failed`` accurately here and
+                    # render immediately (the result branch will then
+                    # skip to avoid a duplicate).
+                    #
+                    # When operation_results is empty (chat reopened,
+                    # /chat reload, etc.) but the very next history
+                    # message IS a matching tool-result, let the
+                    # result branch render — it has access to the
+                    # persisted ``success`` flag and to the recorded
+                    # output, so the user sees the correct status
+                    # without needing live operation_results.
+                    #
+                    # If no result message follows, the plan is the
+                    # only place to draw the line; render it here
+                    # with a neutral ``failed=False`` since no error
+                    # signal is available.
+                    next_payload = None
+                    if (idx + 1) < len(hist):
+                        next_item = hist[idx + 1]
+                        if (
+                            isinstance(next_item, dict)
+                            and str(next_item.get("role") or "").strip().lower() == "assistant"
+                        ):
+                            next_payload = self._parse_model_tool_result_history_content(
+                                str(next_item.get("content") or "")
+                            )
+                    next_is_matching_result = bool(
+                        next_payload is not None
+                        and self._model_tool_result_matches_plan(model_tool, model_args, next_payload)
+                    )
                     if has_result:
                         failed = not bool(result.get("success", True))
                         self._print_tool_call_feedback(model_tool, model_args, failed=failed)
-                        if model_tool == "shell":
-                            next_item = hist[idx + 1] if (idx + 1) < len(hist) else None
-                            suppress_shell_output = False
-                            if next_item is not None:
-                                next_payload = self._parse_model_tool_result_history_content(
-                                    str(next_item.get("content") or "")
+                        last_plan_emitted_feedback = True
+                    elif not next_is_matching_result:
+                        self._print_tool_call_feedback(model_tool, model_args, failed=False)
+                        last_plan_emitted_feedback = True
+                    else:
+                        last_plan_emitted_feedback = False
+                    if has_result and model_tool == "shell":
+                        # Render the shell output from the matching
+                        # operation_results entry, unless the very
+                        # next history message already carries the
+                        # same result payload (the result branch will
+                        # render it instead, to avoid duplicates).
+                        suppress_shell_output = bool(next_is_matching_result)
+                        if not suppress_shell_output:
+                            out_text, err_text = self._extract_model_shell_replay_output(result)
+                            if out_text or err_text:
+                                self._print_direct_shell_history_output(out_text, err_text)
+                            if self._is_model_shell_result_aborted(result) and (
+                                not self._history_item_is_conversation_interrupted(
+                                    hist[idx + 1] if (idx + 1) < len(hist) else None
                                 )
-                                suppress_shell_output = bool(
-                                    next_payload is not None
-                                    and self._model_tool_result_matches_plan(model_tool, model_args, next_payload)
-                                )
-                            if not suppress_shell_output:
-                                out_text, err_text = self._extract_model_shell_replay_output(result)
-                                if out_text or err_text:
-                                    self._print_direct_shell_history_output(out_text, err_text)
-                                if self._is_model_shell_result_aborted(result) and (
-                                    not self._history_item_is_conversation_interrupted(
-                                        hist[idx + 1] if (idx + 1) < len(hist) else None
-                                    )
-                                ):
-                                    self._print_conversation_interrupted_banner()
+                            ):
+                                self._print_conversation_interrupted_banner()
                     continue
                 model_tool_result = self._parse_model_tool_result_history_content(content)
                 if model_tool_result is not None:
@@ -1229,7 +1282,20 @@ class Agent:
                             model_tool, model_args, model_tool_result
                         )
                     )
-                    if model_tool and not plan_matches_result:
+                    # Only treat a matching prior plan as "already
+                    # rendered" when that plan actually emitted its
+                    # feedback line. When the plan stayed silent
+                    # (no matching operation_results entry, e.g. the
+                    # chat was reopened or the result came from
+                    # session memory rather than a live run), the
+                    # result branch is the only place that can show
+                    # the user what happened.
+                    plan_already_printed = bool(
+                        plan_matches_result
+                        and last_plan_index == idx - 1
+                        and last_plan_emitted_feedback
+                    )
+                    if model_tool and not plan_already_printed:
                         self._print_tool_call_feedback(model_tool, model_args, failed=failed)
                     if model_tool == "shell":
                         out_text, err_text = self._extract_model_shell_replay_output(model_tool_result)
@@ -2618,6 +2684,35 @@ class Agent:
             except Exception:
                 self._local_state_version = 0
 
+        def _resolve_ui_language(self) -> str:
+            """Resolve the locale used for translated stream notices.
+
+            The stream may live longer than the originating ``Agent``
+            (e.g. shared state under a slash-output redirect), so we
+            never reach back through ``self`` to grab a method that
+            does not exist on this nested class. Prefer an explicit
+            ``ui_language`` slot on the shared state and fall back to
+            the global default so headless callers / unit tests still
+            work without configuring locale plumbing.
+            """
+            try:
+                from .core.localization import DEFAULT_DISPLAY_LANGUAGE, get_display_language
+            except Exception:
+                return "en-US"
+            try:
+                raw = self._shared_state.get("ui_language") if isinstance(self._shared_state, dict) else None
+            except Exception:
+                raw = None
+            if raw:
+                try:
+                    return get_display_language(raw)
+                except Exception:
+                    pass
+            try:
+                return get_display_language(DEFAULT_DISPLAY_LANGUAGE)
+            except Exception:
+                return DEFAULT_DISPLAY_LANGUAGE
+
         @property
         def encoding(self) -> Optional[str]:
             try:
@@ -2949,7 +3044,7 @@ class Agent:
 
                 notice = "  └ " + translate(
                     "output.omitted_lines",
-                    self._ui_language(),
+                    self._resolve_ui_language(),
                     count=int(omitted_rows),
                 )
                 visible_rows = rows[-tail_keep:] if tail_keep > 0 else []
@@ -3004,6 +3099,15 @@ class Agent:
         self, base_stream: Any, shared_state: Optional[Dict[str, Any]] = None
     ) -> Any:
         state = shared_state if isinstance(shared_state, dict) else {"first_line_emitted": False}
+        # Seed the UI locale used by translated stream notices (e.g. the
+        # "... omitted N lines ..." marker) from the live agent so the
+        # stream renders in the same language as the rest of the chat
+        # surface, regardless of how long it outlives this call.
+        if "ui_language" not in state:
+            try:
+                state["ui_language"] = self._ui_language()
+            except Exception:
+                pass
         return Agent._DirectShellOutputStream(base_stream, state)
 
     def _build_internal_slash_output_stream(

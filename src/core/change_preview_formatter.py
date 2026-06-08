@@ -53,8 +53,11 @@ class ChangePreviewFormatter:
                     new_gap = new_start_line - prev_new_end - 1
                 omitted = max(old_gap, new_gap)
                 if omitted > 0:
-                    marker = _text("... omitted {count} lines ...", "... 已省略 {count} 行 ...", lang).format(
-                        count=omitted
+                    marker = _text(
+                        "output.omitted_lines",
+                        lang,
+                        fallback="... omitted {count} lines ...",
+                        count=omitted,
                     )
                     raw_rows.append((" ", None, marker, " ", None, marker))
 

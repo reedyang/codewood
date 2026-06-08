@@ -271,7 +271,7 @@ class AiOutputDisplayTests(unittest.TestCase):
             "src.agent.highlight_assistant_display_line", side_effect=lambda s: f"<H>{s}</H>"
         ):
             line = self.agent._format_tool_call_feedback_line("read", {"path": "a.txt"}, failed=False)
-        self.assertTrue(line.startswith("<RGB:19,161,14>•</RGB> 已执行 "))
+        self.assertTrue(line.startswith("<RGB:19,161,14>•</RGB> 执行 "))
         self.assertIn("<H>read (path=a.txt)</H>", line)
 
     def test_format_tool_call_feedback_line_switches_bullet_color_when_failed(self):
@@ -296,7 +296,7 @@ class AiOutputDisplayTests(unittest.TestCase):
             "src.agent.highlight_assistant_display_line", side_effect=lambda s: f"<H>{s}</H>"
         ):
             line = self.agent._format_direct_shell_command_feedback_line("git status", failed=False)
-        self.assertTrue(line.startswith("<RGB:19,161,14>•</RGB> 已运行 "))
+        self.assertTrue(line.startswith("<RGB:19,161,14>•</RGB> 你执行了 "))
         self.assertIn("<H>git status</H>", line)
 
     def test_format_tool_call_feedback_line_wraps_long_command_with_gray_pipe_prefix(self):
@@ -662,10 +662,21 @@ class AiOutputDisplayTests(unittest.TestCase):
                     _print_startup_overview(_Agent())
 
                 rendered = "".join(fake_stdout.writes)
+                # Strip CSI escape sequences BEFORE filtering. When the
+                # host terminal has colors enabled (or the venv keeps
+                # ``NO_COLOR`` unset) the renderer wraps the border
+                # characters with ``\x1b[90m...\x1b[0m`` so the raw
+                # string starts with the SGR introducer rather than
+                # ``│``; without the early strip the filter silently
+                # drops every box row and we get a misleading
+                # "0 not greater than or equal to 4" failure.
                 box_rows = [
-                    _strip_ansi(line)
-                    for line in rendered.splitlines()
-                    if line.lstrip().startswith("│") and line.rstrip().endswith("│")
+                    stripped
+                    for stripped in (
+                        _strip_ansi(line) for line in rendered.splitlines()
+                    )
+                    if stripped.lstrip().startswith("│")
+                    and stripped.rstrip().endswith("│")
                 ]
                 self.assertGreaterEqual(
                     len(box_rows), 4, f"{lang}: expected 4+ content rows"

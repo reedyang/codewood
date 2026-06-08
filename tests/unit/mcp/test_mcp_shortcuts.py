@@ -46,6 +46,13 @@ class McpShortcutCommandTests(unittest.TestCase):
             self.assertIsNone(err, cmd)
 
     def test_parse_missing_required_args_returns_usage(self):
+        # The parser now returns a deferred-i18n payload (dict with
+        # ``key``/``kwargs``) instead of an already-translated string so
+        # the controller can resolve the message in the caller's
+        # locale. Resolve it through the same helper the runtime uses
+        # so we still assert on user-visible text.
+        from src.controllers.mcp_shortcut_controller import format_mcp_shortcut_error
+
         bad_cases = [
             "mcp reconnect",
             "mcp server-info",
@@ -60,8 +67,10 @@ class McpShortcutCommandTests(unittest.TestCase):
         for cmd in bad_cases:
             tool, _, err = self.agent._parse_mcp_shortcut_command(cmd)
             self.assertIsNone(tool, cmd)
-            self.assertIsInstance(err, str, cmd)
-            self.assertTrue(err.startswith("Usage:"), f"{cmd} => {err}")
+            self.assertIsNotNone(err, cmd)
+            rendered = format_mcp_shortcut_error(self.agent, err)
+            self.assertIsInstance(rendered, str, cmd)
+            self.assertTrue(rendered.startswith("Usage:"), f"{cmd} => {rendered}")
 
     def test_completion_contains_all_mcp_shortcuts(self):
         expected = [

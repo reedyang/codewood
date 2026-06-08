@@ -13,6 +13,7 @@ DEFAULT_STARTUP_TIP = "Use /workspace to manage workspaces."
 DEFAULT_STARTUP_TIP_ENTRY: Dict[str, Any] = {
     "text": DEFAULT_STARTUP_TIP,
     "highlights": ["/workspace"],
+    "id": "manage_workspaces",
 }
 
 
