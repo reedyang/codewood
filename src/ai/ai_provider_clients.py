@@ -25,6 +25,59 @@ _THINK_TAG_RE = re.compile(r"<think>.*?</think>", flags=re.IGNORECASE | re.DOTAL
 _CHANNEL_THOUGHT_RE = re.compile(
     r"<\|channel\>\s*thought[\s\S]*?<channel\|>", flags=re.IGNORECASE
 )
+# Orphan markers: when the provider strips the matching half (e.g., reasoning
+# content is hidden upstream), the dangling sentinel literal would otherwise
+# leak to the terminal. These are always sentinel tokens — they have no
+# legitimate use in user-facing assistant text — so it is safe to remove them
+# unconditionally after the paired-block regexes have run.
+_ORPHAN_HIDDEN_MARKER_RE = re.compile(
+    r"<\|channel\>\s*thought|<channel\|>|</?think\s*>",
+    flags=re.IGNORECASE,
+)
+
+# Stream-aware sanitizer entry per hidden block:
+#   - opener_re: matches the literal that introduces the hidden block.
+#   - closer_re: matches the corresponding terminator.
+#   - opener_prefix_re: matches any *prefix* of opener_re anchored at end-of-text.
+#     Used while streaming to decide whether a trailing fragment could still grow
+#     into a real opener and therefore must be withheld from the user-visible
+#     stream until more bytes arrive.
+# All patterns are case-insensitive because models occasionally emit different
+# casings; opener_re/closer_re are also DOTALL-ready by virtue of using [\s\S]
+# in the consumer logic, while these literals are simple.
+_STREAM_HIDDEN_BLOCKS: List[Tuple[re.Pattern, re.Pattern, re.Pattern]] = [
+    (
+        re.compile(r"<think>", re.IGNORECASE),
+        re.compile(r"</think>", re.IGNORECASE),
+        # Any non-empty prefix of "<think>" anchored at end of text.
+        re.compile(r"<(?:t(?:h(?:i(?:n(?:k>?)?)?)?)?)?\Z", re.IGNORECASE),
+    ),
+    (
+        re.compile(r"<\|channel\>\s*thought", re.IGNORECASE),
+        re.compile(r"<channel\|>", re.IGNORECASE),
+        # Any non-empty prefix of "<|channel>" optionally followed by whitespace
+        # and an optional prefix of "thought", anchored at end of text. We must
+        # also withhold a partial closer "<channel|>" (prefix at end of text)
+        # because the closer of one block looks similar to the opener.
+        re.compile(
+            r"(?:<(?:\|(?:c(?:h(?:a(?:n(?:n(?:e(?:l(?:>(?:\s*t(?:h(?:o(?:u(?:g(?:h(?:t)?)?)?)?)?)?)?)?)?)?)?)?)?)?)?)?)\Z",
+            re.IGNORECASE,
+        ),
+    ),
+]
+
+# Additional prefix matchers for closer literals. While inside a hidden block
+# we discard everything anyway, so closer-prefix lookahead is only relevant
+# at top level (we should not flush a partial closer like ``<channel`` because
+# in some streams the closer of a hidden block could appear without a clearly
+# matched opener due to provider re-segmentation; flushing it would leak it).
+_STREAM_CLOSER_PREFIX_RE: List[re.Pattern] = [
+    re.compile(r"</(?:t(?:h(?:i(?:n(?:k>?)?)?)?)?)?\Z", re.IGNORECASE),
+    re.compile(
+        r"<(?:c(?:h(?:a(?:n(?:n(?:e(?:l(?:\|(?:>)?)?)?)?)?)?)?)?)?\Z",
+        re.IGNORECASE,
+    ),
+]
 
 
 def _sanitize_assistant_text(text: Any) -> str:
@@ -32,7 +85,143 @@ def _sanitize_assistant_text(text: Any) -> str:
         return ""
     text = _THINK_TAG_RE.sub("", text)
     text = _CHANNEL_THOUGHT_RE.sub("", text)
+    # After paired-block removal, kill any dangling sentinel literals so an
+    # unbalanced opener or closer (provider-side filtering, model error, etc.)
+    # never reaches the user.
+    text = _ORPHAN_HIDDEN_MARKER_RE.sub("", text)
     return text
+
+
+class _StreamingSanitizer:
+    """Stateful sanitizer that strips hidden ``<think>...</think>`` and
+    ``<|channel>thought ... <channel|>`` blocks from a streamed assistant
+    text even when the open/close markers are split across chunk boundaries.
+
+    Per-delta sanitization with a stateless regex was insufficient because a
+    chunk could carry only the opener while the closer arrives several chunks
+    later, leaving the marker visible to the user (e.g., a leaked
+    ``<|channel>thought\\n<channel|>`` showing up in the terminal).
+
+    The sanitizer holds back a small tail of recent text whenever it could
+    still become part of a known opener (or partial closer at top level),
+    and consumes everything between an opener and its closer once both have
+    been observed.
+    """
+
+    def __init__(self) -> None:
+        self._pending = ""
+        self._closer: Optional[re.Pattern] = None
+
+    def feed(self, delta: str) -> str:
+        if not isinstance(delta, str) or not delta:
+            return ""
+        self._pending += delta
+        return self._consume()
+
+    def flush(self) -> str:
+        # End-of-stream: drop any unterminated hidden block. Otherwise emit
+        # the remaining buffer after scrubbing it through the stateless
+        # sanitizer (which kills complete orphan markers). Finally, also
+        # drop any trailing fragment that is clearly an incomplete sentinel
+        # prefix (length >= 2) — at end-of-stream those can never grow into
+        # a legitimate marker and emitting them would leak sentinel text.
+        # A bare ``<`` is preserved because it is more likely a real
+        # character (math, code, comparisons) than an aborted sentinel.
+        if self._closer is not None:
+            self._pending = ""
+            self._closer = None
+            return ""
+        scrubbed = _sanitize_assistant_text(self._pending)
+        self._pending = ""
+        keep_suffix = self._suspect_suffix_length(scrubbed)
+        if keep_suffix >= 2:
+            scrubbed = scrubbed[: len(scrubbed) - keep_suffix]
+        return scrubbed
+
+    def _consume(self) -> str:
+        out_parts: List[str] = []
+        while True:
+            if self._closer is not None:
+                m = self._closer.search(self._pending)
+                if m is None:
+                    return "".join(out_parts)
+                self._pending = self._pending[m.end():]
+                self._closer = None
+                continue
+
+            earliest_match: Optional[re.Match] = None
+            earliest_closer: Optional[re.Pattern] = None
+            earliest_kind: str = ""
+            for opener_re, closer_re, _prefix_re in _STREAM_HIDDEN_BLOCKS:
+                m = opener_re.search(self._pending)
+                if m is None:
+                    continue
+                if earliest_match is None or m.start() < earliest_match.start():
+                    earliest_match = m
+                    earliest_closer = closer_re
+                    earliest_kind = "opener"
+            # Also detect orphan closer literals at top level. If a closer
+            # appears with no matching opener in our pending buffer, the
+            # provider must have stripped the opener (e.g., reasoning content
+            # was hidden upstream). The sentinel is never legitimate visible
+            # text, so we drop just the closer literal and keep the surrounding
+            # text. We pick the earliest such hit so it competes with opener
+            # matches above and we always make progress on the leftmost
+            # marker first.
+            for _opener_re, closer_re, _prefix_re in _STREAM_HIDDEN_BLOCKS:
+                m = closer_re.search(self._pending)
+                if m is None:
+                    continue
+                if earliest_match is None or m.start() < earliest_match.start():
+                    earliest_match = m
+                    earliest_closer = closer_re
+                    earliest_kind = "orphan_closer"
+
+            if earliest_match is not None:
+                out_parts.append(self._pending[: earliest_match.start()])
+                self._pending = self._pending[earliest_match.end():]
+                if earliest_kind == "opener":
+                    self._closer = earliest_closer
+                # For orphan_closer we just dropped the literal and stay at
+                # top level.
+                continue
+
+            keep = self._suspect_suffix_length(self._pending)
+            if keep > 0:
+                emit_to = len(self._pending) - keep
+                out_parts.append(self._pending[:emit_to])
+                self._pending = self._pending[emit_to:]
+            else:
+                out_parts.append(self._pending)
+                self._pending = ""
+            return "".join(out_parts)
+
+    @staticmethod
+    def _suspect_suffix_length(text: str) -> int:
+        """Return how many trailing chars in ``text`` could still grow into a
+        known opener (or a stray closer prefix at top level). The matchers are
+        anchored with ``\\Z`` so they only match suffixes.
+        """
+        if not text:
+            return 0
+        best = 0
+        for _opener_re, _closer_re, prefix_re in _STREAM_HIDDEN_BLOCKS:
+            m = prefix_re.search(text)
+            if m is not None:
+                length = m.end() - m.start()
+                if length > best:
+                    best = length
+        for prefix_re in _STREAM_CLOSER_PREFIX_RE:
+            m = prefix_re.search(text)
+            if m is not None:
+                length = m.end() - m.start()
+                if length > best:
+                    best = length
+        return best
+
+
+def _make_stream_sanitizer() -> _StreamingSanitizer:
+    return _StreamingSanitizer()
 
 
 @dataclass(frozen=True)
@@ -529,6 +718,21 @@ def _stream_openai_like_response(
             seen_payload_keys: List[str] = []
             tool_call_states: Dict[str, Dict[str, Any]] = {}
             tool_call_order: List[str] = []
+            sanitizer = _make_stream_sanitizer()
+
+            def _emit(raw: str, *, first: bool) -> Tuple[str, bool]:
+                """Run raw chunk through the streaming sanitizer; lstrip the
+                first non-empty visible chunk to keep prior leading-trim
+                behavior intact."""
+                produced = sanitizer.feed(raw)
+                if not produced:
+                    return "", first
+                if first:
+                    produced = produced.lstrip()
+                    if produced:
+                        first = False
+                return produced, first
+
             for line in resp.iter_lines():
                 if not line:
                     continue
@@ -557,14 +761,21 @@ def _stream_openai_like_response(
                 current_snapshot = _extract_stream_snapshot_message(payload)
                 if current_snapshot:
                     snapshot_message = current_snapshot
-                delta = _sanitize_assistant_text(_extract_stream_text_delta(payload))
-                if delta:
-                    if first_chunk:
-                        delta = delta.lstrip()
-                        first_chunk = False
+                raw_delta = _extract_stream_text_delta(payload)
+                if raw_delta:
+                    delta, first_chunk = _emit(raw_delta, first=first_chunk)
                     if delta:
                         buffer += delta
                         yield delta
+            tail = sanitizer.flush()
+            if tail:
+                if first_chunk:
+                    tail = tail.lstrip()
+                    if tail:
+                        first_chunk = False
+                if tail:
+                    buffer += tail
+                    yield tail
             if snapshot_message:
                 snapshot_text = _sanitize_assistant_text(
                     snapshot_message.get("content", "") or ""
@@ -1586,6 +1797,7 @@ def _call_with_ollama(
                 final_role = "assistant"
                 tool_calls: List[Dict[str, Any]] = []
                 completed = False
+                sanitizer = _make_stream_sanitizer()
                 try:
                     for chunk in _iter_stream_payloads():
                         message = chunk.get("message")
@@ -1595,7 +1807,8 @@ def _call_with_ollama(
                         current_tool_calls = _normalize_ollama_tool_calls(message.get("tool_calls"))
                         if current_tool_calls:
                             tool_calls = current_tool_calls
-                        delta = _sanitize_assistant_text(message.get("content", "") or "")
+                        raw_delta = message.get("content", "") or ""
+                        delta = sanitizer.feed(raw_delta) if raw_delta else ""
                         if delta:
                             if first_chunk:
                                 delta = delta.lstrip()
@@ -1603,6 +1816,14 @@ def _call_with_ollama(
                             if delta:
                                 buffer += delta
                                 yield delta
+                    tail = sanitizer.flush()
+                    if tail:
+                        if first_chunk:
+                            tail = tail.lstrip()
+                            first_chunk = False
+                        if tail:
+                            buffer += tail
+                            yield tail
                     completed = True
                 finally:
                     self.final_message = {
