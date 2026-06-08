@@ -484,7 +484,10 @@ def _format_active_plan_reminder(summary: Dict[str, Any]) -> str:
             "step to `in_progress` and mark finished steps as `completed`. "
             "When all steps are done, call `update_plan` one last time so every "
             "step is `completed` before you reply with the final natural-language "
-            "answer."
+            "answer. The plan-completion requirement does not block clarifying "
+            "questions: if you genuinely need more information from the user, "
+            "call `ask_more_info` (the host will pause for the user's reply); "
+            "do not mark pending steps as `completed` just to end the turn."
         )
     else:
         lines.append(
@@ -2263,6 +2266,7 @@ def run_agent_loop(agent: Any):
             no_tool_rounds = 0
             tool_round = 0
             plan_finalize_nudged = False
+            turn_used_ask_more_info = False
             while max_tool_rounds is None or tool_round < max_tool_rounds:
                 if self._consume_task_interrupt_requested():
                     raise KeyboardInterrupt
@@ -2457,9 +2461,15 @@ def run_agent_loop(agent: Any):
                     # only fires when standard tool_calls are available so
                     # the model can actually invoke the tool, and at most
                     # once per turn to avoid loops with stubborn models.
+                    # Skip the nudge entirely if the model used
+                    # ``ask_more_info`` earlier in this turn: that path is
+                    # an explicit handoff to the user and the plan can
+                    # legitimately stay open until the next user message
+                    # is processed.
                     if (
                         task_uses_standard_openai_tools
                         and not plan_finalize_nudged
+                        and not turn_used_ask_more_info
                     ):
                         plan_summary_for_nudge = _summarize_active_plan(self)
                         if plan_summary_for_nudge and plan_summary_for_nudge.get("has_pending"):
@@ -2502,6 +2512,18 @@ def run_agent_loop(agent: Any):
                         print(t("❌ Tool plan is missing tool name. Ending this round.", "❌ 工具计划缺少工具名称。本轮结束。"))
                         break_after_batch = True
                         break
+
+                    if tool_name == "ask_more_info":
+                        # Remember that this turn paused for a clarifying
+                        # question. The end-of-turn plan-finalization nudge
+                        # below must not fire after the model used
+                        # ``ask_more_info``: the model is legitimately
+                        # waiting on the user, and forcing one more round
+                        # of ``update_plan`` here would either block the
+                        # handoff (model has nothing more to do without
+                        # the answer) or pressure the model to mark steps
+                        # ``completed`` prematurely.
+                        turn_used_ask_more_info = True
 
                     if tool_name == "apply_patch":
                         patch_path = str(args.get("path") or "").strip() if isinstance(args, dict) else ""
