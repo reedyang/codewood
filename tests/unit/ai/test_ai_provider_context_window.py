@@ -195,7 +195,7 @@ class ProviderContextWindowTests(unittest.TestCase):
                     session_summary_mode=False,
                     memory_query_expansion_mode=False,
                 ),
-                append_history=lambda _s: None,
+                append_history=lambda *_a, **_kw: None,
                 ollama_importer=lambda: None,
             )
         self.assertEqual(out, "ok")
@@ -223,7 +223,7 @@ class ProviderContextWindowTests(unittest.TestCase):
                     session_summary_mode=False,
                     memory_query_expansion_mode=False,
                 ),
-                append_history=lambda _s: None,
+                append_history=lambda *_a, **_kw: None,
                 ollama_importer=lambda: None,
             )
         self.assertEqual(out, "ok")
@@ -261,7 +261,7 @@ class ProviderContextWindowTests(unittest.TestCase):
                     session_summary_mode=False,
                     memory_query_expansion_mode=False,
                 ),
-                append_history=lambda _s: None,
+                append_history=lambda *_a, **_kw: None,
                 ollama_importer=lambda: None,
             )
         self.assertEqual(out, "ok")
@@ -291,7 +291,7 @@ class ProviderContextWindowTests(unittest.TestCase):
                     session_summary_mode=False,
                     memory_query_expansion_mode=False,
                 ),
-                append_history=lambda _s: None,
+                append_history=lambda *_a, **_kw: None,
                 ollama_importer=lambda: None,
             )
         self.assertEqual(out, "hello from responses api")
@@ -320,7 +320,7 @@ class ProviderContextWindowTests(unittest.TestCase):
                     session_summary_mode=False,
                     memory_query_expansion_mode=False,
                 ),
-                append_history=lambda _s: None,
+                append_history=lambda *_a, **_kw: None,
                 ollama_importer=lambda: None,
             )
         self.assertEqual(out, "ok")
@@ -351,7 +351,7 @@ class ProviderContextWindowTests(unittest.TestCase):
                     session_summary_mode=False,
                     memory_query_expansion_mode=False,
                 ),
-                append_history=lambda _s: None,
+                append_history=lambda *_a, **_kw: None,
                 ollama_importer=lambda: None,
             )
         self.assertEqual(out, "ok")
@@ -383,7 +383,7 @@ class ProviderContextWindowTests(unittest.TestCase):
                     session_summary_mode=False,
                     memory_query_expansion_mode=False,
                 ),
-                append_history=lambda _s: None,
+                append_history=lambda *_a, **_kw: None,
                 ollama_importer=lambda: None,
             )
         self.assertEqual(out, "hello from responses api")
@@ -413,7 +413,7 @@ class ProviderContextWindowTests(unittest.TestCase):
                     session_summary_mode=False,
                     memory_query_expansion_mode=False,
                 ),
-                append_history=lambda _s: None,
+                append_history=lambda *_a, **_kw: None,
                 ollama_importer=lambda: None,
             )
         self.assertEqual(out, "hello from responses api")
@@ -443,7 +443,7 @@ class ProviderContextWindowTests(unittest.TestCase):
                     session_summary_mode=False,
                     memory_query_expansion_mode=False,
                 ),
-                append_history=lambda _s: None,
+                append_history=lambda *_a, **_kw: None,
                 ollama_importer=lambda: None,
             )
         self.assertEqual(out, "hello from responses api")
@@ -474,7 +474,7 @@ class ProviderContextWindowTests(unittest.TestCase):
                     tool_schemas=self._sample_tool_schema(),
                     tool_choice="required",
                 ),
-                append_history=lambda _s: None,
+                append_history=lambda *_a, **_kw: None,
                 ollama_importer=lambda: None,
             )
         self.assertIsInstance(out, dict)
@@ -515,7 +515,7 @@ class ProviderContextWindowTests(unittest.TestCase):
                     tool_schemas=self._sample_tool_schema(),
                     tool_choice="required",
                 ),
-                append_history=lambda _s: None,
+                append_history=lambda *_a, **_kw: None,
                 ollama_importer=lambda: None,
             )
         self.assertIsInstance(out, dict)
@@ -564,7 +564,7 @@ class ProviderContextWindowTests(unittest.TestCase):
                     session_summary_mode=False,
                     memory_query_expansion_mode=False,
                 ),
-                append_history=lambda _s: None,
+                append_history=lambda *_a, **_kw: None,
                 ollama_importer=lambda: None,
             )
         self.assertEqual(out, "ok")
@@ -611,7 +611,7 @@ class ProviderContextWindowTests(unittest.TestCase):
                     session_summary_mode=False,
                     memory_query_expansion_mode=False,
                 ),
-                append_history=lambda _s: None,
+                append_history=lambda *_a, **_kw: None,
                 ollama_importer=lambda: None,
             )
         self.assertEqual(out, "ok")
@@ -656,7 +656,7 @@ class ProviderContextWindowTests(unittest.TestCase):
                     session_summary_mode=False,
                     memory_query_expansion_mode=False,
                 ),
-                append_history=lambda _s: None,
+                append_history=lambda *_a, **_kw: None,
                 ollama_importer=lambda: None,
             )
         self.assertEqual(out, "ok")
@@ -684,7 +684,7 @@ class ProviderContextWindowTests(unittest.TestCase):
                     session_summary_mode=False,
                     memory_query_expansion_mode=False,
                 ),
-                append_history=lambda _s: None,
+                append_history=lambda *_a, **_kw: None,
                 ollama_importer=lambda: None,
             )
         self.assertEqual(out, "ok")
@@ -710,7 +710,7 @@ class ProviderContextWindowTests(unittest.TestCase):
                     session_summary_mode=False,
                     memory_query_expansion_mode=False,
                 ),
-                append_history=lambda _s: None,
+                append_history=lambda *_a, **_kw: None,
                 ollama_importer=lambda: None,
             )
         self.assertEqual(mock_post.call_args.args[0], "http://127.0.0.1:11555/api/chat")
@@ -736,7 +736,7 @@ class ProviderContextWindowTests(unittest.TestCase):
                     session_summary_mode=False,
                     memory_query_expansion_mode=False,
                 ),
-                append_history=lambda _s: None,
+                append_history=lambda *_a, **_kw: None,
                 ollama_importer=lambda: None,
             )
 
@@ -773,7 +773,7 @@ class ProviderContextWindowTests(unittest.TestCase):
                     tool_schemas=self._sample_tool_schema(),
                     tool_choice="required",
                 ),
-                append_history=lambda _s: None,
+                append_history=lambda *_a, **_kw: None,
                 ollama_importer=lambda: None,
             )
 
@@ -821,7 +821,7 @@ class ProviderContextWindowTests(unittest.TestCase):
                     tool_schemas=self._sample_tool_schema(),
                     tool_choice="required",
                 ),
-                append_history=lambda _s: None,
+                append_history=lambda *_a, **_kw: None,
                 ollama_importer=lambda: None,
             )
         self.assertEqual(out.get("content"), "Reading")
@@ -862,7 +862,7 @@ class ProviderContextWindowTests(unittest.TestCase):
                     session_summary_mode=True,
                     memory_query_expansion_mode=False,
                 ),
-                append_history=lambda _s: None,
+                append_history=lambda *_a, **_kw: None,
                 ollama_importer=lambda: None,
             )
         self.assertEqual("".join(list(chunks)), "hello world")
@@ -901,7 +901,7 @@ class ProviderContextWindowTests(unittest.TestCase):
                     tool_schemas=self._sample_tool_schema(),
                     tool_choice="required",
                 ),
-                append_history=lambda _s: None,
+                append_history=lambda *_a, **_kw: None,
                 ollama_importer=lambda: None,
             )
         payload = mock_post.call_args.kwargs.get("json", {})
@@ -949,7 +949,7 @@ class ProviderContextWindowTests(unittest.TestCase):
                     session_summary_mode=False,
                     memory_query_expansion_mode=False,
                 ),
-                append_history=lambda s: history.append(s),
+                append_history=lambda s, *_a, **_kw: history.append(s),
                 ollama_importer=lambda: None,
             )
         self.assertEqual("".join(list(chunks)), "Hello")
@@ -984,7 +984,7 @@ class ProviderContextWindowTests(unittest.TestCase):
                     session_summary_mode=False,
                     memory_query_expansion_mode=False,
                 ),
-                append_history=lambda s: history.append(s),
+                append_history=lambda s, *_a, **_kw: history.append(s),
                 ollama_importer=lambda: None,
             )
 
@@ -1022,7 +1022,7 @@ class ProviderContextWindowTests(unittest.TestCase):
                     session_summary_mode=False,
                     memory_query_expansion_mode=False,
                 ),
-                append_history=lambda s: history.append(s),
+                append_history=lambda s, *_a, **_kw: history.append(s),
                 ollama_importer=lambda: None,
             )
 
@@ -1060,7 +1060,7 @@ class ProviderContextWindowTests(unittest.TestCase):
                     session_summary_mode=False,
                     memory_query_expansion_mode=False,
                 ),
-                append_history=lambda s: history.append(s),
+                append_history=lambda s, *_a, **_kw: history.append(s),
                 ollama_importer=lambda: None,
             )
 
@@ -1098,7 +1098,7 @@ class ProviderContextWindowTests(unittest.TestCase):
                     session_summary_mode=False,
                     memory_query_expansion_mode=False,
                 ),
-                append_history=lambda s: history.append(s),
+                append_history=lambda s, *_a, **_kw: history.append(s),
                 ollama_importer=lambda: None,
             )
 
@@ -1131,7 +1131,7 @@ class ProviderContextWindowTests(unittest.TestCase):
                     tool_schemas=self._sample_tool_schema(),
                     tool_choice="required",
                 ),
-                append_history=lambda _s: None,
+                append_history=lambda *_a, **_kw: None,
                 ollama_importer=lambda: None,
             )
         self.assertEqual("".join(list(chunks)), "I will check")
@@ -1168,7 +1168,7 @@ class ProviderContextWindowTests(unittest.TestCase):
                     tool_schemas=self._sample_tool_schema(),
                     tool_choice="required",
                 ),
-                append_history=lambda _s: None,
+                append_history=lambda *_a, **_kw: None,
                 ollama_importer=lambda: None,
             )
         self.assertEqual("".join(list(chunks)), "Reading")
