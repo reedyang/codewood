@@ -3,6 +3,15 @@ from __future__ import annotations
 from typing import Any, Dict, Optional
 
 
+MEMORY_TOOLS = {
+    "memory_search",
+    "memory_add",
+    "memory_list",
+    "memory_stats",
+    "memory_delete",
+}
+
+
 def dispatch_memory_tool(agent: Any, action: str, params: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     if action == "memory_search":
         if not agent._ensure_memory_service():

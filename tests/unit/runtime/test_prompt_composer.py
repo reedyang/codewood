@@ -81,6 +81,12 @@ class PromptComposerTests(unittest.TestCase):
     def test_standard_tools_prompt_strips_simulated_json_examples(self):
         agent = SimpleNamespace(
             tools_prompt_template=prompt_composer.load_tools_prompt_template(),
+            tools_prompt_mcp_management_template=(
+                prompt_composer.load_tools_prompt_mcp_management_template()
+            ),
+            tools_prompt_memory_template=(
+                prompt_composer.load_tools_prompt_memory_template()
+            ),
             tool_specs=[
                 {
                     "function": {
@@ -100,6 +106,7 @@ class PromptComposerTests(unittest.TestCase):
             _project_context_tool_allowed=lambda: True,
             _use_standard_openai_tools_call=lambda: True,
             mcp_tools_enabled=False,
+            memory_enabled=False,
         )
 
         text = prompt_composer.build_tools_prompt_append(agent)
@@ -114,10 +121,128 @@ class PromptComposerTests(unittest.TestCase):
         self.assertNotIn("- mcp_server_info:", text)
         self.assertNotIn('{"tool"', text)
         self.assertNotIn("```json", text)
+        # When MCP-management tools are gated off, the optional side prompt must not be injected.
+        self.assertNotIn("MCP Tool Selection Boundaries", text)
+        self.assertNotIn("mcp_server_info", text)
+        # When memory tools are gated off, the experiential-memory section must not be injected.
+        self.assertNotIn("Experiential Memory", text)
+        self.assertNotIn("memory_search", text)
 
         agent.mcp_tools_enabled = True
         visible_text = prompt_composer.build_tools_prompt_append(agent)
         self.assertIn("- mcp_server_info:", visible_text)
+        # When MCP management is enabled, the side template content is appended.
+        self.assertIn("MCP Tool Selection Boundaries", visible_text)
+        self.assertIn("mcp_server_info", visible_text)
+
+    def test_tools_prompt_omits_mcp_management_section_when_template_missing(self):
+        agent = SimpleNamespace(
+            tools_prompt_template="## Tools",
+            tools_prompt_mcp_management_template="",
+            tools_prompt_memory_template="",
+            tool_specs=[],
+            _project_context_tool_allowed=lambda: False,
+            _use_standard_openai_tools_call=lambda: True,
+            mcp_tools_enabled=True,
+            memory_enabled=True,
+        )
+        text = prompt_composer.build_tools_prompt_append(agent)
+        self.assertNotIn("MCP Tool Selection Boundaries", text)
+        self.assertNotIn("Experiential Memory", text)
+
+    def test_load_tools_prompt_mcp_management_template_returns_section_text(self):
+        text = prompt_composer.load_tools_prompt_mcp_management_template()
+        self.assertIn("MCP Tool Selection Boundaries", text)
+        self.assertIn("mcp_server_info", text)
+
+    def test_load_tools_prompt_memory_template_returns_section_text(self):
+        text = prompt_composer.load_tools_prompt_memory_template()
+        self.assertIn("Experiential Memory", text)
+        self.assertIn("memory_search", text)
+        self.assertIn("memory_add", text)
+        self.assertIn("memory_delete", text)
+
+    def test_tools_prompt_injects_memory_section_when_memory_enabled(self):
+        agent = SimpleNamespace(
+            tools_prompt_template="## Tools",
+            tools_prompt_mcp_management_template="",
+            tools_prompt_memory_template=(
+                prompt_composer.load_tools_prompt_memory_template()
+            ),
+            tool_specs=[
+                {
+                    "function": {
+                        "name": "memory_search",
+                        "description": "Search experiential memory",
+                        "parameters": {"properties": {"query": {}}},
+                    }
+                },
+                {
+                    "function": {
+                        "name": "memory_add",
+                        "description": "Add a memory entry",
+                        "parameters": {"properties": {"content": {}}},
+                    }
+                },
+            ],
+            _project_context_tool_allowed=lambda: False,
+            _use_standard_openai_tools_call=lambda: True,
+            mcp_tools_enabled=False,
+            memory_enabled=True,
+        )
+
+        text_enabled = prompt_composer.build_tools_prompt_append(agent)
+        self.assertIn("Experiential Memory", text_enabled)
+        self.assertIn("- memory_search:", text_enabled)
+        self.assertIn("- memory_add:", text_enabled)
+
+        agent.memory_enabled = False
+        text_disabled = prompt_composer.build_tools_prompt_append(agent)
+        # Side prompt suppressed and memory tool catalog entries filtered.
+        self.assertNotIn("Experiential Memory", text_disabled)
+        self.assertNotIn("- memory_search:", text_disabled)
+        self.assertNotIn("- memory_add:", text_disabled)
+
+    def test_tools_prompt_omits_memory_section_when_template_missing(self):
+        agent = SimpleNamespace(
+            tools_prompt_template="## Tools",
+            tools_prompt_mcp_management_template="",
+            tools_prompt_memory_template="",
+            tool_specs=[],
+            _project_context_tool_allowed=lambda: False,
+            _use_standard_openai_tools_call=lambda: True,
+            mcp_tools_enabled=False,
+            memory_enabled=True,
+        )
+        text = prompt_composer.build_tools_prompt_append(agent)
+        self.assertNotIn("Experiential Memory", text)
+
+    def test_load_tools_spec_filters_mcp_management_tools_when_disabled(self):
+        agent = SimpleNamespace(mcp_tools_enabled=False)
+        specs_disabled = prompt_composer.load_tools_spec_from_jsonc(agent)
+        names_disabled = {
+            str(((s or {}).get("function", {}) or {}).get("name", "")).strip()
+            for s in specs_disabled
+        }
+        for gated in (
+            "mcp_server_info",
+            "mcp_disable_tools",
+            "mcp_enable_tools",
+            "mcp_list_disabled_tools",
+            "mcp_sampling_create_message",
+            "mcp_completion_complete",
+        ):
+            self.assertNotIn(gated, names_disabled)
+        self.assertIn("mcp_status", names_disabled)
+        self.assertIn("mcp_call_tool", names_disabled)
+
+        agent_enabled = SimpleNamespace(mcp_tools_enabled=True)
+        specs_enabled = prompt_composer.load_tools_spec_from_jsonc(agent_enabled)
+        names_enabled = {
+            str(((s or {}).get("function", {}) or {}).get("name", "")).strip()
+            for s in specs_enabled
+        }
+        self.assertIn("mcp_server_info", names_enabled)
 
     def test_build_mcp_system_append_includes_initialize_instructions(self):
         class _FakeMcpManager:

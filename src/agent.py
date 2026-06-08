@@ -4287,6 +4287,12 @@ class Agent:
     def _load_tools_prompt_template(self) -> str:
         return prompt_composer.load_tools_prompt_template()
 
+    def _load_tools_prompt_mcp_management_template(self) -> str:
+        return prompt_composer.load_tools_prompt_mcp_management_template()
+
+    def _load_tools_prompt_memory_template(self) -> str:
+        return prompt_composer.load_tools_prompt_memory_template()
+
     def _build_single_skill_prompt(
         self,
         skill_id: str,
