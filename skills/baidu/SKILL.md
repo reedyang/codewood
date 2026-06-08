@@ -39,7 +39,7 @@ The merged `output` always includes **`【Current Local Time】`** in ISO-like l
 
 ### Query signals the script treats as strong recency (see `baidu_search.py`)
 
-The implementation turns on stricter recent-evidence handling when the query matches patterns such as: **recent, latest, today, this month, one month, market, trend, forecast** (regex over the query string).
+The implementation turns on stricter recent-evidence handling when the query matches Chinese or English patterns such as: **最近, 近期, 最新, 今日, 本月, 一个月, 行情, 走势, 预测, recent, latest, today, this month, one month, market, trend, forecast** (regex over the query string).
 
 ### Additional fresh market / macro figure intent (model-side)
 

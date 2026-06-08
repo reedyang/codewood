@@ -157,7 +157,7 @@ def _http_headers() -> Dict[str, str]:
     return {
         "User-Agent": USER_AGENT,
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.9",
+        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
     }
 
 
@@ -185,7 +185,7 @@ def _charset_from_content_type(content_type: str) -> Optional[str]:
 def _charset_from_html_meta(head: bytes) -> Optional[str]:
     """Parse charset from first bytes (meta charset / http-equiv)."""
     # <meta charset="utf-8">
-    m = re.search(rb'<meta\s+charset\s*=\s*["\']; ([^"\'\s/>]+)', head, re.I)
+    m = re.search(rb'<meta\s+charset\s*=\s*["\']?([^"\'\s/>]+)', head, re.I)
     if m:
         try:
             return _normalize_html_charset(
@@ -207,7 +207,7 @@ def _charset_from_html_meta(head: bytes) -> Optional[str]:
         except Exception:
             pass
     # Loose: charset= after meta or anywhere in head (Baidu / legacy)
-    m = re.search(rb'charset\s*=\s*["\']; ([^"\'\s;>]+)', head[:16384], re.I)
+    m = re.search(rb'charset\s*=\s*["\']?([^"\'\s;>]+)', head[:16384], re.I)
     if m:
         try:
             return _normalize_html_charset(
@@ -359,7 +359,19 @@ def _is_time_sensitive_query(query: str) -> bool:
     q = query.strip()
     if not q:
         return False
+    # Match both Chinese and English recency keywords because Baidu queries
+    # are predominantly in Chinese while this script's report text is English.
     patterns = (
+        r"最近",
+        r"近期",
+        r"最新",
+        r"今日",
+        r"本月",
+        r"一个月",
+        r"近一个月",
+        r"行情",
+        r"走势",
+        r"预测",
         r"recent",
         r"latest",
         r"today",
@@ -401,7 +413,7 @@ def _parse_serp(html: str) -> List[Dict[str, str]]:
 
     # Primary: h3.t > a
     block_re = re.compile(
-        r'<h3[^>]*class="[^"]*\bt\b[^"]*"[^>]*>\s*<a[^>]+href="([^"]+)"[^>]*>(.*; )</a>',
+        r'<h3[^>]*class="[^"]*\bt\b[^"]*"[^>]*>\s*<a[^>]+href="([^"]+)"[^>]*>(.*?)</a>',
         re.DOTALL | re.I,
     )
     for m in block_re.finditer(html):
@@ -411,7 +423,7 @@ def _parse_serp(html: str) -> List[Dict[str, str]]:
             continue
         if not href.startswith(("http://", "https://")):
             continue
-        if "baidu.com" in urlparse(href).netloc and "/link; " not in href:
+        if "baidu.com" in urlparse(href).netloc and "/link?" not in href:
             continue
         key = href[:200]
         if key in seen:
@@ -421,7 +433,7 @@ def _parse_serp(html: str) -> List[Dict[str, str]]:
 
     # Snippets: try c-abstract near results (best-effort)
     abs_re = re.compile(
-        r'class="c-abstract[^"]*"[^>]*>(.*; )</span>',
+        r'class="c-abstract[^"]*"[^>]*>(.*?)</span>',
         re.DOTALL | re.I,
     )
     abses = [ _html_to_text(x.group(1)) for x in abs_re.finditer(html) ]
@@ -433,7 +445,7 @@ def _parse_serp(html: str) -> List[Dict[str, str]]:
     # Fallback: any baidu link lines
     if not results:
         link_re = re.compile(
-            r'href="(https; ://www\.baidu\.com/link\; [^"]+)"[^>]*>\s*([^<]{5,200})</a>',
+            r'href="(https?://www\.baidu\.com/link\?[^"]+)"[^>]*>\s*([^<]{5,200})</a>',
             re.I,
         )
         for m in link_re.finditer(html):
@@ -538,7 +550,8 @@ def run_search(
         lines.append("(SERP results came from this skill directory's .cache and are still within the TTL)")
         lines.append("")
 
-    if "security verification" in serp_html or "please enter captcha" in serp_html:
+    # Baidu's anti-bot page text is in Chinese; match the actual on-page markers.
+    if "安全验证" in serp_html or "请输入验证码" in serp_html or "验证码" in serp_html:
         lines.append("【Search Summary】Baidu returned a verification page and the results could not be parsed. Please retry later or switch networks.")
         lines.append("")
         lines.append("【Answer】Search could not be completed for now.")
