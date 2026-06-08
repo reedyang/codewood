@@ -689,8 +689,27 @@ def _stream_visible_text_with_json_pause(text: str, *, final: bool) -> str:
                     first_char = rest[0]
                     if not (first_char.isascii() and (first_char.isalnum() or first_char == "_")):
                         non_key_after_open = True
+                else:
+                    # Buffer ends exactly at ``{"`` (or with whitespace
+                    # between). We don't yet know whether the next char
+                    # will be a valid JSON key — but the streamer is
+                    # append-only, so if we don't withhold now the
+                    # ``{"`` will leak to the terminal and a later
+                    # retract is invisible to the user. Be conservative
+                    # and withhold the brace until ``final=True`` or
+                    # until the next chunk arrives and disambiguates.
+                    non_key_after_open = True
             if envelope_signal or non_key_after_open or len(tail) >= 60:
                 starts.append(brace_idx)
+        # Also withhold when the buffer ends right at ``\n\n{`` (with
+        # optional trailing whitespace) without a following quote yet.
+        # The next chunk will determine whether it becomes ``{"...``
+        # (envelope leak) or harmless prose; until then, holding the
+        # lone ``{`` back prevents a one-character leak that the
+        # append-only streamer cannot retract.
+        trailing_brace = re.search(r"(?:\n\n|\A)[ \t]*(\{)[ \t]*\Z", s)
+        if trailing_brace:
+            starts.append(trailing_brace.start(1))
 
     if not starts:
         return s
