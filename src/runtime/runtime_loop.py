@@ -32,6 +32,12 @@ from ..core.logging.app_logging import get_logger
 from ..controllers.builtin_command_router import dispatch_builtin_command
 from ..tooling.handlers.mcp_handlers import MCP_MANAGEMENT_GATED_TOOLS
 from ..tooling.handlers.memory_handlers import MEMORY_TOOLS
+from ..tools.plan import (
+    PLAN_STATUS_COMPLETED,
+    PLAN_STATUS_IN_PROGRESS,
+    PLAN_STATUS_PENDING,
+    UpdatePlanTool,
+)
 from ..core.console_utils import (
     _ansi_bold,
     _ansi_gray,
@@ -408,6 +414,84 @@ def _looks_like_pseudo_tool_call_text(ai_response: Any) -> bool:
     if has_tool_name and has_args:
         return True
     return False
+
+
+_PLAN_STATUS_MARK = {
+    PLAN_STATUS_PENDING: "[ ]",
+    PLAN_STATUS_IN_PROGRESS: "[~]",
+    PLAN_STATUS_COMPLETED: "[x]",
+}
+
+
+def _summarize_active_plan(agent: Any) -> Optional[Dict[str, Any]]:
+    """Read the active chat's plan (if any) and return a small summary
+    dict, or ``None`` when there is no usable plan to remind the model about.
+
+    The summary contains:
+      - ``items``: validated list of ``{step, status}`` dicts
+      - ``has_pending``: True if at least one step is not yet ``completed``
+      - ``in_progress_step``: the text of the current ``in_progress`` step,
+        or ``""`` when none is marked.
+    """
+    record = UpdatePlanTool.current_plan(agent)
+    if not isinstance(record, dict):
+        return None
+    raw_items = record.get("plan")
+    if not isinstance(raw_items, list) or not raw_items:
+        return None
+    items: List[Dict[str, str]] = []
+    for entry in raw_items:
+        if not isinstance(entry, dict):
+            continue
+        step = str(entry.get("step") or "").strip()
+        status = str(entry.get("status") or "").strip().lower()
+        if not step:
+            continue
+        if status not in _PLAN_STATUS_MARK:
+            status = PLAN_STATUS_PENDING
+        items.append({"step": step, "status": status})
+    if not items:
+        return None
+    has_pending = any(it["status"] != PLAN_STATUS_COMPLETED for it in items)
+    in_progress_step = next(
+        (it["step"] for it in items if it["status"] == PLAN_STATUS_IN_PROGRESS),
+        "",
+    )
+    return {
+        "items": items,
+        "has_pending": has_pending,
+        "in_progress_step": in_progress_step,
+    }
+
+
+def _format_active_plan_reminder(summary: Dict[str, Any]) -> str:
+    """Render the in-flight plan as a compact ``[Active plan]`` block the
+    model can consume in follow-up rounds. Returns ``""`` for empty input."""
+    if not isinstance(summary, dict):
+        return ""
+    items = summary.get("items") or []
+    if not items:
+        return ""
+    lines: List[str] = ["[Active plan]"]
+    for idx, item in enumerate(items, start=1):
+        status = str(item.get("status") or PLAN_STATUS_PENDING)
+        mark = _PLAN_STATUS_MARK.get(status, "[ ]")
+        step = str(item.get("step") or "").strip()
+        lines.append(f"  {idx}. {mark} {step} ({status})")
+    if summary.get("has_pending"):
+        lines.append(
+            "Keep this plan up to date: call `update_plan` to move the current "
+            "step to `in_progress` and mark finished steps as `completed`. "
+            "When all steps are done, call `update_plan` one last time so every "
+            "step is `completed` before you reply with the final natural-language "
+            "answer."
+        )
+    else:
+        lines.append(
+            "All plan steps are `completed`. You may now finish with a natural-"
+            "language reply and no further tool_calls."
+        )
+    return "\n".join(lines)
 
 
 def _strip_leaked_internal_history_markers(text: Any) -> str:
@@ -2157,6 +2241,7 @@ def run_agent_loop(agent: Any):
             max_no_tool_rounds = 3
             no_tool_rounds = 0
             tool_round = 0
+            plan_finalize_nudged = False
             while max_tool_rounds is None or tool_round < max_tool_rounds:
                 if self._consume_task_interrupt_requested():
                     raise KeyboardInterrupt
@@ -2343,6 +2428,36 @@ def run_agent_loop(agent: Any):
                         sys.stdout.write("\n")
                     sys.stdout.flush()
                 if not fallback_plans:
+                    # No tool calls in the assistant message. Before we hand
+                    # control back to the command prompt, give the model
+                    # exactly one chance to flush a stale plan: if there is
+                    # still an active plan with non-`completed` steps, ask
+                    # the model to call `update_plan` once more. The nudge
+                    # only fires when standard tool_calls are available so
+                    # the model can actually invoke the tool, and at most
+                    # once per turn to avoid loops with stubborn models.
+                    if (
+                        task_uses_standard_openai_tools
+                        and not plan_finalize_nudged
+                    ):
+                        plan_summary_for_nudge = _summarize_active_plan(self)
+                        if plan_summary_for_nudge and plan_summary_for_nudge.get("has_pending"):
+                            plan_finalize_nudged = True
+                            no_tool_rounds = 0
+                            is_first_round = False
+                            plan_block = _format_active_plan_reminder(plan_summary_for_nudge)
+                            next_input = (
+                                f"[Original user request]\n{original_user_task}\n\n"
+                                f"{plan_block}\n\n"
+                                "Before finishing, reconcile the active plan with the work that "
+                                "has actually been done in this turn. Call `update_plan` to mark "
+                                "every step that is finished as `completed` (and remove or "
+                                "rewrite steps that no longer apply, providing an `explanation`). "
+                                "After the plan is up to date, reply with a short natural-"
+                                "language summary and no further tool_calls; the host will then "
+                                "return to the command prompt."
+                            )
+                            continue
                     # No tool calls in the assistant message: end the loop and
                     # return to the command prompt regardless of standard-tool
                     # mode. Visible content (when present) has already been
@@ -2680,9 +2795,16 @@ def run_agent_loop(agent: Any):
                     args=last_tool_args,
                     result=last_tool_result,
                 )
+                active_plan_summary = _summarize_active_plan(self)
+                active_plan_block = (
+                    f"{_format_active_plan_reminder(active_plan_summary)}\n\n"
+                    if active_plan_summary
+                    else ""
+                )
                 next_input = (
                     f"[Original user request]\n{original_user_task}\n\n"
                     f"{step_progress}\n\n"
+                    f"{active_plan_block}"
                     f"[Previous batch tool results (compact)]\n{self._compact_result_for_next_input(result_for_next_input)}\n\n"
                     + "Continue with standard tools when more tool work is needed; you may call one or more tools at once. "
                     "When no further tool action is required, reply in natural language with no tool_calls and the host will return to the command prompt. "

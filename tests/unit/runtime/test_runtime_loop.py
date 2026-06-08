@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 from src.runtime.runtime_loop import (
     _consume_streaming_ai_response,
+    _format_active_plan_reminder,
     _format_worked_for_summary_line,
     _format_startup_directory,
     _model_tool_result_was_aborted,
@@ -16,6 +17,7 @@ from src.runtime.runtime_loop import (
     _resolve_worked_summary_terminal_width,
     _sanitize_prompt_pollution,
     _should_prioritize_project_context_for_task,
+    _summarize_active_plan,
     _sync_command_input_history,
     _should_record_command_input_history,
     _strip_leaked_internal_history_markers,
@@ -1191,6 +1193,125 @@ class RuntimeLoopTests(unittest.TestCase):
         self.assertTrue(_looks_like_pseudo_tool_call_text('{"content":"plan","tool_calls":[{"function":{"name":"done"}}]}'))
         self.assertFalse(_looks_like_pseudo_tool_call_text('{"toolbox": true}'))
         self.assertFalse(_looks_like_pseudo_tool_call_text('I checked the tool output and summarized it.'))
+
+
+class ActivePlanReminderTests(unittest.TestCase):
+    """Cover the helpers that re-inject the persisted `update_plan` state
+    into the model's follow-up context. Without this re-injection the model
+    loses sight of in-flight steps and forgets to flush completion."""
+
+    class _Manager:
+        def __init__(self, plan_record):
+            self._plan_record = plan_record
+
+        def active_chat_plan(self):
+            return self._plan_record
+
+    class _Agent:
+        def __init__(self, plan_record):
+            self._chat_state_manager = ActivePlanReminderTests._Manager(plan_record)
+
+    def test_summarize_active_plan_returns_none_when_no_chat_or_manager(self):
+        class _NoManagerAgent:
+            pass
+
+        self.assertIsNone(_summarize_active_plan(_NoManagerAgent()))
+
+    def test_summarize_active_plan_returns_none_for_empty_record(self):
+        agent = self._Agent({"plan": [], "explanation": "", "updated_at": ""})
+        self.assertIsNone(_summarize_active_plan(agent))
+
+    def test_summarize_active_plan_drops_unusable_entries_and_flags_pending(self):
+        agent = self._Agent({
+            "plan": [
+                {"step": "Survey code paths", "status": "completed"},
+                {"step": "  ", "status": "pending"},
+                "not-a-dict",
+                {"step": "Write tests", "status": "in_progress"},
+                {"step": "Run suite", "status": "pending"},
+            ],
+            "explanation": "",
+            "updated_at": "",
+        })
+        summary = _summarize_active_plan(agent)
+        self.assertIsNotNone(summary)
+        self.assertEqual(
+            summary["items"],
+            [
+                {"step": "Survey code paths", "status": "completed"},
+                {"step": "Write tests", "status": "in_progress"},
+                {"step": "Run suite", "status": "pending"},
+            ],
+        )
+        self.assertTrue(summary["has_pending"])
+        self.assertEqual(summary["in_progress_step"], "Write tests")
+
+    def test_summarize_active_plan_reports_all_completed(self):
+        agent = self._Agent({
+            "plan": [
+                {"step": "A", "status": "completed"},
+                {"step": "B", "status": "completed"},
+            ],
+            "explanation": "",
+            "updated_at": "",
+        })
+        summary = _summarize_active_plan(agent)
+        self.assertIsNotNone(summary)
+        self.assertFalse(summary["has_pending"])
+        self.assertEqual(summary["in_progress_step"], "")
+
+    def test_summarize_active_plan_coerces_unknown_status_to_pending(self):
+        agent = self._Agent({
+            "plan": [
+                {"step": "Mystery", "status": "weird"},
+            ],
+            "explanation": "",
+            "updated_at": "",
+        })
+        summary = _summarize_active_plan(agent)
+        self.assertIsNotNone(summary)
+        self.assertEqual(summary["items"][0]["status"], "pending")
+        self.assertTrue(summary["has_pending"])
+
+    def test_format_active_plan_reminder_emits_pending_hint_when_unfinished(self):
+        summary = {
+            "items": [
+                {"step": "Survey", "status": "completed"},
+                {"step": "Write tests", "status": "in_progress"},
+                {"step": "Ship", "status": "pending"},
+            ],
+            "has_pending": True,
+            "in_progress_step": "Write tests",
+        }
+        text = _format_active_plan_reminder(summary)
+        self.assertIn("[Active plan]", text)
+        # Status markers must appear in order, so the model sees what is done
+        # vs. still in flight at a glance.
+        self.assertLess(text.index("[x] Survey"), text.index("[~] Write tests"))
+        self.assertLess(text.index("[~] Write tests"), text.index("[ ] Ship"))
+        # The hint must explicitly request another `update_plan` call so the
+        # model is nudged to flush completion before answering.
+        self.assertIn("`update_plan`", text)
+        self.assertIn("completed", text)
+
+    def test_format_active_plan_reminder_emits_done_hint_when_all_completed(self):
+        summary = {
+            "items": [
+                {"step": "A", "status": "completed"},
+                {"step": "B", "status": "completed"},
+            ],
+            "has_pending": False,
+            "in_progress_step": "",
+        }
+        text = _format_active_plan_reminder(summary)
+        self.assertIn("All plan steps are `completed`", text)
+        # When everything is finished we must not keep pestering the model to
+        # call `update_plan` again — only to wrap up in natural language.
+        self.assertNotIn("flip it to", text)
+
+    def test_format_active_plan_reminder_returns_empty_for_no_items(self):
+        self.assertEqual(_format_active_plan_reminder({}), "")
+        self.assertEqual(_format_active_plan_reminder({"items": []}), "")
 
 
 if __name__ == "__main__":
