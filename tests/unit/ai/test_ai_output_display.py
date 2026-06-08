@@ -583,6 +583,107 @@ class AiOutputDisplayTests(unittest.TestCase):
         self.assertTrue(all(len(line) <= _Sz.columns for line in box_lines))
         self.assertNotIn("  │", box_lines)
 
+    def test_startup_overview_box_rows_align_in_chinese_and_english(self):
+        """All four content rows of the startup banner must end at the same
+        visual column, in every supported display language. Previously, the
+        Chinese model row over-padded its plain text because the renderer
+        emitted ``/model`` + a short suffix while the width calculation used
+        a longer ``model_change_hint`` translation, shifting the right border
+        only on that row."""
+        import unicodedata as _ud
+        from src.runtime.runtime_loop import _print_startup_overview, _startup_text_display_width
+
+        class _FakeStdout:
+            encoding = "utf-8"
+
+            def __init__(self):
+                self.writes = []
+
+            def write(self, text):
+                self.writes.append(str(text))
+                return len(str(text))
+
+            def flush(self):
+                return None
+
+            def isatty(self):
+                return True
+
+        class _Agent:
+            model_name = "Gemma-4-31B"
+            workspace_name = "Test"
+            workspace_root = r"D:\tmp\test"
+            _startup_chat_state_warning = ""
+
+        def _strip_ansi(text):
+            # Strip CSI escape sequences so we measure on-screen visible width.
+            import re as _re
+            return _re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", text)
+
+        def _visible_width(text):
+            width = 0
+            for ch in text:
+                if _ud.combining(ch):
+                    continue
+                if _ud.category(ch) in ("Cc", "Cf"):
+                    continue
+                width += 2 if _ud.east_asian_width(ch) in ("W", "F") else 1
+            return width
+
+        for lang in ("zh-CN", "en"):
+            with self.subTest(language=lang):
+                fake_stdout = _FakeStdout()
+                stream = self.agent._build_internal_slash_output_stream(
+                    fake_stdout, terminal_columns=80
+                )
+                with (
+                    patch(
+                        "src.agent.shutil.get_terminal_size",
+                        return_value=types.SimpleNamespace(columns=80),
+                    ),
+                    patch("src.runtime.runtime_loop.sys.stdout", stream),
+                    patch(
+                        "src.runtime.runtime_loop.get_app_name",
+                        return_value=get_app_name(),
+                    ),
+                    patch(
+                        "src.runtime.runtime_loop.get_app_display_version",
+                        return_value="v0.1.0",
+                    ),
+                    patch(
+                        "src.runtime.runtime_loop.get_random_startup_tip_entry",
+                        return_value={"text": "", "highlights": []},
+                    ),
+                    patch(
+                        "src.core.localization.get_display_language",
+                        return_value=lang,
+                    ),
+                ):
+                    _print_startup_overview(_Agent())
+
+                rendered = "".join(fake_stdout.writes)
+                box_rows = [
+                    _strip_ansi(line)
+                    for line in rendered.splitlines()
+                    if line.lstrip().startswith("│") and line.rstrip().endswith("│")
+                ]
+                self.assertGreaterEqual(
+                    len(box_rows), 4, f"{lang}: expected 4+ content rows"
+                )
+                widths = [_visible_width(line) for line in box_rows]
+                self.assertEqual(
+                    len(set(widths)),
+                    1,
+                    f"{lang}: box rows must share one visual width but got "
+                    f"widths={widths} for rows={box_rows!r}",
+                )
+                # Sanity: the visible widths we just computed should also agree
+                # with the runtime helper used for padding decisions.
+                self.assertEqual(
+                    widths[0],
+                    _startup_text_display_width(box_rows[0]),
+                )
+
     def test_slash_reload_full_width_lines_reserve_output_indent(self):
         class _FakeStdout:
             encoding = "utf-8"
