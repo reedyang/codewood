@@ -554,6 +554,28 @@ class RuntimeLoopTests(unittest.TestCase):
         out = _stream_visible_text_with_json_pause(raw, final=False)
         self.assertEqual(out, raw)
 
+    def test_stream_visible_text_withholds_trailing_lone_brace(self):
+        """When the streaming buffer ends right at a paragraph-leading
+        ``\\n\\n{`` with no quote yet, the next chunk may turn the
+        ``{`` into ``{"<prose>`` (envelope leak) or into something
+        else. The append-only streamer cannot retract characters that
+        already reached the terminal, so we must withhold the lone
+        brace until the next chunk disambiguates it."""
+        raw = "现在进行深度诊断分析。\n\n{"
+        out = _stream_visible_text_with_json_pause(raw, final=False)
+        self.assertEqual(out, "现在进行深度诊断分析。")
+
+    def test_stream_visible_text_withholds_trailing_brace_quote_pair(self):
+        """When the buffer ends exactly at ``\\n\\n{"`` (or with
+        whitespace between), the cutter doesn't yet know whether the
+        following character will be a valid JSON-key start. Be
+        conservative and withhold from the ``{`` so the partial
+        ``{"`` cannot leak to the terminal before the next chunk
+        arrives."""
+        raw = "现在进行深度诊断分析。\n\n{\""
+        out = _stream_visible_text_with_json_pause(raw, final=False)
+        self.assertEqual(out, "现在进行深度诊断分析。")
+
     def test_stream_visible_text_hides_malformed_envelope_with_cjk_first_char(self):
         """Real-world regression: some models echo their own visible
         prose back inside a malformed ``{"<prose>...`` JSON object —

@@ -7,7 +7,7 @@ from typing import Dict
 
 APP_INFO: Dict[str, str] = {
     "name": "Smart Shell",
-    "version": "0.1.0",
+    "version": "0.0.1",
     "author": "Reed Yang",
     "description": "Smart Shell AI Agent",
 }
@@ -25,7 +25,7 @@ def get_app_description() -> str:
 
 def get_app_version() -> str:
     version = str(APP_INFO.get("version") or "").strip()
-    return version or "0.1.0"
+    return version or "0.0.1"
 
 
 def get_app_display_version(prefix: str = "v") -> str:
