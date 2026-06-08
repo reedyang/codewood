@@ -554,6 +554,37 @@ class RuntimeLoopTests(unittest.TestCase):
         out = _stream_visible_text_with_json_pause(raw, final=False)
         self.assertEqual(out, raw)
 
+    def test_stream_visible_text_hides_malformed_envelope_with_cjk_first_char(self):
+        """Real-world regression: some models echo their own visible
+        prose back inside a malformed ``{"<prose>...`` JSON object —
+        no surrounding key=value structure, just the prose
+        immediately after the opening ``{"``. Because the first
+        "key" character is non-ASCII, this can never be valid prose
+        JSON, so both streaming and the final pass must cut at the
+        opening ``{`` and keep only the natural-language prose."""
+        raw = (
+            "已经获取到比亚迪的实时行情数据，接下来我将调用分析工具为您生成详细的行情报告。\n\n"
+            "**计划更新：**\n"
+            "1. 获取比亚迪实时行情数据 `completed`\n"
+            "2. 分析行情并生成报告 `in_progress`\n"
+            "3. 总结结果并回答用户 `pending`\n\n"
+            "{\"已经获取到比亚迪的实时行情数据，接下来我将调用分析工具为您生成详细的行情报告。\n\n"
+            "**计划更新：**\n"
+            "1. 获取比亚迪实时行情数据 `completed`\n"
+            "2. 分析行情并生成报告 `in_progress`\n"
+            "3. 总结结果并回答用户 `pending`\n\n"
+            "tool_calls\":[...]}"
+        )
+        expected_visible = (
+            "已经获取到比亚迪的实时行情数据，接下来我将调用分析工具为您生成详细的行情报告。\n\n"
+            "**计划更新：**\n"
+            "1. 获取比亚迪实时行情数据 `completed`\n"
+            "2. 分析行情并生成报告 `in_progress`\n"
+            "3. 总结结果并回答用户 `pending`"
+        )
+        self.assertEqual(_stream_visible_text_with_json_pause(raw, final=True), expected_visible)
+        self.assertEqual(_stream_visible_text_with_json_pause(raw, final=False), expected_visible)
+
     def test_stream_visible_text_hides_pseudo_tool_calls_block(self):
         raw = (
             "Preparing to run\n\n"
