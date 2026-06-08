@@ -6,6 +6,8 @@ import secrets
 from pathlib import Path
 from typing import Any, List, Optional
 
+from ..localization import translate
+
 
 def confirm_allowlist_path(agent: Any) -> Path:
     return agent.workspace_config_dir / "confirm_allowlist.json"
@@ -38,7 +40,13 @@ def shell_script_hash(agent: Any, script_path: Path) -> Optional[str]:
     try:
         body = script_path.read_text(encoding="utf-8", errors="replace")
     except OSError as e:
-        print(f"⚠️ Unable to read script to compute allowlist hash: {e}")
+        print(
+            translate(
+                "warning.allowlist_hash_read_failed",
+                getattr(agent, "display_language", "en") or "en",
+                error=e,
+            )
+        )
         return None
     return salted_sha256(body, salt)
 
@@ -113,7 +121,13 @@ def load_confirm_allowlist(agent: Any) -> None:
                 t = x.strip()
                 agent._allowlist_shell_exes.add(t.lower() if os.name == "nt" else t)
     except Exception as e:
-        print(f"⚠️ Failed to read confirm_allowlist.json: {e}")
+        print(
+            translate(
+                "warning.confirm_allowlist_read_failed",
+                getattr(agent, "display_language", "en") or "en",
+                error=e,
+            )
+        )
         agent._confirm_allowlist_salt = secrets.token_hex(16)
 
 
@@ -134,7 +148,13 @@ def save_confirm_allowlist(agent: Any) -> bool:
         p.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         return True
     except Exception as e:
-        print(f"⚠️ Failed to write confirm_allowlist.json: {e}")
+        print(
+            translate(
+                "warning.confirm_allowlist_write_failed",
+                getattr(agent, "display_language", "en") or "en",
+                error=e,
+            )
+        )
         return False
 
 
@@ -317,7 +337,13 @@ def reset_always_confirm_skip(agent: Any) -> dict:
             p.unlink()
             removed = True
     except OSError as e:
-        print(f"⚠️ Failed to delete confirm_allowlist.json: {e}")
+        print(
+            translate(
+                "warning.confirm_allowlist_delete_failed",
+                getattr(agent, "display_language", "en") or "en",
+                error=e,
+            )
+        )
     return {
         "success": True,
         "message": (

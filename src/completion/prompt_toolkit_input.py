@@ -1618,8 +1618,8 @@ class PromptToolkitInputHandler:
 
     def _print_shell_mode_empty_command_hint(self) -> None:
         bullet = _ansi_gray("•")
-        example = _ansi_gray("Example: !ls")
         lang = self._ui_language()
+        example = _ansi_gray(translate("input.shell_mode_example", lang))
         print(f"{bullet} {translate('input.shell_mode_hint', lang)} {example}\n")
 
     def get_terminal_columns(self, default: int = 80) -> int:

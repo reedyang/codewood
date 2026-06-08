@@ -5,6 +5,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from ..core.localization import translate
+
 
 CHAT_STATE_VERSION = 1
 
@@ -258,7 +260,13 @@ class ChatStateManager:
                 except Exception:
                     pass
         except Exception as e:
-            print(f"⚠️ Failed to save chat state: {e}")
+            print(
+                translate(
+                    "warning.chat_state_save_failed",
+                    getattr(self._agent, "display_language", "en") or "en",
+                    error=e,
+                )
+            )
 
     def chat_entries(self) -> List[Dict[str, Any]]:
         chats = self._agent._chat_state.get("chats", [])

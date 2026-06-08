@@ -17,6 +17,7 @@ from ..core.console_utils import (
     _safe_console_write,
 )
 from ..core.console_title import restore_app_console_title
+from ..core.localization import translate
 
 
 def _t(agent: Any, key: str, fallback: Optional[str] = None, **kwargs: Any) -> str:
@@ -431,7 +432,7 @@ def action_shell_command(
         agent._manual_confirm_required_shell_once = False
     command = ensure_absolute_script_for_shell_cwd(agent, command.strip())
     command = enforce_workspace_rg_for_shell_command(agent, command)
-    command = tune_7z_output_for_piped_terminal(command)
+    command = tune_7z_output_for_piped_terminal(command, agent)
     enforce_res = _enforce_windows_powershell_command_prefix(command)
     if not enforce_res.get("ok", False):
         return {"success": False, "error": str(enforce_res.get("error", "PowerShell command format is invalid"))}
@@ -1660,7 +1661,7 @@ def normalize_shell_command_for_summary(command: str) -> str:
     )
 
 
-def tune_7z_output_for_piped_terminal(command: str) -> str:
+def tune_7z_output_for_piped_terminal(command: str, agent: Any = None) -> str:
     if not command.strip():
         return command
     if not re.search(r'(^|[\\/\s"])7z(?:\.exe)?(?=\s|"|$)', command, re.IGNORECASE):
@@ -1681,7 +1682,8 @@ def tune_7z_output_for_piped_terminal(command: str) -> str:
         tuned += " -bse2"
         appended.append("-bse2")
     if appended:
-        print(f"ℹ️ Enabled compatibility output flags for 7z command: {' '.join(appended)}")
+        lang = getattr(agent, "display_language", None) or "en"
+        print(translate("info.seven_z_compat_flags", lang, flags=" ".join(appended)))
     return tuned
 
 
@@ -1747,16 +1749,17 @@ def try_remove_ephemeral_script_after_shell(agent: Any, command: str) -> Optiona
     key = agent._ephemeral_path_key(invoked)
     if key not in agent._ephemeral_script_paths:
         return None
+    lang = getattr(agent, "display_language", None) or "en"
     try:
         if invoked.is_file():
             name = invoked.name
             invoked.unlink()
             agent._ephemeral_script_paths.discard(key)
             agent._ai_created_path_keys.discard(key)
-            print(f"🗑️ Auto-deleted temporary script created in this session: {name}")
+            print(translate("info.temp_script_auto_deleted", lang, name=name))
             return name
     except OSError as e:
-        print(f"⚠️ Failed to auto-delete temporary script ({invoked}): {e}")
+        print(translate("warning.temp_script_delete_failed", lang, path=invoked, error=e))
     return None
 
 

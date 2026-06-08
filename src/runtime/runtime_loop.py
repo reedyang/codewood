@@ -1637,16 +1637,11 @@ def run_agent_loop(agent: Any):
                                 self.input_handler.reset_command_history(
                                     self.history_manager.get_all_history()
                                 )
-                            print(t("✅ History has been cleared", "✅ 历史记录已清除"))
+                            print(t("builtin.history_cleared_check"))
                             continue
                         if bl == "clear context":
                             self._clear_active_chat_context_and_tasks()
-                            print(
-                                t(
-                                    "✅ AI context has been cleared (conversation history, recorded tasks, and recent operation-result cache; command-line input history is unchanged)",
-                                    "✅ AI 上下文已清除（对话历史、记录的任务和最近的操作结果缓存已清除；命令行输入历史保持不变）",
-                                )
-                            )
+                            print(t("builtin.context_cleared_full"))
                             try:
                                 self._handle_chat_builtin_command("chat reload")
                             except Exception:
@@ -1661,16 +1656,24 @@ def run_agent_loop(agent: Any):
                             self.memory_enabled = True
                             ok = self._save_memory_enabled_to_config()
                             print(
-                                "✅ Experiential memory is enabled"
-                                + (f"; saved to {CONFIG_JSONC_FILENAME}" if ok else " (failed to save config; only effective for this process)")
+                                t(
+                                    "memory_command.enabled_saved"
+                                    if ok
+                                    else "memory_command.enabled_session_only",
+                                    config_file=CONFIG_JSONC_FILENAME,
+                                )
                             )
                             continue
                         if bl == "memory disable":
                             self.memory_enabled = False
                             ok = self._save_memory_enabled_to_config()
                             print(
-                                "✅ Experiential memory is disabled"
-                                + (f"; saved to {CONFIG_JSONC_FILENAME}" if ok else " (failed to save config; only effective for this process)")
+                                t(
+                                    "memory_command.disabled_saved"
+                                    if ok
+                                    else "memory_command.disabled_session_only",
+                                    config_file=CONFIG_JSONC_FILENAME,
+                                )
                             )
                             continue
                         if bl == "memory status":
@@ -1691,12 +1694,12 @@ def run_agent_loop(agent: Any):
                                     "memory_search", {"query": q, "verbose_print": True}
                                 )
                             else:
-                                print(t("❌ Please provide search content", "❌ 请提供搜索内容"))
+                                print(t("memory_command.no_search_query"))
                             continue
                         if bl.startswith("memory remember "):
                             text = builtin_line[len("memory remember ") :].strip()
                             if not text:
-                                print(t("❌ Please provide content to remember", "❌ 请提供要记住的内容"))
+                                print(t("memory_command.no_remember_text"))
                                 continue
                             title = text[:80] + ("…" if len(text) > 80 else "")
                             self.execute_tool_call(
@@ -1720,7 +1723,7 @@ def run_agent_loop(agent: Any):
                                     {"memory_id": mid, "verbose_print": True},
                                 )
                             else:
-                                print(t("❌ Please provide memory id", "❌ 请提供记忆 ID"))
+                                print(t("memory_command.no_memory_id"))
                             continue
 
                         if self._handle_chat_builtin_command(builtin_line):
@@ -2139,7 +2142,7 @@ def run_agent_loop(agent: Any):
                     srv = str(e.get("server", "")).strip()
                     name = str(e.get("name", "")).strip()
                     kind = str(e.get("kind", "")).strip() or "unknown"
-                    print(t("🧩 Enabled MCP reference: /mcp/{server}/{name} ({kind})", "🧩 已启用 MCP 引用：/mcp/{server}/{name}（{kind}）").format(server=srv, name=name, kind=kind))
+                    print(t("runtime.mcp_reference_enabled", server=srv, name=name, kind=kind))
                 forced_mcp_prefix = self._build_forced_mcp_prefix(forced_mcp_entries)
             preloaded_skill_ids: Set[str] = set()
             if forced_skills:
@@ -2157,7 +2160,7 @@ def run_agent_loop(agent: Any):
                             self,
                             pre_task_status_ticker,
                         )
-                        print(t("🧩 Enabled skill: {skill}", "🧩 已启用 skill：{skill}").format(skill=sname))
+                        print(t("runtime.skill_enabled", skill=sname))
                         full_prompts.append(full_prompt)
                         preloaded_skill_ids.add(self._canonical_skill_id(sid))
                         if not self._active_skill_id:
@@ -2445,7 +2448,7 @@ def run_agent_loop(agent: Any):
                 if not status_ticker_stopped:
                     _stop_status_ticker_before_first_output()
                 if not isinstance(ai_response, str):
-                    print(t("❌ AI returned invalid response: {value}", "❌ AI 返回了无效响应：{value}").format(value=ai_response))
+                    print(t("runtime.ai_invalid_response", value=ai_response))
                     break
                 cleaned_internal_ai_response = _strip_leaked_internal_history_markers(ai_response)
                 if cleaned_internal_ai_response != ai_response:
@@ -2613,7 +2616,7 @@ def run_agent_loop(agent: Any):
 
                 for tool_name, args in fallback_plans:
                     if not tool_name:
-                        print(t("❌ Tool plan is missing tool name. Ending this round.", "❌ 工具计划缺少工具名称。本轮结束。"))
+                        print(t("runtime.tool_plan_missing_name"))
                         break_after_batch = True
                         break
 
@@ -2715,7 +2718,7 @@ def run_agent_loop(agent: Any):
                             continue_after_batch = True
                             break
                         if active_sid != canon_sid:
-                            print(t("🧩 About to enable skill: {skill}", "🧩 即将启用 skill：{skill}").format(skill=sid))
+                            print(t("runtime.skill_about_to_enable", skill=sid))
                         self._active_skill_full_prompt = full_prompt
                         self._active_skill_id = canon_sid or sid
                         self._active_skill_source = "local" if self._is_local_skill_id(canon_sid or sid) else "mcp"
@@ -2814,7 +2817,7 @@ def run_agent_loop(agent: Any):
                     is_first_round = False
                     if tool_name == "apply_patch" and (not bool(result.get("success", False))):
                         err = str(result.get("error") or result.get("message") or "unknown error").strip()
-                        print(t("❌ apply_patch failed: {error}", "❌ apply_patch 失败：{error}").format(error=err))
+                        print(t("runtime.apply_patch_failed", error=err))
                     if self._result_indicates_user_cancelled(result):
                         self._force_current_input_as_requirement_once = True
                         self._last_cancelled_task = str(original_user_task or "").strip()
@@ -2824,7 +2827,7 @@ def run_agent_loop(agent: Any):
                             user_input_hint=str(original_user_task or ""),
                             context_hint="task cancelled",
                         )
-                        print(t("⏹️ User cancellation detected. The current task has been terminated.", "⏹️ 检测到用户取消。当前任务已终止。"))
+                        print(t("runtime.user_cancelled_task"))
                         break_after_batch = True
                         break
 
@@ -2835,20 +2838,22 @@ def run_agent_loop(agent: Any):
                                 int(max(0.0, time.monotonic() - float(task_started_at))),
                             )
                             worked_summary_emitted = True
-                        q = str(result.get("question") or "").strip() or t("Please provide supplementary information:", "请提供补充信息：")
-                        print(t("🙋 Supplementary information is required before continuing.", "🙋 继续前需要补充信息。"))
-                        print(t("❓ {question}", "❓ {question}").format(question=q))
+                        q = str(result.get("question") or "").strip() or t(
+                            "runtime.ask_more_info.default_question"
+                        )
+                        print(t("runtime.ask_more_info.required"))
+                        print(t("runtime.ask_more_info.question", question=q))
                         supplement_text = ""
                         handoff_to_main_loop = False
                         while True:
                             try:
                                 supplement_text = self._get_user_input_with_history().strip()
                             except KeyboardInterrupt:
-                                print(t("\n⏸️ Supplementary input cancelled. This task round is paused.", "\n⏸️ 补充输入已取消。本轮任务已暂停。"))
+                                print(t("runtime.ask_more_info.supplement_cancelled"))
                                 supplement_text = ""
                                 break
                             if not supplement_text:
-                                print(t("⚠️ No supplementary information received. This task round is paused.", "⚠️ 未收到补充信息。本轮任务已暂停。"))
+                                print(t("runtime.ask_more_info.no_supplement"))
                                 break
                             if supplement_text.startswith("/") or supplement_text.startswith("!"):
                                 # Route prefixed input back to the main loop so it shares
@@ -2886,8 +2891,11 @@ def run_agent_loop(agent: Any):
                         and bool(result.get("needs_user_input", False))
                         and (result.get("retryable", True) is False)
                     ):
-                        hint = str(result.get("error", "") or t("User input is required before continuing.", "继续前需要用户输入。"))
-                        print(t("⏸️ Auto-continue paused: {hint}", "⏸️ 自动继续已暂停：{hint}").format(hint=hint))
+                        hint = str(
+                            result.get("error", "")
+                            or t("runtime.auto_continue.default_hint")
+                        )
+                        print(t("runtime.auto_continue.paused", hint=hint))
                         _refresh_context_usage_after_task_boundary(
                             self,
                             user_input_hint=str(original_user_task or ""),
@@ -2901,7 +2909,7 @@ def run_agent_loop(agent: Any):
                 if continue_after_batch:
                     continue
                 if not executed_batch_results:
-                    print(t("❌ No executable tool call was completed in this round.", "❌ 本轮未完成任何可执行工具调用。"))
+                    print(t("runtime.no_executable_tool_call"))
                     break
 
                 result_for_next_input: Dict[str, Any]
@@ -3050,13 +3058,15 @@ def run_agent_loop(agent: Any):
             self._stop_interrupt_monitor(cancel_task_on_interrupt=True)
             print("")
             try:
-                should_exit = input(t("Exit {app_name}? (y/n): ", "退出 {app_name}？(y/n)：").format(app_name=get_app_name())).strip().lower() == "y"
+                should_exit = input(
+                    t("runtime.exit_prompt", app_name=get_app_name())
+                ).strip().lower() == "y"
             except KeyboardInterrupt:
                 should_exit = False
 
             if should_exit:
                 self._save_current_workspace_position()
-                print(t("👋 {app_name} exited. Goodbye!", "👋 {app_name} 已退出。再见！").format(app_name=get_app_name()))
+                print(t("runtime.exit_goodbye", app_name=get_app_name()))
                 break
             continue
         except Exception as e:
@@ -3073,4 +3083,4 @@ def run_agent_loop(agent: Any):
                 self._clear_last_thinking_line()
             self._in_task_execution = False
             self._stop_interrupt_monitor(cancel_task_on_interrupt=True)
-            print(t("❌ Error occurred: {error}", "❌ 发生错误：{error}").format(error=str(e)))
+            print(t("runtime.error_occurred", error=str(e)))
