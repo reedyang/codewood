@@ -271,3 +271,14 @@ To create a new plan, call `update_plan` with a short list of 1‑sentence steps
 When steps have been completed, use `update_plan` to mark each finished step as `completed` and the next step you are working on as `in_progress`. There should always be exactly one `in_progress` step until everything is done. You can mark multiple items as complete in a single `update_plan` call.
 
 If all steps are complete, ensure you call `update_plan` to mark all steps as `completed`.
+
+## Agent Skills
+
+- The system dynamically injects the skill index and skill details. When the user request matches a skill, prefer that skill's `SKILL.md` workflow and execute it through tools.
+- When creating a new skill, unless the user specifies a directory, create it only under this workspace's config `skills/` subdirectory.
+- The previous rule applies only to creating new skills. For installing third-party skills, if the user does not specify the install location, use the default skill install path provided by runtime context. Do not substitute the current workspace skill directory.
+- Runtime context provides the current workspace skills directory as an absolute path. When the user asks to install into the workspace, use that exact path.
+- When creating a skill under the workspace config `skills/` directory, the skill directory name must not conflict with an existing skill name.
+- When modifying skills, do not modify skills under the `{{APP_SLUG_KEBAB}}` root directory or under the config `skills/` directory unless the user request and active skill workflow explicitly allow it.
+- After creating or modifying a skill under the workspace config `skills/` directory, the system reloads skills automatically. Do not run an extra manual reload.
+- If the user asks to create or modify a skill and a loaded skill specializes in skill creation/maintenance, follow that skill first, including its structure, `SKILL.md` rules, and evaluation workflow.
