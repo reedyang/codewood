@@ -1739,25 +1739,14 @@ class SessionMemoryService:
             "When installing a third-party skill: if the user does not specify an install location, you must use the Default skill install path (absolute path); "
             "use the Current workspace skills directory (absolute path) only when the user explicitly asks to install into the workspace.\n"
         )
+        prompt_path = Path(__file__).resolve().parents[1] / "prompts" / "compact_prompt.md"
+        compact_prompt_text = prompt_path.read_text(encoding="utf-8").strip()
         sys_content = (
             f"{str(getattr(self.agent, '_skills_routing_prefix', '') or '')}"
             f"{system_prompt}\n"
             f"{self._software_development_prompt_append()}"
             f"{runtime_tail_raw}"
-            "\n[Context compaction summary task]\n"
-            "You are generating a durable, retrieval-friendly summary for later turns in the same chat. Output only the summary body; do not include greetings, tool calls, or Markdown code blocks.\n"
-            "Write exactly six lines in this order, using the fixed field names below:\n"
-            "Goals: ...\n"
-            "Facts: Paths/Commands/Tool results: ...; Environment/Workspace: ...; Errors/Fixes: ...\n"
-            "Preferences: ...\n"
-            "Decisions: ...\n"
-            "Errors: ...\n"
-            "Next steps: ...\n"
-            "Use compact semicolon-separated clauses, not paragraphs. Preserve concrete experience details instead of only a broad overview.\n"
-            "In Facts, prioritize three buckets: Paths/Commands/Tool results, Environment/Workspace, and Errors/Fixes.\n"
-            "Include the original user goal, completed items, unfinished items, explicit next steps, key constraints, decisions and reasons, user preferences, stable behavior patterns, file paths, commands, tool calls, options, flags, exact outputs or error messages, environment details, warnings, failures, interruptions, and any one-off facts that could change future behavior or retrieval.\n"
-            "If a previous [Context summary] exists, merge it with subsequent messages into one updated summary, but do not compress away useful specifics.\n"
-            "Prefer dense factual coverage over elegant prose. If a detail is uncertain, mark it as tentative instead of omitting it.\n"
+            f"{compact_prompt_text}\n"
         )
         user_content = (
             f"compact_mode={str(mode or '').strip().lower() or 'manual'}\n"
