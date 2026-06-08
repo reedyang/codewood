@@ -171,12 +171,10 @@ class SessionMemoryService:
 
     def _context_usage_state_key(self) -> str:
         chat_id = str(getattr(self.agent, "active_chat_id", "") or "").strip()
-        task_id = str(getattr(self.agent, "_active_runtime_task_id", "") or "").strip()
         hist = list(getattr(self.agent, "conversation_history", None) or [])
         size = len(hist)
         last_role = ""
         last_content = ""
-        last_task_id = ""
         if hist:
             try:
                 last = hist[-1] if isinstance(hist[-1], dict) else {}
@@ -187,8 +185,7 @@ class SessionMemoryService:
                 last_content = str(last.get("content") or "")
                 if len(last_content) > 120:
                     last_content = last_content[-120:]
-                last_task_id = str(last.get("task_id") or "").strip()
-        return f"{chat_id}|{task_id}|{size}|{last_role}|{last_task_id}|{last_content}"
+        return f"{chat_id}|{size}|{last_role}|{last_content}"
 
     @staticmethod
     def _normalize_summary_fragment(text: str, max_chars: int = SESSION_SUMMARY_MSG_SNIPPET) -> str:
@@ -365,7 +362,6 @@ class SessionMemoryService:
             {
                 "role": r,
                 "content": str(content or ""),
-                "task_id": str(getattr(self.agent, "_active_runtime_task_id", "") or "").strip(),
                 "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             }
         )
@@ -526,63 +522,6 @@ class SessionMemoryService:
                 pass
         return False
 
-    def mark_cancelled_task_unanswered_user_messages(self, task_id: str) -> int:
-        """
-        Mark user messages in a cancelled task that have no later assistant reply in the same task,
-        so they will not enter model context or token budgeting in following rounds.
-        """
-        tid = str(task_id or "").strip()
-        if not tid:
-            return 0
-        hist = list(getattr(self.agent, "conversation_history", None) or [])
-        if not hist:
-            return 0
-        marked_indexes: List[int] = []
-        seen_assistant_after = False
-        for idx in range(len(hist) - 1, -1, -1):
-            msg = hist[idx]
-            if not isinstance(msg, dict):
-                continue
-            if str(msg.get("task_id") or "").strip() != tid:
-                continue
-            role = str(msg.get("role") or "").strip().lower()
-            if role == "assistant":
-                if self._is_internal_assistant_history_message(str(msg.get("content") or "")):
-                    continue
-                seen_assistant_after = True
-                continue
-            if role != "user":
-                continue
-            if self._is_builtin_slash_user_message(role, str(msg.get("content") or "")):
-                continue
-            if seen_assistant_after:
-                continue
-            marked_indexes.append(idx)
-        if not marked_indexes:
-            fallback_idx = self._latest_unanswered_user_message_index_global()
-            if fallback_idx >= 0:
-                marked_indexes.append(fallback_idx)
-            else:
-                return 0
-        marked_count = 0
-        for idx in marked_indexes:
-            try:
-                msg_obj = self.agent.conversation_history[idx]
-            except Exception:
-                continue
-            if not isinstance(msg_obj, dict):
-                continue
-            if bool(msg_obj.get("exclude_from_model_context", False)):
-                continue
-            msg_obj["exclude_from_model_context"] = True
-            marked_count += 1
-        if marked_count > 0:
-            try:
-                self.agent._sync_active_chat_messages()
-            except Exception:
-                pass
-        return marked_count
-
     def mark_latest_unanswered_user_message_for_cancel(self) -> int:
         """
         Fallback marker used when task-id-based marking cannot be applied.
@@ -654,56 +593,6 @@ class SessionMemoryService:
         text = cmd if cmd else raw
         return str(text or "").strip().startswith("/")
 
-    def _extract_tool_names_from_json_value(self, value: Any) -> List[str]:
-        if isinstance(value, dict):
-            tool_name = value.get("tool") or value.get("action")
-            if isinstance(tool_name, str) and tool_name.strip():
-                return [tool_name.strip()]
-            return []
-        if isinstance(value, list):
-            out: List[str] = []
-            for item in value:
-                names = self._extract_tool_names_from_json_value(item)
-                if not names:
-                    return []
-                out.extend(names)
-            return out
-        return []
-
-    def _is_done_tool_call_only_assistant_content(self, content: str) -> bool:
-        text = str(content or "").strip()
-        if not text:
-            return False
-        matches = list(
-            re.finditer(
-                r"```\s*(?:json)?\s*\n?(.*?)\s*```",
-                text,
-                flags=re.IGNORECASE | re.DOTALL,
-            )
-        )
-        if not matches:
-            return False
-        cursor = 0
-        tool_names: List[str] = []
-        for match in matches:
-            if text[cursor : match.start()].strip():
-                return False
-            cursor = match.end()
-            body = str(match.group(1) or "").strip()
-            if not body:
-                return False
-            try:
-                value = json.loads(body)
-            except Exception:
-                return False
-            names = self._extract_tool_names_from_json_value(value)
-            if not names:
-                return False
-            tool_names.extend(names)
-        if text[cursor:].strip():
-            return False
-        return bool(tool_names) and all(name.lower() == "done" for name in tool_names)
-
     def _context_eligible_history(self) -> List[Dict[str, Any]]:
         hist = list(getattr(self.agent, "conversation_history", None) or [])
 
@@ -718,10 +607,6 @@ class SessionMemoryService:
                 if role == "user" and self._is_excluded_user_message_for_model_context(item):
                     continue
                 if self._is_builtin_slash_user_message(role, str(item.get("content") or "")):
-                    continue
-                if role == "assistant" and self._is_done_tool_call_only_assistant_content(
-                    str(item.get("content") or "")
-                ):
                     continue
                 out.append(item)
             return out
@@ -749,10 +634,6 @@ class SessionMemoryService:
             if role == "user" and self._is_excluded_user_message_for_model_context(item):
                 continue
             if self._is_builtin_slash_user_message(role, str(item.get("content") or "")):
-                continue
-            if role == "assistant" and self._is_done_tool_call_only_assistant_content(
-                str(item.get("content") or "")
-            ):
                 continue
             out.append((idx, item))
         return out
@@ -1483,23 +1364,6 @@ class SessionMemoryService:
         return best
 
     def _first_user_requirement(self, fallback: str) -> str:
-        try:
-            chat = self.agent._find_chat_by_id(getattr(self.agent, "active_chat_id", ""))
-        except Exception:
-            chat = None
-        active_task_id = str(getattr(self.agent, "_active_runtime_task_id", "") or "").strip()
-        if isinstance(chat, dict) and active_task_id:
-            tasks = chat.get("tasks")
-            if isinstance(tasks, list):
-                for t in tasks:
-                    if not isinstance(t, dict):
-                        continue
-                    if str(t.get("id") or "").strip() != active_task_id:
-                        continue
-                    root = str(t.get("root_user_input") or "").strip()
-                    if root:
-                        return root
-                    break
         hist = self.history_for_regular_context()
         for msg in hist:
             if str(msg.get("role") or "").strip().lower() != "user":
@@ -2061,17 +1925,14 @@ class SessionMemoryService:
             covered_message_count=len(source_history),
         )
         created_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        task_id = str(getattr(self.agent, "_active_runtime_task_id", "") or "").strip()
         msg = {
             "role": "assistant",
             "content": content,
-            "task_id": task_id,
             "created_at": created_at,
         }
         notice_msg = {
             "role": "assistant",
             "content": self.build_context_compaction_notice_content(mode=mode),
-            "task_id": task_id,
             "created_at": created_at,
         }
         try:

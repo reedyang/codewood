@@ -719,43 +719,5 @@
         "required": ["question"]
       }
     }
-  },
-  {
-    "type": "function",
-    "function": {
-      "name": "task_changed",
-      "description": "Declare a switch to a new task when the user's supplementary information is completely unrelated to the original request.",
-      "parameters": {
-        "type": "object",
-        "properties": {
-          "new_task": {
-            "type": "string"
-          },
-          "reason": {
-            "type": "string"
-          }
-        },
-        "required": ["new_task"]
-      }
-    }
-  },
-  {
-    "type": "function",
-    "function": {
-      "name": "done",
-      "description": "Mark the current user task as complete. If files were modified this turn, args.reviewed_files should list the reviewed files.",
-      "parameters": {
-        "type": "object",
-        "properties": {
-          "reviewed_files": {
-            "type": "array",
-            "description": "Optional list of reviewed file paths. In software_development scenarios, if code changed, this must cover all files modified this turn.",
-            "items": {
-              "type": "string"
-            }
-          }
-        }
-      }
-    }
   }
 ]

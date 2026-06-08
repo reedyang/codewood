@@ -588,14 +588,13 @@ def build_tools_prompt_append(agent: Any) -> str:
 def _build_tool_call_mode_prompt() -> str:
     return (
         "## Tool Call Mode: Standard API tool_calls\n"
-        "- HARD REQUIREMENT: every assistant message in this mode MUST include at least one standard API `tool_calls` entry. A content-only assistant message is invalid, even when the task is complete.\n"
-        "- If the user goal is complete, include the visible final answer in `content` and call `done` through standard API `tool_calls` in the same assistant message.\n"
-        "- If the user goal is not complete, include the next visible status in `content` and call the next real tool through standard API `tool_calls` in the same assistant message.\n"
+        "- When more tool work is needed, the assistant message must include the next standard API `tool_calls` entry alongside any visible plan/status content.\n"
+        "- When no further tool work is needed, reply in natural language with no tool_calls. The host returns to the command prompt automatically; there is no separate finish/done tool.\n"
         "- The current model must invoke tools through the API-standard `tool_calls` field.\n"
         "- Visible text may contain only user-visible natural-language explanation, step status, or result summary.\n"
         "- Never print any tool-call representation in visible text, including JSON tool objects, XML/tags, markdown code blocks, "
         "`tool`/`args` examples, or any other pseudo tool-call format.\n"
-        "- If the user goal is complete, first include the user-visible answer in content, then call `done` through API-standard `tool_calls`."
+        "- If the runtime detects pseudo tool-call text instead of standard `tool_calls`, you will be asked to retry; resend the same intent using real `tool_calls`."
     )
 
 

@@ -39,9 +39,6 @@ from ..core.console_utils import (
     _ansi_yellow,
 )
 
-_CODE_MUTATION_TOOLS = {
-    "apply_patch",
-}
 _WORKING_STATUS_MARQUEE_FPS = 10.0
 _STREAM_ATTR_TERMINAL_COLUMNS = get_app_runtime_attr_name("terminal_columns")
 _STREAM_ATTR_OUTPUT_INDENT_WIDTH = get_app_runtime_attr_name("output_indent_width")
@@ -240,54 +237,6 @@ def _split_trailing_pseudo_tool_calls_text_details(
         pseudo_text = rstripped[start:].strip()
         return visible, plans, pseudo_text
     return raw, [], ""
-
-
-def _is_textless_done_only_tool_call(
-    ai_response: Any,
-    plans: Any,
-) -> bool:
-    if str(ai_response or "").strip():
-        return False
-    if not isinstance(plans, list) or not plans:
-        return False
-    return all(str(tool_name or "").strip() == "done" for tool_name, _args in plans)
-
-
-def _can_finish_without_tool_calls(
-    task_uses_standard_openai_tools: bool,
-    ai_response: Any,
-) -> bool:
-    if task_uses_standard_openai_tools:
-        return False
-    return bool(str(ai_response or "").strip())
-
-
-def _should_retry_missing_standard_tool_call_response(
-    missing_tool_call_rounds: int,
-    max_missing_tool_call_rounds: int,
-) -> bool:
-    try:
-        rounds = int(missing_tool_call_rounds)
-    except Exception:
-        rounds = 0
-    try:
-        max_rounds = int(max_missing_tool_call_rounds)
-    except Exception:
-        max_rounds = 1
-    return rounds < max(1, max_rounds)
-
-
-def _build_missing_standard_tool_call_retry_input(original_user_task: Any) -> str:
-    return (
-        f"[Original user request]\n{original_user_task}\n\n"
-        "HARD REQUIREMENT: your next assistant message MUST include standard API `tool_calls`; content-only replies are invalid in this mode.\n"
-        "If the task is complete, put the final visible answer in content and call `done` via API `tool_calls` in the same message.\n"
-        "If the task is not complete, put the next visible status in content and call the next real tool via API `tool_calls` in the same message.\n"
-        "Your previous response did not include valid standard API tool_calls.\n"
-        "Retry with one assistant message: content contains only a concise plan/status/result, and the real tool action goes in API `tool_calls`.\n"
-        "Never print or serialize JSON/YAML/message objects containing `content`, `tool_calls`, `tool`, `args`, or `arguments` in visible text.\n"
-        "If the user goal is complete, first put the visible final result in content, then call `done` through standard `tool_calls`."
-    )
 
 
 def _should_prioritize_project_context_for_task(user_task: Any) -> bool:
@@ -858,30 +807,6 @@ def _replace_latest_assistant_history_content(
         return
 
 
-def _shell_command_indicates_verification(command: str) -> bool:
-    c = str(command or "").strip().lower()
-    if not c:
-        return False
-    needles = (
-        "pytest",
-        "unittest",
-        "py_compile",
-        "mypy",
-        "ruff",
-        "flake8",
-        "eslint",
-        "npm test",
-        "pnpm test",
-        "yarn test",
-        "go test",
-        "cargo test",
-        "gradle test",
-        "mvn test",
-        "ctest",
-    )
-    return any(n in c for n in needles)
-
-
 def _model_tool_result_was_aborted(tool_name: str, result: Any) -> bool:
     if str(tool_name or "").strip() != "shell":
         return False
@@ -941,96 +866,6 @@ def _render_aborted_direct_shell_feedback(agent: Any, command: str, result: Any)
             banner()
         except Exception:
             pass
-
-
-def _tool_change_and_verification_hints(
-    tool_name: str,
-    args: Dict[str, Any],
-    result: Dict[str, Any],
-) -> Dict[str, Any]:
-    t = str(tool_name or "").strip()
-    out: Dict[str, Any] = {
-        "code_changed": False,
-        "changed_files": [],
-        "verified": False,
-        "verification_summary": "",
-    }
-
-    if t in _CODE_MUTATION_TOOLS:
-        out["code_changed"] = True
-        p = str(args.get("path") or "").strip()
-        if p:
-            out["changed_files"] = [p]
-
-    if t == "shell":
-        cmd = str(args.get("command") or "").strip()
-        if _shell_command_indicates_verification(cmd):
-            ok = bool(result.get("success", False))
-            out["verified"] = ok
-            status = "passed" if ok else "failed"
-            out["verification_summary"] = f"shell verification `{cmd}` => {status}"
-    return out
-
-
-def _extract_done_reviewed_files(args: Dict[str, Any]) -> List[str]:
-    if not isinstance(args, dict):
-        return []
-    raw = args.get("reviewed_files")
-    if isinstance(raw, str):
-        item = raw.strip()
-        return [item] if item else []
-    if not isinstance(raw, list):
-        return []
-    out: List[str] = []
-    for x in raw:
-        s = str(x or "").strip()
-        if s:
-            out.append(s)
-    return out
-
-
-def _normalize_review_file_key(path_text: str) -> str:
-    s = str(path_text or "").strip()
-    if not s:
-        return ""
-    s = s.replace("\\", "/")
-    while s.startswith("./"):
-        s = s[2:]
-    s = re.sub(r"/+", "/", s).strip("/")
-    return s.casefold()
-
-
-def _compute_unreviewed_changed_files(
-    changed_files: List[str],
-    reviewed_files: List[str],
-) -> List[str]:
-    reviewed_keys = {_normalize_review_file_key(x) for x in (reviewed_files or [])}
-    reviewed_keys.discard("")
-    reviewed_basenames = {
-        Path(k).name.casefold() for k in reviewed_keys if str(k).strip()
-    }
-    missing: List[str] = []
-    for fp in changed_files or []:
-        raw_fp = str(fp or "").strip()
-        if not raw_fp:
-            continue
-        key = _normalize_review_file_key(raw_fp)
-        base = Path(key).name.casefold() if key else ""
-        if key in reviewed_keys:
-            continue
-        if base and base in reviewed_basenames:
-            continue
-        missing.append(raw_fp)
-    return missing
-
-
-def _build_minimal_verification_command(changed_files: List[str]) -> str:
-    files = [str(x or "").strip() for x in (changed_files or []) if str(x or "").strip()]
-    py_files = [f for f in files if f.lower().endswith(".py")]
-    if py_files:
-        joined = " ".join(f'"{f}"' for f in py_files)
-        return f"python -m py_compile {joined}"
-    return "Run minimal verification first (relevant tests, compilation, or static checks)."
 
 
 def _resolve_worked_summary_terminal_width(agent: Any, default: int = 80) -> int:
@@ -1117,8 +952,9 @@ def _refresh_context_usage_after_task_boundary(
     context_hint: str = "",
 ) -> None:
     """
-    Force a context-usage refresh at task boundary moments (done/cancelled/ask_more_info pause),
-    so the status bar reflects the latest in-context task-domain anchor immediately.
+    Force a context-usage refresh at conversation boundary moments
+    (turn finished/cancelled/ask_more_info pause), so the status bar
+    reflects the latest in-context anchor immediately.
     """
     try:
         refresh_fn = getattr(agent, "_refresh_status_context_usage_snapshot", None)
@@ -1448,7 +1284,6 @@ def run_agent_loop(agent: Any):
         auto_exit_after_turn = False
         in_task_execution = False
         self._in_task_execution = False
-        current_task_id = ""
         original_user_task = ""
         user_message_recorded = False
         pre_task_status_ticker: Optional[_WorkingStatusTicker] = None
@@ -2049,14 +1884,9 @@ def run_agent_loop(agent: Any):
 
             last_result = None
             self._last_auto_removed_ephemeral = None
-            current_task_id = self._start_chat_task(
-                root_user_input=original_user_task,
-            )
             user_message_recorded = _try_record_user_task_message(
                 self, original_user_task, already_recorded=user_message_recorded
             )
-            code_changed_in_task = False
-            changed_files_in_task: Set[str] = set()
             in_task_execution = True
             self._active_skill_full_prompt = ""
             self._active_skill_id = None
@@ -2119,16 +1949,14 @@ def run_agent_loop(agent: Any):
                 )
             task_uses_standard_openai_tools = bool(self._use_standard_openai_tools_call())
             first_round_contract = (
-                "0) STANDARD TOOL MODE HARD REQUIREMENT: every assistant message MUST include at least one API-standard `tool_calls` entry. Content-only replies are invalid in this mode; if the task is complete, call `done`; otherwise call the next required tool.\n"
                 "\n\n[First-turn hard requirements]\n"
                 "1) For tasks that require two or more steps, briefly state what will be done, then list Step 1..N with status (pending/in_progress/completed/failed).\n"
                 "2) If a tool is needed, the same assistant message must include both content=visible plan/status and tool_calls=standard API tool-call field. Do not split the plan and tool invocation into separate messages or turns.\n"
                 "3) Never output or serialize `tool_calls`, `content/tool_calls` message objects, tool JSON/YAML, XML/tags, markdown tool-call code blocks, or any pseudo tool-call format in content.\n"
                 "4) For multi-step tool tasks, the first turn must not contain only tool_calls without a visible task summary and step plan; it must also not contain only a plan without the required standard API tool_calls.\n"
-                "5) If the user question can be answered completely from injected experiential memory, put the concise visible answer in content and call `done` through standard API tool_calls.\n"
+                "5) When no further tool is needed and the user request can be answered, finish by replying in natural language with no tool_calls; the host returns to the command prompt automatically.\n"
                 "6) If the task needs a natural-language reference resolved to a stable identifier or mapping, read experiential memory first; if still insufficient, use `memory_search` before search, shell, or request_skill_prompt. Do not guess identifiers before checking memory.\n"
-                "7) If any network search/fetch/online query/tool/script/skill was used, before `done` output a search-results summary with key facts, source highlights, and relevance to the user question. Do not go directly from search to done.\n"
-                "8) `done` is allowed only after content includes a user-visible final answer, summary, or result. Greetings, chat, conceptual explanations, and directly answerable questions must also include visible content and call `done` through standard API tool_calls.\n\n"
+                "7) If any network search/fetch/online query/tool/script/skill was used, before finishing output a search-results summary with key facts, source highlights, and relevance to the user question. Do not finish directly after a search call.\n\n"
                 + mcp_tool_selection_constraint
                 + "[Experiential memory `memory_*` rules]\n"
                 "- `memory_search`: if injected experiential memory already contains enough information, do not call it merely for process. If the task depends on an entity identifier or alias mapping that may exist only in memory and no reliable value is visible, call `memory_search` before downstream tools; do not invent identifiers.\n"
@@ -2269,9 +2097,7 @@ def run_agent_loop(agent: Any):
                 parsed_max_tool_rounds if parsed_max_tool_rounds and parsed_max_tool_rounds > 0 else None
             )
             max_no_tool_rounds = 3
-            max_missing_tool_call_rounds = 2
             no_tool_rounds = 0
-            missing_tool_call_rounds = 0
             tool_round = 0
             while max_tool_rounds is None or tool_round < max_tool_rounds:
                 if self._consume_task_interrupt_requested():
@@ -2318,7 +2144,7 @@ def run_agent_loop(agent: Any):
                         history_user_input=original_user_task if not user_message_recorded else None,
                         history_skip_user=user_message_recorded,
                         tool_schemas=standard_tool_schemas,
-                        tool_choice="required" if task_uses_standard_openai_tools else None,
+                        tool_choice="auto" if task_uses_standard_openai_tools else None,
                     )
                 except Exception:
                     _stop_status_ticker_before_first_output()
@@ -2399,7 +2225,6 @@ def run_agent_loop(agent: Any):
                     # We only reject pseudo tool-call text here after the
                     # compatibility parser failed to recover executable plans
                     # from the assistant text.
-                    missing_tool_call_rounds = 0
                     no_tool_rounds += 1
                     if no_tool_rounds >= max_no_tool_rounds:
                         print(
@@ -2421,7 +2246,7 @@ def run_agent_loop(agent: Any):
                         "and tool_calls should contain the actual API-standard tool call(s). "
                         "Do not print or serialize a JSON/YAML/message object containing `content`, "
                         "`tool_calls`, `tool`, `args`, or `arguments` in assistant text. "
-                        "If the task is complete, include the visible final result in content and call `done` via standard `tool_calls`."
+                        "If no further tool action is needed, reply with natural-language content only and no tool_calls."
                     )
                     is_first_round = False
                     continue
@@ -2439,20 +2264,9 @@ def run_agent_loop(agent: Any):
                         self._last_terminal_block_kind = "assistant"
                         self._terminal_cursor_at_line_start = True
 
-                if task_uses_standard_openai_tools and _is_textless_done_only_tool_call(ai_response, fallback_plans):
-                    if current_task_id:
-                        self._close_chat_task(current_task_id, "done")
-                    _refresh_context_usage_after_task_boundary(
-                        self,
-                        user_input_hint=str(original_user_task or ""),
-                        context_hint="task finished",
-                    )
-                    break
                 if fallback_plans:
-                    missing_tool_call_rounds = 0
                     for tool_name, args in fallback_plans:
-                        if tool_name != "done":
-                            self._print_tool_call_feedback(tool_name, args, failed=False)
+                        self._print_tool_call_feedback(tool_name, args, failed=False)
                 else:
                     tool_name, args = "", {}
 
@@ -2462,32 +2276,16 @@ def run_agent_loop(agent: Any):
                         sys.stdout.write("\n")
                     sys.stdout.flush()
                 if not fallback_plans:
-                    if _can_finish_without_tool_calls(task_uses_standard_openai_tools, ai_response):
-                        if current_task_id:
-                            self._close_chat_task(current_task_id, "done")
-                        _refresh_context_usage_after_task_boundary(
-                            self,
-                            user_input_hint=str(original_user_task or ""),
-                            context_hint="basic chat direct answer",
-                        )
-                        break
-                    missing_tool_call_rounds += 1
-                    if not _should_retry_missing_standard_tool_call_response(
-                        missing_tool_call_rounds,
-                        max_missing_tool_call_rounds,
-                    ):
-                        print(
-                            t(
-                                "❌ The model repeatedly failed to produce a valid tool_calls response. Auto-execution has stopped for this round.",
-                                "❌ 模型反复未能生成有效的 tool_calls 响应。本轮自动执行已停止。",
-                            )
-                        )
-                        break
-                    next_input = _build_missing_standard_tool_call_retry_input(
-                        original_user_task
+                    # No tool calls in the assistant message: end the loop and
+                    # return to the command prompt regardless of standard-tool
+                    # mode. Visible content (when present) has already been
+                    # rendered above.
+                    _refresh_context_usage_after_task_boundary(
+                        self,
+                        user_input_hint=str(original_user_task or ""),
+                        context_hint="assistant turn finished",
                     )
-                    is_first_round = False
-                    continue
+                    break
 
                 executed_batch_results: List[Dict[str, Any]] = []
                 last_tool_name = ""
@@ -2613,7 +2411,7 @@ def run_agent_loop(agent: Any):
                             "Stop repeating the search. Instead:\n"
                             "1) Provide an interim conclusion from existing results;\n"
                             "2) If evidence is insufficient, make only one more targeted tool call;\n"
-                            "3) If evidence is sufficient, call `done`.\n"
+                            "3) If evidence is sufficient, finish in the next assistant message with a natural-language reply only.\n"
                             "Continue with standard tools and avoid repetition; you may call one or more tools at once."
                         )
                         no_tool_rounds = 0
@@ -2662,7 +2460,6 @@ def run_agent_loop(agent: Any):
                     except Exception:
                         pass
                     no_tool_rounds = 0
-                    missing_tool_call_rounds = 0
                     self.operation_results.append({
                         "command": pseudo_command,
                         "result": result,
@@ -2689,19 +2486,10 @@ def run_agent_loop(agent: Any):
                     if tool_name == "apply_patch" and (not bool(result.get("success", False))):
                         err = str(result.get("error") or result.get("message") or "unknown error").strip()
                         print(t("❌ apply_patch failed: {error}", "❌ apply_patch 失败：{error}").format(error=err))
-                    hints = _tool_change_and_verification_hints(tool_name, args, result)
-                    if bool(hints.get("code_changed", False)):
-                        code_changed_in_task = True
-                        for fp in list(hints.get("changed_files") or []):
-                            fpp = str(fp or "").strip()
-                            if fpp:
-                                changed_files_in_task.add(fpp)
-
                     if self._result_indicates_user_cancelled(result):
                         self._force_current_input_as_requirement_once = True
                         self._last_cancelled_task = str(original_user_task or "").strip()
-                        if current_task_id:
-                            self._close_chat_task(current_task_id, "cancelled")
+                        self._mark_cancelled_unanswered_user_message()
                         _refresh_context_usage_after_task_boundary(
                             self,
                             user_input_hint=str(original_user_task or ""),
@@ -2711,60 +2499,6 @@ def run_agent_loop(agent: Any):
                         break_after_batch = True
                         break
 
-                    if result.get("finished"):
-                        if (not worked_summary_emitted) and tool_round > 1:
-                            _print_worked_for_summary_line(
-                                self,
-                                int(max(0.0, time.monotonic() - float(task_started_at))),
-                            )
-                            worked_summary_emitted = True
-                        if current_task_id:
-                            self._close_chat_task(current_task_id, "done")
-                        _refresh_context_usage_after_task_boundary(
-                            self,
-                            user_input_hint=str(original_user_task or ""),
-                            context_hint="task finished",
-                        )
-                        break_after_batch = True
-                        break
-                    if bool(result.get("task_changed", False)):
-                        new_task = str(result.get("new_task") or "").strip()
-                        if not new_task:
-                            print(
-                                t(
-                                    "❌ task_changed returned without new_task. Auto-execution has stopped for this round.",
-                                    "❌ task_changed 返回时未提供 new_task。本轮自动执行已停止。",
-                                )
-                            )
-                            break_after_batch = True
-                            break
-                        old_task = original_user_task
-                        original_user_task = new_task
-                        if current_task_id:
-                            self._close_chat_task(current_task_id, "switched")
-                        current_task_id = self._start_chat_task(
-                            root_user_input=original_user_task,
-                            switched_from_task_id=str(current_task_id or ""),
-                        )
-                        code_changed_in_task = False
-                        changed_files_in_task = set()
-                        print(
-                            t(
-                                "🔄 AI judged the user supplement unrelated to the original requirement; switched to a new task.",
-                                "🔄 AI 判断用户补充内容与原始需求无关；已切换到新任务。",
-                            )
-                        )
-                        print(t("   Old task: {task}", "   旧任务：{task}").format(task=old_task))
-                        print(t("   New task: {task}", "   新任务：{task}").format(task=original_user_task))
-                        reason = str(result.get("reason") or "").strip()
-                        next_input = (
-                            f"[Original user request]\n{original_user_task}\n\n"
-                            "You just called `task_changed`; the system has switched the original request to the new task.\n"
-                            + (f"Switch reason: {reason}\n" if reason else "")
-                            + "Continue based on the new original request using standard tools; you may call one or more tools at once."
-                        )
-                        continue_after_batch = True
-                        break
                     if bool(result.get("needs_user_input", False)) and str(result.get("input_type", "")).strip() == "supplement":
                         if (not worked_summary_emitted) and tool_name == "ask_more_info":
                             _print_worked_for_summary_line(
@@ -2813,9 +2547,8 @@ def run_agent_loop(agent: Any):
                         next_input = (
                             f"[Original user request]\n{original_user_task}\n\n"
                             f"[User supplement]\n{supplement_text}\n\n"
-                            + "Decide whether this supplement is related to the original request:\n"
-                            "- If completely unrelated: call `task_changed` with `new_task` set to the distilled new request and `reason` set to why.\n"
-                            "- If related: continue with standard tools; you may call one or more tools at once. If information is still insufficient, call `ask_more_info` again."
+                            "Continue handling the original request together with this supplement using standard tools; "
+                            "you may call one or more tools at once. If information is still insufficient, call `ask_more_info` again."
                         )
                         continue_after_batch = True
                         break
@@ -2861,18 +2594,18 @@ def run_agent_loop(agent: Any):
                 post_status_rule = ""
                 if last_tool_name in ("mcp_status", "mcp_status_refresh"):
                     post_status_rule = (
-                        "You just ran an MCP status query tool. The next step must first render the complete status report from the previous tool result's `status` fields, "
-                        "using the fixed template. Do not call `done` in that step. After the status report is visible, call `done` in the following step."
+                        "You just ran an MCP status query tool. The next assistant message must render the complete status report from the previous tool result's `status` fields "
+                        "using the fixed template, and then finish without further tool calls."
                     )
                 elif last_tool_name == "mcp_server_info":
                     post_status_rule = (
-                        "You just ran `mcp_server_info`. The next step must first render the server details report from the previous tool result's `info`/`status` fields, "
-                        "using the fixed template. Do not call `done` in that step."
+                        "You just ran `mcp_server_info`. The next assistant message must render the server details report from the previous tool result's `info`/`status` fields "
+                        "using the fixed template. "
                         "After the report is visible, decide from [Original user request]: "
-                        "if it only asks to query/show that MCP server, the next step must call `done`; "
-                        "if it contains other unfinished goals, continue with the relevant next tool call."
+                        "if it only asks to query/show that MCP server, finish without further tool calls; "
+                        "if it contains other unfinished goals, continue with the relevant next tool call. "
                         "Query/show requests should not create files or run shell by default; "
-                        "create files only when the user explicitly asks to export/save/write a file."
+                        "create files only when the user explicitly asks to export/save/write a file. "
                         "Do not call unrelated tools such as mcp_status/mcp_status_refresh or shell just to pad steps."
                     )
                 post_result_synthesis_rule = self._build_post_result_synthesis_rule(
@@ -2884,9 +2617,9 @@ def run_agent_loop(agent: Any):
                     f"[Original user request]\n{original_user_task}\n\n"
                     f"{step_progress}\n\n"
                     f"[Previous batch tool results (compact)]\n{self._compact_result_for_next_input(result_for_next_input)}\n\n"
-                    + "Continue with standard tools; you may call one or more tools at once. "
-                    "When the task is fully complete, call `done` directly (if files changed this turn, `args.reviewed_files` must cover all modified files). "
-                    "If the previous batch result already satisfies the original request, the next message must call `done` directly."
+                    + "Continue with standard tools when more tool work is needed; you may call one or more tools at once. "
+                    "When no further tool action is required, reply in natural language with no tool_calls and the host will return to the command prompt. "
+                    "If the previous batch result already satisfies the original request, finish in the next assistant message with a natural-language reply only."
                     + (f"\n{post_status_rule}" if post_status_rule else "")
                     + (f"\n{post_result_synthesis_rule}" if post_result_synthesis_rule else "")
                 )
@@ -2948,8 +2681,7 @@ def run_agent_loop(agent: Any):
                     self, pending_user_task, already_recorded=user_message_recorded
                 )
                 self._force_current_input_as_requirement_once = True
-                if current_task_id:
-                    self._close_chat_task(current_task_id, "cancelled")
+                self._mark_cancelled_unanswered_user_message()
                 _refresh_context_usage_after_task_boundary(
                     self,
                     user_input_hint=str(pending_user_task or ""),
