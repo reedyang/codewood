@@ -2,8 +2,13 @@ from __future__ import annotations
 
 from typing import Any, Dict, Optional
 
+from ...tools.plan import UpdatePlanTool
+
 
 def dispatch_core_tool(agent: Any, action: str, params: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    if action == "update_plan":
+        return UpdatePlanTool.apply(agent, params if isinstance(params, dict) else {})
+
     if action == "ask_more_info":
         question = str(params.get("question") or "").strip() or "Please provide more details to continue."
         expected = params.get("expected_fields")

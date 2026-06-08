@@ -31,6 +31,7 @@ from ..core.assistant_output_highlighter import (
 from ..core.logging.app_logging import get_logger
 from ..controllers.builtin_command_router import dispatch_builtin_command
 from ..tooling.handlers.mcp_handlers import MCP_MANAGEMENT_GATED_TOOLS
+from ..tooling.handlers.memory_handlers import MEMORY_TOOLS
 from ..core.console_utils import (
     _ansi_bold,
     _ansi_gray,
@@ -1947,20 +1948,38 @@ def run_agent_loop(agent: Any):
                     "- If the user asks for information/details about one specific MCP server, the first query tool must be `mcp_server_info`.\n"
                     "- `mcp_status` / `mcp_status_refresh` are only for global MCP status overview and must not replace details for a specific server.\n\n"
                 )
+            memory_runtime_enabled = bool(getattr(self, "memory_enabled", True))
+            base_rules: List[str] = [
+                "For tasks that require two or more steps, briefly state what will be done, then list Step 1..N with status (pending/in_progress/completed/failed).",
+                "If a tool is needed, the same assistant message must include both content=visible plan/status and tool_calls=standard API tool-call field. Do not split the plan and tool invocation into separate messages or turns.",
+                "Never output or serialize `tool_calls`, `content/tool_calls` message objects, tool JSON/YAML, XML/tags, markdown tool-call code blocks, or any pseudo tool-call format in content.",
+                "For multi-step tool tasks, the first turn must not contain only tool_calls without a visible task summary and step plan; it must also not contain only a plan without the required standard API tool_calls.",
+                "When no further tool is needed and the user request can be answered, finish by replying in natural language with no tool_calls; the host returns to the command prompt automatically.",
+            ]
+            if memory_runtime_enabled:
+                base_rules.append(
+                    "If the task needs a natural-language reference resolved to a stable identifier or mapping, read experiential memory first; if still insufficient, use `memory_search` before search, shell, or request_skill_prompt. Do not guess identifiers before checking memory."
+                )
+            base_rules.append(
+                "If any network search/fetch/online query/tool/script/skill was used, before finishing output a search-results summary with key facts, source highlights, and relevance to the user question. Do not finish directly after a search call."
+            )
+            numbered_rules = "".join(
+                f"{idx + 1}) {rule}\n" for idx, rule in enumerate(base_rules)
+            )
+            memory_rules_block = ""
+            if memory_runtime_enabled:
+                memory_rules_block = (
+                    "[Experiential memory `memory_*` rules]\n"
+                    "- `memory_search`: if injected experiential memory already contains enough information, do not call it merely for process. If the task depends on an entity identifier or alias mapping that may exist only in memory and no reliable value is visible, call `memory_search` before downstream tools; do not invent identifiers.\n"
+                    "- `memory_add`: use it when the user explicitly asks to remember something or use a preference in the future and it is personal experiential information rather than documentation. If you believe the user's statement is clearly wrong, you may record your judgment in `system_note` according to tool rules.\n"
+                )
             task_uses_standard_openai_tools = bool(self._use_standard_openai_tools_call())
             first_round_contract = (
                 "\n\n[First-turn hard requirements]\n"
-                "1) For tasks that require two or more steps, briefly state what will be done, then list Step 1..N with status (pending/in_progress/completed/failed).\n"
-                "2) If a tool is needed, the same assistant message must include both content=visible plan/status and tool_calls=standard API tool-call field. Do not split the plan and tool invocation into separate messages or turns.\n"
-                "3) Never output or serialize `tool_calls`, `content/tool_calls` message objects, tool JSON/YAML, XML/tags, markdown tool-call code blocks, or any pseudo tool-call format in content.\n"
-                "4) For multi-step tool tasks, the first turn must not contain only tool_calls without a visible task summary and step plan; it must also not contain only a plan without the required standard API tool_calls.\n"
-                "5) When no further tool is needed and the user request can be answered, finish by replying in natural language with no tool_calls; the host returns to the command prompt automatically.\n"
-                "6) If the task needs a natural-language reference resolved to a stable identifier or mapping, read experiential memory first; if still insufficient, use `memory_search` before search, shell, or request_skill_prompt. Do not guess identifiers before checking memory.\n"
-                "7) If any network search/fetch/online query/tool/script/skill was used, before finishing output a search-results summary with key facts, source highlights, and relevance to the user question. Do not finish directly after a search call.\n\n"
+                + numbered_rules
+                + "\n"
                 + mcp_tool_selection_constraint
-                + "[Experiential memory `memory_*` rules]\n"
-                "- `memory_search`: if injected experiential memory already contains enough information, do not call it merely for process. If the task depends on an entity identifier or alias mapping that may exist only in memory and no reliable value is visible, call `memory_search` before downstream tools; do not invent identifiers.\n"
-                "- `memory_add`: use it when the user explicitly asks to remember something or use a preference in the future and it is personal experiential information rather than documentation. If you believe the user's statement is clearly wrong, you may record your judgment in `system_note` according to tool rules.\n"
+                + memory_rules_block
             )
             if not task_uses_standard_openai_tools:
                 first_round_contract = (
@@ -2135,6 +2154,15 @@ def run_agent_loop(agent: Any):
                                     ((item or {}).get("function", {}) or {}).get("name", "")
                                 ).strip()
                                 not in MCP_MANAGEMENT_GATED_TOOLS
+                            ]
+                        if not bool(getattr(self, "memory_enabled", True)):
+                            standard_tool_schemas = [
+                                item
+                                for item in standard_tool_schemas
+                                if str(
+                                    ((item or {}).get("function", {}) or {}).get("name", "")
+                                ).strip()
+                                not in MEMORY_TOOLS
                             ]
                     ai_result = self.call_ai(
                         next_input,

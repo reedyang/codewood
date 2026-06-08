@@ -9,6 +9,7 @@ from ..config.app_info import get_app_config_dirname
 from ..core.localization import DEFAULT_DISPLAY_LANGUAGE, get_display_language, translate
 from ..core.config.skills_loader import _list_bundled_script_paths
 from ..tooling.handlers.mcp_handlers import MCP_MANAGEMENT_GATED_TOOLS
+from ..tooling.handlers.memory_handlers import MEMORY_TOOLS
 
 
 def _t(language: Any, key: str, **kwargs: Any) -> str:
@@ -249,19 +250,11 @@ def load_tools_spec_from_jsonc(agent: Any) -> List[Dict[str, Any]]:
         specs = [x for x in parsed if isinstance(x, dict)]
 
         if not bool(getattr(agent, "mcp_tools_enabled", False)):
-            disabled_mcp_tools = {
-                "mcp_server_info",
-                "mcp_disable_tools",
-                "mcp_enable_tools",
-                "mcp_list_disabled_tools",
-                "mcp_sampling_create_message",
-                "mcp_completion_complete",
-            }
             specs = [
                 x
                 for x in specs
                 if str((x.get("function", {}) or {}).get("name", "")).strip()
-                not in disabled_mcp_tools
+                not in MCP_MANAGEMENT_GATED_TOOLS
             ]
 
         return specs
@@ -549,6 +542,20 @@ def build_tools_prompt_append(agent: Any) -> str:
         flags=re.IGNORECASE,
     ).strip()
 
+    mcp_tools_enabled = bool(getattr(agent, "mcp_tools_enabled", False))
+    if mcp_tools_enabled:
+        # Append the gated MCP-management section only when those tools are actually exposed.
+        side_template = str(getattr(agent, "tools_prompt_mcp_management_template", "") or "").strip()
+        if side_template:
+            template = (template + "\n\n" + side_template).strip()
+
+    memory_enabled = bool(getattr(agent, "memory_enabled", True))
+    if memory_enabled:
+        # Append the gated experiential-memory section only when memory tools are actually exposed.
+        memory_side = str(getattr(agent, "tools_prompt_memory_template", "") or "").strip()
+        if memory_side:
+            template = (template + "\n\n" + memory_side).strip()
+
     lines: List[str] = [
         template,
         "",
@@ -567,13 +574,14 @@ def build_tools_prompt_append(agent: Any) -> str:
             2,
             "For software development tasks (debugging, implementation, refactoring, tests, source browsing, or change-impact analysis), use `project_context_search` as the first retrieval step before shell search or file reads. If the index is empty or stale, refresh it and retry once before falling back.",
         )
-    mcp_tools_enabled = bool(getattr(agent, "mcp_tools_enabled", False))
     for t in (agent.tool_specs or []):
         fn = (t or {}).get("function", {})
         name = str(fn.get("name") or "").strip()
         if not name:
             continue
         if name in MCP_MANAGEMENT_GATED_TOOLS and not mcp_tools_enabled:
+            continue
+        if name in MEMORY_TOOLS and not memory_enabled:
             continue
         if name == "project_context_search" and not agent._project_context_tool_allowed():
             continue
@@ -639,6 +647,42 @@ def load_tools_prompt_template() -> str:
     except Exception as e:
         print(_t(DEFAULT_DISPLAY_LANGUAGE, "prompt_composer.tools_prompt_load_failed", error=e))
         return "## Tool Catalog (prompt-injected)"
+
+
+def load_tools_prompt_mcp_management_template() -> str:
+    """Load the optional MCP-management prompt section.
+
+    This block describes the `mcp_server_info` selection boundaries and
+    rendering template. It is appended to the tools prompt only when
+    `mcp_tools_enabled` is true; otherwise the gated tools are filtered
+    out of the catalog and this section must not be injected.
+    """
+    path = _src_root() / "prompts" / "tools_prompt_mcp_management.md"
+    try:
+        return path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return ""
+    except Exception as e:
+        print(_t(DEFAULT_DISPLAY_LANGUAGE, "prompt_composer.tools_prompt_load_failed", error=e))
+        return ""
+
+
+def load_tools_prompt_memory_template() -> str:
+    """Load the optional experiential-memory prompt section.
+
+    This block describes how to use the `memory_*` tools. It is appended to
+    the tools prompt only when `memory_enabled` is true; otherwise the
+    memory tools are filtered out of the catalog and this section must
+    not be injected.
+    """
+    path = _src_root() / "prompts" / "tools_prompt_memory.md"
+    try:
+        return path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return ""
+    except Exception as e:
+        print(_t(DEFAULT_DISPLAY_LANGUAGE, "prompt_composer.tools_prompt_load_failed", error=e))
+        return ""
 
 
 def build_local_skill_context_pack(target: Any) -> str:

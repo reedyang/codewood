@@ -270,6 +270,8 @@ def setup_prompt_and_mcp(agent: Any) -> None:
     agent.system_prompt = agent._compose_system_prompt_snapshot(include_tools=False)
     agent.tool_specs = agent._load_tools_spec_from_jsonc()
     agent.tools_prompt_template = agent._load_tools_prompt_template()
+    agent.tools_prompt_mcp_management_template = agent._load_tools_prompt_mcp_management_template()
+    agent.tools_prompt_memory_template = agent._load_tools_prompt_memory_template()
 
 
 def setup_skills(agent: Any, builtin_skills_dir: Optional[str]) -> None:

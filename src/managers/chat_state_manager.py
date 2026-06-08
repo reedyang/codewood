@@ -8,6 +8,38 @@ from typing import Any, Dict, List, Optional
 
 CHAT_STATE_VERSION = 1
 
+_PLAN_STATUSES = ("pending", "in_progress", "completed")
+_PLAN_MAX_ITEMS = 32
+_PLAN_MAX_STEP_CHARS = 200
+
+
+def _normalize_plan_items(raw_plan: Any) -> List[Dict[str, str]]:
+    """Best-effort plan normalization used when loading or syncing chat state.
+
+    Invalid entries are dropped instead of raising so a corrupted record
+    cannot brick the whole chat history. The `update_plan` tool path
+    performs strict validation before reaching this function.
+    """
+    if not isinstance(raw_plan, list):
+        return []
+    out: List[Dict[str, str]] = []
+    for entry in raw_plan:
+        if not isinstance(entry, dict):
+            continue
+        step_text = str(entry.get("step") or "").strip()
+        if not step_text:
+            continue
+        step_text = " ".join(step_text.split())
+        if len(step_text) > _PLAN_MAX_STEP_CHARS:
+            step_text = step_text[:_PLAN_MAX_STEP_CHARS].rstrip()
+        status = str(entry.get("status") or "").strip().lower()
+        if status not in _PLAN_STATUSES:
+            continue
+        out.append({"step": step_text, "status": status})
+        if len(out) >= _PLAN_MAX_ITEMS:
+            break
+    return out
+
 
 class ChatStateManager:
     """Encapsulates chat state persistence and active-chat switching logic."""
@@ -71,6 +103,9 @@ class ChatStateManager:
             "model_provider": provider,
             "model_name": model_name,
             "messages": [],
+            "plan": [],
+            "plan_explanation": "",
+            "plan_updated_at": "",
             "context_usage_percent": usage_pct,
             "context_input_tokens": usage_tokens,
             "context_window": usage_window,
@@ -124,6 +159,10 @@ class ChatStateManager:
                 raise ValueError("message item must be object")
             messages.append(self._normalize_message(item))
 
+        plan_items = _normalize_plan_items(raw.get("plan"))
+        plan_explanation = str(raw.get("plan_explanation") or "").strip()
+        plan_updated_at = str(raw.get("plan_updated_at") or "").strip()
+
         return {
             "id": cid,
             "name": name,
@@ -133,6 +172,9 @@ class ChatStateManager:
             "model_provider": str(raw.get("model_provider") or "").strip(),
             "model_name": str(raw.get("model_name") or "").strip(),
             "messages": messages,
+            "plan": plan_items,
+            "plan_explanation": plan_explanation,
+            "plan_updated_at": plan_updated_at,
             "context_usage_percent": int(raw.get("context_usage_percent") or 0),
             "context_input_tokens": int(raw.get("context_input_tokens") or 0),
             "context_window": int(raw.get("context_window") or 0),
@@ -407,11 +449,49 @@ class ChatStateManager:
             if not chat:
                 return False
             chat["messages"] = []
+            chat["plan"] = []
+            chat["plan_explanation"] = ""
+            chat["plan_updated_at"] = ""
             chat["context_usage_percent"] = 0
             chat["context_input_tokens"] = 0
             chat["context_window"] = int(
                 getattr(self._agent, "_last_context_window", 0) or 0
             )
+            chat["updated_at"] = self._now_text()
+            self.save_chat_state()
+            return True
+
+    def active_chat_plan(self) -> Optional[Dict[str, Any]]:
+        """Return a copy of the active chat's plan record, or None if no active chat."""
+        with self._agent._chat_state_lock:
+            chat = self.find_chat_by_id(self._agent.active_chat_id)
+            if not chat:
+                return None
+            return {
+                "plan": [dict(item) for item in (chat.get("plan") or []) if isinstance(item, dict)],
+                "explanation": str(chat.get("plan_explanation") or ""),
+                "updated_at": str(chat.get("plan_updated_at") or ""),
+            }
+
+    def persist_active_chat_plan(
+        self,
+        plan_items: List[Dict[str, str]],
+        explanation: str = "",
+    ) -> bool:
+        """Replace the active chat's plan with the given items and persist.
+
+        Returns True if a chat was found and updated. The caller is expected to
+        provide already-validated items (e.g. via UpdatePlanTool); we still
+        re-normalize defensively before saving.
+        """
+        normalized = _normalize_plan_items(plan_items)
+        with self._agent._chat_state_lock:
+            chat = self.find_chat_by_id(self._agent.active_chat_id)
+            if not chat:
+                return False
+            chat["plan"] = normalized
+            chat["plan_explanation"] = str(explanation or "").strip()
+            chat["plan_updated_at"] = self._now_text()
             chat["updated_at"] = self._now_text()
             self.save_chat_state()
             return True
