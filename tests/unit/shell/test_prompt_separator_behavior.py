@@ -566,6 +566,30 @@ class PromptSeparatorBehaviorTests(unittest.TestCase):
         self.assertTrue(agent.conversation_history[0].get("exclude_from_model_context"))
         self.assertTrue(agent.conversation_history[1].get("exclude_from_model_context"))
 
+    def test_record_internal_slash_execution_history_honors_one_shot_suppression(self):
+        """When a handler pre-records the slash entry (e.g. ``/language`` so
+        the chat-history reload it triggers includes the just-issued
+        command), the runtime loop's finally-block invocation must skip the
+        duplicate. The suppression flag is one-shot, so the very next call
+        records normally."""
+        agent = self._build_agent()
+        agent._suppress_next_internal_slash_history_record_once = True
+        agent._record_internal_slash_execution_history(
+            raw_user_command="/language zh-CN",
+            output_text="ignored",
+        )
+        self.assertEqual(agent.conversation_history, [])
+        # Flag must have been consumed.
+        self.assertFalse(
+            getattr(agent, "_suppress_next_internal_slash_history_record_once", False)
+        )
+        # Subsequent calls record again as usual.
+        agent._record_internal_slash_execution_history(
+            raw_user_command="/chat list",
+            output_text="listed\n",
+        )
+        self.assertEqual(len(agent.conversation_history), 2)
+
     def test_auto_chat_name_ignores_internal_slash_user_history(self):
         agent = self._build_agent()
         agent.active_chat_name = "New Chat"

@@ -684,6 +684,126 @@ class AiOutputDisplayTests(unittest.TestCase):
                     _startup_text_display_width(box_rows[0]),
                 )
 
+    def test_startup_overview_label_values_share_left_column_in_chinese(self):
+        """The values for ``模型``/``工作区``/``目录`` (and their English
+        counterparts) must all begin at the same visual column inside the
+        startup box, so the three lines look like a tidy two-column layout
+        rather than a ragged left edge."""
+        import re as _re
+        import unicodedata as _ud
+        from src.runtime.runtime_loop import _print_startup_overview
+
+        class _FakeStdout:
+            encoding = "utf-8"
+
+            def __init__(self):
+                self.writes = []
+
+            def write(self, text):
+                self.writes.append(str(text))
+                return len(str(text))
+
+            def flush(self):
+                return None
+
+            def isatty(self):
+                return True
+
+        class _Agent:
+            model_name = "Gemma-4-31B"
+            workspace_name = "Test"
+            workspace_root = r"D:\tmp\test"
+            _startup_chat_state_warning = ""
+
+        def _strip_ansi(text):
+            return _re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", text)
+
+        def _visible_width(text):
+            width = 0
+            for ch in text:
+                if _ud.combining(ch):
+                    continue
+                if _ud.category(ch) in ("Cc", "Cf"):
+                    continue
+                width += 2 if _ud.east_asian_width(ch) in ("W", "F") else 1
+            return width
+
+        # For each language, locate the rows whose value we want to align and
+        # measure the visible width of everything before the value sentinel.
+        cases = [
+            (
+                "zh-CN",
+                [
+                    ("模型：", "Gemma-4-31B"),
+                    ("工作区：", "Test"),
+                    ("目录：", r"D:\tmp\test"),
+                ],
+            ),
+            (
+                "en",
+                [
+                    ("model:", "Gemma-4-31B"),
+                    ("workspace:", "Test"),
+                    ("directory:", r"D:\tmp\test"),
+                ],
+            ),
+        ]
+        for lang, label_value_pairs in cases:
+            with self.subTest(language=lang):
+                fake_stdout = _FakeStdout()
+                stream = self.agent._build_internal_slash_output_stream(
+                    fake_stdout, terminal_columns=80
+                )
+                with (
+                    patch(
+                        "src.agent.shutil.get_terminal_size",
+                        return_value=types.SimpleNamespace(columns=80),
+                    ),
+                    patch("src.runtime.runtime_loop.sys.stdout", stream),
+                    patch(
+                        "src.runtime.runtime_loop.get_app_name",
+                        return_value=get_app_name(),
+                    ),
+                    patch(
+                        "src.runtime.runtime_loop.get_app_display_version",
+                        return_value="v0.1.0",
+                    ),
+                    patch(
+                        "src.runtime.runtime_loop.get_random_startup_tip_entry",
+                        return_value={"text": "", "highlights": []},
+                    ),
+                    patch(
+                        "src.core.localization.get_display_language",
+                        return_value=lang,
+                    ),
+                ):
+                    _print_startup_overview(_Agent())
+
+                rendered = "".join(fake_stdout.writes)
+                stripped_lines = [_strip_ansi(line) for line in rendered.splitlines()]
+                value_columns = []
+                for label, value in label_value_pairs:
+                    match_line = next(
+                        (
+                            ln
+                            for ln in stripped_lines
+                            if label in ln and value in ln
+                        ),
+                        None,
+                    )
+                    self.assertIsNotNone(
+                        match_line,
+                        f"{lang}: expected to find label {label!r} with value {value!r}",
+                    )
+                    value_idx = match_line.index(value)
+                    value_columns.append(_visible_width(match_line[:value_idx]))
+                self.assertEqual(
+                    len(set(value_columns)),
+                    1,
+                    f"{lang}: values must share one left column but got "
+                    f"columns={value_columns} for {label_value_pairs!r}",
+                )
+
     def test_slash_reload_full_width_lines_reserve_output_indent(self):
         class _FakeStdout:
             encoding = "utf-8"

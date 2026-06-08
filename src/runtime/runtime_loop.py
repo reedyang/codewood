@@ -1279,17 +1279,40 @@ def _print_startup_overview(agent: Any) -> None:
     version = get_app_display_version()
 
     line1 = f">_ {app_name} ({version})"
+    # Right-pad the three label prefixes so all values (model/workspace/
+    # directory) start at the same visual column. The English locale already
+    # carries trailing spaces inside the translation, but CJK locales like
+    # ``zh-CN`` only carry the bare label + fullwidth colon and therefore
+    # have different prefix widths (e.g. ``模型：`` = 6 cells vs. ``工作区：``
+    # = 8). Padding here keeps the renderer locale-agnostic.
+    prefix_model_raw = t("startup.model_prefix")
+    prefix_workspace_raw = t("startup.workspace_prefix")
+    prefix_directory_raw = t("startup.directory_prefix")
+    prefix_target_width = max(
+        _startup_text_display_width(prefix_model_raw),
+        _startup_text_display_width(prefix_workspace_raw),
+        _startup_text_display_width(prefix_directory_raw),
+    )
+    prefix_model = prefix_model_raw + _pad_startup_text(
+        prefix_model_raw, prefix_target_width
+    )
+    prefix_workspace = prefix_workspace_raw + _pad_startup_text(
+        prefix_workspace_raw, prefix_target_width
+    )
+    prefix_directory = prefix_directory_raw + _pad_startup_text(
+        prefix_directory_raw, prefix_target_width
+    )
     # Build line2 from the same visible glyphs that the colorized renderer
     # below emits ("/model" + model_change_suffix), so that the plain-text
     # width used for pad/truncate calculations matches the actual on-screen
     # width. Using the longer ``model_change_hint`` here would over-pad the
     # plain measurement and shift the right border for line2 only.
     line2 = (
-        f"{t('startup.model_prefix')}{model_name}  /model"
+        f"{prefix_model}{model_name}  /model"
         f"{t('startup.model_change_suffix')}"
     )
-    line3 = f"{t('startup.workspace_prefix')}{workspace_name}"
-    line4 = f"{t('startup.directory_prefix')}{workspace_dir}"
+    line3 = f"{prefix_workspace}{workspace_name}"
+    line4 = f"{prefix_directory}{workspace_dir}"
 
     term_cols = _startup_terminal_columns(default=80)
     prefix_width = _startup_output_prefix_width()
@@ -1324,8 +1347,8 @@ def _print_startup_overview(agent: Any) -> None:
         line1_rendered = line1_fit
     print(_ansi_gray("│ ") + line1_rendered + _ansi_gray(_pad_startup_text(line1_fit, content_width)) + _ansi_gray("│"))
     print(_ansi_gray(mid2))
-    # model line
-    prefix_model = t("startup.model_prefix")
+    # model line (uses the padded prefix computed above so all values share
+    # one visual column).
     if line2_fit == line2:
         line2_rendered = (
             _ansi_gray(prefix_model)
@@ -1337,15 +1360,13 @@ def _print_startup_overview(agent: Any) -> None:
     else:
         line2_rendered = line2_fit
     print(_ansi_gray("│ ") + line2_rendered + _ansi_gray(_pad_startup_text(line2_fit, content_width)) + _ansi_gray("│"))
-    # workspace line
-    prefix_workspace = t("startup.workspace_prefix")
+    # workspace line (padded prefix)
     if line3_fit == line3:
         line3_rendered = _ansi_gray(prefix_workspace) + workspace_name
     else:
         line3_rendered = line3_fit
     print(_ansi_gray("│ ") + line3_rendered + _ansi_gray(_pad_startup_text(line3_fit, content_width)) + _ansi_gray("│"))
-    # directory line
-    prefix_directory = t("startup.directory_prefix")
+    # directory line (padded prefix)
     if line4_fit == line4:
         line4_rendered = _ansi_gray(prefix_directory) + workspace_dir
     else:

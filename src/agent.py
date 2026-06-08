@@ -2363,6 +2363,13 @@ class Agent:
         output_text: str,
     ) -> None:
         raw_cmd = str(raw_user_command or "").strip()
+        # One-shot suppression: when a slash handler has already recorded the
+        # entry itself (e.g. ``/language`` needs to record before triggering
+        # a full chat-history reload), the runtime loop's ``finally`` call
+        # would otherwise duplicate the entry.
+        if bool(getattr(self, "_suppress_next_internal_slash_history_record_once", False)):
+            self._suppress_next_internal_slash_history_record_once = False
+            return
         if not self._should_record_internal_slash_execution_history(raw_cmd):
             return
         user_content = self._build_internal_slash_user_history_content(raw_cmd)
