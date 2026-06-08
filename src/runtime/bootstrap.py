@@ -7,6 +7,7 @@ from ..config.app_info import get_app_config_dirname, get_app_name, get_app_slug
 from ..core.logging.app_logging import setup_app_logging
 from ..core.config.config_env import resolve_string_values_in_data
 from ..core.config.config_jsonc import CONFIG_JSONC_FILENAME, load_config_jsonc
+from ..core.localization import translate
 from ..core.state.history_manager import HistoryManager
 from ..integrations.mcp import McpManager
 from ..policy.path_policy import PathPolicy
@@ -188,7 +189,14 @@ def setup_runtime_preferences(agent: Any) -> None:
                 # Keep backward compatibility for explicit positive values.
                 agent.max_tool_rounds = parsed_rounds if parsed_rounds and parsed_rounds > 0 else None
     except Exception as e:
-        print(f"⚠️ Failed to read {CONFIG_JSONC_FILENAME} (execution policy and related settings will use defaults): {e}")
+        print(
+            translate(
+                "warning.config_read_failed_for_policy",
+                getattr(agent, "display_language", "en") or "en",
+                config_file=CONFIG_JSONC_FILENAME,
+                error=e,
+            )
+        )
 
 
 def setup_policy_caches(agent: Any) -> None:
@@ -333,9 +341,20 @@ def setup_input_handler(
                 language_provider=lambda: getattr(agent, "display_language", None),
             )
         else:
-            print("⚠️ Unknown input handler type")
+            print(
+                translate(
+                    "warning.input_handler_unknown_type",
+                    getattr(agent, "display_language", "en") or "en",
+                )
+            )
     except Exception as e:
-        print(f"⚠️ Failed to initialize the input handler: {e}")
+        print(
+            translate(
+                "warning.input_handler_init_failed",
+                getattr(agent, "display_language", "en") or "en",
+                error=e,
+            )
+        )
 
 
 def setup_runtime_services(agent: Any) -> None:

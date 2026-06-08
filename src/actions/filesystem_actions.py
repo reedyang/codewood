@@ -2,6 +2,8 @@
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from ..core.localization import translate
+
 
 def _normalize_apply_patch_text(raw_patch: str, file_path: str) -> tuple[str, List[str]]:
     patch_text = str(raw_patch or "")
@@ -235,8 +237,12 @@ def action_apply_unified_patch(agent: Any, file_path: str, patch: str, confirmed
         if had_trailing_newline and len(result_lines) > 0:
             new_text += newline
         if preview_lines and not skip_preview_and_confirm:
-            print("Change preview (old ││ new):")
-            print("   Markers: '=' unchanged, '-' removed, '+' added")
+            try:
+                lang = agent._ui_language()
+            except AttributeError:
+                lang = getattr(agent, "display_language", None) or "en"
+            print(translate("change_preview.header", lang))
+            print(translate("change_preview.markers", lang))
             for ln in preview_lines:
                 print(ln)
         for warn in patch_warnings:

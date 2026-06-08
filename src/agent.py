@@ -74,6 +74,7 @@ from .core.console_utils import (
     _ansi_rgb,
 )
 from .core.console_title import restore_app_console_title
+from .core.localization import translate
 from .controllers.builtin_command_router import dispatch_builtin_command
 from .controllers.workspace_command_controller import (
     handle_workspace_builtin_command,
@@ -1344,8 +1345,6 @@ class Agent:
             elapsed = f"{seconds}s"
         else:
             elapsed = f"{minutes}m {seconds}s"
-        from .core.localization import translate
-
         head = f"─ {translate('status.worked_for', self._ui_language())} {elapsed} "
         width = max(20, int(terminal_width or self._terminal_columns_for_line_estimate()))
         head_width = self._feedback_text_display_width(head)
@@ -1710,8 +1709,6 @@ class Agent:
         args: Dict[str, Any],
         failed: bool = False,
     ) -> str:
-        from .core.localization import translate
-
         summary = self._tool_call_summary(tool_name, args)
         bullet = _ansi_rgb("•", 197, 15, 31) if bool(failed) else _ansi_rgb("•", 19, 161, 14)
         return self._format_wrapped_command_feedback_line(
@@ -2026,8 +2023,6 @@ class Agent:
             pass
 
     def _format_direct_shell_command_feedback_line(self, command: str, failed: bool = False) -> str:
-        from .core.localization import translate
-
         cmd = str(command or "").replace("\r", " ").replace("\n", " ").strip()
         bullet = _ansi_rgb("•", 197, 15, 31) if bool(failed) else _ansi_rgb("•", 19, 161, 14)
         return self._format_wrapped_command_feedback_line(
@@ -3040,8 +3035,6 @@ class Agent:
                 # Keep at most n rows on screen: one notice row + latest n-1 rows.
                 tail_keep = max(0, max_visible_lines - 1)
                 omitted_rows = max(1, omitted_base + max(0, total_rows - tail_keep))
-                from .core.localization import translate
-
                 notice = "  └ " + translate(
                     "output.omitted_lines",
                     self._resolve_ui_language(),
@@ -4302,25 +4295,26 @@ class Agent:
             self._skills_routing_prefix = build_skills_routing_prefix(self.skills)
             self._refresh_input_handler_skill_completions()
         except Exception as e:
-            print(f"⚠️ Skill hot reload failed, continuing with the currently loaded version: {e}")
+            print(translate("warning.skill_hot_reload_failed", self._ui_language(), error=e))
 
     def _load_mcp_config(self) -> Dict[str, Any]:
         """Load MCP configuration from <config_dir>/mcp.jsonc."""
         mcp_path = self.config_dir / "mcp.jsonc"
         if not mcp_path.is_file():
             return {"mcpServers": {}}
+        lang = self._ui_language()
         try:
             data = load_config_jsonc(mcp_path)
             if not isinstance(data, dict):
-                print("⚠️ Invalid mcp.jsonc format: root object must be a JSON object")
+                print(translate("warning.mcp_invalid_root", lang))
                 return {"mcpServers": {}}
             servers = data.get("mcpServers", {})
             if not isinstance(servers, dict):
-                print("⚠️ Invalid mcp.jsonc format: mcpServers must be an object")
+                print(translate("warning.mcp_invalid_servers", lang))
                 return {"mcpServers": {}}
             return {"mcpServers": servers}
         except Exception as e:
-            print(f"⚠️ Failed to read mcp.jsonc: {e}")
+            print(translate("warning.mcp_read_failed", lang, error=e))
             return {"mcpServers": {}}
 
     def _get_mcp_config_file_sig(self) -> Tuple[bool, int, int]:
@@ -4649,7 +4643,7 @@ class Agent:
             save_config_jsonc(cfg_path, cfg_data)
             return True
         except Exception as e:
-            print(f"⚠️ Failed to save execution policy to config: {e}")
+            print(translate("warning.execution_policy_save_failed", self._ui_language(), error=e))
             return False
 
     def _save_memory_enabled_to_config(self) -> bool:
@@ -4666,7 +4660,7 @@ class Agent:
             save_config_jsonc(cfg_path, cfg_data)
             return True
         except Exception as e:
-            print(f"⚠️ Failed to save memory_enabled to config: {e}")
+            print(translate("warning.memory_enabled_save_failed", self._ui_language(), error=e))
             return False
 
     def _enable_freedom(self) -> Dict[str, Any]:
@@ -4706,64 +4700,72 @@ class Agent:
         }
 
     def _print_execution_policy_details(self) -> None:
-        _pm = "`/execution-policy moderate`"
-        _pc = "`/execution-policy confirmation`"
-        _pu = "`/execution-policy unlimited`"
+        lang = self._ui_language()
+        moderate_cmd = "`/execution-policy moderate`"
+        confirmation_cmd = "`/execution-policy confirmation`"
+        unlimited_cmd = "`/execution-policy unlimited`"
         pol = str(getattr(self, "execution_policy", "confirmation")).lower()
-        print(f"Execution policy: {pol}")
+        print(translate("execution_policy.show.current", lang, policy=pol))
         if pol == "unlimited":
             print(
                 _ansi_red(
-                    "  All operations execute directly without safety checks or confirmations."
-                    f"Type {_pm} to switch to moderate; type {_pc} to switch back to confirmation."
+                    translate(
+                        "execution_policy.show.unlimited_desc",
+                        lang,
+                        moderate_cmd=moderate_cmd,
+                        confirmation_cmd=confirmation_cmd,
+                    )
                 )
             )
-            print(_ansi_red("  Warning: high-risk operations will also execute directly. Use only in fully controlled environments."))
+            print(_ansi_red(translate("execution_policy.show.unlimited_warning", lang)))
         elif pol == "moderate":
             print(
                 _ansi_yellow(
-                    "  Safe operations are evaluated by AI before execution; if judged safe, y/n confirmation is skipped automatically. AI safety judgment may be wrong, so use with caution."
-                    f"Type {_pc} to switch back to confirmation."
+                    translate(
+                        "execution_policy.show.moderate_desc",
+                        lang,
+                        confirmation_cmd=confirmation_cmd,
+                    )
                 )
             )
         else:
             print(
-                "  Operations requiring confirmation will always ask y/n."
-                f"Type {_pm} to switch to moderate; type {_pu} to switch to unlimited."
+                translate(
+                    "execution_policy.show.confirmation_desc",
+                    lang,
+                    moderate_cmd=moderate_cmd,
+                    unlimited_cmd=unlimited_cmd,
+                )
             )
 
     def _print_memory_status_details(self) -> None:
+        lang = self._ui_language()
+        yes = translate("memory_status.value_yes", lang)
+        no = translate("memory_status.value_no", lang)
         enabled = bool(getattr(self, "memory_enabled", True))
         dep = bool(MEMORY_AVAILABLE)
         ready = bool(self._ensure_memory_service())
-        print("Experiential memory status details (internalized lessons/preferences, not a document store):")
-        print(f"  feature_enabled: {'yes' if enabled else 'no'}")
-        print(f"  dependency_ready: {'yes' if dep else 'no'}")
-        print(f"  runtime_ready: {'yes' if ready else 'no'}")
+        print(translate("memory_status.header", lang))
+        print(translate("memory_status.feature_enabled", lang, value=yes if enabled else no))
+        print(translate("memory_status.dependency_ready", lang, value=yes if dep else no))
+        print(translate("memory_status.runtime_ready", lang, value=yes if ready else no))
         if not enabled:
-            print("  Experiential memory is disabled. Use /memory enable to turn it back on.")
+            print(translate("memory_status.disabled_hint", lang))
             return
         if dep and ready:
             try:
                 st = self.memory_service.stats()  # type: ignore[union-attr]
                 if isinstance(st, dict):
-                    print(f"  total_memories: {st.get('total_memories', '-')}")
-                    print(f"  storage_backend: {st.get('storage_backend', '-')}")
-                    print(f"  storage_dir: {st.get('storage_dir', '-')}")
+                    print(translate("memory_status.total_memories", lang, value=st.get("total_memories", "-")))
+                    print(translate("memory_status.storage_backend", lang, value=st.get("storage_backend", "-")))
+                    print(translate("memory_status.storage_dir", lang, value=st.get("storage_dir", "-")))
             except Exception as e:
-                print(f"  stats_error: {e}")
-            print(
-                "  Note: after each natural-language task completes normally, background auto-reflection may run (roughly 45+ seconds apart from the previous trigger); "
-                "entries are written only when the model finds reusable lessons (possibly zero entries). "
-                "You can also use memory_search / memory_add or /memory remember manually."
-            )
+                print(translate("memory_status.stats_error", lang, error=e))
+            print(translate("memory_status.note", lang))
         elif dep and not ready:
-            print(
-                "  Memory module is initializing or failed. "
-                f"Check {get_app_log_filename()} and workspace/memory/ under the config directory."
-            )
+            print(translate("memory_status.initializing", lang, log_file=get_app_log_filename()))
         else:
-            print("  Experiential memory is unavailable (initialization failed); the main program can continue running.")
+            print(translate("memory_status.unavailable", lang))
 
     def _load_freedom_script_review_cache(self) -> None:
         return execution_policy_service.load_freedom_script_review_cache(self)
@@ -4827,15 +4829,17 @@ class Agent:
                     available_models.append(model.get('name', model.get('model', 'unknown')))
                 else:
                     available_models.append(str(model))
+            lang = self._ui_language()
             if model_name not in available_models:
-                print(f"⚠️ Warning: {model_type} '{model_name}' is not in the available model list")
-                print(f"📋 Available models: {available_models}")
+                print(translate("warning.model_not_in_list", lang, model_type=model_type, model_name=model_name))
+                print(translate("warning.model_available_list", lang, models=available_models))
                 if available_models:
-                    print(f"💡 Suggested model: {available_models[0]}")
-                print("💡 Please check model configuration in config.jsonc")
+                    print(translate("warning.model_suggested", lang, model=available_models[0]))
+                print(translate("warning.model_check_config", lang))
         except Exception as e:
-            print(f"⚠️ Error validating {model_type}: {e}")
-            print(f"💡 Please ensure the Ollama service is running")
+            lang = self._ui_language()
+            print(translate("warning.model_validation_error", lang, model_type=model_type, error=e))
+            print(translate("warning.model_ensure_ollama", lang))
 
     def _build_regular_task_messages(self, user_input: str, context: str = "") -> Tuple[List[Dict[str, Any]], bool]:
         return self.session_memory_service.build_regular_task_messages(user_input, context)
@@ -5036,11 +5040,14 @@ class Agent:
             if any(self._is_workspace_skill_path(p) for p in paths):
                 self._reload_skills()
                 print(
-                    f"🔄 Detected changes in workspace/{get_app_config_dirname()}/skills; "
-                    "skills have been auto-reloaded."
+                    translate(
+                        "info.skills_auto_reloaded",
+                        self._ui_language(),
+                        config_dirname=get_app_config_dirname(),
+                    )
                 )
         except Exception as e:
-            print(f"⚠️ Failed to auto-reload skills: {e}")
+            print(translate("warning.skills_auto_reload_failed", self._ui_language(), error=e))
 
     def _append_shell_merge_output_path(
         self,
@@ -5556,7 +5563,7 @@ class Agent:
                 # Do not write to HistoryManager here; let the upper-level run() flow handle it to avoid duplication.
                 return user_input
             except Exception as e:
-                print(f"⚠️ Input handler error; falling back to platform-specific input mode: {e}")
+                print(translate("warning.input_handler_error", self._ui_language(), error=e))
         
         # On Windows, prefer prompt_toolkit for a better interactive input experience.
         if platform.system() == "Windows":
@@ -5635,7 +5642,7 @@ class Agent:
                     raise KeyboardInterrupt
             except Exception as e:
                 # Fall back to standard input if prompt_toolkit fails.
-                print(f"⚠️ prompt_toolkit error; falling back to standard input: {e}")
+                print(translate("warning.prompt_toolkit_error", self._ui_language(), error=e))
                 try:
                     print("")
                     print(status_bar_plain)
@@ -5706,14 +5713,15 @@ class Agent:
                     content[k] = default if default is not None else ""
             return {"action": "accept", "content": content}
 
-        print(f"\n📩 MCP elicitation request from server={server}")
+        lang = self._ui_language()
+        print(translate("elicitation.request_header", lang, server=server))
         if message:
-            print(f"Description: {message}")
+            print(translate("elicitation.description", lang, message=message))
 
         if mode == "url":
             target_url = str(p.get("url", "") or "").strip()
-            print(f"URL: {target_url}")
-            consent = input("Do you agree to continue this URL flow? (y=accept / n=decline / Enter=cancel): ").strip().lower()
+            print(translate("elicitation.url", lang, url=target_url))
+            consent = input(translate("elicitation.consent_url", lang)).strip().lower()
             if consent == "y":
                 return {"action": "accept"}
             if consent == "n":
@@ -5728,7 +5736,7 @@ class Agent:
         required_set = {str(x) for x in required} if isinstance(required, list) else set()
         content: Dict[str, Any] = {}
         if not isinstance(props, dict) or not props:
-            consent = input("No requestedSchema was provided. Accept this request? (y/n): ").strip().lower()
+            consent = input(translate("elicitation.no_schema_consent", lang)).strip().lower()
             return {"action": "accept" if consent == "y" else "decline", "content": content}
 
         for key, meta in props.items():
@@ -5744,12 +5752,12 @@ class Agent:
             if desc:
                 hint_parts.append(desc)
             if k in required_set:
-                hint_parts.append("required")
+                hint_parts.append(translate("elicitation.hint_required", lang))
             if default is not None:
-                hint_parts.append(f"default={default}")
+                hint_parts.append(translate("elicitation.hint_default", lang, value=default))
             hint = f" ({', '.join(hint_parts)})" if hint_parts else ""
             while True:
-                raw = input(f"Please input {label}{hint}: ")
+                raw = input(translate("elicitation.input_prompt", lang, label=label, hint=hint))
                 if raw == "" and default is not None:
                     content[k] = default
                     break
@@ -5760,9 +5768,9 @@ class Agent:
                     content[k] = self._normalize_elicitation_value(raw, s)
                     break
                 except Exception:
-                    print("Invalid input format, please try again.")
+                    print(translate("elicitation.invalid_input", lang))
 
-        submit = input("Submit elicitation data now? (y=accept / n=decline / Enter=cancel): ").strip().lower()
+        submit = input(translate("elicitation.submit_prompt", lang)).strip().lower()
         if submit == "y":
             return {"action": "accept", "content": content}
         if submit == "n":
@@ -5821,7 +5829,7 @@ class Agent:
                 self._reset_work_directory_to_startup_initial()
                 
         except Exception as e:
-            print(f"❌ Execution failed: {e}")
+            print(translate("warning.execution_failed", self._ui_language(), error=e))
             return False
 
 

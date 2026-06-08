@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from ..config.app_info import get_app_config_dirname
+from ..core.localization import translate
 
 
 class WorkspaceStateManager:
@@ -72,7 +73,13 @@ class WorkspaceStateManager:
                 if isinstance(loaded, dict):
                     raw_state = loaded
             except Exception as e:
-                print(f"⚠️ Failed to read workspace registry, falling back to default workspace: {e}")
+                print(
+                    translate(
+                        "warning.workspace_registry_read_failed",
+                        getattr(self._agent, "display_language", "en") or "en",
+                        error=e,
+                    )
+                )
 
         raw_workspaces = raw_state.get("workspaces", {})
         if not isinstance(raw_workspaces, dict):
@@ -133,18 +140,39 @@ class WorkspaceStateManager:
                 f.write("\n")
             os.replace(tmp_path, self._agent.workspace_registry_path)
         except Exception as e:
-            print(f"⚠️ Failed to save workspace registry: {e}")
+            print(
+                translate(
+                    "warning.workspace_registry_save_failed",
+                    getattr(self._agent, "display_language", "en") or "en",
+                    error=e,
+                )
+            )
 
     def ensure_workspace_dirs(self) -> None:
+        lang = getattr(self._agent, "display_language", "en") or "en"
         try:
             self._agent.workspace_config_dir.mkdir(parents=True, exist_ok=True)
         except OSError as e:
-            print(f"⚠️ Failed to create AI workspace directory {self._agent.workspace_config_dir}: {e}")
+            print(
+                translate(
+                    "warning.workspace_config_dir_failed",
+                    lang,
+                    path=self._agent.workspace_config_dir,
+                    error=e,
+                )
+            )
         self._agent.ai_workspace_temp_dir = self._agent.workspace_config_dir / "temp"
         try:
             self._agent.ai_workspace_temp_dir.mkdir(parents=True, exist_ok=True)
         except OSError as e:
-            print(f"⚠️ Failed to create workspace temp directory {self._agent.ai_workspace_temp_dir}: {e}")
+            print(
+                translate(
+                    "warning.workspace_temp_dir_failed",
+                    lang,
+                    path=self._agent.ai_workspace_temp_dir,
+                    error=e,
+                )
+            )
 
     def apply_workspace_entry(self, entry: Dict[str, Any], fallback_dir: Path) -> None:
         workspace_id = str(entry.get("id") or self._default_workspace_id)
