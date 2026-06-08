@@ -1,6 +1,5 @@
 import json
 import os
-import subprocess
 import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -25,93 +24,9 @@ def _src_root() -> Path:
     return Path(__file__).resolve().parent.parent
 
 
-_SYSTEM_FILE_SEARCH_NEARBY_RULE_KEY = "{{SYSTEM_FILE_SEARCH_NEARBY_RULE}}"
-_TOOLS_FILE_SEARCH_NEARBY_RULE_KEY = "{{TOOLS_FILE_SEARCH_NEARBY_RULE}}"
-
-_SYSTEM_FILE_SEARCH_NEARBY_RULE_FALLBACK = (
-    "first run a search such as `Select-String` or `rg`, then read nearby content by line range; do not read the whole file at once; keep each read under 100 lines."
-)
-_SYSTEM_FILE_SEARCH_NEARBY_RULE_RG_ONLY = (
-    "first run `rg`, then read nearby content by line range; do not read the whole file at once; keep each read under 100 lines."
-)
-_TOOLS_FILE_SEARCH_NEARBY_RULE_FALLBACK = (
-    "first locate matches, then read nearby snippets by line range; do not read the whole file at once; keep each read under 100 lines."
-)
-_TOOLS_FILE_SEARCH_NEARBY_RULE_RG_ONLY = (
-    "first use `rg` to locate matches, then read nearby snippets by line range; do not read the whole file at once; keep each read under 100 lines."
-)
 _AGENTS_OVERRIDE_FILENAME = "AGENTS.override.md"
 _AGENTS_FILENAME = "AGENTS.md"
 _AGENTS_APPEND_MAX_BYTES = 32 * 1024
-
-
-def _workspace_bin_dir() -> Path:
-    return _src_root().parent / "bin"
-
-
-def _rg_bin_candidates() -> List[Path]:
-    bin_dir = _workspace_bin_dir()
-    if os.name == "nt":
-        names = ("rg.exe", "rg.cmd", "rg.bat", "rg")
-    else:
-        names = ("rg",)
-    return [bin_dir / n for n in names]
-
-
-def _is_usable_rg_executable(candidate: Path) -> bool:
-    try:
-        if not candidate.exists() or not candidate.is_file():
-            return False
-        if os.name != "nt" and not os.access(str(candidate), os.X_OK):
-            return False
-        proc = subprocess.run(
-            [str(candidate), "--version"],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            check=False,
-            timeout=2.0,
-        )
-        return int(getattr(proc, "returncode", 1)) == 0
-    except KeyboardInterrupt:
-        # Treat interrupts as an unusable probe result so cancel flows can exit cleanly.
-        return False
-    except Exception:
-        return False
-
-
-def _usable_workspace_rg_bin_path() -> str:
-    for candidate in _rg_bin_candidates():
-        if _is_usable_rg_executable(candidate):
-            try:
-                return str(candidate.resolve())
-            except Exception:
-                return str(candidate)
-    return ""
-
-
-def has_usable_workspace_rg_bin() -> bool:
-    return bool(_usable_workspace_rg_bin_path())
-
-
-def _rg_prompt_variables() -> Dict[str, str]:
-    if has_usable_workspace_rg_bin():
-        return {
-            _SYSTEM_FILE_SEARCH_NEARBY_RULE_KEY: _SYSTEM_FILE_SEARCH_NEARBY_RULE_RG_ONLY,
-            _TOOLS_FILE_SEARCH_NEARBY_RULE_KEY: _TOOLS_FILE_SEARCH_NEARBY_RULE_RG_ONLY,
-        }
-    return {
-        _SYSTEM_FILE_SEARCH_NEARBY_RULE_KEY: _SYSTEM_FILE_SEARCH_NEARBY_RULE_FALLBACK,
-        _TOOLS_FILE_SEARCH_NEARBY_RULE_KEY: _TOOLS_FILE_SEARCH_NEARBY_RULE_FALLBACK,
-    }
-
-
-def render_workspace_prompt_variables(prompt_text: str) -> str:
-    text = str(prompt_text or "")
-    if not text:
-        return text
-    for key, value in _rg_prompt_variables().items():
-        text = text.replace(key, value)
-    return text
 
 
 def build_mcp_system_append(agent: Any) -> str:
@@ -507,12 +422,11 @@ def compose_system_prompt_snapshot(agent: Any, include_tools: bool) -> str:
         + build_user_preferences_system_append(agent)
         + build_mcp_system_append(agent)
         + build_runtime_cache_prompt_append(agent, default_workspace_id="default")
-        + build_os_file_ops_prompt_append()
     )
     snapshot = core
     if include_tools:
         snapshot = core + "\n" + build_tools_prompt_append(agent)
-    return render_workspace_prompt_variables(snapshot)
+    return snapshot
 
 
 def build_runtime_cache_prompt_append(agent: Any, default_workspace_id: str) -> str:
@@ -603,39 +517,6 @@ def _build_tool_call_mode_prompt() -> str:
         "- Never print any tool-call representation in visible text, including JSON tool objects, XML/tags, markdown code blocks, "
         "`tool`/`args` examples, or any other pseudo tool-call format.\n"
         "- If the runtime detects pseudo tool-call text instead of standard `tool_calls`, you will be asked to retry; resend the same intent using real `tool_calls`."
-    )
-
-
-def build_os_file_ops_prompt_append() -> str:
-    """Inject OS-specific shell policy for file operations."""
-    search_policy_rule = (
-        _TOOLS_FILE_SEARCH_NEARBY_RULE_RG_ONLY
-        if has_usable_workspace_rg_bin()
-        else _TOOLS_FILE_SEARCH_NEARBY_RULE_FALLBACK
-    )
-    search_policy_line = (
-        "- When locating keywords and reading nearby text, "
-        + search_policy_rule
-        + "\n"
-    )
-    if os.name == "nt":
-        return (
-            "\n\n## File Operation Policy (OS-Specific)\n"
-            "- File operations that can be done through OS commands (read, search, create, edit, bulk replace) must use `shell`.\n"
-            "- Command routing priority: script execution rules override text-file operation rules. If the target is script execution, such as python/py/node/bash/pwsh running a script file, follow script execution rules.\n"
-            '- Current OS is Windows: only text-file operations (read, search, create, edit, replace) must use `powershell -ExecutionPolicy Bypass -Command "<command>"`; running scripts is not a text-file operation.\n'
-            "- Do not use `type`, `findstr`, `copy`, `move`, `del`, `cmd /c`, or other non-prefix forms for those file operations.\n"
-            + search_policy_line
-            + "- Keep each text-file read under 100 lines; split larger reads into multiple ranges.\n"
-            + '- Do not wrap script execution in unnecessary PowerShell. Allowed: `python tools/a.py --x 1`, `py scripts/job.py`; forbidden: `powershell -ExecutionPolicy Bypass -Command "python tools/a.py --x 1"`.\n'
-            + "- Before issuing a command, self-check: python/py plus script file means direct python/py call; text-file operation means PowerShell prefix."
-        )
-    return (
-        "\n\n## File Operation Policy (OS-Specific)\n"
-        "- File operations that can be done through OS commands (read, search, create, edit, bulk replace) must use `shell`.\n"
-        "- Current OS is not Windows: `shell.command` uses POSIX shell conventions; prefer `cat`/`sed`/`awk`/`grep`/`find`, and prefer `sed -i` or redirection when editing files.\n"
-        + search_policy_line
-        + "- Keep each text-file read under 100 lines; split larger reads into multiple ranges.\n"
     )
 
 
