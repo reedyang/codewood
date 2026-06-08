@@ -1,6 +1,6 @@
 ---
 name: stock-data
-description: Use Sina Finance real-time market data API to fetch A-share snapshots and output JSON that can be injected directly into `stock-daily-analysis` (`stdout`; compatible with `analyzer --quote-stdin` piping). Triggers: stock-data, real-time quotes, A-share live prices, snapshot fetch, quote injection, and `quote-json`. Use this skill when you want to fetch data first and analyze later.
+description: Use Sina Finance real-time market data API to fetch A-share snapshots and output JSON that can be injected directly into `stock-daily-analysis` (`stdout`; compatible with `analyzer --quote-stdin` piping). Triggers: stock-data, market snapshot, real-time quotes, live A-share prices, quote fetch, quote injection, `quote-json`, upstream data for analysis, and pre-analysis market data retrieval. Use this skill when you want to fetch data first and analyze later, especially as the upstream data provider for `stock-daily-analysis`.
 license: MIT
 ---
 
