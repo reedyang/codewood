@@ -77,7 +77,6 @@ class _FakeAgent:
         self._last_context_usage_percent = 0
         self._last_context_input_tokens = 0
         self._last_context_window = 0
-        self._active_runtime_task_id = ""
         self.remembered_history_anchor_indexes = []
         self.session_memory_service = None
 
@@ -134,8 +133,6 @@ class ChatStateModelPersistenceTests(unittest.TestCase):
                         "name_source": "manual",
                         "created_at": "",
                         "updated_at": "",
-                        "tasks": [],
-                        "active_task_id": "",
                         "messages": [],
                         "context_usage_percent": 44,
                         "context_input_tokens": 1234,
@@ -172,11 +169,9 @@ class ChatStateModelPersistenceTests(unittest.TestCase):
                         "name_source": "manual",
                         "created_at": "",
                         "updated_at": "",
-                        "tasks": [],
-                        "active_task_id": "",
                         "messages": [
-                            {"role": "user", "content": "hi", "task_id": "", "created_at": ""},
-                            {"role": "assistant", "content": "hello", "task_id": "", "created_at": ""},
+                            {"role": "user", "content": "hi", "created_at": ""},
+                            {"role": "assistant", "content": "hello", "created_at": ""},
                         ],
                         "context_usage_percent": 0,
                         "context_input_tokens": 0,
@@ -211,8 +206,6 @@ class ChatStateModelPersistenceTests(unittest.TestCase):
                         "updated_at": "",
                         "model_provider": "openai",
                         "model_name": "gpt-4.1",
-                        "tasks": [],
-                        "active_task_id": "",
                         "messages": [],
                         "context_usage_percent": 0,
                         "context_input_tokens": 0,
@@ -243,23 +236,11 @@ class ChatStateModelPersistenceTests(unittest.TestCase):
                 "updated_at": "",
                 "model_provider": "openai",
                 "model_name": "gpt-4.1",
-                "tasks": [
-                    {
-                        "id": "task-1",
-                        "status": "open",
-                        "root_user_input": "Hello",
-                        "created_at": "",
-                        "updated_at": "",
-                        "closed_at": "",
-                        "switched_from_task_id": "",
-                    }
-                ],
-                "active_task_id": "task-1",
                 "messages": [
-                    {**messages[0], "task_id": "task-1", "created_at": ""},
-                    {**messages[1], "task_id": "task-1", "created_at": ""},
-                    {**messages[2], "task_id": "task-1", "created_at": ""},
-                    {**messages[3], "task_id": "task-1", "created_at": ""},
+                    {**messages[0], "created_at": ""},
+                    {**messages[1], "created_at": ""},
+                    {**messages[2], "created_at": ""},
+                    {**messages[3], "created_at": ""},
                 ],
                 "context_usage_percent": 0,
                 "context_input_tokens": 0,
@@ -283,20 +264,8 @@ class ChatStateModelPersistenceTests(unittest.TestCase):
                         "updated_at": "",
                         "model_provider": "openai",
                         "model_name": "gpt-4.1",
-                        "tasks": [
-                            {
-                                "id": "task-1",
-                                "status": "open",
-                                "root_user_input": "hello",
-                                "created_at": "",
-                                "updated_at": "",
-                                "closed_at": "",
-                                "switched_from_task_id": "",
-                            }
-                        ],
-                        "active_task_id": "task-1",
                         "messages": [
-                            {"role": "user", "content": "hello", "task_id": "task-1", "created_at": ""}
+                            {"role": "user", "content": "hello", "created_at": ""}
                         ],
                         "context_usage_percent": 0,
                         "context_input_tokens": 0,
@@ -314,7 +283,6 @@ class ChatStateModelPersistenceTests(unittest.TestCase):
             manager.load_chat_state()
             self.assertEqual(save_calls, [])
             self.assertEqual(agent.active_chat_id, "chat-1")
-            self.assertEqual(agent._active_runtime_task_id, "task-1")
 
     def test_load_chat_state_preserves_pseudo_tool_call_metadata(self):
         with tempfile.TemporaryDirectory() as td:
@@ -332,23 +300,10 @@ class ChatStateModelPersistenceTests(unittest.TestCase):
                         "updated_at": "",
                         "model_provider": "openai",
                         "model_name": "gpt-4.1",
-                        "tasks": [
-                            {
-                                "id": "task-1",
-                                "status": "open",
-                                "root_user_input": "hello",
-                                "created_at": "",
-                                "updated_at": "",
-                                "closed_at": "",
-                                "switched_from_task_id": "",
-                            }
-                        ],
-                        "active_task_id": "task-1",
                         "messages": [
                             {
                                 "role": "assistant",
                                 "content": "Plan: run a safe command.",
-                                "task_id": "task-1",
                                 "created_at": "",
                                 "pseudo_tool_call_text": pseudo_text,
                                 "pseudo_tool_call_tools": ["shell", "", " shell "],
@@ -375,69 +330,6 @@ class ChatStateModelPersistenceTests(unittest.TestCase):
             self.assertNotIn("tool_calls", msgs[0].get("content", ""))
             self.assertEqual(msgs[0].get("pseudo_tool_call_text"), pseudo_text)
             self.assertEqual(msgs[0].get("pseudo_tool_call_tools"), ["shell", "shell"])
-
-    def test_close_task_clears_active_task_id_when_closed(self):
-        with tempfile.TemporaryDirectory() as td:
-            agent = _FakeAgent(Path(td))
-            manager = ChatStateManager(agent, "chats.json")
-            agent._chat_state = {
-                "version": 2,
-                "active": "chat-1",
-                "chats": [
-                    {
-                        "id": "chat-1",
-                        "name": "Main",
-                        "name_source": "manual",
-                        "created_at": "",
-                        "updated_at": "",
-                        "model_provider": "openai",
-                        "model_name": "gpt-4.1",
-                        "tasks": [
-                            {
-                                "id": "task-1",
-                                "status": "open",
-                                "root_user_input": "hello",
-                                "created_at": "",
-                                "updated_at": "",
-                                "closed_at": "",
-                                "switched_from_task_id": "",
-                            }
-                        ],
-                        "active_task_id": "task-1",
-                        "messages": [],
-                        "context_usage_percent": 0,
-                        "context_input_tokens": 0,
-                        "context_window": 0,
-                    }
-                ],
-            }
-            ok = manager.close_task("chat-1", "task-1", "cancelled")
-            chat = manager.find_chat_by_id("chat-1")
-            self.assertTrue(ok)
-            self.assertEqual(chat.get("active_task_id"), "")
-
-    def test_validate_task_discards_legacy_classification_fields(self):
-        with tempfile.TemporaryDirectory() as td:
-            agent = _FakeAgent(Path(td))
-            manager = ChatStateManager(agent, "chats.json")
-            task = manager._validate_task(
-                {
-                    "id": "task-1",
-                    "status": "done",
-                    "root_user_input": "hello",
-                    "domains": ["software_development"],
-                    "domain_scores": {"software_development": 0.8},
-                    "classifier": {"primary_domain": "software_development"},
-                    "created_at": "",
-                    "updated_at": "",
-                    "closed_at": "",
-                    "switched_from_task_id": "",
-                }
-            )
-
-            self.assertNotIn("domains", task)
-            self.assertNotIn("domain_scores", task)
-            self.assertNotIn("classifier", task)
 
     def test_load_chat_state_invalid_schema_resets_and_persists_default(self):
         with tempfile.TemporaryDirectory() as td:
@@ -469,7 +361,7 @@ class ChatStateModelPersistenceTests(unittest.TestCase):
             self.assertEqual(agent.active_chat_id, "chat-1")
             self.assertEqual(agent._chat_state.get("version"), CHAT_STATE_VERSION)
 
-    def test_clear_chat_context_and_tasks_clears_messages_and_task_records(self):
+    def test_clear_chat_context_clears_messages(self):
         with tempfile.TemporaryDirectory() as td:
             agent = _FakeAgent(Path(td))
             manager = ChatStateManager(agent, "chats.json")
@@ -485,20 +377,8 @@ class ChatStateModelPersistenceTests(unittest.TestCase):
                         "updated_at": "",
                         "model_provider": "openai",
                         "model_name": "gpt-4.1",
-                        "tasks": [
-                            {
-                                "id": "task-1",
-                                "status": "open",
-                                "root_user_input": "hello",
-                                "created_at": "",
-                                "updated_at": "",
-                                "closed_at": "",
-                                "switched_from_task_id": "",
-                            }
-                        ],
-                        "active_task_id": "task-1",
                         "messages": [
-                            {"role": "user", "content": "hello", "task_id": "task-1", "created_at": ""}
+                            {"role": "user", "content": "hello", "created_at": ""}
                         ],
                         "context_usage_percent": 52,
                         "context_input_tokens": 123,
@@ -509,13 +389,11 @@ class ChatStateModelPersistenceTests(unittest.TestCase):
             save_calls = []
             manager.save_chat_state = lambda: save_calls.append("saved")
 
-            ok = manager.clear_chat_context_and_tasks("chat-1")
+            ok = manager.clear_chat_context("chat-1")
 
             self.assertTrue(ok)
             chat = manager.find_chat_by_id("chat-1")
             self.assertEqual(chat.get("messages"), [])
-            self.assertEqual(chat.get("tasks"), [])
-            self.assertEqual(chat.get("active_task_id"), "")
             self.assertEqual(chat.get("context_usage_percent"), 0)
             self.assertEqual(chat.get("context_input_tokens"), 0)
             self.assertEqual(save_calls, ["saved"])
@@ -537,8 +415,6 @@ class ChatStateModelPersistenceTests(unittest.TestCase):
                         "updated_at": "",
                         "model_provider": "openai",
                         "model_name": "gpt-4.1",
-                        "tasks": [],
-                        "active_task_id": "",
                         "messages": [],
                         "context_usage_percent": 0,
                         "context_input_tokens": 0,
@@ -583,8 +459,6 @@ class ChatStateModelPersistenceTests(unittest.TestCase):
                         "updated_at": "",
                         "model_provider": "openai",
                         "model_name": "gpt-4.1",
-                        "tasks": [],
-                        "active_task_id": "",
                         "messages": [],
                         "context_usage_percent": 0,
                         "context_input_tokens": 0,
@@ -593,12 +467,10 @@ class ChatStateModelPersistenceTests(unittest.TestCase):
                 ],
             }
             agent.active_chat_id = "chat-1"
-            agent._active_runtime_task_id = "task-1"
             agent.conversation_history = [
                 {
                     "role": "user",
                     "content": "pending message",
-                    "task_id": "task-1",
                     "exclude_from_model_context": True,
                 }
             ]
@@ -633,8 +505,6 @@ class ChatStateModelPersistenceTests(unittest.TestCase):
                         "updated_at": "",
                         "model_provider": "openai",
                         "model_name": "gpt-4.1",
-                        "tasks": [],
-                        "active_task_id": "",
                         "messages": [],
                         "context_usage_percent": 0,
                         "context_input_tokens": 0,
@@ -644,12 +514,10 @@ class ChatStateModelPersistenceTests(unittest.TestCase):
             }
             pseudo_text = '{"tool_calls":[{"tool":"shell","args":{"command":"echo hi"}}]}'
             agent.active_chat_id = "chat-1"
-            agent._active_runtime_task_id = "task-1"
             agent.conversation_history = [
                 {
                     "role": "assistant",
                     "content": "Plan: run a safe command.",
-                    "task_id": "task-1",
                     "pseudo_tool_call_text": pseudo_text,
                     "pseudo_tool_call_tools": ["shell", "", " shell "],
                 }
@@ -691,8 +559,6 @@ class ChatStateModelPersistenceTests(unittest.TestCase):
                         "updated_at": "",
                         "model_provider": "openai",
                         "model_name": "gpt-4.1",
-                        "tasks": [],
-                        "active_task_id": "",
                         "messages": [],
                         "context_usage_percent": 0,
                         "context_input_tokens": 0,
@@ -723,54 +589,6 @@ class ChatStateModelPersistenceTests(unittest.TestCase):
             _assert_hash_record_file(self, payload["chats"][0].get("record_file"))
             saved_msgs = list(_read_first_chat_record(workspace).get("messages") or [])
             self.assertEqual([m.get("content") for m in saved_msgs], ["persisted"])
-
-    def test_sync_active_chat_messages_does_not_fallback_to_closed_active_task(self):
-        with tempfile.TemporaryDirectory() as td:
-            workspace = Path(td)
-            agent = _FakeAgent(workspace)
-            manager = ChatStateManager(agent, "chats.json")
-            agent._chat_state = {
-                "version": 2,
-                "active": "chat-1",
-                "chats": [
-                    {
-                        "id": "chat-1",
-                        "name": "Main",
-                        "name_source": "manual",
-                        "created_at": "",
-                        "updated_at": "",
-                        "model_provider": "openai",
-                        "model_name": "gpt-4.1",
-                        "tasks": [
-                            {
-                                "id": "task-1",
-                                "status": "cancelled",
-                                "root_user_input": "old",
-                                "created_at": "",
-                                "updated_at": "",
-                                "closed_at": "",
-                                "switched_from_task_id": "",
-                            }
-                        ],
-                        "active_task_id": "task-1",
-                        "messages": [],
-                        "context_usage_percent": 0,
-                        "context_input_tokens": 0,
-                        "context_window": 0,
-                    }
-                ],
-            }
-            agent.active_chat_id = "chat-1"
-            agent._active_runtime_task_id = ""
-            agent.conversation_history = [{"role": "user", "content": "direct shell", "task_id": ""}]
-
-            manager.sync_active_chat_messages()
-
-            chat = manager.find_chat_by_id("chat-1")
-            msgs = list(chat.get("messages") or [])
-            self.assertEqual(chat.get("active_task_id"), "")
-            self.assertEqual(len(msgs), 1)
-            self.assertEqual(msgs[0].get("task_id"), "")
 
 
 if __name__ == "__main__":

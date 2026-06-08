@@ -707,70 +707,22 @@ class Agent:
         self._session_summary_llm = ""
         self._session_summary_rolling = ""
         self._last_llm_summary_pair_count = 0
-        self._active_runtime_task_id = ""
         self._last_context_usage_percent = 0
         self._last_context_input_tokens = 0
-        self._chat_state_manager.clear_chat_context_and_tasks(self.active_chat_id)
+        self._chat_state_manager.clear_chat_context(self.active_chat_id)
         try:
             self._persist_active_chat_usage_snapshot()
         except Exception:
             pass
 
-    def _start_chat_task(
-        self,
-        root_user_input: str,
-        switched_from_task_id: str = "",
-    ) -> str:
-        tid = self._chat_state_manager.start_task(
-            self.active_chat_id,
-            root_user_input=root_user_input,
-            switched_from_task_id=switched_from_task_id,
-        )
-        task_id = str(tid or "").strip()
-        self._active_runtime_task_id = task_id
-        try:
-            self._refresh_status_context_usage_snapshot(
-                user_input_hint=str(root_user_input or ""),
-                context_hint="task started",
-            )
-        except Exception:
-            pass
+    def _mark_cancelled_unanswered_user_message(self) -> None:
         try:
             svc = getattr(self, "session_memory_service", None)
-            schedule_refresh = getattr(svc, "schedule_context_usage_refresh_async", None)
-            if callable(schedule_refresh):
-                schedule_refresh(
-                    user_input_hint=str(root_user_input or ""),
-                    context_hint="task started",
-                )
+            mark_latest = getattr(svc, "mark_latest_unanswered_user_message_for_cancel", None)
+            if callable(mark_latest):
+                mark_latest()
         except Exception:
             pass
-        return task_id
-
-    def _close_chat_task(self, task_id: str, status: str) -> bool:
-        tid = str(task_id or "").strip()
-        closed = False
-        if tid:
-            closed = bool(self._chat_state_manager.close_task(self.active_chat_id, tid, status))
-        if closed and str(status or "").strip().lower() != "open":
-            if str(getattr(self, "_active_runtime_task_id", "") or "").strip() == tid:
-                self._active_runtime_task_id = ""
-        if str(status or "").strip().lower() == "cancelled":
-            try:
-                svc = getattr(self, "session_memory_service", None)
-                marked = 0
-                mark_fn = getattr(svc, "mark_cancelled_task_unanswered_user_messages", None)
-                if callable(mark_fn) and tid:
-                    marked = int(mark_fn(tid) or 0)
-                # Fallback: even if task close failed / task_id mismatched / task_id missing,
-                # still exclude the latest unanswered user message from model context.
-                if marked <= 0:
-                    mark_latest = getattr(svc, "mark_latest_unanswered_user_message_for_cancel", None)
-                    if callable(mark_latest):
-                        mark_latest()
-            except Exception:
-                pass
-        return closed
 
     def _refresh_context_usage_after_task_boundary(
         self,
@@ -2202,7 +2154,6 @@ class Agent:
     # should not pollute chat history (no user-visible side effect).
     _MODEL_TOOL_RESULT_HISTORY_SKIP_TOOLS = frozenset({
         "",
-        "done",
         "request_skill_prompt",
     })
 
@@ -2322,14 +2273,6 @@ class Agent:
         raw_cmd = str(raw_user_command or "").strip()
         if not raw_cmd:
             return
-        direct_task_id = ""
-        if not bool(aborted_by_user):
-            try:
-                direct_task_id = self._start_chat_task(
-                    root_user_input=raw_cmd,
-                )
-            except Exception:
-                direct_task_id = ""
         executed = str(executed_command or "").strip() or raw_cmd
         cwd_text = str(cwd or "").strip()
         user_content = self._build_direct_shell_user_history_content(raw_cmd)
@@ -2344,11 +2287,6 @@ class Agent:
         )
         self._append_chat_message("user", user_content)
         self._append_chat_message("assistant", assistant_content)
-        if direct_task_id:
-            try:
-                self._close_chat_task(direct_task_id, "done")
-            except Exception:
-                pass
         if not bool(aborted_by_user):
             self._refresh_context_usage_after_task_boundary(
                 user_input_hint=raw_cmd,
@@ -2433,9 +2371,7 @@ class Agent:
             output_text=str(output_text or ""),
         )
         created_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        task_id = str(getattr(self, "_active_runtime_task_id", "") or "").strip()
         transient_base = {
-            "task_id": task_id,
             "created_at": created_at,
             "exclude_from_model_context": True,
             "persist_to_chat_state": False,
@@ -5322,12 +5258,12 @@ class Agent:
             return ""
         return (
             "You just received raw information output. In the next reply, you must first produce a user-facing distilled result, "
-            "then decide whether to output done:\n"
+            "then decide whether to finish:\n"
             "- First provide 1-2 sentence final conclusion (directly answering the user);\n"
             "- Then provide no more than 3 key supporting points (prefer latest sources and include timestamps);\n"
             "- Provide timeliness/uncertainty notes;\n"
             "- Do not paste large chunks of webpage body verbatim.\n"
-            "If the above distillation is incomplete, do not output done directly."
+            "If the above distillation is incomplete, do not finish yet; continue with the next required tool call."
         )
 
     def _infer_selected_skill(self, command: Dict[str, Any], ai_response: str) -> Optional[Dict[str, str]]:

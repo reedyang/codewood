@@ -7,16 +7,6 @@ from typing import Any, Dict, List, Optional
 
 
 CHAT_STATE_VERSION = 1
-TASK_STATUS_OPEN = "open"
-TASK_STATUS_DONE = "done"
-TASK_STATUS_CANCELLED = "cancelled"
-TASK_STATUS_SWITCHED = "switched"
-TASK_STATUSES = {
-    TASK_STATUS_OPEN,
-    TASK_STATUS_DONE,
-    TASK_STATUS_CANCELLED,
-    TASK_STATUS_SWITCHED,
-}
 
 
 class ChatStateManager:
@@ -81,45 +71,23 @@ class ChatStateManager:
             "model_provider": provider,
             "model_name": model_name,
             "messages": [],
-            "tasks": [],
-            "active_task_id": "",
             "context_usage_percent": usage_pct,
             "context_input_tokens": usage_tokens,
             "context_window": usage_window,
         }
 
-    def new_task_entry(
-        self,
-        task_id: str,
-        root_user_input: str,
-        switched_from_task_id: str = "",
-    ) -> Dict[str, Any]:
-        now = self._now_text()
-        return {
-            "id": task_id,
-            "status": TASK_STATUS_OPEN,
-            "root_user_input": str(root_user_input or "").strip(),
-            "created_at": now,
-            "updated_at": now,
-            "closed_at": "",
-            "switched_from_task_id": str(switched_from_task_id or "").strip(),
-        }
-
     def _normalize_message(
         self,
         raw: Dict[str, Any],
-        fallback_task_id: str,
     ) -> Dict[str, Any]:
         role = str(raw.get("role") or "").strip().lower()
         if role not in ("user", "assistant"):
             raise ValueError("invalid role")
         content = str(raw.get("content") or "")
-        task_id = str(raw.get("task_id") or "").strip() or fallback_task_id
         created_at = str(raw.get("created_at") or "").strip() or self._now_text()
         out = {
             "role": role,
             "content": content,
-            "task_id": task_id,
             "created_at": created_at,
         }
         if bool(raw.get("exclude_from_model_context", False)):
@@ -138,24 +106,6 @@ class ChatStateManager:
                     out["pseudo_tool_call_tools"] = cleaned_tools
         return out
 
-    def _validate_task(self, raw: Dict[str, Any]) -> Dict[str, Any]:
-        tid = str(raw.get("id") or "").strip()
-        if not tid:
-            raise ValueError("task id required")
-        status = str(raw.get("status") or "").strip().lower()
-        if status not in TASK_STATUSES:
-            raise ValueError("invalid task status")
-        root_user_input = str(raw.get("root_user_input") or "").strip()
-        return {
-            "id": tid,
-            "status": status,
-            "root_user_input": root_user_input,
-            "created_at": str(raw.get("created_at") or "").strip() or self._now_text(),
-            "updated_at": str(raw.get("updated_at") or "").strip() or self._now_text(),
-            "closed_at": str(raw.get("closed_at") or "").strip(),
-            "switched_from_task_id": str(raw.get("switched_from_task_id") or "").strip(),
-        }
-
     def _validate_chat_entry(self, raw: Dict[str, Any]) -> Dict[str, Any]:
         cid = str(raw.get("id") or "").strip()
         if not cid:
@@ -165,28 +115,14 @@ class ChatStateManager:
         if source not in ("default", "auto", "manual"):
             source = "default"
 
-        tasks_raw = raw.get("tasks")
-        if not isinstance(tasks_raw, list):
-            raise ValueError("tasks must be list")
-        tasks = [self._validate_task(t) for t in tasks_raw if isinstance(t, dict)]
-        task_ids = {str(t.get("id") or "") for t in tasks}
-
-        active_task_id = str(raw.get("active_task_id") or "").strip()
-        if active_task_id and active_task_id not in task_ids:
-            raise ValueError("active_task_id not found in tasks")
-
         messages_raw = raw.get("messages")
         if not isinstance(messages_raw, list):
             raise ValueError("messages must be list")
-        fallback_task_id = active_task_id or (tasks[0]["id"] if tasks else "")
         messages = []
         for item in messages_raw:
             if not isinstance(item, dict):
                 raise ValueError("message item must be object")
-            msg = self._normalize_message(item, fallback_task_id=fallback_task_id)
-            if task_ids and msg["task_id"] not in task_ids:
-                raise ValueError("message task_id missing in tasks")
-            messages.append(msg)
+            messages.append(self._normalize_message(item))
 
         return {
             "id": cid,
@@ -197,8 +133,6 @@ class ChatStateManager:
             "model_provider": str(raw.get("model_provider") or "").strip(),
             "model_name": str(raw.get("model_name") or "").strip(),
             "messages": messages,
-            "tasks": tasks,
-            "active_task_id": active_task_id,
             "context_usage_percent": int(raw.get("context_usage_percent") or 0),
             "context_input_tokens": int(raw.get("context_input_tokens") or 0),
             "context_window": int(raw.get("context_window") or 0),
@@ -299,23 +233,6 @@ class ChatStateManager:
                 return c
         return None
 
-    @staticmethod
-    def _task_entries(chat: Dict[str, Any]) -> List[Dict[str, Any]]:
-        items = chat.get("tasks", [])
-        if not isinstance(items, list):
-            items = []
-            chat["tasks"] = items
-        return items
-
-    @staticmethod
-    def _find_task_by_id(chat: Dict[str, Any], task_id: str) -> Optional[Dict[str, Any]]:
-        for t in ChatStateManager._task_entries(chat):
-            if not isinstance(t, dict):
-                continue
-            if str(t.get("id") or "") == task_id:
-                return t
-        return None
-
     def resolve_chat_selector(self, selector: str) -> Optional[Dict[str, Any]]:
         text = str(selector or "").strip()
         if not text:
@@ -346,20 +263,6 @@ class ChatStateManager:
             cid = f"chat-{i}"
             if cid not in existing:
                 return cid
-            i += 1
-
-    @staticmethod
-    def next_task_id(chat: Dict[str, Any]) -> str:
-        existing = {
-            str(t.get("id") or "")
-            for t in ChatStateManager._task_entries(chat)
-            if isinstance(t, dict)
-        }
-        i = 1
-        while True:
-            tid = f"task-{i}"
-            if tid not in existing:
-                return tid
             i += 1
 
     def load_chat_state(self) -> None:
@@ -436,13 +339,6 @@ class ChatStateManager:
             chat = self.find_chat_by_id(self._agent.active_chat_id)
             if not chat:
                 return
-            runtime_task_id = str(getattr(self._agent, "_active_runtime_task_id", "") or "").strip()
-            chat_active_task_id = str(chat.get("active_task_id") or "").strip()
-            fallback_task_id = runtime_task_id or chat_active_task_id
-            if fallback_task_id:
-                task = self._find_task_by_id(chat, fallback_task_id)
-                if not isinstance(task, dict) or str(task.get("status") or "").strip().lower() != TASK_STATUS_OPEN:
-                    fallback_task_id = ""
             msgs = []
             for m in list(self._agent.conversation_history):
                 if not isinstance(m, dict):
@@ -455,7 +351,6 @@ class ChatStateManager:
                 entry = {
                     "role": role,
                     "content": str(m.get("content") or ""),
-                    "task_id": str(m.get("task_id") or "").strip() or fallback_task_id,
                     "created_at": str(m.get("created_at") or "").strip() or self._now_text(),
                 }
                 if bool(m.get("exclude_from_model_context", False)):
@@ -474,7 +369,6 @@ class ChatStateManager:
                             entry["pseudo_tool_call_tools"] = cleaned_tools
                 msgs.append(entry)
             chat["messages"] = msgs
-            chat["active_task_id"] = fallback_task_id
             chat["context_usage_percent"] = int(
                 getattr(self._agent, "_last_context_usage_percent", 0) or 0
             )
@@ -504,7 +398,7 @@ class ChatStateManager:
             chat["updated_at"] = self._now_text()
             self.save_chat_state()
 
-    def clear_chat_context_and_tasks(self, chat_id: str) -> bool:
+    def clear_chat_context(self, chat_id: str) -> bool:
         cid = str(chat_id or "").strip()
         if not cid:
             return False
@@ -513,61 +407,11 @@ class ChatStateManager:
             if not chat:
                 return False
             chat["messages"] = []
-            chat["tasks"] = []
-            chat["active_task_id"] = ""
             chat["context_usage_percent"] = 0
             chat["context_input_tokens"] = 0
             chat["context_window"] = int(
                 getattr(self._agent, "_last_context_window", 0) or 0
             )
-            chat["updated_at"] = self._now_text()
-            self.save_chat_state()
-            return True
-
-    def start_task(
-        self,
-        chat_id: str,
-        root_user_input: str,
-        switched_from_task_id: str = "",
-    ) -> Optional[str]:
-        with self._agent._chat_state_lock:
-            chat = self.find_chat_by_id(chat_id)
-            if not chat:
-                return None
-            task_id = self.next_task_id(chat)
-            entry = self.new_task_entry(
-                task_id=task_id,
-                root_user_input=root_user_input,
-                switched_from_task_id=switched_from_task_id,
-            )
-            self._task_entries(chat).append(entry)
-            chat["active_task_id"] = task_id
-            chat["updated_at"] = self._now_text()
-            self.save_chat_state()
-            return task_id
-
-    def close_task(
-        self,
-        chat_id: str,
-        task_id: str,
-        status: str,
-    ) -> bool:
-        want = str(status or "").strip().lower()
-        if want not in TASK_STATUSES:
-            return False
-        with self._agent._chat_state_lock:
-            chat = self.find_chat_by_id(chat_id)
-            if not chat:
-                return False
-            task = self._find_task_by_id(chat, task_id)
-            if not task:
-                return False
-            task["status"] = want
-            task["updated_at"] = self._now_text()
-            if want != TASK_STATUS_OPEN:
-                task["closed_at"] = self._now_text()
-                if str(chat.get("active_task_id") or "").strip() == str(task_id or "").strip():
-                    chat["active_task_id"] = ""
             chat["updated_at"] = self._now_text()
             self.save_chat_state()
             return True
@@ -599,7 +443,6 @@ class ChatStateManager:
             self._agent._session_summary_llm = ""
             self._agent._session_summary_rolling = ""
             self._agent._last_llm_summary_pair_count = 0
-            self._agent._active_runtime_task_id = str(chat.get("active_task_id") or "").strip()
             try:
                 self._agent._apply_chat_model_from_entry(chat, persist_if_missing=True)
             except Exception:
@@ -633,4 +476,3 @@ class ChatStateManager:
         if announce:
             return f"✅ Switched to Chat: [{self._agent.active_chat_name}]"
         return ""
-

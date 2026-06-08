@@ -53,7 +53,6 @@ class _FakeAgent:
         self._last_cancelled_task = ""
         self.active_chat_id = "chat-1"
         self._chat_state = {"chats": []}
-        self._active_runtime_task_id = ""
         self.sync_active_chat_messages_calls = 0
 
     def _reload_skills(self):
@@ -596,22 +595,16 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
 
     def test_context_eligible_history_returns_all_context_eligible_messages(self):
         agent = _FakeAgent()
-        agent._active_runtime_task_id = "task-a"
         agent._chat_state = {
             "chats": [
                 {
                     "id": "chat-1",
-                    "tasks": [
-                        {"id": "task-a"},
-                        {"id": "task-b"},
-                        {"id": "task-c"},
-                    ],
                     "messages": [
-                        {"role": "user", "content": "C1", "task_id": "task-c"},
-                        {"role": "user", "content": "A1", "task_id": "task-a"},
-                        {"role": "assistant", "content": "A2", "task_id": "task-a"},
-                        {"role": "user", "content": "B1", "task_id": "task-b"},
-                        {"role": "assistant", "content": "B2", "task_id": "task-b"},
+                        {"role": "user", "content": "C1"},
+                        {"role": "user", "content": "A1"},
+                        {"role": "assistant", "content": "A2"},
+                        {"role": "user", "content": "B1"},
+                        {"role": "assistant", "content": "B2"},
                     ],
                 }
             ]
@@ -626,19 +619,14 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
 
     def test_context_eligible_history_ignores_slash_builtin_messages(self):
         agent = _FakeAgent()
-        agent._active_runtime_task_id = "task-c"
         agent._chat_state = {
             "chats": [
                 {
                     "id": "chat-1",
-                    "tasks": [
-                        {"id": "task-a"},
-                        {"id": "task-c"},
-                    ],
                     "messages": [
-                        {"role": "user", "content": "A1", "task_id": "task-a"},
-                        {"role": "assistant", "content": "A2", "task_id": "task-a"},
-                        {"role": "user", "content": "/chat list", "task_id": "task-c"},
+                        {"role": "user", "content": "A1"},
+                        {"role": "assistant", "content": "A2"},
+                        {"role": "user", "content": "/chat list"},
                     ],
                 }
             ]
@@ -651,58 +639,18 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
         self.assertIn("A2", joined)
         self.assertNotIn("/chat list", joined)
 
-    def test_context_eligible_history_skips_done_tool_call_only_assistant_message(self):
-        agent = _FakeAgent()
-        done_only = (
-            "```json\n"
-            "{\n"
-            '  "tool": "done",\n'
-            '  "args": {\n'
-            '    "reviewed_files": []\n'
-            "  }\n"
-            "}\n"
-            "```"
-        )
-        agent._chat_state = {
-            "chats": [
-                {
-                    "id": "chat-1",
-                    "messages": [
-                        {"role": "user", "content": "A1", "task_id": "task-a"},
-                        {"role": "assistant", "content": done_only, "task_id": "task-a"},
-                        {"role": "assistant", "content": "A2", "task_id": "task-a"},
-                    ],
-                }
-            ]
-        }
-        agent.conversation_history = list(agent._chat_state["chats"][0]["messages"])
-        svc = SessionMemoryService(agent)
-
-        filtered = svc._context_eligible_history()
-        joined = " | ".join(str(x.get("content") or "") for x in filtered)
-
-        self.assertIn("A1", joined)
-        self.assertIn("A2", joined)
-        self.assertNotIn('"tool": "done"', joined)
-
     def test_context_eligible_history_skips_cancelled_unanswered_user_message(self):
         agent = _FakeAgent()
-        agent._active_runtime_task_id = "task-b"
         agent._chat_state = {
             "chats": [
                 {
                     "id": "chat-1",
-                    "tasks": [
-                        {"id": "task-a"},
-                        {"id": "task-b"},
-                    ],
                     "messages": [
-                        {"role": "user", "content": "A1", "task_id": "task-a"},
-                        {"role": "assistant", "content": "A2", "task_id": "task-a"},
+                        {"role": "user", "content": "A1"},
+                        {"role": "assistant", "content": "A2"},
                         {
                             "role": "user",
                             "content": "B1-pending",
-                            "task_id": "task-b",
                             "exclude_from_model_context": True,
                         },
                     ],
@@ -719,7 +667,6 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
 
     def test_context_eligible_history_keeps_internal_interrupted_marker(self):
         agent = _FakeAgent()
-        agent._active_runtime_task_id = "task-b"
         interrupted = agent._build_conversation_interrupted_history_content(
             interrupted_kind="task",
             reason="user_interrupt",
@@ -729,20 +676,15 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
             "chats": [
                 {
                     "id": "chat-1",
-                    "tasks": [
-                        {"id": "task-a"},
-                        {"id": "task-b"},
-                    ],
                     "messages": [
-                        {"role": "user", "content": "A1", "task_id": "task-a"},
-                        {"role": "assistant", "content": "A2", "task_id": "task-a"},
+                        {"role": "user", "content": "A1"},
+                        {"role": "assistant", "content": "A2"},
                         {
                             "role": "user",
                             "content": "B1-pending",
-                            "task_id": "task-b",
                             "exclude_from_model_context": True,
                         },
-                        {"role": "assistant", "content": interrupted, "task_id": "task-b"},
+                        {"role": "assistant", "content": interrupted},
                     ],
                 }
             ]
@@ -758,64 +700,12 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
         self.assertFalse(any(str(x.get("content") or "") == "B1-pending" for x in filtered))
         self.assertIn("[CONVERSATION_INTERRUPTED]", joined)
 
-    def test_mark_cancelled_task_unanswered_user_messages_marks_only_unanswered_tail(self):
-        agent = _FakeAgent()
-        agent.conversation_history = [
-            {"role": "user", "content": "T1-U1", "task_id": "task-1"},
-            {"role": "assistant", "content": "T1-A1", "task_id": "task-1"},
-            {"role": "user", "content": "T1-U2-pending", "task_id": "task-1"},
-            {"role": "user", "content": "other", "task_id": "task-2"},
-        ]
-        svc = SessionMemoryService(agent)
-
-        marked = svc.mark_cancelled_task_unanswered_user_messages("task-1")
-
-        self.assertEqual(marked, 1)
-        self.assertFalse(bool(agent.conversation_history[0].get("exclude_from_model_context", False)))
-        self.assertTrue(bool(agent.conversation_history[2].get("exclude_from_model_context", False)))
-        self.assertEqual(agent.sync_active_chat_messages_calls, 1)
-
-    def test_mark_cancelled_task_ignores_internal_assistant_history_as_reply(self):
-        agent = _FakeAgent()
-        internal_result = agent._build_direct_shell_result_history_content(
-            raw_user_command="echo hi",
-            executed_command="echo hi",
-            cwd="D:/ws",
-            return_code=0,
-            stdout_text="ok",
-            stderr_text="",
-            aborted_by_user=False,
-        )
-        agent.conversation_history = [
-            {"role": "user", "content": "T1-U1-pending", "task_id": "task-1"},
-            {"role": "assistant", "content": internal_result, "task_id": "task-1"},
-        ]
-        svc = SessionMemoryService(agent)
-
-        marked = svc.mark_cancelled_task_unanswered_user_messages("task-1")
-
-        self.assertEqual(marked, 1)
-        self.assertTrue(bool(agent.conversation_history[0].get("exclude_from_model_context", False)))
-
-    def test_mark_cancelled_task_falls_back_to_latest_unanswered_user_when_task_mismatch(self):
-        agent = _FakeAgent()
-        agent.conversation_history = [
-            {"role": "assistant", "content": "old reply", "task_id": "task-x"},
-            {"role": "user", "content": "latest pending", "task_id": "task-old"},
-        ]
-        svc = SessionMemoryService(agent)
-
-        marked = svc.mark_cancelled_task_unanswered_user_messages("task-new")
-
-        self.assertEqual(marked, 1)
-        self.assertTrue(bool(agent.conversation_history[1].get("exclude_from_model_context", False)))
-
     def test_mark_latest_unanswered_user_message_for_cancel_marks_global_tail(self):
         agent = _FakeAgent()
         agent.conversation_history = [
-            {"role": "user", "content": "answered", "task_id": "task-1"},
-            {"role": "assistant", "content": "ok", "task_id": "task-1"},
-            {"role": "user", "content": "pending-tail", "task_id": "task-2"},
+            {"role": "user", "content": "answered"},
+            {"role": "assistant", "content": "ok"},
+            {"role": "user", "content": "pending-tail"},
         ]
         svc = SessionMemoryService(agent)
 
@@ -828,14 +718,13 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
         agent = _FakeAgent()
         svc = SessionMemoryService(agent)
         hist = [
-            {"role": "user", "content": "keep-me", "task_id": "task-1"},
+            {"role": "user", "content": "keep-me"},
             {
                 "role": "user",
                 "content": "skip-me",
-                "task_id": "task-1",
                 "exclude_from_model_context": True,
             },
-            {"role": "assistant", "content": "assistant-1", "task_id": "task-1"},
+            {"role": "assistant", "content": "assistant-1"},
         ]
         msgs, _ = svc._build_history_messages_by_budget(
             history_budget=2000,
@@ -854,13 +743,11 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
             "chats": [
                 {
                     "id": "chat-1",
-                    "tasks": [{"id": "task-1", "domains": ["software_development"]}],
                     "messages": [
-                        {"role": "user", "content": "old-requirement", "task_id": "task-1"},
+                        {"role": "user", "content": "old-requirement"},
                         {
                             "role": "user",
                             "content": "pending-requirement",
-                            "task_id": "task-1",
                             "exclude_from_model_context": True,
                         },
                     ],

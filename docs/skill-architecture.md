@@ -62,7 +62,7 @@ Individual skills **cannot see** the host’s full tool surface or other skill b
 
 | Stay in the host (system / tool prompts, agent code) | Stay inside the skill (`SKILL.md` + bundle assets) |
 |------------------------------------------------------|---------------------------------------------------|
-| Task lifecycle: e.g. when to emit **done**, **ask_more_info**, **task_changed** | When **this** script’s run is complete for the current query (e.g. required markers in stdout), and “do not re-run the same command for the same query” |
+| Task lifecycle: e.g. when to emit **ask_more_info** | When **this** script’s run is complete for the current query (e.g. required markers in stdout), and “do not re-run the same command for the same query” |
 | Naming or ordering **other skills**, MCP tools, or “load skill” injection | Neutral wording: e.g. “further steps the host may schedule are out of scope here” |
 | Multi-skill pipelines, stdin pipes **between** bundles, cross-skill ids | CLI for **this** bundle only; how the host merges `model_context_file_env` into the subprocess result |
 

@@ -36,8 +36,6 @@ def execute_tool_call_legacy(agent: Any, tool_name: str, arguments: Dict[str, An
         delegated = handler(self, action, params)
         if delegated is not None:
             return delegated
-    if action == "done":
-        return {"success": True, "message": "Task completed", "finished": True}
     if action == "ask_more_info":
         question = str(params.get("question") or "").strip()
         if not question:
@@ -55,20 +53,7 @@ def execute_tool_call_legacy(agent: Any, tool_name: str, arguments: Dict[str, An
             "retryable": False,
             "message": "Requested additional information from the user",
         }
-    if action == "task_changed":
-        new_task = str(params.get("new_task") or "").strip()
-        reason = str(params.get("reason") or "").strip()
-        if not new_task:
-            return {"success": False, "error": "task_changed is missing the new_task parameter"}
-        return {
-            "success": True,
-            "task_changed": True,
-            "new_task": new_task,
-            "reason": reason or "User input is unrelated to the original request; switched tasks",
-            "message": "Task switched",
-        }
-
-    elif action == "shell":
+    if action == "shell":
         shell_cmd = params.get("command")
         if shell_cmd:
             lowered_shell = str(shell_cmd).lower()

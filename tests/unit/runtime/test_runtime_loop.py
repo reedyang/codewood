@@ -7,12 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from src.runtime.runtime_loop import (
-    _build_missing_standard_tool_call_retry_input,
-    _can_finish_without_tool_calls,
     _consume_streaming_ai_response,
-    _compute_unreviewed_changed_files,
-    _extract_done_reviewed_files,
-    _build_minimal_verification_command,
     _format_worked_for_summary_line,
     _format_startup_directory,
     _model_tool_result_was_aborted,
@@ -20,19 +15,15 @@ from src.runtime.runtime_loop import (
     _refresh_context_usage_after_task_boundary,
     _resolve_worked_summary_terminal_width,
     _sanitize_prompt_pollution,
-    _should_retry_missing_standard_tool_call_response,
     _should_prioritize_project_context_for_task,
     _sync_command_input_history,
     _should_record_command_input_history,
-    _shell_command_indicates_verification,
     _strip_leaked_internal_history_markers,
     _stream_visible_text_with_json_pause,
     _stop_pre_task_status_ticker_for_console_output,
     _try_record_user_task_message,
-    _tool_change_and_verification_hints,
     _parse_tool_plans_from_model_message,
     _parse_tool_plan_from_model_message,
-    _is_textless_done_only_tool_call,
     _looks_like_pseudo_tool_call_text,
     _split_trailing_pseudo_tool_calls_text,
     _split_trailing_pseudo_tool_calls_text_details,
@@ -92,11 +83,6 @@ class RuntimeLoopTests(unittest.TestCase):
                     _format_startup_directory(str(outside_path)),
                     str(outside_path),
                 )
-
-    def test_shell_command_indicates_verification(self):
-        self.assertTrue(_shell_command_indicates_verification("pytest -q"))
-        self.assertTrue(_shell_command_indicates_verification("python -m py_compile a.py"))
-        self.assertFalse(_shell_command_indicates_verification("echo hello"))
 
     def test_model_tool_result_was_aborted_detects_shell_interrupts(self):
         self.assertTrue(
@@ -165,44 +151,6 @@ class RuntimeLoopTests(unittest.TestCase):
                 ("banner",),
             ],
         )
-
-    def test_build_minimal_verification_command_prefers_py_compile(self):
-        cmd = _build_minimal_verification_command(["a.py", "b.txt"])
-        self.assertIn("python -m py_compile", cmd)
-        self.assertIn("a.py", cmd)
-
-    def test_tool_change_and_verification_hints(self):
-        hints_change = _tool_change_and_verification_hints(
-            "apply_patch",
-            {"path": "helloworld.py"},
-            {"success": True},
-        )
-        self.assertTrue(bool(hints_change.get("code_changed")))
-        self.assertIn("helloworld.py", hints_change.get("changed_files") or [])
-
-        hints_verify = _tool_change_and_verification_hints(
-            "shell",
-            {"command": "pytest -q"},
-            {"success": True},
-        )
-        self.assertTrue(bool(hints_verify.get("verified")))
-
-    def test_extract_done_reviewed_files_parses_list_and_string(self):
-        self.assertEqual(
-            _extract_done_reviewed_files({"reviewed_files": ["a.py", " b.py ", ""]}),
-            ["a.py", "b.py"],
-        )
-        self.assertEqual(
-            _extract_done_reviewed_files({"reviewed_files": "README.md"}),
-            ["README.md"],
-        )
-        self.assertEqual(_extract_done_reviewed_files({"reviewed_files": 123}), [])
-
-    def test_compute_unreviewed_changed_files_reports_only_missing(self):
-        changed = ["src/A.py", "docs/Guide.md", "README.md"]
-        reviewed = ["src/a.py", "Guide.md"]
-        missing = _compute_unreviewed_changed_files(changed, reviewed)
-        self.assertEqual(missing, ["README.md"])
 
     def test_sanitize_prompt_pollution_strips_fixed_prompt(self):
         cleaned = _sanitize_prompt_pollution("› /help", Path("D:/ws"))
@@ -390,24 +338,6 @@ class RuntimeLoopTests(unittest.TestCase):
             user_input_hint="u",
             context_hint="ask_more_info paused",
         )
-
-    def test_standard_tool_mode_never_finishes_from_content_only_response(self):
-        self.assertFalse(_can_finish_without_tool_calls(True, "final answer"))
-        self.assertFalse(_can_finish_without_tool_calls(True, ""))
-        self.assertTrue(_can_finish_without_tool_calls(False, "final answer"))
-        self.assertFalse(_can_finish_without_tool_calls(False, ""))
-
-    def test_missing_standard_tool_call_response_retries_only_once(self):
-        self.assertTrue(_should_retry_missing_standard_tool_call_response(1, 2))
-        self.assertFalse(_should_retry_missing_standard_tool_call_response(2, 2))
-        self.assertFalse(_should_retry_missing_standard_tool_call_response(3, 2))
-
-    def test_missing_standard_tool_call_retry_prompt_requests_tool_calls(self):
-        prompt = _build_missing_standard_tool_call_retry_input("Fix tests")
-        self.assertIn("[Original user request]\nFix tests", prompt)
-        self.assertIn("your next assistant message MUST include standard API `tool_calls`", prompt)
-        self.assertIn("Your previous response did not include valid standard API tool_calls.", prompt)
-        self.assertIn("call `done` through standard `tool_calls`", prompt)
 
     def test_project_context_priority_detection_targets_software_development_tasks(self):
         self.assertTrue(_should_prioritize_project_context_for_task("请帮我修复这个 bug"))
@@ -1224,21 +1154,6 @@ class RuntimeLoopTests(unittest.TestCase):
         self.assertTrue(_looks_like_pseudo_tool_call_text('{"content":"plan","tool_calls":[{"function":{"name":"done"}}]}'))
         self.assertFalse(_looks_like_pseudo_tool_call_text('{"toolbox": true}'))
         self.assertFalse(_looks_like_pseudo_tool_call_text('I checked the tool output and summarized it.'))
-
-    def test_textless_done_only_tool_call_detection(self):
-        self.assertTrue(
-            _is_textless_done_only_tool_call("", [("done", {})])
-        )
-        self.assertTrue(
-            _is_textless_done_only_tool_call(None, [("done", {}), ("done", {"reviewed_files": []})])
-        )
-        self.assertFalse(
-            _is_textless_done_only_tool_call("Completed.", [("done", {})])
-        )
-        self.assertFalse(
-            _is_textless_done_only_tool_call("", [("read_file", {"path": "README.md"})])
-        )
-        self.assertFalse(_is_textless_done_only_tool_call("", []))
 
 
 if __name__ == "__main__":
