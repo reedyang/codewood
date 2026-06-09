@@ -32,6 +32,9 @@ from src.runtime.runtime_loop import (
     _replace_latest_assistant_history_content,
     _build_pseudo_tool_call_retry_prompt,
     _PSEUDO_TOOL_CALL_RETRY_EXAMPLE_JSON,
+    _build_plan_finalize_nudge_prompt,
+    _should_fire_plan_finalize_nudge,
+    _warn_loop_ended_with_pending_plan,
 )
 
 
@@ -1515,6 +1518,231 @@ class PseudoToolCallRetryPromptTests(unittest.TestCase):
         self.assertIsInstance(args_field, str)
         inner = json.loads(args_field)
         self.assertIsInstance(inner, dict)
+
+
+class _StubPlanManager:
+    """Minimal stand-in for ChatStateManager that exposes a fixed plan.
+
+    Lets the plan-finalize-nudge tests drive ``_summarize_active_plan``
+    without spinning up the full chat-state stack. The agent stub
+    only needs ``_chat_state_manager`` for ``UpdatePlanTool.current_plan``.
+    """
+
+    def __init__(self, items, explanation: str = "", updated_at: str = ""):
+        self._items = list(items)
+        self._explanation = str(explanation or "")
+        self._updated_at = str(updated_at or "")
+
+    def active_chat_plan(self):
+        return {
+            "plan": [dict(item) for item in self._items],
+            "explanation": self._explanation,
+            "updated_at": self._updated_at,
+        }
+
+
+class _StubAgentForPlanNudge:
+    def __init__(self, plan_items):
+        self._chat_state_manager = _StubPlanManager(plan_items)
+
+
+class PlanFinalizeNudgeGuardTests(unittest.TestCase):
+    """Pin down ``_should_fire_plan_finalize_nudge`` preconditions.
+
+    This guard is the single source of truth for whether the model
+    gets one extra round to flush a stale plan before the host
+    returns to the prompt. The previous implementation inlined the
+    check inside one branch, so other early-exit paths silently
+    abandoned a pending plan; centralizing it means every exit
+    site gets identical behavior.
+    """
+
+    PENDING_PLAN = [
+        {"step": "fetch data", "status": "completed"},
+        {"step": "analyze", "status": "in_progress"},
+        {"step": "summarize", "status": "pending"},
+    ]
+    DONE_PLAN = [
+        {"step": "fetch data", "status": "completed"},
+        {"step": "analyze", "status": "completed"},
+    ]
+
+    def test_returns_summary_when_all_preconditions_met(self):
+        agent = _StubAgentForPlanNudge(self.PENDING_PLAN)
+        result = _should_fire_plan_finalize_nudge(
+            agent,
+            task_uses_standard_openai_tools=True,
+            plan_finalize_nudged=False,
+            turn_used_ask_more_info=False,
+        )
+        self.assertIsNotNone(result)
+        assert result is not None  # for type-checker
+        self.assertTrue(result.get("has_pending"))
+        self.assertEqual(len(result.get("items", [])), 3)
+
+    def test_skips_when_standard_tools_disabled(self):
+        # No standard tool_calls available means the model can't
+        # actually invoke ``update_plan``; nudging would deadlock.
+        agent = _StubAgentForPlanNudge(self.PENDING_PLAN)
+        self.assertIsNone(
+            _should_fire_plan_finalize_nudge(
+                agent,
+                task_uses_standard_openai_tools=False,
+                plan_finalize_nudged=False,
+                turn_used_ask_more_info=False,
+            )
+        )
+
+    def test_skips_when_already_nudged_this_turn(self):
+        # Once the model has had its one chance and still didn't
+        # call update_plan, repeating the nudge would just spin.
+        agent = _StubAgentForPlanNudge(self.PENDING_PLAN)
+        self.assertIsNone(
+            _should_fire_plan_finalize_nudge(
+                agent,
+                task_uses_standard_openai_tools=True,
+                plan_finalize_nudged=True,
+                turn_used_ask_more_info=False,
+            )
+        )
+
+    def test_skips_when_turn_used_ask_more_info(self):
+        # ask_more_info is an explicit handoff to the user; the
+        # plan can legitimately stay open until the user replies.
+        agent = _StubAgentForPlanNudge(self.PENDING_PLAN)
+        self.assertIsNone(
+            _should_fire_plan_finalize_nudge(
+                agent,
+                task_uses_standard_openai_tools=True,
+                plan_finalize_nudged=False,
+                turn_used_ask_more_info=True,
+            )
+        )
+
+    def test_skips_when_plan_has_no_pending_steps(self):
+        agent = _StubAgentForPlanNudge(self.DONE_PLAN)
+        self.assertIsNone(
+            _should_fire_plan_finalize_nudge(
+                agent,
+                task_uses_standard_openai_tools=True,
+                plan_finalize_nudged=False,
+                turn_used_ask_more_info=False,
+            )
+        )
+
+    def test_skips_when_no_active_plan(self):
+        agent = _StubAgentForPlanNudge([])
+        self.assertIsNone(
+            _should_fire_plan_finalize_nudge(
+                agent,
+                task_uses_standard_openai_tools=True,
+                plan_finalize_nudged=False,
+                turn_used_ask_more_info=False,
+            )
+        )
+
+
+class PlanFinalizeNudgePromptTests(unittest.TestCase):
+    """The nudge prompt must include the original task, the active
+    plan block, and clear instructions to call ``update_plan``."""
+
+    def test_prompt_embeds_original_task_and_plan(self):
+        summary = {
+            "items": [
+                {"step": "fetch data", "status": "completed"},
+                {"step": "analyze", "status": "in_progress"},
+                {"step": "summarize", "status": "pending"},
+            ],
+            "has_pending": True,
+            "in_progress_step": "analyze",
+        }
+        prompt = _build_plan_finalize_nudge_prompt(
+            original_user_task="今天比亚迪股票的行情如何？",
+            plan_summary=summary,
+        )
+        self.assertIn("[Original user request]\n今天比亚迪股票的行情如何？", prompt)
+        self.assertIn("[Active plan]", prompt)
+        self.assertIn("fetch data", prompt)
+        self.assertIn("analyze", prompt)
+        self.assertIn("summarize", prompt)
+        self.assertIn("Call `update_plan`", prompt)
+
+
+class WarnLoopEndedWithPendingPlanTests(unittest.TestCase):
+    """The warning gives the user immediate visibility into why the
+    loop ended with a pending plan, so the symptom from the user
+    report ('plan 还没完成，为什么会结束循环？') no longer requires
+    chat-history archaeology to diagnose.
+    """
+
+    @staticmethod
+    def _capture_stdout(callable_, *args, **kwargs) -> str:
+        import io
+        from contextlib import redirect_stdout
+
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            callable_(*args, **kwargs)
+        return buf.getvalue()
+
+    def test_warns_when_plan_still_has_pending_after_nudge(self):
+        agent = _StubAgentForPlanNudge(PlanFinalizeNudgeGuardTests.PENDING_PLAN)
+        out = self._capture_stdout(
+            _warn_loop_ended_with_pending_plan,
+            agent,
+            plan_finalize_nudged=True,
+            turn_used_ask_more_info=False,
+        )
+        self.assertTrue(out.strip(), "warning should have been printed")
+        # 2 unfinished steps (in_progress + pending) → message must
+        # report that count and surface the post-nudge variant of
+        # the wording so the user knows the model already had its
+        # chance and still didn't comply.
+        self.assertIn("2", out)
+        self.assertTrue("`update_plan`" in out or "update_plan" in out)
+
+    def test_warns_when_plan_pending_and_nudge_was_not_attempted(self):
+        agent = _StubAgentForPlanNudge(PlanFinalizeNudgeGuardTests.PENDING_PLAN)
+        out = self._capture_stdout(
+            _warn_loop_ended_with_pending_plan,
+            agent,
+            plan_finalize_nudged=False,
+            turn_used_ask_more_info=False,
+        )
+        self.assertTrue(out.strip())
+
+    def test_silent_when_plan_is_fully_completed(self):
+        agent = _StubAgentForPlanNudge(PlanFinalizeNudgeGuardTests.DONE_PLAN)
+        out = self._capture_stdout(
+            _warn_loop_ended_with_pending_plan,
+            agent,
+            plan_finalize_nudged=False,
+            turn_used_ask_more_info=False,
+        )
+        self.assertEqual(out, "")
+
+    def test_silent_when_no_active_plan(self):
+        agent = _StubAgentForPlanNudge([])
+        out = self._capture_stdout(
+            _warn_loop_ended_with_pending_plan,
+            agent,
+            plan_finalize_nudged=False,
+            turn_used_ask_more_info=False,
+        )
+        self.assertEqual(out, "")
+
+    def test_silent_when_turn_used_ask_more_info(self):
+        # Pausing the plan to wait on the user is legitimate; a
+        # warning here would just create noise on every clarifying
+        # question.
+        agent = _StubAgentForPlanNudge(PlanFinalizeNudgeGuardTests.PENDING_PLAN)
+        out = self._capture_stdout(
+            _warn_loop_ended_with_pending_plan,
+            agent,
+            plan_finalize_nudged=False,
+            turn_used_ask_more_info=True,
+        )
+        self.assertEqual(out, "")
 
 
 if __name__ == "__main__":

@@ -571,6 +571,135 @@ def _format_active_plan_reminder(summary: Dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def _build_plan_finalize_nudge_prompt(
+    *,
+    original_user_task: str,
+    plan_summary: Dict[str, Any],
+) -> str:
+    """Build the prompt that asks the model to reconcile a stale plan
+    before the host returns to the command prompt.
+
+    Centralized so every code path that ends a turn with a pending
+    plan emits identical instructions; previously the prompt was
+    inlined inside one ``if`` branch and other early-exit branches
+    silently dropped the nudge entirely.
+    """
+    plan_block = _format_active_plan_reminder(plan_summary)
+    return (
+        f"[Original user request]\n{original_user_task}\n\n"
+        f"{plan_block}\n\n"
+        "Before finishing, reconcile the active plan with the work that "
+        "has actually been done in this turn. Call `update_plan` to mark "
+        "every step that is finished as `completed` (and remove or "
+        "rewrite steps that no longer apply, providing an `explanation`). "
+        "After the plan is up to date, reply with a short natural-"
+        "language summary and no further tool_calls; the host will then "
+        "return to the command prompt."
+    )
+
+
+def _warn_loop_ended_with_pending_plan(
+    agent: Any,
+    *,
+    plan_finalize_nudged: bool,
+    turn_used_ask_more_info: bool,
+) -> None:
+    """Print a user-visible warning when the loop exits with a stale plan.
+
+    The plan-finalize nudge gives the model exactly one extra round
+    to flush its plan; if the model still doesn't call ``update_plan``
+    after the nudge (or the nudge couldn't fire because of feature
+    flags), we surface the situation explicitly. Without this banner
+    the user is left wondering "plan 还没完成，为什么循环结束了？" —
+    exactly the symptom that motivated this helper.
+
+    Suppresses the warning when the model used ``ask_more_info`` this
+    turn, because pausing the plan to wait for the user's reply is a
+    legitimate, expected handoff.
+    """
+    if turn_used_ask_more_info:
+        return
+    try:
+        summary = _summarize_active_plan(agent)
+    except Exception:
+        return
+    if not summary or not summary.get("has_pending"):
+        return
+    pending = [
+        str(it.get("step") or "").strip()
+        for it in summary.get("items", [])
+        if str(it.get("status") or "") != PLAN_STATUS_COMPLETED
+        and str(it.get("step") or "").strip()
+    ]
+    if not pending:
+        return
+    pending_count = len(pending)
+    if plan_finalize_nudged:
+        en = (
+            f"ℹ️ The active plan still has {pending_count} unfinished step(s) "
+            "but the model finished without calling `update_plan` after the "
+            "reminder. Send another message (e.g. \"continue\") to resume."
+        )
+        zh = (
+            f"ℹ️ 活动计划仍有 {pending_count} 项未完成，但模型在收到提醒后仍未调用 "
+            "`update_plan`。请再发一条消息（例如 \"继续\"）以恢复执行。"
+        )
+    else:
+        en = (
+            f"ℹ️ The active plan still has {pending_count} unfinished step(s); "
+            "the loop ended without nudging the model to update the plan. "
+            "Send another message (e.g. \"continue\") to resume."
+        )
+        zh = (
+            f"ℹ️ 活动计划仍有 {pending_count} 项未完成，循环已结束且未提醒模型更新计划。"
+            "请再发一条消息（例如 \"继续\"）以恢复执行。"
+        )
+    try:
+        from ..core.localization import get_display_language
+
+        lang = get_display_language(agent)
+    except Exception:
+        lang = ""
+    message = zh if str(lang or "").lower().startswith("zh") else en
+    try:
+        print(message)
+    except Exception:
+        pass
+
+
+def _should_fire_plan_finalize_nudge(
+    agent: Any,
+    *,
+    task_uses_standard_openai_tools: bool,
+    plan_finalize_nudged: bool,
+    turn_used_ask_more_info: bool,
+) -> Optional[Dict[str, Any]]:
+    """Return the active-plan summary when a plan-finalize nudge is warranted.
+
+    Returns ``None`` (no nudge needed) when any precondition fails:
+    the model can't actually call tools to update the plan, the
+    nudge was already fired this turn, the model used
+    ``ask_more_info`` (which is a legitimate handoff to the user),
+    or the active plan has no pending steps.
+
+    Centralizing this check guarantees every loop-exit path uses the
+    same logic — the previous implementation only checked it inside
+    the ``if not fallback_plans:`` branch, so other early exits
+    (empty tool name, malformed plan, repeated-call detector, etc.)
+    silently abandoned a still-pending plan.
+    """
+    if not task_uses_standard_openai_tools:
+        return None
+    if plan_finalize_nudged:
+        return None
+    if turn_used_ask_more_info:
+        return None
+    summary = _summarize_active_plan(agent)
+    if not summary or not summary.get("has_pending"):
+        return None
+    return summary
+
+
 def _strip_leaked_internal_history_markers(text: Any) -> str:
     s = str(text or "")
     if not s:
@@ -2549,6 +2678,11 @@ def run_agent_loop(agent: Any):
                     _stop_status_ticker_before_first_output()
                 if not isinstance(ai_response, str):
                     print(t("runtime.ai_invalid_response", value=ai_response))
+                    _warn_loop_ended_with_pending_plan(
+                        self,
+                        plan_finalize_nudged=plan_finalize_nudged,
+                        turn_used_ask_more_info=turn_used_ask_more_info,
+                    )
                     break
                 cleaned_internal_ai_response = _strip_leaked_internal_history_markers(ai_response)
                 if cleaned_internal_ai_response != ai_response:
@@ -2617,6 +2751,11 @@ def run_agent_loop(agent: Any):
                                 "错误：模型反复将工具调用写成助手文本，而不是标准 tool_calls。本轮自动执行已停止。",
                             )
                         )
+                        _warn_loop_ended_with_pending_plan(
+                            self,
+                            plan_finalize_nudged=plan_finalize_nudged,
+                            turn_used_ask_more_info=turn_used_ask_more_info,
+                        )
                         break
 
                     pseudo_retry_attempts += 1
@@ -2665,33 +2804,30 @@ def run_agent_loop(agent: Any):
                     # an explicit handoff to the user and the plan can
                     # legitimately stay open until the next user message
                     # is processed.
-                    if (
-                        task_uses_standard_openai_tools
-                        and not plan_finalize_nudged
-                        and not turn_used_ask_more_info
-                    ):
-                        plan_summary_for_nudge = _summarize_active_plan(self)
-                        if plan_summary_for_nudge and plan_summary_for_nudge.get("has_pending"):
-                            plan_finalize_nudged = True
-                            no_tool_rounds = 0
-                            is_first_round = False
-                            plan_block = _format_active_plan_reminder(plan_summary_for_nudge)
-                            next_input = (
-                                f"[Original user request]\n{original_user_task}\n\n"
-                                f"{plan_block}\n\n"
-                                "Before finishing, reconcile the active plan with the work that "
-                                "has actually been done in this turn. Call `update_plan` to mark "
-                                "every step that is finished as `completed` (and remove or "
-                                "rewrite steps that no longer apply, providing an `explanation`). "
-                                "After the plan is up to date, reply with a short natural-"
-                                "language summary and no further tool_calls; the host will then "
-                                "return to the command prompt."
-                            )
-                            continue
+                    nudge_summary = _should_fire_plan_finalize_nudge(
+                        self,
+                        task_uses_standard_openai_tools=task_uses_standard_openai_tools,
+                        plan_finalize_nudged=plan_finalize_nudged,
+                        turn_used_ask_more_info=turn_used_ask_more_info,
+                    )
+                    if nudge_summary is not None:
+                        plan_finalize_nudged = True
+                        no_tool_rounds = 0
+                        is_first_round = False
+                        next_input = _build_plan_finalize_nudge_prompt(
+                            original_user_task=original_user_task,
+                            plan_summary=nudge_summary,
+                        )
+                        continue
                     # No tool calls in the assistant message: end the loop and
                     # return to the command prompt regardless of standard-tool
                     # mode. Visible content (when present) has already been
                     # rendered above.
+                    _warn_loop_ended_with_pending_plan(
+                        self,
+                        plan_finalize_nudged=plan_finalize_nudged,
+                        turn_used_ask_more_info=turn_used_ask_more_info,
+                    )
                     _refresh_context_usage_after_task_boundary(
                         self,
                         user_input_hint=str(original_user_task or ""),
@@ -2997,11 +3133,21 @@ def run_agent_loop(agent: Any):
                         break
 
                 if break_after_batch:
+                    _warn_loop_ended_with_pending_plan(
+                        self,
+                        plan_finalize_nudged=plan_finalize_nudged,
+                        turn_used_ask_more_info=turn_used_ask_more_info,
+                    )
                     break
                 if continue_after_batch:
                     continue
                 if not executed_batch_results:
                     print(t("runtime.no_executable_tool_call"))
+                    _warn_loop_ended_with_pending_plan(
+                        self,
+                        plan_finalize_nudged=plan_finalize_nudged,
+                        turn_used_ask_more_info=turn_used_ask_more_info,
+                    )
                     break
 
                 result_for_next_input: Dict[str, Any]
