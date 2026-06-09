@@ -46,7 +46,7 @@ if [ ! -f "$REQ_FILE" ]; then
     exit 1
 fi
 
-MISSING=$(pip install --dry-run -r "requirements.txt" 2>&1 | \
+MISSING=$("$VENV_PYTHON" -m pip install --dry-run -r "$REQ_FILE" 2>&1 | \
     grep -v -E "Requirement already satisfied|^\[notice\]|--upgrade pip")
 if echo "$MISSING" | grep -q "Could not find\|No matching distribution"; then
     echo "Missing dependencies detected. Running install.sh..."
