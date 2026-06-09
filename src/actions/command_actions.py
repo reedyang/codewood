@@ -1050,6 +1050,15 @@ def action_shell_command(
                 "message": "Installation was cancelled by the user. Flow ended (should not auto-retry).",
                 **base_out,
             }
+        no_match_message = _classify_no_match_exit(command, return_code, combo)
+        if no_match_message:
+            register_outputs_from_shell_command(agent, command)
+            return {
+                "success": True,
+                "no_matches": True,
+                "message": no_match_message,
+                **base_out,
+            }
         return {
             "success": False,
             "error": f"Command execution failed, exit code: {return_code}",
@@ -1363,6 +1372,99 @@ def _unwrap_shell_command_layers(command: str, max_depth: int = 8) -> str:
         if not changed:
             break
     return s
+
+
+# Tools that document a non-zero exit code as "ran successfully but found
+# no matches". For these, exit code 1 with empty stdout is a normal
+# outcome, not a hard failure. We surface this as ``success=True`` with
+# an explanatory message so the model doesn't think the tool itself
+# broke and switch to a worse alternative.
+_NO_MATCH_FRIENDLY_TOOLS: frozenset[str] = frozenset({
+    "rg",
+    "ripgrep",
+    "ag",          # the_silver_searcher
+    "ack",
+    "grep",
+    "egrep",
+    "fgrep",
+    "findstr",
+})
+
+
+def _shell_command_has_compound_operator(command: str) -> bool:
+    """Return True when the command contains a pipe / boolean / sequencer.
+
+    These operators (``|``, ``||``, ``&&``, ``;``, ``&``) make the final
+    exit code reflect more than just the head tool's behavior, so the
+    no-match-friendly relaxation must not apply.
+    """
+    s = str(command or "")
+    in_single = False
+    in_double = False
+    backtick = False
+    i = 0
+    n = len(s)
+    while i < n:
+        ch = s[i]
+        if ch == "\\" and i + 1 < n and not in_single:
+            i += 2
+            continue
+        if ch == "'" and not in_double and not backtick:
+            in_single = not in_single
+            i += 1
+            continue
+        if ch == '"' and not in_single and not backtick:
+            in_double = not in_double
+            i += 1
+            continue
+        if ch == "`" and not in_single and not in_double:
+            backtick = not backtick
+            i += 1
+            continue
+        if not (in_single or in_double or backtick):
+            if ch in ("|", ";"):
+                return True
+            if ch == "&":
+                # Ignore the trailing ``&`` form only when we hit a single
+                # ``&`` at end of string (rare); both ``&`` and ``&&``
+                # affect exit-code semantics so we treat any unquoted
+                # ``&`` as compound.
+                return True
+        i += 1
+    return False
+
+
+def _classify_no_match_exit(
+    command: str,
+    return_code: int,
+    stdout_text: str,
+) -> Optional[str]:
+    """Classify ``return_code == 1`` from a single search-tool invocation.
+
+    Returns a localized explanation string when the command should be
+    treated as a successful "no matches found" result; returns ``None``
+    when the original failure classification must stand.
+    """
+    if int(return_code) != 1:
+        return None
+    if str(stdout_text or "").strip():
+        return None
+    inner = _unwrap_shell_command_layers(command)
+    if not inner.strip():
+        return None
+    if _shell_command_has_compound_operator(inner):
+        return None
+    parts = _split_shell_like(inner)
+    if not parts:
+        return None
+    base = _token_exe_base(_strip_wrapping_quotes(parts[0]))
+    if base not in _NO_MATCH_FRIENDLY_TOOLS:
+        return None
+    return (
+        f"`{base}` exited with code 1 because it found no matches. "
+        "The tool ran successfully; this is the documented \"no matches\" exit code, "
+        "not a real failure. Adjust the query or pattern if matches were expected."
+    )
 
 
 def parse_shell_invoked_script_path(agent: Any, command: str) -> Optional[Path]:

@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import os
 import re
+from pathlib import Path
 from typing import Dict
 
 APP_INFO: Dict[str, str] = {
@@ -84,6 +86,135 @@ def get_app_client_name() -> str:
 
 def get_app_client_model_name() -> str:
     return f"{get_app_client_name()}-client"
+
+
+def get_app_bundled_bin_dir() -> Path:
+    """Return the absolute path to the project-bundled ``bin/`` directory.
+
+    The repository ships pre-built executables (notably ``rg``) in
+    ``<project_root>/bin``. This helper resolves that directory based
+    on this module's location: ``app_info.py`` lives at
+    ``<project_root>/src/config/app_info.py``, so the project root is
+    two levels above this file.
+    """
+    return Path(__file__).resolve().parent.parent.parent / "bin"
+
+
+def prepend_bundled_bin_to_path() -> str:
+    """Ensure the bundled ``bin/`` directory is the first entry on PATH.
+
+    Modifying ``os.environ`` once at startup is enough because every
+    subprocess spawned via ``subprocess.Popen`` / ``subprocess.run``
+    inherits the parent environment by default, and call sites that
+    pass ``env=os.environ.copy()`` also pick up the prepended value.
+    Pre-bundled tools such as ``rg`` therefore resolve transparently
+    even inside pipelines (``rg ... | head``) and compound commands
+    (``rg ... && other``) where head-of-command rewrites cannot reach.
+
+    Idempotent: re-invocation will not duplicate the entry.
+
+    Returns the resolved bundled-bin path as a string. When the
+    bundled directory does not exist (e.g. running from a stripped
+    install), PATH is left unchanged and an empty string is returned.
+    """
+    try:
+        bin_dir = get_app_bundled_bin_dir()
+    except Exception:
+        return ""
+    try:
+        if not bin_dir.is_dir():
+            return ""
+    except Exception:
+        return ""
+
+    try:
+        bin_str = str(bin_dir.resolve())
+    except Exception:
+        bin_str = str(bin_dir)
+
+    sep = os.pathsep
+    current = os.environ.get("PATH", "") or ""
+    entries = current.split(sep) if current else []
+
+    # Treat case-insensitive matches on Windows so we don't double-prepend
+    # when the same path was already inserted with different casing.
+    normalize = (lambda p: p.casefold()) if os.name == "nt" else (lambda p: p)
+    target_norm = normalize(bin_str)
+
+    if entries and normalize(entries[0]) == target_norm:
+        # Already the first entry; nothing to do.
+        return bin_str
+
+    deduped = [e for e in entries if normalize(e) != target_norm]
+    new_path = bin_str if not deduped else bin_str + sep + sep.join(deduped)
+    os.environ["PATH"] = new_path
+    return bin_str
+
+
+# Git for Windows install root candidates. The default 64-bit installer
+# lays down ``C:\Program Files\Git`` with ``usr\bin`` underneath; we
+# append both so the model can fall back to ``bash``, GNU coreutils
+# (``grep``, ``sed``, ``awk``, ``find``, ``sort``, ...), ``curl``,
+# ``ssh``, etc. when no native Windows tool fits. Appending (rather
+# than prepending) is deliberate: Windows ships ``find.exe`` and
+# ``sort.exe`` of its own under ``System32`` with completely
+# different semantics, and a head-of-PATH override would silently
+# break long-standing Windows usage.
+_WINDOWS_GIT_PATH_CANDIDATES: tuple[str, ...] = (
+    r"C:\Program Files\Git",
+    r"C:\Program Files\Git\usr\bin",
+)
+
+
+def append_windows_git_tools_to_path() -> list[str]:
+    """Append known Git-for-Windows tool directories to PATH.
+
+    On Windows the model frequently reaches for tools that ship with
+    Git for Windows (``git`` itself, plus the bundled busybox/MSYS2
+    coreutils such as ``bash``, ``grep``, ``sed``, ``awk``, ``find``,
+    ``sort``, ``curl``, ``ssh``). When Git is installed but its
+    ``cmd`` / ``usr\\bin`` directories aren't on PATH (a common state
+    when launching from a non-Git terminal), those calls fail.
+
+    This helper checks the well-known install locations
+    (``C:\\Program Files\\Git`` and ``C:\\Program Files\\Git\\usr\\bin``)
+    and appends any that exist to the **end** of PATH, so the Windows
+    defaults under ``System32`` keep priority. Idempotent — repeated
+    calls do not duplicate entries — and a no-op on non-Windows
+    platforms.
+
+    Returns the list of resolved directories that were ensured on
+    PATH (in append order). Empty list when the platform is not
+    Windows or none of the candidates exist.
+    """
+    if os.name != "nt":
+        return []
+
+    sep = os.pathsep
+    current = os.environ.get("PATH", "") or ""
+    entries = current.split(sep) if current else []
+
+    normalize = lambda p: p.casefold()
+    existing_norm = {normalize(e) for e in entries}
+
+    appended: list[str] = []
+    for candidate in _WINDOWS_GIT_PATH_CANDIDATES:
+        try:
+            if not Path(candidate).is_dir():
+                continue
+        except Exception:
+            continue
+        cand_norm = normalize(candidate)
+        if cand_norm in existing_norm:
+            appended.append(candidate)
+            continue
+        entries.append(candidate)
+        existing_norm.add(cand_norm)
+        appended.append(candidate)
+
+    if appended:
+        os.environ["PATH"] = sep.join(entries)
+    return appended
 
 
 def get_app_runtime_attr_name(suffix: str, *, leading_underscore: bool = False) -> str:
