@@ -24,6 +24,7 @@ from src.runtime.runtime_loop import (
     _stream_visible_text_with_json_pause,
     _stop_pre_task_status_ticker_for_console_output,
     _try_record_user_task_message,
+    _build_apply_patch_failure_hints,
     _parse_tool_plans_from_model_message,
     _parse_tool_plan_from_model_message,
     _looks_like_pseudo_tool_call_text,
@@ -116,6 +117,26 @@ class RuntimeLoopTests(unittest.TestCase):
                 {"success": False, "output": "command aborted by user\n"},
             )
         )
+
+    def test_apply_patch_failure_hints_for_context_mismatch(self):
+        t = lambda key, fallback=None: str(fallback if fallback is not None else key)
+        hints = _build_apply_patch_failure_hints(
+            "Patch context mismatch (line 42)",
+            {"path": "bin/start.bat", "patch": "@@ -1,1 +1,1 @@\n-a\n+b\n"},
+            t,
+        )
+        merged = "\n".join(hints)
+        self.assertIn("文件内容可能已漂移", merged)
+
+    def test_apply_patch_failure_hints_for_missing_required_args(self):
+        t = lambda key, fallback=None: str(fallback if fallback is not None else key)
+        hints = _build_apply_patch_failure_hints(
+            "apply_patch requires both path and patch; missing: patch",
+            {"path": "bin/start.bat"},
+            t,
+        )
+        merged = "\n".join(hints)
+        self.assertIn("必须同时包含 `path` 和非空 `patch`", merged)
 
     def test_render_aborted_direct_shell_feedback_repaints_then_prints_banner(self):
         calls = []

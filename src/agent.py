@@ -2215,13 +2215,24 @@ class Agent:
         t = str(tool_name or "").strip()
         a = args if isinstance(args, dict) else {}
         r = result if isinstance(result, dict) else {}
+        success = bool(r.get("success", True))
+        output_text = str(r.get("output") or "")
+        error_text = str(r.get("error") or "")
+        message_text = str(r.get("message") or "")
+        # Some non-shell tools (e.g. apply_patch) report failures through
+        # `error`/`message` only. Mirror that into `output` for history so
+        # replay/log viewers never end up with a blank failed tool result.
+        if (not output_text) and (not success):
+            output_text = error_text or message_text
         payload = {
             "kind": "model_tool_result",
             "tool": t,
             "args": a,
-            "success": bool(r.get("success", True)),
+            "success": success,
             "return_code": r.get("return_code"),
-            "output": str(r.get("output") or ""),
+            "output": output_text,
+            "error": error_text,
+            "message": message_text,
             "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         }
         return f"{MODEL_TOOL_RESULT_HISTORY_PREFIX}{json.dumps(payload, ensure_ascii=False)}"

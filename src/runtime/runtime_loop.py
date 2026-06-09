@@ -1244,6 +1244,76 @@ def _model_tool_result_was_aborted(tool_name: str, result: Any) -> bool:
     return "command aborted by user" in str(result.get("output") or "").lower()
 
 
+def _build_apply_patch_failure_hints(
+    error_text: str,
+    args: Dict[str, Any],
+    t: Callable[[str, Optional[str]], str],
+) -> List[str]:
+    err = str(error_text or "").strip()
+    low = err.lower()
+    patch_text = str((args or {}).get("patch") or "")
+    path_text = str((args or {}).get("path") or "").strip()
+    hints: List[str] = []
+
+    def add(en: str, zh: str) -> None:
+        msg = str(t(en, zh) or "").strip()
+        if msg and msg not in hints:
+            hints.append(msg)
+
+    if ("missing path/patch" in low) or ("requires both path and patch" in low):
+        add(
+            "Hint: include both `path` and non-empty `patch` in apply_patch args.",
+            "提示：`apply_patch` 参数必须同时包含 `path` 和非空 `patch`。",
+        )
+    if ("patch content cannot be empty" in low) or (not patch_text.strip()):
+        add(
+            "Hint: patch body is empty; regenerate a complete unified diff hunk.",
+            "提示：patch 内容为空；请重新生成完整的 unified diff hunk。",
+        )
+    if (
+        ("no applicable hunks found" in low)
+        or ("expected '@@ ... @@'" in low)
+        or ("invalid hunk header" in low)
+        or ("unsupported hunk line prefix" in low)
+    ):
+        add(
+            "Hint: patch format is invalid; use standard unified diff with `@@` hunks and `+/-/ ` prefixes.",
+            "提示：patch 格式不合法；请使用标准 unified diff（含 `@@` hunk，行前缀为 `+/-/ `）。",
+        )
+    if (
+        ("patch context mismatch" in low)
+        or ("patch deletion mismatch" in low)
+        or ("hunk start line out of range" in low)
+        or ("patch anchor not found" in low)
+    ):
+        add(
+            "Hint: file content drifted; re-read the latest file and regenerate a smaller, context-accurate hunk.",
+            "提示：文件内容可能已漂移；请先重新读取最新文件，再生成更小且上下文精确的 hunk。",
+        )
+    if ("not a file" in low) or ("does not exist" in low):
+        if path_text:
+            add(
+                f"Hint: verify target path exists and is a text file: `{path_text}`.",
+                f"提示：请确认目标路径存在且为文本文件：`{path_text}`。",
+            )
+        else:
+            add(
+                "Hint: verify target path exists and points to a text file.",
+                "提示：请确认目标路径存在且指向文本文件。",
+            )
+    if ("operation cancelled by user" in low) or ("cancelled by user" in low):
+        add(
+            "Hint: patch was cancelled by user confirmation; request confirmation before retry.",
+            "提示：该 patch 是用户确认时取消；重试前请先征得用户确认。",
+        )
+    if not hints:
+        add(
+            "Hint: re-read target file and retry with a minimal unified diff patch.",
+            "提示：请重新读取目标文件，并用最小化 unified diff patch 重试。",
+        )
+    return hints
+
+
 def _reload_chat_history_after_aborted_command(agent: Any) -> None:
     try:
         agent._suppress_next_prompt_chat_reload_once = True
@@ -3077,6 +3147,13 @@ def run_agent_loop(agent: Any):
                     if tool_name == "apply_patch" and (not bool(result.get("success", False))):
                         err = str(result.get("error") or result.get("message") or "unknown error").strip()
                         print(t("runtime.apply_patch_failed", error=err))
+                        print(t("🔎 apply_patch diagnostic hints:", "🔎 apply_patch 诊断提示："))
+                        for hint in _build_apply_patch_failure_hints(
+                            err,
+                            args if isinstance(args, dict) else {},
+                            t,
+                        ):
+                            print(f"  - {hint}")
                     if self._result_indicates_user_cancelled(result):
                         self._force_current_input_as_requirement_once = True
                         self._last_cancelled_task = str(original_user_task or "").strip()
