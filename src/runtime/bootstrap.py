@@ -244,7 +244,17 @@ def setup_model_ai_stack(
         agent.provider = provider
         agent.params = params or {}
 
-    agent.openai_conf = agent.params if agent.provider == "openai" else openai_conf
+    # ``api_mode`` is the dispatch switch; ``provider`` is just a
+    # selector-prefix label. ``openai_conf`` is the params bag used
+    # by the OpenAI-compatible HTTP client and is intentionally
+    # ``None`` when the active backend is the Ollama-native HTTP API.
+    from ..ai.ai_provider_clients import resolve_api_mode
+
+    api_mode = resolve_api_mode(params=agent.params, provider=agent.provider)
+    if api_mode == "ollama":
+        agent.openai_conf = None
+    else:
+        agent.openai_conf = agent.params if agent.params else openai_conf
 
     agent.path_policy = PathPolicy(agent)
     agent.session_memory_service = SessionMemoryService(agent)

@@ -1,10 +1,20 @@
 {
   "model_providers": [
     {
+      // ``provider`` is a free-form label used as the prefix in the
+      // model selector (e.g. ``openai:gpt-4o``). The dispatch
+      // between OpenAI-compatible HTTP API and the local Ollama
+      // HTTP API is decided by ``api_mode`` below — set
+      // ``api_mode: "ollama"`` for local Ollama models.
       "provider": "openai",
       "params": {
         "api_key": "<YOUR API KEY>",
         "base_url": "https://api.openai.com/v1",
+        // ``api_mode`` selects the API call method:
+        //   "auto"      = OpenAI-compatible; probe chat-completions/responses by base_url suffix (default)
+        //   "chat"      = OpenAI-compatible; force /chat/completions
+        //   "responses" = OpenAI-compatible; force /responses
+        //   "ollama"    = local Ollama HTTP API (uses ``port``; ignores api_key/base_url)
         "api_mode": "auto",
         "models": [
           {
@@ -19,8 +29,12 @@
       }
     },
     {
+      // Local Ollama model. The ``provider`` label is used only as
+      // the selector prefix (``ollama:<model-name>``); the actual
+      // backend is selected by ``api_mode: "ollama"``.
       "provider": "ollama",
       "params": {
+        "api_mode": "ollama",
         "port": 11434,                    // optional, default is 11434
         "models": [
           {

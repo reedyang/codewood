@@ -134,6 +134,7 @@ Create `.smartshell/config.jsonc` in your user directory:
     {
       "provider": "ollama",
       "params": {
+        "api_mode": "ollama",
         "port": 11434,
         "models": [
           { "name": "qwen2.5vl:3b", "context_window": "96k", "streaming": true }
@@ -153,19 +154,21 @@ Create `.smartshell/config.jsonc` in your user directory:
 ### Configuration Notes
 
 - `model_providers`: ordered list of model providers; Smart Shell uses the first provider by default
-- `model_providers[i].provider`: supports `ollama` and `openai`
-- `model_providers[i].params.port`: used only by `ollama`, with a default of `11434`
-- `model_providers[i].params.api_mode`: used only by `openai`, and supports `auto` (default), `chat`, and `responses`
-  - `auto`: automatically selects between Chat Completions and Responses API
-  - `chat`: uses the Chat Completions API
-  - `responses`: uses the Responses API
+- `model_providers[i].provider`: free-form label used only as the model selector prefix (e.g. `openai:gpt-4o`, `ollama:qwen2.5vl:3b`); it does NOT participate in API-call dispatch — that is decided by `api_mode`
+- `model_providers[i].params.api_mode`: selects the API call method
+  - `auto` (default): OpenAI-compatible HTTP API; auto-probes `/chat/completions` and `/responses` based on `base_url` suffix
+  - `chat`: OpenAI-compatible HTTP API; forces `/chat/completions`
+  - `responses`: OpenAI-compatible HTTP API; forces `/responses`
+  - `ollama`: local Ollama HTTP API (uses `port`; ignores `api_key`/`base_url`)
+  - For backward compatibility, configurations that omit `api_mode` and set `provider: "ollama"` are still treated as `api_mode: "ollama"`
+- `model_providers[i].params.port`: used by `api_mode: "ollama"`, with a default of `11434`
 - `model_providers[i].params.models`: model list; the first model is used by default
   - String form: `"gpt-oss-120b"` uses the default `context_window=128000` and `streaming=true`
   - Object form: `{"name":"gpt-oss-120b","context_window":"128K","streaming":true,"extra_headers":{"X-Model":"gpt-oss-120b"}}`
 - `context_window`: accepts a positive integer or a string matching `^\d+[kKmM]?$`; invalid values fall back to `128000`
 - When `context_window < 64000`, Smart Shell skips system prompts, tool prompts, skill prompts, memory, and operational context, and only sends conversation history plus the current user input
 - `streaming`: per-model streaming toggle, default `true`
-- `extra_headers`: per-model custom request headers, available only for the `openai` provider
+- `extra_headers`: per-model custom request headers, available only for OpenAI-compatible `api_mode` values (`auto`/`chat`/`responses`)
 - `auto_compact_trigger_percent`: automatic summarization threshold, default `60`
 - `model_providers[i].params`: provider-specific parameters such as API keys and base URLs
 - `mcp_tools_enabled`: enables MCP management tools. When `false`, the following tools are unavailable: `mcp_server_info`, `mcp_disable_tools`, `mcp_enable_tools`, `mcp_list_disabled_tools`, `mcp_sampling_create_message`, and `mcp_completion_complete`

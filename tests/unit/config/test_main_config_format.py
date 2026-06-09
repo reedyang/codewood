@@ -190,6 +190,50 @@ class MainConfigFormatTests(unittest.TestCase):
         self.assertIsNone(custom_error)
         self.assertEqual(custom_config["params"]["port"], 11555)
 
+    def test_ollama_port_default_applies_for_explicit_api_mode_ollama(self):
+        # The new canonical shape sets ``api_mode: "ollama"``
+        # explicitly; the port default must follow the api_mode,
+        # not the provider label.
+        _, _, model_config, error = _extract_model_runtime_config(
+            {
+                "model_providers": [
+                    {
+                        # Free-form provider label; the dispatcher
+                        # uses api_mode to pick the backend.
+                        "provider": "local",
+                        "params": {
+                            "api_mode": "ollama",
+                            "models": ["qwen2.5:14b"],
+                        },
+                    }
+                ]
+            }
+        )
+        self.assertIsNone(error)
+        self.assertEqual(model_config["params"]["port"], 11434)
+        self.assertEqual(model_config["params"]["api_mode"], "ollama")
+
+    def test_ollama_port_default_skipped_when_api_mode_is_chat(self):
+        # An OpenAI-compatible api_mode under any provider label
+        # must NOT inject the Ollama port default.
+        _, _, model_config, error = _extract_model_runtime_config(
+            {
+                "model_providers": [
+                    {
+                        "provider": "ollama",
+                        "params": {
+                            "api_mode": "chat",
+                            "base_url": "http://localhost:8080/v1",
+                            "api_key": "k",
+                            "models": ["my-model"],
+                        },
+                    }
+                ]
+            }
+        )
+        self.assertIsNone(error)
+        self.assertNotIn("port", model_config["params"])
+
     def test_requires_model_providers(self):
         provider, model_name, model_config, error = _extract_model_runtime_config({})
         self.assertIsNone(provider)
