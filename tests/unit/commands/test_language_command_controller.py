@@ -75,6 +75,22 @@ class LanguageCommandControllerTests(unittest.TestCase):
             self.assertEqual(data.get("language"), "zh-CN")
             self.assertNotIn("display_language", data)
 
+    def test_language_change_updates_ai_orchestrator_context_display_language(self):
+        with tempfile.TemporaryDirectory() as td:
+            cfg_dir = Path(td)
+            (cfg_dir / "config.jsonc").write_text("{}", encoding="utf-8")
+            agent = _FakeLanguageAgent(cfg_dir)
+            agent.ai_orchestrator = type(
+                "_FakeOrchestrator",
+                (),
+                {"context": type("_FakeContext", (), {"display_language": "en"})()},
+            )()
+
+            handled = handle_language_builtin_command(agent, "language zh-CN")
+            self.assertTrue(handled)
+            self.assertEqual(agent.display_language, "zh-CN")
+            self.assertEqual(agent.ai_orchestrator.context.display_language, "zh-CN")
+
     def test_invalid_language_shows_usage(self):
         with tempfile.TemporaryDirectory() as td:
             agent = _FakeLanguageAgent(Path(td))

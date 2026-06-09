@@ -77,6 +77,7 @@ class AgentAIContext:
     history_writer: Callable[[str, str], None]
     regular_message_builder: Callable[[str, str], Tuple[List[Dict[str, Any]], bool]]
     ollama_importer: Callable[[], Any]
+    display_language: str = "en"
     # Optional sink for multi-attempt model-call error messages that should be
     # displayed on screen and survive terminal-resize redraws but must NOT be
     # persisted to chat history. Receives a single pre-formatted string.
@@ -188,6 +189,7 @@ class AIOrchestrator:
                 memory_query_expansion_mode=call_ctx.memory_query_expansion_mode,
                 tool_schemas=call_ctx.tool_schemas,
                 tool_choice=call_ctx.tool_choice,
+                display_language=self.context.display_language,
             )
             return call_ai_with_provider(
                 context=provider_ctx,

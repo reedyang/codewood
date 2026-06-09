@@ -152,5 +152,37 @@ def apply_display_language(agent: Any, language: Any) -> Dict[str, Any]:
     except Exception:
         pass
 
+    try:
+        ai_orchestrator = getattr(agent, "ai_orchestrator", None)
+        if ai_orchestrator is not None:
+            ctx = getattr(ai_orchestrator, "context", None)
+            if ctx is not None:
+                try:
+                    setattr(ctx, "display_language", normalized)
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+    try:
+        mcp_manager = getattr(agent, "mcp_manager", None)
+        if mcp_manager is not None:
+            try:
+                setattr(mcp_manager, "display_language", normalized)
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    try:
+        history_manager = getattr(agent, "history_manager", None)
+        if history_manager is not None:
+            try:
+                setattr(history_manager, "language", normalized)
+            except Exception:
+                pass
+    except Exception:
+        pass
+
     reload_locales()
     return {"success": True, "path": str(cfg_path), "language": normalized}

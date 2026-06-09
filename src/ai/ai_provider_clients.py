@@ -13,6 +13,7 @@ from ..core.config.model_providers import (
     parse_extra_headers,
     parse_port,
 )
+from ..config.i18n import translate
 from ..core.logging.app_logging import get_logger
 
 
@@ -260,6 +261,7 @@ class ProviderCallContext:
     memory_query_expansion_mode: bool
     tool_schemas: Optional[List[Dict[str, Any]]] = None
     tool_choice: Any = None
+    display_language: str = "en"
 
 
 class OpenAIRequestError(RuntimeError):
@@ -2021,11 +2023,15 @@ def call_ai_with_provider(
             tool_schemas=context.tool_schemas,
             tool_choice=context.tool_choice,
             append_history=append_history,
-            api_key_error_msg="❌ Error: OpenAI API key is not configured. Please set api_key in config.jsonc.",
+            api_key_error_msg=translate(
+                "error.openai_api_key_missing",
+                context.display_language,
+            ),
             default_base_url="https://api.openai.com/v1",
         )
-    return (
-        f"❌ Error: cannot dispatch model call (provider='{context.provider}', "
-        f"api_mode='{api_mode}'); set api_mode to 'chat'/'responses'/'ollama' "
-        "and ensure the model params are configured."
+    return translate(
+        "error.cannot_dispatch_model_call",
+        context.display_language,
+        provider=context.provider,
+        api_mode=api_mode,
     )

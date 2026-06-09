@@ -118,6 +118,8 @@
   "❌ Target directory is already a workspace: {name} ({workspace_id})": "❌ Target directory is already a workspace: {name} ({workspace_id})",
   "❌ Unknown built-in command. Use /help.": "❌ Unknown built-in command. Use /help.",
   "common.error": "Error: {error}",
+  "error.openai_api_key_missing": "❌ Error: OpenAI API key is not configured. Please set api_key in `config.jsonc`.",
+  "error.cannot_dispatch_model_call": "❌ Error: cannot dispatch model call (provider='{provider}', api_mode='{api_mode}'); set api_mode to 'chat'/'responses'/'ollama' and ensure the model params are configured.",
   "common.help": "Help",
   "common.notes": "Notes:",
   "common.tip": "Tip: ",
