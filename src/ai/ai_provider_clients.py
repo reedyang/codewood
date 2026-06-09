@@ -2021,7 +2021,7 @@ def call_ai_with_provider(
             tool_schemas=context.tool_schemas,
             tool_choice=context.tool_choice,
             append_history=append_history,
-            api_key_error_msg="❌ Error: OpenAI API key is not configured. Please set api_key in config.jsonc model.params.",
+            api_key_error_msg="❌ Error: OpenAI API key is not configured. Please set api_key in config.jsonc.",
             default_base_url="https://api.openai.com/v1",
         )
     return (
