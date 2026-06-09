@@ -7,6 +7,7 @@ set "ENTRY=%SCRIPT_DIR%..\src\main.py"
 set "APP_INFO=%SCRIPT_DIR%..\src\config\app_info.py"
 set "VENV_DIR=%ROOT_DIR%\.venv-windows"
 set "VENV_PYTHON=%VENV_DIR%\Scripts\python.exe"
+set "REQ_FILE=%ROOT_DIR%\requirements.txt"
 :: ---- Check if environment or dependencies are missing ----
 set "INSTALL_NEEDED="
 if not exist "%VENV_DIR%\Scripts\activate.bat" set "INSTALL_NEEDED=1"
@@ -17,6 +18,17 @@ if defined INSTALL_NEEDED (
     call "%SCRIPT_DIR%install.bat"
     if errorlevel 1 exit /b %ERRORLEVEL%
  )
+:: ---- Check Python dependencies via pip dry-run ----
+if not defined INSTALL_NEEDED (
+    if exist "%REQ_FILE%" (
+        "%VENV_PYTHON%" -m pip install --dry-run -r "%REQ_FILE%" 2>&1 | findstr /R "^Collecting " >nul
+        if not errorlevel 1 (
+            echo Some Python dependencies are missing. Running install.bat...
+            call "%SCRIPT_DIR%install.bat"
+            if errorlevel 1 exit /b %ERRORLEVEL%
+        )
+    )
+)
 
 call :set_title_from_app_info
 call :run_main %*
