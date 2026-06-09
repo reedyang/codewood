@@ -71,6 +71,20 @@ class AgentCallAiStreamingTests(unittest.TestCase):
         self.agent.params = {}
         self.assertTrue(self.agent._use_standard_openai_tools_call())
 
+    def test_standard_tools_mode_is_enabled_regardless_of_provider_label(self):
+        # ``provider`` is now a free-form selector-prefix label, so
+        # the standard-tool-calls capability check must NOT depend
+        # on a hard-coded ``{"openai", "ollama"}`` allow-list. Any
+        # provider name with a sufficient context window opts into
+        # standard tool_calls.
+        for label in ("nvidia", "my-corp-gateway", "azure", "", "deepseek"):
+            self.agent.provider = label
+            self.agent.params = {"context_window": 128000}
+            self.assertTrue(
+                self.agent._use_standard_openai_tools_call(),
+                f"expected standard tools for provider label {label!r}",
+            )
+
     def test_model_switch_warns_when_context_window_is_below_64k(self):
         agent = Agent.__new__(Agent)
         agent.provider = "openai"

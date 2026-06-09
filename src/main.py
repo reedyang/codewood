@@ -351,7 +351,14 @@ def _extract_model_runtime_config(config: dict, requested_model: str | None = No
     params["context_window"] = int(selected.get("context_window") or 0)
     params["streaming"] = bool(selected.get("streaming", True))
     params["extra_headers"] = dict(selected.get("extra_headers") or {})
-    if provider.strip().lower() == "ollama":
+    # The Ollama-native HTTP backend is selected via ``api_mode``;
+    # ``provider`` is now just a label/prefix. Default the port for
+    # any model whose effective ``api_mode`` resolves to ``ollama``,
+    # whether that came from an explicit ``api_mode: "ollama"`` or
+    # from the legacy ``provider: "ollama"`` shorthand.
+    from src.ai.ai_provider_clients import resolve_api_mode
+
+    if resolve_api_mode(params=params, provider=provider) == "ollama":
         params["port"] = parse_port(params.get("port"), default_value=DEFAULT_OLLAMA_PORT)
 
     model_config = {
@@ -596,83 +603,53 @@ def main(argv: list[str] | None = None):
         workspace_selector = str(cli_args.get("workspace_selector") or "").strip()
         exec_task = str(cli_args.get("exec_task") or "").strip()
 
-    if provider == "openai" and params:
-        agent = None
-        try:
-            agent = Agent(
-                model_name=model_name,
-                work_directory=work_directory,
-                provider="openai",
-                params=params,
-                model_config=model_config,
-                config_dir=config_dir,
-                builtin_skills_dir=builtin_skills_dir,
-            )
-            ok, ws_error = _apply_startup_workspace(agent, workspace_selector or None)
-            if not ok:
-                print(text("main.startup_workspace_failed", ui_language) if not ws_error else str(ws_error))
-                return 1
-            ok, model_error = _apply_startup_model_override(agent, model_override_selector or None)
-            if not ok:
-                print(text("main.startup_model_override_failed", ui_language) if not model_error else str(model_error))
-                return 1
-            _set_basic_chat_only_context_prompt_warning_for_agent(agent)
-            if exec_task:
-                agent._queued_user_input = exec_task
-                agent._startup_exec_turn_pending = True
-            agent.run()
-            return 0
-        except Exception as e:
-            print(text("main.openai_runtime_error", ui_language, error=str(e)))
-            return 1
-        finally:
-            if agent is not None:
-                try:
-                    agent.shutdown(wait=False)
-                except Exception:
-                    pass
-    elif provider == "ollama" and params:
-        # ollama: do not import ollama here (configurations that do not use ollama will not load the package); validation is completed in the Agent background thread.
-        agent = None
-        try:
-            agent = Agent(
-                model_name=model_name,
-                work_directory=work_directory,
-                provider="ollama",
-                params=params,
-                model_config=model_config,
-                config_dir=config_dir,
-                builtin_skills_dir=builtin_skills_dir,
-            )
-            ok, ws_error = _apply_startup_workspace(agent, workspace_selector or None)
-            if not ok:
-                print(text("main.startup_workspace_failed", ui_language) if not ws_error else str(ws_error))
-                return 1
-            ok, model_error = _apply_startup_model_override(agent, model_override_selector or None)
-            if not ok:
-                print(text("main.startup_model_override_failed", ui_language) if not model_error else str(model_error))
-                return 1
-            _set_basic_chat_only_context_prompt_warning_for_agent(agent)
-            if exec_task:
-                agent._queued_user_input = exec_task
-                agent._startup_exec_turn_pending = True
-            agent.run()
-            return 0
-        except KeyboardInterrupt:
-            print(text("main.program_exited", ui_language))
-            return 0
-        except Exception as e:
-            print(text("main.runtime_error", ui_language, error=str(e)))
-            return 1
-        finally:
-            if agent is not None:
-                try:
-                    agent.shutdown(wait=False)
-                except Exception:
-                    pass
-    else:
+    # ``provider`` is now just a label/prefix; the OpenAI-compatible
+    # vs Ollama-native HTTP path is selected by ``api_mode`` inside
+    # the AI client. ``main()`` therefore takes a single launch path
+    # regardless of provider name. Ollama is intentionally NOT
+    # imported here — callers that don't need it never load the
+    # package; the actual validation runs in a background thread
+    # inside the Agent.
+    if not params:
         print(text("main.model_provider_unsupported", ui_language, provider=provider))
         return 1
+    agent = None
+    try:
+        agent = Agent(
+            model_name=model_name,
+            work_directory=work_directory,
+            provider=provider,
+            params=params,
+            model_config=model_config,
+            config_dir=config_dir,
+            builtin_skills_dir=builtin_skills_dir,
+        )
+        ok, ws_error = _apply_startup_workspace(agent, workspace_selector or None)
+        if not ok:
+            print(text("main.startup_workspace_failed", ui_language) if not ws_error else str(ws_error))
+            return 1
+        ok, model_error = _apply_startup_model_override(agent, model_override_selector or None)
+        if not ok:
+            print(text("main.startup_model_override_failed", ui_language) if not model_error else str(model_error))
+            return 1
+        _set_basic_chat_only_context_prompt_warning_for_agent(agent)
+        if exec_task:
+            agent._queued_user_input = exec_task
+            agent._startup_exec_turn_pending = True
+        agent.run()
+        return 0
+    except KeyboardInterrupt:
+        print(text("main.program_exited", ui_language))
+        return 0
+    except Exception as e:
+        print(text("main.runtime_error", ui_language, error=str(e)))
+        return 1
+    finally:
+        if agent is not None:
+            try:
+                agent.shutdown(wait=False)
+            except Exception:
+                pass
 
 if __name__ == "__main__":
     sys.exit(main(sys.argv[1:])) 

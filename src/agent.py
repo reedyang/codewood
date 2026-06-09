@@ -61,7 +61,7 @@ from .core.status_bar import (
 )
 from .integrations.mcp import McpManager, McpError
 from .core.change_preview_formatter import ChangePreviewFormatter
-from .ai.ai_provider_clients import AICallContext
+from .ai.ai_provider_clients import AICallContext, resolve_api_mode
 from .services.session_memory_service import SessionMemoryService
 from .policy.path_policy import PathPolicy
 from .core.console_utils import (
@@ -515,12 +515,17 @@ class Agent:
         return f"{provider}:{model_name}"
 
     def _use_standard_openai_tools_call(self) -> bool:
-        provider = str(getattr(self, "provider", "") or "").strip().lower()
+        # Both supported backends (OpenAI-compatible HTTP and Ollama
+        # native HTTP) accept the standard ``tool_calls`` JSON shape;
+        # the runtime only falls back to pseudo-tool-call recovery
+        # for tiny-context "basic chat" models. ``provider`` no
+        # longer participates in dispatch decisions — it's a free-
+        # form label used for the model selector prefix.
         params = getattr(self, "params", {}) or {}
         raw_context_window = params.get("context_window") if isinstance(params, dict) else None
         if is_basic_chat_only_context_window(raw_context_window):
             return False
-        return provider in {"openai", "ollama"}
+        return True
 
     def _streaming_enabled_for_current_model(self) -> bool:
         params = getattr(self, "params", {}) or {}
@@ -569,7 +574,14 @@ class Agent:
         self.provider = provider
         self.model_name = model_name
         self.params = params
-        self.openai_conf = self.params if self.provider == "openai" else None
+        # Dispatch is now driven by ``api_mode``, not the provider
+        # label. ``openai_conf`` is the params bag handed to the
+        # OpenAI-compatible HTTP call; for ``api_mode='ollama'`` the
+        # call_ai dispatcher reads ``model_params`` instead and
+        # ignores ``openai_conf``, so we can populate it
+        # unconditionally here.
+        api_mode = resolve_api_mode(params=self.params, provider=self.provider)
+        self.openai_conf = None if api_mode == "ollama" else self.params
         try:
             ctx = self.ai_orchestrator.context
             ctx.provider = self.provider
@@ -578,7 +590,7 @@ class Agent:
             ctx.openai_conf = self.openai_conf
         except Exception:
             pass
-        if validate and self.provider == "ollama":
+        if validate and api_mode == "ollama":
             try:
                 self._validate_single_model(self.provider, self.model_name, "model")
             except Exception:
@@ -4257,10 +4269,13 @@ class Agent:
     def _schedule_model_validation_background(self) -> None:
         """
         Ollama model-list probing can block; run it in a background thread to shorten the wait between main printing model info and showing the prompt.
-        Non-ollama providers do not start a thread.
+        Non-ollama (api_mode) configurations do not start a thread.
         """
-        ollama_needed = getattr(self, "provider", "") == "ollama"
-        if not ollama_needed:
+        api_mode = resolve_api_mode(
+            params=getattr(self, "params", None),
+            provider=getattr(self, "provider", ""),
+        )
+        if api_mode != "ollama":
             return
 
         def _run() -> None:
@@ -4803,17 +4818,24 @@ class Agent:
     def _freedom_auto_confirm(self, command: Dict[str, Any]) -> bool:
         return execution_policy_service.freedom_auto_confirm(self, command)
     def _validate_model(self) -> None:
-        """Verify that the model is available (ollama mode only)."""
+        """Verify that the model is available (api_mode=ollama only)."""
         self._validate_single_model(self.provider, self.model_name, "model")
 
     def _validate_single_model(self, provider: str, model_name: str, model_type: str):
-        """Verify whether a single model is available."""
-        if provider != "ollama":
+        """Verify whether a single model is available.
+
+        Only meaningful when the active configuration uses
+        ``api_mode='ollama'`` (i.e. talks to a local Ollama daemon);
+        anything else returns silently because the OpenAI-compatible
+        backend has no equivalent ``/api/tags`` endpoint.
+        """
+        params = getattr(self, "params", {}) or {}
+        api_mode = resolve_api_mode(params=params, provider=provider)
+        if api_mode != "ollama":
             return
         try:
             import requests
 
-            params = getattr(self, "params", {}) or {}
             port = parse_port(
                 params.get("port") if isinstance(params, dict) else None,
                 default_value=DEFAULT_OLLAMA_PORT,

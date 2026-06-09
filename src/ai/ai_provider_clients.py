@@ -927,6 +927,14 @@ def _normalize_openai_messages_for_request(messages: List[Dict[str, Any]]) -> Li
 
 
 def _normalize_openai_api_mode(raw: Any) -> str:
+    """Normalize the ``api_mode`` field to one of: ``auto``, ``chat``,
+    ``responses``, or ``ollama``.
+
+    ``ollama`` selects the local Ollama HTTP API path; the other
+    three select the OpenAI-compatible HTTP path (``auto`` lets the
+    client probe ``/chat/completions`` and ``/responses`` based on
+    the configured ``base_url`` suffix).
+    """
     text = str(raw or "").strip().lower()
     if text in ("", "auto"):
         return "auto"
@@ -934,6 +942,31 @@ def _normalize_openai_api_mode(raw: Any) -> str:
         return "chat"
     if text in ("response", "responses"):
         return "responses"
+    if text == "ollama":
+        return "ollama"
+    return "auto"
+
+
+def resolve_api_mode(*, params: Any, provider: Any = "") -> str:
+    """Pick the effective ``api_mode`` for a model.
+
+    ``api_mode`` is the SOLE switch that selects the API call method
+    (OpenAI-compatible vs Ollama-native). ``provider`` is now just a
+    label/prefix used by the model selector; it does NOT participate
+    in dispatch.
+
+    To keep older configs (``provider: "ollama"`` without an
+    ``api_mode`` field) working, this helper falls back to inferring
+    ``ollama`` from the provider name. New configs should set
+    ``api_mode: "ollama"`` explicitly.
+    """
+    raw_mode = ""
+    if isinstance(params, dict):
+        raw_mode = str(params.get("api_mode") or "").strip()
+    if raw_mode:
+        return _normalize_openai_api_mode(raw_mode)
+    if str(provider or "").strip().lower() == "ollama":
+        return "ollama"
     return "auto"
 
 
@@ -1064,6 +1097,10 @@ def _openai_api_order_for_mode(api_mode: str, base_url: str) -> List[str]:
     mode = _normalize_openai_api_mode(api_mode)
     if mode in ("chat", "responses"):
         return [mode]
+    # ``ollama`` is dispatched on a different code path; if it
+    # somehow reaches this OpenAI-compatible router, treat it the
+    # same as ``auto`` so the call still has a chance to succeed
+    # against a base_url that happens to expose chat/completions.
     hint = _base_url_suffix_hint(base_url)
     if hint == "responses":
         return ["responses", "chat"]
@@ -1854,25 +1891,20 @@ def call_ai_with_provider(
     append_history: Callable[..., None],
     ollama_importer: Callable[[], Any],
 ):
-    if context.provider == "openai" and context.openai_conf:
-        return _call_with_openai_compatible(
-            model_name=context.model_name,
-            conf=context.openai_conf,
-            messages=context.messages,
-            stream=context.stream,
-            return_message=context.return_message,
-            image_data=context.image_data,
-            image_user_idx=context.image_user_idx,
-            image_user_text=context.image_user_text,
-            session_summary_mode=context.session_summary_mode,
-            memory_query_expansion_mode=context.memory_query_expansion_mode,
-            tool_schemas=context.tool_schemas,
-            tool_choice=context.tool_choice,
-            append_history=append_history,
-            api_key_error_msg="❌ Error: OpenAI API key is not configured. Please set api_key in config.jsonc model.params.",
-            default_base_url="https://api.openai.com/v1",
-        )
-    if context.provider == "ollama":
+    """Dispatch to the right backend based on the resolved ``api_mode``.
+
+    The previous implementation branched on ``context.provider``; that
+    forced every label-different-but-API-same provider (e.g. local
+    OpenAI-compatible gateways) to be hard-coded as ``"openai"``.
+    Now ``provider`` is a free-form label and ``api_mode`` is the
+    sole dispatch key (``"ollama"`` → local Ollama HTTP API; anything
+    else → OpenAI-compatible HTTP API).
+    """
+    api_mode = resolve_api_mode(
+        params=context.model_params or context.openai_conf,
+        provider=context.provider,
+    )
+    if api_mode == "ollama":
         context_window = parse_context_window(
             ((context.model_params or {}).get("context_window")),
             default_value=DEFAULT_CONTEXT_WINDOW,
@@ -1894,4 +1926,32 @@ def call_ai_with_provider(
             context_window=context_window,
             model_params=context.model_params,
         )
-    return f"❌ Error: unsupported model provider '{context.provider}'. Supported providers: ollama, openai"
+    # OpenAI-compatible HTTP path. When ``openai_conf`` is unset (e.g.
+    # the agent was constructed with a non-``openai`` provider label
+    # but the user explicitly chose ``api_mode: "chat"|"responses"``),
+    # fall back to ``model_params`` so an api_key/base_url discovered
+    # from there can still drive the call.
+    conf = context.openai_conf or context.model_params
+    if conf:
+        return _call_with_openai_compatible(
+            model_name=context.model_name,
+            conf=conf,
+            messages=context.messages,
+            stream=context.stream,
+            return_message=context.return_message,
+            image_data=context.image_data,
+            image_user_idx=context.image_user_idx,
+            image_user_text=context.image_user_text,
+            session_summary_mode=context.session_summary_mode,
+            memory_query_expansion_mode=context.memory_query_expansion_mode,
+            tool_schemas=context.tool_schemas,
+            tool_choice=context.tool_choice,
+            append_history=append_history,
+            api_key_error_msg="❌ Error: OpenAI API key is not configured. Please set api_key in config.jsonc model.params.",
+            default_base_url="https://api.openai.com/v1",
+        )
+    return (
+        f"❌ Error: cannot dispatch model call (provider='{context.provider}', "
+        f"api_mode='{api_mode}'); set api_mode to 'chat'/'responses'/'ollama' "
+        "and ensure the model params are configured."
+    )
