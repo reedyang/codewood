@@ -3,7 +3,13 @@ from pathlib import Path
 from typing import Any, Optional
 
 from ..ai.ai_orchestrator import AIOrchestrator, AgentAIContext
-from ..config.app_info import get_app_config_dirname, get_app_name, get_app_slug_kebab
+from ..config.app_info import (
+    append_windows_git_tools_to_path,
+    get_app_config_dirname,
+    get_app_name,
+    get_app_slug_kebab,
+    prepend_bundled_bin_to_path,
+)
 from ..core.logging.app_logging import setup_app_logging
 from ..core.config.config_env import resolve_string_values_in_data
 from ..core.config.config_jsonc import CONFIG_JSONC_FILENAME, load_config_jsonc
@@ -24,6 +30,15 @@ DEFAULT_AUTO_COMPACT_TRIGGER_PERCENT = 60
 
 
 def setup_core_state(agent: Any, startup_work_directory: Path, self_repo_root: Path) -> None:
+    # Make the bundled ``bin/`` directory the first PATH entry before
+    # anything else can spawn a subprocess. Idempotent and a no-op
+    # when the directory is missing, so safe to call from every Agent
+    # construction path (main entry, tests, ad-hoc embeddings).
+    prepend_bundled_bin_to_path()
+    # On Windows, also append Git-for-Windows tool directories so the
+    # GNU userland is reachable to subprocesses that copy os.environ.
+    # No-op on non-Windows or when Git for Windows is not installed.
+    append_windows_git_tools_to_path()
     agent.work_directory = startup_work_directory
     try:
         agent.startup_initial_directory = Path(startup_work_directory).expanduser().resolve()

@@ -23,7 +23,13 @@ from src.core.config.config_jsonc import (
     load_config_jsonc,
     save_config_jsonc,
 )
-from src.config.app_info import get_app_config_dirname, get_app_name, get_app_version
+from src.config.app_info import (
+    append_windows_git_tools_to_path,
+    get_app_config_dirname,
+    get_app_name,
+    get_app_version,
+    prepend_bundled_bin_to_path,
+)
 from src.core.localization import DEFAULT_DISPLAY_LANGUAGE, normalize_display_language, text
 from src.core.config.model_providers import DEFAULT_OLLAMA_PORT
 from src.core.config.model_providers import basic_chat_only_context_warning
@@ -475,6 +481,22 @@ def _apply_startup_model_override(
 def main(argv: list[str] | None = None):
     """Main function."""
     restore_app_console_title()
+
+    # Prepend the bundled ``bin/`` directory to PATH so pre-shipped
+    # executables such as ``rg.exe`` resolve transparently in shell
+    # commands the agent (or any subprocess we spawn) runs. Doing this
+    # once here is enough — every later ``subprocess.Popen`` /
+    # ``subprocess.run`` call either inherits ``os.environ`` directly
+    # or copies it (``env=os.environ.copy()``), so the prepended path
+    # is visible everywhere, including inside pipelines and compound
+    # commands where the per-command rg head-rewrite cannot reach.
+    prepend_bundled_bin_to_path()
+    # On Windows, also append the Git-for-Windows tool directories so
+    # the model can reach GNU userland (bash, grep, sed, awk, curl,
+    # ssh, …) when they're installed but the launching shell didn't
+    # put them on PATH. Appended at the tail to preserve System32
+    # priority for ``find.exe``/``sort.exe`` and friends.
+    append_windows_git_tools_to_path()
 
     raw_argv = list(argv) if argv is not None else []
     cli_args, cli_error = _parse_startup_cli_args(raw_argv)
