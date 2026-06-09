@@ -30,6 +30,8 @@ from src.runtime.runtime_loop import (
     _split_trailing_pseudo_tool_calls_text,
     _split_trailing_pseudo_tool_calls_text_details,
     _replace_latest_assistant_history_content,
+    _build_pseudo_tool_call_retry_prompt,
+    _PSEUDO_TOOL_CALL_RETRY_EXAMPLE_JSON,
 )
 
 
@@ -1430,6 +1432,89 @@ class ActivePlanReminderTests(unittest.TestCase):
     def test_format_active_plan_reminder_returns_empty_for_no_items(self):
         self.assertEqual(_format_active_plan_reminder({}), "")
         self.assertEqual(_format_active_plan_reminder({"items": []}), "")
+
+
+class PseudoToolCallRetryPromptTests(unittest.TestCase):
+    """Pin down the staged retry-prompt escalation.
+
+    The runtime asks the model to retry whenever it writes a pseudo
+    tool call in assistant text instead of using standard
+    ``tool_calls``. The first retry uses a purely descriptive nudge;
+    if the model fails again, the second retry must additionally
+    embed a concrete OpenAI-API-shape ``tool_calls`` example so the
+    model has an unambiguous template to mirror.
+    """
+
+    def test_first_attempt_uses_base_prompt_without_example(self):
+        prompt = _build_pseudo_tool_call_retry_prompt(
+            original_user_task="reproduce the bug",
+            attempt=1,
+        )
+        self.assertIn("[Original user request]\nreproduce the bug", prompt)
+        self.assertIn("pseudo tool call", prompt)
+        # The example must NOT appear yet — we want to give the
+        # descriptive prompt a chance to work first.
+        self.assertNotIn(_PSEUDO_TOOL_CALL_RETRY_EXAMPLE_JSON, prompt)
+        self.assertNotIn("previous retry also produced", prompt)
+
+    def test_second_attempt_appends_example_block(self):
+        prompt = _build_pseudo_tool_call_retry_prompt(
+            original_user_task="reproduce the bug",
+            attempt=2,
+        )
+        # Base content remains.
+        self.assertIn("[Original user request]\nreproduce the bug", prompt)
+        # Escalation banner.
+        self.assertIn("previous retry also produced pseudo tool-call text", prompt)
+        # Concrete example.
+        self.assertIn(_PSEUDO_TOOL_CALL_RETRY_EXAMPLE_JSON, prompt)
+        # Reinforcing notes following the example.
+        self.assertIn("`arguments` MUST be a JSON string", prompt)
+        self.assertIn("client-unique `id`", prompt)
+
+    def test_third_and_later_attempts_keep_example_block(self):
+        prompt = _build_pseudo_tool_call_retry_prompt(
+            original_user_task="task",
+            attempt=3,
+        )
+        self.assertIn(_PSEUDO_TOOL_CALL_RETRY_EXAMPLE_JSON, prompt)
+
+    def test_zero_attempt_is_treated_as_base_only(self):
+        # Defensive: callers should always pass attempt >= 1 since
+        # the prompt only fires on a retry, but a zero must not
+        # leak the example block either.
+        prompt = _build_pseudo_tool_call_retry_prompt(
+            original_user_task="task",
+            attempt=0,
+        )
+        self.assertNotIn(_PSEUDO_TOOL_CALL_RETRY_EXAMPLE_JSON, prompt)
+
+    def test_example_json_is_valid_openai_tool_calls_payload(self):
+        # The example must literally match what the OpenAI tool API
+        # produces, so the model can copy the shape verbatim. We
+        # check the wire-level invariants here rather than just
+        # inspecting the string.
+        import json
+
+        parsed = json.loads(_PSEUDO_TOOL_CALL_RETRY_EXAMPLE_JSON)
+        self.assertIsInstance(parsed, dict)
+        self.assertIn("tool_calls", parsed)
+        calls = parsed["tool_calls"]
+        self.assertIsInstance(calls, list)
+        self.assertEqual(len(calls), 1)
+        call = calls[0]
+        self.assertEqual(call.get("type"), "function")
+        self.assertTrue(str(call.get("id") or "").strip())
+        fn = call.get("function")
+        self.assertIsInstance(fn, dict)
+        self.assertTrue(str(fn.get("name") or "").strip())
+        # ``arguments`` MUST be a JSON-encoded STRING (not a dict)
+        # per the OpenAI tool-calling spec; the inner string itself
+        # must parse back to a JSON object describing the args.
+        args_field = fn.get("arguments")
+        self.assertIsInstance(args_field, str)
+        inner = json.loads(args_field)
+        self.assertIsInstance(inner, dict)
 
 
 if __name__ == "__main__":
