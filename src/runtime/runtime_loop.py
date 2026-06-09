@@ -2309,6 +2309,15 @@ def run_agent_loop(agent: Any):
             task_started_at = time.monotonic()
             worked_summary_emitted = False
             turn_send_started_at = time.perf_counter()
+            # Drop any prior ephemeral on-screen notices (e.g., multi-attempt
+            # model-call errors). They are intentionally tied to the moment
+            # they surfaced and should not bleed into the next user turn.
+            try:
+                clear_notices = getattr(self, "clear_ephemeral_screen_notices", None)
+                if callable(clear_notices):
+                    clear_notices()
+            except Exception:
+                pass
             _emit_flow_log(
                 f"User submitted input: chars={len(task_user_input)}, active_chat={getattr(self, 'active_chat_id', '')}"
             )
@@ -2609,6 +2618,14 @@ def run_agent_loop(agent: Any):
                     self._clear_last_thinking_line()
                     status_ticker_stopped = True
                     active_status_ticker = None
+
+                # Expose the ticker-stop hook to synchronous callbacks that
+                # may need to write to the terminal *before* call_ai returns
+                # (e.g. the ephemeral notice channel surfacing a multi-attempt
+                # model-call error trail). Without this hook, those writes
+                # would race with the still-running status ticker and leave
+                # the spinner line interleaved with the error output.
+                self._active_status_ticker_stopper = _stop_status_ticker_before_first_output
                 try:
                     standard_tool_schemas = []
                     if task_uses_standard_openai_tools:
@@ -2643,7 +2660,9 @@ def run_agent_loop(agent: Any):
                     )
                 except Exception:
                     _stop_status_ticker_before_first_output()
+                    self._active_status_ticker_stopper = None
                     raise
+                self._active_status_ticker_stopper = None
                 if self._consume_task_interrupt_requested():
                     raise KeyboardInterrupt
                 message_tool_plans: List[Tuple[str, Dict[str, Any]]] = []
@@ -2766,18 +2785,33 @@ def run_agent_loop(agent: Any):
                     is_first_round = False
                     continue
                 if ai_response and not streamed_assistant_output and not ai_response_looks_like_pseudo_tool:
+                    # When a model-call error trail was just printed via the
+                    # ephemeral notice channel, the orchestrator returns a
+                    # one-line summary purely as a fallback for non-UI
+                    # callers. Suppress its terminal echo here so the user
+                    # only sees the rich multi-attempt block.
+                    suppress_assistant_render = False
                     try:
-                        self._hide_previous_shell_output_if_needed()
+                        consume_flag = getattr(
+                            self, "consume_ephemeral_notice_just_emitted", None
+                        )
+                        if callable(consume_flag) and consume_flag():
+                            suppress_assistant_render = True
                     except Exception:
-                        pass
-                    display_response = format_assistant_display_response(ai_response)
-                    if display_response:
-                        self._ensure_terminal_line_start()
-                        rendered = self._format_assistant_chat_display_message(display_response)
-                        sys.stdout.write(f"{rendered}\n")
-                        sys.stdout.flush()
-                        self._last_terminal_block_kind = "assistant"
-                        self._terminal_cursor_at_line_start = True
+                        suppress_assistant_render = False
+                    if not suppress_assistant_render:
+                        try:
+                            self._hide_previous_shell_output_if_needed()
+                        except Exception:
+                            pass
+                        display_response = format_assistant_display_response(ai_response)
+                        if display_response:
+                            self._ensure_terminal_line_start()
+                            rendered = self._format_assistant_chat_display_message(display_response)
+                            sys.stdout.write(f"{rendered}\n")
+                            sys.stdout.flush()
+                            self._last_terminal_block_kind = "assistant"
+                            self._terminal_cursor_at_line_start = True
 
                 if fallback_plans:
                     for tool_name, args in fallback_plans:

@@ -85,6 +85,15 @@ def _reload_chat_from_top(agent: Any, chat_id: str) -> None:
     if not reload_chat_id:
         print(_t(agent, "chat.reload.no_active"))
         return
+    # Ephemeral on-screen notices (e.g. multi-attempt model-call errors)
+    # are intentionally NOT part of chat history, so a reload must drop
+    # them rather than replay them.
+    try:
+        clear_notices = getattr(agent, "clear_ephemeral_screen_notices", None)
+        if callable(clear_notices):
+            clear_notices()
+    except Exception:
+        pass
     agent._load_chat_state()
     reload_result = agent._activate_chat(
         reload_chat_id,
@@ -141,6 +150,12 @@ def handle_chat_builtin_command(agent: Any, builtin_line: str) -> bool:
         return True
     if sub == "new":
         name = " ".join(parts[2:]).strip() if len(parts) > 2 else _t(agent, "chat.new.default_name")
+        try:
+            clear_notices = getattr(agent, "clear_ephemeral_screen_notices", None)
+            if callable(clear_notices):
+                clear_notices()
+        except Exception:
+            pass
         with agent._chat_state_lock:
             cid = agent._next_chat_id()
             agent._chat_entries().append(agent._new_chat_entry(cid, name=name))

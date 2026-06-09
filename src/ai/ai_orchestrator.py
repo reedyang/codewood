@@ -6,6 +6,7 @@ from ..config.app_info import get_app_logger_root
 from ..core.logging.app_logging import get_logger
 from .ai_provider_clients import (
     AICallContext,
+    ModelCallError,
     ProviderCallContext,
     call_ai_with_provider,
     prepare_image_input,
@@ -76,6 +77,10 @@ class AgentAIContext:
     history_writer: Callable[[str, str], None]
     regular_message_builder: Callable[[str, str], Tuple[List[Dict[str, Any]], bool]]
     ollama_importer: Callable[[], Any]
+    # Optional sink for multi-attempt model-call error messages that should be
+    # displayed on screen and survive terminal-resize redraws but must NOT be
+    # persisted to chat history. Receives a single pre-formatted string.
+    ephemeral_notice_writer: Optional[Callable[[str], None]] = None
 
 
 class AIOrchestrator:
@@ -189,5 +194,53 @@ class AIOrchestrator:
                 append_history=_append_history,
                 ollama_importer=self.context.ollama_importer,
             )
+        except ModelCallError as e:
+            formatted = _format_model_call_error_for_display(
+                e, provider=provider, model_name=model_name
+            )
+            sink = self.context.ephemeral_notice_writer
+            if callable(sink):
+                try:
+                    sink(formatted)
+                except Exception:
+                    pass
+            # Return a one-line summary so callers that simply render the
+            # returned string still show something. The full multi-attempt
+            # detail is delivered through ``ephemeral_notice_writer`` so
+            # it can survive terminal-resize redraws without being
+            # persisted to chat history.
+            return (
+                f"Error calling LLM API: {str(e)} "
+                f"(provider: {provider}, model: {model_name})"
+            )
         except Exception as e:
             return f"Error calling LLM API: {str(e)} (provider: {provider}, model: {model_name})"
+
+
+def _format_model_call_error_for_display(
+    error: ModelCallError, *, provider: str, model_name: str
+) -> str:
+    """Render every captured attempt as its own line so the user can see
+    exactly which retry strategies were tried and why each one failed."""
+    header = (
+        f"❌ Model call failed (provider: {provider}, model: {model_name}). "
+        f"Tried {len(error.attempt_errors)} attempt(s):"
+        if error.attempt_errors
+        else f"❌ Model call failed (provider: {provider}, model: {model_name}): {str(error)}"
+    )
+    if not error.attempt_errors:
+        return header
+    lines = [header]
+    for idx, attempt in enumerate(error.attempt_errors, start=1):
+        label = str(attempt.get("label") or "").strip()
+        url = str(attempt.get("url") or "").strip()
+        err_text = str(attempt.get("error") or "").strip()
+        head = f"  {idx}."
+        if label:
+            head += f" [{label}]"
+        if url:
+            head += f" {url}"
+        lines.append(head)
+        for err_line in err_text.splitlines() or [""]:
+            lines.append(f"     {err_line}")
+    return "\n".join(lines)
