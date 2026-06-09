@@ -118,6 +118,8 @@
   "❌ Target directory is already a workspace: {name} ({workspace_id})": "❌ 目标目录已经是工作区：{name} ({workspace_id})",
   "❌ Unknown built-in command. Use /help.": "❌ 无法识别的内置命令。请使用 /help。",
   "common.error": "错误：{error}",
+  "error.openai_api_key_missing": "❌ 错误：OpenAI API 密钥未配置。请在 `config.jsonc` 中设置 api_key。",
+  "error.cannot_dispatch_model_call": "❌ 错误：无法调度模型调用 (provider='{provider}', api_mode='{api_mode}')；请将 api_mode 设置为 'chat'/'responses'/'ollama' 并确保模型参数已配置。",
   "common.help": "帮助",
   "common.notes": "说明：",
   "common.tip": "提示：",
