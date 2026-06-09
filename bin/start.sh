@@ -46,11 +46,11 @@ if [ ! -f "$REQ_FILE" ]; then
     exit 1
 fi
 
-echo "Installing dependencies from \"$REQ_FILE\"..."
-"$VENV_PYTHON" -m pip install -r "$REQ_FILE"
-if [ $? -ne 0 ]; then
-    echo "Failed to install dependencies."
-    exit 1
+MISSING=$(pip install --dry-run -r "requirements.txt" 2>&1 | \
+    grep -v -E "Requirement already satisfied|^\[notice\]|--upgrade pip")
+if echo "$MISSING" | grep -q "Could not find\|No matching distribution"; then
+    echo "Missing dependencies detected. Running install.sh..."
+    "$SCRIPT_DIR/install.sh" || { echo "install.sh failed."; exit 1; }
 fi
 
 set_title_from_app_info
