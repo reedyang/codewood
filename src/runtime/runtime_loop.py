@@ -1793,8 +1793,7 @@ def run_agent_loop(agent: Any):
                 if not builtin_line:
                     print(
                         t(
-                            "ℹ️ Built-in commands must start with /. For example: /exit, /help, /clear screen, /memory status; a standalone / is invalid. For local commands/scripts executed without AI, use ! prefix, e.g. !ls, !git status.",
-                            "ℹ️ 内置命令必须以 / 开头。例如：/exit、/help、/clear screen、/memory status；单独的 / 无效。对于无需 AI 的本地命令/脚本，请使用 ! 前缀，例如 !ls、!git status。",
+                            "runtime.builtin_command_empty"
                         )
                     )
                     continue
@@ -1985,8 +1984,7 @@ def run_agent_loop(agent: Any):
 
                         print(
                             t(
-                                "❌ Unrecognized built-in command. Use /help to view the list. For direct local shell/script execution, use ! prefix, e.g. !git status, !dir.",
-                                "❌ 无法识别的内置命令。请使用 /help 查看列表。对于直接执行本地 shell/脚本命令，请使用 ! 前缀，例如 !git status、!dir。",
+                                "runtime.unrecognized_builtin_command_with_direct_shell_hint"
                             )
                         )
                         continue
@@ -2008,8 +2006,7 @@ def run_agent_loop(agent: Any):
                 if not run_direct_shell:
                     print(
                         t(
-                            "ℹ️ System commands/executables executed directly (without AI) must start with !, for example !ls, !dir, !ping 127.0.0.1, !git status; a standalone ! is invalid.",
-                            "ℹ️ 直接执行的系统命令/可执行文件（不经过 AI）必须以 ! 开头，例如 !ls、!dir、!ping 127.0.0.1、!git status；单独的 ! 无效。",
+                            "runtime.direct_shell_prefix_required"
                         )
                     )
                     continue
