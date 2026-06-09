@@ -245,6 +245,32 @@ class ApplyPatchPreviewTests(unittest.TestCase):
             self.assertEqual(agent.prompt_calls, 0)
             self.assertEqual(target.read_text(encoding="utf-8"), "hello_mod\n")
 
+    def test_apply_patch_falls_back_to_context_when_hunk_line_number_is_wrong(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            target = root / "demo.txt"
+            target.write_text("a1\na2\na3\n", encoding="utf-8")
+            agent = _DummyAgent(root)
+
+            patch = "@@ -3,1 +3,1 @@\n-a2\n+a2_changed\n"
+            result = action_apply_unified_patch(agent, str(target), patch, confirmed=False)
+
+            self.assertTrue(result.get("success"), result.get("error"))
+            self.assertEqual(target.read_text(encoding="utf-8"), "a1\na2_changed\na3\n")
+
+    def test_apply_patch_with_lf_patch_preserves_crlf_file_newlines(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            target = root / "demo.txt"
+            target.write_bytes(b"a1\r\na2\r\na3\r\n")
+            agent = _DummyAgent(root)
+
+            patch = "@@ -2,1 +2,1 @@\n-a2\n+a2_changed\n"
+            result = action_apply_unified_patch(agent, str(target), patch, confirmed=False)
+
+            self.assertTrue(result.get("success"), result.get("error"))
+            self.assertEqual(target.read_bytes(), b"a1\r\na2_changed\r\na3\r\n")
+
 
 if __name__ == "__main__":
     unittest.main()
