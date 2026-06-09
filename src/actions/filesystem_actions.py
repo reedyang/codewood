@@ -73,6 +73,58 @@ def _normalize_apply_patch_text(raw_patch: str, file_path: str) -> tuple[str, Li
     return normalized, warnings
 
 
+def _hunk_matches_at(old_lines: List[str], start_idx: int, hunk_lines: List[str]) -> bool:
+    if start_idx < 0 or start_idx > len(old_lines):
+        return False
+    cur = start_idx
+    for hl in hunk_lines:
+        if hl.startswith("*** "):
+            continue
+        if hl.startswith("\\ No newline at end of file"):
+            continue
+        if not hl:
+            return False
+        prefix = hl[0]
+        text = hl[1:]
+        if prefix in (" ", "-"):
+            if cur >= len(old_lines) or old_lines[cur] != text:
+                return False
+            cur += 1
+        elif prefix == "+":
+            continue
+        else:
+            return False
+    return True
+
+
+def _locate_hunk_start(
+    old_lines: List[str], src_idx: int, target_idx: int, hunk_lines: List[str]
+) -> Optional[int]:
+    if _hunk_matches_at(old_lines, target_idx, hunk_lines):
+        return target_idx
+
+    anchor: Optional[str] = None
+    for hl in hunk_lines:
+        if hl and hl[0] in (" ", "-"):
+            anchor = hl[1:]
+            break
+    if anchor is None:
+        return None
+
+    candidates: List[int] = []
+    for probe in range(src_idx, len(old_lines)):
+        if old_lines[probe] == anchor:
+            candidates.append(probe)
+    if not candidates:
+        return None
+
+    candidates.sort(key=lambda idx: abs(idx - target_idx))
+    for probe in candidates:
+        if _hunk_matches_at(old_lines, probe, hunk_lines):
+            return probe
+    return None
+
+
 def action_apply_unified_patch(agent: Any, file_path: str, patch: str, confirmed: bool = False) -> Dict[str, Any]:
     try:
         policy = agent._get_path_policy()
@@ -165,21 +217,15 @@ def action_apply_unified_patch(agent: Any, file_path: str, patch: str, confirmed
                 target_idx = 0 if old_start_no <= 0 else old_start_no - 1
             if target_idx < src_idx or target_idx > len(old_lines):
                 return {"success": False, "error": f"Hunk start line out of range: {old_start}"}
-            if old_start is None:
-                anchor = None
-                for hl in hunk["lines"]:
-                    if hl and hl[0] in (" ", "-"):
-                        anchor = hl[1:]
-                        break
-                if anchor is not None:
-                    found_idx = None
-                    for probe in range(src_idx, len(old_lines)):
-                        if old_lines[probe] == anchor:
-                            found_idx = probe
-                            break
-                    if found_idx is None:
-                        return {"success": False, "error": "Patch anchor not found; unable to locate hunk"}
-                    target_idx = found_idx
+            located_idx = _locate_hunk_start(old_lines, src_idx, target_idx, hunk["lines"])
+            if located_idx is None:
+                if old_start is None:
+                    return {"success": False, "error": "Patch anchor not found; unable to locate hunk"}
+                return {
+                    "success": False,
+                    "error": f"Patch context mismatch (line {target_idx + 1})",
+                }
+            target_idx = located_idx
             result_lines.extend(old_lines[src_idx:target_idx])
             new_target_idx = len(result_lines)
             cur = target_idx
