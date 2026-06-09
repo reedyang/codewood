@@ -416,6 +416,80 @@ def _looks_like_pseudo_tool_call_text(ai_response: Any) -> bool:
     return False
 
 
+# A minimal, syntactically-correct example of an OpenAI-API-shape
+# ``tool_calls`` payload. We attach this to the **second** retry
+# prompt when the model keeps emitting pseudo tool calls in
+# assistant text instead of using the standard ``tool_calls`` field.
+# The first retry uses the descriptive prompt only — many models
+# self-correct from that alone — but if the model fails again,
+# showing the exact JSON shape removes any remaining ambiguity.
+#
+# The example uses ``shell`` because:
+#   * it is the most ubiquitous tool in the catalog (always loaded);
+#   * it has a single required string argument (``command``) so the
+#     argument-encoding rule is obvious;
+#   * the same shape applies to every other tool — only the
+#     ``name`` and ``arguments`` content differ.
+#
+# Notes on the shape: ``arguments`` MUST be a JSON string (not an
+# object) per the OpenAI tool-calling spec, so the example shows
+# the inner JSON properly escaped. The ``id`` value is illustrative;
+# any client-unique identifier is acceptable.
+_PSEUDO_TOOL_CALL_RETRY_EXAMPLE_JSON = (
+    "{\n"
+    '  "tool_calls": [\n'
+    "    {\n"
+    '      "id": "call_1",\n'
+    '      "type": "function",\n'
+    '      "function": {\n'
+    '        "name": "shell",\n'
+    '        "arguments": "{\\"command\\": \\"rg -n pattern src\\"}"\n'
+    "      }\n"
+    "    }\n"
+    "  ]\n"
+    "}"
+)
+
+
+def _build_pseudo_tool_call_retry_prompt(
+    *,
+    original_user_task: str,
+    attempt: int,
+) -> str:
+    """Return the retry prompt for an unrecovered pseudo tool call.
+
+    ``attempt`` counts retries within the current turn (1 = first
+    retry). On the first retry we keep the prompt purely descriptive,
+    matching the previous behavior; on the second and later retries
+    we append a concrete OpenAI-API-shape ``tool_calls`` JSON example
+    so the model has an unambiguous template to mirror.
+    """
+    base = (
+        f"[Original user request]\n{original_user_task}\n\n"
+        "Your previous assistant text contained a pseudo tool call, "
+        "but no API-standard `tool_calls` were sent and the runtime could not recover it into executable tool plans.\n"
+        "Tool calls written as JSON/YAML/tags/pseudocode in assistant text are invalid; "
+        "this unrecoverable pseudo tool-call text will not be executed.\n"
+        "Retry with one assistant message that has content and tool_calls together: "
+        "content should contain only the short visible plan/status/result, "
+        "and tool_calls should contain the actual API-standard tool call(s). "
+        "Do not print or serialize a JSON/YAML/message object containing `content`, "
+        "`tool_calls`, `tool`, `args`, or `arguments` in assistant text. "
+        "If no further tool action is needed, reply with natural-language content only and no tool_calls."
+    )
+    if int(attempt) < 2:
+        return base
+    return (
+        base
+        + "\n\nThe previous retry also produced pseudo tool-call text. "
+        "For reference, here is the exact shape an API-standard `tool_calls` payload must take "
+        "(this is the OpenAI tool-calling format your client uses; only `name` and `arguments` should change):\n\n"
+        + _PSEUDO_TOOL_CALL_RETRY_EXAMPLE_JSON
+        + "\n\nKey points: `arguments` MUST be a JSON string (not an object), each call has its own client-unique `id`, "
+        "and the entire `tool_calls` array belongs to the API field — never inside the visible `content`."
+    )
+
+
 _PLAN_STATUS_MARK = {
     PLAN_STATUS_PENDING: "[ ]",
     PLAN_STATUS_IN_PROGRESS: "[~]",
@@ -2372,6 +2446,13 @@ def run_agent_loop(agent: Any):
             )
             max_no_tool_rounds = 3
             no_tool_rounds = 0
+            # Counts pseudo-tool-call retries within this turn. Only
+            # the unrecoverable branch increments it, so a retry
+            # caused by the model self-recovering on a later round
+            # never escalates the prompt. Used to escalate the retry
+            # prompt with a concrete JSON tool_calls example after
+            # the first retry didn't fix the issue.
+            pseudo_retry_attempts = 0
             tool_round = 0
             plan_finalize_nudged = False
             turn_used_ask_more_info = False
@@ -2538,18 +2619,10 @@ def run_agent_loop(agent: Any):
                         )
                         break
 
-                    next_input = (
-                        f"[Original user request]\n{original_user_task}\n\n"
-                        "Your previous assistant text contained a pseudo tool call, "
-                        "but no API-standard `tool_calls` were sent and the runtime could not recover it into executable tool plans.\n"
-                        "Tool calls written as JSON/YAML/tags/pseudocode in assistant text are invalid; "
-                        "this unrecoverable pseudo tool-call text will not be executed.\n"
-                        "Retry with one assistant message that has content and tool_calls together: "
-                        "content should contain only the short visible plan/status/result, "
-                        "and tool_calls should contain the actual API-standard tool call(s). "
-                        "Do not print or serialize a JSON/YAML/message object containing `content`, "
-                        "`tool_calls`, `tool`, `args`, or `arguments` in assistant text. "
-                        "If no further tool action is needed, reply with natural-language content only and no tool_calls."
+                    pseudo_retry_attempts += 1
+                    next_input = _build_pseudo_tool_call_retry_prompt(
+                        original_user_task=original_user_task,
+                        attempt=pseudo_retry_attempts,
                     )
                     is_first_round = False
                     continue
