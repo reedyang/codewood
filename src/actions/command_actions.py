@@ -1,4 +1,6 @@
-﻿import os
+﻿import base64
+import contextlib
+import os
 import re
 import shlex
 import shutil
@@ -6,7 +8,6 @@ import sys
 import tempfile
 import threading
 import unicodedata
-import contextlib
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -401,8 +402,19 @@ def _enforce_windows_powershell_command_prefix(command: str) -> Dict[str, Any]:
     cmd = str(command or "").strip()
     if not cmd:
         return {"ok": True, "command": command}
+    # Models occasionally wrap the entire ``powershell ...`` invocation in an
+    # extra pair of double quotes (typically because over-eager JSON escaping
+    # left ``\"`` markers around the whole token). cmd.exe then tries to
+    # locate an executable literally named ``"powershell ..."`` and fails
+    # with ``The system cannot find the path specified.``. Peel a single
+    # surrounding double-quote layer when doing so reveals a recognizable
+    # ``powershell`` invocation.
+    if len(cmd) >= 2 and cmd[0] == '"' and cmd[-1] == '"':
+        inner = cmd[1:-1].strip()
+        if re.match(r"(?i)^powershell(?:\.exe)?\b", inner):
+            cmd = inner
     if not re.match(r"(?i)^powershell(?:\.exe)?\b", cmd):
-        return {"ok": True, "command": command}
+        return {"ok": True, "command": cmd}
     m = re.match(
         r"(?is)^powershell(?:\.exe)?\s+-ExecutionPolicy\s+Bypass\s+-Command\s+(.+)$",
         cmd,
@@ -415,6 +427,137 @@ def _enforce_windows_powershell_command_prefix(command: str) -> Dict[str, Any]:
     # Normalize executable token to `powershell` while preserving the command payload.
     payload = m.group(1).strip()
     return {"ok": True, "command": f"powershell -ExecutionPolicy Bypass -Command {payload}"}
+
+
+# Match a ``powershell ... -Command <payload>`` invocation in a way that's
+# tolerant of mixed casing and the optional ``.exe`` suffix.
+_WIN_POWERSHELL_COMMAND_RE = re.compile(
+    r"(?is)^(?P<exe>powershell(?:\.exe)?)\s+(?P<head>(?:-ExecutionPolicy\s+Bypass\s+)?)"
+    r"-Command\s+(?P<payload>.+)$"
+)
+
+
+def _strip_powershell_payload_quotes(payload: str) -> Tuple[str, str]:
+    """Return ``(inner, quote_kind)`` after peeling one matched outer layer of
+    quotes from a PowerShell ``-Command`` payload.
+
+    PowerShell strings escape an embedded ``"`` as ``\\"`` (when the whole
+    token came through cmd.exe) or as ``""`` (PS-native). For single-quoted
+    strings the escape is ``''``. Quote kind is ``"d"``, ``"s"`` or ``""``.
+    Also tolerates payloads where the model double-escaped the outer quotes
+    (``\\"...\\"``) — that's invalid powershell-from-cmd syntax but the
+    intent is unambiguous.
+    """
+    s = str(payload or "").strip()
+    # Handle backslash-escaped outer double-quote wrapper (``\"...\"``) that
+    # over-escaping models tend to produce. Peel both halves before falling
+    # through to the standard quote-pair handling.
+    if len(s) >= 4 and s.startswith('\\"') and s.endswith('\\"'):
+        s = s[2:-2].strip()
+    if len(s) >= 2 and s[0] == s[-1] and s[0] in ('"', "'"):
+        quote = s[0]
+        inner = s[1:-1]
+        if quote == '"':
+            inner = inner.replace('\\"', '"').replace('""', '"')
+            return inner, "d"
+        else:
+            inner = inner.replace("''", "'")
+            return inner, "s"
+    return s, ""
+
+
+_POWERSHELL_LITERAL_ESCAPE_RE = re.compile(r"\\(?P<ch>[nrt\"'])")
+
+
+def _decode_powershell_literal_escapes(text: str) -> str:
+    """Translate the literal escape sequences models commonly emit (``\\n``,
+    ``\\r``, ``\\t``, ``\\\"``, ``\\'``) into the real characters they meant.
+
+    PowerShell uses backtick escapes (``` `n ```), so ``\\n`` is otherwise a
+    no-op two-character literal in the resulting script. Decoding them is
+    therefore safe for legitimate scripts and unlocks here-strings (which
+    *require* a real LF immediately after ``@'`` / ``@"``).
+    """
+    def _sub(match: "re.Match[str]") -> str:
+        ch = match.group("ch")
+        return {
+            "n": "\n",
+            "r": "\r",
+            "t": "\t",
+            "\"": "\"",
+            "'": "'",
+        }.get(ch, match.group(0))
+
+    return _POWERSHELL_LITERAL_ESCAPE_RE.sub(_sub, str(text or ""))
+
+
+def _powershell_payload_needs_normalization(payload: str) -> bool:
+    """Heuristic: only rewrite payloads that are likely to fail cmd.exe round
+    tripping. Keep simple one-liners untouched so we don't perturb commands
+    the model already wrote correctly."""
+    s = str(payload or "")
+    if not s:
+        return False
+    if "\n" in s or "\r" in s:
+        return True
+    if "\\n" in s or "\\r" in s:
+        return True
+    if "@'" in s or '@"' in s:
+        return True
+    return False
+
+
+def _encode_powershell_script_as_encoded_command(script: str) -> str:
+    """Encode a PowerShell script for the ``-EncodedCommand`` parameter.
+
+    PowerShell expects a Base64 string built from the script's UTF-16-LE
+    bytes. This bypasses every layer of cmd.exe / PowerShell quoting since
+    the encoded blob is plain ASCII with no whitespace or quote characters.
+    """
+    return base64.b64encode(str(script or "").encode("utf-16-le")).decode("ascii")
+
+
+def _normalize_windows_powershell_command_for_compat(command: str) -> str:
+    """Make best-effort fixes to common ``powershell -Command "..."`` mistakes
+    on Windows so that semantically valid scripts the model emits actually
+    reach PowerShell intact.
+
+    Concretely:
+
+    * Decodes literal ``\\n`` / ``\\r`` / ``\\t`` / ``\\"`` escape sequences
+      in the ``-Command`` payload to real characters (no-op for normal PS
+      strings; required for here-strings to parse).
+    * When the resulting payload spans multiple lines or otherwise contains
+      content that wouldn't survive cmd.exe argument parsing, re-emits the
+      command as ``powershell -ExecutionPolicy Bypass -EncodedCommand
+      <base64>`` so quoting concerns are bypassed entirely.
+
+    Returns the original ``command`` unchanged on non-Windows hosts, when
+    no PowerShell invocation is detected, or when the payload looks safe
+    to leave alone.
+    """
+    if os.name != "nt":
+        return command
+    raw = str(command or "")
+    if not raw.strip():
+        return command
+    match = _WIN_POWERSHELL_COMMAND_RE.match(raw.strip())
+    if not match:
+        return command
+    payload_raw = match.group("payload").strip()
+    if not _powershell_payload_needs_normalization(payload_raw):
+        return command
+    payload, quote_kind = _strip_powershell_payload_quotes(payload_raw)
+    decoded = _decode_powershell_literal_escapes(payload)
+    # If decoding didn't actually change anything and the payload is single
+    # line, leave the command alone — the model already wrote something
+    # cmd.exe can dispatch.
+    if decoded == payload and "\n" not in decoded and "\r" not in decoded:
+        # No newlines after decoding either: nothing to fix.
+        if quote_kind:
+            return command
+    encoded = _encode_powershell_script_as_encoded_command(decoded)
+    return f"powershell -ExecutionPolicy Bypass -EncodedCommand {encoded}"
 
 
 def action_shell_command(
@@ -437,6 +580,10 @@ def action_shell_command(
     if not enforce_res.get("ok", False):
         return {"success": False, "error": str(enforce_res.get("error", "PowerShell command format is invalid"))}
     command = str(enforce_res.get("command") or command)
+    # Rescue common Windows PowerShell quoting failures (literal ``\n`` in
+    # here-strings, over-escaped wrappers, etc.) without changing the user-
+    # visible command summary that already got captured upstream.
+    command = _normalize_windows_powershell_command_for_compat(command)
     policy = agent._get_path_policy()
     decision = policy.can_run_shell_in_workdir(
         is_dependency_install=is_dependency_install_command(command),
