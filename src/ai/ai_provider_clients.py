@@ -277,6 +277,25 @@ class OpenAIRequestError(RuntimeError):
         self.url = url
 
 
+class ModelCallError(RuntimeError):
+    """Raised when every retry strategy for a model call has been exhausted.
+
+    Carries the full per-attempt error trail so the UI can show every
+    failed attempt instead of just the last one. Each entry in
+    ``attempt_errors`` is a dict with at least ``label`` and ``error``
+    keys; optional fields like ``url`` are kept verbatim for display.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        attempt_errors: Optional[List[Dict[str, str]]] = None,
+    ) -> None:
+        super().__init__(message)
+        self.attempt_errors: List[Dict[str, str]] = list(attempt_errors or [])
+
+
 def _openai_api_route_cache_path() -> Path:
     return (Path.home() / get_app_config_dirname() / _OPENAI_API_ROUTE_CACHE_FILE).resolve()
 
@@ -1441,9 +1460,19 @@ def _call_openai_with_suffix_strategy(
         )
 
     if secondary_url == primary_url:
+        attempts: List[Dict[str, str]] = [
+            {
+                "label": f"{api_kind} {'with-suffix' if primary_append else 'no-suffix'}",
+                "url": primary_url,
+                "error": str(first_error) if first_error is not None else "",
+            }
+        ]
         if first_error is not None:
-            raise first_error
-        raise RuntimeError("OpenAI request failed and no alternate URL strategy is available.")
+            raise ModelCallError(str(first_error), attempt_errors=attempts) from first_error
+        raise ModelCallError(
+            "OpenAI request failed and no alternate URL strategy is available.",
+            attempt_errors=attempts,
+        )
 
     try:
         _OPENAI_ROUTE_LOG.info(
@@ -1508,9 +1537,21 @@ def _call_openai_with_suffix_strategy(
             secondary_url,
             str(second_error),
         )
+        attempts: List[Dict[str, str]] = []
         if first_error is not None:
-            raise second_error from first_error
-        raise second_error
+            attempts.append({
+                "label": f"{api_kind} {'with-suffix' if primary_append else 'no-suffix'}",
+                "url": primary_url,
+                "error": str(first_error),
+            })
+        attempts.append({
+            "label": f"{api_kind} {'with-suffix' if secondary_append else 'no-suffix'}",
+            "url": secondary_url,
+            "error": str(second_error),
+        })
+        if first_error is not None:
+            raise ModelCallError(str(second_error), attempt_errors=attempts) from first_error
+        raise ModelCallError(str(second_error), attempt_errors=attempts) from second_error
 
 
 def _extract_message_from_openai_response_data(data: Any) -> Dict[str, Any]:
@@ -1657,6 +1698,7 @@ def _call_with_openai_compatible(
             headers[normalized_key] = str(value)
             existing_keys.add(normalized_key.casefold())
     last_error: Optional[Exception] = None
+    aggregated_attempts: List[Dict[str, str]] = []
     for api_kind in api_kinds:
         try:
             _OPENAI_ROUTE_LOG.info(
@@ -1682,8 +1724,23 @@ def _call_with_openai_compatible(
                 tool_choice=tool_choice,
                 append_history=append_history,
             )
+        except ModelCallError as e:
+            last_error = e
+            aggregated_attempts.extend(e.attempt_errors)
+            _OPENAI_ROUTE_LOG.warning(
+                "openai-route kind-failed model=%s api_kind=%s error=%s",
+                model_name,
+                api_kind,
+                str(e),
+            )
+            continue
         except Exception as e:
             last_error = e
+            aggregated_attempts.append({
+                "label": api_kind,
+                "url": str(base_url or ""),
+                "error": str(e),
+            })
             _OPENAI_ROUTE_LOG.warning(
                 "openai-route kind-failed model=%s api_kind=%s error=%s",
                 model_name,
@@ -1693,8 +1750,11 @@ def _call_with_openai_compatible(
             continue
 
     if last_error is not None:
-        raise last_error
-    raise RuntimeError("OpenAI request failed: no API mode candidates were available.")
+        raise ModelCallError(str(last_error), attempt_errors=aggregated_attempts) from last_error
+    raise ModelCallError(
+        "OpenAI request failed: no API mode candidates were available.",
+        attempt_errors=aggregated_attempts,
+    )
 
 
 def _format_ollama_http_error(url: str, error: Exception, response: Any) -> str:
@@ -1791,9 +1851,19 @@ def _call_with_ollama(
         fallback_payload.pop("tool_choice", None)
         response, fallback_error = _post_ollama_chat(fallback_payload)
         if fallback_error is not None:
-            return _format_ollama_http_error(url, request_error, tool_request_response)
+            primary_msg = _format_ollama_http_error(url, request_error, tool_request_response)
+            fallback_msg = _format_ollama_http_error(url, fallback_error, response)
+            attempts: List[Dict[str, str]] = [
+                {"label": "ollama with-tools", "url": url, "error": primary_msg},
+                {"label": "ollama no-tools", "url": url, "error": fallback_msg},
+            ]
+            raise ModelCallError(fallback_msg, attempt_errors=attempts)
     elif request_error is not None:
-        return _format_ollama_http_error(url, request_error, response)
+        msg = _format_ollama_http_error(url, request_error, response)
+        raise ModelCallError(
+            msg,
+            attempt_errors=[{"label": "ollama", "url": url, "error": msg}],
+        )
 
     if stream:
         def _iter_stream_payloads():
@@ -1878,7 +1948,11 @@ def _call_with_ollama(
     try:
         response_data = response.json()
     except Exception as e:
-        return f"❌ Error parsing Ollama HTTP response at {url}: {str(e)}"
+        msg = f"❌ Error parsing Ollama HTTP response at {url}: {str(e)}"
+        raise ModelCallError(
+            msg,
+            attempt_errors=[{"label": "ollama parse", "url": url, "error": msg}],
+        ) from e
     message = _extract_message_from_ollama_response_data(response_data)
     ai_response = str(message.get("content", "") or "")
     append_history(ai_response, message)

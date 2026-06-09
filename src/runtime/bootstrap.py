@@ -268,6 +268,7 @@ def setup_model_ai_stack(
             history_writer=agent._append_chat_message,
             regular_message_builder=agent._build_regular_task_messages,
             ollama_importer=ollama_importer,
+            ephemeral_notice_writer=agent.add_ephemeral_screen_notice,
         )
     )
 

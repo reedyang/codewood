@@ -861,6 +861,89 @@ class Agent:
                 pass
         self._print_chat_history(start_index=self._get_active_chat_history_first_visible_index())
 
+    def add_ephemeral_screen_notice(self, text: str) -> None:
+        """Record a notice that should be shown on screen and re-rendered on
+        terminal resize, but never persisted to chat history and never
+        replayed by ``/chat reload``.
+
+        Used for things like multi-attempt model-call error trails that
+        the user wants visible without polluting the durable chat log.
+        """
+        message = str(text or "")
+        if not message:
+            return
+        try:
+            existing = list(getattr(self, "_ephemeral_screen_notices", []) or [])
+        except Exception:
+            existing = []
+        existing.append(message)
+        # Cap accumulated notices so a runaway-error session can't grow
+        # the buffer unboundedly. The most recent attempts are kept.
+        if len(existing) > 32:
+            existing = existing[-32:]
+        self._ephemeral_screen_notices = existing
+        # One-shot flag the runtime loop checks to skip a duplicate
+        # one-line summary render right after the full trail was shown.
+        self._ephemeral_notice_just_emitted = True
+        try:
+            self._render_ephemeral_screen_notice(message)
+        except Exception:
+            pass
+
+    def consume_ephemeral_notice_just_emitted(self) -> bool:
+        flag = bool(getattr(self, "_ephemeral_notice_just_emitted", False))
+        self._ephemeral_notice_just_emitted = False
+        return flag
+
+    def clear_ephemeral_screen_notices(self) -> None:
+        self._ephemeral_screen_notices = []
+        self._ephemeral_notice_just_emitted = False
+
+    def _render_ephemeral_screen_notice(self, message: str) -> None:
+        text = str(message or "")
+        if not text:
+            return
+        # If the runtime loop is currently spinning a working-status ticker
+        # (printing "工作中... (Xs)" in place), stop it first so the
+        # ephemeral notice doesn't get glued onto the spinner line.
+        try:
+            stopper = getattr(self, "_active_status_ticker_stopper", None)
+            if callable(stopper):
+                stopper()
+        except Exception:
+            pass
+        try:
+            self._clear_last_thinking_line()
+        except Exception:
+            pass
+        try:
+            self._ensure_terminal_line_start()
+        except Exception:
+            pass
+        try:
+            sys.stdout.write(text.rstrip("\n") + "\n")
+            sys.stdout.flush()
+        except Exception:
+            try:
+                print(text)
+            except Exception:
+                return
+        try:
+            self._terminal_cursor_at_line_start = True
+        except Exception:
+            pass
+
+    def _replay_ephemeral_screen_notices(self) -> None:
+        try:
+            notices = list(getattr(self, "_ephemeral_screen_notices", []) or [])
+        except Exception:
+            notices = []
+        for notice in notices:
+            try:
+                self._render_ephemeral_screen_notice(notice)
+            except Exception:
+                continue
+
     def _handle_terminal_columns_changed_during_input(self, previous_cols: int, new_cols: int) -> bool:
         try:
             prev = int(previous_cols or 0)
@@ -1083,6 +1166,7 @@ class Agent:
         last_plan_emitted_feedback: bool = False
         if not hist:
             self._show_separator_next_prompt = False
+            self._replay_ephemeral_screen_notices()
             return
 
         def _reset_plan_tracker_if_stale(current_idx: int) -> None:
@@ -1334,6 +1418,7 @@ class Agent:
             else:
                 print(content)
         self._show_separator_next_prompt = False
+        self._replay_ephemeral_screen_notices()
 
     def _print_direct_shell_history_separator(self) -> None:
         width = max(1, int(self._terminal_columns_for_line_estimate()))

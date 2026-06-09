@@ -720,28 +720,37 @@ class ProviderContextWindowTests(unittest.TestCase):
             status_code=400,
             body='{"error":"model does not support tools"}',
         )
-        with patch("requests.post", return_value=response):
-            out = call_ai_with_provider(
-                context=ProviderCallContext(
-                    provider="ollama",
-                    model_name="qwen2.5:14b",
-                    model_params={"context_window": "96K"},
-                    openai_conf=None,
-                    messages=[{"role": "user", "content": "hi"}],
-                    stream=False,
-                    return_message=False,
-                    image_data=None,
-                    image_user_idx=None,
-                    image_user_text="",
-                    session_summary_mode=False,
-                    memory_query_expansion_mode=False,
-                ),
-                append_history=lambda *_a, **_kw: None,
-                ollama_importer=lambda: None,
-            )
+        from src.ai.ai_provider_clients import ModelCallError
 
-        self.assertIn("Ollama HTTP API", out)
-        self.assertIn("model does not support tools", out)
+        with patch("requests.post", return_value=response):
+            with self.assertRaises(ModelCallError) as ctx:
+                call_ai_with_provider(
+                    context=ProviderCallContext(
+                        provider="ollama",
+                        model_name="qwen2.5:14b",
+                        model_params={"context_window": "96K"},
+                        openai_conf=None,
+                        messages=[{"role": "user", "content": "hi"}],
+                        stream=False,
+                        return_message=False,
+                        image_data=None,
+                        image_user_idx=None,
+                        image_user_text="",
+                        session_summary_mode=False,
+                        memory_query_expansion_mode=False,
+                    ),
+                    append_history=lambda *_a, **_kw: None,
+                    ollama_importer=lambda: None,
+                )
+
+        err = ctx.exception
+        self.assertIn("Ollama HTTP API", str(err))
+        self.assertIn("model does not support tools", str(err))
+        # Per-attempt detail must be available so the UI can render the
+        # full error trail rather than just the last summary line.
+        self.assertTrue(err.attempt_errors)
+        joined = "\n".join(a.get("error", "") for a in err.attempt_errors)
+        self.assertIn("model does not support tools", joined)
 
     def test_ollama_retries_without_tools_when_tool_payload_is_rejected(self):
         responses = [
