@@ -1750,7 +1750,7 @@ class SessionMemoryService:
         )
         user_content = (
             f"compact_mode={str(mode or '').strip().lower() or 'manual'}\n"
-            "Based on the history above, generate a context summary that can replace those messages using the same six-field format from the system instructions."
+            "Based on the history above, generate a concise checkpoint handoff summary that can replace those messages."
         )
         return [{"role": "system", "content": sys_content}] + history_messages + [{"role": "user", "content": user_content}]
 

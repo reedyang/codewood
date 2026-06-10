@@ -958,18 +958,17 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
 
         messages = svc.build_compaction_messages("manual", [{"role": "user", "content": "Hello"}], 0)
         system_content = str(messages[0].get("content") or "")
+        user_content = str(messages[-1].get("content") or "")
 
-        self.assertIn("retrieval-friendly summary", system_content)
-        self.assertIn("Goals: ...", system_content)
+        self.assertIn("CONTEXT CHECKPOINT COMPACTION", system_content)
+        self.assertIn("Create a handoff summary for another LLM", system_content)
+        self.assertIn("Current progress and key decisions made", system_content)
         self.assertIn(
-            "Facts: Paths/Commands/Tool results: ...; Environment/Workspace: ...; Errors/Fixes: ...",
+            "What remains to be done (clear next steps)",
             system_content,
         )
-        self.assertIn("Preferences: ...", system_content)
-        self.assertIn("Decisions: ...", system_content)
-        self.assertIn("Errors: ...", system_content)
-        self.assertIn("Next steps: ...", system_content)
-        self.assertIn("do not compress away useful specifics", system_content)
+        self.assertIn("generate a concise checkpoint handoff summary", user_content)
+        self.assertNotIn("six-field format", user_content)
 
     def test_rolling_session_summary_uses_fixed_fields_and_preserves_details(self):
         agent = _FakeAgent()
