@@ -705,6 +705,17 @@ def _attach_blink_after_render_hook(
                     term_cols = _get_system_terminal_columns(default=0)
                     if term_cols <= 0:
                         term_cols = _get_output_columns_from_obj(output, default=0)
+                    # Real rows available below the resting cursor. Used to
+                    # gate the "clear the row below the status bar" pass so
+                    # the extra line-feed it emits can never scroll the input
+                    # area when the status bar already sits at the bottom of
+                    # the screen.
+                    rows_below = -1
+                    try:
+                        if hasattr(output, "get_rows_below_cursor_position"):
+                            rows_below = int(output.get_rows_below_cursor_position())
+                    except Exception:
+                        rows_below = -1
                     if not menu_open:
                         if bool(state.get("visible")):
                             if desired == "":
@@ -774,6 +785,32 @@ def _attach_blink_after_render_hook(
                                 cursor_x=cursor_x,
                                 term_cols=term_cols,
                             )
+                            # Symmetric belt-and-suspenders: also wipe the row
+                            # immediately BELOW the status bar every frame.
+                            # When the input shrinks by one visual row (e.g.
+                            # the user backspaces a soft-wrapped line away),
+                            # the previously drawn status bar ends up exactly
+                            # one physical row below where the new one lands.
+                            # The transition-frame _clear_two_rows pass above
+                            # is supposed to erase it, but under the Windows
+                            # Terminal ptk-model/physical row drift that clear
+                            # can miss by a row; and once old_target_row ==
+                            # target_row again on the next steady frame we
+                            # never revisit that row, leaving a stale "second
+                            # status bar" stacked under the live one. Clearing
+                            # rows_down + 1 unconditionally on every draw wipes
+                            # that orphan. Guarded by rows_below so the extra
+                            # line-feed can never scroll the input when the bar
+                            # already sits at the bottom of the screen (in
+                            # which case there is no row below to go stale).
+                            if cursor_x is not None and rows_below > rows_down:
+                                _write_overlay_line(
+                                    output,
+                                    "",
+                                    rows_down + 1,
+                                    cursor_x=cursor_x,
+                                    term_cols=term_cols,
+                                )
                             state["visible"] = True
                             state["text"] = desired
                         state["rows_down"] = rows_down
