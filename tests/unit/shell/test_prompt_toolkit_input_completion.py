@@ -130,6 +130,103 @@ class _CursorAwareSession:
 
 
 class PromptToolkitInputCompletionTests(unittest.TestCase):
+    def test_write_overlay_line_uses_cha_path_when_cursor_x_given(self):
+        # When cursor_x is supplied, _write_overlay_line must NOT emit any
+        # DECSC/DECRC pair (\x1b7 / \x1b8). Under sustained Windows Terminal
+        # activity the single DECSC save slot gets clobbered and the
+        # restored cursor ends up on the wrong row. The downward move uses
+        # LF rather than CUD because CUD interacts badly with the terminal's
+        # pending-wrap state after prompt_toolkit parks the cursor at the
+        # right edge — LF is uniformly defined to clear that state first.
+        # The upward return move uses CUU (which doesn't interact with
+        # pending wrap). The whole sequence is bracketed by DECRST/DECSET
+        # of DECAWM (\x1b[?7l / \x1b[?7h) — disabling autowrap
+        # unconditionally clears the delayed-EOL-wrap (LCF) flag, which
+        # is the root cause of the cursor-drift double-status-bar bug.
+        out = _FakeOutput(80)
+        pti._write_overlay_line(out, "STATUS", row_delta=2, cursor_x=5)
+        joined = "".join(out.raw_writes)
+        self.assertNotIn("\x1b7", joined)
+        self.assertNotIn("\x1b8", joined)
+        self.assertNotIn("\x1b[2B", joined)       # no CUD (pending-wrap-unsafe)
+        self.assertIn("\x1b[?7l", joined)         # disable autowrap (clears LCF)
+        self.assertIn("\n\n\r", joined)           # 2x LF + \r for downward move
+        self.assertIn("\x1b[2K", joined)          # EL2 clear (still emitted)
+        self.assertIn("STATUS", joined)
+        self.assertIn("\x1b[2A", joined)          # move back up 2 rows (CUU)
+        # CHA is 1-based, so cursor_x=5 -> CHA col 6.
+        self.assertIn("\x1b[6G", joined)
+        self.assertIn("\x1b[?7h", joined)         # re-enable autowrap
+        # Ordering: \x1b[?7l must come before any vertical move,
+        # \x1b[?7h must come after CHA (the very last thing we emit).
+        self.assertLess(joined.index("\x1b[?7l"), joined.index("\n\n\r"))
+        self.assertGreater(joined.index("\x1b[?7h"), joined.index("\x1b[6G"))
+
+    def test_write_overlay_line_overwrites_row_with_spaces_when_term_cols_given(self):
+        # \x1b[2K alone has been observed to fail on real Windows Terminal
+        # sessions after prolonged use, so we additionally overwrite the
+        # overlay row with literal spaces. Verify that belt-and-suspenders
+        # erase is in the output when term_cols is supplied.
+        out = _FakeOutput(80)
+        pti._write_overlay_line(
+            out, "", row_delta=1, cursor_x=3, term_cols=20
+        )
+        joined = "".join(out.raw_writes)
+        # The space overwrite must be present (term_cols - 1 = 19 spaces).
+        self.assertIn(" " * 19, joined)
+        # \r must come right after the spaces so the cursor is back at col 0
+        # before we move up.
+        idx_spaces = joined.find(" " * 19)
+        idx_cr_after = joined.find("\r", idx_spaces)
+        idx_up = joined.find("\x1b[1A")
+        self.assertGreater(idx_cr_after, idx_spaces)
+        self.assertGreater(idx_up, idx_cr_after)
+
+    def test_write_overlay_line_falls_back_to_decsc_when_cursor_x_omitted(self):
+        # Legacy callers (e.g. external prints in chat history) that don't
+        # know the cursor column should still get the old DECSC/DECRC pair.
+        out = _FakeOutput(80)
+        pti._write_overlay_line(out, "STATUS", row_delta=2)
+        joined = "".join(out.raw_writes)
+        self.assertIn("\x1b7", joined)
+        self.assertIn("\x1b8", joined)
+        # No CHA in the legacy path.
+        self.assertNotIn("\x1b[", "".join(s for s in out.raw_writes if s.endswith("G")))
+
+    def test_status_overlay_tracks_bottom_of_soft_wrapped_single_line(self):
+        # Regression: a single logical line that the terminal soft-wraps into
+        # multiple visual rows must place the status overlay below the LAST
+        # visual row of the input — not below the first one. prompt_toolkit's
+        # document.cursor_position_row / line_count report only newline-split
+        # logical rows, so without soft-wrap accounting the overlay ends up
+        # sandwiched in the middle of the input, with input text appearing
+        # after the status bar (the exact bug reproduced in the logs).
+        # columns=48, continuation indent 2 -> content_columns=46.
+        # 28 CJK chars = 56 visual cells -> 2 wrapped rows.
+        cjk_text = "测试文本测试文本测试文本测试文本测试文本测试文本测试文本"
+        app = _FakeHookApp(columns=48)
+        app.current_buffer = _FakePromptBuffer(
+            cjk_text,
+            len(cjk_text),
+            _FakeDocument(cursor_position_row=0, line_count=1),
+        )
+        session = _FakeHookSession(app)
+
+        with patch.object(pti, "_get_system_terminal_columns", return_value=0):
+            pti._attach_blink_after_render_hook(
+                session,
+                status_provider=lambda: "status",
+            )
+            app.before_render.fire(app)
+            app.after_render.fire(app)
+
+        # 2 wrapped visual rows, cursor at end -> cursor_row=1, line_count=2,
+        # target_row = (2-1)+2 = 3, rows_down = 3-1 = 2.
+        # Must move 2 rows down (\x1b[2B\r), not 1 (which would land it ON
+        # top of the second wrapped input row).
+        self.assertIn("\x1b[2B\r", app.output.raw_writes)
+        self.assertNotIn("\x1b[1B\r", app.output.raw_writes)
+
     def test_status_overlay_tracks_bottom_of_multiline_history_buffer(self):
         app = _FakeHookApp(columns=80)
         app.current_buffer = _FakePromptBuffer(

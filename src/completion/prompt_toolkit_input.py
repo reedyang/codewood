@@ -71,6 +71,62 @@ def _is_vscode_terminal() -> bool:
     return str(os.environ.get("TERM_PROGRAM", "") or "").strip().lower() == "vscode"
 
 
+# --- Diagnostic logging for status-overlay positioning ---------------------
+# Enabled by setting SMARTSHELL_OVERLAY_DEBUG=1 in the environment. When off
+# this is a no-op so there is zero runtime cost on the rendering hot path.
+# When on, every before/after_render fires one line into
+# ~/.smartshell/logs/prompt_overlay.log so we can reconstruct the real
+# cursor_row / line_count / target_row sequence around a misrender without
+# guessing from screenshots.
+_OVERLAY_DEBUG_ENABLED: Optional[bool] = None
+_OVERLAY_DEBUG_LOG_PATH: Optional[Path] = None
+_OVERLAY_DEBUG_FRAME = [0]
+
+
+def _overlay_debug_enabled() -> bool:
+    global _OVERLAY_DEBUG_ENABLED
+    if _OVERLAY_DEBUG_ENABLED is None:
+        raw = str(os.environ.get("SMARTSHELL_OVERLAY_DEBUG", "") or "").strip().lower()
+        _OVERLAY_DEBUG_ENABLED = raw in ("1", "true", "yes", "on")
+    return bool(_OVERLAY_DEBUG_ENABLED)
+
+
+def _overlay_debug_path() -> Optional[Path]:
+    global _OVERLAY_DEBUG_LOG_PATH
+    if _OVERLAY_DEBUG_LOG_PATH is None:
+        try:
+            home = Path(os.path.expanduser("~"))
+            log_dir = home / ".smartshell" / "logs"
+            log_dir.mkdir(parents=True, exist_ok=True)
+            _OVERLAY_DEBUG_LOG_PATH = log_dir / "prompt_overlay.log"
+        except Exception:
+            _OVERLAY_DEBUG_LOG_PATH = None
+    return _OVERLAY_DEBUG_LOG_PATH
+
+
+def _overlay_debug_log(phase: str, **fields: Any) -> None:
+    if not _overlay_debug_enabled():
+        return
+    path = _overlay_debug_path()
+    if path is None:
+        return
+    try:
+        import time as _time
+        _OVERLAY_DEBUG_FRAME[0] += 1
+        ts = _time.strftime("%H:%M:%S")
+        parts = [f"frame={_OVERLAY_DEBUG_FRAME[0]}", f"ts={ts}", f"phase={phase}"]
+        for k, v in fields.items():
+            try:
+                parts.append(f"{k}={v}")
+            except Exception:
+                parts.append(f"{k}=<unrepr>")
+        line = " ".join(parts) + "\n"
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write(line)
+    except Exception:
+        pass
+
+
 def _get_output_columns_from_obj(output: Any, default: int = 0) -> int:
     try:
         if output is not None and hasattr(output, "get_size"):
@@ -98,11 +154,75 @@ def _get_system_terminal_columns(default: int = 0) -> int:
     return int(default or 0)
 
 
+def _wrapped_visual_row_count(text: str, columns: int) -> int:
+    """How many visual rows a single logical line occupies in the terminal.
+
+    The continuation prompt (`MULTILINE_INDENT`) is rendered on every wrapped
+    row except the first, so the usable width for a wrapped row is
+    `cols - len(MULTILINE_INDENT)`. We use that as the per-row capacity for
+    *every* row of the logical line — that matches prompt_toolkit's own
+    behaviour when ``prompt_continuation`` is configured, and matches what
+    the terminal actually paints.
+    """
+    try:
+        cols = int(columns or 0)
+    except Exception:
+        cols = 0
+    if cols <= 0:
+        return 1
+    continuation_width = max(0, _display_width(MULTILINE_INDENT))
+    content_columns = max(1, cols - continuation_width)
+    width = _display_width(str(text or ""))
+    if width <= 0:
+        return 1
+    return max(1, (width + content_columns - 1) // content_columns)
+
+
+def _wrapped_buffer_cursor_row_and_line_count(
+    app: Any, text: str, cursor_position: int
+) -> Optional[Tuple[int, int]]:
+    """Soft-wrap-aware version of cursor row / line count.
+
+    Returns ``None`` when the terminal width is unknown so the caller can
+    fall back to the logical (newline-only) calculation.
+    """
+    output = getattr(app, "output", None)
+    cols = _get_output_columns_from_obj(output, default=0)
+    if cols <= 0:
+        cols = _get_system_terminal_columns(default=0)
+    if cols <= 0:
+        return None
+
+    cursor_position = max(0, min(int(cursor_position or 0), len(text)))
+    logical_lines = str(text or "").split("\n")
+    before_cursor_lines = str(text[:cursor_position] or "").split("\n")
+
+    line_count = sum(_wrapped_visual_row_count(line, cols) for line in logical_lines)
+    cursor_row = 0
+    for line in before_cursor_lines[:-1]:
+        cursor_row += _wrapped_visual_row_count(line, cols)
+    cursor_row += _wrapped_visual_row_count(before_cursor_lines[-1], cols) - 1
+    return max(0, cursor_row), max(1, line_count)
+
+
 def _get_buffer_cursor_row_and_line_count(app: Any) -> Tuple[int, int]:
     try:
         buf = getattr(app, "current_buffer", None)
         if buf is None:
             return 0, 1
+        text = str(getattr(buf, "text", "") or "")
+        cursor_position = int(getattr(buf, "cursor_position", len(text)) or 0)
+        # Soft-wrap-aware path: prompt_toolkit's document.cursor_position_row
+        # and document.line_count only count newline-separated logical lines,
+        # so a long single-line input that the terminal soft-wraps into N
+        # visual rows is still reported as 1 row. That causes the status
+        # overlay to be painted right under the FIRST visual row of the
+        # input instead of the LAST, producing the visible bug where the
+        # status bar gets sandwiched in the middle of the input. We need to
+        # count actual visual rows here.
+        wrapped = _wrapped_buffer_cursor_row_and_line_count(app, text, cursor_position)
+        if wrapped is not None:
+            return wrapped
         doc = getattr(buf, "document", None)
         if doc is not None:
             try:
@@ -117,8 +237,6 @@ def _get_buffer_cursor_row_and_line_count(app: Any) -> Tuple[int, int]:
                     return max(0, cursor_row), max(1, line_count)
             except Exception:
                 pass
-        text = str(getattr(buf, "text", "") or "")
-        cursor_position = int(getattr(buf, "cursor_position", len(text)) or 0)
         cursor_position = max(0, min(cursor_position, len(text)))
         cursor_row = text[:cursor_position].count("\n")
         line_count = text.count("\n") + 1
@@ -142,10 +260,165 @@ def _get_status_overlay_position(app: Any) -> Tuple[int, int, int]:
     return rows_down, target_row, cursor_row
 
 
-def _write_overlay_line(output: Any, text: str, row_delta: int) -> None:
-    # Save cursor position, move to the target row, clear it, optionally write
-    # the overlay text, then restore the original cursor position.
+def _trace_writes(output: Any, label: str) -> None:
+    """Wrap output.write AND output.write_raw to log every emitted byte.
+
+    Only active when SMARTSHELL_OVERLAY_DEBUG is set. The first time we see a
+    given output object we monkey-patch both ``write`` and ``write_raw``;
+    subsequent calls are no-ops.
+
+    Why both methods: prompt_toolkit's Win32Output.write_raw is a thin
+    wrapper that just calls write(); the main rendering pipeline goes
+    through write() directly. Wrapping only write_raw misses everything
+    ptk emits during its own render pass, including the cursor-motion
+    sequences that move the cursor from the previous frame's resting
+    position to the new one across a soft-wrap boundary — which is
+    exactly what we need to see to diagnose ghost overlays.
+    """
+    if not _overlay_debug_enabled():
+        return
+    if output is None:
+        return
+    if getattr(output, "_smartshell_traced", False):
+        return
+
+    def _wrap(method_name: str) -> None:
+        original = getattr(output, method_name, None)
+        if not callable(original):
+            return
+
+        def _traced(text: str, _original=original, _name=method_name) -> None:
+            try:
+                preview = (
+                    text
+                    .replace("\x1b", "\\x1b")
+                    .replace("\r", "\\r")
+                    .replace("\n", "\\n")
+                )
+                if len(preview) > 120:
+                    preview = preview[:120] + "...(truncated)"
+                _overlay_debug_log(
+                    "raw_write", from_=label, method=_name, payload=preview
+                )
+            except Exception:
+                pass
+            _original(text)
+
+        try:
+            setattr(output, method_name, _traced)
+        except Exception:
+            pass
+
+    _wrap("write_raw")
+    _wrap("write")
+    try:
+        output._smartshell_traced = True  # type: ignore[attr-defined]
+    except Exception:
+        pass
+
+
+def _write_overlay_line(
+    output: Any,
+    text: str,
+    row_delta: int,
+    cursor_x: Optional[int] = None,
+    term_cols: Optional[int] = None,
+) -> None:
+    """Paint (or clear) an overlay row ``row_delta`` rows away from the cursor.
+
+    When ``cursor_x`` is provided we restore the cursor with explicit relative
+    moves + CHA (cursor horizontal absolute, ``\\x1b[<col>G``) instead of the
+    DECSC/DECRC pair (``\\x1b7`` / ``\\x1b8``). DECSC/DECRC has a single save
+    slot at the terminal level; prompt_toolkit and Windows Terminal have been
+    observed to clobber it under sustained input.
+
+    For the "clear" branch we ALSO overwrite the row with literal spaces
+    instead of relying solely on ``\\x1b[2K`` (EL2). Real-world runs on
+    Windows Terminal have shown ``\\x1b[2K`` failing to erase a previously
+    drawn overlay even when the cursor is verified to be on that row — the
+    space overwrite is a belt-and-suspenders fallback that ALWAYS visibly
+    overwrites the row.
+
+    The legacy DECSC/DECRC path is kept as a fallback so callers that do not
+    yet know the cursor column (e.g. external prints in chat history) still
+    work the way they used to.
+    """
     row_delta = int(row_delta or 0)
+    _overlay_debug_log(
+        "_write_overlay_line",
+        row_delta=row_delta,
+        text_len=len(str(text or "")),
+        text_kind=("draw" if text else "clear"),
+        cursor_x=("none" if cursor_x is None else int(cursor_x)),
+        term_cols=("none" if term_cols is None else int(term_cols)),
+    )
+    if cursor_x is not None:
+        # First: bracket the entire overlay write with DECRST/DECSET DECAWM
+        # (\x1b[?7l … \x1b[?7h). Disabling autowrap on entry has the side
+        # effect of unconditionally clearing the "delayed EOL wrap" / LCF
+        # flag. Without this, prompt_toolkit can leave the cursor in
+        # pending-wrap state at the right margin, and our subsequent LF
+        # and CUU moves land one physical row off from where we expect.
+        # Re-enabling autowrap before returning leaves the terminal in
+        # the same mode prompt_toolkit and the user expect for normal
+        # input — autowrap stays on, but with LCF reset to 0.
+        output.write_raw("\x1b[?7l")
+        # Move to the overlay row.
+        #
+        # IMPORTANT: We use LF ("\n") to move DOWN rather than CSI CUD
+        # ("\x1b[<n>B"). After prompt_toolkit's render the cursor may be
+        # parked at the right edge in "pending wrap" / DECAWM-armed state.
+        # Windows Terminal (and several other VT emulators) handle CUD
+        # inconsistently in that state, sometimes treating the cursor as
+        # if it is already on the next row and skipping a line — which is
+        # exactly the failure mode behind the persistent "two status bars
+        # stacked" symptom observed in real sessions even though our
+        # \x1b[2K and space-fill erase did fire. LF is the most primitive
+        # vertical-move primitive and is uniformly defined to clear any
+        # pending wrap before advancing one line, so use it instead.
+        # Moving UP cannot trigger wrap, so CUU ("\x1b[<n>A") is still
+        # fine for the return move.
+        if row_delta > 0:
+            # Emit LFs (which can scroll) but the caller's pre-render
+            # checks ensured we have enough headroom below the cursor for
+            # the overlay row, so this never actually scrolls in practice.
+            output.write_raw("\n" * row_delta)
+            output.write_raw("\r")
+        elif row_delta < 0:
+            output.write_raw(f"\x1b[{abs(row_delta)}A\r")
+        else:
+            output.write_raw("\r")
+        # Belt-and-suspenders erase: \x1b[2K (EL2) plus an explicit row of
+        # spaces. Real Windows Terminal sessions have shown \x1b[2K being
+        # silently dropped after sustained prompt_toolkit activity; the
+        # space overwrite guarantees the cell contents are replaced.
+        output.write_raw("\x1b[2K")
+        if term_cols and term_cols > 0:
+            # Write spaces across the row and \r back to col 0. Cap at
+            # term_cols - 1 so we never push the cursor off the edge and
+            # accidentally trigger a wrap on the next IND/LF.
+            blank_width = max(0, int(term_cols) - 1)
+            if blank_width > 0:
+                output.write_raw(" " * blank_width)
+                output.write_raw("\r")
+        if text:
+            output.write_raw(text)
+        # Return to the row prompt_toolkit left us on. CUU is safe here
+        # because moving up doesn't interact with pending-wrap state.
+        if row_delta > 0:
+            output.write_raw(f"\x1b[{row_delta}A")
+        elif row_delta < 0:
+            output.write_raw(f"\x1b[{abs(row_delta)}B")
+        # CHA is 1-based: column 0 maps to col 1.
+        target_col = max(0, int(cursor_x)) + 1
+        output.write_raw(f"\x1b[{target_col}G")
+        # Re-enable autowrap so the next ptk render frame and any user
+        # input continue to wrap normally at the right margin. The
+        # \x1b[?7h sets DECAWM back on; LCF stays 0 until the next
+        # character is written at the right margin.
+        output.write_raw("\x1b[?7h")
+        return
+    # Legacy DECSC/DECRC fallback (no cursor_x supplied).
     output.write_raw("\x1b7")
     if row_delta > 0:
         output.write_raw(f"\x1b[{row_delta}B\r")
@@ -157,6 +430,49 @@ def _write_overlay_line(output: Any, text: str, row_delta: int) -> None:
     if text:
         output.write_raw(text)
     output.write_raw("\x1b8")
+
+
+def _clear_two_rows(
+    output: Any,
+    row_delta: int,
+    cursor_x: Optional[int] = None,
+    term_cols: Optional[int] = None,
+) -> None:
+    """Wipe both ``row_delta`` AND ``row_delta + 1`` rows away from the cursor.
+
+    This is a defensive belt-and-suspenders erase intended to mask a
+    ptk-model-vs-physical cursor row drift that we have observed under
+    Windows Terminal during soft-wrap transitions: when the buffer adds a
+    new visual row through autowrap, prompt_toolkit's internal cursor row
+    can advance one line ahead of where the physical cursor actually is,
+    so our relative ``row_delta`` lands one row short of the real stale
+    overlay. We don't yet have a way to detect that drift cheaply, but we
+    DO know the stale overlay is always on row N or N+1 (never further
+    away — it's adjacent to where it was painted last frame), so we just
+    wipe both rows. Wiping a blank row is harmless; not wiping the right
+    row leaves a ghost overlay on screen.
+
+    The double-clear only applies to the CHA path (``cursor_x is not
+    None``). The legacy DECSC/DECRC path is taken by callers that do not
+    interact with prompt_toolkit's render hooks (e.g. external chat-history
+    prints), where the row drift bug does not occur. For those callers we
+    fall back to a single clear so we don't disturb adjacent screen rows.
+    """
+    _write_overlay_line(
+        output,
+        "",
+        row_delta,
+        cursor_x=cursor_x,
+        term_cols=term_cols,
+    )
+    if cursor_x is not None:
+        _write_overlay_line(
+            output,
+            "",
+            row_delta + 1,
+            cursor_x=cursor_x,
+            term_cols=term_cols,
+        )
 
 
 def _attach_blink_after_render_hook(
@@ -195,6 +511,14 @@ def _attach_blink_after_render_hook(
 
     def _on_before_render(_app) -> None:
         try:
+            # Install the write/write_raw tracer as early as possible so we
+            # can also capture prompt_toolkit's own render output. Calling
+            # this every frame is safe — _trace_writes is idempotent per
+            # output object.
+            try:
+                _trace_writes(getattr(_app, "output", None), "before_render")
+            except Exception:
+                pass
             prev_menu_open = bool(state.get("menu_open"))
             menu_open = False
             try:
@@ -212,6 +536,55 @@ def _attach_blink_after_render_hook(
             state["pending_rows_down"] = rows_down
             state["pending_target_row"] = target_row
             state["pending_cursor_row"] = cursor_row
+            if _overlay_debug_enabled():
+                buf = getattr(_app, "current_buffer", None)
+                text = str(getattr(buf, "text", "") or "") if buf is not None else ""
+                cpos = int(getattr(buf, "cursor_position", 0) or 0) if buf is not None else 0
+                doc = getattr(buf, "document", None) if buf is not None else None
+                doc_row = -1
+                doc_lc = -1
+                if doc is not None:
+                    try:
+                        doc_row = int(getattr(doc, "cursor_position_row", 0) or 0)
+                        lc_attr = getattr(doc, "line_count", None)
+                        doc_lc = (
+                            int(lc_attr())
+                            if callable(lc_attr)
+                            else int(lc_attr or 0)
+                        )
+                    except Exception:
+                        pass
+                sys_cols = _get_system_terminal_columns(default=0)
+                out_cols = _get_output_columns_from_obj(output, default=0)
+                try:
+                    size = output.get_size() if output is not None and hasattr(output, "get_size") else None
+                    total_rows = int(getattr(size, "rows", 0) or 0) if size is not None else -1
+                except Exception:
+                    total_rows = -1
+                try:
+                    rows_below = int(output.get_rows_below_cursor_position()) if output is not None and hasattr(output, "get_rows_below_cursor_position") else -1
+                except Exception:
+                    rows_below = -2
+                _overlay_debug_log(
+                    "before",
+                    text_len=len(text),
+                    cpos=cpos,
+                    doc_row=doc_row,
+                    doc_lc=doc_lc,
+                    sys_cols=sys_cols,
+                    out_cols=out_cols,
+                    total_rows=total_rows,
+                    rows_below=rows_below,
+                    cursor_row=cursor_row,
+                    line_count_from_pos=target_row - 2 + 1,
+                    target_row=target_row,
+                    rows_down=rows_down,
+                    state_visible=bool(state.get("visible")),
+                    state_target_row=int(state.get("target_row", -1) or -1),
+                    state_cursor_row=int(state.get("cursor_row", -1) or -1),
+                    desired_len=len(desired),
+                    menu_open=menu_open,
+                )
             if menu_open and (not prev_menu_open) and bool(state.get("visible")):
                 try:
                     old_target_row = int(state.get("target_row", target_row) or target_row)
@@ -220,7 +593,27 @@ def _attach_blink_after_render_hook(
                         and hasattr(output, "write_raw")
                         and hasattr(output, "flush")
                     ):
-                        _write_overlay_line(output, "", old_target_row - cursor_row)
+                        cursor_x: Optional[int] = None
+                        try:
+                            ptk_renderer = getattr(_app, "renderer", None)
+                            ptk_cursor_pos = (
+                                getattr(ptk_renderer, "_cursor_pos", None)
+                                if ptk_renderer is not None
+                                else None
+                            )
+                            if ptk_cursor_pos is not None:
+                                cursor_x = int(getattr(ptk_cursor_pos, "x", 0) or 0)
+                        except Exception:
+                            cursor_x = None
+                        term_cols = _get_system_terminal_columns(default=0)
+                        if term_cols <= 0:
+                            term_cols = _get_output_columns_from_obj(output, default=0)
+                        _clear_two_rows(
+                            output,
+                            old_target_row - cursor_row,
+                            cursor_x=cursor_x,
+                            term_cols=term_cols,
+                        )
                         output.flush()
                 except Exception:
                     pass
@@ -272,6 +665,7 @@ def _attach_blink_after_render_hook(
     def _on_after_render(_app) -> None:
         try:
             output = getattr(_app, "output", None)
+            _trace_writes(output, "after_render")
             if output is not None and hasattr(output, "write_raw") and hasattr(output, "flush"):
                 try:
                     desired = str(state.get("desired") or "")
@@ -286,14 +680,53 @@ def _attach_blink_after_render_hook(
                     target_row = int(state.get("pending_target_row", rows_down) or rows_down)
                     cursor_row = int(state.get("pending_cursor_row", 0) or 0)
                     old_target_row = int(state.get("target_row", target_row) or target_row)
+                    # Use prompt_toolkit's bookkept cursor column as the
+                    # restore target. This lets _write_overlay_line use a
+                    # DECSC/DECRC-free path (which has been observed to be
+                    # unreliable under Windows Terminal + sustained input)
+                    # while still landing the cursor exactly where the
+                    # next render expects it.
+                    cursor_x: Optional[int] = None
+                    try:
+                        ptk_renderer = getattr(_app, "renderer", None)
+                        ptk_cursor_pos = (
+                            getattr(ptk_renderer, "_cursor_pos", None)
+                            if ptk_renderer is not None
+                            else None
+                        )
+                        if ptk_cursor_pos is not None:
+                            cursor_x = int(getattr(ptk_cursor_pos, "x", 0) or 0)
+                    except Exception:
+                        cursor_x = None
+                    # term_cols feeds the "write a full row of spaces" belt-
+                    # and-suspenders erase inside _write_overlay_line. Prefer
+                    # the OS-level width because prompt_toolkit's snapshot
+                    # can lag a resize by one render cycle.
+                    term_cols = _get_system_terminal_columns(default=0)
+                    if term_cols <= 0:
+                        term_cols = _get_output_columns_from_obj(output, default=0)
                     if not menu_open:
                         if bool(state.get("visible")):
                             if desired == "":
                                 if old_target_row != target_row and old_target_row > max(
                                     0, target_row - 2
                                 ):
-                                    _write_overlay_line(
-                                        output, "", old_target_row - cursor_row
+                                    # Defensive double-clear: wipe both the
+                                    # row we *think* had the stale overlay
+                                    # AND the row immediately below it.
+                                    # Under Windows Terminal we have seen the
+                                    # ptk-model cursor row drift one row off
+                                    # from the physical cursor (the delayed
+                                    # EOL wrap / LCF mismatch), which makes
+                                    # our relative row_delta land one row
+                                    # short. Clearing both rows guarantees
+                                    # the stale overlay disappears whether
+                                    # ptk-model was right or off-by-one.
+                                    _clear_two_rows(
+                                        output,
+                                        old_target_row - cursor_row,
+                                        cursor_x=cursor_x,
+                                        term_cols=term_cols,
                                     )
                                 state["visible"] = False
                                 state["text"] = ""
@@ -302,17 +735,61 @@ def _attach_blink_after_render_hook(
                                 and old_target_row != target_row
                                 and old_target_row > max(0, target_row - 2)
                             ):
-                                _write_overlay_line(output, "", old_target_row - cursor_row)
+                                _clear_two_rows(
+                                    output,
+                                    old_target_row - cursor_row,
+                                    cursor_x=cursor_x,
+                                    term_cols=term_cols,
+                                )
                         # Always redraw when desired text exists: external prints (e.g.
                         # /chat switch history) may scroll previous overlay away, while
                         # state still says "visible".
                         if desired:
-                            _write_overlay_line(output, desired, rows_down)
+                            # Pre-clear the gap row (the empty row between the
+                            # input area's last line and the status bar). Real-
+                            # world Windows Terminal sessions occasionally
+                            # leave a stale status overlay sitting on that gap
+                            # row after a soft-wrap transition — the row drift
+                            # bug we have tried to fix from several angles
+                            # (LF vs CUD, DECAWM bracketing, two-row clear).
+                            # Pre-clearing the gap row every frame is cheap
+                            # (one extra EL2 + space-fill per render) and
+                            # guarantees no ghost overlay survives there.
+                            # It does NOT touch the input area or scroll
+                            # history, since the gap row is by design always
+                            # blank when the input + status bar layout is
+                            # correct.
+                            if rows_down >= 2 and cursor_x is not None:
+                                _write_overlay_line(
+                                    output,
+                                    "",
+                                    rows_down - 1,
+                                    cursor_x=cursor_x,
+                                    term_cols=term_cols,
+                                )
+                            _write_overlay_line(
+                                output,
+                                desired,
+                                rows_down,
+                                cursor_x=cursor_x,
+                                term_cols=term_cols,
+                            )
                             state["visible"] = True
                             state["text"] = desired
                         state["rows_down"] = rows_down
                         state["target_row"] = target_row
                         state["cursor_row"] = cursor_row
+                    if _overlay_debug_enabled():
+                        _overlay_debug_log(
+                            "after",
+                            cursor_row=cursor_row,
+                            target_row=target_row,
+                            rows_down=rows_down,
+                            old_target_row=old_target_row,
+                            desired_len=len(desired),
+                            menu_open=menu_open,
+                            state_visible=bool(state.get("visible")),
+                        )
                 except Exception:
                     pass
                 if not _is_vscode_terminal():
