@@ -72,7 +72,7 @@ class NoMatchExitClassificationTests(unittest.TestCase):
         # path before execution; the classifier must still recognize
         # that path's basename.
         self.assertTrue(
-            self._classifies(r'"D:\SourceCode\opensource\smart-shell\bin\rg.exe" -n foo .')
+            self._classifies(r'"D:\SourceCode\opensource\codewood\bin\rg.exe" -n foo .')
         )
 
     # --- negative cases -----------------------------------------------

@@ -38,7 +38,7 @@ class ProjectContextIndexTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td_workspace:
             workspace_root = Path(td_workspace) / "workspace_root"
             work_directory = Path(td_workspace) / "current_work_dir"
-            workspace_config_dir = workspace_root / ".smartshell"
+            workspace_config_dir = workspace_root / ".codewood"
             work_directory.mkdir(parents=True)
             workspace_root.mkdir(parents=True, exist_ok=True)
 

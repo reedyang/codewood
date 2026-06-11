@@ -72,10 +72,10 @@ def _is_vscode_terminal() -> bool:
 
 
 # --- Diagnostic logging for status-overlay positioning ---------------------
-# Enabled by setting SMARTSHELL_OVERLAY_DEBUG=1 in the environment. When off
+# Enabled by setting codewood_OVERLAY_DEBUG=1 in the environment. When off
 # this is a no-op so there is zero runtime cost on the rendering hot path.
 # When on, every before/after_render fires one line into
-# ~/.smartshell/logs/prompt_overlay.log so we can reconstruct the real
+# ~/.codewood/logs/prompt_overlay.log so we can reconstruct the real
 # cursor_row / line_count / target_row sequence around a misrender without
 # guessing from screenshots.
 _OVERLAY_DEBUG_ENABLED: Optional[bool] = None
@@ -86,7 +86,7 @@ _OVERLAY_DEBUG_FRAME = [0]
 def _overlay_debug_enabled() -> bool:
     global _OVERLAY_DEBUG_ENABLED
     if _OVERLAY_DEBUG_ENABLED is None:
-        raw = str(os.environ.get("SMARTSHELL_OVERLAY_DEBUG", "") or "").strip().lower()
+        raw = str(os.environ.get("codewood_OVERLAY_DEBUG", "") or "").strip().lower()
         _OVERLAY_DEBUG_ENABLED = raw in ("1", "true", "yes", "on")
     return bool(_OVERLAY_DEBUG_ENABLED)
 
@@ -96,7 +96,7 @@ def _overlay_debug_path() -> Optional[Path]:
     if _OVERLAY_DEBUG_LOG_PATH is None:
         try:
             home = Path(os.path.expanduser("~"))
-            log_dir = home / ".smartshell" / "logs"
+            log_dir = home / ".codewood" / "logs"
             log_dir.mkdir(parents=True, exist_ok=True)
             _OVERLAY_DEBUG_LOG_PATH = log_dir / "prompt_overlay.log"
         except Exception:
@@ -263,7 +263,7 @@ def _get_status_overlay_position(app: Any) -> Tuple[int, int, int]:
 def _trace_writes(output: Any, label: str) -> None:
     """Wrap output.write AND output.write_raw to log every emitted byte.
 
-    Only active when SMARTSHELL_OVERLAY_DEBUG is set. The first time we see a
+    Only active when codewood_OVERLAY_DEBUG is set. The first time we see a
     given output object we monkey-patch both ``write`` and ``write_raw``;
     subsequent calls are no-ops.
 
@@ -279,7 +279,7 @@ def _trace_writes(output: Any, label: str) -> None:
         return
     if output is None:
         return
-    if getattr(output, "_smartshell_traced", False):
+    if getattr(output, "_codewood_traced", False):
         return
 
     def _wrap(method_name: str) -> None:
@@ -312,7 +312,7 @@ def _trace_writes(output: Any, label: str) -> None:
     _wrap("write_raw")
     _wrap("write")
     try:
-        output._smartshell_traced = True  # type: ignore[attr-defined]
+        output._codewood_traced = True  # type: ignore[attr-defined]
     except Exception:
         pass
 

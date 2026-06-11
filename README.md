@@ -1,6 +1,6 @@
-# Smart Shell
+# Code Wood
 
-Smart Shell is an LLM-powered shell that understands natural language, automates user tasks.
+Code Wood is an LLM-powered shell that understands natural language, automates user tasks.
 
 ## Highlights
 
@@ -47,7 +47,7 @@ python src/main.py -m <model name>
 
 ### Execution Policy
 
-Use `execution_policy` in `.smartshell/config.jsonc` to control how potentially risky actions are handled:
+Use `execution_policy` in `.codewood/config.jsonc` to control how potentially risky actions are handled:
 
 - `confirmation`: ask for y/n confirmation for every action that needs approval
 - `moderate`: automatically execute safe actions after evaluating risk
@@ -59,7 +59,7 @@ Switch policies with:
 /execution-policy <unlimited|moderate|confirmation>
 ```
 
-Temporary scripts created through the built-in `script` command are considered session-local work items. If you later run that script through `shell` and it exits with code `0`, Smart Shell will attempt to delete it automatically so temporary files do not linger. If you want to keep a script permanently, use `text_file` to create it in the current working directory instead.
+Temporary scripts created through the built-in `script` command are considered session-local work items. If you later run that script through `shell` and it exits with code `0`, Code Wood will attempt to delete it automatically so temporary files do not linger. If you want to keep a script permanently, use `text_file` to create it in the current working directory instead.
 
 ### Always-Confirm and `confirm_allowlist.json`
 
@@ -73,14 +73,14 @@ When free mode is disabled and interactive confirmation is still required, the p
 
 ### Agent Skills
 
-Smart Shell follows the same layout as [Anthropic Agent Skills](https://github.com/anthropics/skills/blob/main/README.md). Create a `skills/` directory next to `config.jsonc`, and place one skill per folder containing a `SKILL.md` file with YAML frontmatter and Markdown body.
+Code Wood follows the same layout as [Anthropic Agent Skills](https://github.com/anthropics/skills/blob/main/README.md). Create a `skills/` directory next to `config.jsonc`, and place one skill per folder containing a `SKILL.md` file with YAML frontmatter and Markdown body.
 
-- Project-local skills live under `.smartshell/skills/<skill-name>/SKILL.md`
-- User-level skills live under `~/.smartshell/skills/...`
+- Project-local skills live under `.codewood/skills/<skill-name>/SKILL.md`
+- User-level skills live under `~/.codewood/skills/...`
 - Skill folders can include helper files such as `scripts/*.py`
 - Relative paths in a skill body are resolved from that skill folder
 - The runtime injects the absolute skill bundle root and detected scripts into the system prompt
-- During startup, Smart Shell scans and parses all available skills and uses them when a task matches a skill description
+- During startup, Code Wood scans and parses all available skills and uses them when a task matches a skill description
 
 ### Built-In Commands vs Native Shell Commands
 
@@ -91,15 +91,15 @@ Smart Shell follows the same layout as [Anthropic Agent Skills](https://github.c
 ## Project Structure
 
 ```text
-smart-shell/
+codewood/
 ├── src/                           # Core application code
 ├── skills/                        # Built-in Agent Skills
-├── additional-skills/             # Extra skills; copy them into .smartshell/skills if needed
+├── additional-skills/             # Extra skills; copy them into .codewood/skills if needed
 ├── docs/                          # Design and reference documentation
 ├── demo/                          # Demo assets
 ├── tests/                         # Test suite
 ├── requirements.txt               # Python dependencies
-├── smartshell.bat                 # Windows launch script
+├── codewood.bat                 # Windows launch script
 └── README.md                      # Project documentation
 ```
 
@@ -107,7 +107,7 @@ smart-shell/
 
 `model_providers` is required.
 
-Create `.smartshell/config.jsonc` in your user directory:
+Create `.codewood/config.jsonc` in your user directory:
 
 ```json
 {
@@ -153,7 +153,7 @@ Create `.smartshell/config.jsonc` in your user directory:
 
 ### Configuration Notes
 
-- `model_providers`: ordered list of model providers; Smart Shell uses the first provider by default
+- `model_providers`: ordered list of model providers; Code Wood uses the first provider by default
 - `model_providers[i].provider`: free-form label used only as the model selector prefix (e.g. `openai:gpt-4o`, `ollama:qwen2.5vl:3b`); it does NOT participate in API-call dispatch — that is decided by `api_mode`
 - `model_providers[i].params.api_mode`: selects the API call method
   - `auto` (default): OpenAI-compatible HTTP API; auto-probes `/chat/completions` and `/responses` based on `base_url` suffix
@@ -166,7 +166,7 @@ Create `.smartshell/config.jsonc` in your user directory:
   - String form: `"gpt-oss-120b"` uses the default `context_window=128000` and `streaming=true`
   - Object form: `{"name":"gpt-oss-120b","context_window":"128K","streaming":true,"extra_headers":{"X-Model":"gpt-oss-120b"}}`
 - `context_window`: accepts a positive integer or a string matching `^\d+[kKmM]?$`; invalid values fall back to `128000`
-- When `context_window < 64000`, Smart Shell skips system prompts, tool prompts, skill prompts, memory, and operational context, and only sends conversation history plus the current user input
+- When `context_window < 64000`, Code Wood skips system prompts, tool prompts, skill prompts, memory, and operational context, and only sends conversation history plus the current user input
 - `streaming`: per-model streaming toggle, default `true`
 - `extra_headers`: per-model custom request headers, available only for OpenAI-compatible `api_mode` values (`auto`/`chat`/`responses`)
 - `auto_compact_trigger_percent`: automatic summarization threshold, default `60`
@@ -177,11 +177,11 @@ Create `.smartshell/config.jsonc` in your user directory:
 
 ## MCP Configuration
 
-Smart Shell automatically reads `mcp.jsonc` from the same directory as `config.jsonc`:
+Code Wood automatically reads `mcp.jsonc` from the same directory as `config.jsonc`:
 
 - If the file exists and is valid, `mcpServers` is loaded and injected into the system prompt
 - MCP server tool metadata is preloaded asynchronously in the background so the UI stays responsive
-- If the file is missing or invalid, Smart Shell keeps running and simply starts with an empty MCP server list
+- If the file is missing or invalid, Code Wood keeps running and simply starts with an empty MCP server list
 - Store secrets in environment variables instead of committing them in plain text
 - MCP connection and retry logs are written to `workspace/logs/mcp_manager.log` rather than the terminal
 
@@ -236,9 +236,9 @@ Recommended per-server OAuth configuration:
 
 Notes:
 
-- `redirect_port: 0` means Smart Shell will pick a free local callback port automatically
+- `redirect_port: 0` means Code Wood will pick a free local callback port automatically
 - If `open_browser=false`, the app prints the authorization URL so you can open it manually
-- If `scope` is not configured, Smart Shell prefers the 401 challenge scope and otherwise falls back to `scopes_supported`
+- If `scope` is not configured, Code Wood prefers the 401 challenge scope and otherwise falls back to `scopes_supported`
 
 Example `mcp.jsonc`:
 

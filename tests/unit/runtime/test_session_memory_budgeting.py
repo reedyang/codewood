@@ -979,7 +979,7 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
             },
             {
                 "role": "assistant",
-                "content": "Workspace: C:/Users/reed/SourceCode/smart-shell; OS: Windows; repository path: src/services/session_memory_service.py",
+                "content": "Workspace: C:/Users/reed/SourceCode/codewood; OS: Windows; repository path: src/services/session_memory_service.py",
             },
             {
                 "role": "user",
@@ -1011,7 +1011,7 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
         self.assertIn("Next steps:", roll)
         self.assertIn("cache hit rate", roll)
         self.assertIn("python -m unittest tests.unit.runtime.test_session_memory_budgeting -q", roll)
-        self.assertIn("C:/Users/reed/SourceCode/smart-shell", roll)
+        self.assertIn("C:/Users/reed/SourceCode/codewood", roll)
         self.assertIn("too generic", roll)
 
     def test_session_summary_for_retrieval_uses_full_llm_budget(self):
