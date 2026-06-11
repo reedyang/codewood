@@ -21,7 +21,7 @@ class PromptComposerTests(unittest.TestCase):
             config_dir=config_dir,
             workspace_root=workspace_root,
             work_directory=workspace_dir,
-            workspace_config_dir=workspace_config_dir or (workspace_root / ".smartshell"),
+            workspace_config_dir=workspace_config_dir or (workspace_root / ".codewood"),
             _base_system_prompt="BASE",
             tool_specs=[],
             tools_prompt_template="",
@@ -327,7 +327,7 @@ class PromptComposerTests(unittest.TestCase):
             config_dir = root / "config"
             repo_root = root / "repo"
             workspace_root = repo_root / "project"
-            workspace_config_dir = workspace_root / ".smartshell"
+            workspace_config_dir = workspace_root / ".codewood"
             config_dir.mkdir()
             workspace_config_dir.mkdir(parents=True)
             (repo_root / ".git").mkdir()

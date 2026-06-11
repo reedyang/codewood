@@ -1,6 +1,6 @@
 # Agent Skills architecture principles
 
-This document describes how **Smart Shell** loads and uses **Agent Skills**, written so the same ideas can be reused in **other AI coding assistants, agents, or IDEs** (Cursor, Claude Code, Copilot-style workflows, custom MCP hosts, etc.). It is **not** tied to a single vendor UI.
+This document describes how **Code Wood** loads and uses **Agent Skills**, written so the same ideas can be reused in **other AI coding assistants, agents, or IDEs** (Cursor, Claude Code, Copilot-style workflows, custom MCP hosts, etc.). It is **not** tied to a single vendor UI.
 
 Upstream reference format: [Anthropic Agent Skills (`anthropics/skills`)](https://github.com/anthropics/skills/blob/main/README.md).
 
@@ -73,7 +73,7 @@ Individual skills **cannot see** the host’s full tool surface or other skill b
 - Do **not** reference **MCP** or other plugin namespaces as part of this skill’s contract unless the repo defines a **neutral, portable** pattern that applies to all skills equally.
 - Prefer **subprocess result** / **merged `output`** over **tool `output`** when you mean shell stdout or merged file content, so “tool” is not confused with the host’s JSON tool API.
 
-Multi-skill orchestration and “finish the whole user goal” policies live in **host documentation** (e.g. Smart Shell’s `src/system_prompt.md`, `src/tools_prompt.md`), not in per-skill `SKILL.md` files.
+Multi-skill orchestration and “finish the whole user goal” policies live in **host documentation** (e.g. Code Wood’s `src/system_prompt.md`, `src/tools_prompt.md`), not in per-skill `SKILL.md` files.
 
 ---
 
@@ -135,7 +135,7 @@ Hosts should:
 
 ---
 
-## 10. Smart Shell mapping (reference implementation)
+## 10. Code Wood mapping (reference implementation)
 
 In this repository:
 
@@ -149,7 +149,7 @@ Other products can implement the same **principles** without copying implementat
 
 ## 11. Minimal implementation sketch: Skill Context Pack
 
-To improve large-repo navigation without changing existing skill execution flow, Smart Shell can prepend a compact "Skill Context Pack" when injecting skill prompts.
+To improve large-repo navigation without changing existing skill execution flow, Code Wood can prepend a compact "Skill Context Pack" when injecting skill prompts.
 
 **Scope (minimal, backward-compatible):**
 
@@ -170,17 +170,17 @@ To improve large-repo navigation without changing existing skill execution flow,
 - rendered message count / char count
 - concise execution hint
 
-**Current Smart Shell implementation note:**
+**Current Code Wood implementation note:**
 
 - Context Pack is prepended in `src/agent.py` (`_build_single_skill_prompt`) for both local and MCP skill paths.
-- For long `SKILL.md`, Smart Shell injects `Context Pack + first N sections` first, then allows on-demand expansion via `request_skill_prompt` arguments (`section` or `full=true`).
+- For long `SKILL.md`, Code Wood injects `Context Pack + first N sections` first, then allows on-demand expansion via `request_skill_prompt` arguments (`section` or `full=true`).
 - Skill merge priority in runtime is: `builtin -> config_dir -> workspace` (higher layer overrides lower layer by `skill_id`).
 
 ---
 
 ## Document history
 
-- Introduced to capture host–skill boundaries and portability expectations for Agent Skills in Smart Shell and compatible agents.
+- Introduced to capture host–skill boundaries and portability expectations for Agent Skills in Code Wood and compatible agents.
 - Added multi-skill orchestration principle: prefer stdin/pipes, avoid avoidable intermediate files.
 - Documented **host–skill boundary** for `SKILL.md`: no `done`/other-skill/MCP orchestration inside individual skills; those rules belong in host prompts.
 

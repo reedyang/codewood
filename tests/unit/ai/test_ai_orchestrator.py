@@ -56,7 +56,7 @@ class AIOrchestratorTests(unittest.TestCase):
             model_name="test-model",
             model_params={},
             openai_conf={"api_key": "x"},
-            work_directory="D:/SourceCode/opensource/smart-shell",
+            work_directory="D:/SourceCode/opensource/codewood",
             history_writer=lambda _role, _content: None,
             regular_message_builder=_regular_builder,
             ollama_importer=lambda: None,
@@ -79,7 +79,7 @@ class AIOrchestratorTests(unittest.TestCase):
 
         self.assertEqual(result, "ok")
         joined = "\n".join(str(msg.get("content") or "") for msg in captured_messages)
-        self.assertIn("Current working directory: D:/SourceCode/opensource/smart-shell", joined)
+        self.assertIn("Current working directory: D:/SourceCode/opensource/codewood", joined)
 
     def test_empty_assistant_response_is_not_written_to_history(self):
         history = []

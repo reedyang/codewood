@@ -1,5 +1,5 @@
 *.pyc
-.smartshell
+.codewood
 .venv*
 .cursor
 .codegraph

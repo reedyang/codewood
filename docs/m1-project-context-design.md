@@ -1,6 +1,6 @@
 # Project Context Retrieval: Current Design
 
-This document describes the current lightweight project-context retrieval implementation in Smart Shell. It supersedes the original M1 draft language in this file.
+This document describes the current lightweight project-context retrieval implementation in Code Wood. It supersedes the original M1 draft language in this file.
 
 ## Goals
 
@@ -87,7 +87,7 @@ The index is stored under the active AI workspace directory:
 - `workspace_root = agent.work_directory`
 - `storage_dir = agent.workspace_config_dir / "indexes"`
 
-When the active workspace/runtime is refreshed, Smart Shell schedules a background refresh using the current `work_directory` and the current workspace `indexes` directory.
+When the active workspace/runtime is refreshed, Code Wood schedules a background refresh using the current `work_directory` and the current workspace `indexes` directory.
 
 ## Data Model
 
@@ -127,7 +127,7 @@ These directories are pruned during traversal:
 
 - `.git`, `.hg`, `.svn`
 - `node_modules`, `dist`, `build`, `out`
-- `.idea`, `.vscode`, `.smartshell`
+- `.idea`, `.vscode`, `.codewood`
 - `__pycache__`, `.pytest_cache`
 
 The traversal uses `os.walk(..., followlinks=False)`.
@@ -306,7 +306,7 @@ The rendered block starts with:
 
 It lists up to 8 candidate files with score, reasons, and up to 4 symbols per candidate.
 
-When the index is empty or refresh is in flight, Smart Shell skips evidence injection and schedules a background refresh instead.
+When the index is empty or refresh is in flight, Code Wood skips evidence injection and schedules a background refresh instead.
 
 ## Operational Notes
 

@@ -10,7 +10,7 @@ class _DummyAgent:
         self.work_directory = work_directory
         self.workspace_root = workspace_root
         self._self_repo_root = self_repo_root
-        self.workspace_config_dir = workspace_root / ".smart-shell"
+        self.workspace_config_dir = workspace_root / ".codewood"
         self.config_dir = workspace_root / ".config"
 
     def _shell_execution_cwd(self):
@@ -21,11 +21,11 @@ class PathPolicyShellGuardTests(unittest.TestCase):
     def test_shell_guard_uses_effective_shell_cwd_for_workspace(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td).resolve()
-            repo_root = root / "smart-shell"
+            repo_root = root / "codewood"
             repo_root.mkdir(parents=True, exist_ok=True)
             external_workspace = root / "tmp-workspace"
             external_workspace.mkdir(parents=True, exist_ok=True)
-            # Simulate stale work_directory still under smart-shell root.
+            # Simulate stale work_directory still under codewood root.
             stale_work_directory = repo_root
 
             agent = _DummyAgent(
@@ -45,7 +45,7 @@ class PathPolicyShellGuardTests(unittest.TestCase):
     def test_shell_guard_still_blocks_when_effective_shell_cwd_under_repo(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td).resolve()
-            repo_root = root / "smart-shell"
+            repo_root = root / "codewood"
             repo_root.mkdir(parents=True, exist_ok=True)
 
             agent = _DummyAgent(

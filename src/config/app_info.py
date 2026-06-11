@@ -8,10 +8,10 @@ from pathlib import Path
 from typing import Dict
 
 APP_INFO: Dict[str, str] = {
-    "name": "Smart Shell",
+    "name": "Code Wood",
     "version": "0.0.1",
     "author": "Reed Yang",
-    "description": "Smart Shell AI Agent",
+    "description": "Code Wood AI Agent",
 }
 
 
