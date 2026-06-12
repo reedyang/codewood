@@ -1236,8 +1236,10 @@ class Agent:
                 slash_cmd = self._parse_internal_slash_user_history_content(content)
                 if slash_cmd:
                     print(self._format_user_chat_display_message(slash_cmd))
+                    print("")
                     continue
                 print(self._format_user_chat_display_message(content))
+                print("")
             elif role == "assistant":
                 compact_notice = None
                 try:
@@ -1441,6 +1443,8 @@ class Agent:
                 if display_response:
                     self._ensure_terminal_line_start()
                     print(self._format_assistant_chat_display_message(display_response))
+                    # Trailing blank line below the model reply for readability.
+                    print("")
                     try:
                         sys.stdout.flush()
                     except Exception:
@@ -1719,7 +1723,8 @@ class Agent:
             # (multi-line input may have consumed multiple rows), then redraw once.
             for _ in range(line_count):
                 sys.stdout.write("\x1b[1A\r\x1b[2K")
-            sys.stdout.write(f"{rendered}\n")
+            # Trailing blank line below the user message for readability.
+            sys.stdout.write(f"{rendered}\n\n")
             sys.stdout.flush()
         except Exception:
             pass

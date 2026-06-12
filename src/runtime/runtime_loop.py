@@ -1186,7 +1186,9 @@ def _consume_streaming_ai_response(
     if streamed_any:
         if not shown_visible.endswith("\n"):
             sys.stdout.write("\n")
-            sys.stdout.flush()
+        # Trailing blank line below the model reply for readability.
+        sys.stdout.write("\n")
+        sys.stdout.flush()
         try:
             agent._last_terminal_block_kind = "assistant"
             agent._terminal_cursor_at_line_start = True
