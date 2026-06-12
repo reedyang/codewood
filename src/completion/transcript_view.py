@@ -180,7 +180,10 @@ class TranscriptView:
         if len(title) >= width:
             text = title[:width]
         else:
-            text = title + ("/" * (width - len(title)))
+            # Fill the rest of the row with space-separated slashes ("/ / / /").
+            remaining = width - len(title)
+            fill = ("/ " * (remaining // 2 + 1))[:remaining]
+            text = title + fill
         return [("class:transcript.title", text)]
 
     def _status_fragments(self):
