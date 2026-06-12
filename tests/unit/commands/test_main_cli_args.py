@@ -11,11 +11,27 @@ class MainCliArgsTests(unittest.TestCase):
         self.assertEqual(parsed.get("exec_task"), None)
         self.assertEqual(parsed.get("model_selector"), None)
 
-    def test_workspace_only(self):
-        parsed, err = _parse_startup_cli_args(["my-workspace"])
+    def test_workspace_long_option(self):
+        parsed, err = _parse_startup_cli_args(["--workspace", "my-workspace"])
         self.assertIsNone(err)
         self.assertEqual(parsed.get("workspace_selector"), "my-workspace")
         self.assertEqual(parsed.get("exec_task"), None)
+
+    def test_workspace_short_option(self):
+        parsed, err = _parse_startup_cli_args(["-w", "my-workspace"])
+        self.assertIsNone(err)
+        self.assertEqual(parsed.get("workspace_selector"), "my-workspace")
+        self.assertEqual(parsed.get("exec_task"), None)
+
+    def test_workspace_missing_value(self):
+        parsed, err = _parse_startup_cli_args(["-w"])
+        self.assertIsNone(parsed)
+        self.assertIn("Missing workspace name", err or "")
+
+    def test_bare_positional_is_unsupported(self):
+        parsed, err = _parse_startup_cli_args(["my-workspace"])
+        self.assertIsNone(parsed)
+        self.assertIn("Unsupported arguments", err or "")
 
     def test_exec_only(self):
         parsed, err = _parse_startup_cli_args(["exec", "fix build issue"])
@@ -25,7 +41,7 @@ class MainCliArgsTests(unittest.TestCase):
 
     def test_workspace_plus_exec(self):
         parsed, err = _parse_startup_cli_args(
-            ["my-workspace", "exec", "run quick check now"]
+            ["--workspace", "my-workspace", "exec", "run quick check now"]
         )
         self.assertIsNone(err)
         self.assertEqual(parsed.get("workspace_selector"), "my-workspace")

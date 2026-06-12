@@ -29,13 +29,14 @@ pip install -r requirements.txt
 python src/main.py
 
 # Start with a specific workspace by name or path
-python src/main.py <workspace name or path>
+python src/main.py --workspace <workspace name or path>
+python src/main.py -w <workspace name or path>
 
 # Run one task and exit
 python src/main.py exec "your task request"
 
 # Start with a workspace and run one task before exiting
-python src/main.py <workspace name or path> exec "your task request"
+python src/main.py --workspace <workspace name or path> exec "your task request"
 
 # Choose a model at startup
 python src/main.py --model <model name>
