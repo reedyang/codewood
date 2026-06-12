@@ -49,8 +49,8 @@ def _format_startup_usage_with_executable(executable_name: str) -> str:
     command = str(executable_name or "").strip() or "python src/main.py"
     return (
         "Usage:\n"
-        f"  {command} [OPTIONS] [WORKSPACE]\n"
-        f"  {command} [OPTIONS] [WORKSPACE] <COMMAND> [PROMPT]"
+        f"  {command} [OPTIONS]\n"
+        f"  {command} [OPTIONS] <COMMAND> [PROMPT]"
     )
 
 
@@ -63,12 +63,12 @@ def _format_startup_help(executable_name: str = "python src/main.py") -> str:
         f"  exec                       Run {get_app_name()} and execute your prompt non-interactively, then exit\n"
         "\n"
         "Arguments:\n"
-        "  [WORKSPACE]                Workspace name or path to enter on startup\n"
         "  [PROMPT]                   Prompt text used by the exec command\n"
         "\n"
         "Options:\n"
-        "  -m, --model <MODEL>        Select startup model (for example: openai:gpt-4o-mini)\n"
-        f"  -h, --help                 Print help for {get_app_name()} and exit\n"
+        "  -w, --workspace <WORKSPACE>  Workspace name or path to enter on startup\n"
+        "  -m, --model <MODEL>          Select startup model (for example: openai:gpt-4o-mini)\n"
+        f"  -h, --help                   Print help for {get_app_name()} and exit\n"
     )
 
 
@@ -123,6 +123,14 @@ def _parse_startup_cli_args(argv: list[str]) -> tuple[dict[str, Any] | None, str
                 return None, "❌ Model name cannot be empty.\n" + usage_text
             idx += 2
             continue
+        if token in ("-w", "--workspace"):
+            if idx + 1 >= len(filtered_argv):
+                return None, "❌ Missing workspace name for -w/--workspace.\n" + usage_text
+            workspace_selector = str(filtered_argv[idx + 1] or "").strip()
+            if not workspace_selector:
+                return None, "❌ Workspace cannot be empty.\n" + usage_text
+            idx += 2
+            continue
         positionals.append(token)
         idx += 1
 
@@ -132,13 +140,7 @@ def _parse_startup_cli_args(argv: list[str]) -> tuple[dict[str, Any] | None, str
                 return None, "❌ Missing task text after exec.\n" + usage_text
             exec_task = " ".join(positionals[1:]).strip()
         else:
-            workspace_selector = positionals[0]
-            if len(positionals) >= 2:
-                if positionals[1] != "exec":
-                    return None, "❌ Unsupported arguments.\n" + usage_text
-                if len(positionals) < 3:
-                    return None, "❌ Missing task text after exec.\n" + usage_text
-                exec_task = " ".join(positionals[2:]).strip()
+            return None, "❌ Unsupported arguments.\n" + usage_text
 
     if exec_task is not None and not exec_task.strip():
         return None, "❌ Task text cannot be empty.\n" + usage_text
