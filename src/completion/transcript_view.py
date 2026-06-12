@@ -98,6 +98,11 @@ class TranscriptView:
         self.selected_block_id: Optional[int] = None
         self._result: Optional[Dict[str, Any]] = None
         self._last_height = 1
+        # Stick to the latest message until the user scrolls. The true terminal
+        # size is only known once the application is running, so the bottom is
+        # re-pinned on the first real render to avoid clipping the last lines.
+        self._follow_bottom = True
+        self._body_window = None
 
     # ----------------------------------------------------------------- helpers
     def _term_width(self) -> int:
@@ -121,9 +126,19 @@ class TranscriptView:
         return max(4, rows if rows > 0 else 24)
 
     def _body_height(self) -> int:
-        # Layout reserves 1 row for the title, 1 for the scroll indicator,
-        # and 2 for the help footer.
-        height = self._term_rows() - 4
+        # Prefer the body window's real rendered height (known after the first
+        # render); fall back to the terminal size minus the fixed chrome rows
+        # (1 title + 1 scroll indicator + 2 help footer).
+        height = 0
+        window = getattr(self, "_body_window", None)
+        info = getattr(window, "render_info", None) if window is not None else None
+        if info is not None:
+            try:
+                height = int(info.window_height)
+            except Exception:
+                height = 0
+        if height <= 0:
+            height = self._term_rows() - 4
         height = max(1, height)
         self._last_height = height
         return height
@@ -216,6 +231,8 @@ class TranscriptView:
         ]
 
     def _body_fragments(self):
+        if self._follow_bottom:
+            self.top = self._max_top()
         self._clamp_top()
         width = self._term_width()
         height = self._body_height()
@@ -251,26 +268,32 @@ class TranscriptView:
 
         @kb.add("up")
         def _up(event) -> None:
+            self._follow_bottom = False
             self.top = max(0, self.top - 1)
 
         @kb.add("down")
         def _down(event) -> None:
+            self._follow_bottom = False
             self.top = min(self._max_top(), self.top + 1)
 
         @kb.add("pageup")
         def _pageup(event) -> None:
+            self._follow_bottom = False
             self.top = max(0, self.top - self._body_height())
 
         @kb.add("pagedown")
         def _pagedown(event) -> None:
+            self._follow_bottom = False
             self.top = min(self._max_top(), self.top + self._body_height())
 
         @kb.add("home")
         def _home(event) -> None:
+            self._follow_bottom = False
             self.top = 0
 
         @kb.add("end")
         def _end(event) -> None:
+            self._follow_bottom = True
             self.top = self._max_top()
 
         @kb.add("escape")
@@ -278,12 +301,14 @@ class TranscriptView:
             # ESC highlights the last (most recent) user message.
             if not self.nav_block_ids:
                 return
+            self._follow_bottom = False
             self._select_nav(len(self.nav_block_ids) - 1)
 
         @kb.add("left")
         def _select_prev(event) -> None:
             if not self.nav_block_ids:
                 return
+            self._follow_bottom = False
             pos = self._current_nav_position()
             if pos is None:
                 self._select_nav(len(self.nav_block_ids) - 1)
@@ -294,6 +319,7 @@ class TranscriptView:
         def _select_next(event) -> None:
             if not self.nav_block_ids:
                 return
+            self._follow_bottom = False
             pos = self._current_nav_position()
             if pos is None:
                 self._select_nav(len(self.nav_block_ids) - 1)
@@ -323,6 +349,7 @@ class TranscriptView:
             wrap_lines=False,
             always_hide_cursor=True,
         )
+        self._body_window = body_window
         layout = Layout(
             HSplit(
                 [
