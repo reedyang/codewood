@@ -1,11 +1,10 @@
 # Code Wood
 
-Code Wood is an LLM-powered shell that understands natural language, automates user tasks.
+Code Wood is a terminal-based coding assistant.
 
 ## Highlights
 
 - Natural language command handling powered by configurable model providers
-- Clear separation between temporary session scripts and long-lived text files
 - Automatic loading of Agent Skills from the `skills/` directory
 - Unified model provider configuration with per-model settings
 - Built-in MCP support, including resource loading, batch tool calls, and OAuth 2.0 for URL-based servers
