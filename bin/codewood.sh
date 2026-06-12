@@ -20,6 +20,13 @@ run_main() {
     exec "$VENV_PYTHON" "$ENTRY" --executable-name "$(basename -- "$0")" "$@"
 }
 
+# Inlined former install.sh: install dependencies into the venv.
+install_dependencies() {
+    echo "Installing dependencies from \"$REQ_FILE\"..."
+    "$VENV_PYTHON" -m pip install -r "$REQ_FILE" || { echo "Failed to install dependencies."; exit 1; }
+    echo "Dependencies installed successfully."
+}
+
 if command -v python3 >/dev/null 2>&1; then
     PY_BOOTSTRAP="python3"
 elif command -v python >/dev/null 2>&1; then
@@ -49,8 +56,8 @@ fi
 MISSING=$("$VENV_PYTHON" -m pip install --dry-run -r "$REQ_FILE" 2>&1 | \
     grep -v -E "Requirement already satisfied|^\[notice\]|--upgrade pip")
 if echo "$MISSING" | grep -q "Could not find\|No matching distribution"; then
-    echo "Missing dependencies detected. Running install.sh..."
-    "$SCRIPT_DIR/install.sh" || { echo "install.sh failed."; exit 1; }
+    echo "Missing dependencies detected."
+    install_dependencies
 fi
 
 set_title_from_app_info
