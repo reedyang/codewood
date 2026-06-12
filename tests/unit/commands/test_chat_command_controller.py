@@ -212,6 +212,233 @@ class ChatCommandControllerTests(unittest.TestCase):
         mock_startup.assert_not_called()
 
 
+class _FakeForkAgent:
+    def __init__(self, messages, name="Demo", extra_chats=None):
+        self.active_chat_id = "chat-1"
+        self.active_chat_name = name
+        self._chat_state_lock = _NoopLock()
+        self.conversation_history = list(messages)
+        chats = [
+            {
+                "id": "chat-1",
+                "name": name,
+                "name_source": "manual",
+                "model_provider": "openai",
+                "model_name": "gpt",
+                "messages": list(messages),
+            }
+        ]
+        if extra_chats:
+            chats.extend(extra_chats)
+        self._chat_state = {"version": 1, "active": "chat-1", "chats": chats}
+        self.saved = 0
+        self.input_handler = _FakeInputHandler()
+
+    def _sync_active_chat_messages(self):
+        chat = self._find_chat_by_id(self.active_chat_id)
+        if chat is not None:
+            chat["messages"] = list(self.conversation_history)
+
+    def _find_chat_by_id(self, cid):
+        for c in self._chat_state["chats"]:
+            if c.get("id") == cid:
+                return c
+        return None
+
+    def _chat_entries(self):
+        return self._chat_state["chats"]
+
+    def _next_chat_id(self):
+        existing = {c.get("id") for c in self._chat_state["chats"]}
+        i = 1
+        while f"chat-{i}" in existing:
+            i += 1
+        return f"chat-{i}"
+
+    def _new_chat_entry(self, cid, name="New Chat"):
+        return {
+            "id": cid,
+            "name": name,
+            "name_source": "default",
+            "model_provider": "",
+            "model_name": "",
+            "messages": [],
+        }
+
+    def _save_chat_state(self):
+        self.saved += 1
+
+
+class ChatForkCommandTests(unittest.TestCase):
+    def _history(self):
+        return [
+            {"role": "user", "content": "q1"},
+            {"role": "assistant", "content": "a1"},
+            {"role": "assistant", "content": "a1b"},
+            {"role": "user", "content": "q2"},
+            {"role": "assistant", "content": "a2"},
+            {"role": "user", "content": "q3"},
+            {"role": "assistant", "content": "a3"},
+        ]
+
+    def _new_chat(self, agent):
+        return agent._find_chat_by_id(agent._chat_state["active"])
+
+    def test_fork_default_copies_all_and_switches(self):
+        agent = _FakeForkAgent(self._history())
+        buf = io.StringIO()
+        with (
+            patch("src.controllers.chat_command_controller._reload_chat_from_top") as mock_reload,
+            redirect_stdout(buf),
+        ):
+            handled = handle_chat_builtin_command(agent, "chat fork")
+        self.assertTrue(handled)
+        self.assertEqual(agent._chat_state["active"], "chat-2")
+        new_chat = self._new_chat(agent)
+        self.assertEqual(new_chat["name"], "Demo (2)")
+        self.assertEqual(
+            [m["content"] for m in new_chat["messages"]],
+            ["q1", "a1", "a1b", "q2", "a2", "q3", "a3"],
+        )
+        self.assertEqual(new_chat["model_provider"], "openai")
+        self.assertEqual(new_chat["model_name"], "gpt")
+        self.assertEqual(new_chat["name_source"], "manual")
+        mock_reload.assert_called_once_with(agent, "chat-2")
+
+    def test_fork_minus_one_equivalent_to_default(self):
+        agent = _FakeForkAgent(self._history())
+        with (
+            patch("src.controllers.chat_command_controller._reload_chat_from_top"),
+            redirect_stdout(io.StringIO()),
+        ):
+            handle_chat_builtin_command(agent, "chat fork -1")
+        new_chat = self._new_chat(agent)
+        self.assertEqual(
+            [m["content"] for m in new_chat["messages"]],
+            ["q1", "a1", "a1b", "q2", "a2", "q3", "a3"],
+        )
+
+    def test_fork_positive_index_copies_single_turn(self):
+        agent = _FakeForkAgent(self._history())
+        with (
+            patch("src.controllers.chat_command_controller._reload_chat_from_top"),
+            redirect_stdout(io.StringIO()),
+        ):
+            handle_chat_builtin_command(agent, "chat fork 1")
+        new_chat = self._new_chat(agent)
+        # Copies the first user turn plus its triggered assistant messages.
+        self.assertEqual(
+            [m["content"] for m in new_chat["messages"]],
+            ["q1", "a1", "a1b"],
+        )
+
+    def test_fork_second_index_copies_two_turns(self):
+        agent = _FakeForkAgent(self._history())
+        with (
+            patch("src.controllers.chat_command_controller._reload_chat_from_top"),
+            redirect_stdout(io.StringIO()),
+        ):
+            handle_chat_builtin_command(agent, "chat fork 2")
+        new_chat = self._new_chat(agent)
+        self.assertEqual(
+            [m["content"] for m in new_chat["messages"]],
+            ["q1", "a1", "a1b", "q2", "a2"],
+        )
+
+    def test_fork_copied_messages_are_independent(self):
+        agent = _FakeForkAgent(self._history())
+        with (
+            patch("src.controllers.chat_command_controller._reload_chat_from_top"),
+            redirect_stdout(io.StringIO()),
+        ):
+            handle_chat_builtin_command(agent, "chat fork 1")
+        new_chat = self._new_chat(agent)
+        new_chat["messages"][0]["content"] = "mutated"
+        source = agent._find_chat_by_id("chat-1")
+        self.assertEqual(source["messages"][0]["content"], "q1")
+
+    def test_fork_name_skips_existing(self):
+        extra = [{"id": "other", "name": "Demo (2)", "messages": []}]
+        agent = _FakeForkAgent(self._history(), extra_chats=extra)
+        with (
+            patch("src.controllers.chat_command_controller._reload_chat_from_top"),
+            redirect_stdout(io.StringIO()),
+        ):
+            handle_chat_builtin_command(agent, "chat fork")
+        new_chat = self._new_chat(agent)
+        self.assertEqual(new_chat["name"], "Demo (3)")
+
+    def test_fork_out_of_range(self):
+        agent = _FakeForkAgent(self._history())
+        buf = io.StringIO()
+        with (
+            patch("src.controllers.chat_command_controller._reload_chat_from_top") as mock_reload,
+            redirect_stdout(buf),
+        ):
+            handle_chat_builtin_command(agent, "chat fork 4")
+        self.assertIn("❌", buf.getvalue())
+        self.assertEqual(len(agent._chat_state["chats"]), 1)
+        mock_reload.assert_not_called()
+
+    def test_fork_invalid_index(self):
+        agent = _FakeForkAgent(self._history())
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            handle_chat_builtin_command(agent, "chat fork abc")
+        self.assertIn("❌", buf.getvalue())
+        self.assertEqual(len(agent._chat_state["chats"]), 1)
+
+    def test_fork_zero_index_invalid(self):
+        agent = _FakeForkAgent(self._history())
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            handle_chat_builtin_command(agent, "chat fork 0")
+        self.assertIn("❌", buf.getvalue())
+        self.assertEqual(len(agent._chat_state["chats"]), 1)
+
+    def test_fork_too_many_args_shows_usage(self):
+        agent = _FakeForkAgent(self._history())
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            handle_chat_builtin_command(agent, "chat fork 1 2")
+        self.assertIn("/chat fork", buf.getvalue())
+        self.assertEqual(len(agent._chat_state["chats"]), 1)
+
+    def test_fork_no_user_messages(self):
+        agent = _FakeForkAgent([{"role": "assistant", "content": "note"}])
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            handle_chat_builtin_command(agent, "chat fork")
+        self.assertIn("❌", buf.getvalue())
+        self.assertEqual(len(agent._chat_state["chats"]), 1)
+
+    def test_fork_increments_existing_numeric_suffix(self):
+        agent = _FakeForkAgent(self._history(), name="Demo (2)")
+        with (
+            patch("src.controllers.chat_command_controller._reload_chat_from_top"),
+            redirect_stdout(io.StringIO()),
+        ):
+            handle_chat_builtin_command(agent, "chat fork")
+        new_chat = self._new_chat(agent)
+        self.assertEqual(new_chat["name"], "Demo (3)")
+
+    def test_fork_increments_suffix_skipping_existing(self):
+        extra = [{"id": "other", "name": "Demo (3)", "messages": []}]
+        agent = _FakeForkAgent(self._history(), name="Demo (2)", extra_chats=extra)
+        with (
+            patch("src.controllers.chat_command_controller._reload_chat_from_top"),
+            redirect_stdout(io.StringIO()),
+        ):
+            handle_chat_builtin_command(agent, "chat fork")
+        new_chat = self._new_chat(agent)
+        self.assertEqual(new_chat["name"], "Demo (4)")
+
+    def test_fork_is_in_slash_completions(self):
+        out = slash_builtin_completions("/chat fo")
+        self.assertIn("/chat fork", out)
+        self.assertNotIn("/chat fork ", out)
+
+
 class ChatEditCommandTests(unittest.TestCase):
     def _history(self):
         return [
