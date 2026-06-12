@@ -2032,6 +2032,25 @@ class PromptToolkitInputHandler:
             # Fall back to standard input.
             self.session = None
 
+    def set_pending_prefill(
+        self, text: str, cursor_position: Optional[int] = None
+    ) -> None:
+        """Pre-fill the next interactive prompt with ``text``.
+
+        Used by commands such as ``/chat edit`` that want to drop a previous
+        message back into the input box so the user can edit and resubmit it.
+        When ``cursor_position`` is omitted the cursor is placed at the end of
+        the text.
+        """
+        normalized = _normalize_newlines(str(text or ""))
+        self._pending_prefill_text = normalized
+        if cursor_position is None:
+            self._pending_prefill_cursor_position = len(normalized)
+        else:
+            self._pending_prefill_cursor_position = max(
+                0, min(int(cursor_position), len(normalized))
+            )
+
     def _get_terminal_rows(self, default: int = 0) -> int:
         rows = 0
         try:

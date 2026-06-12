@@ -23,6 +23,7 @@ def chat_usage(agent: Any) -> str:
         f"  /chat new [name]\n"
         f"  /chat switch <index|id|name>\n"
         f"  /chat rename <index|id|name> <new name>\n"
+        f"  /chat edit <index>\n"
         f"  /chat delete <index|id|name>\n"
         f"  /chat delete all\n"
     )
@@ -129,6 +130,98 @@ def _reload_chat_from_top(agent: Any, chat_id: str) -> None:
         agent._print_chat_history()
 
 
+def _genuine_user_message_positions(agent: Any) -> list:
+    """Return the conversation-history indices of genuine user prompts.
+
+    Internal bookkeeping entries that happen to use the ``user`` role (direct
+    shell commands, internal slash commands) are excluded so the index the user
+    types matches the messages they actually sent.
+    """
+    from ..agent import (
+        DIRECT_SHELL_USER_HISTORY_PREFIX,
+        INTERNAL_SLASH_USER_HISTORY_PREFIX,
+    )
+
+    positions = []
+    history = list(getattr(agent, "conversation_history", None) or [])
+    for i, msg in enumerate(history):
+        if not isinstance(msg, dict):
+            continue
+        if str(msg.get("role") or "").strip().lower() != "user":
+            continue
+        content = str(msg.get("content") or "")
+        if content.startswith(DIRECT_SHELL_USER_HISTORY_PREFIX):
+            continue
+        if content.startswith(INTERNAL_SLASH_USER_HISTORY_PREFIX):
+            continue
+        positions.append(i)
+    return positions
+
+
+def _prefill_next_input(agent: Any, text: str) -> None:
+    handler = getattr(agent, "input_handler", None)
+    if handler is None:
+        return
+    setter = getattr(handler, "set_pending_prefill", None)
+    if callable(setter):
+        try:
+            setter(text)
+            return
+        except Exception:
+            pass
+    try:
+        handler._pending_prefill_text = str(text or "")
+        handler._pending_prefill_cursor_position = len(str(text or ""))
+    except Exception:
+        pass
+
+
+def handle_chat_edit_command(agent: Any, raw_index: str) -> None:
+    value = str(raw_index or "").strip()
+    try:
+        index = int(value)
+    except ValueError:
+        print(_t(agent, "chat.edit.invalid_index", value=value))
+        return
+    if index == 0:
+        print(_t(agent, "chat.edit.invalid_index", value=value))
+        return
+
+    with agent._chat_state_lock:
+        positions = _genuine_user_message_positions(agent)
+        count = len(positions)
+        if count == 0:
+            print(_t(agent, "chat.edit.no_user_messages"))
+            return
+        if index > 0:
+            if index > count:
+                print(_t(agent, "chat.edit.out_of_range", value=index, count=count))
+                return
+            pos_in_list = index - 1
+        else:
+            if -index > count:
+                print(_t(agent, "chat.edit.out_of_range", value=index, count=count))
+                return
+            pos_in_list = count + index
+        target_history_index = positions[pos_in_list]
+        message_text = str(
+            agent.conversation_history[target_history_index].get("content") or ""
+        )
+        agent.conversation_history = list(
+            agent.conversation_history[:target_history_index]
+        )
+        try:
+            agent._sync_active_chat_messages()
+        except Exception:
+            pass
+
+    current_chat_id = str(getattr(agent, "active_chat_id", "") or "").strip()
+    if current_chat_id:
+        _reload_chat_from_top(agent, current_chat_id)
+    _prefill_next_input(agent, message_text)
+    print(_t(agent, "chat.edit.done"))
+
+
 def handle_chat_builtin_command(agent: Any, builtin_line: str) -> bool:
     raw = str(builtin_line or "").strip()
     if not raw.lower().startswith("chat"):
@@ -197,6 +290,12 @@ def handle_chat_builtin_command(agent: Any, builtin_line: str) -> bool:
                 agent.active_chat_name = new_name
             agent._save_chat_state()
         print(_t(agent, "chat.renamed", name=new_name))
+        return True
+    if sub == "edit":
+        if len(parts) != 3:
+            print(_t(agent, "chat.usage.edit_error"))
+            return True
+        handle_chat_edit_command(agent, parts[2])
         return True
     if sub == "delete":
         if len(parts) < 3:
