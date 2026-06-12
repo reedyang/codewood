@@ -4,6 +4,7 @@ import tempfile
 import threading
 import types
 import unittest
+from datetime import datetime
 from pathlib import Path
 
 
@@ -37,11 +38,31 @@ class _FakeAgent:
         self._last_context_window = 0
         self.session_memory_service = None
         self._chat_state_manager = None
+        self._active_chat_plan = None
+        self._active_chat_plan_pending = False
 
     def _apply_chat_model_from_entry(self, chat, persist_if_missing=False):
         if persist_if_missing:
             chat.setdefault("model_provider", self.provider)
             chat.setdefault("model_name", self.model_name)
+
+    def _append_chat_message(self, role: str, content: str) -> None:
+        r = str(role or "").strip().lower()
+        if r not in ("user", "assistant"):
+            return
+        message = {
+            "role": r,
+            "content": str(content or ""),
+            "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        }
+        if r == "assistant" and self._chat_state_manager is not None:
+            self._chat_state_manager.attach_pending_plan_to_message(message)
+        self.conversation_history.append(message)
+        self._sync_active_chat_messages()
+
+    def _sync_active_chat_messages(self) -> None:
+        if self._chat_state_manager is not None:
+            self._chat_state_manager.sync_active_chat_messages()
 
     def _print_chat_history(self):
         return None
@@ -123,7 +144,7 @@ class UpdatePlanValidationTests(unittest.TestCase):
 
 
 class UpdatePlanIntegrationTests(unittest.TestCase):
-    def test_apply_persists_plan_on_active_chat(self):
+    def test_apply_records_plan_on_next_assistant_message(self):
         with tempfile.TemporaryDirectory() as td:
             workspace = Path(td)
             agent = _build_agent(workspace)
@@ -140,17 +161,28 @@ class UpdatePlanIntegrationTests(unittest.TestCase):
             self.assertTrue(result["success"], result)
             self.assertEqual(result["in_progress_step"], "Survey code")
 
+            # The plan stays off the chat root and is only attached to the next
+            # recorded assistant message.
             chat = agent._chat_state_manager.find_chat_by_id("chat-1")
-            self.assertIsNotNone(chat)
+            self.assertNotIn("plan", chat)
+            self.assertEqual(chat["messages"], [])
+            self.assertTrue(agent._active_chat_plan_pending)
+
+            agent._append_chat_message("assistant", "working on it")
+
+            chat = agent._chat_state_manager.find_chat_by_id("chat-1")
+            self.assertEqual(len(chat["messages"]), 1)
+            msg = chat["messages"][0]
             self.assertEqual(
-                chat["plan"],
+                msg["plan"],
                 [
                     {"step": "Survey code", "status": "in_progress"},
                     {"step": "Edit helper", "status": "pending"},
                 ],
             )
-            self.assertEqual(chat["plan_explanation"], "kicking off")
-            self.assertNotEqual(chat["plan_updated_at"], "")
+            self.assertEqual(msg["plan_explanation"], "kicking off")
+            self.assertNotEqual(msg["plan_updated_at"], "")
+            self.assertFalse(agent._active_chat_plan_pending)
 
             index_path = workspace / "chats" / "chats.json"
             self.assertTrue(index_path.exists())
@@ -159,8 +191,23 @@ class UpdatePlanIntegrationTests(unittest.TestCase):
             saved_chat = json.loads(
                 (workspace / "chats" / record_file).read_text(encoding="utf-8")
             )
-            self.assertEqual(saved_chat["plan"], chat["plan"])
-            self.assertEqual(saved_chat["plan_explanation"], "kicking off")
+            self.assertEqual(saved_chat["messages"][0]["plan"], msg["plan"])
+            self.assertEqual(saved_chat["messages"][0]["plan_explanation"], "kicking off")
+            self.assertNotIn("plan", saved_chat)
+
+    def test_plan_only_recorded_once_until_changed(self):
+        with tempfile.TemporaryDirectory() as td:
+            agent = _build_agent(Path(td))
+            UpdatePlanTool.apply(
+                agent,
+                {"plan": [{"step": "Only step", "status": "in_progress"}]},
+            )
+            agent._append_chat_message("assistant", "first")
+            agent._append_chat_message("assistant", "second")
+
+            chat = agent._chat_state_manager.find_chat_by_id("chat-1")
+            self.assertIn("plan", chat["messages"][0])
+            self.assertNotIn("plan", chat["messages"][1])
 
     def test_apply_returns_failure_when_payload_invalid(self):
         with tempfile.TemporaryDirectory() as td:
@@ -172,8 +219,8 @@ class UpdatePlanIntegrationTests(unittest.TestCase):
             self.assertFalse(result.get("success", True))
             self.assertIn("status", str(result.get("error", "")))
 
-            chat = agent._chat_state_manager.find_chat_by_id("chat-1")
-            self.assertEqual(chat.get("plan"), [])
+            self.assertIsNone(UpdatePlanTool.current_plan(agent))
+            self.assertFalse(agent._active_chat_plan_pending)
 
     def test_apply_replaces_previous_plan(self):
         with tempfile.TemporaryDirectory() as td:
@@ -187,6 +234,7 @@ class UpdatePlanIntegrationTests(unittest.TestCase):
                     ]
                 },
             )
+            agent._append_chat_message("assistant", "round one")
             UpdatePlanTool.apply(
                 agent,
                 {
@@ -196,9 +244,21 @@ class UpdatePlanIntegrationTests(unittest.TestCase):
                     ]
                 },
             )
+            agent._append_chat_message("assistant", "round two")
+
             chat = agent._chat_state_manager.find_chat_by_id("chat-1")
             self.assertEqual(
-                [(it["step"], it["status"]) for it in chat["plan"]],
+                [(it["step"], it["status"]) for it in chat["messages"][0]["plan"]],
+                [("First step", "in_progress"), ("Second step", "pending")],
+            )
+            self.assertEqual(
+                [(it["step"], it["status"]) for it in chat["messages"][1]["plan"]],
+                [("First step", "completed"), ("Second step", "in_progress")],
+            )
+            # The latest plan reflects the most recent update.
+            snapshot = UpdatePlanTool.current_plan(agent)
+            self.assertEqual(
+                [(it["step"], it["status"]) for it in snapshot["plan"]],
                 [("First step", "completed"), ("Second step", "in_progress")],
             )
 
@@ -220,8 +280,8 @@ class UpdatePlanIntegrationTests(unittest.TestCase):
                 [{"step": "Only step", "status": "in_progress"}],
             )
             snapshot["plan"].append({"step": "mutated", "status": "pending"})
-            chat = agent._chat_state_manager.find_chat_by_id("chat-1")
-            self.assertEqual(len(chat["plan"]), 1)
+            snapshot2 = UpdatePlanTool.current_plan(agent)
+            self.assertEqual(len(snapshot2["plan"]), 1)
 
     def test_clear_chat_context_resets_plan(self):
         with tempfile.TemporaryDirectory() as td:
@@ -233,13 +293,14 @@ class UpdatePlanIntegrationTests(unittest.TestCase):
                     "explanation": "keep going",
                 },
             )
+            agent._append_chat_message("assistant", "noted")
             agent._chat_state_manager.clear_chat_context("chat-1")
             chat = agent._chat_state_manager.find_chat_by_id("chat-1")
-            self.assertEqual(chat["plan"], [])
-            self.assertEqual(chat["plan_explanation"], "")
-            self.assertEqual(chat["plan_updated_at"], "")
+            self.assertEqual(chat["messages"], [])
+            self.assertIsNone(agent._active_chat_plan)
+            self.assertIsNone(UpdatePlanTool.current_plan(agent))
 
-    def test_load_chat_state_round_trip_preserves_plan(self):
+    def test_load_chat_state_round_trip_preserves_latest_plan(self):
         with tempfile.TemporaryDirectory() as td:
             workspace = Path(td)
             agent = _build_agent(workspace)
@@ -252,6 +313,7 @@ class UpdatePlanIntegrationTests(unittest.TestCase):
                     ]
                 },
             )
+            agent._append_chat_message("assistant", "progress")
 
             agent2 = _FakeAgent(workspace)
             manager2 = ChatStateManager(agent2, "chats.json")
@@ -259,7 +321,15 @@ class UpdatePlanIntegrationTests(unittest.TestCase):
             manager2.load_chat_state()
             chat = manager2.find_chat_by_id("chat-1")
             self.assertEqual(
-                chat["plan"],
+                chat["messages"][0]["plan"],
+                [
+                    {"step": "Step A", "status": "completed"},
+                    {"step": "Step B", "status": "in_progress"},
+                ],
+            )
+            snapshot = UpdatePlanTool.current_plan(agent2)
+            self.assertEqual(
+                snapshot["plan"],
                 [
                     {"step": "Step A", "status": "completed"},
                     {"step": "Step B", "status": "in_progress"},
@@ -280,15 +350,22 @@ class UpdatePlanIntegrationTests(unittest.TestCase):
                         "name_source": "manual",
                         "created_at": "",
                         "updated_at": "",
-                        "messages": [],
-                        "plan": [
-                            {"step": "valid", "status": "pending"},
-                            {"step": "missing-status"},
-                            {"status": "pending"},
-                            "not an object",
-                            {"step": "bad status", "status": "frobnicate"},
+                        "messages": [
+                            {
+                                "role": "assistant",
+                                "content": "with plan",
+                                "created_at": "2025-01-01 00:00:00",
+                                "plan": [
+                                    {"step": "valid", "status": "pending"},
+                                    {"step": "missing-status"},
+                                    {"status": "pending"},
+                                    "not an object",
+                                    {"step": "bad status", "status": "frobnicate"},
+                                ],
+                                "plan_explanation": "loaded",
+                                "plan_updated_at": "2025-01-01 00:00:00",
+                            }
                         ],
-                        "plan_explanation": "loaded",
                         "context_usage_percent": 0,
                         "context_input_tokens": 0,
                         "context_window": 0,
@@ -324,8 +401,11 @@ class UpdatePlanIntegrationTests(unittest.TestCase):
             agent._chat_state_manager = manager
             manager.load_chat_state()
             chat = manager.find_chat_by_id("chat-1")
-            self.assertEqual(chat["plan"], [{"step": "valid", "status": "pending"}])
-            self.assertEqual(chat["plan_explanation"], "loaded")
+            self.assertEqual(
+                chat["messages"][0]["plan"],
+                [{"step": "valid", "status": "pending"}],
+            )
+            self.assertEqual(chat["messages"][0]["plan_explanation"], "loaded")
 
 
 if __name__ == "__main__":
