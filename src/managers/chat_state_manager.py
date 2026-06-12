@@ -105,9 +105,6 @@ class ChatStateManager:
             "model_provider": provider,
             "model_name": model_name,
             "messages": [],
-            "plan": [],
-            "plan_explanation": "",
-            "plan_updated_at": "",
             "context_usage_percent": usage_pct,
             "context_input_tokens": usage_tokens,
             "context_window": usage_window,
@@ -127,6 +124,12 @@ class ChatStateManager:
             "content": content,
             "created_at": created_at,
         }
+        if role == "assistant":
+            plan_items = _normalize_plan_items(raw.get("plan"))
+            if plan_items:
+                out["plan"] = plan_items
+                out["plan_explanation"] = str(raw.get("plan_explanation") or "").strip()
+                out["plan_updated_at"] = str(raw.get("plan_updated_at") or "").strip()
         if bool(raw.get("exclude_from_model_context", False)):
             out["exclude_from_model_context"] = True
         pseudo_tool_call_text = str(raw.get("pseudo_tool_call_text") or "").strip()
@@ -161,10 +164,6 @@ class ChatStateManager:
                 raise ValueError("message item must be object")
             messages.append(self._normalize_message(item))
 
-        plan_items = _normalize_plan_items(raw.get("plan"))
-        plan_explanation = str(raw.get("plan_explanation") or "").strip()
-        plan_updated_at = str(raw.get("plan_updated_at") or "").strip()
-
         return {
             "id": cid,
             "name": name,
@@ -174,9 +173,6 @@ class ChatStateManager:
             "model_provider": str(raw.get("model_provider") or "").strip(),
             "model_name": str(raw.get("model_name") or "").strip(),
             "messages": messages,
-            "plan": plan_items,
-            "plan_explanation": plan_explanation,
-            "plan_updated_at": plan_updated_at,
             "context_usage_percent": int(raw.get("context_usage_percent") or 0),
             "context_input_tokens": int(raw.get("context_input_tokens") or 0),
             "context_window": int(raw.get("context_window") or 0),
@@ -403,6 +399,12 @@ class ChatStateManager:
                     "content": str(m.get("content") or ""),
                     "created_at": str(m.get("created_at") or "").strip() or self._now_text(),
                 }
+                if role == "assistant":
+                    plan_items = _normalize_plan_items(m.get("plan"))
+                    if plan_items:
+                        entry["plan"] = plan_items
+                        entry["plan_explanation"] = str(m.get("plan_explanation") or "").strip()
+                        entry["plan_updated_at"] = str(m.get("plan_updated_at") or "").strip()
                 if bool(m.get("exclude_from_model_context", False)):
                     entry["exclude_from_model_context"] = True
                 pseudo_tool_call_text = str(m.get("pseudo_tool_call_text") or "").strip()
@@ -457,28 +459,65 @@ class ChatStateManager:
             if not chat:
                 return False
             chat["messages"] = []
-            chat["plan"] = []
-            chat["plan_explanation"] = ""
-            chat["plan_updated_at"] = ""
             chat["context_usage_percent"] = 0
             chat["context_input_tokens"] = 0
             chat["context_window"] = int(
                 getattr(self._agent, "_last_context_window", 0) or 0
             )
             chat["updated_at"] = self._now_text()
+            if cid == str(getattr(self._agent, "active_chat_id", "") or "").strip():
+                self._agent._active_chat_plan = None
+                self._agent._active_chat_plan_pending = False
             self.save_chat_state()
             return True
 
+    @staticmethod
+    def _latest_plan_snapshot_from_messages(
+        messages: Any,
+    ) -> Optional[Dict[str, Any]]:
+        """Scan messages (most-recent first) for the last attached plan snapshot.
+
+        Plans are stored in the message stream rather than on the chat root, so
+        the "latest plan" is whatever the most recent assistant message recorded.
+        """
+        if not isinstance(messages, list):
+            return None
+        for msg in reversed(messages):
+            if not isinstance(msg, dict):
+                continue
+            items = _normalize_plan_items(msg.get("plan"))
+            if items:
+                return {
+                    "plan": items,
+                    "explanation": str(msg.get("plan_explanation") or ""),
+                    "updated_at": str(msg.get("plan_updated_at") or ""),
+                }
+        return None
+
+    def refresh_active_chat_plan_from_messages(self) -> None:
+        """Reset the in-memory active plan from the active chat's message stream.
+
+        Called when (re)activating a chat so the runtime loop's plan reminder
+        reflects the loaded conversation's latest plan.
+        """
+        snapshot = self._latest_plan_snapshot_from_messages(
+            list(getattr(self._agent, "conversation_history", None) or [])
+        )
+        self._agent._active_chat_plan = snapshot
+        self._agent._active_chat_plan_pending = False
+
     def active_chat_plan(self) -> Optional[Dict[str, Any]]:
-        """Return a copy of the active chat's plan record, or None if no active chat."""
+        """Return a copy of the active chat's latest plan, or None if unset."""
         with self._agent._chat_state_lock:
-            chat = self.find_chat_by_id(self._agent.active_chat_id)
-            if not chat:
+            if not self.find_chat_by_id(self._agent.active_chat_id):
+                return None
+            snapshot = getattr(self._agent, "_active_chat_plan", None)
+            if not isinstance(snapshot, dict):
                 return None
             return {
-                "plan": [dict(item) for item in (chat.get("plan") or []) if isinstance(item, dict)],
-                "explanation": str(chat.get("plan_explanation") or ""),
-                "updated_at": str(chat.get("plan_updated_at") or ""),
+                "plan": [dict(item) for item in (snapshot.get("plan") or []) if isinstance(item, dict)],
+                "explanation": str(snapshot.get("explanation") or ""),
+                "updated_at": str(snapshot.get("updated_at") or ""),
             }
 
     def persist_active_chat_plan(
@@ -486,23 +525,52 @@ class ChatStateManager:
         plan_items: List[Dict[str, str]],
         explanation: str = "",
     ) -> bool:
-        """Replace the active chat's plan with the given items and persist.
+        """Stage the given plan as the active chat's latest plan.
 
-        Returns True if a chat was found and updated. The caller is expected to
-        provide already-validated items (e.g. via UpdatePlanTool); we still
-        re-normalize defensively before saving.
+        The plan is not written to the chat root; instead it is held in memory
+        and stamped onto the next recorded assistant message (see
+        ``attach_pending_plan_to_message``). Returns True if there is an active
+        chat to attach the plan to. The caller is expected to provide
+        already-validated items (e.g. via UpdatePlanTool); we still re-normalize
+        defensively.
         """
         normalized = _normalize_plan_items(plan_items)
         with self._agent._chat_state_lock:
             chat = self.find_chat_by_id(self._agent.active_chat_id)
             if not chat:
                 return False
-            chat["plan"] = normalized
-            chat["plan_explanation"] = str(explanation or "").strip()
-            chat["plan_updated_at"] = self._now_text()
-            chat["updated_at"] = self._now_text()
-            self.save_chat_state()
+            self._agent._active_chat_plan = {
+                "plan": normalized,
+                "explanation": str(explanation or "").strip(),
+                "updated_at": self._now_text(),
+            }
+            self._agent._active_chat_plan_pending = True
             return True
+
+    def attach_pending_plan_to_message(self, message: Dict[str, Any]) -> None:
+        """Stamp the staged plan snapshot onto an assistant message in place.
+
+        Does nothing unless (a) the message is an assistant message and (b) a
+        plan update is pending since the last recorded message. After stamping,
+        the pending flag is cleared so subsequent unchanged messages do not
+        re-record the same plan.
+        """
+        if not isinstance(message, dict):
+            return
+        if str(message.get("role") or "").strip().lower() != "assistant":
+            return
+        if not getattr(self._agent, "_active_chat_plan_pending", False):
+            return
+        self._agent._active_chat_plan_pending = False
+        snapshot = getattr(self._agent, "_active_chat_plan", None)
+        if not isinstance(snapshot, dict):
+            return
+        items = _normalize_plan_items(snapshot.get("plan"))
+        if not items:
+            return
+        message["plan"] = items
+        message["plan_explanation"] = str(snapshot.get("explanation") or "").strip()
+        message["plan_updated_at"] = str(snapshot.get("updated_at") or "").strip()
 
     def activate_chat(
         self,
@@ -522,6 +590,7 @@ class ChatStateManager:
             self._agent.active_chat_id = chat_id
             self._agent.active_chat_name = str(chat.get("name") or "New Chat")
             self._agent.conversation_history = list(chat.get("messages") or [])
+            self.refresh_active_chat_plan_from_messages()
             # Keep in-memory tool outcomes when reloading the same chat so
             # history replay can preserve failed/success visual markers.
             if chat_id == prev_active_chat_id:

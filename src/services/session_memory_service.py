@@ -358,13 +358,20 @@ class SessionMemoryService:
         r = str(role or "").strip().lower()
         if r not in ("user", "assistant"):
             return
-        self.agent.conversation_history.append(
-            {
-                "role": r,
-                "content": str(content or ""),
-                "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            }
-        )
+        message: Dict[str, Any] = {
+            "role": r,
+            "content": str(content or ""),
+            "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        }
+        if r == "assistant":
+            manager = getattr(self.agent, "_chat_state_manager", None)
+            attach = getattr(manager, "attach_pending_plan_to_message", None)
+            if callable(attach):
+                try:
+                    attach(message)
+                except Exception:
+                    pass
+        self.agent.conversation_history.append(message)
         self.agent._sync_active_chat_messages()
         if r == "user":
             self.agent._maybe_schedule_auto_chat_name()

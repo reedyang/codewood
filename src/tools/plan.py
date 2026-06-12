@@ -1,9 +1,11 @@
 """Implementation of the `update_plan` tool.
 
 The plan is a short, ordered list of steps with a status per step that the
-model maintains while working on a task. It is stored on the active chat
-record (`chat["plan"]`) and is not surfaced directly to the user; the host
-only persists it for use as model context.
+model maintains while working on a task. The latest plan is held in memory on
+the active chat and is recorded into the message stream (stamped onto the next
+assistant message whenever it changes), rather than on the chat root. It is not
+surfaced directly to the user nor replayed from history into model context; the
+host only keeps the latest plan available as in-flight model context.
 """
 
 from __future__ import annotations

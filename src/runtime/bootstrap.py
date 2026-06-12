@@ -50,6 +50,13 @@ def setup_core_state(agent: Any, startup_work_directory: Path, self_repo_root: P
     agent.active_chat_id = ""
     agent.active_chat_name = "New Chat"
     agent._chat_state_lock = threading.RLock()
+    # Latest plan for the active chat, kept in memory so the runtime loop can
+    # still surface it as model context. The plan itself is persisted inside the
+    # message stream (attached to assistant messages) rather than on the chat
+    # root; ``_active_chat_plan_pending`` marks that the plan changed and should
+    # be stamped onto the next recorded assistant message.
+    agent._active_chat_plan = None
+    agent._active_chat_plan_pending = False
     agent._queued_user_input = None
 
     agent._session_summary_llm = ""
