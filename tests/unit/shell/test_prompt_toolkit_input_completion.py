@@ -573,6 +573,40 @@ class PromptToolkitInputCompletionTests(unittest.TestCase):
             str(getattr(fork_items[0], "display_text", "")), "/chat fork [index]"
         )
 
+    def test_builtin_commands_with_args_show_param_hints(self):
+        cases = [
+            ("/chat sw", "/chat switch ", "/chat switch <index|id|name>"),
+            ("/chat ne", "/chat new ", "/chat new [name]"),
+            ("/chat del", "/chat delete ", "/chat delete <index|id|name>"),
+            ("/chat ren", "/chat rename ", "/chat rename <index|id|name> <new name>"),
+            ("/mcp list-to", "/mcp list-tools ", "/mcp list-tools <server>"),
+            (
+                "/mcp disable-to",
+                "/mcp disable-tools ",
+                "/mcp disable-tools <server> <tool1,tool2>",
+            ),
+            ("/mcp reco", "/mcp reconnect ", "/mcp reconnect <server>"),
+            ("/memory rem", "/memory remember ", "/memory remember <text>"),
+            ("/memory sea", "/memory search ", "/memory search <query>"),
+            (
+                "/workspace cre",
+                "/workspace create ",
+                "/workspace create <path> [--name <name>]",
+            ),
+            ("/lang", "/language", "/language [language code]"),
+            ("/mod", "/model", "/model [model_provider:name]"),
+        ]
+        with tempfile.TemporaryDirectory() as td:
+            completer = FileCompleter(Path(td))
+            for typed, insertion, display in cases:
+                out = list(completer.get_completions(_Doc(typed), None))
+                item = next(
+                    c for c in out if getattr(c, "text", "") == insertion
+                )
+                self.assertEqual(
+                    str(getattr(item, "display_text", "")), display, typed
+                )
+
     def test_get_input_uses_multiline_prompt_and_two_space_continuation(self):
         handler = pti.PromptToolkitInputHandler.__new__(pti.PromptToolkitInputHandler)
         handler.session = _FakeSession("line1\nline2")
