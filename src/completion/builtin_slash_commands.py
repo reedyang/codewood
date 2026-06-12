@@ -69,11 +69,44 @@ SLASH_BUILTIN_COMMANDS: List[str] = [
 # Optional display labels for built-in completions whose menu text should differ
 # from the inserted text. The key is the inserted command (as listed above);
 # the value is what the completion menu shows. This lets a command advertise its
-# argument shape (e.g. "/chat fork [index]") while tab still inserts the bare
-# command ("/chat fork").
+# argument shape while tab still inserts the bare command.
+#
+# Convention: required arguments are wrapped in <>, optional arguments in [].
+# Only commands that accept arguments need an entry here.
 SLASH_BUILTIN_DISPLAY_OVERRIDES = {
+    # /chat
+    "/chat new ": "/chat new [name]",
+    "/chat switch ": "/chat switch <index|id|name>",
+    "/chat rename ": "/chat rename <index|id|name> <new name>",
     "/chat edit ": "/chat edit <index>",
     "/chat fork": "/chat fork [index]",
+    "/chat delete ": "/chat delete <index|id|name>",
+    # /execution-policy
+    "/execution-policy ": "/execution-policy <show|unlimited|moderate|confirmation>",
+    # /language
+    "/language": "/language [language code]",
+    # /model
+    "/model": "/model [model_provider:name]",
+    # /mcp
+    "/mcp list-tools ": "/mcp list-tools <server>",
+    "/mcp list-resources ": "/mcp list-resources <server>",
+    "/mcp list-resource-templates ": "/mcp list-resource-templates <server>",
+    "/mcp list-prompts ": "/mcp list-prompts <server>",
+    "/mcp list-disabled-tools": "/mcp list-disabled-tools [server]",
+    "/mcp reconnect ": "/mcp reconnect <server>",
+    "/mcp server-info ": "/mcp server-info <server>",
+    "/mcp disable-tools ": "/mcp disable-tools <server> <tool1,tool2>",
+    "/mcp enable-tools ": "/mcp enable-tools <server> <tool1,tool2>",
+    # /memory
+    "/memory search ": "/memory search <query>",
+    "/memory remember ": "/memory remember <text>",
+    "/memory delete ": "/memory delete <id>",
+    # /workspace
+    "/workspace create ": "/workspace create <path> [--name <name>]",
+    "/workspace switch ": "/workspace switch <name|id|path>",
+    "/workspace rename ": "/workspace rename <name|id|path> <new name>",
+    "/workspace update ": "/workspace update <name|id|path> [--name <name>] [--path <path>]",
+    "/workspace delete ": "/workspace delete <name|id|path> [--remove-files]",
 }
 
 
