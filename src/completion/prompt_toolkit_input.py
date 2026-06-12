@@ -16,6 +16,12 @@ from ..config.app_info import get_app_runtime_attr_name
 _WIN_DRIVE_BANG = re.compile(r"^([A-Za-z]:)(/.*)?$")
 _ANSI_SGR_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 MULTILINE_INDENT = "  "
+# Cap the input area to behave like a GUI text box: it grows with the content
+# up to this many visible rows, then stops growing and scrolls internally.
+MAX_INPUT_VISIBLE_ROWS = 8
+# Keep at least this many rows above the prompt symbol so the box never gets
+# pushed flush against the top edge of a short terminal window.
+INPUT_TOP_MARGIN_ROWS = 2
 VK_SHIFT = 0x10
 VK_LSHIFT = 0xA0
 VK_RSHIFT = 0xA1
@@ -55,6 +61,7 @@ try:
     )
     from prompt_toolkit.key_binding import KeyBindings
     from prompt_toolkit.history import InMemoryHistory
+    from prompt_toolkit.layout.dimension import Dimension
     from prompt_toolkit.styles import Style
     try:
         from prompt_toolkit.cursor_shapes import CursorShape
@@ -136,6 +143,31 @@ def _get_output_columns_from_obj(output: Any, default: int = 0) -> int:
                 return cols
     except Exception:
         pass
+    return int(default or 0)
+
+
+def _get_output_rows_from_obj(output: Any, default: int = 0) -> int:
+    try:
+        if output is not None and hasattr(output, "get_size"):
+            size = output.get_size()
+            rows = int(getattr(size, "rows", 0) or 0)
+            if rows > 0:
+                return rows
+    except Exception:
+        pass
+    return int(default or 0)
+
+
+def _get_system_terminal_rows(default: int = 0) -> int:
+    for stream in (getattr(sys, "__stdout__", None), getattr(sys, "stdout", None)):
+        try:
+            if stream is None or not hasattr(stream, "fileno"):
+                continue
+            rows = int(os.get_terminal_size(stream.fileno()).lines or 0)
+            if rows > 0:
+                return rows
+        except Exception:
+            continue
     return int(default or 0)
 
 
@@ -253,8 +285,38 @@ def _get_buffer_rows_below_cursor(app: Any) -> int:
         return 0
 
 
-def _get_status_overlay_position(app: Any) -> Tuple[int, int, int]:
+def _get_status_overlay_position(
+    app: Any,
+    window: Any = None,
+    max_visible: int = 0,
+) -> Tuple[int, int, int]:
     cursor_row, line_count = _get_buffer_cursor_row_and_line_count(app)
+    try:
+        max_visible = int(max_visible or 0)
+    except Exception:
+        max_visible = 0
+    if max_visible > 0 and line_count > max_visible:
+        # The input box is capped to a fixed height and scrolls internally.
+        # Anchor the status line 2 rows below the *visible* bottom edge of the
+        # box instead of below the (now off-screen) last logical line. We read
+        # the renderer's window info to find where the cursor actually sits
+        # inside the scrolled box.
+        window_height = max_visible
+        cursor_visible_row = max_visible - 1
+        info = getattr(window, "render_info", None) if window is not None else None
+        if info is not None:
+            try:
+                window_height = max(1, min(int(info.window_height), max_visible))
+            except Exception:
+                window_height = max_visible
+            try:
+                cursor_visible_row = int(info.cursor_position.y)
+            except Exception:
+                cursor_visible_row = window_height - 1
+        cursor_visible_row = max(0, min(cursor_visible_row, window_height - 1))
+        target_row = (window_height - 1) + 2
+        rows_down = max(0, target_row - cursor_visible_row)
+        return rows_down, target_row, cursor_visible_row
     target_row = max(0, line_count - 1) + 2
     rows_down = max(0, target_row - cursor_row)
     return rows_down, target_row, cursor_row
@@ -479,6 +541,8 @@ def _attach_blink_after_render_hook(
     session,
     status_provider: Optional[Callable[[], str]] = None,
     terminal_resize_callback: Optional[Callable[[int, int], bool]] = None,
+    max_input_rows_provider: Optional[Callable[[], int]] = None,
+    buffer_window_provider: Optional[Callable[[], Any]] = None,
 ) -> None:
     """
     `Application.after_render` is an `Event` object — handlers must be added via
@@ -507,7 +571,23 @@ def _attach_blink_after_render_hook(
         "pending_rows_down": 2,
         "pending_target_row": 2,
         "pending_cursor_row": 0,
+        "prev_line_count": None,
     }
+
+    def _overlay_pos(_app) -> Tuple[int, int, int]:
+        win = None
+        mv = 0
+        try:
+            if callable(buffer_window_provider):
+                win = buffer_window_provider()
+        except Exception:
+            win = None
+        try:
+            if callable(max_input_rows_provider):
+                mv = int(max_input_rows_provider() or 0)
+        except Exception:
+            mv = 0
+        return _get_status_overlay_position(_app, window=win, max_visible=mv)
 
     def _on_before_render(_app) -> None:
         try:
@@ -532,10 +612,37 @@ def _attach_blink_after_render_hook(
             desired = str(status_provider() or "") if callable(status_provider) else ""
             state["desired"] = desired
             output = getattr(_app, "output", None)
-            rows_down, target_row, cursor_row = _get_status_overlay_position(_app)
+            rows_down, target_row, cursor_row = _overlay_pos(_app)
             state["pending_rows_down"] = rows_down
             state["pending_target_row"] = target_row
             state["pending_cursor_row"] = cursor_row
+            # Detect a large jump in the input's visual height (e.g. arrow-key
+            # history navigation swapping a 1-line draft for a multi-line one,
+            # or pasting several lines at once). Our status line is painted
+            # outside prompt_toolkit's screen model, so a big jump can strand
+            # the previous status bar inside the freshly drawn content where
+            # ptk's incremental diff won't erase it (the "duplicate status bar"
+            # artifact). Force a full repaint for this frame: ptk then erases
+            # the whole input region before redrawing and the stranded overlay
+            # disappears cleanly. Small (+/-1) changes keep the lightweight
+            # incremental path to avoid flicker on ordinary typing.
+            try:
+                _, _line_count = _get_buffer_cursor_row_and_line_count(_app)
+                prev_line_count = state.get("prev_line_count")
+                if (
+                    bool(state.get("visible"))
+                    and prev_line_count is not None
+                    and abs(int(_line_count) - int(prev_line_count)) >= 2
+                ):
+                    renderer = getattr(_app, "renderer", None)
+                    if renderer is not None:
+                        try:
+                            renderer._last_screen = None
+                        except Exception:
+                            pass
+                state["prev_line_count"] = int(_line_count)
+            except Exception:
+                pass
             if _overlay_debug_enabled():
                 buf = getattr(_app, "current_buffer", None)
                 text = str(getattr(buf, "text", "") or "") if buf is not None else ""
@@ -670,15 +777,26 @@ def _attach_blink_after_render_hook(
                 try:
                     desired = str(state.get("desired") or "")
                     menu_open = bool(state.get("menu_open"))
-                    rows_down = int(
-                        state.get(
-                            "pending_rows_down",
-                            2 + _get_buffer_rows_below_cursor(_app),
+                    # Recompute the overlay anchor from the *just-rendered*
+                    # window info. For the capped/scrolling input box the
+                    # cursor's visible row and the box height are only known
+                    # after the render, so this keeps the status line glued to
+                    # the box's bottom edge even while the user scrolls through
+                    # an overflowing draft with the arrow keys.
+                    try:
+                        rows_down, target_row, cursor_row = _overlay_pos(_app)
+                    except Exception:
+                        rows_down = int(
+                            state.get(
+                                "pending_rows_down",
+                                2 + _get_buffer_rows_below_cursor(_app),
+                            )
+                            or 0
                         )
-                        or 0
-                    )
-                    target_row = int(state.get("pending_target_row", rows_down) or rows_down)
-                    cursor_row = int(state.get("pending_cursor_row", 0) or 0)
+                        target_row = int(
+                            state.get("pending_target_row", rows_down) or rows_down
+                        )
+                        cursor_row = int(state.get("pending_cursor_row", 0) or 0)
                     old_target_row = int(state.get("target_row", target_row) or target_row)
                     # Use prompt_toolkit's bookkept cursor column as the
                     # restore target. This lets _write_overlay_line use a
@@ -1795,6 +1913,7 @@ class PromptToolkitInputHandler:
         self.renders_prompt_separator_inline = False
         self._terminal_resize_callback = terminal_resize_callback
         self._language_provider = language_provider
+        self._default_buffer_window = None
         self._pt_style = None
         self._pt_cursor_shape = None
         if (
@@ -1852,14 +1971,151 @@ class PromptToolkitInputHandler:
             if self._pt_cursor_shape is not None:
                 session_kwargs["cursor"] = self._pt_cursor_shape
             self.session = PromptSession(**session_kwargs)
+            self._install_input_box_height_limit()
             _attach_blink_after_render_hook(
                 self.session,
                 status_provider=self._status_line_for_overlay,
                 terminal_resize_callback=self._terminal_resize_callback,
+                max_input_rows_provider=self._compute_max_input_rows,
+                buffer_window_provider=lambda: getattr(
+                    self, "_default_buffer_window", None
+                ),
             )
         else:
             # Fall back to standard input.
             self.session = None
+
+    def _get_terminal_rows(self, default: int = 0) -> int:
+        rows = 0
+        try:
+            session = getattr(self, "session", None)
+            if session is not None:
+                output = getattr(session, "output", None)
+                if output is None:
+                    app = getattr(session, "app", None)
+                    output = getattr(app, "output", None) if app is not None else None
+                rows = _get_output_rows_from_obj(output, default=0)
+        except Exception:
+            rows = 0
+        if rows <= 0:
+            rows = _get_system_terminal_rows(default=0)
+        return rows if rows > 0 else int(default or 0)
+
+    def _compute_max_input_rows(self) -> int:
+        """Maximum number of visible rows the input box may occupy.
+
+        Defaults to ``MAX_INPUT_VISIBLE_ROWS`` but shrinks on short terminals so
+        the prompt symbol keeps at least ``INPUT_TOP_MARGIN_ROWS`` rows above it
+        (plus room below for the gap + status line).
+        """
+        base = MAX_INPUT_VISIBLE_ROWS
+        rows = self._get_terminal_rows(default=0)
+        if rows > 0:
+            below_reserved = 2 if getattr(self, "_status_bar_enabled", True) else 1
+            limit = rows - INPUT_TOP_MARGIN_ROWS - below_reserved
+            if limit < 1:
+                limit = 1
+            return max(1, min(base, limit))
+        return base
+
+    def _menu_reserve_rows(self, app: Any, max_visible: int) -> int:
+        """Rows to reserve below the cursor so the completion menu has room.
+
+        Only reserves while a completion menu is actually open, so the box can
+        otherwise grow naturally with the typed content.
+        """
+        try:
+            session = getattr(self, "session", None)
+            if session is None:
+                return 0
+            if getattr(session, "completer", None) is None:
+                return 0
+            if app is None or bool(getattr(app, "is_done", False)):
+                return 0
+            buf = getattr(app, "current_buffer", None)
+            if buf is None or getattr(buf, "complete_state", None) is None:
+                return 0
+            space = int(getattr(session, "reserve_space_for_menu", 8) or 8)
+            return max(0, min(space, int(max_visible or 0)))
+        except Exception:
+            return 0
+
+    def _input_window_height_dimension(self):
+        """Height for the input window: grow with content, cap, then scroll."""
+        app = None
+        try:
+            from prompt_toolkit.application.current import get_app
+            app = get_app()
+        except Exception:
+            session = getattr(self, "session", None)
+            app = getattr(session, "app", None) if session is not None else None
+        max_visible = self._compute_max_input_rows()
+        if max_visible < 1:
+            max_visible = 1
+        reserve = self._menu_reserve_rows(app, max_visible) if app is not None else 0
+        if reserve > 0:
+            return Dimension(min=reserve, max=max_visible)
+        return Dimension(min=1, max=max_visible)
+
+    def _install_input_box_height_limit(self) -> None:
+        """Cap the default buffer window so the input behaves like a GUI box."""
+        self._default_buffer_window = None
+        session = getattr(self, "session", None)
+        if session is None:
+            return
+        try:
+            from prompt_toolkit.layout.containers import Window
+        except Exception:
+            return
+        try:
+            layout = getattr(session, "layout", None)
+            if layout is None:
+                return
+            for win in layout.walk():
+                if not isinstance(win, Window):
+                    continue
+                content = getattr(win, "content", None)
+                buf = getattr(content, "buffer", None) if content is not None else None
+                if buf is not None and getattr(buf, "name", "") == "DEFAULT_BUFFER":
+                    win.height = self._input_window_height_dimension
+                    self._default_buffer_window = win
+                    self._install_first_visible_prompt(win)
+                    break
+        except Exception:
+            self._default_buffer_window = None
+
+    def _install_first_visible_prompt(self, win: Any) -> None:
+        """Keep the prompt symbol pinned to the first *visible* row.
+
+        prompt_toolkit normally renders the prompt only on logical line 0. Once
+        the capped input box scrolls, line 0 moves out of view and the prompt
+        would disappear. We wrap the window's ``get_line_prefix`` so the prompt
+        rides whatever row is currently first visible, while every other row
+        keeps the continuation indent. The prompt (``"› "``) and the
+        continuation (``MULTILINE_INDENT``) are both 2 columns wide, so this
+        swap never shifts the text or the cursor math.
+        """
+        orig = getattr(win, "get_line_prefix", None)
+        if orig is None:
+            return
+
+        def _line_prefix(line_number: int, wrap_count: int):
+            try:
+                vs = int(getattr(win, "vertical_scroll", 0) or 0)
+                vs2 = int(getattr(win, "vertical_scroll_2", 0) or 0)
+                if line_number == vs and wrap_count == vs2:
+                    # First visible row -> show the prompt symbol.
+                    return orig(0, 0)
+                # Any other row -> force the continuation indent (never the
+                # prompt, which must appear exactly once).
+                return orig(1, 0)
+            except Exception:
+                return orig(line_number, wrap_count)
+
+        try:
+            win.get_line_prefix = _line_prefix
+        except Exception:
+            pass
 
     def _render_bottom_toolbar(self):
         try:
@@ -2646,10 +2902,15 @@ class PromptToolkitInputHandler:
         if getattr(self, "_pt_cursor_shape", None) is not None:
             session_kwargs["cursor"] = self._pt_cursor_shape
         self.session = PromptSession(**session_kwargs)
+        self._install_input_box_height_limit()
         _attach_blink_after_render_hook(
             self.session,
             status_provider=self._status_line_for_overlay,
             terminal_resize_callback=self._terminal_resize_callback,
+            max_input_rows_provider=self._compute_max_input_rows,
+            buffer_window_provider=lambda: getattr(
+                self, "_default_buffer_window", None
+            ),
         )
 
 
