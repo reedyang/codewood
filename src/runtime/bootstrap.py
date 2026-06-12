@@ -376,6 +376,9 @@ def setup_input_handler(
                     agent, "_handle_terminal_columns_changed_during_input", None
                 ),
                 language_provider=lambda: getattr(agent, "display_language", None),
+                transcript_mode_callback=getattr(
+                    agent, "_run_transcript_mode", None
+                ),
             )
         else:
             print(

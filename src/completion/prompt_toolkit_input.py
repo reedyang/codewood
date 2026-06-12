@@ -1942,6 +1942,7 @@ class PromptToolkitInputHandler:
         slash_dynamic_rules: Optional[List[Dict[str, Any]]] = None,
         terminal_resize_callback: Optional[Callable[[int, int], bool]] = None,
         language_provider: Optional[Callable[[], Any]] = None,
+        transcript_mode_callback: Optional[Callable[[], None]] = None,
     ):
         """
         Initialize the input handler.
@@ -1951,6 +1952,8 @@ class PromptToolkitInputHandler:
         """
         self.work_directory = work_directory
         self.workspace_directory = workspace_directory or work_directory
+        self._transcript_mode_callback = transcript_mode_callback
+        self._transcript_mode_requested = False
         self.history = []
         self._status_bar_text = ""
         self._status_bar_fragments = []
@@ -2565,6 +2568,8 @@ class PromptToolkitInputHandler:
             self._shell_mode_history_indices = set()
         if not hasattr(self, "_shell_mode_sync_guard"):
             self._shell_mode_sync_guard = False
+        if not hasattr(self, "_transcript_mode_requested"):
+            self._transcript_mode_requested = False
 
         self._status_bar_text = str(status_bar_text or "")
         self._status_bar_fragments = (
@@ -2629,6 +2634,24 @@ class PromptToolkitInputHandler:
                 finally:
                     self._end_enhanced_keyboard_reporting()
                 self._clear_status_overlay_line_if_possible()
+                if bool(getattr(self, "_transcript_mode_requested", False)):
+                    # Shift+Alt+T exited the prompt to open transcript mode.
+                    # Run the callback (which may delete history and pre-fill a
+                    # message for editing), then re-show the input prompt.
+                    self._transcript_mode_requested = False
+                    callback = getattr(self, "_transcript_mode_callback", None)
+                    if callable(callback):
+                        try:
+                            callback()
+                        except Exception:
+                            pass
+                    return self.get_input_with_completion(
+                        prompt,
+                        status_bar_text=status_bar_text,
+                        status_bar_fragments=status_bar_fragments,
+                        show_status_bar=show_status_bar,
+                        show_separator=show_separator,
+                    )
                 if bool(getattr(self.session, _RESIZE_ATTR_INTERRUPTED, False)):
                     draft = str(getattr(self.session, _RESIZE_ATTR_DRAFT, "") or "")
                     draft_cursor = int(
@@ -2740,6 +2763,25 @@ class PromptToolkitInputHandler:
             if pasted:
                 event.current_buffer.insert_text(pasted)
 
+        def _enter_transcript_mode(event) -> None:
+            # Shift+Alt+T opens the read-only transcript view. The current
+            # draft is preserved and restored on return.
+            if not callable(getattr(self, "_transcript_mode_callback", None)):
+                return
+            buf = event.current_buffer
+            draft = str(getattr(buf, "text", "") or "")
+            draft_cursor = int(getattr(buf, "cursor_position", len(draft)) or 0)
+            self._pending_prefill_text = _normalize_newlines(draft)
+            self._pending_prefill_cursor_position = max(0, draft_cursor)
+            self._pending_shell_mode_active = bool(
+                getattr(self, "_shell_mode_active", False)
+            )
+            self._transcript_mode_requested = True
+            try:
+                event.app.exit(result="")
+            except Exception:
+                pass
+
         # Enter always submits in multiline mode.
         # Keep Enter as non-eager so multi-key Shift+Enter sequences (starting with
         # ESC in some terminals) have a chance to match first.
@@ -2752,6 +2794,12 @@ class PromptToolkitInputHandler:
         for alias in SHIFT_ENTER_KEY_ALIASES:
             _safe_bind(alias, _insert_newline, eager=True)
         _safe_bind(("<bracketed-paste>",), _on_bracketed_paste, eager=True)
+
+        # Shift+Alt+T enters transcript (full-screen read-only) mode. Terminals
+        # send Alt as an ESC prefix; the shifted letter arrives as uppercase 'T'.
+        # Bind the lowercase Alt+t too for convenience.
+        _safe_bind(("escape", "T"), _enter_transcript_mode, eager=True)
+        _safe_bind(("escape", "t"), _enter_transcript_mode, eager=True)
 
         @kb.add("backspace")
         def _on_backspace(event):
@@ -3056,6 +3104,7 @@ def create_prompt_toolkit_input_handler(
     slash_dynamic_rules: Optional[List[Dict[str, Any]]] = None,
     terminal_resize_callback: Optional[Callable[[int, int], bool]] = None,
     language_provider: Optional[Callable[[], Any]] = None,
+    transcript_mode_callback: Optional[Callable[[], None]] = None,
 ) -> PromptToolkitInputHandler:
     """Create a prompt_toolkit input handler."""
     return PromptToolkitInputHandler(
@@ -3067,4 +3116,5 @@ def create_prompt_toolkit_input_handler(
         slash_dynamic_rules,
         terminal_resize_callback,
         language_provider,
+        transcript_mode_callback,
     )
