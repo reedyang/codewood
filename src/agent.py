@@ -1,5 +1,6 @@
 ﻿import os
 import sys
+import io
 import json
 import re
 import shlex
@@ -1419,6 +1420,184 @@ class Agent:
                 print(content)
         self._show_separator_next_prompt = False
         self._replay_ephemeral_screen_notices()
+
+    def _render_transcript_single_message(
+        self, idx: int, msg: Dict[str, Any], hist: List[Dict[str, Any]]
+    ) -> None:
+        """Render one history message to stdout for the transcript view.
+
+        This mirrors the per-message branches of ``_print_chat_history`` but
+        renders each message independently (no cross-message tool plan/result
+        deduplication). The caller captures stdout to build a transcript block.
+        """
+        role = str(msg.get("role") or "").strip().lower()
+        content = str(msg.get("content") or "")
+        if role == "user":
+            direct_cmd = self._parse_direct_shell_user_history_content(content)
+            if direct_cmd:
+                self._print_direct_shell_command_feedback(
+                    direct_cmd, failed=False, erase_previous=False
+                )
+                return
+            slash_cmd = self._parse_internal_slash_user_history_content(content)
+            if slash_cmd:
+                print(self._format_user_chat_display_message(slash_cmd))
+                return
+            print(self._format_user_chat_display_message(content))
+            return
+        if role != "assistant":
+            print(content)
+            return
+
+        # Assistant message: skip durable/context-only payloads, render the rest.
+        try:
+            if (
+                self.session_memory_service.parse_context_compaction_notice_content(content)
+                is not None
+            ):
+                return
+            if (
+                self.session_memory_service.parse_context_compaction_summary_content(content)
+                is not None
+            ):
+                return
+        except Exception:
+            pass
+        if self._parse_conversation_interrupted_history_content(content) is not None:
+            self._print_conversation_interrupted_banner()
+            return
+        direct_result = self._parse_direct_shell_result_history_content(content)
+        if direct_result is not None:
+            aborted_result = self._is_direct_shell_result_aborted(direct_result)
+            out_text = str(direct_result.get("stdout") or "")
+            err_text = str(direct_result.get("stderr") or "")
+            if aborted_result:
+                merged = out_text + err_text
+                out_text = self._normalize_aborted_direct_shell_stdout_for_history(merged)
+                err_text = ""
+            out_text, err_text = self._extract_direct_shell_replay_output(out_text, err_text)
+            self._print_direct_shell_history_output(out_text, err_text)
+            return
+        slash_result = self._parse_internal_slash_result_history_content(content)
+        if slash_result is not None:
+            self._print_internal_slash_history_output(str(slash_result.get("output") or ""))
+            return
+        worked_summary = self._parse_task_worked_summary_history_content(content)
+        if worked_summary is not None:
+            try:
+                elapsed_seconds = int(worked_summary.get("elapsed_seconds") or 0)
+            except Exception:
+                elapsed_seconds = 0
+            self._print_task_worked_summary_line(elapsed_seconds)
+            return
+        # Tool-call plans are bookkeeping; the matching result message carries the
+        # final status/output, so skip plans to keep the transcript clean.
+        if self._parse_model_tool_plan_history_content(content) is not None:
+            return
+        model_tool_result = self._parse_model_tool_result_history_content(content)
+        if model_tool_result is not None:
+            model_tool = str(model_tool_result.get("tool") or "").strip()
+            model_args = model_tool_result.get("args")
+            if not isinstance(model_args, dict):
+                model_args = {}
+            failed = not bool(model_tool_result.get("success", True))
+            if model_tool:
+                self._print_tool_call_feedback(model_tool, model_args, failed=failed)
+            if model_tool == "shell":
+                out_text, err_text = self._extract_model_shell_replay_output(model_tool_result)
+                if out_text or err_text:
+                    self._print_direct_shell_history_output(out_text, err_text)
+            return
+        display_response = format_assistant_display_response(content)
+        if display_response:
+            print(self._format_assistant_chat_display_message(display_response))
+
+    def _build_transcript_blocks(self) -> List[Dict[str, Any]]:
+        """Build renderable transcript blocks from the conversation history.
+
+        Each block is a dict with ``lines`` (a list of rendered ANSI strings),
+        ``nav`` (whether it is a navigable genuine user message), and
+        ``user_index`` (1-based index among genuine user messages, when nav).
+        """
+        from .controllers.chat_command_controller import _genuine_user_positions_in_list
+
+        hist = list(getattr(self, "conversation_history", None) or [])
+        genuine_positions = set(_genuine_user_positions_in_list(hist))
+        blocks: List[Dict[str, Any]] = []
+        next_user_index = 0
+        for idx, msg in enumerate(hist):
+            if not isinstance(msg, dict):
+                continue
+            buffer = io.StringIO()
+            try:
+                with contextlib.redirect_stdout(buffer):
+                    self._render_transcript_single_message(idx, msg, hist)
+            except Exception:
+                pass
+            text = buffer.getvalue().replace("\r\n", "\n").replace("\r", "\n")
+            text = text.strip("\n")
+            if not text:
+                continue
+            is_nav = idx in genuine_positions
+            user_index: Optional[int] = None
+            if is_nav:
+                next_user_index += 1
+                user_index = next_user_index
+            blocks.append(
+                {
+                    "lines": text.split("\n"),
+                    "nav": is_nav,
+                    "user_index": user_index,
+                }
+            )
+        return blocks
+
+    def _transcript_view_labels(self) -> Dict[str, str]:
+        lang = self._ui_language()
+        keys = (
+            "scroll",
+            "page",
+            "jump",
+            "quit",
+            "edit_prev_hint",
+            "edit_prev",
+            "edit_next",
+            "edit_msg",
+        )
+        labels: Dict[str, str] = {}
+        for key in keys:
+            value = translate(f"transcript.help.{key}", lang, fallback="")
+            if value:
+                labels[key] = value
+        return labels
+
+    def _run_transcript_mode(self) -> None:
+        """Enter the read-only transcript view (triggered by Shift+Alt+T)."""
+        try:
+            from .completion.transcript_view import run_transcript_view
+        except Exception:
+            return
+        blocks = self._build_transcript_blocks()
+        if not blocks:
+            return
+        result = run_transcript_view(
+            blocks,
+            labels=self._transcript_view_labels(),
+            width_provider=self._terminal_columns_for_line_estimate,
+        )
+        if not isinstance(result, dict):
+            return
+        if str(result.get("action") or "") == "edit":
+            user_index = result.get("user_index")
+            if isinstance(user_index, int):
+                try:
+                    from .controllers.chat_command_controller import (
+                        handle_chat_edit_command,
+                    )
+
+                    handle_chat_edit_command(self, str(user_index))
+                except Exception:
+                    pass
 
     def _print_direct_shell_history_separator(self) -> None:
         width = max(1, int(self._terminal_columns_for_line_estimate()))
