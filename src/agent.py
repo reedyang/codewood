@@ -142,6 +142,18 @@ TASK_WORKED_SUMMARY_HISTORY_PREFIX = "[TASK_WORKED_SUMMARY]"
 # Effectively unbounded tail limit: used by transcript mode to render shell
 # output in full (no "... omitted N lines ..." truncation).
 _FULL_OUTPUT_TAIL_LIMIT = 10**9
+
+
+class _TtyCaptureStringIO(io.StringIO):
+    """In-memory text buffer that reports as a TTY.
+
+    Used to capture transcript rendering so the shared console-color helpers
+    (which suppress ANSI when ``sys.stdout`` is not a TTY) keep emitting color
+    codes. ``NO_COLOR`` / ``TERM=dumb`` are still honored by those helpers.
+    """
+
+    def isatty(self) -> bool:  # noqa: D401 - simple override
+        return True
 _STREAM_ATTR_TERMINAL_COLUMNS = get_app_runtime_attr_name("terminal_columns")
 _STREAM_ATTR_OUTPUT_INDENT_WIDTH = get_app_runtime_attr_name("output_indent_width")
 
@@ -1551,7 +1563,10 @@ class Agent:
         for idx, msg in enumerate(hist):
             if not isinstance(msg, dict):
                 continue
-            buffer = io.StringIO()
+            # Capture rendering into a TTY-reporting buffer so the shared color
+            # helpers (gated on ``sys.stdout.isatty()``) keep emitting ANSI color
+            # codes; the transcript view then renders them like normal mode.
+            buffer = _TtyCaptureStringIO()
             try:
                 with contextlib.redirect_stdout(buffer):
                     self._render_transcript_single_message(idx, msg, hist)

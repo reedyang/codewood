@@ -24,11 +24,13 @@ try:  # prompt_toolkit is always available where this view is used.
     from prompt_toolkit.key_binding import KeyBindings
     from prompt_toolkit.layout import HSplit, Layout, Window
     from prompt_toolkit.layout.controls import FormattedTextControl
+    from prompt_toolkit.output import ColorDepth
     from prompt_toolkit.styles import Style
 
     PROMPT_TOOLKIT_AVAILABLE = True
 except Exception:  # pragma: no cover - defensive
     PROMPT_TOOLKIT_AVAILABLE = False
+    ColorDepth = None  # type: ignore[assignment]
 
 
 _TITLE = "/ T R A N S C R I P T "
@@ -380,13 +382,21 @@ class TranscriptView:
             }
         )
 
-        app = Application(
+        app_kwargs: Dict[str, Any] = dict(
             layout=layout,
             key_bindings=self._build_key_bindings(),
             style=style,
             full_screen=True,
             mouse_support=False,
         )
+        # Render captured ANSI at full fidelity (avoid downsampling the model's
+        # truecolor highlighting to 4/8-bit) so colors match normal mode.
+        if ColorDepth is not None:
+            try:
+                app_kwargs["color_depth"] = ColorDepth.TRUE_COLOR
+            except Exception:
+                pass
+        app = Application(**app_kwargs)
         app.run()
         return self._result
 
