@@ -1,8 +1,17 @@
 import io
+import sys
+import types
 import unittest
 from contextlib import redirect_stdout
 from unittest.mock import patch
 
+if "ollama" not in sys.modules:
+    sys.modules["ollama"] = types.SimpleNamespace(list=lambda: {"models": []})
+
+from src.agent import (
+    DIRECT_SHELL_USER_HISTORY_PREFIX,
+    INTERNAL_SLASH_USER_HISTORY_PREFIX,
+)
 from src.completion.builtin_slash_commands import slash_builtin_completions
 from src.controllers.chat_command_controller import handle_chat_builtin_command
 
@@ -60,6 +69,29 @@ class _NoopLock:
 
     def __exit__(self, exc_type, exc, tb):
         return False
+
+
+class _FakeInputHandler:
+    def __init__(self):
+        self.prefilled_text = None
+        self.prefilled_cursor = None
+
+    def set_pending_prefill(self, text, cursor_position=None):
+        self.prefilled_text = text
+        self.prefilled_cursor = cursor_position
+
+
+class _FakeEditAgent:
+    def __init__(self, conversation_history):
+        self.active_chat_id = "chat-1"
+        self.active_chat_name = "Demo"
+        self._chat_state_lock = _NoopLock()
+        self.conversation_history = list(conversation_history)
+        self.sync_calls = 0
+        self.input_handler = _FakeInputHandler()
+
+    def _sync_active_chat_messages(self):
+        self.sync_calls += 1
 
 
 class _PrefixingStream:
@@ -178,6 +210,141 @@ class ChatCommandControllerTests(unittest.TestCase):
         self.assertEqual(base_out.getvalue(), "› hello\n• world\n")
         mock_clear.assert_not_called()
         mock_startup.assert_not_called()
+
+
+class ChatEditCommandTests(unittest.TestCase):
+    def _history(self):
+        return [
+            {"role": "user", "content": "first question"},
+            {"role": "assistant", "content": "first answer"},
+            {"role": "user", "content": "second question"},
+            {"role": "assistant", "content": "second answer"},
+            {"role": "user", "content": "third question"},
+            {"role": "assistant", "content": "third answer"},
+        ]
+
+    def test_edit_positive_index_truncates_and_prefills(self):
+        agent = _FakeEditAgent(self._history())
+        buf = io.StringIO()
+        with (
+            patch("src.controllers.chat_command_controller._reload_chat_from_top") as mock_reload,
+            redirect_stdout(buf),
+        ):
+            handled = handle_chat_builtin_command(agent, "chat edit 2")
+        self.assertTrue(handled)
+        # Message at user-index 2 (history index 2) and everything after removed.
+        self.assertEqual(
+            [m["content"] for m in agent.conversation_history],
+            ["first question", "first answer"],
+        )
+        self.assertEqual(agent.input_handler.prefilled_text, "second question")
+        self.assertEqual(agent.sync_calls, 1)
+        mock_reload.assert_called_once_with(agent, "chat-1")
+
+    def test_edit_negative_index_targets_last_user_message(self):
+        agent = _FakeEditAgent(self._history())
+        with (
+            patch("src.controllers.chat_command_controller._reload_chat_from_top"),
+            redirect_stdout(io.StringIO()),
+        ):
+            handle_chat_builtin_command(agent, "chat edit -1")
+        self.assertEqual(
+            [m["content"] for m in agent.conversation_history],
+            ["first question", "first answer", "second question", "second answer"],
+        )
+        self.assertEqual(agent.input_handler.prefilled_text, "third question")
+
+    def test_edit_negative_index_full_span(self):
+        agent = _FakeEditAgent(self._history())
+        with (
+            patch("src.controllers.chat_command_controller._reload_chat_from_top"),
+            redirect_stdout(io.StringIO()),
+        ):
+            handle_chat_builtin_command(agent, "chat edit -3")
+        self.assertEqual(agent.conversation_history, [])
+        self.assertEqual(agent.input_handler.prefilled_text, "first question")
+
+    def test_edit_skips_internal_user_messages_when_counting(self):
+        history = [
+            {"role": "user", "content": "real one"},
+            {"role": "assistant", "content": "answer"},
+            {"role": "user", "content": f"{DIRECT_SHELL_USER_HISTORY_PREFIX}ls -la"},
+            {"role": "assistant", "content": "[DIRECT_SHELL_RESULT]{}"},
+            {"role": "user", "content": f"{INTERNAL_SLASH_USER_HISTORY_PREFIX}/help"},
+            {"role": "assistant", "content": "[INTERNAL_SLASH_RESULT]{}"},
+            {"role": "user", "content": "real two"},
+            {"role": "assistant", "content": "answer two"},
+        ]
+        agent = _FakeEditAgent(history)
+        with (
+            patch("src.controllers.chat_command_controller._reload_chat_from_top"),
+            redirect_stdout(io.StringIO()),
+        ):
+            handle_chat_builtin_command(agent, "chat edit -1")
+        # The last genuine user message is "real two" at history index 6.
+        self.assertEqual(agent.input_handler.prefilled_text, "real two")
+        self.assertEqual(len(agent.conversation_history), 6)
+
+    def test_edit_out_of_range_positive(self):
+        agent = _FakeEditAgent(self._history())
+        buf = io.StringIO()
+        with (
+            patch("src.controllers.chat_command_controller._reload_chat_from_top") as mock_reload,
+            redirect_stdout(buf),
+        ):
+            handle_chat_builtin_command(agent, "chat edit 4")
+        self.assertIn("❌", buf.getvalue())
+        self.assertEqual(len(agent.conversation_history), 6)
+        self.assertIsNone(agent.input_handler.prefilled_text)
+        mock_reload.assert_not_called()
+
+    def test_edit_out_of_range_negative(self):
+        agent = _FakeEditAgent(self._history())
+        buf = io.StringIO()
+        with (
+            patch("src.controllers.chat_command_controller._reload_chat_from_top"),
+            redirect_stdout(buf),
+        ):
+            handle_chat_builtin_command(agent, "chat edit -4")
+        self.assertIn("❌", buf.getvalue())
+        self.assertEqual(len(agent.conversation_history), 6)
+
+    def test_edit_invalid_index(self):
+        agent = _FakeEditAgent(self._history())
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            handle_chat_builtin_command(agent, "chat edit abc")
+        self.assertIn("❌", buf.getvalue())
+        self.assertEqual(len(agent.conversation_history), 6)
+
+    def test_edit_zero_index_invalid(self):
+        agent = _FakeEditAgent(self._history())
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            handle_chat_builtin_command(agent, "chat edit 0")
+        self.assertIn("❌", buf.getvalue())
+        self.assertEqual(len(agent.conversation_history), 6)
+
+    def test_edit_missing_index_shows_usage(self):
+        agent = _FakeEditAgent(self._history())
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            handle_chat_builtin_command(agent, "chat edit")
+        self.assertIn("/chat edit", buf.getvalue())
+        self.assertEqual(len(agent.conversation_history), 6)
+
+    def test_edit_no_user_messages(self):
+        agent = _FakeEditAgent(
+            [{"role": "assistant", "content": "system note"}]
+        )
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            handle_chat_builtin_command(agent, "chat edit 1")
+        self.assertIn("❌", buf.getvalue())
+
+    def test_edit_is_in_slash_completions(self):
+        out = slash_builtin_completions("/chat ed")
+        self.assertIn("/chat edit ", out)
 
 
 if __name__ == "__main__":

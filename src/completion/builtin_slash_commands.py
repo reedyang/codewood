@@ -11,6 +11,7 @@ SLASH_BUILTIN_COMMANDS: List[str] = [
     "/chat current",
     "/chat delete ",
     "/chat delete all",
+    "/chat edit ",
     "/chat list",
     "/chat new ",
     "/chat reload",
