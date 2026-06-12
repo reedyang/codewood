@@ -277,6 +277,7 @@
   "startup.tip.shift_enter": "按 Ctrl+J, Alt+Enter, 或 Shift+Enter (仅 Windows 系统) 插入换行，按 Enter 发送。",
   "startup.tip.help": "使用 /help 查看内置命令，当你不确定时非常有用。",
   "input.shell_mode_hint": "使用 ! 前缀在本地运行命令",
+  "input.transcript_hint": "Shift+Alt+T 进入转录视图",
   "input.error": "输入错误：{error}",
   "history.load_failed": "⚠️ 加载历史记录失败：{error}",
   "history.save_failed": "⚠️ 保存历史记录失败：{error}",

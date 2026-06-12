@@ -2228,6 +2228,8 @@ class PromptToolkitInputHandler:
             status_line = str(self._status_bar_text or "")
             if bool(getattr(self, "_shell_mode_active", False)):
                 status_line = self._compose_shell_mode_status_line(status_line)
+            else:
+                status_line = self._compose_transcript_hint_status_line(status_line)
             return status_line
         except Exception:
             return ""
@@ -2477,6 +2479,32 @@ class PromptToolkitInputHandler:
         except Exception:
             pass
 
+    def _compose_transcript_hint_status_line(self, base_status_line: str) -> str:
+        """Append a right-aligned, gray "Shift+Alt+T" transcript hint."""
+        base_colored = str(base_status_line or "")
+        if not callable(getattr(self, "_transcript_mode_callback", None)):
+            return base_colored
+        if self.session is None:
+            return base_colored
+        lang = self._ui_language()
+        label_plain = translate("input.transcript_hint", lang)
+        if not str(label_plain or "").strip():
+            return base_colored
+        label_colored = _ansi_gray(label_plain)
+        right_padding = 1
+        cols = _get_output_columns(self.session, default=80)
+        right_len = _display_width(label_plain)
+        start_col = max(1, int(cols) - right_len - right_padding + 1)
+        left_cap = max(0, start_col - 1)
+        base_plain = _strip_ansi_sgr(base_colored)
+        left_len = _display_width(base_plain)
+        if left_len <= left_cap:
+            base_render = base_colored
+        else:
+            # Avoid overlap with the right-aligned hint when the left side is wide.
+            base_render = _truncate_to_display_width(base_plain, left_cap)
+        return f"{base_render}\x1b[{start_col}G{label_colored}{' ' * right_padding}"
+
     def _compose_shell_mode_status_line(self, base_status_line: str) -> str:
         base_colored = str(base_status_line or "")
         base_plain = _strip_ansi_sgr(base_colored)
@@ -2639,6 +2667,12 @@ class PromptToolkitInputHandler:
                     # Run the callback (which may delete history and pre-fill a
                     # message for editing), then re-show the input prompt.
                     self._transcript_mode_requested = False
+                    try:
+                        _app = getattr(self.session, "app", None)
+                        if _app is not None:
+                            _app.erase_when_done = False
+                    except Exception:
+                        pass
                     callback = getattr(self, "_transcript_mode_callback", None)
                     if callable(callback):
                         try:
@@ -2777,6 +2811,12 @@ class PromptToolkitInputHandler:
                 getattr(self, "_shell_mode_active", False)
             )
             self._transcript_mode_requested = True
+            try:
+                # Erase the rendered prompt when the app exits so re-showing the
+                # input after transcript mode does not leave a stale "›" line.
+                event.app.erase_when_done = True
+            except Exception:
+                pass
             try:
                 event.app.exit(result="")
             except Exception:
