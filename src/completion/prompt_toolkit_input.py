@@ -74,6 +74,53 @@ except ImportError:
     PROMPT_TOOLKIT_AVAILABLE = False
 
 
+def _install_shift_enter_ansi_aliases() -> None:
+    """
+    Make Shift+Enter / Ctrl+Enter insert a newline instead of submitting.
+
+    On a terminal there is no way to tell ``Shift+Enter`` apart from a plain
+    ``Enter`` unless the terminal is asked to report "other" keys (xterm
+    modifyOtherKeys, or the kitty keyboard protocol). When that reporting is
+    enabled, those key combos arrive as dedicated escape sequences. prompt_toolkit
+    ships mappings for the modifyOtherKeys variants but collapses them back to
+    ``ControlM`` (i.e. plain Enter), so they would still submit.
+
+    Here we re-point those sequences (and the kitty CSI-u equivalents) to
+    ``ControlJ`` which our key bindings treat as "insert newline". This is a
+    no-op when prompt_toolkit is unavailable and is safe on Windows because the
+    win32 input backend does not consult this table.
+    """
+    if not PROMPT_TOOLKIT_AVAILABLE:
+        return
+    try:
+        from prompt_toolkit.input.ansi_escape_sequences import ANSI_SEQUENCES
+        from prompt_toolkit.keys import Keys as _PTKKeys
+    except Exception:
+        return
+    newline_key = getattr(_PTKKeys, "ControlJ", None)
+    if newline_key is None:
+        return
+    # 13 == CR (the Enter key), 10 == LF (Ctrl+J). The middle field is the
+    # xterm modifier code: 2=Shift, 5=Ctrl, 6=Ctrl+Shift.
+    sequences = (
+        "\x1b[27;2;13~",  # modifyOtherKeys: Shift+Enter
+        "\x1b[27;5;13~",  # modifyOtherKeys: Ctrl+Enter
+        "\x1b[27;6;13~",  # modifyOtherKeys: Ctrl+Shift+Enter
+        "\x1b[27;5;10~",  # modifyOtherKeys: Ctrl+J (keep newline working)
+        "\x1b[13;2u",     # kitty/CSI-u: Shift+Enter
+        "\x1b[13;5u",     # kitty/CSI-u: Ctrl+Enter
+        "\x1b[13;6u",     # kitty/CSI-u: Ctrl+Shift+Enter
+    )
+    for seq in sequences:
+        try:
+            ANSI_SEQUENCES[seq] = newline_key
+        except Exception:
+            pass
+
+
+_install_shift_enter_ansi_aliases()
+
+
 def _is_vscode_terminal() -> bool:
     return str(os.environ.get("TERM_PROGRAM", "") or "").strip().lower() == "vscode"
 
@@ -2317,6 +2364,62 @@ class PromptToolkitInputHandler:
         except Exception:
             pass
 
+    def _enhanced_keyboard_reporting_enabled(self) -> bool:
+        """
+        Whether to ask the terminal to report Shift/Ctrl+Enter as distinct keys.
+
+        Only meaningful on POSIX VT100 terminals: on Windows we already detect
+        Shift via native key state, and VS Code's terminal does not handle the
+        sequence cleanly. Can be disabled with codewood_DISABLE_ENHANCED_KEYS=1.
+        """
+        if not PROMPT_TOOLKIT_AVAILABLE:
+            return False
+        if os.name == "nt":
+            return False
+        raw = str(os.environ.get("codewood_DISABLE_ENHANCED_KEYS", "") or "").strip().lower()
+        if raw in ("1", "true", "yes", "on"):
+            return False
+        if _is_vscode_terminal():
+            return False
+        try:
+            if not (hasattr(sys.stdout, "isatty") and sys.stdout.isatty()):
+                return False
+        except Exception:
+            return False
+        return True
+
+    def _write_terminal_control(self, data: str) -> None:
+        try:
+            output = None
+            if self.session is not None:
+                app = getattr(self.session, "app", None)
+                if app is not None:
+                    output = getattr(app, "output", None)
+                if output is None:
+                    output = getattr(self.session, "output", None)
+            if output is not None and hasattr(output, "write_raw") and hasattr(output, "flush"):
+                output.write_raw(data)
+                output.flush()
+                return
+            sys.stdout.write(data)
+            sys.stdout.flush()
+        except Exception:
+            pass
+
+    def _begin_enhanced_keyboard_reporting(self) -> None:
+        """Enable xterm modifyOtherKeys so Shift+Enter becomes a distinct key."""
+        if not self._enhanced_keyboard_reporting_enabled():
+            return
+        # CSI > 4 ; 1 m -> modifyOtherKeys level 1 (only "ambiguous" modified keys,
+        # e.g. Shift+Enter; leaves plain typing/arrows/backspace untouched).
+        self._write_terminal_control("\x1b[>4;1m")
+
+    def _end_enhanced_keyboard_reporting(self) -> None:
+        if not self._enhanced_keyboard_reporting_enabled():
+            return
+        # Restore the terminal default (modifyOtherKeys off).
+        self._write_terminal_control("\x1b[>4;0m")
+
     def _clear_status_overlay_line_if_possible(self) -> None:
         try:
             if not bool(getattr(self, "_status_bar_enabled", False)):
@@ -2491,10 +2594,14 @@ class PromptToolkitInputHandler:
 
                 prompt_kwargs["pre_run"] = _pre_run_setup
 
-                user_input = self.session.prompt(
-                    self._shell_mode_prompt_message,
-                    **prompt_kwargs,
-                ).strip()
+                self._begin_enhanced_keyboard_reporting()
+                try:
+                    user_input = self.session.prompt(
+                        self._shell_mode_prompt_message,
+                        **prompt_kwargs,
+                    ).strip()
+                finally:
+                    self._end_enhanced_keyboard_reporting()
                 self._clear_status_overlay_line_if_possible()
                 if bool(getattr(self.session, _RESIZE_ATTR_INTERRUPTED, False)):
                     draft = str(getattr(self.session, _RESIZE_ATTR_DRAFT, "") or "")

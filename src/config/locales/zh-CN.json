@@ -256,7 +256,7 @@
   "startup.tip.clear_context": "使用 /clear context 重置 AI 上下文，但保留命令历史。",
   "startup.tip.clear_input_history": "使用 /clear input history 清除终端输入历史。",
   "startup.tip.mcp_status": "使用 /mcp status 检查 MCP 服务器健康状况和加载状态。",
-  "startup.tip.shift_enter": "按 Shift+Enter 插入换行，按 Enter 发送。",
+  "startup.tip.shift_enter": "按 Ctrl+J, Alt+Enter, 或 Shift+Enter (仅 Windows 系统) 插入换行，按 Enter 发送。",
   "startup.tip.help": "使用 /help 查看内置命令，当你不确定时非常有用。",
   "input.shell_mode_hint": "使用 ! 前缀在本地运行命令",
   "input.error": "输入错误：{error}",

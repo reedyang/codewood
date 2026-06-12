@@ -222,7 +222,11 @@ def prompt_confirm_yes_no_maybe_always(
         line = f"{prompt_core}{yes_no_always_suffix}"
     else:
         line = f"{prompt_core}{yes_no_suffix}"
-    raw = input(line).strip().lower()
+    suspend_monitor = getattr(agent, "_suspended_input", None)
+    if callable(suspend_monitor):
+        raw = suspend_monitor(line).strip().lower()
+    else:
+        raw = input(line).strip().lower()
     if offer_always and raw in ("a", "always"):
         if kind == "shell" and shell_command is not None:
             add_shell_command_allowlist(agent, shell_command)

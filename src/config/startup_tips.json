@@ -77,8 +77,8 @@
     },
     {
       "id": "shift_enter",
-      "text": "Press Shift+Enter to insert a newline, and press Enter to send.",
-      "highlights": ["Shift+Enter", "Enter"]
+      "text": "Press Ctrl+J, Alt+Enter, or Shift+Enter(Windows only) to insert a newline, and press Enter to send.",
+      "highlights": ["Ctrl+J", "Alt+Enter", "Shift+Enter", "Enter"]
     },
     {
       "id": "help",
