@@ -3487,6 +3487,58 @@ class Agent:
             self._task_interrupt_requested = False
             return wanted
 
+    def _restore_posix_interrupt_tty_locked(self) -> None:
+        """Return the controlling tty to its saved (cooked) state. Lock held."""
+        tty_info = getattr(self, "_posix_interrupt_tty", None)
+        if not tty_info:
+            self._posix_interrupt_applied = False
+            return
+        fd, saved_attrs = tty_info
+        try:
+            import termios
+
+            termios.tcsetattr(fd, termios.TCSANOW, saved_attrs)
+        except Exception:
+            pass
+        self._posix_interrupt_applied = False
+
+    @contextlib.contextmanager
+    def _suspended_interrupt_monitor(self):
+        """
+        Temporarily hand the terminal back to a foreground reader (confirmation
+        prompts, MCP elicitation, ...). On POSIX the ESC monitor keeps the tty in
+        non-canonical/no-echo mode; reading a line with ``input()`` while that is
+        active would be broken, so we pause the monitor and restore cooked mode
+        for the duration of the read. No-op on Windows.
+        """
+        lock = getattr(self, "_interrupt_state_lock", None)
+        if lock is not None:
+            with lock:
+                self._interrupt_monitor_suspend_depth = (
+                    int(getattr(self, "_interrupt_monitor_suspend_depth", 0) or 0) + 1
+                )
+                if bool(getattr(self, "_posix_interrupt_applied", False)):
+                    self._restore_posix_interrupt_tty_locked()
+        else:
+            self._interrupt_monitor_suspend_depth = (
+                int(getattr(self, "_interrupt_monitor_suspend_depth", 0) or 0) + 1
+            )
+        try:
+            yield
+        finally:
+            if lock is not None:
+                with lock:
+                    depth = int(getattr(self, "_interrupt_monitor_suspend_depth", 0) or 0)
+                    self._interrupt_monitor_suspend_depth = max(0, depth - 1)
+            else:
+                depth = int(getattr(self, "_interrupt_monitor_suspend_depth", 0) or 0)
+                self._interrupt_monitor_suspend_depth = max(0, depth - 1)
+
+    def _suspended_input(self, prompt: str = "") -> str:
+        """``input()`` that pauses the POSIX ESC monitor while reading."""
+        with self._suspended_interrupt_monitor():
+            return input(prompt)
+
     def _poll_windows_escape_pressed_async_fallback(self) -> bool:
         """Fallback ESC polling for terminals where msvcrt.kbhit() is unreliable."""
         if os.name != "nt":
@@ -3621,7 +3673,7 @@ class Agent:
         return self._poll_windows_escape_pressed_async_fallback()
 
     def _start_interrupt_monitor(self, cancel_task_on_interrupt: bool = False) -> None:
-        if os.name != "nt":
+        if os.name != "nt" and not self._posix_interrupt_monitor_supported():
             return
         lock = getattr(self, "_interrupt_state_lock", None)
         if lock is None:
@@ -3665,13 +3717,155 @@ class Agent:
                     except Exception:
                         continue
 
+            target = _monitor if os.name == "nt" else (
+                lambda: self._run_posix_interrupt_monitor(stop_event, monitor_armed_at, lock)
+            )
             th = threading.Thread(
-                target=_monitor,
+                target=target,
                 name=f"{get_app_logger_root()}-esc-interrupt-monitor",
                 daemon=True,
             )
             self._interrupt_monitor_thread = th
             th.start()
+
+    def _posix_interrupt_monitor_supported(self) -> bool:
+        """POSIX ESC monitoring needs a real tty and the termios/select modules."""
+        if os.name == "nt":
+            return False
+        raw = str(os.environ.get("codewood_DISABLE_ESC_INTERRUPT", "") or "").strip().lower()
+        if raw in ("1", "true", "yes", "on"):
+            return False
+        try:
+            import select  # noqa: F401
+            import termios  # noqa: F401
+        except Exception:
+            return False
+        try:
+            stdin_obj = getattr(sys, "stdin", None)
+            if stdin_obj is None or not stdin_obj.isatty():
+                return False
+            int(stdin_obj.fileno())
+        except Exception:
+            return False
+        return True
+
+    def _run_posix_interrupt_monitor(self, stop_event, monitor_armed_at: float, lock) -> None:
+        """
+        Watch the controlling tty for a standalone ESC keypress during task
+        execution and translate it into a task/process interrupt.
+
+        The terminal is normally line-buffered (canonical) between prompts, so a
+        lone ESC is not delivered until Enter is pressed. We temporarily switch
+        the tty to non-canonical, no-echo mode (keeping ISIG so Ctrl+C still
+        works) and read bytes ourselves, restoring the original mode whenever the
+        monitor is suspended (foreground prompts) or stops.
+        """
+        try:
+            import select
+            import termios
+        except Exception:
+            return
+        try:
+            fd = int(sys.stdin.fileno())
+        except Exception:
+            return
+
+        def _apply_cbreak_locked() -> bool:
+            try:
+                saved = termios.tcgetattr(fd)
+                new = termios.tcgetattr(fd)
+                # lflags (index 3): drop canonical + echo, keep ISIG/IEXTEN.
+                new[3] = new[3] & ~(termios.ICANON | termios.ECHO)
+                # cc (index 6): read at least 1 byte, no inter-byte timer.
+                new[6][termios.VMIN] = 1
+                new[6][termios.VTIME] = 0
+                termios.tcsetattr(fd, termios.TCSANOW, new)
+            except Exception:
+                self._posix_interrupt_tty = None
+                self._posix_interrupt_applied = False
+                return False
+            self._posix_interrupt_tty = (fd, saved)
+            self._posix_interrupt_applied = True
+            return True
+
+        last_interrupt_at = 0.0
+        try:
+            while not stop_event.wait(0.02):
+                try:
+                    with lock:
+                        suspended = (
+                            int(getattr(self, "_interrupt_monitor_suspend_depth", 0) or 0) > 0
+                        )
+                        if suspended:
+                            if bool(getattr(self, "_posix_interrupt_applied", False)):
+                                self._restore_posix_interrupt_tty_locked()
+                            active = False
+                        else:
+                            if not bool(getattr(self, "_posix_interrupt_applied", False)):
+                                _apply_cbreak_locked()
+                            active = bool(getattr(self, "_posix_interrupt_applied", False))
+                    if not active:
+                        continue
+                    try:
+                        readable, _, _ = select.select([fd], [], [], 0.05)
+                    except Exception:
+                        continue
+                    if not readable:
+                        continue
+                    # Re-check suspension just before consuming bytes so we don't
+                    # steal keystrokes from a foreground reader.
+                    with lock:
+                        if (
+                            int(getattr(self, "_interrupt_monitor_suspend_depth", 0) or 0) > 0
+                            or not bool(getattr(self, "_posix_interrupt_applied", False))
+                        ):
+                            continue
+                    try:
+                        data = os.read(fd, 64)
+                    except OSError:
+                        continue
+                    if not data:
+                        continue
+                    if float(time.monotonic()) < monitor_armed_at:
+                        continue
+                    if not self._posix_bytes_are_standalone_escape(data, fd, select):
+                        continue
+                    now_ts = float(time.monotonic())
+                    if (now_ts - last_interrupt_at) < 0.5:
+                        continue
+                    last_interrupt_at = now_ts
+                    with lock:
+                        should_cancel_task = bool(
+                            int(getattr(self, "_interrupt_monitor_cancel_task_refs", 0) or 0) > 0
+                        )
+                    self._request_task_interrupt(source="esc", cancel_task=should_cancel_task)
+                except Exception:
+                    continue
+        finally:
+            with lock:
+                if bool(getattr(self, "_posix_interrupt_applied", False)):
+                    self._restore_posix_interrupt_tty_locked()
+
+    def _posix_bytes_are_standalone_escape(self, data: bytes, fd: int, select_mod) -> bool:
+        """
+        True only when the user pressed ESC on its own. Arrow keys / function
+        keys arrive as ESC followed by more bytes (often in the same read); a
+        lone ESC arrives as a single 0x1b byte, occasionally split from any
+        trailing bytes, so we briefly peek for a continuation before deciding.
+        """
+        if data != b"\x1b":
+            return False
+        try:
+            readable, _, _ = select_mod.select([fd], [], [], 0.05)
+            if readable:
+                try:
+                    os.read(fd, 64)
+                except Exception:
+                    pass
+                return False
+        except Exception:
+            pass
+        return True
 
     def _stop_interrupt_monitor(self, cancel_task_on_interrupt: bool = False) -> None:
         lock = getattr(self, "_interrupt_state_lock", None)
@@ -5839,7 +6033,7 @@ class Agent:
         if mode == "url":
             target_url = str(p.get("url", "") or "").strip()
             print(translate("elicitation.url", lang, url=target_url))
-            consent = input(translate("elicitation.consent_url", lang)).strip().lower()
+            consent = self._suspended_input(translate("elicitation.consent_url", lang)).strip().lower()
             if consent == "y":
                 return {"action": "accept"}
             if consent == "n":
@@ -5854,7 +6048,7 @@ class Agent:
         required_set = {str(x) for x in required} if isinstance(required, list) else set()
         content: Dict[str, Any] = {}
         if not isinstance(props, dict) or not props:
-            consent = input(translate("elicitation.no_schema_consent", lang)).strip().lower()
+            consent = self._suspended_input(translate("elicitation.no_schema_consent", lang)).strip().lower()
             return {"action": "accept" if consent == "y" else "decline", "content": content}
 
         for key, meta in props.items():
@@ -5875,7 +6069,7 @@ class Agent:
                 hint_parts.append(translate("elicitation.hint_default", lang, value=default))
             hint = f" ({', '.join(hint_parts)})" if hint_parts else ""
             while True:
-                raw = input(translate("elicitation.input_prompt", lang, label=label, hint=hint))
+                raw = self._suspended_input(translate("elicitation.input_prompt", lang, label=label, hint=hint))
                 if raw == "" and default is not None:
                     content[k] = default
                     break
@@ -5888,7 +6082,7 @@ class Agent:
                 except Exception:
                     print(translate("elicitation.invalid_input", lang))
 
-        submit = input(translate("elicitation.submit_prompt", lang)).strip().lower()
+        submit = self._suspended_input(translate("elicitation.submit_prompt", lang)).strip().lower()
         if submit == "y":
             return {"action": "accept", "content": content}
         if submit == "n":

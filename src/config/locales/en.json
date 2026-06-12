@@ -256,7 +256,7 @@
   "startup.tip.clear_context": "Use /clear context to reset AI context but keep command history.",
   "startup.tip.clear_input_history": "Use /clear input history to clear terminal input history.",
   "startup.tip.mcp_status": "Use /mcp status to inspect MCP server health and loading state.",
-  "startup.tip.shift_enter": "Press Shift+Enter to insert a newline, and press Enter to send.",
+  "startup.tip.shift_enter": "Press Ctrl+J, Alt+Enter, or Shift+Enter (Windows only) to insert a newline, and press Enter to send.",
   "startup.tip.help": "Use /help to view built-in commands whenever you are unsure.",
   "input.shell_mode_hint": "Prefix a command with ! to run it locally",
   "input.error": "Input error: {error}",
