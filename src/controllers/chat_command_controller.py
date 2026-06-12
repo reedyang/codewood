@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import copy
 import os
+import re
 import shlex
 import sys
 from contextlib import redirect_stderr, redirect_stdout
@@ -24,6 +26,7 @@ def chat_usage(agent: Any) -> str:
         f"  /chat switch <index|id|name>\n"
         f"  /chat rename <index|id|name> <new name>\n"
         f"  /chat edit <index>\n"
+        f"  /chat fork [index]\n"
         f"  /chat delete <index|id|name>\n"
         f"  /chat delete all\n"
     )
@@ -130,8 +133,8 @@ def _reload_chat_from_top(agent: Any, chat_id: str) -> None:
         agent._print_chat_history()
 
 
-def _genuine_user_message_positions(agent: Any) -> list:
-    """Return the conversation-history indices of genuine user prompts.
+def _genuine_user_positions_in_list(messages: Any) -> list:
+    """Return indices of genuine user prompts within ``messages``.
 
     Internal bookkeeping entries that happen to use the ``user`` role (direct
     shell commands, internal slash commands) are excluded so the index the user
@@ -143,8 +146,7 @@ def _genuine_user_message_positions(agent: Any) -> list:
     )
 
     positions = []
-    history = list(getattr(agent, "conversation_history", None) or [])
-    for i, msg in enumerate(history):
+    for i, msg in enumerate(messages or []):
         if not isinstance(msg, dict):
             continue
         if str(msg.get("role") or "").strip().lower() != "user":
@@ -156,6 +158,116 @@ def _genuine_user_message_positions(agent: Any) -> list:
             continue
         positions.append(i)
     return positions
+
+
+def _genuine_user_message_positions(agent: Any) -> list:
+    """Genuine user prompt indices within the active conversation history."""
+    return _genuine_user_positions_in_list(
+        list(getattr(agent, "conversation_history", None) or [])
+    )
+
+
+def _resolve_user_message_index(index: int, count: int) -> int:
+    """Map a 1-based / negative user-message index to a 0-based position.
+
+    Returns ``-1`` when the index falls outside the available range.
+    """
+    if count <= 0:
+        return -1
+    if index > 0:
+        if index > count:
+            return -1
+        return index - 1
+    if -index > count:
+        return -1
+    return count + index
+
+
+_FORK_SUFFIX_RE = re.compile(r"^(.*?) \((\d+)\)$")
+
+
+def _unique_fork_chat_name(agent: Any, base_name: str) -> str:
+    """Build a unique forked name based on ``base_name``.
+
+    When ``base_name`` already ends with a numeric suffix like ``"xxx (3)"`` the
+    suffix number is incremented (``"xxx (4)"`` …) instead of appending a new
+    ``" (2)"``. Otherwise the smallest ``n >= 2`` is used (``"xxx (2)"`` …). In
+    both cases the result is guaranteed not to collide with an existing chat.
+    """
+    existing = {
+        str(c.get("name") or "")
+        for c in agent._chat_entries()
+        if isinstance(c, dict)
+    }
+    match = _FORK_SUFFIX_RE.match(str(base_name or ""))
+    if match:
+        stem = match.group(1)
+        n = int(match.group(2)) + 1
+    else:
+        stem = str(base_name or "")
+        n = 2
+    while True:
+        candidate = f"{stem} ({n})"
+        if candidate not in existing:
+            return candidate
+        n += 1
+
+
+def handle_chat_fork_command(agent: Any, raw_index: str) -> None:
+    value = str(raw_index or "").strip()
+    if value == "":
+        index = -1
+    else:
+        try:
+            index = int(value)
+        except ValueError:
+            print(_t(agent, "chat.fork.invalid_index", value=value))
+            return
+        if index == 0:
+            print(_t(agent, "chat.fork.invalid_index", value=value))
+            return
+
+    with agent._chat_state_lock:
+        try:
+            agent._sync_active_chat_messages()
+        except Exception:
+            pass
+        source = agent._find_chat_by_id(agent.active_chat_id)
+        if not source:
+            print(_t(agent, "chat.reload.no_active"))
+            return
+        messages = list(source.get("messages") or [])
+        positions = _genuine_user_positions_in_list(messages)
+        count = len(positions)
+        if count == 0:
+            print(_t(agent, "chat.fork.no_user_messages"))
+            return
+        pos = _resolve_user_message_index(index, count)
+        if pos < 0:
+            print(_t(agent, "chat.fork.out_of_range", value=index, count=count))
+            return
+        # Copy everything up to (but excluding) the next genuine user message,
+        # i.e. the target user turn plus all assistant messages it triggered.
+        cut_point = positions[pos + 1] if (pos + 1) < count else len(messages)
+        sliced = copy.deepcopy(messages[:cut_point])
+        base_name = str(
+            source.get("name")
+            or getattr(agent, "active_chat_name", "")
+            or _t(agent, "chat.new.default_name")
+        )
+        new_name = _unique_fork_chat_name(agent, base_name)
+        new_id = agent._next_chat_id()
+        entry = agent._new_chat_entry(new_id, name=new_name)
+        entry["name_source"] = "manual"
+        entry["messages"] = sliced
+        entry["model_provider"] = str(source.get("model_provider") or "")
+        entry["model_name"] = str(source.get("model_name") or "")
+        agent._chat_entries().append(entry)
+        agent._chat_state["active"] = new_id
+        agent._save_chat_state()
+
+    _reload_chat_from_top(agent, new_id)
+    print(_t(agent, "chat.fork.done", name=new_name, id=new_id))
 
 
 def _prefill_next_input(agent: Any, text: str) -> None:
@@ -193,16 +305,10 @@ def handle_chat_edit_command(agent: Any, raw_index: str) -> None:
         if count == 0:
             print(_t(agent, "chat.edit.no_user_messages"))
             return
-        if index > 0:
-            if index > count:
-                print(_t(agent, "chat.edit.out_of_range", value=index, count=count))
-                return
-            pos_in_list = index - 1
-        else:
-            if -index > count:
-                print(_t(agent, "chat.edit.out_of_range", value=index, count=count))
-                return
-            pos_in_list = count + index
+        pos_in_list = _resolve_user_message_index(index, count)
+        if pos_in_list < 0:
+            print(_t(agent, "chat.edit.out_of_range", value=index, count=count))
+            return
         target_history_index = positions[pos_in_list]
         message_text = str(
             agent.conversation_history[target_history_index].get("content") or ""
@@ -296,6 +402,13 @@ def handle_chat_builtin_command(agent: Any, builtin_line: str) -> bool:
             print(_t(agent, "chat.usage.edit_error"))
             return True
         handle_chat_edit_command(agent, parts[2])
+        return True
+    if sub == "fork":
+        if len(parts) > 3:
+            print(_t(agent, "chat.usage.fork_error"))
+            return True
+        raw_index = parts[2] if len(parts) == 3 else ""
+        handle_chat_fork_command(agent, raw_index)
         return True
     if sub == "delete":
         if len(parts) < 3:

@@ -47,7 +47,10 @@ _SHELL_MODE_SYNC_HANDLER_ATTR = get_app_runtime_attr_name(
     "shell_mode_sync_handler", leading_underscore=True
 )
 
-from .builtin_slash_commands import slash_builtin_completions
+from .builtin_slash_commands import (
+    SLASH_BUILTIN_DISPLAY_OVERRIDES,
+    slash_builtin_completions,
+)
 from ..config.i18n import DEFAULT_DISPLAY_LANGUAGE, language_display_name, normalize_display_language, translate
 from ..core.console_utils import _ansi_gray, _ansi_rgb
 
@@ -1417,6 +1420,10 @@ class FileCompleter(Completer):
                             display_text = self._dynamic_completion_display(
                                 slash_part, mc, all_delayed_groups
                             )
+                            if display_text == mc:
+                                display_text = SLASH_BUILTIN_DISPLAY_OVERRIDES.get(
+                                    mc, display_text
+                                )
                             yield Completion(
                                 mc,
                                 start_position=spos,

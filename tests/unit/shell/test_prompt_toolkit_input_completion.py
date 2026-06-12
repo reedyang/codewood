@@ -555,6 +555,24 @@ class PromptToolkitInputCompletionTests(unittest.TestCase):
             self.assertEqual(str(getattr(en_item, "display_text", "")), "English")
             self.assertEqual(str(getattr(zh_item, "display_text", "")), "简体中文")
 
+    def test_chat_edit_completion_shows_arg_hint_but_inserts_command(self):
+        with tempfile.TemporaryDirectory() as td:
+            completer = FileCompleter(Path(td))
+            out = list(completer.get_completions(_Doc("/chat ed"), None))
+        item = next(c for c in out if getattr(c, "text", "") == "/chat edit ")
+        self.assertEqual(str(getattr(item, "display_text", "")), "/chat edit <index>")
+
+    def test_chat_fork_completion_single_entry_with_arg_hint(self):
+        with tempfile.TemporaryDirectory() as td:
+            completer = FileCompleter(Path(td))
+            out = list(completer.get_completions(_Doc("/chat fo"), None))
+        fork_items = [c for c in out if str(getattr(c, "text", "")).startswith("/chat fork")]
+        self.assertEqual(len(fork_items), 1)
+        self.assertEqual(getattr(fork_items[0], "text", ""), "/chat fork")
+        self.assertEqual(
+            str(getattr(fork_items[0], "display_text", "")), "/chat fork [index]"
+        )
+
     def test_get_input_uses_multiline_prompt_and_two_space_continuation(self):
         handler = pti.PromptToolkitInputHandler.__new__(pti.PromptToolkitInputHandler)
         handler.session = _FakeSession("line1\nline2")

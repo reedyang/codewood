@@ -12,6 +12,7 @@ SLASH_BUILTIN_COMMANDS: List[str] = [
     "/chat delete ",
     "/chat delete all",
     "/chat edit ",
+    "/chat fork",
     "/chat list",
     "/chat new ",
     "/chat reload",
@@ -64,6 +65,17 @@ SLASH_BUILTIN_COMMANDS: List[str] = [
     "/workspace switch ",
     "/workspace update ",
 ]
+
+# Optional display labels for built-in completions whose menu text should differ
+# from the inserted text. The key is the inserted command (as listed above);
+# the value is what the completion menu shows. This lets a command advertise its
+# argument shape (e.g. "/chat fork [index]") while tab still inserts the bare
+# command ("/chat fork").
+SLASH_BUILTIN_DISPLAY_OVERRIDES = {
+    "/chat edit ": "/chat edit <index>",
+    "/chat fork": "/chat fork [index]",
+}
+
 
 # Keep built-in completion list unique while preserving order.
 _seen_builtin = set()
