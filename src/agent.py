@@ -139,6 +139,9 @@ CONVERSATION_INTERRUPTED_HISTORY_PREFIX = "[CONVERSATION_INTERRUPTED]"
 INTERNAL_SLASH_USER_HISTORY_PREFIX = "[INTERNAL_SLASH_USER_COMMAND]"
 INTERNAL_SLASH_RESULT_HISTORY_PREFIX = "[INTERNAL_SLASH_RESULT]"
 TASK_WORKED_SUMMARY_HISTORY_PREFIX = "[TASK_WORKED_SUMMARY]"
+# Effectively unbounded tail limit: used by transcript mode to render shell
+# output in full (no "... omitted N lines ..." truncation).
+_FULL_OUTPUT_TAIL_LIMIT = 10**9
 _STREAM_ATTR_TERMINAL_COLUMNS = get_app_runtime_attr_name("terminal_columns")
 _STREAM_ATTR_OUTPUT_INDENT_WIDTH = get_app_runtime_attr_name("output_indent_width")
 
@@ -1041,12 +1044,18 @@ class Agent:
             return res, idx
         return {}, cursor
 
-    def _extract_model_shell_replay_output(self, shell_result: Any) -> Tuple[str, str]:
+    def _extract_model_shell_replay_output(
+        self, shell_result: Any, full_output: bool = False
+    ) -> Tuple[str, str]:
         payload = shell_result if isinstance(shell_result, dict) else {}
         has_output_field = "output" in payload
         raw_out = str(payload.get("output") or "")
         if raw_out:
-            out_limit = command_actions._dynamic_tail_line_limit(sys.stdout)
+            out_limit = (
+                _FULL_OUTPUT_TAIL_LIMIT
+                if full_output
+                else command_actions._dynamic_tail_line_limit(sys.stdout)
+            )
             out_text = command_actions._build_tail_output_for_display(
                 raw_out,
                 sys.stdout,
@@ -1096,13 +1105,19 @@ class Agent:
             out += "\n"
         return out
 
-    def _extract_direct_shell_replay_output(self, stdout_text: str, stderr_text: str) -> Tuple[str, str]:
+    def _extract_direct_shell_replay_output(
+        self, stdout_text: str, stderr_text: str, full_output: bool = False
+    ) -> Tuple[str, str]:
         raw_out = str(stdout_text or "")
         raw_err = str(stderr_text or "")
         out_text = ""
         err_text = ""
         if raw_out:
-            out_limit = command_actions._dynamic_tail_line_limit(sys.stdout)
+            out_limit = (
+                _FULL_OUTPUT_TAIL_LIMIT
+                if full_output
+                else command_actions._dynamic_tail_line_limit(sys.stdout)
+            )
             out_text = command_actions._build_tail_output_for_display(
                 raw_out,
                 sys.stdout,
@@ -1112,7 +1127,11 @@ class Agent:
             )
             out_text = self._strip_console_color_controls(out_text)
         if raw_err:
-            err_limit = command_actions._dynamic_tail_line_limit(sys.stderr)
+            err_limit = (
+                _FULL_OUTPUT_TAIL_LIMIT
+                if full_output
+                else command_actions._dynamic_tail_line_limit(sys.stderr)
+            )
             err_text = command_actions._build_tail_output_for_display(
                 raw_err,
                 sys.stderr,
@@ -1475,7 +1494,9 @@ class Agent:
                 merged = out_text + err_text
                 out_text = self._normalize_aborted_direct_shell_stdout_for_history(merged)
                 err_text = ""
-            out_text, err_text = self._extract_direct_shell_replay_output(out_text, err_text)
+            out_text, err_text = self._extract_direct_shell_replay_output(
+                out_text, err_text, full_output=True
+            )
             self._print_direct_shell_history_output(out_text, err_text)
             return
         slash_result = self._parse_internal_slash_result_history_content(content)
@@ -1504,7 +1525,9 @@ class Agent:
             if model_tool:
                 self._print_tool_call_feedback(model_tool, model_args, failed=failed)
             if model_tool == "shell":
-                out_text, err_text = self._extract_model_shell_replay_output(model_tool_result)
+                out_text, err_text = self._extract_model_shell_replay_output(
+                    model_tool_result, full_output=True
+                )
                 if out_text or err_text:
                     self._print_direct_shell_history_output(out_text, err_text)
             return
