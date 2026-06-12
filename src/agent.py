@@ -1513,7 +1513,12 @@ class Agent:
             out_text, err_text = self._extract_direct_shell_replay_output(
                 out_text, err_text, full_output=True
             )
-            self._print_direct_shell_history_output(out_text, err_text)
+            # Use default color (no gray) so the whole command output renders
+            # uniformly in the transcript view, which splits the captured text
+            # line-by-line and would otherwise only gray the first line.
+            self._print_direct_shell_history_output(
+                out_text, err_text, apply_gray=False
+            )
             return
         slash_result = self._parse_internal_slash_result_history_content(content)
         if slash_result is not None:
@@ -1545,7 +1550,9 @@ class Agent:
                     model_tool_result, full_output=True
                 )
                 if out_text or err_text:
-                    self._print_direct_shell_history_output(out_text, err_text)
+                    self._print_direct_shell_history_output(
+                        out_text, err_text, apply_gray=False
+                    )
             return
         display_response = format_assistant_display_response(content)
         if display_response:
@@ -2622,11 +2629,13 @@ class Agent:
         stdout_text: str,
         stderr_text: str,
         force_first_line_continuation: bool = False,
+        apply_gray: bool = True,
     ) -> int:
         self._ensure_terminal_line_start()
         shared_state: Dict[str, Any] = {
             "first_line_emitted": bool(force_first_line_continuation),
             "_suppress_first_write_clear": True,
+            "apply_gray": bool(apply_gray),
         }
         out_stream, err_stream = self._create_direct_shell_output_streams(shared_state)
         out = str(stdout_text or "")
@@ -3248,6 +3257,11 @@ class Agent:
             term_rows = max(2, int(self._terminal_rows() or 24))
             out_parts: List[str] = []
             added_rows = 0
+            # When the body is rendered in the default color (apply_gray False),
+            # still gray the "└" connector so it stays visually tied to the
+            # feedback line. When the whole block is grayed, leave the connector
+            # plain so an inner reset does not break the outer gray span.
+            body_apply_gray = bool(self._shared_state.get("apply_gray", True))
 
             def _mark_row_started() -> None:
                 nonlocal added_rows
@@ -3262,10 +3276,12 @@ class Agent:
                 if self._line_start:
                     if not bool(self._shared_state.get("first_line_emitted", False)):
                         indent = "  └ "
+                        indent_render = indent if body_apply_gray else _ansi_gray(indent)
                         self._shared_state["first_line_emitted"] = True
                     else:
                         indent = "    "
-                    out_parts.append(indent)
+                        indent_render = indent
+                    out_parts.append(indent_render)
                     self._visual_col = len(indent)
                     self._line_start = False
                     _mark_row_started()
