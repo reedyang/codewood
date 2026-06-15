@@ -11,6 +11,7 @@ rem PyInstaller will search this path for modules
 set VENV_PATH=.venv-windows\Lib\site-packages
 
 pyinstaller --onefile --name codewood ^
+  --icon "../../build/codewood.ico" ^
   --add-data "../../vendors/rg.exe;bin" ^
   --add-data "../../skills;skills" ^
   --add-data "../../src;src" ^
