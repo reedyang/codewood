@@ -2638,6 +2638,10 @@ class Agent:
             "first_line_emitted": bool(force_first_line_continuation),
             "_suppress_first_write_clear": True,
             "apply_gray": bool(apply_gray),
+            # In transcript/history replay the body uses the default color, but
+            # the "└" connector should still be grayed to tie it to the
+            # feedback line above. (Live "!" rendering leaves this unset.)
+            "gray_connector": not bool(apply_gray),
         }
         out_stream, err_stream = self._create_direct_shell_output_streams(shared_state)
         out = str(stdout_text or "")
@@ -3259,11 +3263,14 @@ class Agent:
             term_rows = max(2, int(self._terminal_rows() or 24))
             out_parts: List[str] = []
             added_rows = 0
-            # When the body is rendered in the default color (apply_gray False),
-            # still gray the "└" connector so it stays visually tied to the
-            # feedback line. When the whole block is grayed, leave the connector
-            # plain so an inner reset does not break the outer gray span.
+            # Connector ("└") coloring is independent of the body color:
+            # - body grayed (apply_gray True): keep the connector plain so an
+            #   inner reset does not break the outer gray span.
+            # - body default + gray_connector True (transcript replay): gray only
+            #   the connector so it stays visually tied to the feedback line.
+            # - body default + gray_connector False (live "!" render): no gray.
             body_apply_gray = bool(self._shared_state.get("apply_gray", True))
+            gray_connector = bool(self._shared_state.get("gray_connector", False))
 
             def _mark_row_started() -> None:
                 nonlocal added_rows
@@ -3278,7 +3285,10 @@ class Agent:
                 if self._line_start:
                     if not bool(self._shared_state.get("first_line_emitted", False)):
                         indent = "  └ "
-                        indent_render = indent if body_apply_gray else _ansi_gray(indent)
+                        if not body_apply_gray and gray_connector:
+                            indent_render = _ansi_gray(indent)
+                        else:
+                            indent_render = indent
                         self._shared_state["first_line_emitted"] = True
                     else:
                         indent = "    "
