@@ -11,6 +11,22 @@ from ..tooling.handlers.mcp_handlers import MCP_MANAGEMENT_GATED_TOOLS
 from ..tooling.handlers.memory_handlers import MEMORY_TOOLS
 
 
+# Tools that require the model to accept image input. Hidden from prompts and
+# tool schemas when the active model is not multimodal.
+IMAGE_INPUT_TOOLS = frozenset({"read_image"})
+
+
+def _model_supports_multimodal(agent: Any) -> bool:
+    """True when the active model can accept image input (defaults to True)."""
+    checker = getattr(agent, "_multimodal_enabled_for_current_model", None)
+    if callable(checker):
+        try:
+            return bool(checker())
+        except Exception:
+            return True
+    return True
+
+
 def _t(language: Any, key: str, **kwargs: Any) -> str:
     return translate(
         key,
@@ -177,6 +193,14 @@ def load_tools_spec_from_jsonc(agent: Any) -> List[Dict[str, Any]]:
                 x
                 for x in specs
                 if str((x.get("function", {}) or {}).get("name", "")).strip() != "run_subagent"
+            ]
+
+        if not _model_supports_multimodal(agent):
+            specs = [
+                x
+                for x in specs
+                if str((x.get("function", {}) or {}).get("name", "")).strip()
+                not in IMAGE_INPUT_TOOLS
             ]
 
         return specs
@@ -504,6 +528,8 @@ def build_tools_prompt_append(agent: Any) -> str:
         if memory_side:
             template = (template + "\n\n" + memory_side).strip()
 
+    multimodal_enabled = _model_supports_multimodal(agent)
+
     lines: List[str] = [
         template,
         "",
@@ -530,6 +556,8 @@ def build_tools_prompt_append(agent: Any) -> str:
         if name in MCP_MANAGEMENT_GATED_TOOLS and not mcp_tools_enabled:
             continue
         if name in MEMORY_TOOLS and not memory_enabled:
+            continue
+        if name in IMAGE_INPUT_TOOLS and not multimodal_enabled:
             continue
         if name == "project_context_search" and not agent._project_context_tool_allowed():
             continue

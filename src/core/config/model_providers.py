@@ -106,6 +106,7 @@ def parse_configured_models(
         context_window_raw: Any = None
         streaming_raw: Any = True
         extra_headers_raw: Any = {}
+        multimodal_raw: Any = True
         if isinstance(item, str):
             model_name = item.strip()
         elif isinstance(item, dict):
@@ -113,6 +114,7 @@ def parse_configured_models(
             context_window_raw = item.get("context_window")
             streaming_raw = item.get("streaming", True)
             extra_headers_raw = item.get("extra_headers", {})
+            multimodal_raw = item.get("multimodal", True)
         else:
             model_name = str(item or "").strip()
         if not model_name:
@@ -125,6 +127,11 @@ def parse_configured_models(
                 ),
                 "streaming": parse_bool_flag(
                     streaming_raw, default_value=True
+                ),
+                # Whether the model can accept image input. Defaults to True;
+                # set ``"multimodal": false`` to hide image tools (read_image).
+                "multimodal": parse_bool_flag(
+                    multimodal_raw, default_value=True
                 ),
                 "extra_headers": parse_extra_headers(extra_headers_raw),
             }

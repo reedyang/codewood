@@ -249,6 +249,7 @@ def _extract_model_runtime_config(config: dict, requested_model: str | None = No
                     "name": model_name,
                     "context_window": int(model_item.get("context_window") or 0),
                     "streaming": bool(model_item.get("streaming", True)),
+                    "multimodal": bool(model_item.get("multimodal", True)),
                     "extra_headers": dict(model_item.get("extra_headers") or {}),
                     "params_raw": params_raw,
                     "provider_models": parsed_models,
@@ -269,6 +270,7 @@ def _extract_model_runtime_config(config: dict, requested_model: str | None = No
             "name": str(first_model.get("name") or "").strip(),
             "context_window": int(first_model.get("context_window") or 0),
             "streaming": bool(first_model.get("streaming", True)),
+            "multimodal": bool(first_model.get("multimodal", True)),
             "extra_headers": dict(first_model.get("extra_headers") or {}),
             "params_raw": first_provider["params_raw"],
             "provider_models": first_provider["models"],
@@ -352,6 +354,7 @@ def _extract_model_runtime_config(config: dict, requested_model: str | None = No
     params["model"] = model_name
     params["context_window"] = int(selected.get("context_window") or 0)
     params["streaming"] = bool(selected.get("streaming", True))
+    params["multimodal"] = bool(selected.get("multimodal", True))
     params["extra_headers"] = dict(selected.get("extra_headers") or {})
     # The Ollama-native HTTP backend is selected via ``api_mode``;
     # ``provider`` is now just a label/prefix. Default the port for

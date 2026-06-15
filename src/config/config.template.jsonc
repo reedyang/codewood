@@ -20,7 +20,8 @@
           {
             "name": "<YOUR MODEL NAME>",
             "context_window": 131072,
-            "streaming": true,              // optional, default is true
+            "streaming": true,               // optional, default is true
+            "multimodal": true,              // optional, default is true; set false to hide image tools (read_image)
             "extra_headers": {
               "X-Model": "<YOUR MODEL NAME>" // optional, model-level custom headers
             }
@@ -35,12 +36,13 @@
       "provider": "ollama",
       "params": {
         "api_mode": "ollama",
-        "port": 11434,                    // optional, default is 11434
+        "port": 11434,                       // optional, default is 11434
         "models": [
           {
             "name": "<YOUR OLLAMA MODEL NAME>",
             "context_window": 128000,
-            "streaming": true              // optional, default is true
+            "streaming": true,               // optional, default is true
+            "multimodal": false              // optional, default is true; set false to hide image tools (read_image)
           }
         ]
       }

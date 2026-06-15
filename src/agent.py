@@ -501,6 +501,7 @@ class Agent:
                 model_name = str(model_item.get("name") or "").strip()
                 context_window = int(model_item.get("context_window") or 0)
                 streaming = bool(model_item.get("streaming", True))
+                multimodal = bool(model_item.get("multimodal", True))
                 selector = f"{provider}:{model_name}"
                 key = selector.lower()
                 if key in seen:
@@ -510,6 +511,7 @@ class Agent:
                 params["model"] = model_name
                 params["context_window"] = context_window
                 params["streaming"] = streaming
+                params["multimodal"] = multimodal
                 params["extra_headers"] = dict(model_item.get("extra_headers") or {})
                 out.append(
                     {
@@ -547,6 +549,17 @@ class Agent:
     def _streaming_enabled_for_current_model(self) -> bool:
         params = getattr(self, "params", {}) or {}
         raw = params.get("streaming", True) if isinstance(params, dict) else True
+        return parse_bool_flag(raw, default_value=True)
+
+    def _multimodal_enabled_for_current_model(self) -> bool:
+        """Whether the active model accepts image input.
+
+        Defaults to True so models that omit the ``multimodal`` config flag keep
+        full tool access; only an explicit ``"multimodal": false`` hides the
+        image tools (read_image).
+        """
+        params = getattr(self, "params", {}) or {}
+        raw = params.get("multimodal", True) if isinstance(params, dict) else True
         return parse_bool_flag(raw, default_value=True)
 
     def _basic_chat_only_context_warning_for_params(

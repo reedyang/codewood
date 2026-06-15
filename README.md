@@ -160,7 +160,8 @@ Create `.codewood/config.jsonc` in your user directory:
           {
             "name": "gpt-oss-120b",
             "context_window": "128K",
-            "streaming": true
+            "streaming": true,
+            "multimodal": false
           },
           { "name": "gpt-4o-mini", "context_window": 64000, "streaming": false }
         ]
@@ -199,10 +200,11 @@ Create `.codewood/config.jsonc` in your user directory:
 - `model_providers[i].params.port`: used by `api_mode: "ollama"`, with a default of `11434`
 - `model_providers[i].params.models`: model list; the first model is used by default
   - String form: `"gpt-oss-120b"` uses the default `context_window=128000` and `streaming=true`
-  - Object form: `{"name":"gpt-oss-120b","context_window":"128K","streaming":true,"extra_headers":{"X-Model":"gpt-oss-120b"}}`
+  - Object form: `{"name":"gpt-oss-120b","context_window":"128K","streaming":true,"multimodal":false,"extra_headers":{"X-Model":"gpt-oss-120b"}}`
 - `context_window`: accepts a positive integer or a string matching `^\d+[kKmM]?$`; invalid values fall back to `128000`
 - When `context_window < 64000`, Code Wood skips system prompts, tool prompts, skill prompts, memory, and operational context, and only sends conversation history plus the current user input
 - `streaming`: per-model streaming toggle, default `true`
+- `multimodal`: per-model image-input capability, default `true`. When set to `false`, Code Wood hides image tools (`read_image`) from the system prompt and tool schemas so a non-multimodal model is never asked to read images directly. To still analyze images, delegate to a multimodal sub-agent via `run_subagent`'s `image` argument (see `additional-subagents/image-analyzer.md`)
 - `extra_headers`: per-model custom request headers, available only for OpenAI-compatible `api_mode` values (`auto`/`chat`/`responses`)
 - `auto_compact_trigger_percent`: automatic summarization threshold, default `60`
 - `model_providers[i].params`: provider-specific parameters such as API keys and base URLs

@@ -32,6 +32,7 @@ from ..core.logging.app_logging import get_logger
 from ..controllers.builtin_command_router import dispatch_builtin_command
 from ..tooling.handlers.mcp_handlers import MCP_MANAGEMENT_GATED_TOOLS
 from ..tooling.handlers.memory_handlers import MEMORY_TOOLS
+from .prompt_composer import IMAGE_INPUT_TOOLS
 from ..tools.plan import (
     PLAN_STATUS_COMPLETED,
     PLAN_STATUS_IN_PROGRESS,
@@ -2716,6 +2717,15 @@ def run_agent_loop(agent: Any):
                                     ((item or {}).get("function", {}) or {}).get("name", "")
                                 ).strip()
                                 not in MEMORY_TOOLS
+                            ]
+                        if not self._multimodal_enabled_for_current_model():
+                            standard_tool_schemas = [
+                                item
+                                for item in standard_tool_schemas
+                                if str(
+                                    ((item or {}).get("function", {}) or {}).get("name", "")
+                                ).strip()
+                                not in IMAGE_INPUT_TOOLS
                             ]
                     ai_result = self.call_ai(
                         next_input,
