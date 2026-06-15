@@ -4,3 +4,5 @@
 .cursor
 .codegraph
 AGENTS.override.md
+dist
+build/codewood
