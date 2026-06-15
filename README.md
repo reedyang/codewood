@@ -99,7 +99,9 @@ codewood/
 ├── demo/                          # Demo assets
 ├── tests/                         # Test suite
 ├── requirements.txt               # Python dependencies
-├── codewood.bat                 # Windows launch script
+├── bin/
+|   ├── codewood.bat               # Windows launch script
+|   └── codewood.sh                # Bash launch script
 └── README.md                      # Project documentation
 ```
 
@@ -115,17 +117,14 @@ Create `.codewood/config.jsonc` in your user directory:
     {
       "provider": "openai",
       "params": {
-        "api_key": "${HAPPYCODING_API_KEY}",
-        "base_url": "https://happycoding.corp.zoom.com/api/v1",
+        "api_key": "YOUR_API_KEY",
+        "base_url": "YOUR API BASE URL",
         "api_mode": "auto",
         "models": [
           {
             "name": "gpt-oss-120b",
             "context_window": "128K",
-            "streaming": true,
-            "extra_headers": {
-              "X-Model": "gpt-oss-120b"
-            }
+            "streaming": true
           },
           { "name": "gpt-4o-mini", "context_window": 64000, "streaming": false }
         ]
@@ -248,10 +247,6 @@ Example `mcp.jsonc`:
     "playwright": {
       "command": "npx",
       "args": ["-y", "@playwright/mcp@latest"]
-    },
-    "figma": {
-      "url": "https://mcp.figma.com/mcp",
-      "headers": {}
     },
     "custom-stdio": {
       "command": "python",
