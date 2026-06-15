@@ -389,8 +389,17 @@ def action_read_image(agent: Any, file_path: str, prompt: str = "") -> Dict[str,
             return {"success": False, "error": f"Unsupported file format: {abs_path.suffix}"}
         image_task_context = f"Image file path: {str(abs_path)}"
         image_user_prompt = prompt if prompt else "Please read this image first, then continue with the current task."
-        analysis = agent.call_ai(image_user_prompt, context=image_task_context, image_path=str(abs_path))
-        return {"success": True, "analysis": analysis, "file": str(abs_path)}
+        # Force a non-streaming call so we receive the complete analysis as a
+        # string. Without ``stream=False`` a streaming-enabled model returns an
+        # unconsumed stream result object, which is not JSON-serializable and
+        # breaks downstream tool-result handling.
+        analysis = agent.call_ai(
+            image_user_prompt,
+            context=image_task_context,
+            image_path=str(abs_path),
+            stream=False,
+        )
+        return {"success": True, "analysis": str(analysis or ""), "file": str(abs_path)}
     except Exception as e:
         return {"success": False, "error": f"Image read failed: {str(e)}"}
 

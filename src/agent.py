@@ -5902,7 +5902,10 @@ class Agent:
                 v = str(compact.get(k) or "")
                 if len(v) > 800:
                     compact[k] = v[:800] + " ...[truncated]"
-        s = json.dumps(compact, ensure_ascii=False)
+        # ``default=str`` guards against any non-JSON-serializable value that a
+        # tool may accidentally leave in its result (e.g. an unconsumed stream
+        # object), so a stray object can never crash the main loop here.
+        s = json.dumps(compact, ensure_ascii=False, default=str)
         if is_subagent_result:
             # Allow the full sub-agent output through the outer length cap too.
             return s

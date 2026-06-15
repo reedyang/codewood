@@ -306,6 +306,7 @@
   "subagents.error.bad_response": "❌ Sub-agent returned an unexpected response",
   "subagents.error.max_rounds": "Sub-agent reached the maximum of {rounds} rounds without a final answer",
   "subagents.error.image_not_found": "❌ Image file not found or unsupported format: {path}",
+  "subagents.error.model_not_found": "❌ Sub-agent '{subagent}' is configured with model '{selector}', which is not found in model_providers. Fix the 'model' field in the sub-agent file (it must exactly match a configured provider:name). Available models: {available}",
   "tool.shell.missing_command": "❌ shell command is missing the command parameter",
   "tool.apply_patch.missing_path_patch": "❌ apply_patch command is missing the path/patch parameters",
   "tool.read_image.result_header": "\n🖼️ Image read result ({file}):",

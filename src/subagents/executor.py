@@ -46,27 +46,52 @@ def _find_subagent(agent: Any, name: str) -> Optional[SubAgentRecord]:
     return None
 
 
-def _build_orchestrator(agent: Any, record: SubAgentRecord) -> AIOrchestrator:
-    """Build a throwaway orchestrator for the sub-agent.
+def _resolve_subagent_model(
+    agent: Any, record: SubAgentRecord
+) -> Tuple[Optional[Tuple[str, str, Dict[str, Any]]], Optional[str]]:
+    """Resolve the sub-agent's (provider, model_name, params).
 
-    When the sub-agent declares a ``model`` selector, resolve it from the
-    configured catalog (without mutating the main agent). Otherwise reuse the
-    main agent's current model.
+    Returns ``(resolved, None)`` on success or ``(None, error_message)`` when a
+    declared ``model`` selector cannot be resolved. A missing selector means
+    "reuse the main agent's current model".
     """
-    provider = str(getattr(agent, "provider", "") or "")
-    model_name = str(getattr(agent, "model_name", "") or "")
-    params = dict(getattr(agent, "params", {}) or {})
-
     selector = str(getattr(record, "model_selector", "") or "").strip()
-    if selector:
-        choice = agent._find_configured_model_choice(selector)
-        if choice:
-            provider = str(choice.get("provider") or "").strip() or provider
-            model_name = str(choice.get("name") or "").strip() or model_name
-            params = dict(choice.get("params") or {})
-            if model_name:
-                params["model"] = model_name
+    if not selector:
+        provider = str(getattr(agent, "provider", "") or "")
+        model_name = str(getattr(agent, "model_name", "") or "")
+        params = dict(getattr(agent, "params", {}) or {})
+        return (provider, model_name, params), None
 
+    choice = agent._find_configured_model_choice(selector)
+    if not choice:
+        # Do NOT silently fall back to the main model: that would route image/
+        # specialized work to the wrong (e.g. non-multimodal) model and produce
+        # confusing results. Surface a clear, actionable error instead.
+        try:
+            available = ", ".join(s for s in agent._get_configured_model_selectors() if s) or "-"
+        except Exception:
+            available = "-"
+        return None, _t(
+            agent,
+            "subagents.error.model_not_found",
+            selector=selector,
+            subagent=record.name,
+            available=available,
+        )
+
+    provider = str(choice.get("provider") or "").strip() or str(getattr(agent, "provider", "") or "")
+    model_name = str(choice.get("name") or "").strip() or str(getattr(agent, "model_name", "") or "")
+    params = dict(choice.get("params") or {})
+    if model_name:
+        params["model"] = model_name
+    return (provider, model_name, params), None
+
+
+def _build_orchestrator(
+    agent: Any, provider: str, model_name: str, params: Dict[str, Any]
+) -> AIOrchestrator:
+    """Build a throwaway orchestrator for the sub-agent (no main-agent mutation)."""
+    params = dict(params or {})
     api_mode = resolve_api_mode(params=params, provider=provider)
     openai_conf = None if api_mode == "ollama" else params
 
@@ -114,41 +139,71 @@ def _resolve_allowed_tool_schemas(agent: Any, record: SubAgentRecord) -> List[Di
 _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp", ".tiff", ".tif"}
 
 
-def _resolve_image_path(agent: Any, image: str) -> Optional[str]:
-    """Resolve an image path the same way ``action_read_image`` does.
+def _candidate_image_paths(agent: Any, raw: str) -> List[Path]:
+    """Build an ordered list of candidate absolute paths for an image argument.
 
-    Returns the resolved absolute path string, or ``None`` if it does not
-    resolve to an existing supported image file.
+    Relative paths are resolved against the same bases the rest of the app uses
+    (workspace_root via the canonical resolver, then work_directory, the AI temp
+    dir, the workspace config dir, and finally the process CWD), so a relative
+    path like ``test.jpg`` works without the caller needing an absolute path.
     """
-    raw = str(image or "").strip()
+    candidates: List[Path] = []
+
+    def _add(p: Optional[Path]) -> None:
+        if p is None:
+            return
+        try:
+            resolved = p.expanduser()
+        except Exception:
+            resolved = p
+        candidates.append(resolved)
+
+    candidate = Path(raw)
+    if candidate.is_absolute():
+        _add(candidate)
+        return candidates
+
+    # Canonical resolver first: matches how apply_patch / shell-relative paths
+    # behave (workspace_root, then work_directory).
+    resolver = getattr(agent, "_resolve_user_path", None)
+    if callable(resolver):
+        try:
+            _add(Path(resolver(raw)))
+        except Exception:
+            pass
+
+    for root in (
+        getattr(agent, "workspace_root", None),
+        getattr(agent, "work_directory", None),
+        getattr(agent, "ai_workspace_temp_dir", None),
+        getattr(agent, "workspace_config_dir", None),
+    ):
+        if root is not None:
+            _add(Path(root) / raw)
+    try:
+        _add(Path.cwd() / raw)
+    except Exception:
+        pass
+    _add(candidate)
+    return candidates
+
+
+def _resolve_image_path(agent: Any, image: str) -> Optional[str]:
+    """Resolve an image argument to an existing absolute image-file path.
+
+    Returns the absolute path string, or ``None`` if no candidate resolves to an
+    existing supported image file.
+    """
+    raw = str(image or "").strip().strip('"').strip("'")
     if not raw:
         return None
-    candidate = Path(raw)
-    if not candidate.is_absolute():
-        search_roots = [
-            getattr(agent, "work_directory", None),
-            getattr(agent, "ai_workspace_temp_dir", None),
-            getattr(agent, "workspace_config_dir", None),
-        ]
-        resolved: Optional[Path] = None
-        for root in search_roots:
-            if root is None:
-                continue
-            probe = Path(root) / raw
-            if probe.is_file():
-                resolved = probe
-                break
-        if resolved is None:
-            # Fall back to work_directory join so the caller gets a clear error.
-            base = getattr(agent, "work_directory", None)
-            candidate = (Path(base) / raw) if base is not None else candidate
-        else:
-            candidate = resolved
-    if not candidate.is_file():
-        return None
-    if candidate.suffix.lower() not in _IMAGE_EXTS:
-        return None
-    return str(candidate)
+    for candidate in _candidate_image_paths(agent, raw):
+        try:
+            if candidate.is_file() and candidate.suffix.lower() in _IMAGE_EXTS:
+                return str(candidate.resolve())
+        except OSError:
+            continue
+    return None
 
 
 def _extract_tool_call_id(message: Dict[str, Any], index: int) -> str:
@@ -208,10 +263,15 @@ def run_subagent(
                 "subagent": record.name,
             }
 
+    resolved_model, model_error = _resolve_subagent_model(agent, record)
+    if model_error:
+        return {"success": False, "error": model_error, "subagent": record.name}
+
     # Import here to avoid a circular import at module load time.
     from ..runtime.runtime_loop import _parse_tool_plans_from_model_message
 
-    orchestrator = _build_orchestrator(agent, record)
+    provider, model_name, model_params = resolved_model
+    orchestrator = _build_orchestrator(agent, provider, model_name, model_params)
     tool_schemas = _resolve_allowed_tool_schemas(agent, record)
 
     messages: List[Dict[str, Any]] = [
