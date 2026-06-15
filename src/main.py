@@ -61,6 +61,7 @@ def _format_startup_help(executable_name: str = "python src/main.py") -> str:
         "\n"
         "Commands:\n"
         f"  exec                       Run {get_app_name()} and execute your prompt non-interactively, then exit\n"
+        f"  app                        Launch the {get_app_name()} desktop GUI (no console window)\n"
         f"  serve                      Run {get_app_name()} as a headless localhost server for the desktop GUI\n"
         "\n"
         "Arguments:\n"
@@ -103,6 +104,7 @@ def _parse_startup_cli_args(argv: list[str]) -> tuple[dict[str, Any] | None, str
             "model_selector": None,
             "show_help": False,
             "serve_mode": False,
+            "app_mode": False,
             "serve_host": "127.0.0.1",
             "serve_port": 0,
             "executable_name": executable_name,
@@ -161,6 +163,7 @@ def _parse_startup_cli_args(argv: list[str]) -> tuple[dict[str, Any] | None, str
         idx += 1
 
     serve_mode = False
+    app_mode = False
     if positionals:
         if positionals[0] == "exec":
             if len(positionals) < 2:
@@ -170,6 +173,10 @@ def _parse_startup_cli_args(argv: list[str]) -> tuple[dict[str, Any] | None, str
             if len(positionals) > 1:
                 return None, "❌ The serve command takes no positional arguments.\n" + usage_text
             serve_mode = True
+        elif positionals[0] == "app":
+            if len(positionals) > 1:
+                return None, "❌ The app command takes no positional arguments.\n" + usage_text
+            app_mode = True
         else:
             return None, "❌ Unsupported arguments.\n" + usage_text
 
@@ -182,6 +189,7 @@ def _parse_startup_cli_args(argv: list[str]) -> tuple[dict[str, Any] | None, str
         "model_selector": model_selector,
         "show_help": show_help,
         "serve_mode": serve_mode,
+        "app_mode": app_mode,
         "serve_host": serve_host,
         "serve_port": serve_port,
         "executable_name": executable_name,
@@ -524,6 +532,56 @@ def _apply_startup_model_override(
     return True, None
 
 
+def _hide_owned_console_window() -> None:
+    """Hide the console window when this process owns it (Windows only).
+
+    The GUI ``app`` mode ships in the same console-mode executable as the
+    terminal UI. When the executable is launched on its own (double-click
+    or shortcut) Windows allocates a console for it; we hide that console so
+    the GUI starts without a stray command window. When launched from an
+    existing terminal (more than one process attached to the console) we
+    leave it visible so we never hide the user's own shell.
+    """
+    if os.name != "nt":
+        return
+    try:
+        import ctypes
+
+        kernel32 = ctypes.windll.kernel32
+        user32 = ctypes.windll.user32
+        hwnd = kernel32.GetConsoleWindow()
+        if not hwnd:
+            return
+        process_list = (ctypes.c_uint * 8)()
+        attached = int(kernel32.GetConsoleProcessList(process_list, 8))
+        if attached <= 1:
+            user32.ShowWindow(hwnd, 0)  # SW_HIDE
+    except Exception:
+        pass
+
+
+def _launch_gui_app() -> int:
+    """Launch the desktop GUI host (which spawns the backend serve process).
+
+    The GUI host modules live under ``desktop/host``. In a frozen build they
+    are bundled as data under ``<_MEIPASS>/host`` (see build/pack.bat); in
+    development they are imported directly from the source tree.
+    """
+    _hide_owned_console_window()
+    if getattr(sys, "frozen", False):
+        host_dir = os.path.join(getattr(sys, "_MEIPASS", ""), "host")
+    else:
+        host_dir = str(project_root / "desktop" / "host")
+    if host_dir and host_dir not in sys.path:
+        sys.path.insert(0, host_dir)
+    try:
+        import codewoodw  # type: ignore
+    except Exception as exc:  # pragma: no cover - defensive
+        print(f"❌ Failed to launch the desktop GUI: {exc}")
+        return 1
+    return int(codewoodw.main() or 0)
+
+
 def main(argv: list[str] | None = None):
     """Main function."""
     restore_app_console_title()
@@ -553,6 +611,12 @@ def main(argv: list[str] | None = None):
         executable_name = str(cli_args.get("executable_name") or "python src/main.py").strip()
         print(_format_startup_help(executable_name=executable_name))
         return 0
+
+    # The GUI ``app`` command short-circuits before any config/model work:
+    # it only launches the desktop host, which spawns its own ``serve``
+    # backend process that performs the real configuration loading.
+    if isinstance(cli_args, dict) and bool(cli_args.get("app_mode", False)):
+        return _launch_gui_app()
 
     work_directory = None
     config = None

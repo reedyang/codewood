@@ -31,16 +31,15 @@ class BackendProcess:
         self.token: Optional[str] = None
 
     def _resolve(self) -> Tuple[List[str], str]:
-        """Return (command, cwd) for the backend depending on environment."""
+        """Return (command, cwd) for the backend depending on environment.
+
+        The GUI and the backend share a single executable. In a frozen
+        build the GUI re-launches itself with the ``serve`` command; in
+        development it launches ``python src/main.py serve``.
+        """
         if getattr(sys, "frozen", False):
-            exe_dir = Path(sys.executable).resolve().parent
-            name = "codewood.exe" if os.name == "nt" else "codewood"
-            backend = exe_dir / name
-            if not backend.exists():
-                raise BackendError(
-                    f"Backend executable not found next to the GUI: {backend}"
-                )
-            return [str(backend), "serve", "--port", "0"], str(exe_dir)
+            exe = Path(sys.executable).resolve()
+            return [str(exe), "serve", "--port", "0"], str(exe.parent)
 
         repo_root = Path(__file__).resolve().parents[2]
         main_py = repo_root / "src" / "main.py"

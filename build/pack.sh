@@ -24,15 +24,25 @@ fi
 PYINSTALLER="$VENV_DIR/bin/pyinstaller"
 [ -x "$PYINSTALLER" ] || PYINSTALLER="pyinstaller"
 
+# Build the desktop GUI frontend bundle first.
+( cd desktop/frontend && npm install && npm run build )
+
 # Source paths are relative to --specpath (build/codewood), matching pack.bat.
 # Unix uses ':' as the --add-data separator instead of ';'.
 # Note: ripgrep (rg) is NOT bundled on non-Windows; it is expected to be
 # installed system-wide (e.g. via the package manager) and found on PATH.
+# The single executable serves both the terminal UI and the desktop GUI
+# ("codewood app"); the GUI frontend bundle and pywebview host are included.
 ARGS=(
   --onefile --name codewood
   --add-data "../../skills:skills"
   --add-data "../../src:src"
-  --paths "../../$VENV_PATH"
+  --add-data "../../desktop/frontend/dist:frontend"
+  --add-data "../../desktop/host:host"
+  # pathex is resolved relative to the working dir (project root), unlike
+  # --add-data sources which are relative to --specpath; so no "../../".
+  --paths "$VENV_PATH"
+  --collect-all webview
   --specpath "build/codewood"
 )
 
@@ -44,3 +54,4 @@ fi
 "$PYINSTALLER" "${ARGS[@]}" "$ENTRY_SCRIPT"
 
 echo "Build completed. Executable is in the \"dist\" folder."
+echo "Run \"codewood\" for the terminal UI or \"codewood app\" for the desktop GUI."
