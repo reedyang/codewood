@@ -270,6 +270,7 @@ class Agent:
         )
         self._restore_active_chat_model()
 
+        bootstrap.setup_subagents(self)
         bootstrap.setup_prompt_and_mcp(self)
         bootstrap.setup_skills(self, builtin_skills_dir=builtin_skills_dir)
         bootstrap.setup_input_handler(
@@ -5683,6 +5684,9 @@ class Agent:
     def _tool_call_summary(self, tool_name: str, args: Dict[str, Any]) -> str:
         """Generate one-line tool execution summary."""
         a = args if isinstance(args, dict) else {}
+        if str(tool_name).strip().lower() == "run_subagent":
+            name = str(a.get("subagent") or "").strip() or "-"
+            return f"run_subagent (subagent={name})"
         if str(tool_name).strip().lower() == "apply_patch":
             p = str(a.get("path") or "").strip() or "-"
             patch_v = a.get("patch")
@@ -5877,12 +5881,21 @@ class Agent:
         if not isinstance(result, dict):
             return ""
         compact = dict(result)
-        for k in ("content", "output", "stderr", "analysis"):
+        # Sub-agent results carry a final answer in ``output`` that the main
+        # model must consume in full; never truncate that payload.
+        is_subagent_result = "subagent" in compact and "output" in compact
+        truncate_keys = ("content", "output", "stderr", "analysis")
+        if is_subagent_result:
+            truncate_keys = ("content", "stderr", "analysis")
+        for k in truncate_keys:
             if k in compact and isinstance(compact.get(k), str):
                 v = str(compact.get(k) or "")
                 if len(v) > 800:
                     compact[k] = v[:800] + " ...[truncated]"
         s = json.dumps(compact, ensure_ascii=False)
+        if is_subagent_result:
+            # Allow the full sub-agent output through the outer length cap too.
+            return s
         if len(s) > max_chars:
             s = s[:max_chars] + " ...[truncated]"
         return s

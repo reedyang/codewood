@@ -23,6 +23,10 @@ from ..core.config.skills_loader import (
     calc_skills_dirs_fingerprint,
     load_skills_merged,
 )
+from ..core.config.subagents_loader import (
+    calc_subagents_dirs_fingerprint,
+    load_subagents_merged,
+)
 from ..tooling.dispatcher import ToolDispatcher
 from ..tools.project_context_index import ProjectContextIndex
 
@@ -343,6 +347,23 @@ def setup_skills(agent: Any, builtin_skills_dir: Optional[str]) -> None:
     agent._active_skill_section = 0
     agent._active_skill_total_sections = 0
     agent._active_skill_chunked = False
+
+
+def setup_subagents(agent: Any) -> None:
+    """Load user-configured sub-agents (markdown + frontmatter)."""
+    language = getattr(agent, "display_language", "en") or "en"
+    agent.subagents = load_subagents_merged(
+        agent.config_dir,
+        agent.workspace_config_dir,
+        language=language,
+    )
+    agent._subagents_dirs_fingerprint = calc_subagents_dirs_fingerprint(
+        agent.config_dir,
+        agent.workspace_config_dir,
+    )
+    # Recursion guard: incremented while a sub-agent loop is running so nested
+    # ``run_subagent`` calls can be rejected.
+    agent._subagent_depth = 0
 
 
 def setup_input_handler(

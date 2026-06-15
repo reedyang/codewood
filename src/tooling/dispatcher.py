@@ -7,6 +7,7 @@ from .handlers.file_shell_handlers import dispatch_file_shell_tool
 from .handlers.mcp_handlers import dispatch_mcp_tool
 from .handlers.memory_handlers import dispatch_memory_tool
 from .handlers.agent_state_handlers import dispatch_agent_state_tool
+from .handlers.subagent_handlers import dispatch_subagent_tool
 
 
 class ToolDispatcher:
@@ -39,6 +40,10 @@ class ToolDispatcher:
         agent_state = dispatch_agent_state_tool(self._agent, action, args)
         if agent_state is not None:
             return agent_state
+
+        subagent = dispatch_subagent_tool(self._agent, action, args)
+        if subagent is not None:
+            return subagent
 
         return None
 

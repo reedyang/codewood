@@ -82,6 +82,41 @@ Code Wood follows the same layout as [Anthropic Agent Skills](https://github.com
 - The runtime injects the absolute skill bundle root and detected scripts into the system prompt
 - During startup, Code Wood scans and parses all available skills and uses them when a task matches a skill description
 
+### Sub-agents
+
+Sub-agents are user-configured helpers that run an isolated nested agentic loop with their own model, system instructions, and tool allowlist. The main model invokes a sub-agent automatically through a single `run_subagent` tool, based on each sub-agent's `description`, and the sub-agent's final text result is injected back into the main loop.
+
+Define sub-agents as Markdown files with YAML frontmatter, one per file:
+
+- User-level sub-agents live under `~/.codewood/subagents/<name>.md`
+- Workspace sub-agents live under `<workspace>/.codewood/subagents/<name>.md` (workspace overrides user-level by `name`)
+
+Frontmatter keys (the Markdown body is the sub-agent's independent system instructions):
+
+- `name` (required) — sub-agent id
+- `description` (required) — when-to-use text that drives the main model's auto-selection
+- `model` (optional) — a `provider:name` selector referencing `model_providers`; defaults to the main model
+- `tools` (optional) — allowlist of tool names; defaults to a core coding set (`shell`, `apply_patch`, `read_image`, `project_context_search`, `update_plan`, `request_skill_prompt`). An explicit empty list (`tools: []`) grants no tools. `run_subagent` is always excluded, so sub-agents cannot nest.
+- `max_rounds` (optional) — maximum tool-use rounds before the sub-agent must return (default 20)
+
+The `run_subagent` tool also accepts an optional `image` argument (a file path). The image is attached to and analyzed by the **sub-agent's own model**, not the main model — so a non-multimodal main model can delegate image understanding to a multimodal sub-agent. See `additional-subagents/image-analyzer.md` for a ready-made example that turns a UI mockup, screenshot, diagram, or chart into a structured description a coding model can act on.
+
+Example `~/.codewood/subagents/code-reviewer.md`:
+
+```markdown
+---
+name: code-reviewer
+description: Use to review a diff, file, or change for bugs, security issues, and style problems. Returns a concise findings list.
+model: openai:gpt-4o
+tools: [shell, project_context_search, read_image]
+max_rounds: 15
+---
+You are a meticulous senior code reviewer. Inspect the requested code using the
+available tools, then report concrete findings grouped by severity (blocker,
+major, minor) with file/line references and suggested fixes. Be concise and do
+not modify any files.
+```
+
 ### Built-In Commands vs Native Shell Commands
 
 - Built-in commands that do not go through AI must start with `/`, for example `/exit`, `/help`, `/clear screen`, `/clear context`, and `/free`
@@ -95,6 +130,7 @@ codewood/
 ├── src/                           # Core application code
 ├── skills/                        # Built-in Agent Skills
 ├── additional-skills/             # Extra skills; copy them into .codewood/skills if needed
+├── additional-subagents/          # Example sub-agents; copy them into .codewood/subagents if needed
 ├── docs/                          # Design and reference documentation
 ├── demo/                          # Demo assets
 ├── tests/                         # Test suite
