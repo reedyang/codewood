@@ -1,8 +1,44 @@
 ﻿import re
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from ..core.localization import translate
+
+# BOM signatures, checked longest-first so utf-32 is not misread as utf-16.
+# Each entry maps the leading bytes to the base codec used to decode/encode the
+# remaining content (the BOM itself is preserved separately).
+_BOM_SIGNATURES: List[Tuple[bytes, str]] = [
+    (b"\xff\xfe\x00\x00", "utf-32-le"),
+    (b"\x00\x00\xfe\xff", "utf-32-be"),
+    (b"\xef\xbb\xbf", "utf-8"),
+    (b"\xff\xfe", "utf-16-le"),
+    (b"\xfe\xff", "utf-16-be"),
+]
+
+# Candidate encodings tried (strict) for files without a BOM. ``latin1`` maps
+# every byte, so it is the final catch-all.
+_TEXT_DECODE_CANDIDATES: List[str] = ["utf-8", "gbk", "gb2312", "utf-16", "latin1"]
+
+
+def _read_text_preserving_encoding(abs_path: Path) -> Tuple[str, str, bytes]:
+    """Read a text file as ``(content_without_bom, base_codec, bom_bytes)``.
+
+    The encoding and any byte-order mark are detected so the file can later be
+    rewritten byte-for-byte in the same encoding. Decoding is attempted strictly
+    (so a non-UTF-8 file is not silently mojibake'd to UTF-8); only the final
+    fallback uses lossy replacement.
+    """
+    raw_bytes = abs_path.read_bytes()
+    for bom, codec in _BOM_SIGNATURES:
+        if raw_bytes.startswith(bom):
+            content = raw_bytes[len(bom):].decode(codec, errors="replace")
+            return content, codec, bom
+    for codec in _TEXT_DECODE_CANDIDATES:
+        try:
+            return raw_bytes.decode(codec), codec, b""
+        except UnicodeDecodeError:
+            continue
+    return raw_bytes.decode("utf-8", errors="replace"), "utf-8", b""
 
 
 def _normalize_apply_patch_text(raw_patch: str, file_path: str) -> tuple[str, List[str]]:
@@ -150,24 +186,25 @@ def action_apply_unified_patch(agent: Any, file_path: str, patch: str, confirmed
         )
         need_confirm = not skip_preview_and_confirm
 
-        encodings = ["utf-8", "gbk", "gb2312", "utf-16", "latin1"]
+        # New files are always created as UTF-8 without BOM and "\n" newlines.
+        # Existing files keep their original encoding, BOM, and newline style.
         source = ""
-        used_encoding = "utf-8"
+        base_codec = "utf-8"
+        bom_bytes = b""
         if file_exists:
-            loaded = False
-            for enc in encodings:
-                try:
-                    with open(abs_path, "r", encoding=enc, errors="replace") as f:
-                        source = f.read()
-                    used_encoding = enc
-                    loaded = True
-                    break
-                except Exception:
-                    continue
-            if not loaded:
+            try:
+                source, base_codec, bom_bytes = _read_text_preserving_encoding(abs_path)
+            except Exception:
                 return {"success": False, "error": "Unable to read text file; encoding may be unsupported"}
 
-        newline = "\r\n" if "\r\n" in source else "\n"
+        if not file_exists:
+            newline = "\n"
+        elif "\r\n" in source:
+            newline = "\r\n"
+        elif "\r" in source:
+            newline = "\r"
+        else:
+            newline = "\n"
         had_trailing_newline = (
             (source.endswith("\n") or source.endswith("\r"))
             if file_exists
@@ -305,8 +342,14 @@ def action_apply_unified_patch(agent: Any, file_path: str, patch: str, confirmed
             if not ok:
                 return {"success": False, "error": "Operation cancelled by user"}
         abs_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(abs_path, "w", encoding=used_encoding or "utf-8", errors="replace") as f:
-            f.write(new_text)
+        # Write raw bytes so the text-mode universal-newline translation does not
+        # rewrite "\n" to the OS separator. This keeps the chosen ``newline`` and
+        # encoding/BOM exactly as intended.
+        if file_exists:
+            data = bom_bytes + new_text.encode(base_codec or "utf-8", errors="replace")
+        else:
+            data = new_text.encode("utf-8", errors="replace")
+        abs_path.write_bytes(data)
         resolved = abs_path.resolve()
         agent._ai_created_path_keys.add(agent._ephemeral_path_key(resolved))
         agent._reload_skills_if_workspace_skill_changed([resolved])
