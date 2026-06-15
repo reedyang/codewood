@@ -43,6 +43,74 @@ python src/main.py --model <model name>
 python src/main.py -m <model name>
 ```
 
+## Desktop GUI
+
+Code Wood ships an optional desktop GUI under `desktop/`. It renders a
+TypeScript (React) UI inside the platform's default web engine
+(WebView2 on Windows) via [pywebview](https://pywebview.flowspace.dev/),
+and drives the existing agent through a headless backend "serve" mode
+over a localhost HTTP + Server-Sent-Events API.
+
+Features: AI chat with streaming output, all `/workspace` and `/chat`
+commands, light/dark themes, English / Simplified Chinese localization,
+and a settings screen (theme, language, model, execution policy).
+
+### Architecture
+
+- The GUI process (`codewoodw`) launches a separate backend process and
+  talks to it over `127.0.0.1` using a per-launch bearer token.
+- In a packaged build the GUI launches the sibling `codewood.exe serve`.
+  In development it launches `python src/main.py serve`.
+- The backend `serve` mode reuses the normal agent loop, so every GUI
+  action maps to the same logic the terminal uses.
+
+### Backend serve mode
+
+```bash
+# Headless server for the GUI (ephemeral port by default).
+python src/main.py serve
+python src/main.py serve --host 127.0.0.1 --port 8765
+```
+
+On startup it prints a single JSON handshake line
+(`{"port": ..., "token": ...}`) on stdout that the GUI reads to connect.
+
+### Develop the GUI
+
+```bash
+# 1. Install host dependencies (pywebview, pyinstaller)
+pip install -r desktop/host/requirements.txt
+
+# 2. Install and build the frontend (or run the Vite dev server)
+cd desktop/frontend
+npm install
+npm run build           # produces desktop/frontend/dist used by the host
+
+# 3. Launch the GUI (spawns "python src/main.py serve" automatically)
+cd ../..
+python desktop/host/codewoodw.py
+```
+
+For live frontend development, run `npm run dev` in `desktop/frontend`
+and point the host at it with the `CODEWOOD_GUI_URL` environment
+variable (for example `http://localhost:5173`) before launching
+`desktop/host/codewoodw.py`.
+
+### Package the GUI
+
+```bash
+# Windows: builds the frontend, then dist\codewoodw.exe
+desktop\build\pack-gui.bat
+
+# Linux/macOS
+bash desktop/build/pack-gui.sh
+```
+
+The packaged `codewoodw.exe` does **not** bundle `codewood.exe`. Place
+`codewoodw.exe` next to `codewood.exe` (build the backend with
+`build/pack.bat`); at runtime the GUI starts the backend from the same
+folder.
+
 ## AI Features
 
 ### Execution Policy
@@ -128,6 +196,11 @@ not modify any files.
 ```text
 codewood/
 ├── src/                           # Core application code
+├── src/server/                    # Headless serve mode (HTTP + SSE) for the GUI
+├── desktop/                       # Desktop GUI (TypeScript UI + pywebview host)
+│   ├── frontend/                  # Vite + React + TypeScript UI
+│   ├── host/                      # pywebview host packaged to codewoodw.exe
+│   └── build/                     # GUI packaging scripts
 ├── skills/                        # Built-in Agent Skills
 ├── additional-skills/             # Extra skills; copy them into .codewood/skills if needed
 ├── additional-subagents/          # Example sub-agents; copy them into .codewood/subagents if needed

@@ -61,6 +61,7 @@ def _format_startup_help(executable_name: str = "python src/main.py") -> str:
         "\n"
         "Commands:\n"
         f"  exec                       Run {get_app_name()} and execute your prompt non-interactively, then exit\n"
+        f"  serve                      Run {get_app_name()} as a headless localhost server for the desktop GUI\n"
         "\n"
         "Arguments:\n"
         "  [PROMPT]                   Prompt text used by the exec command\n"
@@ -68,6 +69,8 @@ def _format_startup_help(executable_name: str = "python src/main.py") -> str:
         "Options:\n"
         "  -w, --workspace <WORKSPACE>  Workspace name or path to enter on startup\n"
         "  -m, --model <MODEL>          Select startup model (for example: openai:gpt-4o-mini)\n"
+        "      --host <HOST>            Bind host for serve mode (default: 127.0.0.1)\n"
+        "      --port <PORT>            Bind port for serve mode (default: 0 = ephemeral)\n"
         f"  -h, --help                   Print help for {get_app_name()} and exit\n"
     )
 
@@ -99,6 +102,9 @@ def _parse_startup_cli_args(argv: list[str]) -> tuple[dict[str, Any] | None, str
             "exec_task": None,
             "model_selector": None,
             "show_help": False,
+            "serve_mode": False,
+            "serve_host": "127.0.0.1",
+            "serve_port": 0,
             "executable_name": executable_name,
         }, None
 
@@ -106,6 +112,8 @@ def _parse_startup_cli_args(argv: list[str]) -> tuple[dict[str, Any] | None, str
     exec_task: str | None = None
     model_selector: str | None = None
     show_help = False
+    serve_host = "127.0.0.1"
+    serve_port = 0
     positionals: list[str] = []
 
     idx = 0
@@ -131,14 +139,37 @@ def _parse_startup_cli_args(argv: list[str]) -> tuple[dict[str, Any] | None, str
                 return None, "❌ Workspace cannot be empty.\n" + usage_text
             idx += 2
             continue
+        if token == "--host":
+            if idx + 1 >= len(filtered_argv):
+                return None, "❌ Missing value for --host.\n" + usage_text
+            serve_host = str(filtered_argv[idx + 1] or "").strip() or "127.0.0.1"
+            idx += 2
+            continue
+        if token == "--port":
+            if idx + 1 >= len(filtered_argv):
+                return None, "❌ Missing value for --port.\n" + usage_text
+            raw_port = str(filtered_argv[idx + 1] or "").strip()
+            try:
+                serve_port = int(raw_port)
+            except ValueError:
+                return None, "❌ Port must be an integer.\n" + usage_text
+            if serve_port < 0 or serve_port > 65535:
+                return None, "❌ Port must be between 0 and 65535.\n" + usage_text
+            idx += 2
+            continue
         positionals.append(token)
         idx += 1
 
+    serve_mode = False
     if positionals:
         if positionals[0] == "exec":
             if len(positionals) < 2:
                 return None, "❌ Missing task text after exec.\n" + usage_text
             exec_task = " ".join(positionals[1:]).strip()
+        elif positionals[0] == "serve":
+            if len(positionals) > 1:
+                return None, "❌ The serve command takes no positional arguments.\n" + usage_text
+            serve_mode = True
         else:
             return None, "❌ Unsupported arguments.\n" + usage_text
 
@@ -150,6 +181,9 @@ def _parse_startup_cli_args(argv: list[str]) -> tuple[dict[str, Any] | None, str
         "exec_task": exec_task,
         "model_selector": model_selector,
         "show_help": show_help,
+        "serve_mode": serve_mode,
+        "serve_host": serve_host,
+        "serve_port": serve_port,
         "executable_name": executable_name,
     }, None
 
@@ -638,6 +672,12 @@ def main(argv: list[str] | None = None):
             print(text("main.startup_model_override_failed", ui_language) if not model_error else str(model_error))
             return 1
         _set_basic_chat_only_context_prompt_warning_for_agent(agent)
+        if isinstance(cli_args, dict) and bool(cli_args.get("serve_mode", False)):
+            from src.server.serve_app import ServeApp
+
+            serve_host = str(cli_args.get("serve_host") or "127.0.0.1")
+            serve_port = int(cli_args.get("serve_port") or 0)
+            return ServeApp(agent).run(host=serve_host, port=serve_port)
         if exec_task:
             agent._queued_user_input = exec_task
             agent._startup_exec_turn_pending = True

@@ -1,0 +1,6 @@
+# Desktop GUI host dependencies.
+# pywebview uses the platform default engine (WebView2/EdgeChromium on
+# Windows 10/11, which ships with the OS). On Windows it pulls in
+# pythonnet automatically for the EdgeChromium backend.
+pywebview>=5.0
+pyinstaller>=6.0
