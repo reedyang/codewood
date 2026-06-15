@@ -1633,6 +1633,7 @@ class Agent:
             blocks,
             labels=self._transcript_view_labels(),
             width_provider=self._terminal_columns_for_line_estimate,
+            blocks_provider=self._build_transcript_blocks,
         )
         if not isinstance(result, dict):
             return

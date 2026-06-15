@@ -57,6 +57,7 @@ class TranscriptView:
         *,
         labels: Optional[Dict[str, str]] = None,
         width_provider: Optional[Callable[[], int]] = None,
+        blocks_provider: Optional[Callable[[], List[Dict[str, Any]]]] = None,
     ) -> None:
         self._labels = dict(_DEFAULT_HELP)
         if labels:
@@ -64,7 +65,29 @@ class TranscriptView:
                 if value:
                     self._labels[str(key)] = str(value)
         self._width_provider = width_provider
+        # Rebuilds blocks (re-wrapped to the current terminal width) so the
+        # transcript can reflow on a window resize.
+        self._blocks_provider = blocks_provider
 
+        # Top visible line index. Default to the latest content (bottom).
+        self.top = 0
+        # Currently highlighted navigable block id (or None).
+        self.selected_block_id: Optional[int] = None
+        self._result: Optional[Dict[str, Any]] = None
+        self._last_height = 1
+        # Stick to the latest message until the user scrolls. The true terminal
+        # size is only known once the application is running, so the bottom is
+        # re-pinned on the first real render to avoid clipping the last lines.
+        self._follow_bottom = True
+        self._body_window = None
+        # Terminal width the current ``lines`` were wrapped to; -1 forces a
+        # reflow check on the first render.
+        self._last_render_width = -1
+
+        self._load_blocks(blocks)
+
+    def _load_blocks(self, blocks: List[Dict[str, Any]]) -> None:
+        """Flatten blocks into display lines, tracking block/nav metadata."""
         # Flatten blocks into individual display lines while tracking which
         # block (and which navigable user message) each line belongs to.
         self.lines: List[str] = []
@@ -75,7 +98,8 @@ class TranscriptView:
         # user_index (1-based) -> block id
         self.nav_user_index: Dict[int, int] = {}
 
-        for block_id, block in enumerate(blocks or []):
+        blocks = list(blocks or [])
+        for block_id, block in enumerate(blocks):
             raw_lines = list(block.get("lines") or [])
             if not raw_lines:
                 raw_lines = [""]
@@ -94,17 +118,72 @@ class TranscriptView:
                 self.line_block.append(-1)
 
         self.total_lines = len(self.lines)
-        # Top visible line index. Default to the latest content (bottom).
-        self.top = 0
-        # Currently highlighted navigable block id (or None).
-        self.selected_block_id: Optional[int] = None
-        self._result: Optional[Dict[str, Any]] = None
-        self._last_height = 1
-        # Stick to the latest message until the user scrolls. The true terminal
-        # size is only known once the application is running, so the bottom is
-        # re-pinned on the first real render to avoid clipping the last lines.
-        self._follow_bottom = True
-        self._body_window = None
+
+    def _maybe_reflow(self) -> None:
+        """Rebuild the wrapped lines when the terminal width changed.
+
+        Keeps the transcript adapting to window resizes: the block text is
+        re-wrapped to the new width while preserving the user's selection and
+        approximate scroll position.
+        """
+        width = self._term_width()
+        if width == self._last_render_width:
+            return
+        # First render (no real size yet) just records the width.
+        if self._last_render_width < 0 or not callable(self._blocks_provider):
+            self._last_render_width = width
+            return
+
+        # Remember an anchor for restoring the scroll position after reflow.
+        # Pin the line currently at the top of the viewport: record its block
+        # and the offset within that block so the same text stays on top after
+        # the content is re-wrapped (rather than jumping to the block start).
+        anchor_block: Optional[int] = None
+        anchor_offset = 0
+        if 0 <= self.top < len(self.line_block):
+            anchor_block = self.line_block[self.top]
+            # A spacer line (block id -1) is not anchorable on its own; pin to
+            # the next real block instead.
+            if anchor_block is not None and anchor_block < 0:
+                for li in range(self.top + 1, len(self.line_block)):
+                    if self.line_block[li] >= 0:
+                        anchor_block = self.line_block[li]
+                        break
+            if anchor_block is not None and anchor_block >= 0:
+                first = self.block_first_line.get(anchor_block, self.top)
+                anchor_offset = max(0, self.top - first)
+
+        try:
+            new_blocks = self._blocks_provider()
+        except Exception:
+            new_blocks = None
+        if new_blocks:
+            self._load_blocks(new_blocks)
+        self._last_render_width = width
+
+        if self._follow_bottom:
+            self.top = self._max_top()
+        elif self.selected_block_id is not None:
+            self._scroll_block_into_view(self.selected_block_id)
+        elif anchor_block is not None and anchor_block >= 0:
+            first = self.block_first_line.get(anchor_block)
+            if first is not None:
+                block_len = self._block_line_count(anchor_block)
+                offset = min(anchor_offset, max(0, block_len - 1))
+                self.top = first + offset
+        self._clamp_top()
+
+    def _block_line_count(self, block_id: int) -> int:
+        """Number of display lines belonging to ``block_id``."""
+        first = self.block_first_line.get(block_id)
+        if first is None:
+            return 0
+        count = 0
+        for li in range(first, len(self.line_block)):
+            if self.line_block[li] != block_id:
+                break
+            count += 1
+        return count
 
     # ----------------------------------------------------------------- helpers
     def _term_width(self) -> int:
@@ -233,6 +312,7 @@ class TranscriptView:
         ]
 
     def _body_fragments(self):
+        self._maybe_reflow()
         if self._follow_bottom:
             self.top = self._max_top()
         self._clamp_top()
@@ -406,11 +486,15 @@ def run_transcript_view(
     *,
     labels: Optional[Dict[str, str]] = None,
     width_provider: Optional[Callable[[], int]] = None,
+    blocks_provider: Optional[Callable[[], List[Dict[str, Any]]]] = None,
 ) -> Optional[Dict[str, Any]]:
     """Run the transcript view and return the chosen action (or ``None``)."""
     try:
         view = TranscriptView(
-            blocks, labels=labels, width_provider=width_provider
+            blocks,
+            labels=labels,
+            width_provider=width_provider,
+            blocks_provider=blocks_provider,
         )
         return view.run()
     except Exception:
