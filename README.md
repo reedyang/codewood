@@ -45,22 +45,37 @@ python src/main.py -m <model name>
 
 ## Desktop GUI
 
-Code Wood ships an optional desktop GUI under `desktop/`. It renders a
-TypeScript (React) UI inside the platform's default web engine
-(WebView2 on Windows) via [pywebview](https://pywebview.flowspace.dev/),
-and drives the existing agent through a headless backend "serve" mode
-over a localhost HTTP + Server-Sent-Events API.
+Code Wood ships a desktop GUI under `desktop/`. The terminal UI and the
+GUI share the **same entry point and the same executable**: run Code Wood
+normally for the terminal UI, or pass the `app` command to open the GUI.
+The GUI renders a TypeScript (React) UI inside the platform's default web
+engine (WebView2 on Windows) via
+[pywebview](https://pywebview.flowspace.dev/), and drives the existing
+agent through a headless backend "serve" mode over a localhost HTTP +
+Server-Sent-Events API.
 
 Features: AI chat with streaming output, all `/workspace` and `/chat`
 commands, light/dark themes, English / Simplified Chinese localization,
 and a settings screen (theme, language, model, execution policy).
 
+### Launch the GUI
+
+```bash
+# Development
+python src/main.py app
+
+# Packaged build
+codewood app
+```
+
+Launching `app` opens the desktop window without a console window. The GUI
+process spawns the backend by re-launching the same executable in `serve`
+mode (development: `python src/main.py serve`).
+
 ### Architecture
 
-- The GUI process (`codewoodw`) launches a separate backend process and
-  talks to it over `127.0.0.1` using a per-launch bearer token.
-- In a packaged build the GUI launches the sibling `codewood.exe serve`.
-  In development it launches `python src/main.py serve`.
+- The GUI process launches a backend process and talks to it over
+  `127.0.0.1` using a per-launch bearer token.
 - The backend `serve` mode reuses the normal agent loop, so every GUI
   action maps to the same logic the terminal uses.
 
@@ -78,38 +93,39 @@ On startup it prints a single JSON handshake line
 ### Develop the GUI
 
 ```bash
-# 1. Install host dependencies (pywebview, pyinstaller)
-pip install -r desktop/host/requirements.txt
+# 1. Install dependencies (includes pywebview for the GUI)
+pip install -r requirements.txt
 
 # 2. Install and build the frontend (or run the Vite dev server)
 cd desktop/frontend
 npm install
 npm run build           # produces desktop/frontend/dist used by the host
 
-# 3. Launch the GUI (spawns "python src/main.py serve" automatically)
+# 3. Launch the GUI
 cd ../..
-python desktop/host/codewoodw.py
+python src/main.py app
 ```
 
 For live frontend development, run `npm run dev` in `desktop/frontend`
 and point the host at it with the `CODEWOOD_GUI_URL` environment
 variable (for example `http://localhost:5173`) before launching
-`desktop/host/codewoodw.py`.
+`python src/main.py app`.
 
-### Package the GUI
+### Package
+
+The GUI is bundled into the single executable by the standard build
+scripts (the frontend is built automatically):
 
 ```bash
-# Windows: builds the frontend, then dist\codewoodw.exe
-desktop\build\pack-gui.bat
+# Windows
+build\pack.bat
 
 # Linux/macOS
-bash desktop/build/pack-gui.sh
+bash build/pack.sh
 ```
 
-The packaged `codewoodw.exe` does **not** bundle `codewood.exe`. Place
-`codewoodw.exe` next to `codewood.exe` (build the backend with
-`build/pack.bat`); at runtime the GUI starts the backend from the same
-folder.
+The resulting `codewood` executable runs the terminal UI by default and
+the desktop GUI when invoked as `codewood app`.
 
 ## AI Features
 
@@ -199,8 +215,7 @@ codewood/
 ├── src/server/                    # Headless serve mode (HTTP + SSE) for the GUI
 ├── desktop/                       # Desktop GUI (TypeScript UI + pywebview host)
 │   ├── frontend/                  # Vite + React + TypeScript UI
-│   ├── host/                      # pywebview host packaged to codewoodw.exe
-│   └── build/                     # GUI packaging scripts
+│   └── host/                      # pywebview host (launched via "codewood app")
 ├── skills/                        # Built-in Agent Skills
 ├── additional-skills/             # Extra skills; copy them into .codewood/skills if needed
 ├── additional-subagents/          # Example sub-agents; copy them into .codewood/subagents if needed
