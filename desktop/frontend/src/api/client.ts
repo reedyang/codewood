@@ -1,4 +1,4 @@
-import type { AppState, ServerEvent } from "./types";
+import type { AppState, ServerEvent, WorkspaceChatSummary } from "./types";
 
 /**
  * Thin client for the Code Wood backend serve API.
@@ -61,6 +61,41 @@ export class ApiClient {
       headers: this.headers(),
       body: "{}",
     });
+  }
+
+  /** List chats for any workspace by id (without switching to it). */
+  async listWorkspaceChats(id: string): Promise<WorkspaceChatSummary[]> {
+    const res = await fetch(
+      `${this.base}/workspace-chats?id=${encodeURIComponent(id)}`,
+      { headers: this.headers() },
+    );
+    if (!res.ok) {
+      return [];
+    }
+    try {
+      const data = (await res.json()) as { chats?: WorkspaceChatSummary[] };
+      return Array.isArray(data.chats) ? data.chats : [];
+    } catch {
+      return [];
+    }
+  }
+
+  /** Ask the backend to open a workspace's root in the OS file manager. */
+  async openWorkspaceInExplorer(id: string): Promise<boolean> {
+    const res = await fetch(`${this.base}/open-workspace`, {
+      method: "POST",
+      headers: this.headers(),
+      body: JSON.stringify({ id }),
+    });
+    if (!res.ok) {
+      return false;
+    }
+    try {
+      const data = (await res.json()) as { ok?: boolean };
+      return Boolean(data.ok);
+    } catch {
+      return false;
+    }
   }
 
   connectEvents(onEvent: (event: ServerEvent) => void): EventSource {

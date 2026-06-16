@@ -1,56 +1,72 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { AppProvider, useApp } from "./state/AppContext";
+import { Sidebar } from "./components/Sidebar";
 import { ChatView } from "./components/ChatView";
-import { ChatList } from "./components/ChatList";
-import { WorkspacePanel } from "./components/WorkspacePanel";
 import { SettingsDialog } from "./components/SettingsDialog";
+import { AboutDialog } from "./components/AboutDialog";
 import { ConfirmDialog } from "./components/ConfirmDialog";
-
-type Tab = "chat" | "workspace";
+import { Icon } from "./components/Icon";
 
 function Shell() {
-  const { state, connected, t } = useApp();
-  const [tab, setTab] = useState<Tab>("chat");
-  const [settingsOpen, setSettingsOpen] = useState(false);
+  const {
+    t,
+    settingsOpen,
+    closeSettings,
+    openSettings,
+    aboutOpen,
+    closeAbout,
+    clearTurns,
+    runCommand,
+  } = useApp();
+  const [collapsed, setCollapsed] = useState(false);
+
+  // JS-accessible shortcuts (the native menu shows the same accelerators).
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!(e.ctrlKey || e.metaKey)) {
+        return;
+      }
+      const key = e.key.toLowerCase();
+      if (key === "n") {
+        e.preventDefault();
+        clearTurns();
+        void runCommand("/chat new");
+      } else if (key === ",") {
+        e.preventDefault();
+        openSettings();
+      } else if (key === "w") {
+        e.preventDefault();
+        window.close();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [clearTurns, runCommand, openSettings]);
 
   return (
-    <div className="app-shell">
-      <aside className="sidebar">
-        <div className="brand">
-          <div className="brand-name">{state?.app.name ?? "Code Wood"}</div>
-          <div className="brand-sub">{t("app.subtitle")}</div>
-        </div>
-        <nav className="nav">
-          <button className={`nav-item ${tab === "chat" ? "nav-active" : ""}`} onClick={() => setTab("chat")}>
-            {t("nav.chat")}
-          </button>
-          <button
-            className={`nav-item ${tab === "workspace" ? "nav-active" : ""}`}
-            onClick={() => setTab("workspace")}
-          >
-            {t("nav.workspace")}
-          </button>
-        </nav>
-        <div className="sidebar-footer">
-          <div className={`status-dot ${connected ? "online" : "offline"}`} />
-          <button className="btn btn-small" onClick={() => setSettingsOpen(true)}>
-            {t("nav.settings")}
-          </button>
-        </div>
-      </aside>
-
+    <div className={`app-shell ${collapsed ? "sidebar-collapsed" : ""}`}>
+      {!collapsed && (
+        <Sidebar
+          onOpenSettings={openSettings}
+          onTogglePanel={() => setCollapsed(true)}
+        />
+      )}
       <main className="main">
-        {tab === "chat" ? (
-          <div className="chat-layout">
-            <ChatList />
-            <ChatView />
-          </div>
-        ) : (
-          <WorkspacePanel />
+        {collapsed && (
+          <button
+            className="panel-toggle-float"
+            aria-label={t("panel.toggle")}
+            title={t("panel.toggle")}
+            onClick={() => setCollapsed(false)}
+          >
+            <Icon name="panel" size={18} />
+          </button>
         )}
+        <ChatView />
       </main>
 
-      {settingsOpen && <SettingsDialog onClose={() => setSettingsOpen(false)} />}
+      {settingsOpen && <SettingsDialog onClose={closeSettings} />}
+      {aboutOpen && <AboutDialog onClose={closeAbout} />}
       <ConfirmDialog />
     </div>
   );

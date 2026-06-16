@@ -20,9 +20,11 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import queue
 import re
 import secrets
+import subprocess
 import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -44,6 +46,66 @@ def strip_ansi(text: str) -> str:
     if not text:
         return ""
     return _ANSI_RE.sub("", text)
+
+
+def _open_in_file_manager(path: str) -> bool:
+    """Open a validated directory in the OS file manager (no shell).
+
+    ``path`` must already resolve to an existing directory; the caller is
+    responsible for mapping a trusted id to this root.
+    """
+    try:
+        target = os.path.realpath(str(path))
+    except Exception:
+        return False
+    if not target or not os.path.isdir(target):
+        return False
+    try:
+        if sys.platform.startswith("win"):
+            os.startfile(target)  # type: ignore[attr-defined]  # noqa: S606
+        elif sys.platform == "darwin":
+            subprocess.Popen(["open", target], close_fds=True)
+        else:
+            subprocess.Popen(["xdg-open", target], close_fds=True)
+        return True
+    except Exception:
+        return False
+
+
+def _read_workspace_chat_index(storage_dir: Any) -> List[Dict[str, Any]]:
+    """Read chat summaries from a workspace's on-disk chat index.
+
+    Returns ``[{id, name, updatedAt}]`` (possibly empty). The path is derived
+    from trusted agent state, not from any client input.
+    """
+    from ..agent import CHAT_STATE_FILE
+
+    out: List[Dict[str, Any]] = []
+    try:
+        index_path = os.path.join(str(storage_dir), "chats", CHAT_STATE_FILE)
+        if not os.path.isfile(index_path):
+            return out
+        with open(index_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception:
+        return out
+    chats = data.get("chats") if isinstance(data, dict) else None
+    if not isinstance(chats, list):
+        return out
+    for c in chats:
+        if not isinstance(c, dict):
+            continue
+        cid = str(c.get("id") or "")
+        if not cid:
+            continue
+        out.append(
+            {
+                "id": cid,
+                "name": str(c.get("name") or ""),
+                "updatedAt": str(c.get("updated_at") or ""),
+            }
+        )
+    return out
 
 
 class _Broadcaster:
@@ -87,6 +149,13 @@ class _OutputBridge(io.TextIOBase):
 
     def __init__(self, broadcaster: _Broadcaster) -> None:
         self._broadcaster = broadcaster
+        # Event name used for subsequent writes. The agent loop flips this to
+        # "assistant" while streaming the final reply (via the GUI hooks) so
+        # the GUI can render the answer separately from intermediate steps.
+        self._tag = "output"
+
+    def set_tag(self, tag: str) -> None:
+        self._tag = str(tag or "output")
 
     def write(self, s: Any) -> int:  # type: ignore[override]
         if s is None:
@@ -96,7 +165,7 @@ class _OutputBridge(io.TextIOBase):
             return 0
         cleaned = strip_ansi(text)
         if cleaned:
-            self._broadcaster.publish("output", {"text": cleaned})
+            self._broadcaster.publish(self._tag, {"text": cleaned})
         return len(text)
 
     def writable(self) -> bool:  # type: ignore[override]
@@ -114,6 +183,15 @@ def _build_state(agent: Any) -> Dict[str, Any]:
     from ..config.app_info import get_app_name, get_app_version
     from ..core.localization import get_display_language
 
+    default_ws_id = ""
+    try:
+        default_ws_id = str(
+            getattr(getattr(agent, "_workspace_state_manager", None), "_default_workspace_id", "")
+            or ""
+        )
+    except Exception:
+        default_ws_id = ""
+
     workspaces: List[Dict[str, Any]] = []
     try:
         raw = agent._workspaces_state.get("workspaces", {})
@@ -126,12 +204,18 @@ def _build_state(agent: Any) -> Dict[str, Any]:
                     root = str(agent._workspace_root_path(entry))
                 except Exception:
                     root = str(entry.get("root") or "")
+                ws_id = str(entry.get("id") or "")
+                is_default = (
+                    str(entry.get("kind") or "").lower() == "default"
+                    or (bool(default_ws_id) and ws_id == default_ws_id)
+                )
                 workspaces.append(
                     {
-                        "id": str(entry.get("id") or ""),
+                        "id": ws_id,
                         "name": str(entry.get("name") or ""),
                         "root": root,
-                        "active": str(entry.get("id") or "") == active_ws_id,
+                        "active": ws_id == active_ws_id,
+                        "isDefault": is_default,
                     }
                 )
     except Exception:
@@ -149,6 +233,7 @@ def _build_state(agent: Any) -> Dict[str, Any]:
                     "id": str(c.get("id") or ""),
                     "name": str(c.get("name") or ""),
                     "messageCount": len(c.get("messages") or []),
+                    "updatedAt": str(c.get("updated_at") or ""),
                     "active": str(c.get("id") or "") == active_chat_id,
                 }
             )
@@ -260,6 +345,87 @@ class ServeApp:
     def state(self) -> Dict[str, Any]:
         return _build_state(self.agent)
 
+    def _resolve_workspace_root(self, ws_id: str) -> Optional[str]:
+        """Map a workspace id to its on-disk root using agent state only.
+
+        The client never supplies a path; only an id that must match a known
+        workspace, preventing arbitrary-path disclosure/open.
+        """
+        ws_id = str(ws_id or "").strip()
+        if not ws_id:
+            return None
+        agent = self.agent
+        try:
+            raw = agent._workspaces_state.get("workspaces", {})
+        except Exception:
+            raw = None
+        if isinstance(raw, dict):
+            for entry in raw.values():
+                if not isinstance(entry, dict):
+                    continue
+                if str(entry.get("id") or "") != ws_id:
+                    continue
+                try:
+                    root = str(agent._workspace_root_path(entry))
+                except Exception:
+                    root = str(entry.get("root") or "")
+                return root or None
+        if str(getattr(agent, "workspace_id", "") or "") == ws_id:
+            return str(getattr(agent, "workspace_root", "") or "") or None
+        return None
+
+    def open_workspace(self, ws_id: str) -> bool:
+        root = self._resolve_workspace_root(ws_id)
+        if not root:
+            return False
+        return _open_in_file_manager(root)
+
+    def list_workspace_chats(self, ws_id: str) -> Optional[List[Dict[str, Any]]]:
+        """List chats for a workspace by id without switching to it.
+
+        The active workspace uses the fresher in-memory entries; other
+        workspaces are read from their on-disk chat index. The id must match a
+        known workspace; raw paths are never accepted.
+        """
+        ws_id = str(ws_id or "").strip()
+        if not ws_id:
+            return None
+        agent = self.agent
+        if str(getattr(agent, "workspace_id", "") or "") == ws_id:
+            out: List[Dict[str, Any]] = []
+            try:
+                for c in agent._chat_entries():
+                    if not isinstance(c, dict):
+                        continue
+                    out.append(
+                        {
+                            "id": str(c.get("id") or ""),
+                            "name": str(c.get("name") or ""),
+                            "updatedAt": str(c.get("updated_at") or ""),
+                        }
+                    )
+            except Exception:
+                return []
+            return out
+
+        try:
+            raw = agent._workspaces_state.get("workspaces", {})
+        except Exception:
+            raw = None
+        if not isinstance(raw, dict):
+            return None
+        for entry in raw.values():
+            if not isinstance(entry, dict):
+                continue
+            if str(entry.get("id") or "") != ws_id:
+                continue
+            try:
+                storage = agent._workspace_storage_path(entry)
+            except Exception:
+                return []
+            return _read_workspace_chat_index(storage)
+        return None
+
     def request_shutdown(self) -> None:
         self._shutdown_event.set()
         self._input_queue.put(None)
@@ -295,6 +461,12 @@ class ServeApp:
         self.agent._suspended_input = self._confirm_provider  # type: ignore[assignment]
 
         bridge = _OutputBridge(self.broadcaster)
+        # GUI streaming mode: the runtime emits clean append-only deltas and
+        # brackets the assistant reply with these hooks so the bridge can tag
+        # those writes as "assistant" (vs "output" steps).
+        self.agent._gui_plain_stream = True  # type: ignore[attr-defined]
+        self.agent._gui_assistant_begin = lambda: bridge.set_tag("assistant")  # type: ignore[attr-defined]
+        self.agent._gui_assistant_end = lambda: bridge.set_tag("output")  # type: ignore[attr-defined]
         prev_stdout, prev_stderr = sys.stdout, sys.stderr
         sys.stdout = bridge
         sys.stderr = bridge
@@ -429,6 +601,17 @@ def _make_handler(app: ServeApp):
             if path == "/state":
                 self._send_json(200, app.state())
                 return
+            if path == "/workspace-chats":
+                ws_id = ""
+                values = query.get("id") or []
+                if values:
+                    ws_id = str(values[0])[:256]
+                result = app.list_workspace_chats(ws_id)
+                if result is None:
+                    self._send_json(404, {"error": "not found"})
+                else:
+                    self._send_json(200, {"chats": result})
+                return
             if path == "/events":
                 self._stream_events()
                 return
@@ -461,6 +644,11 @@ def _make_handler(app: ServeApp):
             if path == "/interrupt":
                 app.interrupt()
                 self._send_json(200, {"ok": True})
+                return
+            if path == "/open-workspace":
+                ws_id = str(body.get("id") or "")[:256]
+                ok = app.open_workspace(ws_id)
+                self._send_json(200 if ok else 404, {"ok": ok})
                 return
             if path == "/shutdown":
                 self._send_json(200, {"ok": True})
