@@ -12,12 +12,48 @@ rem two processes (app + serve backend) and the terminal UI uses one.
 
 set ENTRY_SCRIPT=src\main.py
 
+rem ---- Prepare the Python virtual environment so all build/runtime
+rem ---- dependencies (PyInstaller, pywebview, ...) are ready before packaging.
+rem ---- Mirrors bin\codewood.bat: create .venv-windows if missing, then
+rem ---- install requirements.txt into it.
+set VENV_DIR=.venv-windows
+set VENV_PYTHON=%VENV_DIR%\Scripts\python.exe
+set REQ_FILE=requirements.txt
+
+if exist "%VENV_DIR%\Scripts\activate.bat" goto venv_ready
+
+echo Virtual environment not found. Creating "%VENV_DIR%"...
+set PY_BOOTSTRAP=
+where python >nul 2>nul && set PY_BOOTSTRAP=python
+if not defined PY_BOOTSTRAP where py >nul 2>nul && set PY_BOOTSTRAP=py
+if not defined PY_BOOTSTRAP (
+  echo Python executable not found. Please install Python or add it to PATH.
+  exit /b 9009
+)
+%PY_BOOTSTRAP% -m venv "%VENV_DIR%"
+if errorlevel 1 (
+  echo Failed to create virtual environment.
+  exit /b 1
+)
+
+:venv_ready
+if not exist "%REQ_FILE%" (
+  echo Requirements file not found: "%REQ_FILE%"
+  exit /b 1
+)
+echo Installing/updating dependencies from "%REQ_FILE%"...
+"%VENV_PYTHON%" -m pip install -r "%REQ_FILE%"
+if errorlevel 1 (
+  echo Failed to install dependencies.
+  exit /b 1
+)
+
 rem Include required resources: rg.exe, skills, src resources, and the
 rem desktop GUI (frontend bundle + pywebview host modules).
 rem Using multiple --add-data flags (Windows uses ';' as separator)
 rem Include virtual environment packages from .venv-windows
 rem PyInstaller will search this path for modules
-set VENV_PATH=.venv-windows\Lib\site-packages
+set VENV_PATH=%VENV_DIR%\Lib\site-packages
 
 rem Build the desktop GUI frontend bundle first (run from project root).
 pushd desktop\frontend
@@ -45,7 +81,7 @@ rem directory (the project root here), unlike --add-data sources which are
 rem resolved relative to --specpath. So the venv path must NOT use "../../".
 rem 1) codewood.exe (console, one-dir) carries ALL terminal-UI and GUI
 rem    functionality. Output: dist\codewood\codewood.exe (+ _internal\).
-"%PYINSTALLER%" --onedir --name codewood ^
+"%PYINSTALLER%" --onedir --noconfirm --name codewood ^
   --icon "../../build/app_icon.ico" ^
   --add-data "../../vendors/rg.exe;bin" ^
   --add-data "../../skills;skills" ^
@@ -69,7 +105,7 @@ rem standard library (no pywebview / prompt_toolkit / etc.) and simply starts
 rem "codewood app" with no console window, so a double-click opens the GUI
 rem without flashing a terminal window. It is emitted INTO the codewood
 rem one-dir folder so it sits next to codewood.exe (single shippable folder).
-"%PYINSTALLER%" --onefile --noconsole --name codewood-gui ^
+"%PYINSTALLER%" --onefile --noconfirm --noconsole --name codewood-gui ^
   --icon "../../build/app_icon.ico" ^
   --distpath "dist\\codewood" ^
   --specpath "build\\codewood-gui" ^
@@ -82,4 +118,3 @@ if errorlevel 1 (
 echo Build completed. The shippable folder is "dist\codewood".
 echo   codewood\codewood.exe       - terminal UI (default) and "codewood app" for the GUI
 echo   codewood\codewood-gui.exe   - double-click to open the GUI without a console window
-pause
