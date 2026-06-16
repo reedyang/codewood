@@ -49,7 +49,6 @@ interface ChatRow {
 export function Sidebar({ onOpenSettings }: { onOpenSettings: () => void }) {
   const {
     state,
-    connected,
     uiPrefs,
     workspaceChats,
     expandedWorkspaceIds,
@@ -349,7 +348,6 @@ export function Sidebar({ onOpenSettings }: { onOpenSettings: () => void }) {
 
       <div className="sidebar-footer">
         <button className="settings-btn" onClick={onOpenSettings}>
-          <span className={`status-dot ${connected ? "online" : "offline"}`} />
           <Icon name="gear" size={16} />
           {t("nav.settings")}
         </button>

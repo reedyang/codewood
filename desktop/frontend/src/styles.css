@@ -297,20 +297,6 @@ body {
   gap: 8px;
 }
 
-.status-dot {
-  width: 9px;
-  height: 9px;
-  border-radius: 50%;
-}
-
-.status-dot.online {
-  background: #22c55e;
-}
-
-.status-dot.offline {
-  background: #f59e0b;
-}
-
 /* Main */
 .main {
   flex: 1;
