@@ -1,7 +1,12 @@
 import { useApp, type Theme } from "../state/AppContext";
 import { SUPPORTED_LANGS } from "../i18n";
+import { Icon, type IconName } from "./Icon";
 
-const POLICIES = ["unlimited", "moderate", "confirmation"] as const;
+const THEME_OPTIONS: { value: Theme; icon: IconName }[] = [
+  { value: "light", icon: "sun" },
+  { value: "dark", icon: "moon" },
+  { value: "system", icon: "monitor" },
+];
 
 export function SettingsDialog({ onClose }: { onClose: () => void }) {
   const { state, theme, setTheme, runCommand, t } = useApp();
@@ -16,12 +21,13 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
         <div className="setting-row">
           <label>{t("settings.theme")}</label>
           <div className="segmented">
-            {(["light", "dark"] as Theme[]).map((value) => (
+            {THEME_OPTIONS.map(({ value, icon }) => (
               <button
                 key={value}
                 className={`segment ${theme === value ? "segment-active" : ""}`}
                 onClick={() => setTheme(value)}
               >
+                <Icon name={icon} size={15} />
                 {t(`settings.theme.${value}`)}
               </button>
             ))}
@@ -32,42 +38,13 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
           <label>{t("settings.language")}</label>
           <select
             className="select"
+            aria-label={t("settings.language")}
             value={state?.language ?? "en"}
             onChange={(e) => void runCommand(`/language ${e.target.value}`)}
           >
             {SUPPORTED_LANGS.map((code) => (
               <option key={code} value={code}>
                 {langLabel(code)}
-              </option>
-            ))}
-          </select>
-        </div>
-
-        <div className="setting-row">
-          <label>{t("settings.model")}</label>
-          <select
-            className="select"
-            value={state?.model.current ?? ""}
-            onChange={(e) => void runCommand(`/model ${e.target.value}`)}
-          >
-            {(state?.model.available ?? []).map((selector) => (
-              <option key={selector} value={selector}>
-                {selector}
-              </option>
-            ))}
-          </select>
-        </div>
-
-        <div className="setting-row">
-          <label>{t("settings.executionPolicy")}</label>
-          <select
-            className="select"
-            value={state?.executionPolicy ?? "moderate"}
-            onChange={(e) => void runCommand(`/execution-policy ${e.target.value}`)}
-          >
-            {POLICIES.map((policy) => (
-              <option key={policy} value={policy}>
-                {t(`settings.policy.${policy}`)}
               </option>
             ))}
           </select>

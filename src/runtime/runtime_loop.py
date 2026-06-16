@@ -108,6 +108,32 @@ def _estimate_visible_lines(agent: Any, text: str) -> int:
     return max(0, len(parts))
 
 
+class _NullStatusTicker:
+    """No-op status ticker used in GUI (serve) mode.
+
+    The desktop GUI renders its own "Working.../Worked for" indicator, so the
+    terminal ticker (which writes a plain ``Working...`` line in non-TTY mode)
+    would only add noise to the GUI step output.
+    """
+
+    def start(self) -> None:
+        return None
+
+    def stop(self) -> None:
+        return None
+
+
+def _new_working_status_ticker(agent: Any) -> Any:
+    """Build a status ticker, or a no-op one when running in GUI mode."""
+    if bool(getattr(agent, "_gui_plain_stream", False)):
+        return _NullStatusTicker()
+    return _WorkingStatusTicker(
+        sys.stdout,
+        fps=_WORKING_STATUS_MARQUEE_FPS,
+        language=getattr(agent, "display_language", None),
+    )
+
+
 def _stop_pre_task_status_ticker_for_console_output(
     agent: Any,
     pre_task_status_ticker: Optional[_WorkingStatusTicker],
@@ -944,11 +970,30 @@ def _consume_streaming_ai_response(
     first_visible_output_ready = False
     last_rendered_block = ""
     last_rendered_lines = 0
-    is_tty = bool(getattr(sys.stdout, "isatty", lambda: False)())
-    can_format_render = callable(getattr(agent, "_format_assistant_chat_display_message", None))
+    # GUI (serve) mode: emit clean append-only deltas instead of the
+    # terminal's in-place block re-render (which depends on ANSI cursor
+    # control that a non-TTY SSE sink cannot honor). The assistant reply is
+    # also bracketed so the GUI can render it separately from step output.
+    gui_plain = bool(getattr(agent, "_gui_plain_stream", False))
+    is_tty = (not gui_plain) and bool(getattr(sys.stdout, "isatty", lambda: False)())
+    can_format_render = (not gui_plain) and callable(
+        getattr(agent, "_format_assistant_chat_display_message", None)
+    )
     append_stream_builder = getattr(agent, "_build_internal_slash_output_stream", None)
     can_append_stream = bool(is_tty and callable(append_stream_builder))
     append_stream = None
+
+    def _gui_mark(begin: bool) -> None:
+        if not gui_plain:
+            return
+        hook = getattr(
+            agent, "_gui_assistant_begin" if begin else "_gui_assistant_end", None
+        )
+        if callable(hook):
+            try:
+                hook()
+            except Exception:
+                pass
 
     def _clear_previous_block() -> None:
         nonlocal last_rendered_lines
@@ -989,6 +1034,7 @@ def _consume_streaming_ai_response(
         if first_visible_output_ready:
             return
         first_visible_output_ready = True
+        _gui_mark(True)
         if callable(before_first_visible_output):
             try:
                 before_first_visible_output()
@@ -1112,6 +1158,8 @@ def _consume_streaming_ai_response(
                     streamed_any = True
             shown_visible = visible_now
     except KeyboardInterrupt:
+        if first_visible_output_ready:
+            _gui_mark(False)
         _close_ai_result()
         raise
 
@@ -1195,6 +1243,8 @@ def _consume_streaming_ai_response(
             agent._terminal_cursor_at_line_start = True
         except Exception:
             pass
+    if first_visible_output_ready:
+        _gui_mark(False)
     return ai_response, streamed_any
 
 
@@ -2413,11 +2463,7 @@ def run_agent_loop(agent: Any):
                         _emit_flow_log("Automatic context compact failed; continuing with the current request")
                     except Exception:
                         pass
-            pre_task_status_ticker = _WorkingStatusTicker(
-                sys.stdout,
-                fps=_WORKING_STATUS_MARQUEE_FPS,
-                language=getattr(self, "display_language", None),
-            )
+            pre_task_status_ticker = _new_working_status_ticker(self)
             pre_task_status_ticker.start()
 
             last_result = None
@@ -2671,11 +2717,7 @@ def run_agent_loop(agent: Any):
                 status_ticker = pre_task_status_ticker
                 pre_task_status_ticker = None
                 if status_ticker is None:
-                    status_ticker = _WorkingStatusTicker(
-                        sys.stdout,
-                        fps=_WORKING_STATUS_MARQUEE_FPS,
-                        language=getattr(self, "display_language", None),
-                    )
+                    status_ticker = _new_working_status_ticker(self)
                     status_ticker.start()
                 active_status_ticker = status_ticker
                 status_ticker_stopped = False

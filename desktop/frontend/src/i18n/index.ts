@@ -8,6 +8,47 @@ const en: Dict = {
   "nav.settings": "Settings",
   "app.subtitle": "AI coding assistant",
 
+  "sidebar.newChat": "New chat",
+  "sidebar.pinned": "Pinned",
+  "sidebar.workspaces": "Workspaces",
+  "sidebar.chats": "Chats",
+  "sidebar.archived": "Archived",
+  "sidebar.noChats": "No chats yet",
+  "sidebar.noWorkspaces": "No workspaces",
+
+  "activity.working": "Working ...",
+  "activity.workedFor": "Worked for",
+
+  "menu.pinProject": "Pin project",
+  "menu.unpinProject": "Unpin project",
+  "menu.openInExplorer": "Open in Explorer",
+  "menu.renameProject": "Rename project",
+  "menu.archiveChats": "Archive chats",
+  "menu.remove": "Remove",
+  "menu.pinChat": "Pin Chat",
+  "menu.unpinChat": "Unpin Chat",
+  "menu.archiveChat": "Archive chat",
+  "menu.unarchiveChat": "Unarchive chat",
+  "menu.rename": "Rename",
+  "menu.more": "More",
+
+  "empty.prompt": "What should we work on in {workspace}?",
+
+  "status.online": "Connected",
+  "status.offline": "Disconnected",
+
+  "workspace.none": "Don't work in a project",
+  "workspace.search": "Search projects…",
+  "workspace.addNew": "Add new project",
+  "workspace.useExisting": "Use an existing folder",
+
+  "model.label": "Model",
+  "panel.toggle": "Toggle sidebar",
+
+  "about.title": "About Code Wood",
+  "about.version": "Version",
+  "about.description": "Code Wood is an AI coding assistant.",
+
   "chat.sessions": "Sessions",
   "chat.new": "New chat",
   "chat.newPlaceholder": "Chat name (optional)",
@@ -41,6 +82,7 @@ const en: Dict = {
   "settings.theme": "Theme",
   "settings.theme.light": "Light",
   "settings.theme.dark": "Dark",
+  "settings.theme.system": "System",
   "settings.language": "Language",
   "settings.model": "Model",
   "settings.executionPolicy": "Execution policy",
@@ -66,6 +108,47 @@ const zhCN: Dict = {
   "nav.workspace": "工作区",
   "nav.settings": "设置",
   "app.subtitle": "AI 编程助手",
+
+  "sidebar.newChat": "新建对话",
+  "sidebar.pinned": "已置顶",
+  "sidebar.workspaces": "工作区",
+  "sidebar.chats": "对话",
+  "sidebar.archived": "已归档",
+  "sidebar.noChats": "暂无对话",
+  "sidebar.noWorkspaces": "暂无工作区",
+
+  "activity.working": "处理中 ...",
+  "activity.workedFor": "用时",
+
+  "menu.pinProject": "置顶工作区",
+  "menu.unpinProject": "取消置顶",
+  "menu.openInExplorer": "在文件管理器中打开",
+  "menu.renameProject": "重命名工作区",
+  "menu.archiveChats": "归档对话",
+  "menu.remove": "移除",
+  "menu.pinChat": "置顶对话",
+  "menu.unpinChat": "取消置顶",
+  "menu.archiveChat": "归档对话",
+  "menu.unarchiveChat": "取消归档",
+  "menu.rename": "重命名",
+  "menu.more": "更多",
+
+  "empty.prompt": "在 {workspace} 中我们要做点什么？",
+
+  "status.online": "已连接",
+  "status.offline": "未连接",
+
+  "workspace.none": "不在任何项目中工作",
+  "workspace.search": "搜索项目……",
+  "workspace.addNew": "新增项目",
+  "workspace.useExisting": "使用已有文件夹",
+
+  "model.label": "模型",
+  "panel.toggle": "切换侧边栏",
+
+  "about.title": "关于 Code Wood",
+  "about.version": "版本",
+  "about.description": "Code Wood 是一款 AI 编程助手。",
 
   "chat.sessions": "会话",
   "chat.new": "新建对话",
@@ -100,6 +183,7 @@ const zhCN: Dict = {
   "settings.theme": "主题",
   "settings.theme.light": "浅色",
   "settings.theme.dark": "深色",
+  "settings.theme.system": "跟随系统",
   "settings.language": "语言",
   "settings.model": "模型",
   "settings.executionPolicy": "执行策略",
