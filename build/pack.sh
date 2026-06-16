@@ -31,10 +31,16 @@ PYINSTALLER="$VENV_DIR/bin/pyinstaller"
 # Unix uses ':' as the --add-data separator instead of ';'.
 # Note: ripgrep (rg) is NOT bundled on non-Windows; it is expected to be
 # installed system-wide (e.g. via the package manager) and found on PATH.
-# The single executable serves both the terminal UI and the desktop GUI
-# ("codewood app"); the GUI frontend bundle and pywebview host are included.
+#
+# One-dir is used (instead of one-file) so each process runs directly without
+# an extra self-extracting bootloader process: the GUI then uses two processes
+# (app + serve backend) and the terminal UI uses one. Output is a single
+# shippable folder dist/codewood/ (codewood, codewood-gui, _internal/).
+#
+# 1) codewood carries ALL terminal-UI and GUI logic (frontend bundle +
+#    pywebview host included). Default = terminal UI; "codewood app" = GUI.
 ARGS=(
-  --onefile --name codewood
+  --onedir --name codewood
   --add-data "../../skills:skills"
   --add-data "../../src:src"
   --add-data "../../desktop/frontend/dist:frontend"
@@ -47,11 +53,24 @@ ARGS=(
 )
 
 # App icon: macOS uses .icns; Linux ignores it, so only pass when present.
+ICON_ARGS=()
 if [ "$(uname -s)" = "Darwin" ] && [ -f "build/app_icon.icns" ]; then
-  ARGS=(--icon "../../build/app_icon.icns" "${ARGS[@]}")
+  ICON_ARGS=(--icon "../../build/app_icon.icns")
 fi
 
-"$PYINSTALLER" "${ARGS[@]}" "$ENTRY_SCRIPT"
+"$PYINSTALLER" "${ICON_ARGS[@]}" "${ARGS[@]}" "$ENTRY_SCRIPT"
 
-echo "Build completed. Executable is in the \"dist\" folder."
-echo "Run \"codewood\" for the terminal UI or \"codewood app\" for the desktop GUI."
+# 2) codewood-gui is a tiny launcher that bundles only the standard library
+#    (no pywebview / prompt_toolkit / etc.) and simply starts "codewood app"
+#    in a detached, window-free process. Mirrors codewood-gui.exe on Windows.
+#    It is emitted INTO the codewood one-dir folder so it sits next to the
+#    codewood executable (single shippable folder).
+"$PYINSTALLER" "${ICON_ARGS[@]}" \
+  --onefile --windowed --name codewood-gui \
+  --distpath "dist/codewood" \
+  --specpath "build/codewood-gui" \
+  "desktop/host/launcher.py"
+
+echo "Build completed. The shippable folder is \"dist/codewood\"."
+echo "  codewood/codewood      - terminal UI (default) and \"codewood app\" for the GUI"
+echo "  codewood/codewood-gui  - launch the GUI without a console window"

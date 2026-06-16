@@ -74,14 +74,29 @@ returns control to the command prompt immediately. The GUI process spawns
 the backend by re-launching the same executable in `serve` mode
 (development: `python src/main.py serve`).
 
-Launch behaviour of the packaged executable:
+The packaged build is a single **one-dir folder** (`dist/codewood/`) holding
+**two executables** plus a shared `_internal/` runtime:
 
-- **Double-click `codewood.exe`** (or a shortcut) → starts the desktop GUI.
-- **`codewood.exe` with no arguments in a terminal** → starts the terminal UI.
-- **`codewood.exe app`** → starts the desktop GUI from anywhere.
+- **`codewood.exe`** — the full console build. It contains *all* terminal-UI
+  and GUI functionality.
+  - No arguments in a terminal → terminal UI.
+  - `codewood.exe app` → desktop GUI from anywhere.
+  - Double-click → desktop GUI (a console may briefly flash because this is a
+    console-subsystem binary).
+- **`codewood-gui.exe`** — a tiny windowed launcher next to `codewood.exe`.
+  Double-clicking it opens the GUI **with no console window at all**; it simply
+  runs `codewood app` (the sibling `codewood.exe`) in a window-free process. It
+  bundles only the Python standard library, so it stays small. For the cleanest
+  GUI launch, use this executable (or a shortcut to it).
 
-(Double-click is detected by the executable owning a freshly allocated
-console; running it from an existing shell keeps the terminal UI.)
+On non-Windows platforms the same folder with two binaries is produced
+(`codewood` and `codewood-gui`).
+
+The build uses PyInstaller **one-dir** mode rather than one-file: a one-file
+binary self-extracts through a bootloader process, so every launch costs an
+extra resident process. With one-dir each executable runs as a single process,
+so the desktop GUI uses **two** processes (the GUI host + the `serve` backend)
+and the terminal UI uses **one**.
 
 ### Architecture
 
@@ -124,8 +139,9 @@ variable (for example `http://localhost:5173`) before launching
 
 ### Package
 
-The GUI is bundled into the single executable by the standard build
-scripts (the frontend is built automatically):
+The GUI is bundled by the standard build scripts (the frontend is built
+automatically). A single run produces the `dist/codewood/` folder containing
+both `codewood` and `codewood-gui`:
 
 ```bash
 # Windows
@@ -135,8 +151,10 @@ build\pack.bat
 bash build/pack.sh
 ```
 
-The resulting `codewood` executable runs the terminal UI by default and
-the desktop GUI when invoked as `codewood app`.
+`codewood` runs the terminal UI by default and the desktop GUI when invoked
+as `codewood app`. `codewood-gui` is a thin windowed launcher that opens the
+GUI without a console window by delegating to `codewood app`. Ship the whole
+`dist/codewood/` folder (the executables need the sibling `_internal/`).
 
 ## AI Features
 
@@ -226,7 +244,8 @@ codewood/
 ├── src/server/                    # Headless serve mode (HTTP + SSE) for the GUI
 ├── desktop/                       # Desktop GUI (TypeScript UI + pywebview host)
 │   ├── frontend/                  # Vite + React + TypeScript UI
-│   └── host/                      # pywebview host (launched via "codewood app")
+│   └── host/                      # pywebview host (launched via "codewood app");
+│                                  #   launcher.py builds the thin codewood-gui
 ├── skills/                        # Built-in Agent Skills
 ├── additional-skills/             # Extra skills; copy them into .codewood/skills if needed
 ├── additional-subagents/          # Example sub-agents; copy them into .codewood/subagents if needed
