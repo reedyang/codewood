@@ -1,7 +1,14 @@
 @echo off
-rem Build executable with PyInstaller for the current project.
-rem This single executable provides both the terminal UI (default) and the
-rem desktop GUI (run "codewood app"). Adjust as needed.
+rem Build executables with PyInstaller for the current project.
+rem Produces a single one-dir bundle folder dist\codewood\ containing:
+rem   codewood.exe      - console build with ALL terminal-UI and GUI logic
+rem                       (default = terminal UI; "codewood app" = desktop GUI)
+rem   codewood-gui.exe  - tiny windowed launcher that opens the GUI with no
+rem                       console window (it just runs "codewood app")
+rem   _internal\        - shared runtime + bundled resources
+rem One-dir is used (instead of one-file) so each process runs directly
+rem without an extra self-extracting bootloader process: the GUI then uses
+rem two processes (app + serve backend) and the terminal UI uses one.
 
 set ENTRY_SCRIPT=src\main.py
 
@@ -36,7 +43,9 @@ if not exist "%PYINSTALLER%" set PYINSTALLER=pyinstaller
 rem NOTE: --paths (pathex) is resolved relative to the current working
 rem directory (the project root here), unlike --add-data sources which are
 rem resolved relative to --specpath. So the venv path must NOT use "../../".
-"%PYINSTALLER%" --onefile --name codewood ^
+rem 1) codewood.exe (console, one-dir) carries ALL terminal-UI and GUI
+rem    functionality. Output: dist\codewood\codewood.exe (+ _internal\).
+"%PYINSTALLER%" --onedir --name codewood ^
   --icon "../../build/app_icon.ico" ^
   --add-data "../../vendors/rg.exe;bin" ^
   --add-data "../../skills;skills" ^
@@ -50,7 +59,27 @@ rem resolved relative to --specpath. So the venv path must NOT use "../../".
   --hidden-import clr ^
   --specpath "build\\codewood" ^
   "%ENTRY_SCRIPT%"
+if errorlevel 1 (
+  echo codewood.exe build failed.
+  exit /b 1
+)
 
-echo Build completed. Executable is in the "dist" folder.
-echo Run "codewood" for the terminal UI or "codewood app" for the desktop GUI.
+rem 2) codewood-gui.exe is a tiny windowed launcher. It bundles only the
+rem standard library (no pywebview / prompt_toolkit / etc.) and simply starts
+rem "codewood app" with no console window, so a double-click opens the GUI
+rem without flashing a terminal window. It is emitted INTO the codewood
+rem one-dir folder so it sits next to codewood.exe (single shippable folder).
+"%PYINSTALLER%" --onefile --noconsole --name codewood-gui ^
+  --icon "../../build/app_icon.ico" ^
+  --distpath "dist\\codewood" ^
+  --specpath "build\\codewood-gui" ^
+  "desktop\host\launcher.py"
+if errorlevel 1 (
+  echo codewood-gui.exe build failed.
+  exit /b 1
+)
+
+echo Build completed. The shippable folder is "dist\codewood".
+echo   codewood\codewood.exe       - terminal UI (default) and "codewood app" for the GUI
+echo   codewood\codewood-gui.exe   - double-click to open the GUI without a console window
 pause
