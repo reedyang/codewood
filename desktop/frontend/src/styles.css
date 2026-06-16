@@ -21,6 +21,8 @@
   --user-bg: #eaf3ff;
   --shadow: 0 8px 30px rgba(0, 0, 0, 0.12);
   --panel-radius: 10px;
+  --scrollbar-thumb: rgba(0, 0, 0, 0.22);
+  --scrollbar-thumb-hover: rgba(0, 0, 0, 0.34);
 }
 
 [data-theme="dark"] {
@@ -45,6 +47,8 @@
   --output-text: #d7dbe3;
   --user-bg: #243044;
   --shadow: 0 8px 30px rgba(0, 0, 0, 0.5);
+  --scrollbar-thumb: rgba(255, 255, 255, 0.16);
+  --scrollbar-thumb-hover: rgba(255, 255, 255, 0.3);
 }
 
 * {
@@ -65,11 +69,174 @@ body {
   font-size: 14px;
 }
 
-.app-shell {
+/* Theme-aware scrollbars (Chromium / WebView2). */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar-thumb) transparent;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
+  border-radius: 8px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--scrollbar-thumb-hover);
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+/* Window shell: custom title bar + content. */
+.window-root {
   display: flex;
+  flex-direction: column;
   height: 100vh;
   overflow: hidden;
   background: var(--bg-sidebar);
+}
+
+.app-shell {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--bg-sidebar);
+}
+
+/* Custom title bar */
+.titlebar {
+  display: flex;
+  align-items: center;
+  height: 38px;
+  flex: 0 0 auto;
+  background: var(--bg-sidebar);
+  color: var(--text-on-dark);
+  padding: 0 4px;
+  gap: 2px;
+  user-select: none;
+  position: relative;
+  z-index: 400;
+}
+
+.titlebar .icon-btn.titlebar-toggle {
+  margin-left: 0;
+}
+
+.titlebar-drag {
+  flex: 1;
+  align-self: stretch;
+}
+
+.menubar {
+  display: flex;
+  align-items: center;
+}
+
+.menubar-item {
+  position: relative;
+}
+
+.menubar-button {
+  background: transparent;
+  border: none;
+  color: var(--text-on-dark);
+  padding: 6px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.menubar-button:hover,
+.menubar-button.open {
+  background: var(--sidebar-hover);
+}
+
+.menubar-menu {
+  position: absolute;
+  top: calc(100% + 2px);
+  left: 0;
+  min-width: 210px;
+  background: var(--bg-elevated);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: var(--shadow);
+  padding: 6px;
+  z-index: 410;
+}
+
+.menubar-menu-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  width: 100%;
+  background: transparent;
+  border: none;
+  color: var(--text);
+  text-align: left;
+  padding: 7px 10px;
+  border-radius: 7px;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.menubar-menu-item:hover {
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+}
+
+.menubar-shortcut {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.menubar-separator {
+  height: 1px;
+  background: var(--border);
+  margin: 5px 6px;
+}
+
+/* Window controls */
+.win-controls {
+  display: flex;
+  align-items: center;
+  align-self: stretch;
+}
+
+.win-btn {
+  width: 44px;
+  align-self: stretch;
+  border: none;
+  background: transparent;
+  color: var(--text-on-dark);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+
+.win-btn:hover {
+  background: var(--sidebar-hover);
+}
+
+.win-btn.close:hover {
+  background: #e81123;
+  color: #ffffff;
 }
 
 /* Sidebar */

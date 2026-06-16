@@ -7,7 +7,6 @@ frontend, and tears the backend down when the window closes.
 
 from __future__ import annotations
 
-import json
 import sys
 
 import webview
@@ -44,71 +43,47 @@ def _pick_folder() -> str:
 
 
 class HostApi:
-    """Minimal bridge exposed to the frontend as ``window.pywebview.api``."""
+    """Bridge exposed to the frontend as ``window.pywebview.api``.
+
+    The window is frameless and renders its own title bar (toggle, menus and
+    window controls) in the web layer, so these methods drive the OS window.
+    """
+
+    def __init__(self) -> None:
+        self._maximized = False
 
     def pick_folder(self) -> str:
         return _pick_folder()
 
+    def minimize(self) -> None:
+        window = webview.active_window()
+        if window is not None:
+            try:
+                window.minimize()
+            except Exception:
+                pass
 
-def _dispatch_menu(action: str, payload: str | None = None) -> None:
-    """Forward a native-menu action to the frontend handler."""
-    window = webview.active_window()
-    if window is None:
-        return
-    if payload is None:
-        js = f"window.__codewoodMenu && window.__codewoodMenu({json.dumps(action)})"
-    else:
-        js = (
-            "window.__codewoodMenu && "
-            f"window.__codewoodMenu({json.dumps(action)}, {json.dumps(payload)})"
-        )
-    try:
-        window.evaluate_js(js)
-    except Exception:
-        pass
-
-
-def _close_window() -> None:
-    window = webview.active_window()
-    if window is not None:
+    def toggle_maximize(self) -> bool:
+        window = webview.active_window()
+        if window is None:
+            return self._maximized
         try:
-            window.destroy()
+            if self._maximized:
+                window.restore()
+            else:
+                window.maximize()
+            self._maximized = not self._maximized
         except Exception:
             pass
+        return self._maximized
 
-
-def _open_folder_dialog() -> None:
-    path = _pick_folder()
-    if path:
-        _dispatch_menu("open-folder", path)
-
-
-def _build_menu() -> list:
-    """Build the native File/Help menu, or [] if unsupported."""
-    try:
-        from webview.menu import Menu, MenuAction, MenuSeparator
-    except Exception:
-        return []
-    return [
-        Menu(
-            "File",
-            [
-                MenuAction("New Chat", lambda: _dispatch_menu("new-chat")),
-                MenuAction("Open Folder...", _open_folder_dialog),
-                MenuAction("Close", _close_window),
-                MenuSeparator(),
-                MenuAction("Settings...", lambda: _dispatch_menu("settings")),
-                MenuSeparator(),
-                MenuAction("Exit", _close_window),
-            ],
-        ),
-        Menu(
-            "Help",
-            [
-                MenuAction("About Code Wood", lambda: _dispatch_menu("about")),
-            ],
-        ),
-    ]
+    def close_window(self) -> None:
+        window = webview.active_window()
+        if window is not None:
+            try:
+                window.destroy()
+            except Exception:
+                pass
 
 
 def main() -> int:
@@ -128,6 +103,8 @@ def main() -> int:
         width=1280,
         height=860,
         min_size=(960, 640),
+        frameless=True,
+        easy_drag=False,
         js_api=HostApi(),
     )
 
@@ -137,7 +114,7 @@ def main() -> int:
     window.events.closed += _on_closed
 
     try:
-        webview.start(gui=_preferred_gui(), menu=_build_menu())
+        webview.start(gui=_preferred_gui())
     finally:
         backend.stop()
     return 0

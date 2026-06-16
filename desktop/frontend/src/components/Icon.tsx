@@ -16,6 +16,9 @@ import monitor from "../assets/icons/monitor.svg";
 import info from "../assets/icons/info.svg";
 import dots from "../assets/icons/dots.svg";
 import stop from "../assets/icons/stop.svg";
+import winMin from "../assets/icons/win-min.svg";
+import winMax from "../assets/icons/win-max.svg";
+import winClose from "../assets/icons/win-close.svg";
 
 const SOURCES = {
   panel,
@@ -35,6 +38,9 @@ const SOURCES = {
   info,
   dots,
   stop,
+  "win-min": winMin,
+  "win-max": winMax,
+  "win-close": winClose,
 } as const;
 
 export type IconName = keyof typeof SOURCES;
