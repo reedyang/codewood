@@ -46,13 +46,7 @@ interface ChatRow {
   active?: boolean;
 }
 
-export function Sidebar({
-  onOpenSettings,
-  onTogglePanel,
-}: {
-  onOpenSettings: () => void;
-  onTogglePanel: () => void;
-}) {
+export function Sidebar({ onOpenSettings }: { onOpenSettings: () => void }) {
   const {
     state,
     connected,
@@ -272,14 +266,6 @@ export function Sidebar({
   return (
     <aside className="sidebar">
       <div className="sidebar-top">
-        <button
-          className="icon-btn panel-toggle"
-          aria-label={t("panel.toggle")}
-          title={t("panel.toggle")}
-          onClick={onTogglePanel}
-        >
-          <Icon name="panel" size={18} />
-        </button>
         <button className="btn-newchat" onClick={() => void reloadingRun("/chat new")}>
           <Icon name="new-chat" size={16} />
           {t("sidebar.newChat")}

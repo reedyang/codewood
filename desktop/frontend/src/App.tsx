@@ -5,11 +5,10 @@ import { ChatView } from "./components/ChatView";
 import { SettingsDialog } from "./components/SettingsDialog";
 import { AboutDialog } from "./components/AboutDialog";
 import { ConfirmDialog } from "./components/ConfirmDialog";
-import { Icon } from "./components/Icon";
+import { TitleBar } from "./components/TitleBar";
 
 function Shell() {
   const {
-    t,
     settingsOpen,
     closeSettings,
     openSettings,
@@ -44,26 +43,14 @@ function Shell() {
   }, [clearTurns, runCommand, openSettings]);
 
   return (
-    <div className={`app-shell ${collapsed ? "sidebar-collapsed" : ""}`}>
-      {!collapsed && (
-        <Sidebar
-          onOpenSettings={openSettings}
-          onTogglePanel={() => setCollapsed(true)}
-        />
-      )}
-      <main className="main">
-        {collapsed && (
-          <button
-            className="panel-toggle-float"
-            aria-label={t("panel.toggle")}
-            title={t("panel.toggle")}
-            onClick={() => setCollapsed(false)}
-          >
-            <Icon name="panel" size={18} />
-          </button>
-        )}
-        <ChatView />
-      </main>
+    <div className="window-root">
+      <TitleBar onTogglePanel={() => setCollapsed((v) => !v)} />
+      <div className={`app-shell ${collapsed ? "sidebar-collapsed" : ""}`}>
+        {!collapsed && <Sidebar onOpenSettings={openSettings} />}
+        <main className="main">
+          <ChatView />
+        </main>
+      </div>
 
       {settingsOpen && <SettingsDialog onClose={closeSettings} />}
       {aboutOpen && <AboutDialog onClose={closeAbout} />}

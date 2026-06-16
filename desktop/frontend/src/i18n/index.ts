@@ -45,6 +45,18 @@ const en: Dict = {
   "model.label": "Model",
   "panel.toggle": "Toggle sidebar",
 
+  "menu.file": "File",
+  "menu.help": "Help",
+  "menu.file.newChat": "New Chat",
+  "menu.file.openFolder": "Open Folder...",
+  "menu.file.close": "Close",
+  "menu.file.settings": "Settings...",
+  "menu.file.exit": "Exit",
+  "menu.help.about": "About Code Wood",
+  "win.minimize": "Minimize",
+  "win.maximize": "Maximize",
+  "win.close": "Close",
+
   "about.title": "About Code Wood",
   "about.version": "Version",
   "about.description": "Code Wood is an AI coding assistant.",
@@ -145,6 +157,18 @@ const zhCN: Dict = {
 
   "model.label": "模型",
   "panel.toggle": "切换侧边栏",
+
+  "menu.file": "文件",
+  "menu.help": "帮助",
+  "menu.file.newChat": "新建对话",
+  "menu.file.openFolder": "打开文件夹…",
+  "menu.file.close": "关闭",
+  "menu.file.settings": "设置…",
+  "menu.file.exit": "退出",
+  "menu.help.about": "关于 Code Wood",
+  "win.minimize": "最小化",
+  "win.maximize": "最大化",
+  "win.close": "关闭",
 
   "about.title": "关于 Code Wood",
   "about.version": "版本",
