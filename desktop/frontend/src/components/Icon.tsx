@@ -2,6 +2,7 @@ import type { CSSProperties } from "react";
 import panel from "../assets/icons/panel.svg";
 import newChat from "../assets/icons/new-chat.svg";
 import folder from "../assets/icons/folder.svg";
+import folderOpen from "../assets/icons/folder-open.svg";
 import pin from "../assets/icons/pin.svg";
 import gear from "../assets/icons/gear.svg";
 import shield from "../assets/icons/shield.svg";
@@ -18,12 +19,14 @@ import dots from "../assets/icons/dots.svg";
 import stop from "../assets/icons/stop.svg";
 import winMin from "../assets/icons/win-min.svg";
 import winMax from "../assets/icons/win-max.svg";
+import winRestore from "../assets/icons/win-restore.svg";
 import winClose from "../assets/icons/win-close.svg";
 
 const SOURCES = {
   panel,
   "new-chat": newChat,
   folder,
+  "folder-open": folderOpen,
   pin,
   gear,
   shield,
@@ -40,6 +43,7 @@ const SOURCES = {
   stop,
   "win-min": winMin,
   "win-max": winMax,
+  "win-restore": winRestore,
   "win-close": winClose,
 } as const;
 

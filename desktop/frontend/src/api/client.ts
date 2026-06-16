@@ -1,4 +1,9 @@
-import type { AppState, ServerEvent, WorkspaceChatSummary } from "./types";
+import type {
+  AppState,
+  ChatHistoryPage,
+  ServerEvent,
+  WorkspaceChatSummary,
+} from "./types";
 
 /**
  * Thin client for the Code Wood backend serve API.
@@ -77,6 +82,64 @@ export class ApiClient {
       return Array.isArray(data.chats) ? data.chats : [];
     } catch {
       return [];
+    }
+  }
+
+  /** Load a paginated slice of structured turns for the active chat. */
+  async getChatHistory(before?: number, limit = 12): Promise<ChatHistoryPage> {
+    const params = new URLSearchParams();
+    if (typeof before === "number") {
+      params.set("before", String(before));
+    }
+    params.set("limit", String(limit));
+    const res = await fetch(`${this.base}/chat-history?${params.toString()}`, {
+      headers: this.headers(),
+    });
+    if (!res.ok) {
+      return { turns: [], start: 0, total: 0 };
+    }
+    try {
+      return (await res.json()) as ChatHistoryPage;
+    } catch {
+      return { turns: [], start: 0, total: 0 };
+    }
+  }
+
+  /** Silently switch the active chat/workspace (no command echo / replay). */
+  async selectChat(id: string, workspaceId = ""): Promise<boolean> {
+    const res = await fetch(`${this.base}/select-chat`, {
+      method: "POST",
+      headers: this.headers(),
+      body: JSON.stringify({ id, workspaceId }),
+    });
+    return res.ok;
+  }
+
+  /** Persist the GUI theme preference to the backend config file. */
+  async setTheme(theme: string): Promise<boolean> {
+    const res = await fetch(`${this.base}/set-theme`, {
+      method: "POST",
+      headers: this.headers(),
+      body: JSON.stringify({ theme }),
+    });
+    return res.ok;
+  }
+
+  /** Silently create and activate a new chat; returns its id (or ""). */
+  async newChat(): Promise<string> {
+    const res = await fetch(`${this.base}/new-chat`, {
+      method: "POST",
+      headers: this.headers(),
+      body: "{}",
+    });
+    if (!res.ok) {
+      return "";
+    }
+    try {
+      const data = (await res.json()) as { id?: string };
+      return data.id ?? "";
+    } catch {
+      return "";
     }
   }
 

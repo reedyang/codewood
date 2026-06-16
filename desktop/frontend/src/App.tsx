@@ -14,8 +14,7 @@ function Shell() {
     openSettings,
     aboutOpen,
     closeAbout,
-    clearTurns,
-    runCommand,
+    newChat,
   } = useApp();
   const [collapsed, setCollapsed] = useState(false);
 
@@ -28,8 +27,7 @@ function Shell() {
       const key = e.key.toLowerCase();
       if (key === "n") {
         e.preventDefault();
-        clearTurns();
-        void runCommand("/chat new");
+        void newChat();
       } else if (key === ",") {
         e.preventDefault();
         openSettings();
@@ -40,7 +38,7 @@ function Shell() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [clearTurns, runCommand, openSettings]);
+  }, [newChat, openSettings]);
 
   return (
     <div className="window-root">

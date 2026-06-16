@@ -42,6 +42,24 @@ def _pick_folder() -> str:
     return result[0] if isinstance(result, (list, tuple)) else str(result)
 
 
+def _pick_files() -> list[str]:
+    """Open a native multi-select file picker; return selected paths."""
+    window = webview.active_window()
+    if window is None:
+        return []
+    try:
+        result = window.create_file_dialog(
+            webview.OPEN_DIALOG, allow_multiple=True
+        )
+    except Exception:
+        return []
+    if not result:
+        return []
+    if isinstance(result, (list, tuple)):
+        return [str(p) for p in result if p]
+    return [str(result)]
+
+
 class HostApi:
     """Bridge exposed to the frontend as ``window.pywebview.api``.
 
@@ -54,6 +72,9 @@ class HostApi:
 
     def pick_folder(self) -> str:
         return _pick_folder()
+
+    def pick_files(self) -> list[str]:
+        return _pick_files()
 
     def minimize(self) -> None:
         window = webview.active_window()

@@ -4,7 +4,7 @@ import { Icon } from "./Icon";
 
 interface HostWindowApi {
   minimize?: () => void;
-  toggle_maximize?: () => void;
+  toggle_maximize?: () => boolean | Promise<boolean>;
   close_window?: () => void;
 }
 
@@ -17,10 +17,24 @@ type MenuEntry =
   | { label: string; shortcut?: string; onSelect: () => void };
 
 export function TitleBar({ onTogglePanel }: { onTogglePanel: () => void }) {
-  const { t, clearTurns, runCommand, openSettings, openAbout, pickFolder } = useApp();
+  const { t, clearTurns, runCommand, newChat, openSettings, openAbout, pickFolder } = useApp();
   const [openMenu, setOpenMenu] = useState<string | null>(null);
   const [native, setNative] = useState<boolean>(() => Boolean(hostApi()));
+  const [maximized, setMaximized] = useState(false);
   const barRef = useRef<HTMLDivElement | null>(null);
+
+  const toggleMaximize = async () => {
+    const api = hostApi();
+    if (!api?.toggle_maximize) {
+      return;
+    }
+    try {
+      const result = await api.toggle_maximize();
+      setMaximized(Boolean(result));
+    } catch {
+      setMaximized((v) => !v);
+    }
+  };
 
   useEffect(() => {
     const onReady = () => setNative(true);
@@ -60,10 +74,7 @@ export function TitleBar({ onTogglePanel }: { onTogglePanel: () => void }) {
         {
           label: t("menu.file.newChat"),
           shortcut: "Ctrl+N",
-          onSelect: () => {
-            clearTurns();
-            void runCommand("/chat new");
-          },
+          onSelect: () => void newChat(),
         },
         { label: t("menu.file.openFolder"), shortcut: "Ctrl+O", onSelect: () => void openFolder() },
         { label: t("menu.file.close"), shortcut: "Ctrl+W", onSelect: closeWindow },
@@ -127,15 +138,23 @@ export function TitleBar({ onTogglePanel }: { onTogglePanel: () => void }) {
         ))}
       </div>
 
-      <div className="titlebar-drag pywebview-drag-region" />
+      <div
+        className="titlebar-drag pywebview-drag-region"
+        onDoubleClick={() => void toggleMaximize()}
+      />
 
       {native && (
         <div className="win-controls">
           <button className="win-btn" aria-label={t("win.minimize")} title={t("win.minimize")} onClick={() => hostApi()?.minimize?.()}>
             <Icon name="win-min" size={14} />
           </button>
-          <button className="win-btn" aria-label={t("win.maximize")} title={t("win.maximize")} onClick={() => hostApi()?.toggle_maximize?.()}>
-            <Icon name="win-max" size={13} />
+          <button
+            className="win-btn"
+            aria-label={maximized ? t("win.restore") : t("win.maximize")}
+            title={maximized ? t("win.restore") : t("win.maximize")}
+            onClick={() => void toggleMaximize()}
+          >
+            <Icon name={maximized ? "win-restore" : "win-max"} size={13} />
           </button>
           <button className="win-btn close" aria-label={t("win.close")} title={t("win.close")} onClick={closeWindow}>
             <Icon name="win-close" size={14} />

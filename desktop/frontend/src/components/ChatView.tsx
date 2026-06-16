@@ -1,10 +1,21 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { useApp } from "../state/AppContext";
-import type { Turn } from "../api/types";
+import type { HistoryTurn, Turn } from "../api/types";
 import { Icon } from "./Icon";
 
 function quote(value: string): string {
   return `"${value.replace(/"/g, "")}"`;
+}
+
+function baseName(path: string): string {
+  const parts = path.split(/[\\/]/);
+  return parts[parts.length - 1] || path;
+}
+
+function fileExt(path: string): string {
+  const name = baseName(path);
+  const dot = name.lastIndexOf(".");
+  return dot > 0 ? name.slice(dot + 1).toUpperCase() : "";
 }
 
 function formatElapsed(ms: number): string {
@@ -34,11 +45,28 @@ function useOutsideClose(open: boolean, onClose: () => void) {
 }
 
 export function ChatView() {
-  const { state, turns, busy, now, sendInput, interrupt, setExecutionPolicy, setModel, pickFolder, runCommand, clearTurns, t } =
-    useApp();
+  const {
+    state,
+    turns,
+    historyTurns,
+    historyStart,
+    historyLoading,
+    loadOlderHistory,
+    busy,
+    now,
+    sendInput,
+    interrupt,
+    setExecutionPolicy,
+    setModel,
+    pickFiles,
+    t,
+  } = useApp();
   const [draft, setDraft] = useState("");
+  const [attachments, setAttachments] = useState<string[]>([]);
   const scrollRef = useRef<HTMLDivElement | null>(null);
+  const prevHeightRef = useRef<number | null>(null);
 
+  // Live updates and chat switches stick to the bottom.
   useEffect(() => {
     const el = scrollRef.current;
     if (el) {
@@ -46,22 +74,65 @@ export function ChatView() {
     }
   }, [turns, now]);
 
-  const submit = async () => {
-    const text = draft.trim();
-    if (!text) {
+  // When history turns change: a prepend (older page) preserves the viewport;
+  // a replacement (initial load / switch) jumps to the bottom.
+  useLayoutEffect(() => {
+    const el = scrollRef.current;
+    if (!el) {
       return;
     }
-    setDraft("");
-    await sendInput(text);
-  };
+    if (prevHeightRef.current != null) {
+      el.scrollTop = el.scrollHeight - prevHeightRef.current;
+      prevHeightRef.current = null;
+    } else {
+      el.scrollTop = el.scrollHeight;
+    }
+  }, [historyTurns]);
 
-  const addProject = async () => {
-    const path = await pickFolder();
-    if (path) {
-      clearTurns();
-      await runCommand(`/workspace create ${quote(path)}`);
+  const onScroll = () => {
+    const el = scrollRef.current;
+    if (!el || historyLoading || historyStart <= 0) {
+      return;
+    }
+    if (el.scrollTop < 80) {
+      prevHeightRef.current = el.scrollHeight;
+      void loadOlderHistory();
     }
   };
+
+  const canSend = Boolean(draft.trim()) || attachments.length > 0;
+
+  const submit = async () => {
+    const text = draft.trim();
+    if (!text && attachments.length === 0) {
+      return;
+    }
+    const message = [...attachments, text].filter(Boolean).join("\n");
+    setDraft("");
+    setAttachments([]);
+    await sendInput(message);
+  };
+
+  const addFiles = async () => {
+    const picked = await pickFiles();
+    if (picked.length === 0) {
+      return;
+    }
+    setAttachments((prev) => {
+      const seen = new Set(prev);
+      const merged = [...prev];
+      for (const p of picked) {
+        if (!seen.has(p)) {
+          seen.add(p);
+          merged.push(p);
+        }
+      }
+      return merged;
+    });
+  };
+
+  const removeAttachment = (path: string) =>
+    setAttachments((prev) => prev.filter((p) => p !== path));
 
   const currentPolicy = state?.executionPolicy || "moderate";
   const currentModel = state?.model.current || "";
@@ -69,6 +140,24 @@ export function ChatView() {
 
   const composer = (
     <div className="composer">
+      {attachments.length > 0 && (
+        <div className="attachments">
+          {attachments.map((path) => (
+            <span className="attachment-chip" key={path} title={path}>
+              <Icon name="info" size={13} className="muted-icon" />
+              <span className="attachment-name">{baseName(path)}</span>
+              <span className="attachment-ext">{fileExt(path)}</span>
+              <button
+                className="attachment-remove"
+                aria-label={t("attach.remove")}
+                onClick={() => removeAttachment(path)}
+              >
+                <Icon name="win-close" size={10} />
+              </button>
+            </span>
+          ))}
+        </div>
+      )}
       <textarea
         className="composer-input"
         value={draft}
@@ -84,7 +173,7 @@ export function ChatView() {
       />
       <div className="composer-toolbar">
         <div className="composer-left">
-          <button className="icon-btn round" aria-label={t("workspace.addNew")} title={t("workspace.addNew")} onClick={() => void addProject()}>
+          <button className="icon-btn round" aria-label={t("attach.add")} title={t("attach.add")} onClick={() => void addFiles()}>
             <Icon name="plus" size={16} />
           </button>
           <Dropdown
@@ -145,7 +234,7 @@ export function ChatView() {
           <button
             className={`send-btn ${busy ? "is-stop" : ""}`}
             aria-label={busy ? t("chat.interrupt") : t("chat.send")}
-            disabled={!busy && !draft.trim()}
+            disabled={!busy && !canSend}
             onClick={() => (busy ? void interrupt() : void submit())}
           >
             <Icon name={busy ? "stop" : "send"} size={16} />
@@ -155,7 +244,7 @@ export function ChatView() {
     </div>
   );
 
-  if (turns.length === 0) {
+  if (turns.length === 0 && historyTurns.length === 0 && !historyLoading) {
     const workspaceName = state?.workspace.name || t("workspace.none");
     return (
       <div className="chat-view">
@@ -172,7 +261,15 @@ export function ChatView() {
 
   return (
     <div className="chat-view">
-      <div className="transcript" ref={scrollRef}>
+      <div className="transcript" ref={scrollRef} onScroll={onScroll}>
+        {historyStart > 0 && (
+          <div className="history-more">
+            {historyLoading ? t("history.loading") : t("history.more")}
+          </div>
+        )}
+        {historyTurns.map((turn, index) => (
+          <HistoryTurnView key={`h-${index}`} turn={turn} />
+        ))}
         {turns.map((turn, index) => (
           <TurnView
             key={turn.id}
@@ -186,6 +283,38 @@ export function ChatView() {
         {composer}
         <WorkspaceSelector />
       </div>
+    </div>
+  );
+}
+
+function HistoryTurnView({ turn }: { turn: HistoryTurn }) {
+  const { t } = useApp();
+  const [expanded, setExpanded] = useState(false);
+  const hasSteps = turn.steps.trim().length > 0;
+  const hasAnswer = turn.answer.trim().length > 0;
+
+  return (
+    <div className="turn">
+      {turn.userText && (
+        <div className="entry entry-input">
+          <span className="entry-label">{t("chat.you")}</span>
+          <div className="entry-text">{turn.userText}</div>
+        </div>
+      )}
+
+      {hasSteps && (
+        <div className="activity">
+          <button className="activity-header" onClick={() => setExpanded((v) => !v)}>
+            <span className="activity-text">
+              {`${t("activity.workedFor")} ${formatElapsed((turn.elapsedSeconds ?? 0) * 1000)}`}
+            </span>
+            <Icon name="chevron" size={14} className={`chevron ${expanded ? "open" : ""}`} />
+          </button>
+          {expanded && <pre className="activity-steps">{turn.steps}</pre>}
+        </div>
+      )}
+
+      {hasAnswer && <pre className="answer">{turn.answer}</pre>}
     </div>
   );
 }
@@ -269,7 +398,7 @@ function TurnView({ turn, now, active }: { turn: Turn; now: number; active: bool
 }
 
 function WorkspaceSelector() {
-  const { state, runCommand, clearTurns, pickFolder, t } = useApp();
+  const { state, runCommand, clearTurns, selectWorkspace, pickFolder, t } = useApp();
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState("");
   const [adding, setAdding] = useState(false);
@@ -292,8 +421,7 @@ function WorkspaceSelector() {
 
   const switchTo = async (id: string) => {
     close();
-    clearTurns();
-    await runCommand(`/workspace switch ${id}`);
+    await selectWorkspace(id);
   };
 
   const createFromPath = async (path: string) => {

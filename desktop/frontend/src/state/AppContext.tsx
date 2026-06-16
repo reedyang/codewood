@@ -12,6 +12,7 @@ import { ApiClient } from "../api/client";
 import type {
   AppState,
   ConfirmRequest,
+  HistoryTurn,
   SegmentKind,
   ServerEvent,
   Turn,
@@ -34,6 +35,10 @@ function quoteArg(value: string): string {
 interface AppContextValue {
   state: AppState | null;
   turns: Turn[];
+  historyTurns: HistoryTurn[];
+  historyStart: number;
+  historyTotal: number;
+  historyLoading: boolean;
   busy: boolean;
   connected: boolean;
   now: number;
@@ -52,6 +57,10 @@ interface AppContextValue {
   interrupt: () => Promise<void>;
   answerConfirm: (answer: string) => Promise<void>;
   clearTurns: () => void;
+  switchToChat: (chatId: string, workspaceId?: string) => Promise<void>;
+  selectWorkspace: (workspaceId: string) => Promise<void>;
+  newChat: () => Promise<void>;
+  loadOlderHistory: () => Promise<void>;
   openWorkspaceInExplorer: (id: string) => Promise<boolean>;
   toggleWorkspacePin: (id: string) => void;
   toggleChatPin: (id: string) => void;
@@ -66,10 +75,12 @@ interface AppContextValue {
   openAbout: () => void;
   closeAbout: () => void;
   pickFolder: () => Promise<string>;
+  pickFiles: () => Promise<string[]>;
 }
 
 interface HostApiBridge {
   pick_folder?: () => string | Promise<string>;
+  pick_files?: () => string[] | Promise<string[]>;
 }
 
 const AppContext = createContext<AppContextValue | null>(null);
@@ -104,6 +115,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const [state, setState] = useState<AppState | null>(null);
   const [turns, setTurns] = useState<Turn[]>([]);
+  const [historyTurns, setHistoryTurns] = useState<HistoryTurn[]>([]);
+  const [historyStart, setHistoryStart] = useState(0);
+  const [historyTotal, setHistoryTotal] = useState(0);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const historyChatRef = useRef<string>("\u0000");
   const [busy, setBusy] = useState(false);
   const [connected, setConnected] = useState(false);
   const [now, setNow] = useState(() => Date.now());
@@ -117,6 +133,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [aboutOpen, setAboutOpen] = useState(false);
   const nextIdRef = useRef(1);
+  const seededExpandRef = useRef(false);
+  const themeInitRef = useRef(false);
 
   const lang = useMemo(() => normalizeLang(state?.language), [state?.language]);
   const t = useCallback((key: string) => translate(lang, key), [lang]);
@@ -136,10 +154,40 @@ export function AppProvider({ children }: { children: ReactNode }) {
     return () => mql.removeEventListener?.("change", onChange);
   }, [theme]);
 
-  const setTheme = useCallback((value: Theme) => {
-    setThemeState(value);
-    window.localStorage.setItem(THEME_STORAGE_KEY, value);
-  }, []);
+  const setTheme = useCallback(
+    (value: Theme) => {
+      themeInitRef.current = true;
+      setThemeState(value);
+      window.localStorage.setItem(THEME_STORAGE_KEY, value);
+      void client.setTheme(value);
+    },
+    [client],
+  );
+
+  // Adopt the theme persisted in config.jsonc once it arrives from the backend,
+  // unless the user has already changed it this session.
+  useEffect(() => {
+    if (themeInitRef.current) {
+      return;
+    }
+    const serverTheme = state?.theme;
+    if (serverTheme === "light" || serverTheme === "dark" || serverTheme === "system") {
+      themeInitRef.current = true;
+      setThemeState(serverTheme);
+      window.localStorage.setItem(THEME_STORAGE_KEY, serverTheme);
+    }
+  }, [state?.theme]);
+
+  // Auto-expand the active workspace once on first load so its chats are
+  // visible; afterwards the user fully controls which workspaces are open.
+  useEffect(() => {
+    const activeWsId = state?.workspace.id ?? "";
+    if (seededExpandRef.current || !activeWsId) {
+      return;
+    }
+    seededExpandRef.current = true;
+    setExpandedWorkspaceIds((prev) => (prev.includes(activeWsId) ? prev : [...prev, activeWsId]));
+  }, [state?.workspace.id]);
 
   const updatePrefs = useCallback((next: UiPrefs) => {
     setUiPrefs(next);
@@ -305,6 +353,85 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const clearTurns = useCallback(() => setTurns([]), []);
 
+  const INITIAL_HISTORY = 12;
+  const HISTORY_PAGE = 8;
+
+  const loadChatHistory = useCallback(async () => {
+    setHistoryLoading(true);
+    try {
+      const page = await client.getChatHistory(undefined, INITIAL_HISTORY);
+      setHistoryTurns(page.turns);
+      setHistoryStart(page.start);
+      setHistoryTotal(page.total);
+    } finally {
+      setHistoryLoading(false);
+    }
+  }, [client]);
+
+  const loadOlderHistory = useCallback(async () => {
+    if (historyLoading || historyStart <= 0) {
+      return;
+    }
+    setHistoryLoading(true);
+    try {
+      const page = await client.getChatHistory(historyStart, HISTORY_PAGE);
+      setHistoryTurns((prev) => [...page.turns, ...prev]);
+      setHistoryStart(page.start);
+      setHistoryTotal(page.total);
+    } finally {
+      setHistoryLoading(false);
+    }
+  }, [client, historyLoading, historyStart]);
+
+  // Initial / external chat changes: (re)load history for the active chat.
+  // Our own switchToChat/newChat update historyChatRef so this won't double-run.
+  useEffect(() => {
+    const cid = state?.activeChatId ?? "";
+    if (!cid || cid === historyChatRef.current) {
+      return;
+    }
+    historyChatRef.current = cid;
+    void loadChatHistory();
+  }, [state?.activeChatId, loadChatHistory]);
+
+  const switchToChat = useCallback(
+    async (chatId: string, workspaceId = "") => {
+      const ok = await client.selectChat(chatId, workspaceId);
+      if (!ok) {
+        return;
+      }
+      historyChatRef.current = chatId;
+      clearTurns();
+      await loadChatHistory();
+    },
+    [client, clearTurns, loadChatHistory],
+  );
+
+  const selectWorkspace = useCallback(
+    async (workspaceId: string) => {
+      const ok = await client.selectChat("", workspaceId);
+      if (!ok) {
+        return;
+      }
+      // The new workspace's active chat id arrives via the idle state event,
+      // which triggers the history effect above to load its turns.
+      historyChatRef.current = "\u0000";
+      clearTurns();
+    },
+    [client, clearTurns],
+  );
+
+  const newChat = useCallback(async () => {
+    const id = await client.newChat();
+    if (id) {
+      historyChatRef.current = id;
+    }
+    clearTurns();
+    setHistoryTurns([]);
+    setHistoryStart(0);
+    setHistoryTotal(0);
+  }, [client, clearTurns]);
+
   const openWorkspaceInExplorer = useCallback(
     (id: string) => client.openWorkspaceInExplorer(id),
     [client],
@@ -406,6 +533,20 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
+  const pickFiles = useCallback(async (): Promise<string[]> => {
+    const api = (window as unknown as { pywebview?: { api?: HostApiBridge } })
+      .pywebview?.api;
+    if (!api?.pick_files) {
+      return [];
+    }
+    try {
+      const result = await api.pick_files();
+      return Array.isArray(result) ? result.filter(Boolean) : [];
+    } catch {
+      return [];
+    }
+  }, []);
+
   // Bridge native-menu actions (gui.py -> window.__codewoodMenu) to app state.
   useEffect(() => {
     const handler = (action: string, payload?: string) => {
@@ -443,6 +584,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const value: AppContextValue = {
     state,
     turns,
+    historyTurns,
+    historyStart,
+    historyTotal,
+    historyLoading,
     busy,
     connected,
     now,
@@ -461,6 +606,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
     interrupt,
     answerConfirm,
     clearTurns,
+    switchToChat,
+    selectWorkspace,
+    newChat,
+    loadOlderHistory,
     openWorkspaceInExplorer,
     toggleWorkspacePin,
     toggleChatPin,
@@ -475,6 +624,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     openAbout,
     closeAbout,
     pickFolder,
+    pickFiles,
   };
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;
