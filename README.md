@@ -68,9 +68,20 @@ python src/main.py app
 codewood app
 ```
 
-Launching `app` opens the desktop window without a console window. The GUI
-process spawns the backend by re-launching the same executable in `serve`
-mode (development: `python src/main.py serve`).
+Launching `app` opens the desktop window without a console window. In a
+packaged build, `codewood app` starts the GUI in a detached process and
+returns control to the command prompt immediately. The GUI process spawns
+the backend by re-launching the same executable in `serve` mode
+(development: `python src/main.py serve`).
+
+Launch behaviour of the packaged executable:
+
+- **Double-click `codewood.exe`** (or a shortcut) → starts the desktop GUI.
+- **`codewood.exe` with no arguments in a terminal** → starts the terminal UI.
+- **`codewood.exe app`** → starts the desktop GUI from anywhere.
+
+(Double-click is detected by the executable owning a freshly allocated
+console; running it from an existing shell keeps the terminal UI.)
 
 ### Architecture
 

@@ -37,7 +37,7 @@ rem NOTE: --paths (pathex) is resolved relative to the current working
 rem directory (the project root here), unlike --add-data sources which are
 rem resolved relative to --specpath. So the venv path must NOT use "../../".
 "%PYINSTALLER%" --onefile --name codewood ^
-  --icon "../../build/codewood.ico" ^
+  --icon "../../build/app_icon.ico" ^
   --add-data "../../vendors/rg.exe;bin" ^
   --add-data "../../skills;skills" ^
   --add-data "../../src;src" ^

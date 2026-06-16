@@ -47,8 +47,8 @@ ARGS=(
 )
 
 # App icon: macOS uses .icns; Linux ignores it, so only pass when present.
-if [ "$(uname -s)" = "Darwin" ] && [ -f "build/codewood.icns" ]; then
-  ARGS=(--icon "../../build/codewood.icns" "${ARGS[@]}")
+if [ "$(uname -s)" = "Darwin" ] && [ -f "build/app_icon.icns" ]; then
+  ARGS=(--icon "../../build/app_icon.icns" "${ARGS[@]}")
 fi
 
 "$PYINSTALLER" "${ARGS[@]}" "$ENTRY_SCRIPT"

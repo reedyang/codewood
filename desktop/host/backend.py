@@ -1,7 +1,7 @@
 """Spawn and manage the Code Wood backend (serve mode) subprocess.
 
-In a frozen build the GUI runs as ``codewoodw.exe`` and launches the
-sibling ``codewood.exe serve``. During development it launches
+In a frozen build the GUI re-launches the same ``codewood.exe`` in
+``serve`` mode. During development it launches
 ``python <repo>/src/main.py serve`` instead. Either way the backend
 prints a one-line JSON handshake (``{"port", "token"}``) on stdout that
 this module reads to learn where to connect.
@@ -22,6 +22,23 @@ from typing import List, Optional, Tuple
 
 class BackendError(RuntimeError):
     pass
+
+
+def _clean_frozen_env() -> dict:
+    """Return a copy of the environment without PyInstaller's private vars.
+
+    A frozen (one-file) parent exports bootstrap variables such as
+    ``_PYI_ARCHIVE_FILE`` / ``_PYI_APPLICATION_HOME_DIR`` / ``_MEIPASS2``
+    that point at *its own* extraction directory. If they leak into a child
+    that is itself a frozen executable, the child resolves its bundle to the
+    wrong place (breaking imports and the bundled .NET runtime). Strip them
+    so the child bootstraps cleanly.
+    """
+    env = os.environ.copy()
+    for key in list(env):
+        if key.startswith("_PYI") or key.startswith("_MEI"):
+            env.pop(key, None)
+    return env
 
 
 class BackendProcess:
@@ -60,6 +77,7 @@ class BackendProcess:
             text=True,
             bufsize=1,
             creationflags=creationflags,
+            env=_clean_frozen_env(),
         )
 
         assert self.proc.stdout is not None

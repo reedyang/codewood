@@ -1,4 +1,4 @@
-"""Code Wood desktop GUI host.
+"""Desktop GUI host.
 
 Creates a WebView2 (Windows) / system WebView window via pywebview,
 launches the Code Wood backend in serve mode, loads the TypeScript
