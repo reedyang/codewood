@@ -532,15 +532,107 @@ def _apply_startup_model_override(
     return True, None
 
 
-def _hide_owned_console_window() -> None:
-    """Hide the console window when this process owns it (Windows only).
+_GUI_DETACHED_ENV = "CODEWOOD_GUI_DETACHED"
 
-    The GUI ``app`` mode ships in the same console-mode executable as the
-    terminal UI. When the executable is launched on its own (double-click
-    or shortcut) Windows allocates a console for it; we hide that console so
-    the GUI starts without a stray command window. When launched from an
-    existing terminal (more than one process attached to the console) we
-    leave it visible so we never hide the user's own shell.
+
+def _launched_from_explorer() -> bool:
+    """Return True when our nearest non-self ancestor is Explorer (Windows).
+
+    Used to tell a double-click / shortcut launch apart from a run inside an
+    existing shell. We walk the parent-process chain and skip our own
+    executable's frames (PyInstaller one-file builds run as a bootloader
+    process plus an app child, so the immediate parent is usually our own
+    exe) until we reach the first foreign process: ``explorer.exe`` means a
+    double-click; a shell (cmd/powershell/…) means a terminal launch.
+    """
+    if os.name != "nt":
+        return False
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        TH32CS_SNAPPROCESS = 0x00000002
+
+        class PROCESSENTRY32(ctypes.Structure):
+            _fields_ = [
+                ("dwSize", wintypes.DWORD),
+                ("cntUsage", wintypes.DWORD),
+                ("th32ProcessID", wintypes.DWORD),
+                ("th32DefaultHeapID", ctypes.POINTER(ctypes.c_ulong)),
+                ("th32ModuleID", wintypes.DWORD),
+                ("cntThreads", wintypes.DWORD),
+                ("th32ParentProcessID", wintypes.DWORD),
+                ("pcPriClassBase", ctypes.c_long),
+                ("dwFlags", wintypes.DWORD),
+                ("szExeFile", ctypes.c_char * 260),
+            ]
+
+        kernel32 = ctypes.windll.kernel32
+        snapshot = kernel32.CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
+        if snapshot == wintypes.HANDLE(-1).value:
+            return False
+        ppid_by_pid: dict[int, int] = {}
+        name_by_pid: dict[int, str] = {}
+        try:
+            entry = PROCESSENTRY32()
+            entry.dwSize = ctypes.sizeof(PROCESSENTRY32)
+            ok = kernel32.Process32First(snapshot, ctypes.byref(entry))
+            while ok:
+                pid = int(entry.th32ProcessID)
+                ppid_by_pid[pid] = int(entry.th32ParentProcessID)
+                name_by_pid[pid] = entry.szExeFile.decode("ascii", "ignore").lower()
+                ok = kernel32.Process32Next(snapshot, ctypes.byref(entry))
+        finally:
+            kernel32.CloseHandle(snapshot)
+
+        own_names = {
+            "codewood.exe",
+            "python.exe",
+            "pythonw.exe",
+            os.path.basename(sys.executable).lower(),
+        }
+        current = ppid_by_pid.get(os.getpid())
+        seen: set[int] = set()
+        while current and current not in seen:
+            seen.add(current)
+            name = name_by_pid.get(current, "")
+            if name and name not in own_names:
+                return name == "explorer.exe"
+            current = ppid_by_pid.get(current)
+    except Exception:
+        return False
+    return False
+
+
+def _hide_owned_console_window() -> None:
+    """Hide the console window for a double-click launch (Windows only).
+
+    A double-click of the console-mode executable allocates a console that
+    we don't want flashing on screen while the GUI starts. When launched
+    from an existing terminal we leave the console alone so we never hide
+    the user's own shell.
+    """
+    if not _launched_from_explorer():
+        return
+    try:
+        import ctypes
+
+        kernel32 = ctypes.windll.kernel32
+        user32 = ctypes.windll.user32
+        hwnd = kernel32.GetConsoleWindow()
+        if hwnd:
+            user32.ShowWindow(hwnd, 0)  # SW_HIDE
+    except Exception:
+        pass
+
+
+def _free_own_console() -> None:
+    """Hide and detach from this process's own console (Windows only).
+
+    The detached GUI child is a console-subsystem one-file build, so Windows
+    gives it a private console. We hide its window immediately and then call
+    ``FreeConsole`` to destroy it outright, leaving the GUI with no console
+    window at all (and no window the user could close to kill the GUI).
     """
     if os.name != "nt":
         return
@@ -550,12 +642,77 @@ def _hide_owned_console_window() -> None:
         kernel32 = ctypes.windll.kernel32
         user32 = ctypes.windll.user32
         hwnd = kernel32.GetConsoleWindow()
-        if not hwnd:
-            return
-        process_list = (ctypes.c_uint * 8)()
-        attached = int(kernel32.GetConsoleProcessList(process_list, 8))
-        if attached <= 1:
-            user32.ShowWindow(hwnd, 0)  # SW_HIDE
+        if hwnd:
+            user32.ShowWindow(hwnd, 0)  # SW_HIDE before freeing to avoid a flash
+        kernel32.FreeConsole()
+    except Exception:
+        pass
+
+
+def _spawn_detached_gui() -> int:
+    """Re-launch ourselves as a detached, console-free GUI process.
+
+    This lets ``codewood app`` (and a double-click) return control to the
+    caller immediately: the parent exits while the GUI keeps running in an
+    independent process with no console window attached.
+    """
+    import subprocess
+
+    if getattr(sys, "frozen", False):
+        cmd = [sys.executable, "app"]
+        cwd = str(Path(sys.executable).resolve().parent)
+    else:
+        cmd = [sys.executable, str(project_root / "src" / "main.py"), "app"]
+        cwd = str(project_root)
+
+    # Strip PyInstaller's private bootstrap variables (_PYI*/_MEIPASS2) so the
+    # child — itself a frozen one-file build — resolves its own bundle instead
+    # of inheriting the parent's extraction directory (which breaks imports and
+    # the bundled .NET runtime used by the WebView2 backend).
+    env = {k: v for k, v in os.environ.items()
+           if not (k.startswith("_PYI") or k.startswith("_MEI"))}
+    env[_GUI_DETACHED_ENV] = "1"
+    if os.name == "nt":
+        env.setdefault("PYTHONNET_RUNTIME", "netfx")
+
+    creationflags = 0
+    if os.name == "nt":
+        # CREATE_NO_WINDOW (rather than DETACHED_PROCESS) so the child — itself
+        # a console-subsystem one-file build — never gets a visible console
+        # window; the child also frees its console on startup. NEW_PROCESS_GROUP
+        # keeps it independent of the launching terminal's Ctrl+C.
+        CREATE_NO_WINDOW = 0x08000000
+        CREATE_NEW_PROCESS_GROUP = 0x00000200
+        creationflags = CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP
+
+    # Hide our own console first so a double-click launch never flashes a
+    # window before the detached GUI takes over (no-op when run from a shell).
+    _hide_owned_console_window()
+    try:
+        subprocess.Popen(  # noqa: S603 - launching our own trusted executable
+            cmd,
+            cwd=cwd,
+            env=env,
+            close_fds=True,
+            creationflags=creationflags,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except Exception as exc:  # pragma: no cover - defensive
+        print(f"❌ Failed to launch the desktop GUI: {exc}")
+        return 1
+    return 0
+
+
+def _log_gui_error(message: str) -> None:
+    """Best-effort error log for the detached GUI process (no console)."""
+    try:
+        import tempfile
+
+        log_path = Path(tempfile.gettempdir()) / "codewood-gui-error.log"
+        with open(log_path, "a", encoding="utf-8") as handle:
+            handle.write(message.rstrip() + "\n")
     except Exception:
         pass
 
@@ -567,7 +724,20 @@ def _launch_gui_app() -> int:
     are bundled as data under ``<_MEIPASS>/host`` (see build/pack.bat); in
     development they are imported directly from the source tree.
     """
-    _hide_owned_console_window()
+    if os.environ.get(_GUI_DETACHED_ENV) == "1":
+        # The detached child owns a private console; destroy it so the GUI
+        # has no console window attached to it.
+        _free_own_console()
+    else:
+        _hide_owned_console_window()
+
+    # Force pywebview's EdgeChromium backend to host the .NET Framework
+    # runtime (always present on Windows 10/11). Without this, pythonnet may
+    # auto-select coreclr and intermittently fail with "Failed to create a
+    # .NET runtime (coreclr)", especially inside the frozen one-file build.
+    if os.name == "nt":
+        os.environ.setdefault("PYTHONNET_RUNTIME", "netfx")
+
     if getattr(sys, "frozen", False):
         host_dir = os.path.join(getattr(sys, "_MEIPASS", ""), "host")
     else:
@@ -575,11 +745,49 @@ def _launch_gui_app() -> int:
     if host_dir and host_dir not in sys.path:
         sys.path.insert(0, host_dir)
     try:
-        import codewoodw  # type: ignore
+        import gui  # type: ignore
+
+        return int(gui.main() or 0)
     except Exception as exc:  # pragma: no cover - defensive
-        print(f"❌ Failed to launch the desktop GUI: {exc}")
+        message = f"❌ Failed to launch the desktop GUI: {exc}"
+        if os.environ.get(_GUI_DETACHED_ENV) == "1":
+            _log_gui_error(message)
+        else:
+            print(message)
         return 1
-    return int(codewoodw.main() or 0)
+
+
+def _resolve_gui_launch(cli_args: dict) -> int | None:
+    """Decide whether to launch the GUI, and how.
+
+    Returns an exit code when the GUI path handles the run, or ``None`` to
+    fall through to the terminal UI. The GUI is launched when ``app`` is
+    requested explicitly, or — on a frozen build — when the executable was
+    started on its own console (a double-click) with no arguments.
+    """
+    detached_child = os.environ.get(_GUI_DETACHED_ENV) == "1"
+    app_requested = bool(cli_args.get("app_mode", False))
+
+    if not app_requested and not detached_child and getattr(sys, "frozen", False):
+        no_arguments = not (
+            cli_args.get("exec_task")
+            or cli_args.get("serve_mode")
+            or cli_args.get("show_help")
+            or cli_args.get("workspace_selector")
+            or cli_args.get("model_selector")
+        )
+        if no_arguments and _launched_from_explorer():
+            app_requested = True
+
+    if not app_requested:
+        return None
+
+    # The detached child (or a dev run) runs the GUI inline; a frozen,
+    # still-attached launch re-spawns itself detached so the caller's prompt
+    # returns immediately and no console window lingers.
+    if detached_child or not getattr(sys, "frozen", False):
+        return _launch_gui_app()
+    return _spawn_detached_gui()
 
 
 def main(argv: list[str] | None = None):
@@ -612,11 +820,14 @@ def main(argv: list[str] | None = None):
         print(_format_startup_help(executable_name=executable_name))
         return 0
 
-    # The GUI ``app`` command short-circuits before any config/model work:
-    # it only launches the desktop host, which spawns its own ``serve``
-    # backend process that performs the real configuration loading.
-    if isinstance(cli_args, dict) and bool(cli_args.get("app_mode", False)):
-        return _launch_gui_app()
+    # GUI launch short-circuits before any config/model work: it only starts
+    # the desktop host, which spawns its own ``serve`` backend process that
+    # performs the real configuration loading. This also covers double-click
+    # launches of the frozen executable (see _resolve_gui_launch).
+    if isinstance(cli_args, dict):
+        gui_exit_code = _resolve_gui_launch(cli_args)
+        if gui_exit_code is not None:
+            return gui_exit_code
 
     work_directory = None
     config = None
