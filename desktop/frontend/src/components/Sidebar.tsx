@@ -55,6 +55,8 @@ export function Sidebar({ onOpenSettings }: { onOpenSettings: () => void }) {
     t,
     runCommand,
     clearTurns,
+    switchToChat,
+    newChat,
     openWorkspaceInExplorer,
     toggleWorkspacePin,
     toggleChatPin,
@@ -73,7 +75,7 @@ export function Sidebar({ onOpenSettings }: { onOpenSettings: () => void }) {
   const pinnedWs = new Set(uiPrefs.pinnedWorkspaceIds);
   const pinnedChat = new Set(uiPrefs.pinnedChatIds);
   const archivedChat = new Set(uiPrefs.archivedChatIds);
-  const expanded = new Set(expandedWorkspaceIds.length > 0 ? expandedWorkspaceIds : [activeWsId]);
+  const expanded = new Set(expandedWorkspaceIds);
 
   // Resolve every known chat (active workspace + loaded ones) for pin lookup.
   const allKnownChats = useMemo(() => {
@@ -108,11 +110,7 @@ export function Sidebar({ onOpenSettings }: { onOpenSettings: () => void }) {
   };
 
   const switchChat = async (wsId: string, chatId: string) => {
-    clearTurns();
-    if (wsId && wsId !== activeWsId) {
-      await runCommand(`/workspace switch ${wsId}`);
-    }
-    await runCommand(`/chat switch ${chatId}`);
+    await switchToChat(chatId, wsId && wsId !== activeWsId ? wsId : "");
   };
 
   const runChatCommand = async (wsId: string, command: string) => {
@@ -265,7 +263,7 @@ export function Sidebar({ onOpenSettings }: { onOpenSettings: () => void }) {
   return (
     <aside className="sidebar">
       <div className="sidebar-top">
-        <button className="btn-newchat" onClick={() => void reloadingRun("/chat new")}>
+        <button className="btn-newchat" onClick={() => void newChat()}>
           <Icon name="new-chat" size={16} />
           {t("sidebar.newChat")}
         </button>
@@ -302,7 +300,7 @@ export function Sidebar({ onOpenSettings }: { onOpenSettings: () => void }) {
               return (
                 <li key={ws.id} className="tree-group">
                   <div
-                    className={`tree-row ws-row ${ws.active ? "active" : ""}`}
+                    className="tree-row ws-row"
                     onContextMenu={(e) => openWorkspaceMenu(e, ws)}
                   >
                     {isRenaming("workspace", ws.id) ? (
@@ -314,8 +312,11 @@ export function Sidebar({ onOpenSettings }: { onOpenSettings: () => void }) {
                           title={ws.root}
                           onClick={() => toggleWorkspaceExpanded(ws.id)}
                         >
-                          <Icon name="chevron" size={14} className={`chevron ${open ? "open" : ""}`} />
-                          <Icon name="folder" size={15} className="muted-icon" />
+                          <Icon
+                            name={open ? "folder-open" : "folder"}
+                            size={15}
+                            className="muted-icon"
+                          />
                           <span className="tree-name">{ws.name}</span>
                         </button>
                         <button
@@ -324,6 +325,13 @@ export function Sidebar({ onOpenSettings }: { onOpenSettings: () => void }) {
                           onClick={(e) => openWorkspaceMenu(e, ws)}
                         >
                           <Icon name="dots" size={14} />
+                        </button>
+                        <button
+                          className="tree-chevron-btn"
+                          aria-label={t("panel.toggle")}
+                          onClick={() => toggleWorkspaceExpanded(ws.id)}
+                        >
+                          <Icon name="chevron" size={14} className={`chevron ${open ? "open" : ""}`} />
                         </button>
                       </>
                     )}

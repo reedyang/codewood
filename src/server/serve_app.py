@@ -108,6 +108,130 @@ def _read_workspace_chat_index(storage_dir: Any) -> List[Dict[str, Any]]:
     return out
 
 
+def _build_structured_turns(agent: Any) -> List[Dict[str, Any]]:
+    """Group the active chat's history into GUI turns.
+
+    Each turn is ``{"userText", "steps", "answer"}``. Internal command inputs
+    (slash / direct shell) and command outputs are filtered out, so the GUI can
+    render genuine user prompts, collapsible execution steps, and the final
+    model reply as distinct blocks.
+    """
+    import contextlib
+
+    from ..controllers.chat_command_controller import (
+        _genuine_user_positions_in_list,
+    )
+    from ..core.assistant_output_highlighter import (
+        format_assistant_display_response,
+    )
+
+    hist = list(getattr(agent, "conversation_history", None) or [])
+    genuine = set(_genuine_user_positions_in_list(hist))
+    turns: List[Dict[str, Any]] = []
+    current: Optional[Dict[str, Any]] = None
+    sms = getattr(agent, "session_memory_service", None)
+
+    def _ensure_turn() -> Dict[str, Any]:
+        nonlocal current
+        if current is None:
+            current = {"userText": "", "steps": "", "answer": "", "elapsedSeconds": 0}
+            turns.append(current)
+        return current
+
+    def _is_answer(content: str) -> bool:
+        """A plain final reply, not a bookkeeping/tool/compaction payload."""
+        try:
+            if sms is not None:
+                if sms.parse_context_compaction_notice_content(content) is not None:
+                    return False
+                if sms.parse_context_compaction_summary_content(content) is not None:
+                    return False
+            if agent._parse_conversation_interrupted_history_content(content) is not None:
+                return False
+            if agent._parse_direct_shell_result_history_content(content) is not None:
+                return False
+            if agent._parse_task_worked_summary_history_content(content) is not None:
+                return False
+            if agent._parse_model_tool_plan_history_content(content) is not None:
+                return False
+            if agent._parse_model_tool_result_history_content(content) is not None:
+                return False
+        except Exception:
+            return False
+        try:
+            return bool(format_assistant_display_response(content))
+        except Exception:
+            return False
+
+    for idx, msg in enumerate(hist):
+        if not isinstance(msg, dict):
+            continue
+        role = str(msg.get("role") or "").strip().lower()
+        content = str(msg.get("content") or "")
+        if idx in genuine:
+            current = {"userText": content, "steps": "", "answer": "", "elapsedSeconds": 0}
+            turns.append(current)
+            continue
+        if role == "user":
+            # Non-genuine user entries are command inputs; never shown.
+            continue
+        if role == "assistant":
+            # Drop slash-command outputs and durable compaction summaries.
+            try:
+                if agent._parse_internal_slash_result_history_content(content) is not None:
+                    continue
+            except Exception:
+                pass
+            try:
+                if sms is not None and sms.parse_context_compaction_summary_content(content) is not None:
+                    continue
+            except Exception:
+                pass
+            # Capture the turn's elapsed time; surfaced in the steps header
+            # ("Worked for ...") rather than rendered as a step line.
+            try:
+                worked = agent._parse_task_worked_summary_history_content(content)
+            except Exception:
+                worked = None
+            if worked is not None:
+                turn = _ensure_turn()
+                try:
+                    turn["elapsedSeconds"] = int(worked.get("elapsed_seconds") or 0)
+                except Exception:
+                    pass
+                continue
+
+        if _is_answer(content):
+            try:
+                text = format_assistant_display_response(content) or ""
+            except Exception:
+                text = ""
+            text = strip_ansi(str(text)).replace("\r\n", "\n").replace("\r", "\n").strip("\n")
+            if not text.strip():
+                continue
+            turn = _ensure_turn()
+            turn["answer"] = turn["answer"] + ("\n" if turn["answer"] else "") + text
+            continue
+
+        # Render an execution step using the agent's per-message renderer.
+        buffer = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(buffer):
+                agent._render_transcript_single_message(idx, msg, hist)
+        except Exception:
+            pass
+        text = strip_ansi(buffer.getvalue()).replace("\r\n", "\n").replace("\r", "\n").strip("\n")
+        if not text.strip():
+            continue
+        turn = _ensure_turn()
+        turn["steps"] = turn["steps"] + text + "\n"
+
+    for turn in turns:
+        turn["steps"] = turn["steps"].rstrip("\n")
+        turn["answer"] = turn["answer"].rstrip("\n")
+    return turns
+
+
 class _Broadcaster:
     """Fan-out of server events to all connected SSE subscribers."""
 
@@ -256,6 +380,12 @@ def _build_state(agent: Any) -> Dict[str, Any]:
     except Exception:
         language = "en"
 
+    theme = ""
+    try:
+        theme = str(agent._load_runtime_config_data().get("theme") or "")
+    except Exception:
+        theme = ""
+
     return {
         "app": {"name": get_app_name(), "version": get_app_version()},
         "workspace": {
@@ -269,6 +399,7 @@ def _build_state(agent: Any) -> Dict[str, Any]:
         "activeChatId": str(getattr(agent, "active_chat_id", "") or ""),
         "model": {"current": model_current, "available": model_available},
         "language": language,
+        "theme": theme,
         "executionPolicy": str(getattr(agent, "execution_policy", "") or ""),
     }
 
@@ -379,6 +510,118 @@ class ServeApp:
         if not root:
             return False
         return _open_in_file_manager(root)
+
+    def chat_history(self, before: Optional[int], limit: int) -> Dict[str, Any]:
+        """Return a paginated slice of structured turns for the active chat.
+
+        ``before`` is the exclusive end index (0-based among turns); ``None``
+        means "from the end". The newest ``limit`` turns up to ``before`` are
+        returned along with ``start`` (the index of the first returned turn) and
+        the overall ``total`` count, so the GUI can lazily load older turns.
+        """
+        try:
+            turns = _build_structured_turns(self.agent)
+        except Exception:
+            turns = []
+        total = len(turns)
+        if limit <= 0:
+            limit = 12
+        if before is None or before < 0 or before > total:
+            end = total
+        else:
+            end = before
+        start = max(0, end - limit)
+        return {"turns": turns[start:end], "start": start, "total": total}
+
+    def select_chat(self, chat_id: str, workspace_id: str = "") -> bool:
+        """Silently switch workspace and/or chat (no echo / no history replay).
+
+        Refused while a task is running to avoid racing the agent loop, which
+        owns the conversation history during a turn. ``chat_id`` may be empty to
+        only switch workspace (its active chat is kept).
+        """
+        import contextlib
+
+        cid = str(chat_id or "").strip()
+        wsid = str(workspace_id or "").strip()
+        if self._busy.is_set() or (not cid and not wsid):
+            return False
+        agent = self.agent
+        try:
+            if wsid and wsid != str(getattr(agent, "workspace_id", "") or ""):
+                from ..controllers.workspace_command_controller import (
+                    workspace_switch_command,
+                )
+
+                # The command returns a status string; redirect any incidental
+                # output so nothing leaks into the SSE stream.
+                with contextlib.redirect_stdout(io.StringIO()):
+                    workspace_switch_command(agent, wsid)
+            if cid:
+                with agent._chat_state_lock:
+                    target = agent._resolve_chat_selector(cid)
+                    rid = str(target.get("id") or "") if target else ""
+                if not rid:
+                    return False
+                result = agent._activate_chat(
+                    rid, announce=False, clear_screen=False, print_history=False
+                )
+                if result:
+                    return False
+        except Exception:
+            return False
+        self.broadcaster.publish("idle", {"state": _build_state(agent)})
+        return True
+
+    def set_theme(self, theme: str) -> bool:
+        """Persist the GUI theme preference to config.jsonc."""
+        value = str(theme or "").strip().lower()
+        if value not in ("light", "dark", "system"):
+            return False
+        agent = self.agent
+        try:
+            from ..core.config.config_jsonc import (
+                CONFIG_JSONC_FILENAME,
+                load_config_jsonc,
+                save_config_jsonc,
+            )
+
+            cfg_path = agent.config_dir / CONFIG_JSONC_FILENAME
+            cfg_data: Dict[str, Any] = {}
+            if cfg_path.exists():
+                try:
+                    cfg_data = load_config_jsonc(cfg_path) or {}
+                except Exception:
+                    cfg_data = {}
+            cfg_data["theme"] = value
+            save_config_jsonc(cfg_path, cfg_data)
+            cache = getattr(agent, "_resolved_config_data", None)
+            if isinstance(cache, dict):
+                cache["theme"] = value
+        except Exception:
+            return False
+        return True
+
+    def new_chat(self) -> Optional[str]:
+        """Silently create and activate a new chat; return its id."""
+        if self._busy.is_set():
+            return None
+        agent = self.agent
+        try:
+            from ..core.localization import get_display_language, translate
+
+            name = translate("chat.new.default_name", get_display_language(agent))
+            with agent._chat_state_lock:
+                cid = agent._next_chat_id()
+                agent._chat_entries().append(agent._new_chat_entry(cid, name=name))
+                agent._save_chat_state()
+            agent._activate_chat(
+                cid, announce=False, clear_screen=False, print_history=False
+            )
+        except Exception:
+            return None
+        self.broadcaster.publish("idle", {"state": _build_state(agent)})
+        return cid
 
     def list_workspace_chats(self, ws_id: str) -> Optional[List[Dict[str, Any]]]:
         """List chats for a workspace by id without switching to it.
@@ -612,6 +855,23 @@ def _make_handler(app: ServeApp):
                 else:
                     self._send_json(200, {"chats": result})
                 return
+            if path == "/chat-history":
+                before: Optional[int] = None
+                limit = 12
+                try:
+                    before_vals = query.get("before") or []
+                    if before_vals and str(before_vals[0]).strip():
+                        before = int(str(before_vals[0])[:12])
+                except (ValueError, TypeError):
+                    before = None
+                try:
+                    limit_vals = query.get("limit") or []
+                    if limit_vals and str(limit_vals[0]).strip():
+                        limit = max(1, min(200, int(str(limit_vals[0])[:6])))
+                except (ValueError, TypeError):
+                    limit = 12
+                self._send_json(200, app.chat_history(before, limit))
+                return
             if path == "/events":
                 self._stream_events()
                 return
@@ -649,6 +909,23 @@ def _make_handler(app: ServeApp):
                 ws_id = str(body.get("id") or "")[:256]
                 ok = app.open_workspace(ws_id)
                 self._send_json(200 if ok else 404, {"ok": ok})
+                return
+            if path == "/select-chat":
+                chat_id = str(body.get("id") or "")[:256]
+                ws_id = str(body.get("workspaceId") or "")[:256]
+                ok = app.select_chat(chat_id, ws_id)
+                self._send_json(200 if ok else 409, {"ok": ok})
+                return
+            if path == "/new-chat":
+                cid = app.new_chat()
+                self._send_json(
+                    200 if cid else 409, {"ok": bool(cid), "id": cid or ""}
+                )
+                return
+            if path == "/set-theme":
+                theme = str(body.get("theme") or "")[:16]
+                ok = app.set_theme(theme)
+                self._send_json(200 if ok else 400, {"ok": ok})
                 return
             if path == "/shutdown":
                 self._send_json(200, {"ok": True})

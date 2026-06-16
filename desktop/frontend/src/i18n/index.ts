@@ -18,6 +18,9 @@ const en: Dict = {
 
   "activity.working": "Working ...",
   "activity.workedFor": "Worked for",
+  "activity.steps": "Work steps",
+  "history.more": "Scroll up to load earlier messages",
+  "history.loading": "Loading earlier messages…",
 
   "menu.pinProject": "Pin project",
   "menu.unpinProject": "Unpin project",
@@ -44,6 +47,8 @@ const en: Dict = {
 
   "model.label": "Model",
   "panel.toggle": "Toggle sidebar",
+  "attach.add": "Attach files",
+  "attach.remove": "Remove file",
 
   "menu.file": "File",
   "menu.help": "Help",
@@ -55,11 +60,13 @@ const en: Dict = {
   "menu.help.about": "About Code Wood",
   "win.minimize": "Minimize",
   "win.maximize": "Maximize",
+  "win.restore": "Restore Down",
   "win.close": "Close",
 
   "about.title": "About Code Wood",
   "about.version": "Version",
   "about.description": "Code Wood is an AI coding assistant.",
+  "about.copyright": "© Code Wood",
 
   "chat.sessions": "Sessions",
   "chat.new": "New chat",
@@ -131,6 +138,9 @@ const zhCN: Dict = {
 
   "activity.working": "处理中 ...",
   "activity.workedFor": "用时",
+  "activity.steps": "执行过程",
+  "history.more": "向上滚动加载更早的消息",
+  "history.loading": "正在加载更早的消息……",
 
   "menu.pinProject": "置顶工作区",
   "menu.unpinProject": "取消置顶",
@@ -157,6 +167,8 @@ const zhCN: Dict = {
 
   "model.label": "模型",
   "panel.toggle": "切换侧边栏",
+  "attach.add": "添加文件",
+  "attach.remove": "移除文件",
 
   "menu.file": "文件",
   "menu.help": "帮助",
@@ -168,11 +180,13 @@ const zhCN: Dict = {
   "menu.help.about": "关于 Code Wood",
   "win.minimize": "最小化",
   "win.maximize": "最大化",
+  "win.restore": "向下还原",
   "win.close": "关闭",
 
   "about.title": "关于 Code Wood",
   "about.version": "版本",
   "about.description": "Code Wood 是一款 AI 编程助手。",
+  "about.copyright": "© Code Wood",
 
   "chat.sessions": "会话",
   "chat.new": "新建对话",

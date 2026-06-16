@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Code Wood app icon - flat, minimal: a sprout (wood / growth) inside code braces -->
+<svg width="256" height="256" viewBox="0 0 256 256" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect width="256" height="256" rx="58" fill="#F4EFE3"/>
+
+  <!-- code braces "{ }" : warm wood amber -->
+  <path d="M82,70 C72,70 69,76 69,94 C69,114 69,118 46,128 C69,138 69,142 69,162 C69,180 72,186 82,186"
+        fill="none" stroke="#E08A2B" stroke-width="14" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M174,70 C184,70 187,76 187,94 C187,114 187,118 210,128 C187,138 187,142 187,162 C187,180 184,186 174,186"
+        fill="none" stroke="#E08A2B" stroke-width="14" stroke-linecap="round" stroke-linejoin="round"/>
+
+  <!-- sprout : stem + two leaves (fresh green) -->
+  <line x1="128" y1="184" x2="128" y2="132"
+        stroke="#2FA86A" stroke-width="14" stroke-linecap="round"/>
+  <path d="M128,144 C112,144 102,131 102,110 C121,112 130,126 128,144 Z" fill="#46C684"/>
+  <path d="M128,137 C144,135 154,121 156,100 C137,103 127,118 128,137 Z" fill="#46C684"/>
+</svg>

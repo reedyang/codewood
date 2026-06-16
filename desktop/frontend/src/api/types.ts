@@ -30,6 +30,7 @@ export interface AppState {
   activeChatId: string;
   model: { current: string; available: string[] };
   language: string;
+  theme?: string;
   executionPolicy: string;
 }
 
@@ -62,4 +63,19 @@ export interface Turn {
   segments: TurnSegment[];
   startedAt: number;
   endedAt: number | null;
+}
+
+/** A previously-recorded turn loaded from chat history (already classified). */
+export interface HistoryTurn {
+  userText: string;
+  steps: string;
+  answer: string;
+  elapsedSeconds?: number;
+}
+
+/** Paginated chat history response from GET /chat-history. */
+export interface ChatHistoryPage {
+  turns: HistoryTurn[];
+  start: number;
+  total: number;
 }
