@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Build executable with PyInstaller for non-Windows platforms (Linux/macOS).
-# Mirrors build/pack.bat. The Python virtual environment lives in <root>/.env
-# Run it from anywhere; the script resolves the project root itself:
+# Mirrors build/pack.bat. It prepares the Python virtual environment in
+# <root>/.venv (creating it and installing requirements.txt if needed) before
+# packaging. Run it from anywhere; the script resolves the project root itself:
 #   bash build/pack.sh
 set -euo pipefail
 
@@ -11,12 +12,37 @@ cd "$PROJECT_ROOT"
 
 ENTRY_SCRIPT="src/main.py"
 VENV_DIR=".venv"
+VENV_PYTHON="$VENV_DIR/bin/python"
+REQ_FILE="requirements.txt"
+
+# ---- Prepare the Python virtual environment so all build/runtime
+# ---- dependencies (PyInstaller, pywebview, ...) are ready before packaging.
+# ---- Mirrors bin/codewood.sh: create .venv if missing, then install
+# ---- requirements.txt into it.
+if [ ! -x "$VENV_PYTHON" ]; then
+  if command -v python3 >/dev/null 2>&1; then
+    PY_BOOTSTRAP="python3"
+  elif command -v python >/dev/null 2>&1; then
+    PY_BOOTSTRAP="python"
+  else
+    echo "Python executable not found. Please install Python or add it to PATH." >&2
+    exit 127
+  fi
+  echo "Virtual environment not found. Creating \"$VENV_DIR\"..."
+  "$PY_BOOTSTRAP" -m venv "$VENV_DIR" || { echo "Failed to create virtual environment." >&2; exit 1; }
+fi
+
+if [ ! -f "$REQ_FILE" ]; then
+  echo "Requirements file not found: \"$REQ_FILE\"" >&2
+  exit 1
+fi
+echo "Installing/updating dependencies from \"$REQ_FILE\"..."
+"$VENV_PYTHON" -m pip install -r "$REQ_FILE" || { echo "Failed to install dependencies." >&2; exit 1; }
 
 # Locate the virtualenv site-packages (.venv/lib/pythonX.Y/site-packages).
 VENV_PATH="$(ls -d "$VENV_DIR"/lib/python*/site-packages 2>/dev/null | head -n 1 || true)"
 if [ -z "$VENV_PATH" ]; then
   echo "Error: site-packages not found under $VENV_DIR/lib/python*/." >&2
-  echo "Create the virtual environment first, e.g. python3 -m venv $VENV_DIR" >&2
   exit 1
 fi
 
@@ -40,7 +66,7 @@ PYINSTALLER="$VENV_DIR/bin/pyinstaller"
 # 1) codewood carries ALL terminal-UI and GUI logic (frontend bundle +
 #    pywebview host included). Default = terminal UI; "codewood app" = GUI.
 ARGS=(
-  --onedir --name codewood
+  --onedir --noconfirm --name codewood
   --add-data "../../skills:skills"
   --add-data "../../src:src"
   --add-data "../../desktop/frontend/dist:frontend"
@@ -66,7 +92,7 @@ fi
 #    It is emitted INTO the codewood one-dir folder so it sits next to the
 #    codewood executable (single shippable folder).
 "$PYINSTALLER" "${ICON_ARGS[@]}" \
-  --onefile --windowed --name codewood-gui \
+  --onefile --noconfirm --windowed --name codewood-gui \
   --distpath "dist/codewood" \
   --specpath "build/codewood-gui" \
   "desktop/host/launcher.py"
