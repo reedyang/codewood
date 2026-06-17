@@ -1800,6 +1800,45 @@ body.resizing-x {
   margin: 10px 0 6px;
 }
 
+/* Section header that lets the TOOLS / PROMPTS label sit on the left while
+   action affordances (like the bulk Enable all / Disable all toggle) hang on
+   the right edge of the same row. */
+.mcp-section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin: 10px 0 6px;
+}
+
+.mcp-section-header .mcp-section-label {
+  margin: 0;
+}
+
+/* Compact text-only toggle that toggles every tool on its server at once.
+   Styled as a low-emphasis pill so it doesn't compete with the per-tool
+   chips below — the chips are the primary call-to-action. */
+.mcp-bulk-toggle {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--accent);
+  background: transparent;
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
+  border-radius: 999px;
+  padding: 2px 10px;
+  cursor: pointer;
+  line-height: 1.4;
+}
+
+.mcp-bulk-toggle:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
+.mcp-bulk-toggle:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 .mcp-chip-grid {
   display: flex;
   flex-wrap: wrap;
@@ -1812,6 +1851,12 @@ body.resizing-x {
   border-radius: 999px;
   background: var(--bg);
   font-size: 12px;
+  /* Reserve the bold metrics up front so toggling .is-enabled doesn't
+     re-flow the chip's width (which used to nudge sibling chips and
+     wrap-break the row when the user clicked one). The visual weight is
+     handled by paint-only properties (font-synthesis-weight / text-shadow)
+     so the layout box stays identical between states. */
+  font-weight: 600;
   color: var(--text-muted);
   cursor: pointer;
 }
@@ -1820,7 +1865,6 @@ body.resizing-x {
   background: color-mix(in srgb, var(--accent) 16%, transparent);
   border-color: color-mix(in srgb, var(--accent) 50%, transparent);
   color: var(--accent);
-  font-weight: 600;
 }
 
 .mcp-tool-chip:disabled {
@@ -1870,6 +1914,15 @@ body.resizing-x {
   color: var(--accent);
   background: color-mix(in srgb, var(--accent) 14%, transparent);
   border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent);
+}
+
+/* Agent mode badge mirrors the Plan badge so the composer always shows the
+   currently active mode in the same slot — using a neutral, lower-emphasis
+   palette so it doesn't compete with the more decisive Plan badge. */
+.mode-badge-agent {
+  color: var(--text-muted);
+  background: color-mix(in srgb, var(--text-muted) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--text-muted) 28%, transparent);
 }
 
 .segmented {

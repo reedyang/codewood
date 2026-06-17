@@ -261,6 +261,19 @@ export class ApiClient {
     return res.ok;
   }
 
+  async setMcpToolsEnabled(
+    server: string,
+    tools: string[],
+    enabled: boolean,
+  ): Promise<boolean> {
+    const res = await fetch(`${this.base}/set-mcp-tools-enabled`, {
+      method: "POST",
+      headers: this.headers(),
+      body: JSON.stringify({ server, tools, enabled }),
+    });
+    return res.ok;
+  }
+
   async getMcpServerConfig(name: string): Promise<McpServerConfigEntry> {
     const res = await fetch(`${this.base}/mcp-server-config`, {
       method: "POST",

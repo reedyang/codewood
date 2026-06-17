@@ -25,6 +25,7 @@ export function McpSettings() {
     getMcpServerDetails,
     setMcpServerEnabled,
     setMcpToolEnabled,
+    setMcpToolsEnabled,
     getMcpServerConfig,
     addMcpServer,
     updateMcpServer,
@@ -156,6 +157,47 @@ export function McpSettings() {
       return;
     }
     await refresh();
+  };
+
+  /** Flip every tool on a server in one shot. We compute the target set from
+   *  the current details snapshot rather than from the server summary so a
+   *  user who has just hand-toggled a tool sees consistent behaviour: all
+   *  visible tools become enabled (or all disabled). */
+  const onToggleAllTools = async (server: string, targetEnabled: boolean) => {
+    const detail = details[server];
+    if (!detail || detail.tools.length === 0) return;
+    const allKey = `${server}::__all__`;
+    if (busyTool[allKey]) return;
+    setBusyTool((prev) => ({ ...prev, [allKey]: true }));
+    const toolNames = detail.tools.map((tool) => tool.name);
+    const ok = await setMcpToolsEnabled(server, toolNames, targetEnabled);
+    setBusyTool((prev) => {
+      const next = { ...prev };
+      delete next[allKey];
+      return next;
+    });
+    if (!ok) {
+      setError(t("mcp.errToggleTool"));
+      return;
+    }
+    // Mirror the new state into our local snapshots so the chip highlights
+    // flip immediately without waiting on a round-trip refresh.
+    setDetails((prev) => {
+      const entry = prev[server];
+      if (!entry) return prev;
+      const nextDisabled = targetEnabled ? [] : [...toolNames].sort();
+      return {
+        ...prev,
+        [server]: { ...entry, disabledTools: nextDisabled },
+      };
+    });
+    setServers((prev) =>
+      prev.map((s) =>
+        s.name === server
+          ? { ...s, disabledTools: targetEnabled ? [] : [...toolNames].sort() }
+          : s,
+      ),
+    );
   };
 
   const onToggleTool = async (server: string, tool: string, currentEnabled: boolean) => {
@@ -303,7 +345,37 @@ export function McpSettings() {
                 {isLoadingDetail && <p className="muted">{t("models.loading")}</p>}
                 {detail && (
                   <>
-                    <div className="mcp-section-label">{t("mcp.toolsLabel")}</div>
+                    <div className="mcp-section-header">
+                      <span className="mcp-section-label">{t("mcp.toolsLabel")}</span>
+                      {detail.tools.length > 0 && (() => {
+                        // "All on" when no tool is currently disabled by
+                        // policy; the bulk button flips us to the opposite
+                        // state so a single click toggles the whole row.
+                        const allEnabled = detail.tools.every(
+                          (tool) => !disabledNames.has(tool.name),
+                        );
+                        const bulkKey = `${server.name}::__all__`;
+                        return (
+                          <button
+                            type="button"
+                            className="mcp-bulk-toggle"
+                            disabled={!!busyTool[bulkKey] || !server.enabled}
+                            onClick={() =>
+                              void onToggleAllTools(server.name, !allEnabled)
+                            }
+                            title={
+                              allEnabled
+                                ? t("mcp.disableAllTools")
+                                : t("mcp.enableAllTools")
+                            }
+                          >
+                            {allEnabled
+                              ? t("mcp.disableAllTools")
+                              : t("mcp.enableAllTools")}
+                          </button>
+                        );
+                      })()}
+                    </div>
                     {detail.tools.length === 0 ? (
                       <p className="muted">{t("mcp.noTools")}</p>
                     ) : (

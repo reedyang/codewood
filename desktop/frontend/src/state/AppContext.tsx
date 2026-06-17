@@ -107,6 +107,11 @@ interface AppContextValue {
     tool: string,
     enabled: boolean,
   ) => Promise<boolean>;
+  setMcpToolsEnabled: (
+    server: string,
+    tools: string[],
+    enabled: boolean,
+  ) => Promise<boolean>;
   getCompletionCatalog: () => Promise<CompletionCatalog>;
   getMcpServerConfig: (name: string) => Promise<McpServerConfigEntry>;
   addMcpServer: (
@@ -1178,6 +1183,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
       client.setMcpServerEnabled(name, enabled),
     setMcpToolEnabled: (server: string, tool: string, enabled: boolean) =>
       client.setMcpToolEnabled(server, tool, enabled),
+    setMcpToolsEnabled: (server: string, tools: string[], enabled: boolean) =>
+      client.setMcpToolsEnabled(server, tools, enabled),
     getCompletionCatalog: () => client.getCompletionCatalog(),
     getMcpServerConfig: (name: string) => client.getMcpServerConfig(name),
     addMcpServer: (name: string, config: McpServerConfigEntry) =>

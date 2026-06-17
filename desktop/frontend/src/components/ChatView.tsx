@@ -211,7 +211,6 @@ function ComposerPlusMenu({
             }}
           >
             <span className="dropdown-check" />
-            <Icon name="plus" size={13} />
             <span>{t("attach.add")}</span>
           </button>
           <div className="dropdown-divider" />
@@ -503,9 +502,13 @@ export function ChatView() {
               void setPlanMode(m === "plan");
             }}
           />
-          {chatMode === "plan" && (
+          {chatMode === "plan" ? (
             <span className="mode-badge mode-badge-plan" title={t("composer.modePlanHint")}>
               {t("composer.modePlan")}
+            </span>
+          ) : (
+            <span className="mode-badge mode-badge-agent" title={t("composer.modeAgentHint")}>
+              {t("composer.modeAgent")}
             </span>
           )}
           <Dropdown
@@ -627,19 +630,26 @@ export function ChatView() {
             handlers={messageHandlers}
           />
         ))}
-        {chatMode === "plan" && !busy && turns.length > 0 && (
-          <div className="plan-execute-row">
-            <button
-              type="button"
-              className="btn btn-primary plan-execute-btn"
-              onClick={() => void continueFromPlan()}
-            >
-              <Icon name="send" size={13} />
-              <span>{t("composer.executeNow")}</span>
-            </button>
-            <span className="plan-execute-hint">{t("composer.executeNowHint")}</span>
-          </div>
-        )}
+        {chatMode === "plan" &&
+          !busy &&
+          turns.length > 0 &&
+          // Don't surface the Execute now button while the planning turn
+          // is still streaming — the plan isn't finalized until the last
+          // round closes, and showing the button mid-stream invites the
+          // user to advance before the model has even finished writing.
+          turns[turns.length - 1].endedAt !== null && (
+            <div className="plan-execute-row">
+              <button
+                type="button"
+                className="btn btn-primary plan-execute-btn"
+                onClick={() => void continueFromPlan()}
+              >
+                <Icon name="send" size={13} />
+                <span>{t("composer.executeNow")}</span>
+              </button>
+              <span className="plan-execute-hint">{t("composer.executeNowHint")}</span>
+            </div>
+          )}
       </div>
       <div className="composer-dock">{composer}</div>
     </div>
