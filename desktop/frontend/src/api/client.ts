@@ -177,6 +177,7 @@ export class ApiClient {
     base_url: string;
     api_key?: string;
     api_mode?: string;
+    port?: number;
   }): Promise<{ ok: boolean; models?: string[]; error?: string }> {
     const res = await fetch(`${this.base}/fetch-models`, {
       method: "POST",

@@ -2,14 +2,16 @@
 // API key; the rest (base URL, api_mode) is filled in automatically. "custom"
 // lets the user type everything by hand.
 
+export type PresetKind = "openai" | "ollama" | "custom";
+
 export interface ModelPreset {
   id: string;
   label: string;
   provider: string;
   base_url: string;
   api_mode: string;
-  /** When true the UI only asks for an API key. */
-  presetFilled: boolean;
+  /** Distinguishes connection shape: OpenAI-compatible, Ollama, or custom. */
+  kind: PresetKind;
 }
 
 export const MODEL_PRESETS: ModelPreset[] = [
@@ -19,7 +21,7 @@ export const MODEL_PRESETS: ModelPreset[] = [
     provider: "DeepSeek",
     base_url: "https://api.deepseek.com",
     api_mode: "chat",
-    presetFilled: true,
+    kind: "openai",
   },
   {
     id: "openai",
@@ -27,7 +29,7 @@ export const MODEL_PRESETS: ModelPreset[] = [
     provider: "OpenAI",
     base_url: "https://api.openai.com/v1",
     api_mode: "chat",
-    presetFilled: true,
+    kind: "openai",
   },
   {
     id: "zhipu",
@@ -35,7 +37,7 @@ export const MODEL_PRESETS: ModelPreset[] = [
     provider: "Zhipu",
     base_url: "https://open.bigmodel.cn/api/paas/v4",
     api_mode: "chat",
-    presetFilled: true,
+    kind: "openai",
   },
   {
     id: "qwen",
@@ -43,7 +45,7 @@ export const MODEL_PRESETS: ModelPreset[] = [
     provider: "Qwen",
     base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1",
     api_mode: "chat",
-    presetFilled: true,
+    kind: "openai",
   },
   {
     id: "mimo",
@@ -51,7 +53,7 @@ export const MODEL_PRESETS: ModelPreset[] = [
     provider: "Mimo",
     base_url: "https://api.mimo.xiaomi.com/v1",
     api_mode: "chat",
-    presetFilled: true,
+    kind: "openai",
   },
   {
     id: "minimax",
@@ -59,7 +61,7 @@ export const MODEL_PRESETS: ModelPreset[] = [
     provider: "MiniMax",
     base_url: "https://api.minimax.chat/v1",
     api_mode: "chat",
-    presetFilled: true,
+    kind: "openai",
   },
   {
     id: "doubao",
@@ -67,7 +69,15 @@ export const MODEL_PRESETS: ModelPreset[] = [
     provider: "Doubao",
     base_url: "https://ark.cn-beijing.volces.com/api/v3",
     api_mode: "chat",
-    presetFilled: true,
+    kind: "openai",
+  },
+  {
+    id: "ollama",
+    label: "Ollama",
+    provider: "Ollama",
+    base_url: "",
+    api_mode: "ollama",
+    kind: "ollama",
   },
   {
     id: "custom",
@@ -75,12 +85,27 @@ export const MODEL_PRESETS: ModelPreset[] = [
     provider: "",
     base_url: "",
     api_mode: "chat",
-    presetFilled: false,
+    kind: "custom",
   },
 ];
 
 export function findPreset(id: string): ModelPreset | undefined {
   return MODEL_PRESETS.find((p) => p.id === id);
+}
+
+/** Pick the best-matching preset id for a loaded provider (by api_mode/base_url). */
+export function presetIdForProvider(p: {
+  api_mode: string;
+  base_url: string;
+}): string {
+  if ((p.api_mode || "").toLowerCase() === "ollama") {
+    return "ollama";
+  }
+  const base = (p.base_url || "").replace(/\/+$/, "");
+  const match = MODEL_PRESETS.find(
+    (preset) => preset.kind === "openai" && preset.base_url.replace(/\/+$/, "") === base,
+  );
+  return match ? match.id : "custom";
 }
 
 // Editor-side representation of a configured provider.
@@ -93,6 +118,8 @@ export interface EditorModel {
 
 export interface EditorProvider {
   provider: string;
+  /** Optional human label; required to disambiguate duplicate providers. */
+  display_name: string;
   api_key: string;
   base_url: string;
   api_mode: string;
@@ -100,6 +127,8 @@ export interface EditorProvider {
   models: EditorModel[];
   /** Auto-refresh + select-all on every app start when true. */
   auto_refresh?: boolean;
+  /** Selected platform preset id (drives which fields are shown). */
+  presetId: string;
 }
 
 /** Convert a raw config provider object into the editor model. */
@@ -119,14 +148,18 @@ export function toEditorProvider(raw: unknown): EditorProvider {
       multimodal: mm.multimodal as boolean | undefined,
     };
   });
+  const api_mode = String(params.api_mode ?? "chat");
+  const base_url = String(params.base_url ?? "");
   return {
     provider: String(obj.provider ?? ""),
+    display_name: String(obj.display_name ?? ""),
     api_key: String(params.api_key ?? ""),
-    base_url: String(params.base_url ?? ""),
-    api_mode: String(params.api_mode ?? "chat"),
+    base_url,
+    api_mode,
     port: typeof params.port === "number" ? params.port : undefined,
     models,
     auto_refresh: Boolean(params.auto_refresh),
+    presetId: presetIdForProvider({ api_mode, base_url }),
   };
 }
 
@@ -152,6 +185,10 @@ export function toConfigProviders(editors: EditorProvider[]): unknown[] {
         }
         return model;
       });
-    return { provider: e.provider, params };
+    const entry: Record<string, unknown> = { provider: e.provider, params };
+    if (e.display_name && e.display_name.trim()) {
+      entry.display_name = e.display_name.trim();
+    }
+    return entry;
   });
 }
