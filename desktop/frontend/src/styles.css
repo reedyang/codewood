@@ -1594,7 +1594,18 @@ body.resizing-x {
   gap: 10px;
   padding: 10px 14px;
 }
+.mcp-server-actions {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
 
+.mcp-collapse-placeholder {
+  display: inline-block;
+  width: 22px;
+  height: 22px;
+}
 .mcp-collapse {
   display: inline-flex;
   align-items: center;

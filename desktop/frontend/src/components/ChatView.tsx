@@ -6,7 +6,12 @@ import { MarkdownText } from "./Markdown";
 import { StepsView } from "./Steps";
 import { ChatTitleBar } from "./ChatTitleBar";
 import { decodeAttachments } from "../utils/attachments";
-import { composeMessageText, parseMessageToSegments } from "../utils/tokens";
+import {
+  composeMessageText,
+  encodeHiddenInstruction,
+  parseMessageToSegments,
+  stripHiddenControl,
+} from "../utils/tokens";
 import type { Segment } from "../utils/tokens";
 import { RichComposer } from "./RichComposer";
 
@@ -102,6 +107,13 @@ function UserEntry({
   const time = formatMessageTime(timeMs);
   const canAct = index < 0;
   const { paths: attachedPaths, body } = decodeAttachments(text);
+  const visibleBody = stripHiddenControl(body);
+  // A message that consists ONLY of a CONTROL envelope (e.g. the GUI's
+  // "Execute now" nudge) becomes invisible in the chat transcript — we
+  // don't render an empty bubble for it, since the user never typed it.
+  if (!visibleBody && attachedPaths.length === 0) {
+    return null;
+  }
   return (
     <div className="user-message">
       <div className="entry-input">
@@ -117,7 +129,7 @@ function UserEntry({
             ))}
           </div>
         )}
-        {body && <div className="entry-text">{body}</div>}
+        {visibleBody && <div className="entry-text">{visibleBody}</div>}
       </div>
       <div className="entry-actions">
         <span className="entry-time">{time}</span>
@@ -128,7 +140,7 @@ function UserEntry({
             aria-label={t("msg.copy")}
             onClick={() => {
               // Copy the user-visible body, not the sentinel-wrapped envelope.
-              handlers.onCopy(body || text);
+              handlers.onCopy(visibleBody || text);
               setCopied(true);
               window.setTimeout(() => setCopied(false), 1200);
             }}
@@ -407,7 +419,11 @@ export function ChatView() {
   const continueFromPlan = async () => {
     await setPlanMode(false);
     setChatMode("agent");
-    await sendInput(t("composer.executePlanPrompt"));
+    // Wrap the proceed-instruction in a CONTROL envelope so the GUI hides
+    // it from the chat bubble; the agent still receives the inner text as
+    // part of the message body and can respond as if the user said it.
+    const prompt = t("composer.executePlanPrompt");
+    await sendInput(encodeHiddenInstruction(prompt));
   };
 
   const addFiles = async () => {
