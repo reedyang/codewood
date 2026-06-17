@@ -790,8 +790,37 @@ def _resolve_gui_launch(cli_args: dict) -> int | None:
     return _spawn_detached_gui()
 
 
+def _force_utf8_std_streams() -> None:
+    """Make stdout/stderr tolerate non-ASCII output on every platform.
+
+    On a Chinese (or other non-UTF-8) Windows install, Python defaults its
+    console streams to the legacy ANSI code page (e.g. GBK/cp936). The agent
+    and startup banners legitimately print Unicode symbols such as ``⚠``
+    (U+26A0) and ``❌`` (U+274C); writing those to a GBK stream raises
+    ``UnicodeEncodeError`` and, in serve mode, kills the backend before it can
+    emit its handshake — surfacing only as "Backend exited before sending a
+    handshake" in the GUI.
+
+    Reconfigure both streams to UTF-8 with ``errors="replace"`` so unknown
+    glyphs degrade to a placeholder instead of crashing the process. Wrapped
+    in best-effort guards: ``reconfigure`` exists on Python 3.7+ text streams
+    but may be absent when stdout has been replaced by a non-standard object.
+    """
+    for stream_name in ("stdout", "stderr"):
+        stream = getattr(sys, stream_name, None)
+        reconfigure = getattr(stream, "reconfigure", None)
+        if callable(reconfigure):
+            try:
+                reconfigure(encoding="utf-8", errors="replace")
+            except Exception:
+                pass
+
+
 def main(argv: list[str] | None = None):
     """Main function."""
+    # Harden the console encoding before ANYTHING prints, so a non-UTF-8
+    # system locale can't crash startup on the first Unicode symbol.
+    _force_utf8_std_streams()
     restore_app_console_title()
 
     # Prepend the bundled ``bin/`` directory to PATH so pre-shipped
