@@ -1140,6 +1140,26 @@ class ServeApp:
 
         base_url = str(params.get("base_url") or "").strip()
         api_key_raw = str(params.get("api_key") or "").strip()
+        api_mode = str(params.get("api_mode") or "").strip().lower()
+
+        # Ollama has no base_url/api_key in the UI: derive a localhost URL from
+        # the configured port (default 11434) and use its OpenAI-compatible API.
+        if api_mode == "ollama":
+            port_raw = params.get("port")
+            try:
+                port = int(port_raw) if port_raw not in (None, "") else 11434
+            except (TypeError, ValueError):
+                port = 11434
+            base_url = f"http://localhost:{port}/v1"
+            api_key = "ollama"
+            try:
+                from ..ai.ai_provider_clients import fetch_openai_compatible_models
+
+                models = fetch_openai_compatible_models(base_url=base_url, api_key=api_key)
+                return {"ok": True, "models": models}
+            except Exception as e:  # noqa: BLE001 - surface a clean message to UI
+                return {"ok": False, "error": str(e)[:300]}
+
         if not base_url:
             return {"ok": False, "error": "base_url is required"}
         try:
@@ -1176,6 +1196,7 @@ class ServeApp:
                     "base_url": params.get("base_url"),
                     "api_key": params.get("api_key"),
                     "api_mode": params.get("api_mode"),
+                    "port": params.get("port"),
                 }
             )
             if not result.get("ok"):

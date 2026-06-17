@@ -29,6 +29,66 @@ export function SettingsView() {
   const [page, setPage] = useState<PageId>("appearance");
   const [navWidth, setNavWidth] = useState(loadNavWidth);
   const [resizing, setResizing] = useState(false);
+  const [modelsDirty, setModelsDirty] = useState(false);
+  const [saveSignal, setSaveSignal] = useState(0);
+  // A queued navigation that is waiting on the unsaved-changes prompt.
+  const [pendingLeave, setPendingLeave] = useState<PageId | "back" | null>(null);
+  // When true, the pending navigation runs once the page reports it's clean.
+  const [leaveAfterSave, setLeaveAfterSave] = useState(false);
+
+  const performLeave = (target: PageId | "back") => {
+    if (target === "back") {
+      closeSettings();
+    } else {
+      setPage(target);
+    }
+  };
+
+  // Attempt to navigate; if the models page is dirty, open the prompt instead.
+  const requestLeave = (target: PageId | "back") => {
+    if (page === "models" && modelsDirty) {
+      setPendingLeave(target);
+      return;
+    }
+    performLeave(target);
+  };
+
+  const onDialogSave = () => {
+    setLeaveAfterSave(true);
+    setSaveSignal((n) => n + 1);
+  };
+
+  const onDialogDiscard = () => {
+    const target = pendingLeave;
+    setPendingLeave(null);
+    setModelsDirty(false);
+    if (target) performLeave(target);
+  };
+
+  const onDialogCancel = () => {
+    setPendingLeave(null);
+    setLeaveAfterSave(false);
+  };
+
+  // Once a save triggered by the dialog clears the dirty flag, finish leaving.
+  const handleDirtyChange = (d: boolean) => {
+    setModelsDirty(d);
+    if (!d && leaveAfterSave) {
+      setLeaveAfterSave(false);
+      const target = pendingLeave;
+      setPendingLeave(null);
+      if (target) performLeave(target);
+    }
+  };
+
+  const goToPage = (id: PageId) => {
+    if (id === page) return;
+    requestLeave(id);
+  };
+
+  const back = () => {
+    requestLeave("back");
+  };
 
   useEffect(() => {
     window.localStorage.setItem(NAV_WIDTH_KEY, String(navWidth));
@@ -56,9 +116,9 @@ export function SettingsView() {
 
   const langLabel = (code: string) => (code === "zh-CN" ? "简体中文" : "English");
 
-  const pages: { id: PageId; label: string }[] = [
-    { id: "appearance", label: t("settings.page.appearance") },
-    { id: "models", label: t("settings.page.models") },
+  const pages: { id: PageId; label: string; icon: IconName }[] = [
+    { id: "appearance", label: t("settings.page.appearance"), icon: "sun" },
+    { id: "models", label: t("settings.page.models"), icon: "cube" },
   ];
 
   return (
@@ -67,7 +127,7 @@ export function SettingsView() {
       style={{ "--settings-nav-width": `${navWidth}px` } as CSSProperties}
     >
       <aside className="settings-nav">
-        <button className="settings-back" onClick={closeSettings}>
+        <button className="settings-back" onClick={back}>
           <Icon name="arrow-left" size={15} />
           <span>{t("settings.back")}</span>
         </button>
@@ -76,9 +136,10 @@ export function SettingsView() {
             <button
               key={p.id}
               className={`settings-nav-item ${page === p.id ? "active" : ""}`}
-              onClick={() => setPage(p.id)}
+              onClick={() => goToPage(p.id)}
             >
-              {p.label}
+              <Icon name={p.icon} size={15} />
+              <span>{p.label}</span>
             </button>
           ))}
         </nav>
@@ -127,8 +188,30 @@ export function SettingsView() {
             </div>
           </div>
         )}
-        {page === "models" && <ModelsSettings />}
+        {page === "models" && (
+          <ModelsSettings onDirtyChange={handleDirtyChange} saveSignal={saveSignal} />
+        )}
       </section>
+
+      {pendingLeave !== null && (
+        <div className="modal-backdrop" role="dialog" aria-modal="true">
+          <div className="modal">
+            <h3 className="modal-title">{t("models.leaveTitle")}</h3>
+            <p className="modal-body">{t("models.leavePrompt")}</p>
+            <div className="modal-actions">
+              <button className="btn" onClick={onDialogCancel}>
+                {t("models.leaveCancel")}
+              </button>
+              <button className="btn" onClick={onDialogDiscard}>
+                {t("models.leaveDiscard")}
+              </button>
+              <button className="btn btn-primary" onClick={onDialogSave}>
+                {t("models.leaveSave")}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -89,6 +89,7 @@ interface AppContextValue {
     base_url: string;
     api_key?: string;
     api_mode?: string;
+    port?: number;
   }) => Promise<{ ok: boolean; models?: string[]; error?: string }>;
   setExecutionPolicy: (policy: string) => Promise<void>;
   toggleWorkspaceExpanded: (id: string) => void;
@@ -1078,8 +1079,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setReasoning,
     getModelsConfig: () => client.getModelsConfig(),
     saveModelsConfig: (providers: unknown[]) => client.saveModelsConfig(providers),
-    fetchProviderModels: (params: { base_url: string; api_key?: string; api_mode?: string }) =>
-      client.fetchProviderModels(params),
+    fetchProviderModels: (params: {
+      base_url: string;
+      api_key?: string;
+      api_mode?: string;
+      port?: number;
+    }) => client.fetchProviderModels(params),
     setExecutionPolicy,
     toggleWorkspaceExpanded,
     refreshWorkspaceChats,

@@ -330,6 +330,9 @@ body.resizing-x {
 }
 
 .settings-nav-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   padding: 8px 10px;
   border: none;
   border-radius: 8px;
@@ -400,7 +403,19 @@ body.resizing-x {
   display: flex;
   gap: 10px;
   align-items: center;
-  margin-bottom: 20px;
+  justify-content: flex-end;
+  margin-top: 20px;
+}
+
+.models-add .select {
+  flex: 0 0 auto;
+  width: auto;
+  min-width: 140px;
+}
+
+.models-provider-label {
+  flex: 1;
+  font-weight: 600;
 }
 
 .models-provider {
@@ -415,6 +430,10 @@ body.resizing-x {
   align-items: center;
   gap: 8px;
   margin-bottom: 12px;
+}
+
+.models-provider.collapsed .models-provider-head {
+  margin-bottom: 0;
 }
 
 .models-provider-name {
@@ -479,6 +498,44 @@ body.resizing-x {
 
 .models-actions {
   margin-top: 20px;
+}
+
+.models-key {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.models-key .text-input {
+  flex: 1;
+}
+
+.models-key-eye {
+  flex: 0 0 auto;
+}
+
+.models-section {
+  margin-top: 8px;
+}
+
+.models-collapse {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: transparent;
+  border: none;
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+  padding: 4px 0;
+}
+
+.models-collapse .chevron {
+  transition: transform 0.12s ease;
+}
+
+.models-collapse .chevron.down {
+  transform: rotate(90deg);
 }
 
 .icon-spin {
@@ -1177,7 +1234,14 @@ body.resizing-x {
 .modal-actions {
   display: flex;
   justify-content: flex-end;
+  gap: 8px;
   margin-top: 20px;
+}
+
+.modal-body {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text-secondary, var(--text));
 }
 
 .setting-row {

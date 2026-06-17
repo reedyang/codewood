@@ -109,7 +109,7 @@ export function ChatTitleBar() {
         title={t("plan.toggle")}
         onClick={togglePlan}
       >
-        <Icon name="list-check" size={16} />
+        <Icon name="panel-right" size={18} />
       </button>
       {menu && (
         <ContextMenu

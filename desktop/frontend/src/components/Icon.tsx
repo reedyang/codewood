@@ -30,6 +30,10 @@ import listCheck from "../assets/icons/list-check.svg";
 import circle from "../assets/icons/circle.svg";
 import checkCircle from "../assets/icons/check-circle.svg";
 import spinner from "../assets/icons/spinner.svg";
+import eye from "../assets/icons/eye.svg";
+import eyeOff from "../assets/icons/eye-off.svg";
+import panelRight from "../assets/icons/panel-right.svg";
+import cube from "../assets/icons/cube.svg";
 
 const SOURCES = {
   panel,
@@ -63,6 +67,10 @@ const SOURCES = {
   circle,
   "check-circle": checkCircle,
   spinner,
+  eye,
+  "eye-off": eyeOff,
+  "panel-right": panelRight,
+  cube,
 } as const;
 
 export type IconName = keyof typeof SOURCES;
