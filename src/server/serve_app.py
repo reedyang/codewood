@@ -1136,6 +1136,152 @@ class ServeApp:
             return False
         return True
 
+    # General settings (auto_compact / max_tool_rounds / memory / mcp_tools)
+    # ----------------------------------------------------------------------
+    # These four toggles live at the top level of ``config.jsonc`` because they
+    # change agent runtime behavior and must remain consistent between the TUI
+    # and the GUI. We surface them through dedicated endpoints rather than the
+    # generic ``/save-models-config`` path so the GUI never has to read or
+    # rewrite the rest of the config file just to flip a single switch.
+    _GENERAL_KEYS = (
+        "auto_compact_trigger_percent",
+        "max_tool_rounds",
+        "memory_enabled",
+        "mcp_tools_enabled",
+    )
+
+    def get_general_config(self) -> Dict[str, Any]:
+        """Return current values for the General settings panel.
+
+        Falls back to live agent attributes when ``config.jsonc`` is missing or
+        unreadable so the panel always renders the same values that the
+        running agent is actually using.
+        """
+        agent = self.agent
+        # Always start from the live agent attributes; the file may not exist
+        # yet on a brand-new install but those attributes were populated from
+        # bootstrap defaults.
+        out: Dict[str, Any] = {
+            "auto_compact_trigger_percent": int(
+                getattr(agent, "auto_compact_trigger_percent", 0) or 0
+            ),
+            "max_tool_rounds": getattr(agent, "max_tool_rounds", None),
+            "memory_enabled": bool(getattr(agent, "memory_enabled", False)),
+            "mcp_tools_enabled": bool(getattr(agent, "mcp_tools_enabled", False)),
+        }
+        try:
+            from ..core.config.config_jsonc import (
+                CONFIG_JSONC_FILENAME,
+                load_config_jsonc,
+            )
+
+            cfg_path = agent.config_dir / CONFIG_JSONC_FILENAME
+            if cfg_path.exists():
+                cfg = load_config_jsonc(cfg_path) or {}
+                if isinstance(cfg, dict):
+                    if "auto_compact_trigger_percent" in cfg:
+                        try:
+                            out["auto_compact_trigger_percent"] = int(
+                                cfg.get("auto_compact_trigger_percent") or 0
+                            )
+                        except Exception:
+                            pass
+                    if "max_tool_rounds" in cfg:
+                        mtr = cfg.get("max_tool_rounds")
+                        if mtr is None:
+                            out["max_tool_rounds"] = None
+                        else:
+                            try:
+                                out["max_tool_rounds"] = int(mtr)
+                            except Exception:
+                                pass
+                    if "memory_enabled" in cfg:
+                        out["memory_enabled"] = bool(cfg.get("memory_enabled"))
+                    if "mcp_tools_enabled" in cfg:
+                        out["mcp_tools_enabled"] = bool(cfg.get("mcp_tools_enabled"))
+        except Exception:
+            pass
+        return out
+
+    def save_general_config(self, payload: Dict[str, Any]) -> bool:
+        """Persist General settings to ``config.jsonc`` and apply immediately.
+
+        Validates each field, rejects clearly out-of-range values, and applies
+        the result to the live agent so the change takes effect without
+        restarting the process. The rest of ``config.jsonc`` is preserved.
+        """
+        if not isinstance(payload, dict):
+            return False
+        normalized: Dict[str, Any] = {}
+        if "auto_compact_trigger_percent" in payload:
+            try:
+                pct = int(payload.get("auto_compact_trigger_percent"))
+            except Exception:
+                return False
+            if pct < 0 or pct > 100:
+                return False
+            normalized["auto_compact_trigger_percent"] = pct
+        if "max_tool_rounds" in payload:
+            raw = payload.get("max_tool_rounds")
+            if raw is None or (isinstance(raw, str) and not raw.strip()):
+                normalized["max_tool_rounds"] = None
+            else:
+                try:
+                    rounds = int(raw)
+                except Exception:
+                    return False
+                if rounds <= 0:
+                    normalized["max_tool_rounds"] = None
+                else:
+                    normalized["max_tool_rounds"] = rounds
+        if "memory_enabled" in payload:
+            normalized["memory_enabled"] = bool(payload.get("memory_enabled"))
+        if "mcp_tools_enabled" in payload:
+            normalized["mcp_tools_enabled"] = bool(payload.get("mcp_tools_enabled"))
+        if not normalized:
+            return False
+        agent = self.agent
+        try:
+            from ..core.config.config_jsonc import (
+                CONFIG_JSONC_FILENAME,
+                load_config_jsonc,
+                save_config_jsonc,
+            )
+
+            cfg_path = agent.config_dir / CONFIG_JSONC_FILENAME
+            cfg_data: Dict[str, Any] = {}
+            if cfg_path.exists():
+                try:
+                    cfg_data = load_config_jsonc(cfg_path) or {}
+                except Exception:
+                    cfg_data = {}
+            if not isinstance(cfg_data, dict):
+                cfg_data = {}
+            for key, value in normalized.items():
+                cfg_data[key] = value
+            save_config_jsonc(cfg_path, cfg_data)
+        except Exception:
+            return False
+        # Apply to the live agent so the change takes effect immediately.
+        try:
+            for key, value in normalized.items():
+                setattr(agent, key, value)
+        except Exception:
+            pass
+        # Drop the resolved-config cache so downstream consumers re-read fresh.
+        try:
+            agent._resolved_config_data = {}
+        except Exception:
+            pass
+        # Push a fresh state snapshot to refresh any open settings page.
+        try:
+            self.broadcaster.publish(
+                "idle", {"state": _build_state(agent), "chatId": self._active_chat_id()}
+            )
+        except Exception:
+            pass
+        return True
+
     def get_models_config(self) -> List[Dict[str, Any]]:
         """Return the raw (unresolved) ``model_providers`` list for editing."""
         agent = self.agent
@@ -1764,6 +1910,14 @@ def _make_handler(app: ServeApp):
             if path == "/save-models-config":
                 providers = body.get("providers")
                 ok = app.save_models_config(providers if isinstance(providers, list) else [])
+                self._send_json(200 if ok else 400, {"ok": ok})
+                return
+            if path == "/general-config":
+                self._send_json(200, {"ok": True, "general": app.get_general_config()})
+                return
+            if path == "/save-general-config":
+                general = body.get("general")
+                ok = app.save_general_config(general if isinstance(general, dict) else {})
                 self._send_json(200 if ok else 400, {"ok": ok})
                 return
             if path == "/fetch-models":

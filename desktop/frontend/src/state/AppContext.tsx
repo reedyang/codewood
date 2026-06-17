@@ -12,6 +12,7 @@ import { ApiClient } from "../api/client";
 import type {
   AppState,
   ConfirmRequest,
+  GeneralConfig,
   HistoryTurn,
   SegmentKind,
   ServerEvent,
@@ -92,6 +93,8 @@ interface AppContextValue {
     api_mode?: string;
     port?: number;
   }) => Promise<{ ok: boolean; models?: string[]; error?: string }>;
+  getGeneralConfig: () => Promise<GeneralConfig | null>;
+  saveGeneralConfig: (general: Partial<GeneralConfig>) => Promise<boolean>;
   setExecutionPolicy: (policy: string) => Promise<void>;
   toggleWorkspaceExpanded: (id: string) => void;
   refreshWorkspaceChats: (id: string) => Promise<void>;
@@ -1136,6 +1139,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
       api_mode?: string;
       port?: number;
     }) => client.fetchProviderModels(params),
+    getGeneralConfig: () => client.getGeneralConfig(),
+    saveGeneralConfig: (general: Partial<GeneralConfig>) =>
+      client.saveGeneralConfig(general),
     setExecutionPolicy,
     toggleWorkspaceExpanded,
     refreshWorkspaceChats,

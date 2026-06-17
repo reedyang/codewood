@@ -1,6 +1,7 @@
 import type {
   AppState,
   ChatHistoryPage,
+  GeneralConfig,
   ServerEvent,
   WorkspaceChatSummary,
 } from "./types";
@@ -177,6 +178,33 @@ export class ApiClient {
       method: "POST",
       headers: this.headers(),
       body: JSON.stringify({ providers }),
+    });
+    return res.ok;
+  }
+
+  /** General-runtime settings (auto-compact / tool rounds / memory / mcp). */
+  async getGeneralConfig(): Promise<GeneralConfig | null> {
+    const res = await fetch(`${this.base}/general-config`, {
+      method: "POST",
+      headers: this.headers(),
+      body: "{}",
+    });
+    if (!res.ok) {
+      return null;
+    }
+    try {
+      const data = (await res.json()) as { general?: GeneralConfig };
+      return data.general ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  async saveGeneralConfig(general: Partial<GeneralConfig>): Promise<boolean> {
+    const res = await fetch(`${this.base}/save-general-config`, {
+      method: "POST",
+      headers: this.headers(),
+      body: JSON.stringify({ general }),
     });
     return res.ok;
   }
