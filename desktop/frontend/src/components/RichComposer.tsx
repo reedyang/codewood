@@ -248,13 +248,13 @@ function isPreviousSiblingPill(node: Node): boolean {
 function kindIconName(kind: TokenKind): string {
   switch (kind) {
     case "attach":
-      return "info";
+      return "paperclip";
     case "skill":
-      return "list-check";
+      return "sparkles";
     case "mcp-tool":
-      return "shield";
+      return "wrench";
     case "mcp-prompt":
-      return "edit";
+      return "message-square";
   }
 }
 

@@ -36,6 +36,10 @@ import eyeOff from "../assets/icons/eye-off.svg";
 import panelRight from "../assets/icons/panel-right.svg";
 import cube from "../assets/icons/cube.svg";
 import trash from "../assets/icons/trash.svg";
+import sparkles from "../assets/icons/sparkles.svg";
+import wrench from "../assets/icons/wrench.svg";
+import messageSquare from "../assets/icons/message-square.svg";
+import paperclip from "../assets/icons/paperclip.svg";
 
 const SOURCES = {
   panel,
@@ -75,6 +79,10 @@ const SOURCES = {
   "panel-right": panelRight,
   cube,
   trash,
+  sparkles,
+  wrench,
+  "message-square": messageSquare,
+  paperclip,
 } as const;
 
 export type IconName = keyof typeof SOURCES;
