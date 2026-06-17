@@ -83,6 +83,13 @@ interface AppContextValue {
   archiveChats: (ids: string[]) => void;
   setModel: (selector: string) => Promise<void>;
   setReasoning: (level: string) => Promise<void>;
+  getModelsConfig: () => Promise<unknown[]>;
+  saveModelsConfig: (providers: unknown[]) => Promise<boolean>;
+  fetchProviderModels: (params: {
+    base_url: string;
+    api_key?: string;
+    api_mode?: string;
+  }) => Promise<{ ok: boolean; models?: string[]; error?: string }>;
   setExecutionPolicy: (policy: string) => Promise<void>;
   toggleWorkspaceExpanded: (id: string) => void;
   refreshWorkspaceChats: (id: string) => Promise<void>;
@@ -1069,6 +1076,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
     archiveChats,
     setModel,
     setReasoning,
+    getModelsConfig: () => client.getModelsConfig(),
+    saveModelsConfig: (providers: unknown[]) => client.saveModelsConfig(providers),
+    fetchProviderModels: (params: { base_url: string; api_key?: string; api_mode?: string }) =>
+      client.fetchProviderModels(params),
     setExecutionPolicy,
     toggleWorkspaceExpanded,
     refreshWorkspaceChats,

@@ -2,6 +2,7 @@ import { useEffect, useState, type CSSProperties, type MouseEvent as ReactMouseE
 import { useApp, type Theme } from "../state/AppContext";
 import { SUPPORTED_LANGS } from "../i18n";
 import { Icon, type IconName } from "./Icon";
+import { ModelsSettings } from "./ModelsSettings";
 
 const THEME_OPTIONS: { value: Theme; icon: IconName }[] = [
   { value: "light", icon: "sun" },
@@ -13,7 +14,7 @@ const NAV_MIN = 160;
 const NAV_MAX = 360;
 const NAV_WIDTH_KEY = "codewood.settingsNavWidth";
 
-type PageId = "appearance";
+type PageId = "appearance" | "models";
 
 function loadNavWidth(): number {
   const raw = Number(window.localStorage.getItem(NAV_WIDTH_KEY));
@@ -57,6 +58,7 @@ export function SettingsView() {
 
   const pages: { id: PageId; label: string }[] = [
     { id: "appearance", label: t("settings.page.appearance") },
+    { id: "models", label: t("settings.page.models") },
   ];
 
   return (
@@ -125,6 +127,7 @@ export function SettingsView() {
             </div>
           </div>
         )}
+        {page === "models" && <ModelsSettings />}
       </section>
     </div>
   );
