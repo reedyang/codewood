@@ -316,7 +316,12 @@ class Agent:
     def _session_for_key(self, key: str) -> "SessionState":
         reg = self.__dict__.get("_session_registry")
         if reg is None:
-            return SessionState()
+            # No registry yet (e.g. a bare ``Agent.__new__`` instance in tests, or
+            # a code path that touches a per-session field before
+            # ``setup_core_state`` ran). Lazily create one so reads/writes persist
+            # on a single shared session instead of a throwaway that drops state.
+            self._install_session_registry()
+            reg = self.__dict__["_session_registry"]
         lock = self.__dict__.get("_session_registry_lock")
         if lock is None:
             st = reg.get(key)
