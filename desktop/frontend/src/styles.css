@@ -1755,6 +1755,12 @@ h6.md-h {
   border-top: 1px solid var(--border);
 }
 
+.model-reasoning-level {
+  margin-left: 4px;
+  font-style: italic;
+  opacity: 0.8;
+}
+
 .model-group-header {
   padding: 4px 10px 2px;
   font-size: 11px;

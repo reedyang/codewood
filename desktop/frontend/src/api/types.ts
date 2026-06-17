@@ -30,7 +30,12 @@ export interface AppState {
   workspaces: WorkspaceSummary[];
   chats: ChatSummary[];
   activeChatId: string;
-  model: { current: string; available: string[] };
+  model: {
+    current: string;
+    available: string[];
+    reasoningLevel?: string;
+    reasoningLevels?: string[];
+  };
   language: string;
   theme?: string;
   uiPrefs?: {

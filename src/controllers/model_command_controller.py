@@ -15,6 +15,8 @@ def model_usage(agent: Any) -> str:
         f"{_t(agent, 'common.usage')}\n"
         f"  /model\n"
         f"  /model <model_provider>:<name>\n"
+        f"  /model <model_provider>:<name> <reasoning_level>\n"
+        f"  /model reasoning <reasoning_level>\n"
     )
 
 
@@ -29,6 +31,12 @@ def handle_model_builtin_command(agent: Any, builtin_line: str) -> bool:
         current = str(agent._current_model_selector() or "")
         if current:
             print(_t(agent, "model.current", current=current))
+        levels = list(agent._current_model_reasoning_levels() or [])
+        if levels:
+            active_level = str(agent._current_reasoning_level() or "")
+            if active_level:
+                print(_t(agent, "reasoning.current", level=active_level))
+            print(_t(agent, "reasoning.available", levels=", ".join(levels)))
         configured = list(agent._get_configured_model_selectors() or [])
         if configured:
             print(_t(agent, "model.available"))
@@ -39,12 +47,29 @@ def handle_model_builtin_command(agent: Any, builtin_line: str) -> bool:
         print(model_usage(agent))
         return True
 
-    selector = " ".join(parts[1:]).strip()
+    # ``/model reasoning <level>`` adjusts only the reasoning level.
+    if parts[1].lower() == "reasoning":
+        level = " ".join(parts[2:]).strip()
+        print(agent._set_reasoning_level(level))
+        return True
+
+    # ``/model <provider>:<name> [reasoning_level]``
+    selector = str(parts[1]).strip()
     if not selector:
         print(_t(agent, "model.name_missing_with_usage", usage=model_usage(agent)))
         return True
     if ":" not in selector:
-        print(_t(agent, "model.invalid_format_with_usage", usage=model_usage(agent)))
+        # Allow selectors with spaces (e.g. names containing spaces) by treating
+        # everything as the selector when no trailing level is recognized.
+        selector = " ".join(parts[1:]).strip()
+        if ":" not in selector:
+            print(_t(agent, "model.invalid_format_with_usage", usage=model_usage(agent)))
+            return True
+        print(agent._switch_model_by_selector(selector))
         return True
+
+    level = " ".join(parts[2:]).strip()
     print(agent._switch_model_by_selector(selector))
+    if level:
+        print(agent._set_reasoning_level(level))
     return True

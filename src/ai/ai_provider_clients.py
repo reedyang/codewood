@@ -1231,8 +1231,10 @@ def _build_openai_payload(
     tool_schemas: Optional[List[Dict[str, Any]]],
     tool_choice: Any,
     force_disable_thinking: bool,
+    reasoning_effort: str = "",
 ) -> Dict[str, Any]:
     tools_payload = _normalize_openai_tool_schemas(tool_schemas, api_kind=api_kind)
+    reasoning_effort = str(reasoning_effort or "").strip()
     tool_choice_payload = _normalize_openai_tool_choice(tool_choice, api_kind=api_kind)
 
     if api_kind == "responses":
@@ -1256,6 +1258,8 @@ def _build_openai_payload(
             payload["temperature"] = 0.2
         if force_disable_thinking:
             payload["thinking"] = {"type": "disabled"}
+        if reasoning_effort and not (session_summary_mode or memory_query_expansion_mode):
+            payload["reasoning"] = {"effort": reasoning_effort.lower()}
         if isinstance(payload.get("tools"), list) and not payload.get("tools"):
             payload.pop("tools", None)
         effective_drop_params = _merge_default_drop_params(
@@ -1276,6 +1280,8 @@ def _build_openai_payload(
         payload["temperature"] = 0.2
     if force_disable_thinking:
         payload["thinking"] = {"type": "disabled"}
+    if reasoning_effort and not (session_summary_mode or memory_query_expansion_mode):
+        payload["reasoning_effort"] = reasoning_effort.lower()
     if isinstance(payload.get("tools"), list) and not payload.get("tools"):
         payload.pop("tools", None)
     effective_drop_params = _merge_default_drop_params(
@@ -1341,6 +1347,7 @@ def _call_openai_once(
     tool_schemas: Optional[List[Dict[str, Any]]],
     tool_choice: Any,
     force_disable_thinking: bool,
+    reasoning_effort: str = "",
     append_history: Callable[..., None],
 ):
     payload = _build_openai_payload(
@@ -1357,6 +1364,7 @@ def _call_openai_once(
         tool_schemas=tool_schemas,
         tool_choice=tool_choice,
         force_disable_thinking=force_disable_thinking,
+        reasoning_effort=reasoning_effort,
     )
     resp = _post_openai_request(url=url, headers=headers, payload=payload, stream=stream)
     if stream:
@@ -1403,6 +1411,7 @@ def _call_openai_with_suffix_strategy(
     additional_drop_params: List[str],
     tool_schemas: Optional[List[Dict[str, Any]]],
     tool_choice: Any,
+    reasoning_effort: str = "",
     append_history: Callable[..., None],
 ):
     force_disable_thinking = _should_disable_thinking_for_openai_compatible(
@@ -1448,6 +1457,7 @@ def _call_openai_with_suffix_strategy(
             tool_schemas=tool_schemas,
             tool_choice=tool_choice,
             force_disable_thinking=force_disable_thinking,
+            reasoning_effort=reasoning_effort,
             append_history=append_history,
         )
     except Exception as e:
@@ -1501,6 +1511,7 @@ def _call_openai_with_suffix_strategy(
             tool_schemas=tool_schemas,
             tool_choice=tool_choice,
             force_disable_thinking=force_disable_thinking,
+            reasoning_effort=reasoning_effort,
             append_history=append_history,
         )
         if primary_append and not secondary_append:
@@ -1671,6 +1682,7 @@ def _call_with_openai_compatible(
     additional_drop_params = _normalize_additional_drop_params(
         conf.get("additional_drop_params")
     )
+    reasoning_effort = str(conf.get("reasoning_effort") or "").strip()
     api_kinds = _openai_api_order_for_mode(api_mode, str(base_url or ""))
     _OPENAI_ROUTE_LOG.info(
         "openai-route dispatch model=%s api_mode=%s api_order=%s base_url=%s",
@@ -1724,6 +1736,7 @@ def _call_with_openai_compatible(
                 additional_drop_params=additional_drop_params,
                 tool_schemas=tool_schemas,
                 tool_choice=tool_choice,
+                reasoning_effort=reasoning_effort,
                 append_history=append_history,
             )
         except ModelCallError as e:

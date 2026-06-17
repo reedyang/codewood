@@ -46,6 +46,7 @@ class SessionState:
         "call_model_params",
         "call_openai_conf",
         "call_model_set",
+        "reasoning_level",
     )
 
     def __init__(self) -> None:
@@ -76,6 +77,8 @@ class SessionState:
         self.call_model_params: Any = None
         self.call_openai_conf: Any = None
         self.call_model_set: bool = False
+        # Selected reasoning effort level for this chat ("" = none/unsupported).
+        self.reasoning_level: str = ""
 
 
 # Maps each public Agent attribute name to the SessionState slot backing it.
@@ -99,6 +102,7 @@ SESSION_FIELD_MAP: Dict[str, str] = {
     "_tool_call_feedback_interstitial_lines": "tool_call_feedback_interstitial_lines",
     "_force_current_input_as_requirement_once": "force_current_input_as_requirement_once",
     "_last_cancelled_task": "last_cancelled_task",
+    "reasoning_level": "reasoning_level",
 }
 
 

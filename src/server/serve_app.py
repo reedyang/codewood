@@ -526,6 +526,20 @@ def _primary_active_chat_id(agent: Any) -> str:
     return ""
 
 
+def _safe_reasoning_level(agent: Any) -> str:
+    try:
+        return str(agent._current_reasoning_level() or "")
+    except Exception:
+        return ""
+
+
+def _safe_reasoning_levels(agent: Any) -> List[str]:
+    try:
+        return [str(x) for x in (agent._current_model_reasoning_levels() or []) if str(x)]
+    except Exception:
+        return []
+
+
 def _build_state(agent: Any) -> Dict[str, Any]:
     """Serialize a read-only snapshot of agent state for the GUI."""
     from ..config.app_info import get_app_name, get_app_version
@@ -640,7 +654,12 @@ def _build_state(agent: Any) -> Dict[str, Any]:
         "workspaces": workspaces,
         "chats": chats,
         "activeChatId": _primary_active_chat_id(agent),
-        "model": {"current": model_current, "available": model_available},
+        "model": {
+            "current": model_current,
+            "available": model_available,
+            "reasoningLevel": _safe_reasoning_level(agent),
+            "reasoningLevels": _safe_reasoning_levels(agent),
+        },
         "language": language,
         "theme": theme,
         "uiPrefs": ui_prefs,
