@@ -284,6 +284,117 @@ body.resizing-x {
   user-select: none;
 }
 
+/* Full-screen settings (replaces sidebar + chat in the main area). */
+.settings-view {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--bg-sidebar);
+}
+
+.settings-nav {
+  width: var(--settings-nav-width, 220px);
+  flex-shrink: 0;
+  background: var(--bg-sidebar);
+  color: var(--text-on-dark);
+  display: flex;
+  flex-direction: column;
+  padding: 14px 10px 10px;
+  gap: 6px;
+}
+
+.settings-back {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+
+.settings-back:hover {
+  background: color-mix(in srgb, var(--text-on-dark) 12%, transparent);
+}
+
+.settings-nav-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 6px;
+}
+
+.settings-nav-item {
+  padding: 8px 10px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+
+.settings-nav-item:hover {
+  background: color-mix(in srgb, var(--text-on-dark) 10%, transparent);
+}
+
+.settings-nav-item.active {
+  background: color-mix(in srgb, var(--text-on-dark) 16%, transparent);
+  font-weight: 600;
+}
+
+.settings-resizer {
+  flex: 0 0 6px;
+  align-self: stretch;
+  cursor: col-resize;
+  background: transparent;
+  position: relative;
+  z-index: 6;
+}
+
+.settings-resizer::after {
+  content: "";
+  position: absolute;
+  top: var(--panel-radius, 12px);
+  bottom: 0;
+  left: 50%;
+  width: 2px;
+  transform: translateX(-50%);
+  background: transparent;
+  transition: background 0.12s ease;
+}
+
+.settings-resizer:hover::after,
+.settings-resizer.resizing::after {
+  background: var(--divider-strong, #9aa0a6);
+}
+
+.settings-content {
+  flex: 1;
+  min-width: 0;
+  background: var(--bg);
+  border-top-left-radius: var(--panel-radius);
+  border-bottom-left-radius: var(--panel-radius);
+  overflow: auto;
+}
+
+.settings-page {
+  max-width: 640px;
+  padding: 28px 32px;
+}
+
+.settings-page-title {
+  margin: 0 0 20px;
+  font-size: 20px;
+  font-weight: 700;
+}
+
 .brand-name {
   font-size: 18px;
   font-weight: 700;
