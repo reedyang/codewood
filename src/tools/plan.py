@@ -123,6 +123,15 @@ class UpdatePlanTool:
                 "error": "no active chat to attach the plan to",
             }
 
+        # Notify the host (e.g. GUI) so it can push the updated plan to clients
+        # immediately, instead of waiting for the next round/idle boundary.
+        on_changed = getattr(agent, "_gui_plan_changed", None)
+        if callable(on_changed):
+            try:
+                on_changed()
+            except Exception:
+                pass
+
         in_progress = next(
             (it["step"] for it in parsed["plan"] if it["status"] == PLAN_STATUS_IN_PROGRESS),
             "",

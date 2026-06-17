@@ -527,9 +527,23 @@ def _primary_active_chat_id(agent: Any) -> str:
 
 
 def _safe_active_plan(agent: Any) -> Dict[str, Any]:
-    """Return the active chat's plan ({plan:[{step,status}], explanation})."""
+    """Return the active chat's plan ({plan:[{step,status}], explanation}).
+
+    ``_active_chat_plan`` is session-scoped, but this runs on HTTP handler
+    threads that may not be bound to the active chat's session (and a
+    focus-only chat switch never rebinds/refreshes it). Bind to the active
+    chat and refresh the in-memory plan from its message stream so the panel
+    always reflects the latest plan-bearing message of the chat being shown.
+    """
+    snapshot = None
     try:
-        snapshot = agent._chat_state_manager.active_chat_plan()
+        cid = _primary_active_chat_id(agent)
+        with agent._session_scope(cid):
+            try:
+                agent._chat_state_manager.refresh_active_chat_plan_from_messages()
+            except Exception:
+                pass
+            snapshot = agent._chat_state_manager.active_chat_plan()
     except Exception:
         snapshot = None
     if not isinstance(snapshot, dict):
@@ -1429,6 +1443,11 @@ class ServeApp:
         )
         self.agent._gui_round_end = lambda: self.broadcaster.publish(  # type: ignore[attr-defined]
             "round_end", {"chatId": self._active_chat_id()}
+        )
+        # When the model updates its plan mid-turn, push a fresh state snapshot
+        # so the GUI's plan panel reflects it immediately (not only at idle).
+        self.agent._gui_plan_changed = lambda: self.broadcaster.publish(  # type: ignore[attr-defined]
+            "idle", {"state": _build_state(self.agent), "chatId": self._active_chat_id()}
         )
         # The GUI renders its own layout, so disable terminal hard-wrapping and
         # force SGR color emission (stdout is not a TTY here). The bridge keeps

@@ -588,13 +588,46 @@ class ChatStateManager:
             chat = self.find_chat_by_id(self._agent.active_chat_id)
             if not chat:
                 return False
-            self._agent._active_chat_plan = {
+            snapshot = {
                 "plan": normalized,
                 "explanation": str(explanation or "").strip(),
                 "updated_at": self._now_text(),
             }
+            self._agent._active_chat_plan = snapshot
             self._agent._active_chat_plan_pending = True
-            return True
+            # Also stamp the latest existing assistant message and persist now so
+            # the plan survives a restart even when ``update_plan`` is the final
+            # action of a turn (no later assistant message to carry it).
+            self._stamp_plan_on_latest_assistant_message(snapshot)
+        return True
+
+    def _stamp_plan_on_latest_assistant_message(
+        self,
+        snapshot: Dict[str, Any],
+    ) -> None:
+        """Write the plan snapshot onto the most recent assistant message in the
+        active conversation and persist the chat state. Best-effort.
+        """
+        items = _normalize_plan_items(snapshot.get("plan"))
+        if not items:
+            return
+        history = getattr(self._agent, "conversation_history", None)
+        if not isinstance(history, list):
+            return
+        for msg in reversed(history):
+            if not isinstance(msg, dict):
+                continue
+            if str(msg.get("role") or "").strip().lower() != "assistant":
+                continue
+            msg["plan"] = items
+            msg["plan_explanation"] = str(snapshot.get("explanation") or "").strip()
+            msg["plan_updated_at"] = str(snapshot.get("updated_at") or "").strip()
+            try:
+                self.sync_active_chat_messages()
+                self.save_chat_state()
+            except Exception:
+                pass
+            return
 
     def attach_pending_plan_to_message(self, message: Dict[str, Any]) -> None:
         """Stamp the staged plan snapshot onto an assistant message in place.

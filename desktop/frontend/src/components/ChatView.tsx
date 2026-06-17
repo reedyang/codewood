@@ -545,24 +545,30 @@ function RoundShell({
   }, [autoExpand]);
 
   const showTimer = hasTools || running;
+  // For a pure answer round (no tools) that is still live, the model has
+  // already produced this reply and is now thinking about the next step — so
+  // the running "Working" timer reads more naturally BELOW the answer text.
+  const timerBelow = running && !hasTools;
+  const timer = showTimer ? (
+    <div className="activity">
+      <button
+        className={`activity-header ${running ? "running" : ""}`}
+        onClick={() => hasTools && setExpanded((v) => !v)}
+        disabled={!hasTools}
+      >
+        <span className={`activity-text ${running ? "marquee" : ""}`}>{timerText}</span>
+        {hasTools && (
+          <Icon name="chevron" size={14} className={`chevron ${expanded ? "open" : ""}`} />
+        )}
+      </button>
+      {hasTools && expanded && <StepsView text={toolText} />}
+    </div>
+  ) : null;
   return (
     <div className="turn-round">
-      {showTimer && (
-        <div className="activity">
-          <button
-            className={`activity-header ${running ? "running" : ""}`}
-            onClick={() => hasTools && setExpanded((v) => !v)}
-            disabled={!hasTools}
-          >
-            <span className={`activity-text ${running ? "marquee" : ""}`}>{timerText}</span>
-            {hasTools && (
-              <Icon name="chevron" size={14} className={`chevron ${expanded ? "open" : ""}`} />
-            )}
-          </button>
-          {hasTools && expanded && <StepsView text={toolText} />}
-        </div>
-      )}
+      {!timerBelow && timer}
       {textNode}
+      {timerBelow && timer}
     </div>
   );
 }
