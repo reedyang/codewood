@@ -136,6 +136,23 @@ export const TOKEN_CLOSE = CLOSE;
  *  other token kinds become readable inline markers (``[skill: foo]``,
  *  ``[mcp tool: srv/name]``, ``[mcp prompt: srv/name]``) so the LLM sees a
  *  sensible representation of what the user pinned. */
+/** Wrap an arbitrary instruction in our private-use sentinels so the GUI
+ *  knows to strip it from the user's chat bubble before display. The agent
+ *  still sees the inner text as part of the message body. */
+export function encodeHiddenInstruction(text: string): string {
+  return `${OPEN}CONTROL:${sanitizePayload(text)}${CLOSE}`;
+}
+
+/** Strip any ``CONTROL:`` envelope from a message string. Used by the GUI
+ *  to hide the "please execute the plan" nudge from the visible chat
+ *  bubble while still leaving the user's own prose intact. */
+export function stripHiddenControl(text: string): string {
+  return String(text ?? "").replace(
+    new RegExp(`${OPEN}CONTROL:[^${OPEN}${CLOSE}]*${CLOSE}\\s*`, "g"),
+    "",
+  );
+}
+
 export function composeMessageText(segments: readonly Segment[]): string {
   const attachPaths: string[] = [];
   const bodyParts: string[] = [];

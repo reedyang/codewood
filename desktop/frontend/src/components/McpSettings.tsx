@@ -236,13 +236,20 @@ export function McpSettings() {
         return (
           <div className="mcp-server" key={server.name}>
             <div className="mcp-server-head">
-              <button
-                className="mcp-collapse"
-                onClick={() => toggleCollapsed(server.name)}
-                aria-label={isCollapsed ? t("models.toggleProvider") : t("models.toggleProvider")}
-              >
-                <Icon name="chevron" size={13} className={isCollapsed ? "chevron right" : "chevron down"} />
-              </button>
+              {server.enabled ? (
+                <button
+                  className="mcp-collapse"
+                  onClick={() => toggleCollapsed(server.name)}
+                  aria-label={isCollapsed ? t("models.toggleProvider") : t("models.toggleProvider")}
+                >
+                  <Icon name="chevron" size={13} className={isCollapsed ? "chevron right" : "chevron down"} />
+                </button>
+              ) : (
+                // Disabled servers have nothing to expand, so the chevron
+                // would just be a dead control; leave its slot blank to
+                // keep the row's column layout intact.
+                <span className="mcp-collapse-placeholder" />
+              )}
               <span className="mcp-server-name">{server.name}</span>
               {server.transport && (
                 <span className="mcp-badge">{server.transport.toUpperCase()}</span>
@@ -252,42 +259,46 @@ export function McpSettings() {
                   {stateLabel}
                 </span>
               )}
-              <span className="mcp-counts">
-                {t("mcp.toolsCount").replace("{n}", String(server.toolsCount))}
-                {" · "}
-                {t("mcp.promptsCount").replace("{n}", String(server.promptsCount))}
-              </span>
-              <button
-                type="button"
-                role="switch"
-                aria-checked={server.enabled}
-                className={`mcp-toggle ${server.enabled ? "is-on" : ""}`}
-                disabled={!!busyServer[server.name]}
-                title={t("mcp.enabled")}
-                onClick={() => void onToggleServer(server)}
-              >
-                <span className="mcp-toggle-thumb" />
-              </button>
-              <button
-                type="button"
-                className="icon-btn ghost"
-                title={t("mcp.editServer")}
-                aria-label={t("mcp.editServer")}
-                onClick={() => void openEditor(server.name)}
-              >
-                <Icon name="edit" size={14} />
-              </button>
-              <button
-                type="button"
-                className="icon-btn ghost"
-                title={t("mcp.deleteServer")}
-                aria-label={t("mcp.deleteServer")}
-                onClick={() => setConfirmDelete(server.name)}
-              >
-                <Icon name="trash" size={14} />
-              </button>
+              <div className="mcp-server-actions">
+                {server.enabled && (
+                  <span className="mcp-counts">
+                    {t("mcp.toolsCount").replace("{n}", String(server.toolsCount))}
+                    {" · "}
+                    {t("mcp.promptsCount").replace("{n}", String(server.promptsCount))}
+                  </span>
+                )}
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={server.enabled}
+                  className={`mcp-toggle ${server.enabled ? "is-on" : ""}`}
+                  disabled={!!busyServer[server.name]}
+                  title={t("mcp.enabled")}
+                  onClick={() => void onToggleServer(server)}
+                >
+                  <span className="mcp-toggle-thumb" />
+                </button>
+                <button
+                  type="button"
+                  className="icon-btn ghost"
+                  title={t("mcp.editServer")}
+                  aria-label={t("mcp.editServer")}
+                  onClick={() => void openEditor(server.name)}
+                >
+                  <Icon name="edit" size={14} />
+                </button>
+                <button
+                  type="button"
+                  className="icon-btn ghost"
+                  title={t("mcp.deleteServer")}
+                  aria-label={t("mcp.deleteServer")}
+                  onClick={() => setConfirmDelete(server.name)}
+                >
+                  <Icon name="trash" size={14} />
+                </button>
+              </div>
             </div>
-            {!isCollapsed && (
+            {server.enabled && !isCollapsed && (
               <div className="mcp-server-body">
                 {isLoadingDetail && <p className="muted">{t("models.loading")}</p>}
                 {detail && (
