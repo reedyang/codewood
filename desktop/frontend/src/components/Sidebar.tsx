@@ -118,6 +118,17 @@ export function Sidebar({ onOpenSettings }: { onOpenSettings: () => void }) {
     await switchToChat(chatId, wsId && wsId !== activeWsId ? wsId : "");
   };
 
+  const newChatInWorkspace = async (wsId: string) => {
+    if (!expanded.has(wsId)) {
+      toggleWorkspaceExpanded(wsId);
+    }
+    if (wsId && wsId !== activeWsId) {
+      clearTurns();
+      await runCommand(`/workspace switch ${wsId}`);
+    }
+    await newChat();
+  };
+
   const runChatCommand = async (wsId: string, command: string) => {
     if (wsId && wsId !== activeWsId) {
       await runCommand(`/workspace switch ${wsId}`);
@@ -298,6 +309,17 @@ export function Sidebar({ onOpenSettings }: { onOpenSettings: () => void }) {
                 onClick={(e) => openWorkspaceMenu(e, ws)}
               >
                 <Icon name="dots" size={14} />
+              </button>
+              <button
+                className="tree-more"
+                aria-label={t("sidebar.newChat")}
+                title={t("sidebar.newChat")}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  void newChatInWorkspace(ws.id);
+                }}
+              >
+                <Icon name="new-chat" size={14} />
               </button>
             </>
           )}
