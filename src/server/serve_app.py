@@ -225,12 +225,38 @@ def _build_structured_turns(agent: Any) -> List[Dict[str, Any]]:
         except Exception:
             return False
 
+    def _looks_like_tool_calls_blob(content: str) -> bool:
+        """A raw ``tool_calls`` JSON payload the strict parser may not match.
+
+        Some models emit assistant content that is literally a tool-call JSON
+        object/array (occasionally malformed or multi-call). It must never be
+        shown as natural-language text — treat it as a (skipped) tool step.
+        """
+        text = str(content or "").strip()
+        if not (text.startswith("{") or text.startswith("[")):
+            return False
+        try:
+            payload = json.loads(text)
+        except Exception:
+            # Unparseable but clearly a tool-call shape (e.g. truncated stream).
+            return '"tool_calls"' in text or '"function"' in text
+        if isinstance(payload, dict):
+            return "tool_calls" in payload or "tool" in payload or "function" in payload
+        if isinstance(payload, list) and payload:
+            first = payload[0]
+            return isinstance(first, dict) and (
+                "tool" in first or "name" in first or "function" in first
+            )
+        return False
+
     def _is_tool_plan(content: str) -> bool:
         """A pure tool-call model message (no natural-language reply)."""
         try:
-            return agent._parse_model_tool_plan_history_content(content) is not None
+            if agent._parse_model_tool_plan_history_content(content) is not None:
+                return True
         except Exception:
-            return False
+            pass
+        return _looks_like_tool_calls_blob(content)
 
     for idx, msg in enumerate(hist):
         if not isinstance(msg, dict):
@@ -307,28 +333,64 @@ def _build_structured_turns(agent: Any) -> List[Dict[str, Any]]:
                 current_round = _new_round(turn, wait)
             else:
                 current_round["waitSeconds"] += max(0, int(round(wait)))
-            rendered = _render_step(idx, msg)
-            if rendered.strip():
-                current_round["tools"] = current_round["tools"] + rendered + "\n"
+            # Tool-call plans are bookkeeping: the matching tool-result message
+            # renders the "Ran <tool>" feedback line. Render the plan only when
+            # the per-message renderer recognizes it (so it stays silent); for a
+            # blob the strict parser misses, skip rendering entirely rather than
+            # letting the raw JSON leak as text.
+            recognized_plan = False
+            try:
+                recognized_plan = (
+                    agent._parse_model_tool_plan_history_content(content) is not None
+                )
+            except Exception:
+                recognized_plan = False
+            if recognized_plan:
+                rendered = _render_step(idx, msg)
+                if rendered.strip():
+                    current_round["tools"] = current_round["tools"] + rendered + "\n"
             if ts is not None:
                 prev_ts = ts
             continue
 
-        # Otherwise this is a fresh natural-language model response: open a new
-        # round timed by the model latency since the previous activity.
+        # Otherwise resolve the model's natural-language reply (if any). Only a
+        # message that actually carries answer text opens a new round; anything
+        # else (empty/blank assistant turns, bookkeeping that slipped through)
+        # merges into the current tool group so it can't split one collapsible
+        # group into two with separate timers.
         turn = _ensure_turn()
         wait = (ts - prev_ts) if (ts is not None and prev_ts is not None) else 0
-        current_round = _new_round(turn, wait)
+        answer_text = ""
         if _is_answer(content):
             try:
-                text = format_assistant_display_response(content) or ""
+                answer_text = format_assistant_display_response(content) or ""
             except Exception:
-                text = ""
-            text = strip_ansi(str(text)).replace("\r\n", "\n").replace("\r", "\n").strip("\n")
-            if text.strip():
-                current_round["text"] = text
+                answer_text = ""
+            answer_text = (
+                strip_ansi(str(answer_text)).replace("\r\n", "\n").replace("\r", "\n").strip("\n")
+            )
+        if answer_text.strip():
+            # Some models re-emit an identical final reply (e.g. an empty
+            # tool-call round followed by a repeat of the same answer). Collapse
+            # a verbatim repeat of the previous round's text instead of showing
+            # the same answer twice with its own timer.
+            rounds_so_far = turn.get("rounds", [])
+            prev_round = rounds_so_far[-1] if rounds_so_far else None
+            if (
+                prev_round is not None
+                and str(prev_round.get("text") or "").strip() == answer_text.strip()
+            ):
+                if ts is not None:
+                    prev_ts = ts
+                continue
+            current_round = _new_round(turn, wait)
+            current_round["text"] = answer_text
         else:
             rendered = _render_step(idx, msg)
+            if current_round is None or current_round.get("text"):
+                current_round = _new_round(turn, wait)
+            else:
+                current_round["waitSeconds"] += max(0, int(round(wait)))
             if rendered.strip():
                 current_round["tools"] = current_round["tools"] + rendered + "\n"
         if ts is not None:
