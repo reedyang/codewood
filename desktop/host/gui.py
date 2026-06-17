@@ -7,6 +7,7 @@ frontend, and tears the backend down when the window closes.
 
 from __future__ import annotations
 
+import os
 import sys
 
 import webview
@@ -61,15 +62,30 @@ def _pick_folder() -> str:
     return result[0] if isinstance(result, (list, tuple)) else str(result)
 
 
-def _pick_files() -> list[str]:
-    """Open a native multi-select file picker; return selected paths."""
+def _pick_files(directory: str = "") -> list[str]:
+    """Open a native multi-select file picker; return selected paths.
+
+    ``directory`` is an optional starting folder hint. Passing the GUI's
+    workspace root keeps the dialog anchored inside the workspace instead of
+    reusing pywebview's last-remembered location (which often points outside
+    the project after switching workspaces).
+    """
     window = webview.active_window()
     if window is None:
         return []
     try:
-        result = window.create_file_dialog(
-            _open_dialog(), allow_multiple=True
-        )
+        kwargs: dict = {"allow_multiple": True}
+        # Validate the starting directory before passing it to pywebview so a
+        # malformed/empty/non-existent path silently falls back to the default
+        # rather than raising. ``directory`` from the renderer is always a
+        # string but may be the empty string when no workspace is bound.
+        try:
+            start = str(directory or "").strip()
+        except Exception:
+            start = ""
+        if start and os.path.isdir(start):
+            kwargs["directory"] = start
+        result = window.create_file_dialog(_open_dialog(), **kwargs)
     except Exception:
         return []
     if not result:
@@ -92,8 +108,8 @@ class HostApi:
     def pick_folder(self) -> str:
         return _pick_folder()
 
-    def pick_files(self) -> list[str]:
-        return _pick_files()
+    def pick_files(self, directory: str = "") -> list[str]:
+        return _pick_files(directory)
 
     def minimize(self) -> None:
         window = webview.active_window()

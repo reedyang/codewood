@@ -118,7 +118,7 @@ interface AppContextValue {
 
 interface HostApiBridge {
   pick_folder?: () => string | Promise<string>;
-  pick_files?: () => string[] | Promise<string[]>;
+  pick_files?: (directory?: string) => string[] | Promise<string[]>;
 }
 
 const AppContext = createContext<AppContextValue | null>(null);
@@ -1053,8 +1053,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
     if (!api?.pick_files) {
       return [];
     }
+    // Anchor the native file picker at the active workspace's root so the user
+    // doesn't see pywebview's last-remembered (often unrelated) location after
+    // switching workspaces. The dialog itself still lets the user navigate
+    // anywhere; this is just the starting directory.
+    const workspaceRoot = stateRef.current?.workspace?.root ?? "";
     try {
-      const result = await api.pick_files();
+      const result = await api.pick_files(workspaceRoot);
       return Array.isArray(result) ? result.filter(Boolean) : [];
     } catch {
       return [];
