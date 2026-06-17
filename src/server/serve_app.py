@@ -1471,6 +1471,32 @@ class ServeApp:
                 transport = "http"
             elif "command" in conf:
                 transport = "stdio"
+            # ``get_status`` reports the counts it has cached on its in-memory
+            # status dict, but the timing varies: when the GUI opens the
+            # settings page just after launch the status entry may still be
+            # ``loading`` and report ``0`` even though the catalog cache for
+            # this server has already been hydrated by a prior list_tools
+            # call. Fall back to a direct cache lookup so the row reflects
+            # the true catalog size instead of a transient zero.
+            tools_count = int(status_dict.get("tools_count") or 0)
+            prompts_count = int(status_dict.get("prompts_count") or 0)
+            if enabled and (tools_count == 0 or prompts_count == 0):
+                mgr_obj = getattr(agent, "mcp_manager", None)
+                if mgr_obj is not None:
+                    if tools_count == 0:
+                        try:
+                            cached_tools, _ = mgr_obj.list_tools(str(name), use_cache=True)
+                            if isinstance(cached_tools, list):
+                                tools_count = len(cached_tools)
+                        except Exception:
+                            pass
+                    if prompts_count == 0:
+                        try:
+                            cached_prompts, _ = mgr_obj.list_prompts(str(name), use_cache=True)
+                            if isinstance(cached_prompts, list):
+                                prompts_count = len(cached_prompts)
+                        except Exception:
+                            pass
             out.append(
                 {
                     "name": str(name),
@@ -1478,8 +1504,8 @@ class ServeApp:
                     "transport": transport,
                     "state": str(status_dict.get("state") or ""),
                     "lastError": str(status_dict.get("last_error") or ""),
-                    "toolsCount": int(status_dict.get("tools_count") or 0),
-                    "promptsCount": int(status_dict.get("prompts_count") or 0),
+                    "toolsCount": tools_count,
+                    "promptsCount": prompts_count,
                     "disabledTools": disabled_by_server.get(str(name), []),
                 }
             )
