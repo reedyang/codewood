@@ -2,7 +2,7 @@ import { useEffect, useState, type CSSProperties, type MouseEvent as ReactMouseE
 import { AppProvider, useApp } from "./state/AppContext";
 import { Sidebar } from "./components/Sidebar";
 import { ChatView } from "./components/ChatView";
-import { SettingsDialog } from "./components/SettingsDialog";
+import { SettingsView } from "./components/SettingsView";
 import { AboutDialog } from "./components/AboutDialog";
 import { ConfirmDialog } from "./components/ConfirmDialog";
 import { TitleBar } from "./components/TitleBar";
@@ -23,7 +23,6 @@ function loadSidebarWidth(): number {
 function Shell() {
   const {
     settingsOpen,
-    closeSettings,
     openSettings,
     aboutOpen,
     closeAbout,
@@ -85,25 +84,30 @@ function Shell() {
   return (
     <div className="window-root">
       <TitleBar onTogglePanel={() => setCollapsed((v) => !v)} />
-      <div
-        className={`app-shell ${collapsed ? "sidebar-collapsed" : ""}`}
-        style={{ "--sidebar-width": `${sidebarWidth}px` } as CSSProperties}
-      >
-        {!collapsed && <Sidebar onOpenSettings={openSettings} />}
-        {!collapsed && (
-          <div
-            className={`sidebar-resizer ${resizing ? "resizing" : ""}`}
-            role="separator"
-            aria-orientation="vertical"
-            onMouseDown={startResize}
-          />
-        )}
-        <main className="main">
-          <ChatView />
-        </main>
-      </div>
+      {settingsOpen ? (
+        <div className="app-shell">
+          <SettingsView />
+        </div>
+      ) : (
+        <div
+          className={`app-shell ${collapsed ? "sidebar-collapsed" : ""}`}
+          style={{ "--sidebar-width": `${sidebarWidth}px` } as CSSProperties}
+        >
+          {!collapsed && <Sidebar onOpenSettings={openSettings} />}
+          {!collapsed && (
+            <div
+              className={`sidebar-resizer ${resizing ? "resizing" : ""}`}
+              role="separator"
+              aria-orientation="vertical"
+              onMouseDown={startResize}
+            />
+          )}
+          <main className="main">
+            <ChatView />
+          </main>
+        </div>
+      )}
 
-      {settingsOpen && <SettingsDialog onClose={closeSettings} />}
       {aboutOpen && <AboutDialog onClose={closeAbout} />}
       <ConfirmDialog />
       <ResizeGrips />

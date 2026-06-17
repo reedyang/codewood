@@ -105,6 +105,8 @@ const en: Dict = {
   "workspace.active": "active",
 
   "settings.title": "Settings",
+  "settings.back": "Back to app",
+  "settings.page.appearance": "Appearance",
   "settings.theme": "Theme",
   "settings.theme.light": "Light",
   "settings.theme.dark": "Dark",
@@ -232,6 +234,8 @@ const zhCN: Dict = {
   "workspace.active": "当前",
 
   "settings.title": "设置",
+  "settings.back": "返回应用",
+  "settings.page.appearance": "外观",
   "settings.theme": "主题",
   "settings.theme.light": "浅色",
   "settings.theme.dark": "深色",
