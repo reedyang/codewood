@@ -137,6 +137,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const nextIdRef = useRef(1);
   const seededExpandRef = useRef(false);
   const themeInitRef = useRef(false);
+  // When set, the next `idle` event reloads chat history even if the active
+  // chat id is unchanged (e.g. after `/chat edit` truncates the conversation).
+  const pendingHistoryReloadRef = useRef(false);
+  const reloadHistoryRef = useRef<() => void>(() => {});
 
   const lang = useMemo(() => normalizeLang(state?.language), [state?.language]);
   const t = useCallback((key: string) => translate(lang, key), [lang]);
@@ -335,6 +339,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
           }
           endActiveTurn();
           setBusy(false);
+          if (pendingHistoryReloadRef.current) {
+            pendingHistoryReloadRef.current = false;
+            reloadHistoryRef.current();
+          }
           break;
         }
         case "turn_start": {
@@ -429,6 +437,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }
   }, [client]);
 
+  // Keep a stable ref to the latest loadChatHistory so the SSE idle handler
+  // (which closes over an old render) can trigger a reload on demand.
+  useEffect(() => {
+    reloadHistoryRef.current = () => {
+      void loadChatHistory();
+    };
+  }, [loadChatHistory]);
+
   const loadOlderHistory = useCallback(async () => {
     if (historyLoading || historyStart <= 0) {
       return;
@@ -507,12 +523,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
   );
 
   // Truncate the conversation at the given (negative, from-end) genuine-user
-  // index, mirroring the TUI `/chat edit` command. The chat id is unchanged so
-  // we force a history reload on the next idle via the sentinel ref.
+  // index, mirroring the TUI `/chat edit` command. The chat id is unchanged, so
+  // the activeChatId effect won't refire; instead we flag the next idle event
+  // to reload the (now shorter) history.
   const editChat = useCallback(
     async (index: number) => {
       clearTurns();
-      historyChatRef.current = "\u0000";
+      pendingHistoryReloadRef.current = true;
       await client.sendInput(`/chat edit ${index}`);
     },
     [client, clearTurns],

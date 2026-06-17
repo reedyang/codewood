@@ -520,14 +520,20 @@ body.resizing-x {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  flex: 1;
+  flex: 0 1 auto;
   min-width: 0;
 }
 
 .chat-titlebar-rename {
-  flex: 1;
+  flex: 0 1 360px;
   min-width: 0;
   font-size: 14px;
+}
+
+/* Push everything after the menu button to the far right so the name and the
+   "more" button stay grouped together on the left, matching the design. */
+.chat-titlebar-more {
+  margin-right: auto;
 }
 
 .chat-titlebar-more {
@@ -598,11 +604,13 @@ body.resizing-x {
 }
 
 /* Always laid out so the row reserves its height; only its contents are
-   hidden until hover, which keeps messages from jumping when hovered. */
+   hidden until hover, which keeps messages from jumping when hovered. The
+   row sits under the right-aligned bubble, so cluster time + buttons together
+   on the right rather than spreading them apart. */
 .entry-actions {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-end;
   gap: 8px;
   margin-top: 4px;
   padding: 0 2px;
@@ -904,9 +912,9 @@ body.resizing-x {
   align-items: center;
   gap: 8px;
   flex: 1;
-  background: var(--sidebar-strong);
+  background: transparent;
   color: var(--text-on-dark);
-  border: 1px solid var(--sidebar-border);
+  border: 1px solid transparent;
   border-radius: 8px;
   padding: 8px 12px;
   cursor: pointer;
@@ -915,6 +923,7 @@ body.resizing-x {
 
 .btn-newchat:hover {
   background: var(--sidebar-active);
+  border-color: var(--sidebar-border);
 }
 
 .btn-newchat .plus {
