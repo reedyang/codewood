@@ -263,7 +263,9 @@ body {
 .sidebar-resizer::after {
   content: "";
   position: absolute;
-  top: 0;
+  /* Start below the main panel's top-left rounded corner so the line doesn't
+     cut across the rounded area. */
+  top: var(--panel-radius, 12px);
   bottom: 0;
   left: 50%;
   width: 2px;
@@ -274,7 +276,7 @@ body {
 
 .sidebar-resizer:hover::after,
 .sidebar-resizer.resizing::after {
-  background: var(--accent);
+  background: var(--divider-strong, #9aa0a6);
 }
 
 body.resizing-x {
@@ -895,7 +897,7 @@ body.resizing-x {
 
 /* Cursor-style sidebar */
 .sidebar {
-  width: 248px;
+  width: var(--sidebar-width, 248px);
   padding: 14px 10px 10px;
 }
 
