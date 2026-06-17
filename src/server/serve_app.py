@@ -32,7 +32,10 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Dict, List, Optional
 from urllib.parse import parse_qs, urlparse
 
-from ..core.console_utils import GUI_FORCE_PROMPT_PREFIX
+from ..core.console_utils import (
+    GUI_FORCE_PROMPT_PREFIX,
+    GUI_INTERNAL_COMMAND_PREFIX,
+)
 
 # Matches CSI / SGR and most other ANSI escape sequences.
 _ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b[@-Z\\-_]")
@@ -128,14 +131,18 @@ def _read_workspace_chat_index(storage_dir: Any) -> List[Dict[str, Any]]:
 
 
 def _build_structured_turns(agent: Any) -> List[Dict[str, Any]]:
-    """Group the active chat's history into GUI turns.
+    """Group the active chat's history into GUI turns of ordered model rounds.
 
-    Each turn is ``{"userText", "steps", "answer"}``. Internal command inputs
-    (slash / direct shell) and command outputs are filtered out, so the GUI can
-    render genuine user prompts, collapsible execution steps, and the final
-    model reply as distinct blocks.
+    Each turn is ``{"userText", "timestamp", "rounds"}`` where every round is
+    one model request/response: ``{"waitSeconds", "text", "tools"}``. ``text``
+    is the model's reply for that round (markdown); ``tools`` is that round's
+    tool call(s) + result(s) rendered in natural order; ``waitSeconds`` is how
+    long the model took to answer that round (derived from message timestamps).
+    Internal command inputs (slash / direct shell) and their outputs are
+    filtered out.
     """
     import contextlib
+    from datetime import datetime
 
     from ..controllers.chat_command_controller import (
         _genuine_user_positions_in_list,
@@ -148,14 +155,44 @@ def _build_structured_turns(agent: Any) -> List[Dict[str, Any]]:
     genuine = set(_genuine_user_positions_in_list(hist))
     turns: List[Dict[str, Any]] = []
     current: Optional[Dict[str, Any]] = None
+    current_round: Optional[Dict[str, Any]] = None
+    prev_ts: Optional[float] = None
     sms = getattr(agent, "session_memory_service", None)
+
+    def _parse_ts(value: Any) -> Optional[float]:
+        text = str(value or "").strip()
+        if not text:
+            return None
+        try:
+            return datetime.strptime(text, "%Y-%m-%d %H:%M:%S").timestamp()
+        except Exception:
+            return None
 
     def _ensure_turn() -> Dict[str, Any]:
         nonlocal current
         if current is None:
-            current = {"userText": "", "steps": "", "answer": "", "elapsedSeconds": 0}
+            current = {"userText": "", "timestamp": "", "rounds": []}
             turns.append(current)
         return current
+
+    def _new_round(turn: Dict[str, Any], wait_seconds: float) -> Dict[str, Any]:
+        rnd = {"waitSeconds": max(0, int(round(wait_seconds))), "text": "", "tools": ""}
+        turn["rounds"].append(rnd)
+        return rnd
+
+    def _render_step(idx: int, msg: Dict[str, Any]) -> str:
+        buffer = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(buffer):
+                agent._render_transcript_single_message(idx, msg, hist)
+        except Exception:
+            pass
+        return (
+            strip_ansi_keep_sgr(buffer.getvalue())
+            .replace("\r\n", "\n")
+            .replace("\r", "")
+            .strip("\n")
+        )
 
     def _is_answer(content: str) -> bool:
         """A plain final reply, not a bookkeeping/tool/compaction payload."""
@@ -182,20 +219,34 @@ def _build_structured_turns(agent: Any) -> List[Dict[str, Any]]:
         except Exception:
             return False
 
+    def _is_tool_result(content: str) -> bool:
+        try:
+            return agent._parse_model_tool_result_history_content(content) is not None
+        except Exception:
+            return False
+
+    def _is_tool_plan(content: str) -> bool:
+        """A pure tool-call model message (no natural-language reply)."""
+        try:
+            return agent._parse_model_tool_plan_history_content(content) is not None
+        except Exception:
+            return False
+
     for idx, msg in enumerate(hist):
         if not isinstance(msg, dict):
             continue
         role = str(msg.get("role") or "").strip().lower()
         content = str(msg.get("content") or "")
+        ts = _parse_ts(msg.get("created_at"))
         if idx in genuine:
             current = {
                 "userText": content,
-                "steps": "",
-                "answer": "",
-                "elapsedSeconds": 0,
                 "timestamp": str(msg.get("created_at") or ""),
+                "rounds": [],
             }
             turns.append(current)
+            current_round = None
+            prev_ts = ts
             continue
         if role == "user":
             # Non-genuine user entries are internal command inputs (slash
@@ -221,50 +272,80 @@ def _build_structured_turns(agent: Any) -> List[Dict[str, Any]]:
                     continue
             except Exception:
                 pass
-            # Capture the turn's elapsed time; surfaced in the steps header
-            # ("Worked for ...") rather than rendered as a step line.
+            # The per-turn worked summary is superseded by per-round timers.
             try:
-                worked = agent._parse_task_worked_summary_history_content(content)
+                if agent._parse_task_worked_summary_history_content(content) is not None:
+                    continue
             except Exception:
-                worked = None
-            if worked is not None:
-                # Attach to the in-progress turn only; never synthesize an
-                # empty turn just to carry an elapsed value.
-                if current is not None:
-                    try:
-                        current["elapsedSeconds"] = int(worked.get("elapsed_seconds") or 0)
-                    except Exception:
-                        pass
-                continue
+                pass
 
+        # A tool result belongs to the round whose model message requested it,
+        # accumulating its wait into that round's total time.
+        if _is_tool_result(content):
+            turn = _ensure_turn()
+            if current_round is None:
+                current_round = _new_round(turn, 0)
+            if ts is not None and prev_ts is not None:
+                current_round["waitSeconds"] += max(0, int(round(ts - prev_ts)))
+            rendered = _render_step(idx, msg)
+            if rendered.strip():
+                current_round["tools"] = current_round["tools"] + rendered + "\n"
+            if ts is not None:
+                prev_ts = ts
+            continue
+
+        # A pure tool-call model message (no natural-language reply) belongs to
+        # the same collapsible tool group: merge it into the current tool round
+        # (creating one only if none is open) so its wait adds to the group's
+        # total time instead of spawning a separate timer.
+        if _is_tool_plan(content):
+            turn = _ensure_turn()
+            wait = (ts - prev_ts) if (ts is not None and prev_ts is not None) else 0
+            if current_round is None or current_round.get("text"):
+                # Start a fresh tool group either at the turn's first activity or
+                # right after a round that already carried a model reply.
+                current_round = _new_round(turn, wait)
+            else:
+                current_round["waitSeconds"] += max(0, int(round(wait)))
+            rendered = _render_step(idx, msg)
+            if rendered.strip():
+                current_round["tools"] = current_round["tools"] + rendered + "\n"
+            if ts is not None:
+                prev_ts = ts
+            continue
+
+        # Otherwise this is a fresh natural-language model response: open a new
+        # round timed by the model latency since the previous activity.
+        turn = _ensure_turn()
+        wait = (ts - prev_ts) if (ts is not None and prev_ts is not None) else 0
+        current_round = _new_round(turn, wait)
         if _is_answer(content):
             try:
                 text = format_assistant_display_response(content) or ""
             except Exception:
                 text = ""
             text = strip_ansi(str(text)).replace("\r\n", "\n").replace("\r", "\n").strip("\n")
-            if not text.strip():
-                continue
-            turn = _ensure_turn()
-            turn["answer"] = turn["answer"] + ("\n" if turn["answer"] else "") + text
-            continue
-
-        # Render an execution step using the agent's per-message renderer.
-        buffer = io.StringIO()
-        try:
-            with contextlib.redirect_stdout(buffer):
-                agent._render_transcript_single_message(idx, msg, hist)
-        except Exception:
-            pass
-        text = strip_ansi_keep_sgr(buffer.getvalue()).replace("\r\n", "\n").replace("\r", "").strip("\n")
-        if not text.strip():
-            continue
-        turn = _ensure_turn()
-        turn["steps"] = turn["steps"] + text + "\n"
+            if text.strip():
+                current_round["text"] = text
+        else:
+            rendered = _render_step(idx, msg)
+            if rendered.strip():
+                current_round["tools"] = current_round["tools"] + rendered + "\n"
+        if ts is not None:
+            prev_ts = ts
 
     for turn in turns:
-        turn["steps"] = turn["steps"].rstrip("\n")
-        turn["answer"] = turn["answer"].rstrip("\n")
+        rounds = [
+            {
+                "waitSeconds": int(r.get("waitSeconds") or 0),
+                "text": str(r.get("text") or "").rstrip("\n"),
+                "tools": str(r.get("tools") or "").rstrip("\n"),
+            }
+            for r in turn.get("rounds", [])
+        ]
+        # Drop rounds that produced nothing renderable (e.g. an empty model
+        # response) so we don't show a stray timer with no content.
+        turn["rounds"] = [r for r in rounds if r["text"].strip() or r["tools"].strip()]
     return turns
 
 
@@ -614,10 +695,15 @@ class ServeApp:
         # Composer input carries a force-prompt sentinel; strip it from the
         # displayed/broadcast text but keep it on the line the loop consumes.
         forced = str(text).startswith(GUI_FORCE_PROMPT_PREFIX)
-        display = str(text)[len(GUI_FORCE_PROMPT_PREFIX):] if forced else str(text)
-        # Composer input is always forced to a prompt, so any bare slash line is
-        # an internal command the GUI issued (rename, switch, ...). Hide its
-        # echo and output from the message list and skip turn bookkeeping.
+        if forced:
+            display = str(text)[len(GUI_FORCE_PROMPT_PREFIX):]
+        elif str(text).startswith(GUI_INTERNAL_COMMAND_PREFIX):
+            display = str(text)[len(GUI_INTERNAL_COMMAND_PREFIX):]
+        else:
+            display = str(text)
+        # GUI-issued internal commands (rename, switch, ...) carry their own
+        # sentinel. A bare slash line with no sentinel is treated the same way
+        # defensively. Hide its echo/output and skip turn bookkeeping.
         is_internal_command = (not forced) and display.lstrip().startswith("/")
         if self._bridge is not None:
             # Per-thread: only silences this loop thread's writes.
@@ -661,6 +747,11 @@ class ServeApp:
         # runtime loop strips so "/foo" / "!bar" never run as command/shell.
         if as_prompt and line:
             line = GUI_FORCE_PROMPT_PREFIX + line
+        elif line.lstrip().startswith("/"):
+            # A non-prompt slash line is a command the GUI issued on the user's
+            # behalf (rename/switch/pin/...). Mark it so the runtime loop runs it
+            # but keeps it out of the user's input history (history.json).
+            line = GUI_INTERNAL_COMMAND_PREFIX + line
         cid = str(chat_id or "").strip() or _primary_active_chat_id(self.agent)
         rt = self._get_or_spawn_runtime(cid)
         rt.input_queue.put(line)
@@ -1015,6 +1106,16 @@ class ServeApp:
         self.agent._gui_plain_stream = True  # type: ignore[attr-defined]
         self.agent._gui_assistant_begin = lambda: bridge.set_tag("assistant")  # type: ignore[attr-defined]
         self.agent._gui_assistant_end = lambda: bridge.set_tag("output")  # type: ignore[attr-defined]
+        # Each model round (one request->response within a turn) is bracketed so
+        # the GUI can show a per-round "Working/Worked" wait timer and lay out
+        # model text + tool output for that round in natural order. Scoped to the
+        # chat bound to the calling loop thread so parallel chats stay separate.
+        self.agent._gui_round_begin = lambda: self.broadcaster.publish(  # type: ignore[attr-defined]
+            "round_start", {"chatId": self._active_chat_id()}
+        )
+        self.agent._gui_round_end = lambda: self.broadcaster.publish(  # type: ignore[attr-defined]
+            "round_end", {"chatId": self._active_chat_id()}
+        )
         # The GUI renders its own layout, so disable terminal hard-wrapping and
         # force SGR color emission (stdout is not a TTY here). The bridge keeps
         # the SGR runs so the GUI can color step output like the terminal.

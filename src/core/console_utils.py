@@ -21,6 +21,12 @@ GUI_CMD_OUTPUT_END = "\ue001"
 # run commands directly, so even "/foo" or "!bar" text is handed to the model.
 GUI_FORCE_PROMPT_PREFIX = "\ue002"
 
+# Private-use sentinel prepended to commands the desktop GUI issues internally
+# on the user's behalf (rename/switch/pin slash commands, etc.). These are not
+# things the user typed, so the runtime loop must execute them without
+# recording them into the user's input history (history.json).
+GUI_INTERNAL_COMMAND_PREFIX = "\ue003"
+
 
 def _decode_subprocess_output(data: Optional[bytes]) -> str:
     """

@@ -29,7 +29,10 @@ from ..core.assistant_output_highlighter import (
     format_assistant_display_response,
 )
 from ..core.logging.app_logging import get_logger
-from ..core.console_utils import GUI_FORCE_PROMPT_PREFIX
+from ..core.console_utils import (
+    GUI_FORCE_PROMPT_PREFIX,
+    GUI_INTERNAL_COMMAND_PREFIX,
+)
 from ..controllers.builtin_command_router import dispatch_builtin_command
 from ..tooling.handlers.mcp_handlers import MCP_MANAGEMENT_GATED_TOOLS
 from ..tooling.handlers.memory_handlers import MEMORY_TOOLS
@@ -1541,6 +1544,23 @@ def _emit_flow_log(message: str) -> None:
         pass
 
 
+def _gui_round_mark(agent: Any, begin: bool) -> None:
+    """Bracket one model round so the GUI can show a per-round wait timer.
+
+    No-op outside GUI plain-stream mode (the TUI ignores it). ``begin`` fires
+    just before the model request is sent; the matching end fires once the model
+    has fully responded, before this round's tool output streams.
+    """
+    if not bool(getattr(agent, "_gui_plain_stream", False)):
+        return
+    hook = getattr(agent, "_gui_round_begin" if begin else "_gui_round_end", None)
+    if callable(hook):
+        try:
+            hook()
+        except Exception:
+            pass
+
+
 def _sanitize_prompt_pollution(text: str, work_directory: Any) -> str:
     s = str(text or "")
     if not s:
@@ -1882,14 +1902,20 @@ def run_agent_loop(agent: Any):
             # GUI composer input is sentinel-prefixed so it is always handled as
             # a model prompt; "/foo" and "!bar" text must not run directly.
             force_prompt = False
+            gui_internal_command = False
             if user_input and str(user_input).startswith(GUI_FORCE_PROMPT_PREFIX):
                 force_prompt = True
                 user_input = str(user_input)[len(GUI_FORCE_PROMPT_PREFIX):]
+            elif user_input and str(user_input).startswith(GUI_INTERNAL_COMMAND_PREFIX):
+                # Command the GUI issued on the user's behalf: run it, but keep it
+                # out of the user's input history (it isn't something they typed).
+                gui_internal_command = True
+                user_input = str(user_input)[len(GUI_INTERNAL_COMMAND_PREFIX):]
             user_input = _sanitize_prompt_pollution(user_input, self.work_directory)
             raw_user_input = str(user_input or "")
         
-            # Save non-empty input to history.
-            if user_input.strip():
+            # Save non-empty input to history (never for GUI-internal commands).
+            if user_input.strip() and not gui_internal_command:
                 _sync_command_input_history(self, user_input)
 
             stripped_in = user_input.strip()
@@ -2776,6 +2802,9 @@ def run_agent_loop(agent: Any):
                                 ).strip()
                                 not in IMAGE_INPUT_TOOLS
                             ]
+                    # Open this round's wait timer for the GUI just before the
+                    # model request goes out.
+                    _gui_round_mark(self, True)
                     ai_result = self.call_ai(
                         next_input,
                         context=json.dumps(last_result, ensure_ascii=False) if last_result else "",
@@ -2821,6 +2850,9 @@ def run_agent_loop(agent: Any):
                             if task_uses_standard_openai_tools
                             else []
                         )
+                # The model has fully responded for this round; freeze its wait
+                # timer before any tool output for the round streams out.
+                _gui_round_mark(self, False)
                 if not status_ticker_stopped:
                     _stop_status_ticker_before_first_output()
                 if not isinstance(ai_response, str):
