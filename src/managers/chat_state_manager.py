@@ -3,7 +3,7 @@ import os
 import secrets
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from ..core.localization import translate
 
@@ -89,10 +89,46 @@ class ChatStateManager:
             raise ValueError("chat record_file must be under chats directory") from exc
         return path
 
+    def _last_used_chat_model(self) -> Tuple[str, str]:
+        """Return ("provider", "model_name") of the workspace's latest chat.
+
+        Picks the chat with the most recent ``updated_at`` that has a model
+        recorded, so a freshly created chat inherits the user's last selection.
+        Returns ("", "") when no existing chat carries a model.
+        """
+        try:
+            state = getattr(self._agent, "_chat_state", None)
+            chats = (state or {}).get("chats") if isinstance(state, dict) else None
+            if not isinstance(chats, list):
+                return "", ""
+        except Exception:
+            return "", ""
+        best_key = ""
+        best_provider = ""
+        best_model = ""
+        for c in chats:
+            if not isinstance(c, dict):
+                continue
+            provider = str(c.get("model_provider") or "").strip()
+            model_name = str(c.get("model_name") or "").strip()
+            if not provider or not model_name:
+                continue
+            key = str(c.get("updated_at") or c.get("created_at") or "")
+            if key >= best_key:
+                best_key = key
+                best_provider = provider
+                best_model = model_name
+        return best_provider, best_model
+
     def new_chat_entry(self, chat_id: str, name: str = "New Chat") -> Dict[str, Any]:
         now = self._now_text()
-        provider = str(getattr(self._agent, "provider", "") or "").strip()
-        model_name = str(getattr(self._agent, "model_name", "") or "").strip()
+        # A new chat defaults to the model used by the most recently updated chat
+        # in this workspace, so it inherits the user's last choice rather than the
+        # shared global agent selection (which a concurrent chat may have changed).
+        provider, model_name = self._last_used_chat_model()
+        if not provider or not model_name:
+            provider = str(getattr(self._agent, "provider", "") or "").strip()
+            model_name = str(getattr(self._agent, "model_name", "") or "").strip()
         usage_pct = int(getattr(self._agent, "_last_context_usage_percent", 0) or 0)
         usage_tokens = int(getattr(self._agent, "_last_context_input_tokens", 0) or 0)
         usage_window = int(getattr(self._agent, "_last_context_window", 0) or 0)

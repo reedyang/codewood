@@ -570,30 +570,43 @@ def _build_state(agent: Any) -> Dict[str, Any]:
         pass
 
     chats: List[Dict[str, Any]] = []
+    active_chat_model = ""
     try:
         active_chat_id = _primary_active_chat_id(agent)
         for i, c in enumerate(agent._chat_entries(), start=1):
             if not isinstance(c, dict):
                 continue
+            prov = str(c.get("model_provider") or "").strip()
+            name = str(c.get("model_name") or "").strip()
+            chat_model = f"{prov}:{name}" if prov and name else ""
+            cid = str(c.get("id") or "")
+            if cid == active_chat_id:
+                active_chat_model = chat_model
             chats.append(
                 {
                     "index": i,
-                    "id": str(c.get("id") or ""),
+                    "id": cid,
                     "name": str(c.get("name") or ""),
                     "messageCount": len(c.get("messages") or []),
                     "updatedAt": str(c.get("updated_at") or ""),
-                    "active": str(c.get("id") or "") == active_chat_id,
+                    "active": cid == active_chat_id,
+                    # Per-chat model selector so the GUI can show the right model
+                    # for the focused chat and prefill new chats from it.
+                    "model": chat_model,
                 }
             )
     except Exception:
         pass
 
-    model_current = ""
     model_available: List[str] = []
-    try:
-        model_current = str(agent._current_model_selector() or "")
-    except Exception:
-        pass
+    # The displayed "current model" must follow the focused chat, not the shared
+    # global agent selection (which a concurrent chat's switch can clobber).
+    model_current = active_chat_model
+    if not model_current:
+        try:
+            model_current = str(agent._current_model_selector() or "")
+        except Exception:
+            model_current = ""
     try:
         model_available = [str(s) for s in (agent._get_configured_model_selectors() or []) if str(s)]
     except Exception:

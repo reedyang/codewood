@@ -13,6 +13,8 @@ export interface ChatSummary {
   messageCount: number;
   updatedAt?: string;
   active: boolean;
+  /** Per-chat model selector ("provider:name"); empty if unset. */
+  model?: string;
 }
 
 /** Chat summary as returned by GET /workspace-chats for any workspace. */
