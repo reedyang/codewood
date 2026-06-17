@@ -47,12 +47,14 @@ export interface ConfirmRequest {
 export type ServerEvent =
   | { event: "idle"; data: { state: AppState } }
   | { event: "turn_start"; data: { text: string } }
+  | { event: "round_start"; data: { chatId?: string } }
+  | { event: "round_end"; data: { chatId?: string } }
   | { event: "output"; data: { text: string } }
   | { event: "assistant"; data: { text: string } }
   | { event: "confirm"; data: ConfirmRequest }
   | { event: string; data: Record<string, unknown> };
 
-/** A streamed segment within a turn: intermediate steps or the final answer. */
+/** A streamed segment within a round: model text ("answer") or tool output ("step"). */
 export type SegmentKind = "step" | "answer";
 
 export interface TurnSegment {
@@ -61,21 +63,35 @@ export interface TurnSegment {
   text: string;
 }
 
-/** One user request and the assistant's streamed response, split into segments. */
+/** One model request/response within a turn: the wait timer plus the model
+ *  text and tool output streamed for that round, kept in arrival order. */
+export interface TurnRound {
+  id: number;
+  waitStartedAt: number;
+  waitEndedAt: number | null;
+  segments: TurnSegment[];
+}
+
+/** One user request and the assistant's streamed response, split into rounds. */
 export interface Turn {
   id: number;
   userText: string;
-  segments: TurnSegment[];
+  rounds: TurnRound[];
   startedAt: number;
   endedAt: number | null;
+}
+
+/** A previously-recorded model round loaded from chat history. */
+export interface HistoryRound {
+  waitSeconds: number;
+  text: string;
+  tools: string;
 }
 
 /** A previously-recorded turn loaded from chat history (already classified). */
 export interface HistoryTurn {
   userText: string;
-  steps: string;
-  answer: string;
-  elapsedSeconds?: number;
+  rounds: HistoryRound[];
   timestamp?: string;
 }
 

@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { useApp } from "../state/AppContext";
-import type { HistoryTurn, Turn } from "../api/types";
+import type { HistoryRound, HistoryTurn, Turn, TurnRound } from "../api/types";
 import { Icon } from "./Icon";
 import { MarkdownText } from "./Markdown";
 import { StepsView } from "./Steps";
@@ -423,7 +423,6 @@ export function ChatView() {
             turn={turn}
             now={now}
             negIndex={liveNeg[index]}
-            active={busy && index === turns.length - 1 && turn.endedAt === null}
             handlers={messageHandlers}
           />
         ))}
@@ -436,6 +435,70 @@ export function ChatView() {
   );
 }
 
+/** One model round laid out in natural order: the tool group first (its wait
+ *  timer + collapsible tool output), then the model's natural-language reply.
+ *  `running` marks a live, in-flight round so the timer animates and its tools
+ *  default to expanded. The timer is shown only when the round has a tool group
+ *  (or is still running); a pure-answer round renders just its text. */
+function RoundShell({
+  timerText,
+  running,
+  toolText,
+  textNode,
+}: {
+  timerText: string;
+  running: boolean;
+  toolText: string;
+  textNode: ReactNode;
+}) {
+  const hasTools = toolText.trim().length > 0;
+  const [expanded, setExpanded] = useState(running);
+  useEffect(() => {
+    setExpanded(running);
+  }, [running]);
+
+  const showTimer = hasTools || running;
+  return (
+    <div className="turn-round">
+      {showTimer && (
+        <div className="activity">
+          <button
+            className={`activity-header ${running ? "running" : ""}`}
+            onClick={() => hasTools && setExpanded((v) => !v)}
+            disabled={!hasTools}
+          >
+            <span className={`activity-text ${running ? "marquee" : ""}`}>{timerText}</span>
+            {hasTools && (
+              <Icon name="chevron" size={14} className={`chevron ${expanded ? "open" : ""}`} />
+            )}
+          </button>
+          {hasTools && expanded && <StepsView text={toolText} />}
+        </div>
+      )}
+      {textNode}
+    </div>
+  );
+}
+
+function HistoryRoundView({ round }: { round: HistoryRound }) {
+  const { t } = useApp();
+  const timerText = `${t("activity.workedFor")} ${formatElapsed(round.waitSeconds * 1000)}`;
+  return (
+    <RoundShell
+      timerText={timerText}
+      running={false}
+      toolText={round.tools}
+      textNode={
+        round.text.trim().length > 0 ? (
+          <div className="answer">
+            <MarkdownText text={round.text} />
+          </div>
+        ) : null
+      }
+    />
+  );
+}
+
 function HistoryTurnView({
   turn,
   negIndex,
@@ -445,11 +508,6 @@ function HistoryTurnView({
   negIndex: number;
   handlers: MessageHandlers;
 }) {
-  const { t } = useApp();
-  const [expanded, setExpanded] = useState(false);
-  const hasSteps = turn.steps.trim().length > 0;
-  const hasAnswer = turn.answer.trim().length > 0;
-
   return (
     <div className="turn">
       {turn.userText && (
@@ -460,24 +518,9 @@ function HistoryTurnView({
           handlers={handlers}
         />
       )}
-
-      {hasSteps && (
-        <div className="activity">
-          <button className="activity-header" onClick={() => setExpanded((v) => !v)}>
-            <span className="activity-text">
-              {`${t("activity.workedFor")} ${formatElapsed((turn.elapsedSeconds ?? 0) * 1000)}`}
-            </span>
-            <Icon name="chevron" size={14} className={`chevron ${expanded ? "open" : ""}`} />
-          </button>
-          {expanded && <StepsView text={turn.steps} />}
-        </div>
-      )}
-
-      {hasAnswer && (
-        <div className="answer">
-          <MarkdownText text={turn.answer} />
-        </div>
-      )}
+      {turn.rounds.map((round, index) => (
+        <HistoryRoundView key={index} round={round} />
+      ))}
     </div>
   );
 }
@@ -509,37 +552,49 @@ function Dropdown({
   );
 }
 
+function LiveRoundView({ round, now }: { round: TurnRound; now: number }) {
+  const { t } = useApp();
+  const running = round.waitEndedAt === null;
+  const elapsedMs = (round.waitEndedAt ?? now) - round.waitStartedAt;
+  const elapsed = formatElapsed(elapsedMs);
+  const timerText = running
+    ? `${t("activity.working")} (${elapsed})`
+    : `${t("activity.workedFor")} ${elapsed}`;
+  const answer = round.segments
+    .filter((s) => s.kind === "answer")
+    .map((s) => s.text)
+    .join("");
+  const toolText = round.segments
+    .filter((s) => s.kind === "step")
+    .map((s) => s.text)
+    .join("");
+  return (
+    <RoundShell
+      timerText={timerText}
+      running={running}
+      toolText={toolText}
+      textNode={
+        answer.trim().length > 0 ? (
+          <div className="answer">
+            <MarkdownText text={answer} />
+          </div>
+        ) : null
+      }
+    />
+  );
+}
+
 function TurnView({
   turn,
   now,
   negIndex,
-  active,
   handlers,
 }: {
   turn: Turn;
   now: number;
   negIndex: number;
-  active: boolean;
   handlers: MessageHandlers;
 }) {
-  const { t } = useApp();
-  const [expanded, setExpanded] = useState(active);
-
-  // Collapse the steps automatically once the turn finishes.
-  useEffect(() => {
-    setExpanded(active);
-  }, [active]);
-
-  const steps = turn.segments.filter((s) => s.kind === "step");
-  const answer = turn.segments
-    .filter((s) => s.kind === "answer")
-    .map((s) => s.text)
-    .join("");
-  const stepText = steps.map((s) => s.text).join("");
-  const elapsedMs = (turn.endedAt ?? now) - turn.startedAt;
-  const elapsed = formatElapsed(elapsedMs);
-  const hasSteps = stepText.trim().length > 0;
-
   return (
     <div className="turn">
       {turn.userText && (
@@ -550,30 +605,9 @@ function TurnView({
           handlers={handlers}
         />
       )}
-
-      {(hasSteps || active) && (
-        <div className="activity">
-          <button
-            className={`activity-header ${active ? "running" : ""}`}
-            onClick={() => hasSteps && setExpanded((v) => !v)}
-            disabled={!hasSteps}
-          >
-            <span className={`activity-text ${active ? "marquee" : ""}`}>
-              {active
-                ? `${t("activity.working")} (${elapsed})`
-                : `${t("activity.workedFor")} ${elapsed}`}
-            </span>
-            {hasSteps && <Icon name="chevron" size={14} className={`chevron ${expanded ? "open" : ""}`} />}
-          </button>
-          {hasSteps && expanded && <StepsView text={stepText} />}
-        </div>
-      )}
-
-      {answer.trim().length > 0 && (
-        <div className="answer">
-          <MarkdownText text={answer} />
-        </div>
-      )}
+      {turn.rounds.map((round) => (
+        <LiveRoundView key={round.id} round={round} now={now} />
+      ))}
     </div>
   );
 }

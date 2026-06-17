@@ -293,35 +293,45 @@ export function AppProvider({ children }: { children: ReactNode }) {
     return () => window.clearInterval(handle);
   }, [busy]);
 
-  // Append text to the last segment of the active turn when it matches the
-  // requested kind; otherwise open a new segment. This keeps streamed deltas
-  // append-only (no full-block rewrites) and separates steps from the answer.
+  // Append a streamed delta to the current round of the active turn. Within a
+  // round, consecutive same-kind deltas merge into one segment so model text
+  // and tool output each stay contiguous while preserving arrival order.
   const appendSegment = useCallback(
     (kind: SegmentKind, text: string, chatId: string) => {
       if (!text || !chatId) {
         return;
       }
       setTurnsByChat((prev) => {
-        const next = prev[chatId] ? [...prev[chatId]] : [];
-        let turn = next[next.length - 1];
-        if (!turn) {
-          turn = {
-            id: nextIdRef.current++,
-            userText: "",
-            segments: [],
-            startedAt: Date.now(),
-            endedAt: null,
-          };
-          next.push(turn);
+        const existing = prev[chatId];
+        // Deltas only belong inside a turn opened by `turn_start`. Output that
+        // arrives with no active turn is startup noise (the banner / tips
+        // printed before the first user message) — drop it rather than
+        // synthesizing an empty "Worked for 0s" turn.
+        if (!existing || existing.length === 0) {
+          return prev;
         }
-        const segments = [...turn.segments];
+        const next = [...existing];
+        const turn = next[next.length - 1];
+        const rounds = [...turn.rounds];
+        let round = rounds[rounds.length - 1];
+        if (!round) {
+          round = {
+            id: nextIdRef.current++,
+            waitStartedAt: Date.now(),
+            waitEndedAt: null,
+            segments: [],
+          };
+          rounds.push(round);
+        }
+        const segments = [...round.segments];
         const last = segments[segments.length - 1];
         if (last && last.kind === kind) {
           segments[segments.length - 1] = { ...last, text: last.text + text };
         } else {
           segments.push({ id: nextIdRef.current++, kind, text });
         }
-        next[next.length - 1] = { ...turn, segments };
+        rounds[rounds.length - 1] = { ...round, segments };
+        next[next.length - 1] = { ...turn, rounds };
         return { ...prev, [chatId]: next };
       });
     },
@@ -339,12 +349,87 @@ export function AppProvider({ children }: { children: ReactNode }) {
         {
           id: nextIdRef.current++,
           userText,
-          segments: [],
+          rounds: [],
           startedAt: Date.now(),
           endedAt: null,
         },
       ],
     }));
+  }, []);
+
+  // Open a model round's wait timer on the active turn. Consecutive rounds
+  // that only issue tool calls (no natural-language reply yet) belong to one
+  // collapsible tool group with a single running timer, so instead of starting
+  // a new round we just reopen the previous round's timer when it carries tool
+  // output but no answer. A new round starts only after a round produced an
+  // answer (or at the turn's first round).
+  const startRound = useCallback((chatId: string) => {
+    if (!chatId) {
+      return;
+    }
+    setTurnsByChat((prev) => {
+      const next = prev[chatId] ? [...prev[chatId]] : [];
+      let turn = next[next.length - 1];
+      if (!turn) {
+        turn = {
+          id: nextIdRef.current++,
+          userText: "",
+          rounds: [],
+          startedAt: Date.now(),
+          endedAt: null,
+        };
+        next.push(turn);
+      }
+      const last = turn.rounds[turn.rounds.length - 1];
+      const lastIsOpenToolGroup =
+        last &&
+        last.segments.some((s) => s.kind === "step") &&
+        !last.segments.some((s) => s.kind === "answer");
+      let rounds;
+      if (lastIsOpenToolGroup) {
+        // Keep the group's original start time; just resume its timer.
+        rounds = [...turn.rounds];
+        rounds[rounds.length - 1] = { ...last, waitEndedAt: null };
+      } else {
+        rounds = [
+          ...turn.rounds,
+          {
+            id: nextIdRef.current++,
+            waitStartedAt: Date.now(),
+            waitEndedAt: null,
+            segments: [],
+          },
+        ];
+      }
+      next[next.length - 1] = { ...turn, rounds };
+      return { ...prev, [chatId]: next };
+    });
+  }, []);
+
+  // Freeze the current round's wait timer (the model has fully responded).
+  const endRound = useCallback((chatId: string) => {
+    if (!chatId) {
+      return;
+    }
+    setTurnsByChat((prev) => {
+      const list = prev[chatId];
+      if (!list || list.length === 0) {
+        return prev;
+      }
+      const turn = list[list.length - 1];
+      if (turn.rounds.length === 0) {
+        return prev;
+      }
+      const lastRound = turn.rounds[turn.rounds.length - 1];
+      if (lastRound.waitEndedAt !== null) {
+        return prev;
+      }
+      const rounds = [...turn.rounds];
+      rounds[rounds.length - 1] = { ...lastRound, waitEndedAt: Date.now() };
+      const next = [...list];
+      next[next.length - 1] = { ...turn, rounds };
+      return { ...prev, [chatId]: next };
+    });
   }, []);
 
   const endActiveTurn = useCallback((chatId: string) => {
@@ -360,8 +445,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
       if (last.endedAt !== null) {
         return prev;
       }
+      // Freeze any still-open round so its timer stops with the turn.
+      const rounds = last.rounds.map((r, i) =>
+        i === last.rounds.length - 1 && r.waitEndedAt === null
+          ? { ...r, waitEndedAt: Date.now() }
+          : r,
+      );
       const copy = [...list];
-      copy[copy.length - 1] = { ...last, endedAt: Date.now() };
+      copy[copy.length - 1] = { ...last, rounds, endedAt: Date.now() };
       return { ...prev, [chatId]: copy };
     });
   }, []);
@@ -414,6 +505,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
           setBusyForChat(chatId, true);
           break;
         }
+        case "round_start": {
+          startRound(chatId);
+          break;
+        }
+        case "round_end": {
+          endRound(chatId);
+          break;
+        }
         case "output": {
           appendSegment("step", String(data.text ?? ""), chatId);
           break;
@@ -446,7 +545,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     return () => {
       source?.close();
     };
-  }, [client, appendSegment, startTurn, endActiveTurn, setBusyForChat]);
+  }, [client, appendSegment, startTurn, startRound, endRound, endActiveTurn, setBusyForChat]);
 
   const sendInput = useCallback(
     async (text: string) => {
