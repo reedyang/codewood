@@ -3,6 +3,7 @@ import type {
   ChatHistoryPage,
   CompletionCatalog,
   GeneralConfig,
+  McpServerConfigEntry,
   McpServerDetails,
   McpServerSummary,
   ServerEvent,
@@ -258,6 +259,67 @@ export class ApiClient {
       body: JSON.stringify({ server, tool, enabled }),
     });
     return res.ok;
+  }
+
+  async getMcpServerConfig(name: string): Promise<McpServerConfigEntry> {
+    const res = await fetch(`${this.base}/mcp-server-config`, {
+      method: "POST",
+      headers: this.headers(),
+      body: JSON.stringify({ name }),
+    });
+    if (!res.ok) return {};
+    try {
+      const data = (await res.json()) as { ok?: boolean; config?: McpServerConfigEntry };
+      return data?.config ?? {};
+    } catch {
+      return {};
+    }
+  }
+
+  async addMcpServer(
+    name: string,
+    config: McpServerConfigEntry,
+  ): Promise<{ ok: boolean; error?: string }> {
+    const res = await fetch(`${this.base}/add-mcp-server`, {
+      method: "POST",
+      headers: this.headers(),
+      body: JSON.stringify({ name, config }),
+    });
+    try {
+      return (await res.json()) as { ok: boolean; error?: string };
+    } catch {
+      return { ok: false, error: "network" };
+    }
+  }
+
+  async updateMcpServer(
+    originalName: string,
+    name: string,
+    config: McpServerConfigEntry,
+  ): Promise<{ ok: boolean; error?: string }> {
+    const res = await fetch(`${this.base}/update-mcp-server`, {
+      method: "POST",
+      headers: this.headers(),
+      body: JSON.stringify({ originalName, name, config }),
+    });
+    try {
+      return (await res.json()) as { ok: boolean; error?: string };
+    } catch {
+      return { ok: false, error: "network" };
+    }
+  }
+
+  async deleteMcpServer(name: string): Promise<{ ok: boolean; error?: string }> {
+    const res = await fetch(`${this.base}/delete-mcp-server`, {
+      method: "POST",
+      headers: this.headers(),
+      body: JSON.stringify({ name }),
+    });
+    try {
+      return (await res.json()) as { ok: boolean; error?: string };
+    } catch {
+      return { ok: false, error: "network" };
+    }
   }
 
   async getCompletionCatalog(): Promise<CompletionCatalog> {
