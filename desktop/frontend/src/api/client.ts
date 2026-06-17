@@ -2,6 +2,8 @@ import type {
   AppState,
   ChatHistoryPage,
   GeneralConfig,
+  McpServerDetails,
+  McpServerSummary,
   ServerEvent,
   WorkspaceChatSummary,
 } from "./types";
@@ -205,6 +207,54 @@ export class ApiClient {
       method: "POST",
       headers: this.headers(),
       body: JSON.stringify({ general }),
+    });
+    return res.ok;
+  }
+
+  async getMcpOverview(): Promise<McpServerSummary[]> {
+    const res = await fetch(`${this.base}/mcp-overview`, {
+      method: "POST",
+      headers: this.headers(),
+      body: "{}",
+    });
+    if (!res.ok) return [];
+    try {
+      const data = (await res.json()) as { servers?: McpServerSummary[] };
+      return Array.isArray(data.servers) ? data.servers : [];
+    } catch {
+      return [];
+    }
+  }
+
+  async getMcpServerDetails(name: string): Promise<McpServerDetails | null> {
+    const res = await fetch(`${this.base}/mcp-server-details`, {
+      method: "POST",
+      headers: this.headers(),
+      body: JSON.stringify({ name }),
+    });
+    if (!res.ok) return null;
+    try {
+      const data = (await res.json()) as McpServerDetails;
+      return data;
+    } catch {
+      return null;
+    }
+  }
+
+  async setMcpServerEnabled(name: string, enabled: boolean): Promise<boolean> {
+    const res = await fetch(`${this.base}/set-mcp-server-enabled`, {
+      method: "POST",
+      headers: this.headers(),
+      body: JSON.stringify({ name, enabled }),
+    });
+    return res.ok;
+  }
+
+  async setMcpToolEnabled(server: string, tool: string, enabled: boolean): Promise<boolean> {
+    const res = await fetch(`${this.base}/set-mcp-tool-enabled`, {
+      method: "POST",
+      headers: this.headers(),
+      body: JSON.stringify({ server, tool, enabled }),
     });
     return res.ok;
   }

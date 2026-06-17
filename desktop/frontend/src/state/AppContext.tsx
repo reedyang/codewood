@@ -14,6 +14,8 @@ import type {
   ConfirmRequest,
   GeneralConfig,
   HistoryTurn,
+  McpServerDetails,
+  McpServerSummary,
   SegmentKind,
   ServerEvent,
   Turn,
@@ -95,6 +97,14 @@ interface AppContextValue {
   }) => Promise<{ ok: boolean; models?: string[]; error?: string }>;
   getGeneralConfig: () => Promise<GeneralConfig | null>;
   saveGeneralConfig: (general: Partial<GeneralConfig>) => Promise<boolean>;
+  getMcpOverview: () => Promise<McpServerSummary[]>;
+  getMcpServerDetails: (name: string) => Promise<McpServerDetails | null>;
+  setMcpServerEnabled: (name: string, enabled: boolean) => Promise<boolean>;
+  setMcpToolEnabled: (
+    server: string,
+    tool: string,
+    enabled: boolean,
+  ) => Promise<boolean>;
   setExecutionPolicy: (policy: string) => Promise<void>;
   toggleWorkspaceExpanded: (id: string) => void;
   refreshWorkspaceChats: (id: string) => Promise<void>;
@@ -1142,6 +1152,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
     getGeneralConfig: () => client.getGeneralConfig(),
     saveGeneralConfig: (general: Partial<GeneralConfig>) =>
       client.saveGeneralConfig(general),
+    getMcpOverview: () => client.getMcpOverview(),
+    getMcpServerDetails: (name: string) => client.getMcpServerDetails(name),
+    setMcpServerEnabled: (name: string, enabled: boolean) =>
+      client.setMcpServerEnabled(name, enabled),
+    setMcpToolEnabled: (server: string, tool: string, enabled: boolean) =>
+      client.setMcpToolEnabled(server, tool, enabled),
     setExecutionPolicy,
     toggleWorkspaceExpanded,
     refreshWorkspaceChats,

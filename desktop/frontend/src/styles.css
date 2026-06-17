@@ -1418,6 +1418,143 @@ body.resizing-x {
   font-variant-numeric: tabular-nums;
 }
 
+/* MCP settings page. */
+.mcp-server {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  margin-bottom: 12px;
+  background: var(--bg-elevated);
+}
+
+.mcp-server-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+}
+
+.mcp-collapse {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.mcp-server-name {
+  font-weight: 600;
+  font-size: 14px;
+}
+
+.mcp-badge {
+  font-size: 10px;
+  font-weight: 700;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+}
+
+.mcp-status {
+  font-size: 12px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+}
+
+.mcp-status-ok {
+  color: #1f8a4a;
+  border-color: #1f8a4a40;
+  background: #1f8a4a14;
+}
+
+.mcp-status-loading {
+  color: #b27a00;
+  border-color: #b27a0040;
+  background: #b27a0014;
+}
+
+.mcp-status-error {
+  color: #c54545;
+  border-color: #c5454540;
+  background: #c5454514;
+}
+
+.mcp-status-off {
+  color: var(--text-muted);
+}
+
+.mcp-counts {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-left: auto;
+}
+
+.mcp-enable {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+}
+
+.mcp-server-body {
+  padding: 4px 14px 14px;
+  border-top: 1px solid var(--border);
+}
+
+.mcp-section-label {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  letter-spacing: 0.04em;
+  margin: 10px 0 6px;
+}
+
+.mcp-chip-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.mcp-tool-chip {
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg);
+  font-size: 12px;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.mcp-tool-chip.is-enabled {
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 50%, transparent);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.mcp-tool-chip:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.mcp-prompt-chip {
+  padding: 4px 10px;
+  border: 1px dashed var(--border);
+  border-radius: 999px;
+  background: var(--bg);
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
 .segmented {
   display: inline-flex;
   border: 1px solid var(--border);
