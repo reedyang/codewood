@@ -20,6 +20,9 @@ except ImportError:  # pragma: no cover - allow running as a module too
 
 WINDOW_TITLE = "Code Wood"
 
+MIN_WIDTH = 960
+MIN_HEIGHT = 640
+
 
 def _preferred_gui() -> str | None:
     # On Windows, force the EdgeChromium (WebView2) renderer.
@@ -28,13 +31,29 @@ def _preferred_gui() -> str | None:
     return None
 
 
+def _folder_dialog():
+    """Resolve the folder-picker dialog kind across pywebview versions."""
+    file_dialog = getattr(webview, "FileDialog", None)
+    if file_dialog is not None and hasattr(file_dialog, "FOLDER"):
+        return file_dialog.FOLDER
+    return webview.FOLDER_DIALOG
+
+
+def _open_dialog():
+    """Resolve the open-file dialog kind across pywebview versions."""
+    file_dialog = getattr(webview, "FileDialog", None)
+    if file_dialog is not None and hasattr(file_dialog, "OPEN"):
+        return file_dialog.OPEN
+    return webview.OPEN_DIALOG
+
+
 def _pick_folder() -> str:
     """Open a native folder picker; return the selected path or ""."""
     window = webview.active_window()
     if window is None:
         return ""
     try:
-        result = window.create_file_dialog(webview.FOLDER_DIALOG)
+        result = window.create_file_dialog(_folder_dialog())
     except Exception:
         return ""
     if not result:
@@ -49,7 +68,7 @@ def _pick_files() -> list[str]:
         return []
     try:
         result = window.create_file_dialog(
-            webview.OPEN_DIALOG, allow_multiple=True
+            _open_dialog(), allow_multiple=True
         )
     except Exception:
         return []
@@ -105,6 +124,32 @@ class HostApi:
                 window.destroy()
             except Exception:
                 pass
+
+    def set_window_geometry(self, x: float, y: float, width: float, height: float) -> None:
+        """Resize/move the OS window (drives the web-rendered resize grips).
+
+        WebView2 covers the frameless window edges and swallows the native
+        resize hit-test, so the frontend implements edge resizing and calls
+        back here. Width/height are clamped to the minimum window size.
+        """
+        window = webview.active_window()
+        if window is None:
+            return
+        try:
+            w = max(MIN_WIDTH, int(round(width)))
+            h = max(MIN_HEIGHT, int(round(height)))
+            nx = int(round(x))
+            ny = int(round(y))
+        except (TypeError, ValueError):
+            return
+        try:
+            window.resize(w, h)
+        except Exception:
+            pass
+        try:
+            window.move(nx, ny)
+        except Exception:
+            pass
 
 
 def main() -> int:

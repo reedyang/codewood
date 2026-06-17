@@ -66,6 +66,8 @@ from .ai.ai_provider_clients import AICallContext, resolve_api_mode
 from .services.session_memory_service import SessionMemoryService
 from .policy.path_policy import PathPolicy
 from .core.console_utils import (
+    GUI_CMD_OUTPUT_BEGIN,
+    GUI_CMD_OUTPUT_END,
     _WorkingStatusTicker,
     _ansi_blue,
     _ansi_gray,
@@ -1694,6 +1696,11 @@ class Agent:
         return head + ("─" * (width - head_width))
 
     def _print_task_worked_summary_line(self, elapsed_seconds: int) -> None:
+        # The GUI surfaces elapsed time in its own turn header, and the
+        # no-wrap width would make the padded rule absurdly long, so skip
+        # printing the separator line there (history recording is separate).
+        if bool(getattr(self, "_gui_no_wrap", False)):
+            return
         line = self._format_task_worked_summary_line(elapsed_seconds)
         print("")
         print(_ansi_gray(line))
@@ -1764,6 +1771,11 @@ class Agent:
             pass
 
     def _terminal_columns_for_line_estimate(self) -> int:
+        # GUI mode renders its own layout and soft-wraps in the browser, so
+        # report an effectively unbounded width to suppress terminal-style
+        # hard line wrapping while keeping the 2-space output indentation.
+        if bool(getattr(self, "_gui_no_wrap", False)):
+            return 100000
         width = 80
         output_indent_width = 0
         stdout_stream = sys.stdout
@@ -2671,6 +2683,14 @@ class Agent:
         if err:
             err_stream.write(err)
             err_stream.flush()
+        if bool(getattr(self, "_gui_no_wrap", False)) and shared_state.get(
+            "_first_text_emitted_notified"
+        ):
+            try:
+                sys.stdout.write(GUI_CMD_OUTPUT_END)
+                sys.stdout.flush()
+            except Exception:
+                pass
         try:
             rendered = max(0, int(shared_state.get("rendered_line_count", 0) or 0))
         except Exception:
@@ -3025,6 +3045,67 @@ class Agent:
             self._flush_pending_word(out_parts, term_cols)
             self._base_stream.write("".join(out_parts))
             return len(s)
+
+    class _GuiRawOutputStream:
+        """Pass-through command-output stream for the desktop GUI.
+
+        The terminal renderer adds a live tail window, tree connector,
+        truncation notices and gray styling that only make sense on a TTY.
+        The GUI renders command output in its own padded node (so the indent
+        survives soft-wrapping), so emit the raw text verbatim and wrap it in
+        the begin/end sentinels the GUI uses to isolate the block.
+        """
+
+        def __init__(self, base_stream: Any, shared_state: Dict[str, Any]) -> None:
+            self._base_stream = base_stream
+            self._shared_state = shared_state if isinstance(shared_state, dict) else {}
+
+        @property
+        def encoding(self) -> Optional[str]:
+            try:
+                return getattr(self._base_stream, "encoding", None)
+            except Exception:
+                return None
+
+        def _notify_first_text(self) -> None:
+            state = self._shared_state
+            if state.get("_first_text_emitted_notified"):
+                return
+            state["_first_text_emitted_notified"] = True
+            cb = state.get("on_text_emitted")
+            if callable(cb):
+                try:
+                    cb()
+                except Exception:
+                    pass
+            try:
+                self._base_stream.write(GUI_CMD_OUTPUT_BEGIN)
+            except Exception:
+                pass
+
+        def write(self, s: Any) -> int:
+            text = s if isinstance(s, str) else str(s)
+            if not text:
+                return 0
+            self._notify_first_text()
+            try:
+                self._base_stream.write(text)
+                self._base_stream.flush()
+            except Exception:
+                pass
+            return len(text)
+
+        def flush(self) -> None:
+            try:
+                self._base_stream.flush()
+            except Exception:
+                pass
+
+        def writable(self) -> bool:
+            return True
+
+        def isatty(self) -> bool:
+            return False
 
     class _DirectShellOutputStream:
         def __init__(self, base_stream: Any, shared_state: Dict[str, Any]) -> None:
@@ -3472,6 +3553,8 @@ class Agent:
                 state["ui_language"] = self._ui_language()
             except Exception:
                 pass
+        if bool(getattr(self, "_gui_no_wrap", False)):
+            return Agent._GuiRawOutputStream(base_stream, state)
         return Agent._DirectShellOutputStream(base_stream, state)
 
     def _build_internal_slash_output_stream(

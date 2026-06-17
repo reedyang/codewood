@@ -2,6 +2,9 @@ import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "re
 import { useApp } from "../state/AppContext";
 import type { HistoryTurn, Turn } from "../api/types";
 import { Icon } from "./Icon";
+import { MarkdownText } from "./Markdown";
+import { StepsView } from "./Steps";
+import { ChatTitleBar } from "./ChatTitleBar";
 
 function quote(value: string): string {
   return `"${value.replace(/"/g, "")}"`;
@@ -23,6 +26,96 @@ function formatElapsed(ms: number): string {
   const m = Math.floor(total / 60);
   const s = total % 60;
   return m > 0 ? `${m}m ${s}s` : `${s}s`;
+}
+
+/** Render a message time as e.g. "Jun 1, 6:11 PM" (locale-aware). */
+function formatMessageTime(ms?: number): string {
+  if (ms == null || Number.isNaN(ms)) {
+    return "";
+  }
+  return new Date(ms).toLocaleString(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
+function parseHistoryTime(value?: string): number | undefined {
+  if (!value) {
+    return undefined;
+  }
+  const ts = Date.parse(value.replace(" ", "T"));
+  return Number.isNaN(ts) ? undefined : ts;
+}
+
+interface MessageHandlers {
+  onCopy: (text: string) => void;
+  onFork: (index: number) => void;
+  onEdit: (index: number, text: string) => void;
+}
+
+/** A user message with a hover-only action row (timestamp + copy/fork/edit).
+ *  `index` is the from-end genuine-user index (e.g. -1 = last) used to address
+ *  this turn for the backend `/chat fork|edit` commands. */
+function UserEntry({
+  text,
+  timeMs,
+  index,
+  handlers,
+}: {
+  text: string;
+  timeMs?: number;
+  index: number;
+  handlers: MessageHandlers;
+}) {
+  const { t } = useApp();
+  const [copied, setCopied] = useState(false);
+  const time = formatMessageTime(timeMs);
+  const canAct = index < 0;
+  return (
+    <div className="user-message">
+      <div className="entry-input">
+        <span className="entry-label">{t("chat.you")}</span>
+        <div className="entry-text">{text}</div>
+      </div>
+      <div className="entry-actions">
+        <span className="entry-time">{time}</span>
+        <div className="entry-action-buttons">
+          <button
+            className="entry-action-btn"
+            title={t("msg.copy")}
+            aria-label={t("msg.copy")}
+            onClick={() => {
+              handlers.onCopy(text);
+              setCopied(true);
+              window.setTimeout(() => setCopied(false), 1200);
+            }}
+          >
+            <Icon name={copied ? "check" : "copy"} size={14} />
+          </button>
+          <button
+            className="entry-action-btn"
+            title={t("msg.fork")}
+            aria-label={t("msg.fork")}
+            disabled={!canAct}
+            onClick={() => handlers.onFork(index)}
+          >
+            <Icon name="fork" size={14} />
+          </button>
+          <button
+            className="entry-action-btn"
+            title={t("msg.edit")}
+            aria-label={t("msg.edit")}
+            disabled={!canAct}
+            onClick={() => handlers.onEdit(index, text)}
+          >
+            <Icon name="edit" size={14} />
+          </button>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 const POLICIES = ["unlimited", "moderate", "confirmation"] as const;
@@ -59,12 +152,29 @@ export function ChatView() {
     setExecutionPolicy,
     setModel,
     pickFiles,
+    forkChat,
+    editChat,
     t,
   } = useApp();
   const [draft, setDraft] = useState("");
   const [attachments, setAttachments] = useState<string[]>([]);
   const scrollRef = useRef<HTMLDivElement | null>(null);
+  const composerRef = useRef<HTMLTextAreaElement | null>(null);
   const prevHeightRef = useRef<number | null>(null);
+
+  const messageHandlers: MessageHandlers = {
+    onCopy: (text) => {
+      void navigator.clipboard?.writeText(text);
+    },
+    onEdit: (index, text) => {
+      setDraft(text);
+      composerRef.current?.focus();
+      void editChat(index);
+    },
+    onFork: (index) => {
+      void forkChat(index);
+    },
+  };
 
   // Live updates and chat switches stick to the bottom.
   useEffect(() => {
@@ -138,6 +248,32 @@ export function ChatView() {
   const currentModel = state?.model.current || "";
   const models = state?.model.available ?? [];
 
+  // From-end genuine-user indices (e.g. -1 = last user turn) so Fork/Edit can
+  // address a turn the same way the TUI `/chat fork|edit <index>` commands do.
+  const histUserCount = historyTurns.reduce((n, h) => n + (h.userText ? 1 : 0), 0);
+  const liveUserCount = turns.reduce((n, tn) => n + (tn.userText ? 1 : 0), 0);
+  const totalUser = histUserCount + liveUserCount;
+  const histNeg: number[] = [];
+  {
+    let seen = 0;
+    for (const h of historyTurns) {
+      histNeg.push(h.userText ? -(totalUser - seen) : 0);
+      if (h.userText) {
+        seen += 1;
+      }
+    }
+  }
+  const liveNeg: number[] = [];
+  {
+    let seen = histUserCount;
+    for (const tn of turns) {
+      liveNeg.push(tn.userText ? -(totalUser - seen) : 0);
+      if (tn.userText) {
+        seen += 1;
+      }
+    }
+  }
+
   const composer = (
     <div className="composer">
       {attachments.length > 0 && (
@@ -159,6 +295,7 @@ export function ChatView() {
         </div>
       )}
       <textarea
+        ref={composerRef}
         className="composer-input"
         value={draft}
         placeholder={t("chat.inputPlaceholder")}
@@ -195,7 +332,9 @@ export function ChatView() {
                     void setExecutionPolicy(p);
                   }}
                 >
-                  {p === currentPolicy && <Icon name="check" size={13} />}
+                  <span className="dropdown-check">
+                    {p === currentPolicy && <Icon name="check" size={13} />}
+                  </span>
                   <span>{t(`settings.policy.${p}`)}</span>
                 </button>
               ))
@@ -224,7 +363,9 @@ export function ChatView() {
                       void setModel(m);
                     }}
                   >
-                    {m === currentModel && <Icon name="check" size={13} />}
+                    <span className="dropdown-check">
+                      {m === currentModel && <Icon name="check" size={13} />}
+                    </span>
                     <span>{m}</span>
                   </button>
                 ))
@@ -261,6 +402,7 @@ export function ChatView() {
 
   return (
     <div className="chat-view">
+      <ChatTitleBar />
       <div className="transcript" ref={scrollRef} onScroll={onScroll}>
         {historyStart > 0 && (
           <div className="history-more">
@@ -268,14 +410,21 @@ export function ChatView() {
           </div>
         )}
         {historyTurns.map((turn, index) => (
-          <HistoryTurnView key={`h-${index}`} turn={turn} />
+          <HistoryTurnView
+            key={`h-${index}`}
+            turn={turn}
+            negIndex={histNeg[index]}
+            handlers={messageHandlers}
+          />
         ))}
         {turns.map((turn, index) => (
           <TurnView
             key={turn.id}
             turn={turn}
             now={now}
+            negIndex={liveNeg[index]}
             active={busy && index === turns.length - 1 && turn.endedAt === null}
+            handlers={messageHandlers}
           />
         ))}
       </div>
@@ -287,7 +436,15 @@ export function ChatView() {
   );
 }
 
-function HistoryTurnView({ turn }: { turn: HistoryTurn }) {
+function HistoryTurnView({
+  turn,
+  negIndex,
+  handlers,
+}: {
+  turn: HistoryTurn;
+  negIndex: number;
+  handlers: MessageHandlers;
+}) {
   const { t } = useApp();
   const [expanded, setExpanded] = useState(false);
   const hasSteps = turn.steps.trim().length > 0;
@@ -296,10 +453,12 @@ function HistoryTurnView({ turn }: { turn: HistoryTurn }) {
   return (
     <div className="turn">
       {turn.userText && (
-        <div className="entry entry-input">
-          <span className="entry-label">{t("chat.you")}</span>
-          <div className="entry-text">{turn.userText}</div>
-        </div>
+        <UserEntry
+          text={turn.userText}
+          timeMs={parseHistoryTime(turn.timestamp)}
+          index={negIndex}
+          handlers={handlers}
+        />
       )}
 
       {hasSteps && (
@@ -310,11 +469,15 @@ function HistoryTurnView({ turn }: { turn: HistoryTurn }) {
             </span>
             <Icon name="chevron" size={14} className={`chevron ${expanded ? "open" : ""}`} />
           </button>
-          {expanded && <pre className="activity-steps">{turn.steps}</pre>}
+          {expanded && <StepsView text={turn.steps} />}
         </div>
       )}
 
-      {hasAnswer && <pre className="answer">{turn.answer}</pre>}
+      {hasAnswer && (
+        <div className="answer">
+          <MarkdownText text={turn.answer} />
+        </div>
+      )}
     </div>
   );
 }
@@ -346,7 +509,19 @@ function Dropdown({
   );
 }
 
-function TurnView({ turn, now, active }: { turn: Turn; now: number; active: boolean }) {
+function TurnView({
+  turn,
+  now,
+  negIndex,
+  active,
+  handlers,
+}: {
+  turn: Turn;
+  now: number;
+  negIndex: number;
+  active: boolean;
+  handlers: MessageHandlers;
+}) {
   const { t } = useApp();
   const [expanded, setExpanded] = useState(active);
 
@@ -368,10 +543,12 @@ function TurnView({ turn, now, active }: { turn: Turn; now: number; active: bool
   return (
     <div className="turn">
       {turn.userText && (
-        <div className="entry entry-input">
-          <span className="entry-label">{t("chat.you")}</span>
-          <div className="entry-text">{turn.userText}</div>
-        </div>
+        <UserEntry
+          text={turn.userText}
+          timeMs={turn.startedAt}
+          index={negIndex}
+          handlers={handlers}
+        />
       )}
 
       {(hasSteps || active) && (
@@ -388,11 +565,15 @@ function TurnView({ turn, now, active }: { turn: Turn; now: number; active: bool
             </span>
             {hasSteps && <Icon name="chevron" size={14} className={`chevron ${expanded ? "open" : ""}`} />}
           </button>
-          {hasSteps && expanded && <pre className="activity-steps">{stepText}</pre>}
+          {hasSteps && expanded && <StepsView text={stepText} />}
         </div>
       )}
 
-      {answer.trim().length > 0 && <pre className="answer">{answer}</pre>}
+      {answer.trim().length > 0 && (
+        <div className="answer">
+          <MarkdownText text={answer} />
+        </div>
+      )}
     </div>
   );
 }

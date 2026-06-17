@@ -31,6 +31,11 @@ export interface AppState {
   model: { current: string; available: string[] };
   language: string;
   theme?: string;
+  uiPrefs?: {
+    pinnedWorkspaceIds?: string[];
+    pinnedChatIds?: string[];
+    archivedChatIds?: string[];
+  };
   executionPolicy: string;
 }
 
@@ -71,6 +76,7 @@ export interface HistoryTurn {
   steps: string;
   answer: string;
   elapsedSeconds?: number;
+  timestamp?: string;
 }
 
 /** Paginated chat history response from GET /chat-history. */

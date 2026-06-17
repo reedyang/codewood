@@ -44,11 +44,11 @@ export class ApiClient {
     return (await res.json()) as AppState;
   }
 
-  async sendInput(text: string): Promise<void> {
+  async sendInput(text: string, asPrompt = false): Promise<void> {
     await fetch(`${this.base}/input`, {
       method: "POST",
       headers: this.headers(),
-      body: JSON.stringify({ text }),
+      body: JSON.stringify({ text, asPrompt }),
     });
   }
 
@@ -121,6 +121,15 @@ export class ApiClient {
       method: "POST",
       headers: this.headers(),
       body: JSON.stringify({ theme }),
+    });
+    return res.ok;
+  }
+
+  async setUiPrefs(prefs: unknown): Promise<boolean> {
+    const res = await fetch(`${this.base}/set-ui-prefs`, {
+      method: "POST",
+      headers: this.headers(),
+      body: JSON.stringify({ prefs }),
     });
     return res.ok;
   }

@@ -29,6 +29,7 @@ from ..core.assistant_output_highlighter import (
     format_assistant_display_response,
 )
 from ..core.logging.app_logging import get_logger
+from ..core.console_utils import GUI_FORCE_PROMPT_PREFIX
 from ..controllers.builtin_command_router import dispatch_builtin_command
 from ..tooling.handlers.mcp_handlers import MCP_MANAGEMENT_GATED_TOOLS
 from ..tooling.handlers.memory_handlers import MEMORY_TOOLS
@@ -1878,6 +1879,12 @@ def run_agent_loop(agent: Any):
                     self._startup_exec_turn_pending = False
             else:
                 user_input = self._get_user_input_with_history()
+            # GUI composer input is sentinel-prefixed so it is always handled as
+            # a model prompt; "/foo" and "!bar" text must not run directly.
+            force_prompt = False
+            if user_input and str(user_input).startswith(GUI_FORCE_PROMPT_PREFIX):
+                force_prompt = True
+                user_input = str(user_input)[len(GUI_FORCE_PROMPT_PREFIX):]
             user_input = _sanitize_prompt_pollution(user_input, self.work_directory)
             raw_user_input = str(user_input or "")
         
@@ -1911,7 +1918,7 @@ def run_agent_loop(agent: Any):
 
             # Built-in slash commands use "/" prefix; direct shell uses "!" prefix.
             builtin_line: Optional[str] = None
-            if stripped_in.startswith("/") and not forced_skills and not forced_mcp_entries:
+            if stripped_in.startswith("/") and not forced_skills and not forced_mcp_entries and not force_prompt:
                 builtin_line = stripped_in[1:].lstrip()
                 if not builtin_line:
                     print(
@@ -2124,7 +2131,7 @@ def run_agent_loop(agent: Any):
 
             # Direct local execution without AI: requires leading "!" on all platforms.
             run_direct_shell: Optional[str] = None
-            if stripped_in.startswith("!"):
+            if stripped_in.startswith("!") and not force_prompt:
                 run_direct_shell = stripped_in[1:].lstrip()
                 if not run_direct_shell:
                     print(

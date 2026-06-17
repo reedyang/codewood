@@ -3,6 +3,7 @@ import { useApp } from "../state/AppContext";
 import type { WorkspaceSummary } from "../api/types";
 import { ContextMenu, type MenuItem } from "./ContextMenu";
 import { Icon } from "./Icon";
+import { buildChatMenuItems, chatKey } from "./chatMenu";
 
 function quote(value: string): string {
   return `"${value.replace(/"/g, "")}"`;
@@ -77,31 +78,35 @@ export function Sidebar({ onOpenSettings }: { onOpenSettings: () => void }) {
   const archivedChat = new Set(uiPrefs.archivedChatIds);
   const expanded = new Set(expandedWorkspaceIds);
 
-  // Resolve every known chat (active workspace + loaded ones) for pin lookup.
-  const allKnownChats = useMemo(() => {
-    const map = new Map<string, ChatRow>();
-    for (const c of activeChats) {
-      map.set(c.id, c);
-    }
-    for (const list of Object.values(workspaceChats)) {
-      for (const c of list) {
-        if (!map.has(c.id)) {
-          map.set(c.id, c);
-        }
-      }
+  // Chat ids are only unique within a workspace, so pin/archive state must be
+  // keyed by workspace + chat to avoid hiding same-id chats in other workspaces.
+  const isPinnedChat = (wsId: string, chatId: string) => pinnedChat.has(chatKey(wsId, chatId));
+  const isArchivedChat = (wsId: string, chatId: string) => archivedChat.has(chatKey(wsId, chatId));
+
+  // Chats per workspace (active workspace sourced from live state).
+  const chatsByWorkspace = useMemo(() => {
+    const map: Record<string, ChatRow[]> = { ...workspaceChats };
+    if (activeWsId) {
+      map[activeWsId] = activeChats;
     }
     return map;
-  }, [activeChats, workspaceChats]);
+  }, [activeChats, workspaceChats, activeWsId]);
 
   const pinnedWorkspaces = workspaces.filter((w) => pinnedWs.has(w.id));
-  const pinnedChats = Array.from(allKnownChats.values()).filter(
-    (c) => pinnedChat.has(c.id) && !archivedChat.has(c.id),
-  );
-  const hasPinned = pinnedWorkspaces.length > 0 || pinnedChats.length > 0;
+  const unpinnedWorkspaces = workspaces.filter((w) => !pinnedWs.has(w.id));
+  const pinnedChatEntries: { chat: ChatRow; wsId: string }[] = [];
+  for (const [wsId, list] of Object.entries(chatsByWorkspace)) {
+    for (const chat of list) {
+      if (isPinnedChat(wsId, chat.id) && !isArchivedChat(wsId, chat.id)) {
+        pinnedChatEntries.push({ chat, wsId });
+      }
+    }
+  }
+  const hasPinned = pinnedWorkspaces.length > 0 || pinnedChatEntries.length > 0;
 
   const chatsForWorkspace = (ws: WorkspaceSummary): ChatRow[] => {
-    const list = ws.id === activeWsId ? activeChats : workspaceChats[ws.id] ?? [];
-    return list.filter((c) => !archivedChat.has(c.id) && !pinnedChat.has(c.id));
+    const list = chatsByWorkspace[ws.id] ?? [];
+    return list.filter((c) => !isArchivedChat(ws.id, c.id) && !isPinnedChat(ws.id, c.id));
   };
 
   const reloadingRun = async (command: string) => {
@@ -142,7 +147,7 @@ export function Sidebar({ onOpenSettings }: { onOpenSettings: () => void }) {
 
   const openWorkspaceMenu = (e: MouseEvent, ws: WorkspaceSummary) => {
     e.preventDefault();
-    const archivableIds = ws.id === activeWsId ? activeChats.map((c) => c.id) : [];
+    const archivableIds = ws.id === activeWsId ? activeChats.map((c) => chatKey(ws.id, c.id)) : [];
     const items: MenuItem[] = [
       {
         id: "pin",
@@ -154,11 +159,16 @@ export function Sidebar({ onOpenSettings }: { onOpenSettings: () => void }) {
         label: t("menu.openInExplorer"),
         onSelect: () => void openWorkspaceInExplorer(ws.id),
       },
-      {
-        id: "rename",
-        label: t("menu.renameProject"),
-        onSelect: () => startRename("workspace", ws.id, ws.id, ws.name),
-      },
+      // The Default workspace cannot be renamed.
+      ...(ws.isDefault
+        ? []
+        : [
+            {
+              id: "rename",
+              label: t("menu.renameProject"),
+              onSelect: () => startRename("workspace", ws.id, ws.id, ws.name),
+            },
+          ]),
       {
         id: "archive",
         label: t("menu.archiveChats"),
@@ -177,32 +187,18 @@ export function Sidebar({ onOpenSettings }: { onOpenSettings: () => void }) {
 
   const openChatMenu = (e: MouseEvent, chat: ChatRow, wsId: string) => {
     e.preventDefault();
-    const items: MenuItem[] = [
-      {
-        id: "pin",
-        label: pinnedChat.has(chat.id) ? t("menu.unpinChat") : t("menu.pinChat"),
-        onSelect: () => toggleChatPin(chat.id),
+    const items = buildChatMenuItems({
+      t,
+      isPinned: isPinnedChat(wsId, chat.id),
+      isArchived: isArchivedChat(wsId, chat.id),
+      onTogglePin: () => toggleChatPin(chatKey(wsId, chat.id)),
+      onToggleArchive: () => toggleChatArchive(chatKey(wsId, chat.id)),
+      onRename: () => startRename("chat", chat.id, wsId, chat.name),
+      onRemove: () => {
+        clearTurns();
+        void runChatCommand(wsId, `/chat delete ${chat.id}`);
       },
-      {
-        id: "archive",
-        label: archivedChat.has(chat.id) ? t("menu.unarchiveChat") : t("menu.archiveChat"),
-        onSelect: () => toggleChatArchive(chat.id),
-      },
-      {
-        id: "rename",
-        label: t("menu.rename"),
-        onSelect: () => startRename("chat", chat.id, wsId, chat.name),
-      },
-      {
-        id: "remove",
-        label: t("menu.remove"),
-        danger: true,
-        onSelect: () => {
-          clearTurns();
-          void runChatCommand(wsId, `/chat delete ${chat.id}`);
-        },
-      },
-    ];
+    });
     setMenu({ x: e.clientX, y: e.clientY, items });
   };
 
@@ -229,23 +225,39 @@ export function Sidebar({ onOpenSettings }: { onOpenSettings: () => void }) {
   const isRenaming = (kind: "workspace" | "chat", id: string) =>
     rename?.kind === kind && rename.id === id;
 
+  // Chat ids repeat across workspaces, so the rename target must match the
+  // exact workspace too, otherwise the input would open on a same-id sibling.
+  const isRenamingChat = (wsId: string, id: string) =>
+    rename?.kind === "chat" && rename.wsId === wsId && rename.id === id;
+
   const renderChatRow = (chat: ChatRow, wsId: string) => {
     const isActive = wsId === activeWsId && chat.active;
     const rel = formatRelative(chat.updatedAt);
+    const isPinned = isPinnedChat(wsId, chat.id);
     return (
       <li
         key={`${wsId}-${chat.id}`}
-        className={`tree-row chat-row ${isActive ? "active" : ""}`}
+        className={`tree-row chat-row ${isPinned ? "chat-row-pinned" : ""} ${isActive ? "active" : ""}`}
         onContextMenu={(e) => openChatMenu(e, chat, wsId)}
       >
-        {isRenaming("chat", chat.id) ? (
+        {isRenamingChat(wsId, chat.id) ? (
           renderRenameRow()
         ) : (
           <>
             <button className="tree-label" title={chat.id} onClick={() => void switchChat(wsId, chat.id)}>
-              {pinnedChat.has(chat.id) && <Icon name="pin" size={12} className="muted-icon" />}
               <span className="tree-name">{chat.name}</span>
               {rel && <span className="tree-meta">{rel}</span>}
+            </button>
+            <button
+              className="chat-pin-btn"
+              aria-label={isPinned ? t("menu.unpinChat") : t("menu.pinChat")}
+              title={isPinned ? t("menu.unpinChat") : t("menu.pinChat")}
+              onClick={(e) => {
+                e.stopPropagation();
+                toggleChatPin(chatKey(wsId, chat.id));
+              }}
+            >
+              <Icon name={isPinned ? "pin-filled" : "pin"} size={15} />
             </button>
             <button
               className="tree-more"
@@ -255,6 +267,50 @@ export function Sidebar({ onOpenSettings }: { onOpenSettings: () => void }) {
               <Icon name="dots" size={14} />
             </button>
           </>
+        )}
+      </li>
+    );
+  };
+
+  const renderWorkspaceGroup = (ws: WorkspaceSummary) => {
+    const open = expanded.has(ws.id);
+    const chats = chatsForWorkspace(ws);
+    return (
+      <li key={ws.id} className="tree-group">
+        <div className="tree-row ws-row" onContextMenu={(e) => openWorkspaceMenu(e, ws)}>
+          {isRenaming("workspace", ws.id) ? (
+            renderRenameRow()
+          ) : (
+            <>
+              <button
+                className="tree-label ws-label"
+                title={ws.root}
+                onClick={() => toggleWorkspaceExpanded(ws.id)}
+              >
+                <Icon name={open ? "folder-open" : "folder"} size={15} className="muted-icon" />
+                <span className="tree-name">{ws.name}</span>
+                <Icon name="chevron" size={14} className={`chevron tree-inline-chevron ${open ? "open" : ""}`} />
+              </button>
+              <span className="tree-flex" />
+              <button
+                className="tree-more"
+                aria-label={t("menu.more")}
+                onClick={(e) => openWorkspaceMenu(e, ws)}
+              >
+                <Icon name="dots" size={14} />
+              </button>
+            </>
+          )}
+        </div>
+
+        {open && (
+          <ul className="tree-list tree-children">
+            {chats.length === 0 ? (
+              <li className="tree-empty">{t("sidebar.noChats")}</li>
+            ) : (
+              chats.map((chat) => renderChatRow(chat, ws.id))
+            )}
+          </ul>
         )}
       </li>
     );
@@ -274,19 +330,8 @@ export function Sidebar({ onOpenSettings }: { onOpenSettings: () => void }) {
           <section className="tree-section">
             <div className="tree-section-title">{t("sidebar.pinned")}</div>
             <ul className="tree-list">
-              {pinnedWorkspaces.map((ws) => (
-                <li
-                  key={`pw-${ws.id}`}
-                  className={`tree-row ws-row ${ws.active ? "active" : ""}`}
-                  onContextMenu={(e) => openWorkspaceMenu(e, ws)}
-                >
-                  <button className="tree-label" title={ws.root} onClick={() => toggleWorkspaceExpanded(ws.id)}>
-                    <Icon name="pin" size={12} className="muted-icon" />
-                    <span className="tree-name">{ws.name}</span>
-                  </button>
-                </li>
-              ))}
-              {pinnedChats.map((chat) => renderChatRow(chat, activeWsId))}
+              {pinnedWorkspaces.map((ws) => renderWorkspaceGroup(ws))}
+              {pinnedChatEntries.map(({ chat, wsId }) => renderChatRow(chat, wsId))}
             </ul>
           </section>
         )}
@@ -294,61 +339,7 @@ export function Sidebar({ onOpenSettings }: { onOpenSettings: () => void }) {
         <section className="tree-section">
           <div className="tree-section-title">{t("sidebar.workspaces")}</div>
           <ul className="tree-list">
-            {workspaces.map((ws) => {
-              const open = expanded.has(ws.id);
-              const chats = chatsForWorkspace(ws);
-              return (
-                <li key={ws.id} className="tree-group">
-                  <div
-                    className="tree-row ws-row"
-                    onContextMenu={(e) => openWorkspaceMenu(e, ws)}
-                  >
-                    {isRenaming("workspace", ws.id) ? (
-                      renderRenameRow()
-                    ) : (
-                      <>
-                        <button
-                          className="tree-label"
-                          title={ws.root}
-                          onClick={() => toggleWorkspaceExpanded(ws.id)}
-                        >
-                          <Icon
-                            name={open ? "folder-open" : "folder"}
-                            size={15}
-                            className="muted-icon"
-                          />
-                          <span className="tree-name">{ws.name}</span>
-                        </button>
-                        <button
-                          className="tree-more"
-                          aria-label={t("menu.more")}
-                          onClick={(e) => openWorkspaceMenu(e, ws)}
-                        >
-                          <Icon name="dots" size={14} />
-                        </button>
-                        <button
-                          className="tree-chevron-btn"
-                          aria-label={t("panel.toggle")}
-                          onClick={() => toggleWorkspaceExpanded(ws.id)}
-                        >
-                          <Icon name="chevron" size={14} className={`chevron ${open ? "open" : ""}`} />
-                        </button>
-                      </>
-                    )}
-                  </div>
-
-                  {open && (
-                    <ul className="tree-list tree-children">
-                      {chats.length === 0 ? (
-                        <li className="tree-empty">{t("sidebar.noChats")}</li>
-                      ) : (
-                        chats.map((chat) => renderChatRow(chat, ws.id))
-                      )}
-                    </ul>
-                  )}
-                </li>
-              );
-            })}
+            {unpinnedWorkspaces.map((ws) => renderWorkspaceGroup(ws))}
             {workspaces.length === 0 && <li className="tree-empty">{t("sidebar.noWorkspaces")}</li>}
           </ul>
         </section>

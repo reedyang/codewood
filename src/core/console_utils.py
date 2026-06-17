@@ -7,6 +7,20 @@ from typing import Any, List, Optional, Tuple
 from ..config.app_info import get_app_logger_root
 from .localization import DEFAULT_DISPLAY_LANGUAGE, normalize_display_language, text
 
+# Private-use sentinels wrapping raw command output in GUI (serve) mode. The
+# desktop GUI splits step text on these markers to render command output in its
+# own padded node so the indent survives soft-wrapping. They never collide with
+# real output and pass through SSE/JSON untouched. Keep in sync with the
+# frontend (desktop/frontend/src/components/Steps.tsx).
+GUI_CMD_OUTPUT_BEGIN = "\ue000"
+GUI_CMD_OUTPUT_END = "\ue001"
+
+# Private-use sentinel prepended to composer input by the desktop GUI to force
+# the runtime loop to treat the line as a model prompt, never as a built-in
+# slash command or "!" direct-shell execution. The GUI does not allow users to
+# run commands directly, so even "/foo" or "!bar" text is handed to the model.
+GUI_FORCE_PROMPT_PREFIX = "\ue002"
+
 
 def _decode_subprocess_output(data: Optional[bytes]) -> str:
     """

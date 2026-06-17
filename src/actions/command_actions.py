@@ -13,6 +13,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from ..config.app_info import get_app_runtime_attr_name
 from ..core.console_utils import (
+    GUI_CMD_OUTPUT_END,
     _WorkingStatusTicker,
     _ansi_gray,
     _safe_console_write,
@@ -668,11 +669,15 @@ def action_shell_command(
                 finally:
                     status_ticker = None
         try:
-            status_ticker = _WorkingStatusTicker(
-                sys.stdout,
-                fps=SHELL_WORKING_STATUS_MARQUEE_FPS,
-            )
-            status_ticker.start()
+            # The desktop GUI renders its own "Working.../Worked for" indicator,
+            # so suppress the terminal ticker (which would otherwise leave a
+            # stale "Working... (0s ...)" line in the GUI step output).
+            if not bool(getattr(agent, "_gui_plain_stream", False)):
+                status_ticker = _WorkingStatusTicker(
+                    sys.stdout,
+                    fps=SHELL_WORKING_STATUS_MARQUEE_FPS,
+                )
+                status_ticker.start()
             if interactive:
                 import codecs
 
@@ -1092,19 +1097,44 @@ def action_shell_command(
                 # no post-processing changed the displayed text.
                 if displayed_out and (_count_output_lines(out) <= out_tail_limit) and (displayed_out == out):
                     should_replay_out = False
+            gui_mode = bool(getattr(agent, "_gui_no_wrap", False))
+            gui_streamed = (
+                bool(live_stream_state.get("_first_text_emitted_notified"))
+                if gui_mode
+                else False
+            )
+            if gui_mode:
+                # The GUI streamed the full raw output live and cannot clear a
+                # terminal window, so never replay the tail-truncated copy.
+                should_replay_out = False
+                # Close the command-output block opened by the raw stream so the
+                # GUI can render it as a single padded node. The no-output case
+                # is wrapped by the history-output replay path below instead.
+                if gui_streamed:
+                    try:
+                        sys.stdout.write(GUI_CMD_OUTPUT_END)
+                        sys.stdout.flush()
+                    except Exception:
+                        pass
             last_rendered_chunk = ""
             replay_out_text = displayed_out_plain if (displayed_out and should_replay_out) else ""
-            if (not replay_out_text) and int(return_code) == 0 and (not aborted_by_user):
+            if (
+                (not replay_out_text)
+                and int(return_code) == 0
+                and (not aborted_by_user)
+                and not (gui_mode and gui_streamed)
+            ):
                 replay_out_text = "(no output)\n"
             replay_rendered_lines = 0
             lock_obj = live_stream_state.get("_write_lock")
             lock_ctx = lock_obj if hasattr(lock_obj, "__enter__") and hasattr(lock_obj, "__exit__") else contextlib.nullcontext()
             with lock_ctx:
-                _clear_streamed_output_window(
-                    sys.stdout,
-                    int(live_stream_state.get("rendered_line_count", 0) or 0),
-                    bool(live_stream_state.get("cursor_at_line_start", True)),
-                )
+                if not gui_mode:
+                    _clear_streamed_output_window(
+                        sys.stdout,
+                        int(live_stream_state.get("rendered_line_count", 0) or 0),
+                        bool(live_stream_state.get("cursor_at_line_start", True)),
+                    )
                 if replay_out_text:
                     replay_direct = getattr(agent, "_print_direct_shell_history_output", None)
                     if callable(replay_direct):

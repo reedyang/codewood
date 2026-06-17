@@ -60,6 +60,8 @@ interface AppContextValue {
   switchToChat: (chatId: string, workspaceId?: string) => Promise<void>;
   selectWorkspace: (workspaceId: string) => Promise<void>;
   newChat: () => Promise<void>;
+  forkChat: (index: number) => Promise<void>;
+  editChat: (index: number) => Promise<void>;
   loadOlderHistory: () => Promise<void>;
   openWorkspaceInExplorer: (id: string) => Promise<boolean>;
   toggleWorkspacePin: (id: string) => void;
@@ -189,10 +191,67 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setExpandedWorkspaceIds((prev) => (prev.includes(activeWsId) ? prev : [...prev, activeWsId]));
   }, [state?.workspace.id]);
 
-  const updatePrefs = useCallback((next: UiPrefs) => {
-    setUiPrefs(next);
-    saveUiPrefs(next);
-  }, []);
+  // Mirror the active workspace's chats into the per-workspace cache. The
+  // sidebar renders the active workspace from state.chats but other (expanded)
+  // workspaces from this cache; without mirroring, switching away would leave
+  // the previously-active workspace showing "No chats yet" until re-expanded.
+  useEffect(() => {
+    const activeWsId = state?.workspace.id ?? "";
+    const chats = state?.chats;
+    if (!activeWsId || !chats) {
+      return;
+    }
+    setWorkspaceChats((prev) => ({ ...prev, [activeWsId]: chats }));
+  }, [state?.workspace.id, state?.chats]);
+
+  const updatePrefs = useCallback(
+    (next: UiPrefs) => {
+      setUiPrefs(next);
+      saveUiPrefs(next);
+      // Persist to the backend too so pin/archive survive a restart even when
+      // the webview clears localStorage.
+      void client.setUiPrefs(next);
+    },
+    [client],
+  );
+
+  // Adopt server-persisted pin/archive prefs once on first load; if the backend
+  // has none yet, migrate any existing localStorage prefs up to it.
+  const prefsInitRef = useRef(false);
+  useEffect(() => {
+    if (prefsInitRef.current) {
+      return;
+    }
+    const sp = state?.uiPrefs;
+    if (!sp) {
+      return;
+    }
+    prefsInitRef.current = true;
+    const ids = (v: unknown): string[] =>
+      Array.isArray(v) ? v.filter((x): x is string => typeof x === "string" && !!x) : [];
+    const server: UiPrefs = {
+      pinnedWorkspaceIds: ids(sp.pinnedWorkspaceIds),
+      pinnedChatIds: ids(sp.pinnedChatIds),
+      archivedChatIds: ids(sp.archivedChatIds),
+    };
+    const hasServer =
+      server.pinnedWorkspaceIds.length > 0 ||
+      server.pinnedChatIds.length > 0 ||
+      server.archivedChatIds.length > 0;
+    if (hasServer) {
+      setUiPrefs(server);
+      saveUiPrefs(server);
+      return;
+    }
+    const local = loadUiPrefs();
+    if (
+      local.pinnedWorkspaceIds.length > 0 ||
+      local.pinnedChatIds.length > 0 ||
+      local.archivedChatIds.length > 0
+    ) {
+      void client.setUiPrefs(local);
+    }
+  }, [state?.uiPrefs, client]);
 
   // Tick a 1s clock while busy so the active turn shows live elapsed time.
   useEffect(() => {
@@ -324,7 +383,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
       if (!trimmed) {
         return;
       }
-      await client.sendInput(trimmed);
+      // Composer input is always a model prompt; the GUI never executes
+      // built-in commands or "!" direct shell typed by the user.
+      await client.sendInput(trimmed, true);
     },
     [client],
   );
@@ -431,6 +492,31 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setHistoryStart(0);
     setHistoryTotal(0);
   }, [client, clearTurns]);
+
+  // Fork the chat at the given (negative, from-end) genuine-user index into a
+  // new chat, mirroring the TUI `/chat fork` command. The backend switches the
+  // active chat; the idle state carries the new id and the history effect
+  // reloads it.
+  const forkChat = useCallback(
+    async (index: number) => {
+      clearTurns();
+      historyChatRef.current = "\u0000";
+      await client.sendInput(`/chat fork ${index}`);
+    },
+    [client, clearTurns],
+  );
+
+  // Truncate the conversation at the given (negative, from-end) genuine-user
+  // index, mirroring the TUI `/chat edit` command. The chat id is unchanged so
+  // we force a history reload on the next idle via the sentinel ref.
+  const editChat = useCallback(
+    async (index: number) => {
+      clearTurns();
+      historyChatRef.current = "\u0000";
+      await client.sendInput(`/chat edit ${index}`);
+    },
+    [client, clearTurns],
+  );
 
   const openWorkspaceInExplorer = useCallback(
     (id: string) => client.openWorkspaceInExplorer(id),
@@ -609,6 +695,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
     switchToChat,
     selectWorkspace,
     newChat,
+    forkChat,
+    editChat,
     loadOlderHistory,
     openWorkspaceInExplorer,
     toggleWorkspacePin,
