@@ -22,7 +22,7 @@ export function ChatTitleBar() {
     uiPrefs,
     t,
     runCommand,
-    clearTurns,
+    deleteChat,
     toggleChatPin,
     toggleChatArchive,
   } = useApp();
@@ -61,8 +61,7 @@ export function ChatTitleBar() {
         setRenaming(true);
       },
       onRemove: () => {
-        clearTurns();
-        void runCommand(`/chat delete ${activeChat.id}`);
+        void deleteChat(activeChat.id);
       },
     });
     setMenu({ x: e.clientX, y: e.clientY, items });

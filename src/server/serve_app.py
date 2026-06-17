@@ -1086,6 +1086,79 @@ class ServeApp:
         )
         return cid
 
+    def delete_chat(self, chat_id: str, workspace_id: str = "") -> bool:
+        """Delete a chat in the GUI, allowing the workspace to become chat-less.
+
+        Unlike the TUI ``/chat delete`` command (which keeps at least one chat),
+        the GUI can show a chat-less compose state, so removing the final chat is
+        permitted. A chat whose agent loop is currently running is not deleted.
+        """
+        agent = self.agent
+        cid = str(chat_id or "").strip()
+        wsid = str(workspace_id or "").strip()
+        if not cid:
+            return False
+        try:
+            from ..controllers.workspace_command_controller import (
+                workspace_switch_command,
+            )
+
+            if wsid and wsid != str(getattr(agent, "workspace_id", "") or ""):
+                with agent._chat_state_lock:
+                    workspace_switch_command(agent, wsid)
+            with agent._chat_state_lock:
+                target = agent._resolve_chat_selector(cid)
+                rid = str(target.get("id") or "") if target else ""
+            if not rid:
+                return False
+            # Refuse to delete a chat whose loop is mid-task; the user should
+            # interrupt it first.
+            with self._runtimes_lock:
+                rt = self._runtimes.get(rid)
+                if rt is not None and rt.busy.is_set():
+                    return False
+            with agent._chat_state_lock:
+                chats = agent._chat_entries()
+                was_active = rid == str(getattr(agent, "active_chat_id", "") or "")
+                remaining = [c for c in chats if str(c.get("id") or "") != rid]
+                chats[:] = remaining
+                agent._chat_state["chats"] = chats
+                if remaining:
+                    if was_active:
+                        agent._chat_state["active"] = str(remaining[0].get("id") or "")
+                else:
+                    # Chat-less workspace: clear the active marker; the GUI shows
+                    # its compose (draft) state and creates a chat on next send.
+                    agent._chat_state["active"] = ""
+                agent._save_chat_state()
+            # Drop the deleted chat's runtime (if any) and its session.
+            with self._runtimes_lock:
+                self._runtimes.pop(rid, None)
+            try:
+                reg = agent.__dict__.get("_session_registry")
+                if isinstance(reg, dict):
+                    reg.pop(rid, None)
+            except Exception:
+                pass
+            if remaining and was_active:
+                next_id = str(agent._chat_state.get("active") or "")
+                if next_id:
+                    with self._runtimes_lock:
+                        has_runtime = next_id in self._runtimes
+                    if not has_runtime:
+                        agent._activate_chat(
+                            next_id,
+                            announce=False,
+                            clear_screen=False,
+                            print_history=False,
+                        )
+        except Exception:
+            return False
+        self.broadcaster.publish(
+            "idle", {"state": _build_state(agent), "chatId": self._active_chat_id()}
+        )
+        return True
+
     def list_workspace_chats(self, ws_id: str) -> Optional[List[Dict[str, Any]]]:
         """List chats for a workspace by id without switching to it.
 
@@ -1427,6 +1500,12 @@ def _make_handler(app: ServeApp):
                 self._send_json(
                     200 if cid else 409, {"ok": bool(cid), "id": cid or ""}
                 )
+                return
+            if path == "/delete-chat":
+                chat_id = str(body.get("id") or "")[:256]
+                ws_id = str(body.get("workspaceId") or "")[:256]
+                ok = app.delete_chat(chat_id, ws_id)
+                self._send_json(200 if ok else 409, {"ok": ok})
                 return
             if path == "/set-theme":
                 theme = str(body.get("theme") or "")[:16]

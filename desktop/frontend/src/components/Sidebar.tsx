@@ -59,6 +59,7 @@ export function Sidebar({ onOpenSettings }: { onOpenSettings: () => void }) {
     clearTurns,
     switchToChat,
     newChat,
+    deleteChat,
     openWorkspaceInExplorer,
     toggleWorkspacePin,
     toggleChatPin,
@@ -205,8 +206,7 @@ export function Sidebar({ onOpenSettings }: { onOpenSettings: () => void }) {
       onToggleArchive: () => toggleChatArchive(chatKey(wsId, chat.id)),
       onRename: () => startRename("chat", chat.id, wsId, chat.name),
       onRemove: () => {
-        clearTurns();
-        void runChatCommand(wsId, `/chat delete ${chat.id}`);
+        void deleteChat(chat.id, wsId);
       },
     });
     setMenu({ x: e.clientX, y: e.clientY, items });

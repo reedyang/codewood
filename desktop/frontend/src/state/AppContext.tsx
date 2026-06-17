@@ -69,6 +69,8 @@ interface AppContextValue {
   draftWorkspaceId: string;
   /** Choose the workspace the pending draft chat will be created in. */
   setDraftWorkspace: (workspaceId: string) => void;
+  /** Delete a chat (may leave the workspace chat-less, entering compose mode). */
+  deleteChat: (chatId: string, workspaceId?: string) => Promise<void>;
   forkChat: (index: number) => Promise<void>;
   editChat: (index: number) => Promise<void>;
   loadOlderHistory: () => Promise<void>;
@@ -171,6 +173,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const themeInitRef = useRef(false);
   const activeChatIdRef = useRef<string>("");
   const activeWorkspaceIdRef = useRef<string>("");
+  const stateRef = useRef<AppState | null>(null);
+  useEffect(() => {
+    stateRef.current = state;
+  }, [state]);
 
   const activeChatId = state?.activeChatId ?? "";
   useEffect(() => {
@@ -794,6 +800,37 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setDraftWorkspaceId(workspaceId);
   }, []);
 
+  // Delete a chat. If it was the active chat and the workspace is now chat-less,
+  // drop into compose (draft) mode for that workspace instead of auto-creating a
+  // new chat. The idle event from the backend carries the post-delete state.
+  const deleteChat = useCallback(
+    async (chatId: string, workspaceId = "") => {
+      const wasActive = chatId === activeChatIdRef.current;
+      const wsId = workspaceId || activeWorkspaceIdRef.current;
+      // Whether deleting this chat empties the active workspace. (Only the
+      // active workspace's chats are present in ``state.chats``.)
+      const inActiveWs = !workspaceId || workspaceId === activeWorkspaceIdRef.current;
+      const willBeEmpty =
+        inActiveWs && (stateRef.current?.chats?.length ?? 0) <= 1;
+      const ok = await client.deleteChat(chatId, workspaceId);
+      if (!ok) {
+        return;
+      }
+      clearLiveTurns(chatId);
+      if (wasActive && willBeEmpty) {
+        // Chat-less workspace: enter compose mode so the user can type to create
+        // a fresh chat instead of auto-creating one.
+        setDraftWorkspaceId(wsId);
+        setDraftMode(true);
+        historyChatRef.current = "\u0000";
+        setHistoryTurns([]);
+        setHistoryStart(0);
+        setHistoryTotal(0);
+      }
+    },
+    [client, clearLiveTurns],
+  );
+
   // Fork the chat at the given (negative, from-end) genuine-user index into a
   // new chat, mirroring the TUI `/chat fork` command. The backend switches the
   // active chat; the idle state carries the new id and the history effect
@@ -1003,6 +1040,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     draftMode,
     draftWorkspaceId,
     setDraftWorkspace,
+    deleteChat,
     forkChat,
     editChat,
     loadOlderHistory,
