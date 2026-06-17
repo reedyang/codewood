@@ -26,6 +26,7 @@ import winMax from "../assets/icons/win-max.svg";
 import winRestore from "../assets/icons/win-restore.svg";
 import winClose from "../assets/icons/win-close.svg";
 import arrowLeft from "../assets/icons/arrow-left.svg";
+import arrowRight from "../assets/icons/arrow-right.svg";
 import listCheck from "../assets/icons/list-check.svg";
 import circle from "../assets/icons/circle.svg";
 import checkCircle from "../assets/icons/check-circle.svg";
@@ -63,6 +64,7 @@ const SOURCES = {
   "win-restore": winRestore,
   "win-close": winClose,
   "arrow-left": arrowLeft,
+  "arrow-right": arrowRight,
   "list-check": listCheck,
   circle,
   "check-circle": checkCircle,

@@ -669,8 +669,8 @@ class Agent:
                 params["streaming"] = streaming
                 params["multimodal"] = multimodal
                 params["extra_headers"] = dict(model_item.get("extra_headers") or {})
-                params["reasoning_levels"] = list(
-                    model_item.get("reasoning_levels") or []
+                params["reasoning_effort"] = list(
+                    model_item.get("reasoning_effort") or []
                 )
                 out.append(
                     {
@@ -695,7 +695,7 @@ class Agent:
     def _current_model_reasoning_levels(self) -> List[str]:
         """Reasoning levels the active model supports (empty if none)."""
         params = getattr(self, "params", {}) or {}
-        raw = params.get("reasoning_levels") if isinstance(params, dict) else None
+        raw = params.get("reasoning_effort") if isinstance(params, dict) else None
         if not isinstance(raw, list):
             return []
         return [str(x).strip() for x in raw if str(x).strip()]

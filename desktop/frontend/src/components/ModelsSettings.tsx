@@ -7,7 +7,11 @@ import {
   toEditorProvider,
   toConfigProviders,
   type EditorProvider,
+  type EditorModel,
+  type EditorHeader,
 } from "./modelPresets";
+
+const FIXED_EFFORTS = ["low", "medium", "high"] as const;
 
 interface ModelsSettingsProps {
   onDirtyChange?: (dirty: boolean) => void;
@@ -24,6 +28,7 @@ export function ModelsSettings({ onDirtyChange, saveSignal }: ModelsSettingsProp
   const [errorByIdx, setErrorByIdx] = useState<Record<number, string>>({});
   const [revealKey, setRevealKey] = useState<Record<number, boolean>>({});
   const [collapsed, setCollapsed] = useState<Record<number, boolean>>({});
+  const [expandModel, setExpandModel] = useState<Record<string, boolean>>({});
   const [confirmRemoveIdx, setConfirmRemoveIdx] = useState<number | null>(null);
   const lastSaveSignal = useRef<number | undefined>(saveSignal);
 
@@ -138,7 +143,13 @@ export function ModelsSettings({ onDirtyChange, saveSignal }: ModelsSettingsProp
         if (i !== idx) return prov;
         const existing = new Map(prov.models.map((m) => [m.name, m]));
         const merged = fetched.map(
-          (name) => existing.get(name) ?? { name, enabled: prov.auto_refresh ?? false },
+          (name) =>
+            existing.get(name) ?? {
+              name,
+              enabled: prov.auto_refresh ?? false,
+              reasoning_effort: [],
+              extra_headers: [],
+            },
         );
         for (const m of prov.models) {
           if (!fetched.includes(m.name)) merged.push(m);
@@ -149,20 +160,68 @@ export function ModelsSettings({ onDirtyChange, saveSignal }: ModelsSettingsProp
     markDirty();
   };
 
-  const toggleModel = (pIdx: number, mName: string) => {
+  const patchModel = (
+    pIdx: number,
+    mName: string,
+    patch: Partial<EditorModel>,
+  ) => {
     setProviders((prev) =>
       prev.map((p, i) =>
         i === pIdx
           ? {
               ...p,
               models: p.models.map((m) =>
-                m.name === mName ? { ...m, enabled: !m.enabled } : m,
+                m.name === mName ? { ...m, ...patch } : m,
               ),
             }
           : p,
       ),
     );
     markDirty();
+  };
+
+  const toggleModel = (pIdx: number, mName: string) => {
+    const m = providers[pIdx]?.models.find((x) => x.name === mName);
+    if (m) patchModel(pIdx, mName, { enabled: !m.enabled });
+  };
+
+  const toggleModelEffort = (pIdx: number, mName: string, level: string) => {
+    const m = providers[pIdx]?.models.find((x) => x.name === mName);
+    if (!m) return;
+    const has = m.reasoning_effort.includes(level);
+    const next = has
+      ? m.reasoning_effort.filter((l) => l !== level)
+      : [...m.reasoning_effort, level];
+    patchModel(pIdx, mName, { reasoning_effort: next });
+  };
+
+  const addModelHeader = (pIdx: number, mName: string) => {
+    const m = providers[pIdx]?.models.find((x) => x.name === mName);
+    if (!m) return;
+    patchModel(pIdx, mName, {
+      extra_headers: [...m.extra_headers, { key: "", value: "" }],
+    });
+  };
+
+  const patchModelHeader = (
+    pIdx: number,
+    mName: string,
+    hIdx: number,
+    patch: Partial<EditorHeader>,
+  ) => {
+    const m = providers[pIdx]?.models.find((x) => x.name === mName);
+    if (!m) return;
+    patchModel(pIdx, mName, {
+      extra_headers: m.extra_headers.map((h, i) => (i === hIdx ? { ...h, ...patch } : h)),
+    });
+  };
+
+  const removeModelHeader = (pIdx: number, mName: string, hIdx: number) => {
+    const m = providers[pIdx]?.models.find((x) => x.name === mName);
+    if (!m) return;
+    patchModel(pIdx, mName, {
+      extra_headers: m.extra_headers.filter((_, i) => i !== hIdx),
+    });
   };
 
   /** Returns a validation error message, or "" when valid. */
@@ -351,16 +410,104 @@ export function ModelsSettings({ onDirtyChange, saveSignal }: ModelsSettingsProp
                   {p.models.length === 0 ? (
                     <div className="models-empty">{t("models.noModels")}</div>
                   ) : (
-                    p.models.map((m) => (
-                      <label className="models-item" key={m.name}>
-                        <input
-                          type="checkbox"
-                          checked={m.enabled}
-                          onChange={() => toggleModel(idx, m.name)}
-                        />
-                        <span>{m.name}</span>
-                      </label>
-                    ))
+                    p.models.map((m) => {
+                      const mkey = `${idx}:${m.name}`;
+                      const showDetails = !isOllama && Boolean(expandModel[mkey]);
+                      return (
+                        <div className="models-model" key={m.name}>
+                          <div className="models-item-row">
+                            <label className="models-item">
+                              <input
+                                type="checkbox"
+                                checked={m.enabled}
+                                onChange={() => toggleModel(idx, m.name)}
+                              />
+                              <span>{m.name}</span>
+                            </label>
+                            {!isOllama && (
+                              <button
+                                className="models-model-toggle"
+                                aria-expanded={showDetails}
+                                aria-label={t("models.modelOptions")}
+                                title={t("models.modelOptions")}
+                                onClick={() =>
+                                  setExpandModel((e) => ({ ...e, [mkey]: !e[mkey] }))
+                                }
+                              >
+                                <Icon
+                                  name="chevron"
+                                  size={12}
+                                  className={`chevron ${showDetails ? "down" : ""}`}
+                                />
+                              </button>
+                            )}
+                          </div>
+                          {showDetails && (
+                            <div className="models-model-details">
+                              <div className="models-field">
+                                <label>{t("reasoning.label")}</label>
+                                <div className="models-effort-row">
+                                  {FIXED_EFFORTS.map((level) => (
+                                    <label className="models-effort" key={level}>
+                                      <input
+                                        type="checkbox"
+                                        checked={m.reasoning_effort.includes(level)}
+                                        onChange={() =>
+                                          toggleModelEffort(idx, m.name, level)
+                                        }
+                                      />
+                                      {t(`reasoning.effort.${level}`)}
+                                    </label>
+                                  ))}
+                                </div>
+                              </div>
+                              <div className="models-field">
+                                <label>{t("models.extraHeaders")}</label>
+                                {m.extra_headers.map((h, hIdx) => (
+                                  <div className="models-header-row" key={hIdx}>
+                                    <input
+                                      className="text-input"
+                                      placeholder={t("models.headerName")}
+                                      value={h.key}
+                                      onChange={(e) =>
+                                        patchModelHeader(idx, m.name, hIdx, {
+                                          key: e.target.value,
+                                        })
+                                      }
+                                    />
+                                    <input
+                                      className="text-input"
+                                      placeholder={t("models.headerValue")}
+                                      value={h.value}
+                                      onChange={(e) =>
+                                        patchModelHeader(idx, m.name, hIdx, {
+                                          value: e.target.value,
+                                        })
+                                      }
+                                    />
+                                    <button
+                                      className="icon-btn"
+                                      aria-label={t("models.removeHeader")}
+                                      title={t("models.removeHeader")}
+                                      onClick={() => removeModelHeader(idx, m.name, hIdx)}
+                                    >
+                                      <Icon name="win-close" size={12} />
+                                    </button>
+                                  </div>
+                                ))}
+                                <button
+                                  className="btn btn-small"
+                                  onClick={() => addModelHeader(idx, m.name)}
+                                >
+                                  <Icon name="plus" size={12} />
+                                  {t("models.addHeader")}
+                                </button>
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })
                   )}
                 </div>
               </>

@@ -93,12 +93,12 @@ def basic_chat_only_context_warning(value: Any) -> str:
     return SMALL_CONTEXT_WINDOW_BASIC_CHAT_WARNING if is_basic_chat_only_context_window(value) else ""
 
 
-def parse_reasoning_levels(value: Any) -> List[str]:
-    """Normalize a model's optional reasoning-level list.
+def parse_reasoning_effort(value: Any) -> List[str]:
+    """Normalize a model's optional reasoning-effort list.
 
     Accepts a list of non-empty strings (order preserved, duplicates dropped).
     Anything else yields an empty list, meaning the model exposes no selectable
-    reasoning level.
+    reasoning effort.
     """
     if not isinstance(value, list):
         return []
@@ -130,7 +130,7 @@ def parse_configured_models(
         streaming_raw: Any = True
         extra_headers_raw: Any = {}
         multimodal_raw: Any = True
-        reasoning_levels_raw: Any = None
+        reasoning_effort_raw: Any = None
         if isinstance(item, str):
             model_name = item.strip()
         elif isinstance(item, dict):
@@ -139,7 +139,7 @@ def parse_configured_models(
             streaming_raw = item.get("streaming", True)
             extra_headers_raw = item.get("extra_headers", {})
             multimodal_raw = item.get("multimodal", True)
-            reasoning_levels_raw = item.get("reasoning_levels")
+            reasoning_effort_raw = item.get("reasoning_effort")
         else:
             model_name = str(item or "").strip()
         if not model_name:
@@ -160,9 +160,9 @@ def parse_configured_models(
                 ),
                 "extra_headers": parse_extra_headers(extra_headers_raw),
                 # Optional reasoning effort levels the model supports (e.g.
-                # ["Low", "Medium", "High"]). Empty when the model has no
-                # selectable reasoning level.
-                "reasoning_levels": parse_reasoning_levels(reasoning_levels_raw),
+                # ["low", "medium", "high"]). Empty when the model has no
+                # selectable reasoning effort.
+                "reasoning_effort": parse_reasoning_effort(reasoning_effort_raw),
             }
         )
     return parsed

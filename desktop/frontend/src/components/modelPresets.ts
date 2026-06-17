@@ -108,12 +108,21 @@ export function presetIdForProvider(p: {
   return match ? match.id : "custom";
 }
 
+export interface EditorHeader {
+  key: string;
+  value: string;
+}
+
 // Editor-side representation of a configured provider.
 export interface EditorModel {
   name: string;
   enabled: boolean;
   context_window?: string | number;
   multimodal?: boolean;
+  /** Reasoning-effort levels this model supports (subset of low/medium/high). */
+  reasoning_effort: string[];
+  /** Per-model custom request headers (OpenAI-compatible only). */
+  extra_headers: EditorHeader[];
 }
 
 export interface EditorProvider {
@@ -138,14 +147,27 @@ export function toEditorProvider(raw: unknown): EditorProvider {
   const rawModels = Array.isArray(params.models) ? params.models : [];
   const models: EditorModel[] = rawModels.map((m) => {
     if (typeof m === "string") {
-      return { name: m, enabled: true };
+      return { name: m, enabled: true, reasoning_effort: [], extra_headers: [] };
     }
     const mm = (m ?? {}) as Record<string, unknown>;
+    const re = Array.isArray(mm.reasoning_effort)
+      ? mm.reasoning_effort.map((x) => String(x).trim().toLowerCase()).filter(Boolean)
+      : [];
+    const headersObj =
+      mm.extra_headers && typeof mm.extra_headers === "object"
+        ? (mm.extra_headers as Record<string, unknown>)
+        : {};
+    const headers: EditorHeader[] = Object.entries(headersObj).map(([key, value]) => ({
+      key: String(key),
+      value: String(value ?? ""),
+    }));
     return {
       name: String(mm.name ?? ""),
       enabled: true,
       context_window: mm.context_window as string | number | undefined,
       multimodal: mm.multimodal as boolean | undefined,
+      reasoning_effort: re,
+      extra_headers: headers,
     };
   });
   const api_mode = String(params.api_mode ?? "chat");
@@ -182,6 +204,24 @@ export function toConfigProviders(editors: EditorProvider[]): unknown[] {
         }
         if (m.multimodal !== undefined) {
           model.multimodal = m.multimodal;
+        }
+        // Ollama doesn't support reasoning effort or custom headers; only
+        // serialize them for OpenAI-compatible providers.
+        if ((e.api_mode || "").toLowerCase() !== "ollama") {
+          const re = (m.reasoning_effort || [])
+            .map((x) => String(x).trim().toLowerCase())
+            .filter(Boolean);
+          if (re.length > 0) {
+            model.reasoning_effort = re;
+          }
+          const headers: Record<string, string> = {};
+          for (const h of m.extra_headers || []) {
+            const k = h.key.trim();
+            if (k) headers[k] = h.value;
+          }
+          if (Object.keys(headers).length > 0) {
+            model.extra_headers = headers;
+          }
         }
         return model;
       });
