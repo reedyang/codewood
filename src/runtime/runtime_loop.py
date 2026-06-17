@@ -2482,6 +2482,23 @@ def run_agent_loop(agent: Any):
             except Exception:
                 pass
             self._rewrite_previous_prompt_as_user(raw_user_input.strip())
+            # Plan-mode is a session-sticky flag toggled via ``/plan`` /
+            # ``/agent`` commands. When on, prepend a planning instruction to
+            # the outgoing user task so the model is told to outline a plan
+            # rather than execute destructive tools. The original text is
+            # preserved verbatim after the prefix so models that don't
+            # interpret the directive still see the user's message.
+            try:
+                if bool(getattr(self, "_plan_mode_sticky", False)) and task_user_input:
+                    from ..core.localization import translate as _translate_plan
+                    plan_prefix = _translate_plan(
+                        "builtin.plan_mode_prefix",
+                        getattr(self, "display_language", None) or "en",
+                    )
+                    if plan_prefix and not task_user_input.startswith(plan_prefix):
+                        task_user_input = f"{plan_prefix}\n\n{task_user_input}"
+            except Exception:
+                pass
             original_user_task = task_user_input
             maybe_auto_compact = getattr(
                 getattr(self, "session_memory_service", None),

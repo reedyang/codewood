@@ -158,6 +158,78 @@ function UserEntry({
 
 const POLICIES = ["unlimited", "moderate", "confirmation"] as const;
 
+type ChatMode = "agent" | "plan";
+
+/** Plus-button menu in the composer: attach files, switch between Agent and
+ *  Plan modes. The Plan mode is GUI-only — selecting it injects a planning
+ *  instruction at send time and lights up a "Plan" badge so the user can see
+ *  at a glance which mode the next message will go out under. */
+function ComposerPlusMenu({
+  onAttach,
+  mode,
+  onChangeMode,
+}: {
+  onAttach: () => void;
+  mode: ChatMode;
+  onChangeMode: (m: ChatMode) => void;
+}) {
+  const { t } = useApp();
+  const [open, setOpen] = useState(false);
+  const ref = useOutsideClose(open, () => setOpen(false));
+  return (
+    <div className="dropdown composer-plus-menu" ref={ref}>
+      <button
+        className={`icon-btn round ${mode === "plan" ? "is-plan" : ""}`}
+        aria-label={t("composer.plusMenu")}
+        title={t("composer.plusMenu")}
+        onClick={() => setOpen((v) => !v)}
+      >
+        <Icon name="plus" size={16} />
+      </button>
+      {open && (
+        <div className="dropdown-menu">
+          <button
+            className="dropdown-item"
+            onClick={() => {
+              setOpen(false);
+              onAttach();
+            }}
+          >
+            <span className="dropdown-check" />
+            <Icon name="plus" size={13} />
+            <span>{t("attach.add")}</span>
+          </button>
+          <div className="dropdown-divider" />
+          <button
+            className={`dropdown-item ${mode === "agent" ? "active" : ""}`}
+            onClick={() => {
+              setOpen(false);
+              onChangeMode("agent");
+            }}
+          >
+            <span className="dropdown-check">
+              {mode === "agent" && <Icon name="check" size={13} />}
+            </span>
+            <span>{t("composer.modeAgent")}</span>
+          </button>
+          <button
+            className={`dropdown-item ${mode === "plan" ? "active" : ""}`}
+            onClick={() => {
+              setOpen(false);
+              onChangeMode("plan");
+            }}
+          >
+            <span className="dropdown-check">
+              {mode === "plan" && <Icon name="check" size={13} />}
+            </span>
+            <span>{t("composer.modePlan")}</span>
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function useOutsideClose(open: boolean, onClose: () => void) {
   const ref = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
@@ -210,6 +282,16 @@ export function ChatView() {
   >({});
   const draft = draftsByChat[draftKey] ?? "";
   const attachments = attachmentsByChat[draftKey] ?? [];
+  // Per-chat compose mode (Agent or Plan). Stored only in-memory: switching
+  // chats restores the last-known mode for that chat without persisting it
+  // across restarts (so re-opening a project doesn't trap the user in Plan
+  // mode they forgot to leave). The Plan mode is conveyed to the agent by
+  // prepending a planning instruction to the outgoing message; the backend
+  // doesn't need a dedicated flag for this minimal implementation.
+  const [chatModeMap, setChatModeMap] = useState<Record<string, ChatMode>>({});
+  const chatMode: ChatMode = chatModeMap[draftKey] ?? "agent";
+  const setChatMode = (m: ChatMode) =>
+    setChatModeMap((prev) => ({ ...prev, [draftKey]: m }));
   const setDraft = (value: string | ((prev: string) => string)) => {
     setDraftsByChat((prev) => {
       const current = prev[draftKey] ?? "";
@@ -302,7 +384,16 @@ export function ChatView() {
     // safely round-trip attachments through history/edit, without having to
     // parse a free-form "Attached files:" header that a user could
     // accidentally collide with in their own message.
-    const message = encodeAttachments(attachments, text);
+    let body = text;
+    if (chatMode === "plan") {
+      // Inject a planning instruction so the agent treats this turn as a
+      // plan-and-discuss step (no destructive tool calls). The instruction is
+      // a normal natural-language prefix — keeping it model-agnostic and
+      // easy for the user to tweak via Edit if they want.
+      const planHeader = t("composer.planInstruction");
+      body = planHeader ? `${planHeader}\n\n${text}` : text;
+    }
+    const message = encodeAttachments(attachments, body);
     setDraft("");
     setAttachments([]);
     await sendInput(message);
@@ -397,9 +488,16 @@ export function ChatView() {
       />
       <div className="composer-toolbar">
         <div className="composer-left">
-          <button className="icon-btn round" aria-label={t("attach.add")} title={t("attach.add")} onClick={() => void addFiles()}>
-            <Icon name="plus" size={16} />
-          </button>
+          <ComposerPlusMenu
+            onAttach={() => void addFiles()}
+            mode={chatMode}
+            onChangeMode={(m) => setChatMode(m)}
+          />
+          {chatMode === "plan" && (
+            <span className="mode-badge mode-badge-plan" title={t("composer.modePlanHint")}>
+              {t("composer.modePlan")}
+            </span>
+          )}
           <Dropdown
             trigger={
               <>
