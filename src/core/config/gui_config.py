@@ -21,6 +21,10 @@ from typing import Any, Dict
 GUI_CONFIG_FILENAME = "config-gui.jsonl"
 
 _ALLOWED_THEMES = ("light", "dark", "system")
+# Display languages the GUI is allowed to render. Kept in sync with the
+# frontend i18n bundle ("en" + "zh-Hans"). Validation is strict so a typo in
+# the config file cannot pivot the UI into an unsupported locale.
+_ALLOWED_LANGUAGES = ("en", "zh-Hans")
 _MAX_IDS = 2000
 _MAX_ID_LEN = 512
 
@@ -69,6 +73,26 @@ def save_gui_config(config_dir: Path, data: Dict[str, Any]) -> None:
 def normalize_theme(value: Any) -> str:
     theme = str(value or "").strip().lower()
     return theme if theme in _ALLOWED_THEMES else ""
+
+
+def normalize_gui_language(value: Any) -> str:
+    """Return a supported GUI display language code or ``""``.
+
+    The GUI language is intentionally separate from the agent's
+    ``display_language`` (which drives TUI prompts, logs and model system
+    prompts). Values outside the allowlist are dropped rather than coerced so
+    the frontend always sees a known locale.
+    """
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    # Normalize common aliases to the canonical code set.
+    lower = raw.lower()
+    if lower in ("zh", "zh-cn", "zh_cn", "zh-hans", "zh_hans", "chinese"):
+        return "zh-Hans"
+    if lower in ("en", "en-us", "en_us", "english"):
+        return "en"
+    return raw if raw in _ALLOWED_LANGUAGES else ""
 
 
 def _normalize_ids(value: Any) -> list:

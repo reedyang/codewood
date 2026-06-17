@@ -25,7 +25,7 @@ function loadNavWidth(): number {
 }
 
 export function SettingsView() {
-  const { state, theme, setTheme, runCommand, closeSettings, t } = useApp();
+  const { state, theme, setTheme, setGuiLanguage, closeSettings, t } = useApp();
   const [page, setPage] = useState<PageId>("appearance");
   const [navWidth, setNavWidth] = useState(loadNavWidth);
   const [resizing, setResizing] = useState(false);
@@ -177,7 +177,7 @@ export function SettingsView() {
                 className="select"
                 aria-label={t("settings.language")}
                 value={state?.language ?? "en"}
-                onChange={(e) => void runCommand(`/language ${e.target.value}`)}
+                onChange={(e) => void setGuiLanguage(e.target.value)}
               >
                 {SUPPORTED_LANGS.map((code) => (
                   <option key={code} value={code}>

@@ -56,6 +56,7 @@ interface AppContextValue {
   togglePlan: () => void;
   t: (key: string) => string;
   setTheme: (theme: Theme) => void;
+  setGuiLanguage: (language: string) => Promise<void>;
   sendInput: (text: string) => Promise<void>;
   runCommand: (command: string) => Promise<void>;
   interrupt: () => Promise<void>;
@@ -252,6 +253,16 @@ export function AppProvider({ children }: { children: ReactNode }) {
       setThemeState(value);
       window.localStorage.setItem(THEME_STORAGE_KEY, value);
       void client.setTheme(value);
+    },
+    [client],
+  );
+
+  const setGuiLanguage = useCallback(
+    async (value: string) => {
+      // GUI language is a presentation-only override stored in the GUI config
+      // file; the agent's display_language (used by the TUI) is intentionally
+      // left untouched.
+      await client.setGuiLanguage(value);
     },
     [client],
   );
@@ -1094,6 +1105,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     togglePlan: () => setPlanOpen((v) => !v),
     t,
     setTheme,
+    setGuiLanguage,
     sendInput,
     runCommand,
     interrupt,
