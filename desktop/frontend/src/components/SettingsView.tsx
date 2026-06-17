@@ -1,6 +1,6 @@
 import { useEffect, useState, type CSSProperties, type MouseEvent as ReactMouseEvent } from "react";
 import { useApp, type Theme } from "../state/AppContext";
-import { SUPPORTED_LANGS } from "../i18n";
+import { SUPPORTED_LANGS, normalizeLang } from "../i18n";
 import { Icon, type IconName } from "./Icon";
 import { ModelsSettings } from "./ModelsSettings";
 import { GeneralSettings } from "./GeneralSettings";
@@ -202,7 +202,7 @@ export function SettingsView() {
               <select
                 className="select"
                 aria-label={t("settings.language")}
-                value={state?.language ?? "en"}
+                value={normalizeLang(state?.language)}
                 onChange={(e) => void setGuiLanguage(e.target.value)}
               >
                 {SUPPORTED_LANGS.map((code) => (
