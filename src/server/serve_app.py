@@ -307,19 +307,37 @@ class _OutputBridge(io.TextIOBase):
     becomes an ``output`` event instead of hitting the console.
     """
 
-    def __init__(self, broadcaster: _Broadcaster) -> None:
+    def __init__(self, broadcaster: _Broadcaster, chat_id_getter: Any = None) -> None:
         self._broadcaster = broadcaster
-        # Event name used for subsequent writes. The agent loop flips this to
-        # "assistant" while streaming the final reply (via the GUI hooks) so
-        # the GUI can render the answer separately from intermediate steps.
-        self._tag = "output"
-        # When set, writes are dropped instead of streamed. Used to hide the
-        # output of internal slash commands the GUI runs on the user's behalf
-        # (e.g. /chat rename, /workspace switch) from the message list.
-        self.suppressed = False
+        # Returns the chat id that output is currently attributed to, so the
+        # GUI can route streamed text to the correct chat when several chats
+        # run concurrently. Falls back to "" when unknown.
+        self._chat_id_getter = chat_id_getter
+        # The current output tag ("output" steps vs "assistant" reply) and the
+        # suppression flag are per-thread: each concurrent chat loop runs on its
+        # own thread and must not flip the other's tag or silence the other's
+        # output. Defaults: tag="output", suppressed=False.
+        self._tls = threading.local()
+
+    def _chat_id(self) -> str:
+        getter = self._chat_id_getter
+        if not callable(getter):
+            return ""
+        try:
+            return str(getter() or "")
+        except Exception:
+            return ""
+
+    @property
+    def suppressed(self) -> bool:
+        return bool(getattr(self._tls, "suppressed", False))
+
+    @suppressed.setter
+    def suppressed(self, value: bool) -> None:
+        self._tls.suppressed = bool(value)
 
     def set_tag(self, tag: str) -> None:
-        self._tag = str(tag or "output")
+        self._tls.tag = str(tag or "output")
 
     def write(self, s: Any) -> int:  # type: ignore[override]
         if s is None:
@@ -327,7 +345,7 @@ class _OutputBridge(io.TextIOBase):
         text = s if isinstance(s, str) else str(s)
         if not text:
             return 0
-        if self.suppressed:
+        if bool(getattr(self._tls, "suppressed", False)):
             # Consume silently so the command still runs but nothing streams.
             return len(text)
         # Keep SGR color runs (so the GUI can theme step output like the
@@ -335,7 +353,8 @@ class _OutputBridge(io.TextIOBase):
         # sink cannot honor. Normalize carriage returns to plain newlines.
         cleaned = strip_ansi_keep_sgr(text).replace("\r\n", "\n").replace("\r", "")
         if cleaned:
-            self._broadcaster.publish(self._tag, {"text": cleaned})
+            tag = str(getattr(self._tls, "tag", "output") or "output")
+            self._broadcaster.publish(tag, {"text": cleaned, "chatId": self._chat_id()})
         return len(text)
 
     def writable(self) -> bool:  # type: ignore[override]
@@ -346,6 +365,22 @@ class _OutputBridge(io.TextIOBase):
 
     def isatty(self) -> bool:  # type: ignore[override]
         return False
+
+
+def _primary_active_chat_id(agent: Any) -> str:
+    """The workspace's primary/focused chat id from the shared chat index.
+
+    ``agent.active_chat_id`` is now per-session (thread-bound), so reading it on
+    an HTTP handler thread would yield that thread's (usually empty) session.
+    The shared ``_chat_state["active"]`` is the stable, cross-thread truth.
+    """
+    try:
+        cs = getattr(agent, "_chat_state", None)
+        if isinstance(cs, dict):
+            return str(cs.get("active") or "")
+    except Exception:
+        pass
+    return ""
 
 
 def _build_state(agent: Any) -> Dict[str, Any]:
@@ -393,7 +428,7 @@ def _build_state(agent: Any) -> Dict[str, Any]:
 
     chats: List[Dict[str, Any]] = []
     try:
-        active_chat_id = str(getattr(agent, "active_chat_id", "") or "")
+        active_chat_id = _primary_active_chat_id(agent)
         for i, c in enumerate(agent._chat_entries(), start=1):
             if not isinstance(c, dict):
                 continue
@@ -447,7 +482,7 @@ def _build_state(agent: Any) -> Dict[str, Any]:
         },
         "workspaces": workspaces,
         "chats": chats,
-        "activeChatId": str(getattr(agent, "active_chat_id", "") or ""),
+        "activeChatId": _primary_active_chat_id(agent),
         "model": {"current": model_current, "available": model_available},
         "language": language,
         "theme": theme,
@@ -456,36 +491,81 @@ def _build_state(agent: Any) -> Dict[str, Any]:
     }
 
 
+class _ChatRuntime:
+    """Per-chat execution context: its input queue, busy flag, loop thread.
+
+    Each chat that receives input gets one long-lived ``run_agent_loop`` thread
+    bound to that chat's :class:`SessionState`, so several chats can execute
+    turns concurrently without sharing conversation/plan/usage state.
+    """
+
+    __slots__ = ("chat_id", "input_queue", "busy", "thread", "turn_started_at", "turn_record_pending")
+
+    def __init__(self, chat_id: str) -> None:
+        self.chat_id = str(chat_id or "")
+        self.input_queue: "queue.Queue[Optional[str]]" = queue.Queue()
+        self.busy = threading.Event()
+        self.thread: Optional[threading.Thread] = None
+        # Per-turn wall-clock tracking so the elapsed "Worked for" time is
+        # persisted to this chat's history and survives a reload.
+        self.turn_started_at: Optional[float] = None
+        self.turn_record_pending = False
+
+
 class ServeApp:
     """Owns the agent loop, the event broadcaster, and the HTTP server."""
 
     def __init__(self, agent: Any) -> None:
         self.agent = agent
         self.broadcaster = _Broadcaster()
-        self._input_queue: "queue.Queue[Optional[str]]" = queue.Queue()
         self._confirms: Dict[str, "queue.Queue[str]"] = {}
         self._confirms_lock = threading.Lock()
         self._shutdown_event = threading.Event()
         self._token = secrets.token_urlsafe(32)
         self._httpd: Optional[ThreadingHTTPServer] = None
-        self._busy = threading.Event()
-        # Per-turn wall-clock tracking so the elapsed "Worked for" time is
-        # persisted to chat history and survives a reload.
-        self._turn_started_at: Optional[float] = None
-        self._turn_record_pending = False
+        # One runtime (input queue + busy flag + loop thread + per-turn timing)
+        # per chat, so multiple chats can run their agent loop concurrently. A
+        # chat's runtime is created lazily the first time input is routed to it.
+        self._runtimes: Dict[str, "_ChatRuntime"] = {}
+        self._runtimes_lock = threading.Lock()
         self._bridge: Optional["_OutputBridge"] = None
 
+    def _active_chat_id(self) -> str:
+        """Chat id the running turn / streamed output is attributed to.
+
+        On the agent-loop thread this is the thread-bound session's chat; on
+        HTTP handler threads (which have no bound session) it falls back to the
+        shared focused chat.
+        """
+        try:
+            cid = str(getattr(self.agent, "active_chat_id", "") or "")
+        except Exception:
+            cid = ""
+        return cid or _primary_active_chat_id(self.agent)
+
+    def _runtime_for_thread(self) -> Optional["_ChatRuntime"]:
+        """The runtime owning the calling loop thread (bound chat)."""
+        try:
+            key = str(self.agent._current_session_chat_key() or "")
+        except Exception:
+            key = ""
+        with self._runtimes_lock:
+            return self._runtimes.get(key)
+
     # ----- agent loop hooks ------------------------------------------------
-    def _record_turn_elapsed(self) -> None:
+    def _record_turn_elapsed(self, rt: Optional["_ChatRuntime"]) -> None:
         """Append the just-finished turn's elapsed time to chat history.
 
-        Called when the loop returns to ask for the next input, at which
-        point the previous turn's messages are already appended/persisted.
+        Called when a chat's loop returns to ask for the next input, at which
+        point the previous turn's messages are already appended/persisted. The
+        timing is per-chat so concurrent loops don't clobber each other.
         """
-        started = self._turn_started_at
-        pending = self._turn_record_pending
-        self._turn_started_at = None
-        self._turn_record_pending = False
+        if rt is None:
+            return
+        started = rt.turn_started_at
+        pending = rt.turn_record_pending
+        rt.turn_started_at = None
+        rt.turn_record_pending = False
         if started is None or not pending:
             return
         elapsed = int(max(0, time.monotonic() - started))
@@ -508,16 +588,29 @@ class ServeApp:
             pass
 
     def _input_provider(self) -> str:
-        """Replacement for ``agent._get_user_input_with_history``."""
-        self._record_turn_elapsed()
-        self._busy.clear()
-        self.broadcaster.publish("idle", {"state": _build_state(self.agent)})
-        text = self._input_queue.get()
+        """Replacement for ``agent._get_user_input_with_history``.
+
+        Runs on a chat's dedicated loop thread (bound to that chat's session),
+        so it reads input from that chat's queue and tags all events with that
+        chat's id.
+        """
+        rt = self._runtime_for_thread()
+        self._record_turn_elapsed(rt)
+        if rt is not None:
+            rt.busy.clear()
+        self.broadcaster.publish(
+            "idle", {"state": _build_state(self.agent), "chatId": self._active_chat_id()}
+        )
+        if rt is None:
+            # No runtime bound (should not happen); block on a private queue so
+            # the loop parks instead of busy-spinning.
+            return "/exit"
+        text = rt.input_queue.get()
         if text is None:
             # Shutdown sentinel: ask the loop to exit cleanly.
             return "/exit"
-        self._busy.set()
-        self._turn_started_at = time.monotonic()
+        rt.busy.set()
+        rt.turn_started_at = time.monotonic()
         # Composer input carries a force-prompt sentinel; strip it from the
         # displayed/broadcast text but keep it on the line the loop consumes.
         forced = str(text).startswith(GUI_FORCE_PROMPT_PREFIX)
@@ -527,10 +620,13 @@ class ServeApp:
         # echo and output from the message list and skip turn bookkeeping.
         is_internal_command = (not forced) and display.lstrip().startswith("/")
         if self._bridge is not None:
+            # Per-thread: only silences this loop thread's writes.
             self._bridge.suppressed = is_internal_command
-        self._turn_record_pending = not is_internal_command
+        rt.turn_record_pending = not is_internal_command
         if not is_internal_command:
-            self.broadcaster.publish("turn_start", {"text": display})
+            self.broadcaster.publish(
+                "turn_start", {"text": display, "chatId": self._active_chat_id()}
+            )
         return text
 
     def _confirm_provider(self, prompt: str = "") -> str:
@@ -540,7 +636,12 @@ class ServeApp:
         with self._confirms_lock:
             self._confirms[cid] = reply
         self.broadcaster.publish(
-            "confirm", {"id": cid, "prompt": strip_ansi(str(prompt or ""))}
+            "confirm",
+            {
+                "id": cid,
+                "prompt": strip_ansi(str(prompt or "")),
+                "chatId": self._active_chat_id(),
+            },
         )
         try:
             answer = reply.get()
@@ -554,13 +655,33 @@ class ServeApp:
     def token(self) -> str:
         return self._token
 
-    def submit_input(self, text: str, as_prompt: bool = False) -> None:
+    def submit_input(self, text: str, chat_id: str = "", as_prompt: bool = False) -> None:
         line = str(text or "")
         # Composer input is forced to a model prompt: prefix a sentinel the
         # runtime loop strips so "/foo" / "!bar" never run as command/shell.
         if as_prompt and line:
             line = GUI_FORCE_PROMPT_PREFIX + line
-        self._input_queue.put(line)
+        cid = str(chat_id or "").strip() or _primary_active_chat_id(self.agent)
+        rt = self._get_or_spawn_runtime(cid)
+        rt.input_queue.put(line)
+
+    def _get_or_spawn_runtime(self, chat_id: str) -> "_ChatRuntime":
+        """Return the chat's runtime, starting its loop thread on first use."""
+        cid = str(chat_id or "")
+        with self._runtimes_lock:
+            rt = self._runtimes.get(cid)
+            if rt is not None:
+                return rt
+            rt = _ChatRuntime(cid)
+            self._runtimes[cid] = rt
+            rt.thread = threading.Thread(
+                target=self._run_chat_loop,
+                args=(rt,),
+                name=f"codewood-chat-{cid[:8] or 'main'}",
+                daemon=True,
+            )
+            rt.thread.start()
+            return rt
 
     def answer_confirm(self, cid: str, answer: str) -> bool:
         with self._confirms_lock:
@@ -626,8 +747,12 @@ class ServeApp:
         returned along with ``start`` (the index of the first returned turn) and
         the overall ``total`` count, so the GUI can lazily load older turns.
         """
+        # Reading history happens on an HTTP handler thread; bind it to the
+        # focused chat so the per-session conversation_history resolves to that
+        # chat's live session.
         try:
-            turns = _build_structured_turns(self.agent)
+            with self.agent._session_scope(_primary_active_chat_id(self.agent)):
+                turns = _build_structured_turns(self.agent)
         except Exception:
             turns = []
         total = len(turns)
@@ -641,17 +766,20 @@ class ServeApp:
         return {"turns": turns[start:end], "start": start, "total": total}
 
     def select_chat(self, chat_id: str, workspace_id: str = "") -> bool:
-        """Silently switch workspace and/or chat (no echo / no history replay).
+        """Silently switch the focused workspace and/or chat (no history replay).
 
-        Refused while a task is running to avoid racing the agent loop, which
-        owns the conversation history during a turn. ``chat_id`` may be empty to
-        only switch workspace (its active chat is kept).
+        No longer refused while a task is running: a chat with a live loop keeps
+        executing in the background, so switching focus must not reload its
+        conversation from disk (that would clobber the in-progress turn). For a
+        chat that has a running runtime we only move the focus pointer; for an
+        idle chat we fully activate it (binding + loading its session).
+        ``chat_id`` may be empty to only switch workspace.
         """
         import contextlib
 
         cid = str(chat_id or "").strip()
         wsid = str(workspace_id or "").strip()
-        if self._busy.is_set() or (not cid and not wsid):
+        if not cid and not wsid:
             return False
         agent = self.agent
         try:
@@ -670,14 +798,26 @@ class ServeApp:
                     rid = str(target.get("id") or "") if target else ""
                 if not rid:
                     return False
-                result = agent._activate_chat(
-                    rid, announce=False, clear_screen=False, print_history=False
-                )
-                if result:
-                    return False
+                with self._runtimes_lock:
+                    has_runtime = rid in self._runtimes
+                if has_runtime:
+                    # Focus-only switch: the live loop owns this chat's session,
+                    # so just repoint the workspace's active chat and persist it
+                    # without touching conversation_history.
+                    with agent._chat_state_lock:
+                        agent._chat_state["active"] = rid
+                        agent._save_chat_state()
+                else:
+                    result = agent._activate_chat(
+                        rid, announce=False, clear_screen=False, print_history=False
+                    )
+                    if result:
+                        return False
         except Exception:
             return False
-        self.broadcaster.publish("idle", {"state": _build_state(agent)})
+        self.broadcaster.publish(
+            "idle", {"state": _build_state(agent), "chatId": self._active_chat_id()}
+        )
         return True
 
     def set_theme(self, theme: str) -> bool:
@@ -756,9 +896,11 @@ class ServeApp:
         return True
 
     def new_chat(self) -> Optional[str]:
-        """Silently create and activate a new chat; return its id."""
-        if self._busy.is_set():
-            return None
+        """Silently create and activate a new chat; return its id.
+
+        Not refused while other chats are running: the new chat gets its own
+        loop thread on first input and is independent of any in-flight turn.
+        """
         agent = self.agent
         try:
             from ..core.localization import get_display_language, translate
@@ -773,7 +915,9 @@ class ServeApp:
             )
         except Exception:
             return None
-        self.broadcaster.publish("idle", {"state": _build_state(agent)})
+        self.broadcaster.publish(
+            "idle", {"state": _build_state(agent), "chatId": self._active_chat_id()}
+        )
         return cid
 
     def list_workspace_chats(self, ws_id: str) -> Optional[List[Dict[str, Any]]]:
@@ -824,8 +968,15 @@ class ServeApp:
 
     def request_shutdown(self) -> None:
         self._shutdown_event.set()
-        self._input_queue.put(None)
-        # Unblock any pending confirmation so the loop can drain.
+        # Send the exit sentinel to every chat loop so they all drain.
+        with self._runtimes_lock:
+            runtimes = list(self._runtimes.values())
+        for rt in runtimes:
+            try:
+                rt.input_queue.put(None)
+            except Exception:
+                pass
+        # Unblock any pending confirmation so the loops can drain.
         with self._confirms_lock:
             pending = list(self._confirms.values())
         for reply in pending:
@@ -856,7 +1007,7 @@ class ServeApp:
         self.agent._get_user_input_with_history = self._input_provider  # type: ignore[assignment]
         self.agent._suspended_input = self._confirm_provider  # type: ignore[assignment]
 
-        bridge = _OutputBridge(self.broadcaster)
+        bridge = _OutputBridge(self.broadcaster, chat_id_getter=self._active_chat_id)
         self._bridge = bridge
         # GUI streaming mode: the runtime emits clean append-only deltas and
         # brackets the assistant reply with these hooks so the bridge can tag
@@ -874,10 +1025,9 @@ class ServeApp:
         sys.stdout = bridge
         sys.stderr = bridge
 
-        loop_thread = threading.Thread(
-            target=self._run_agent_loop, name="codewood-agent-loop", daemon=True
-        )
-        loop_thread.start()
+        # Spawn the loop for the startup-focused chat. Other chats get their own
+        # loop thread lazily, the first time input is routed to them.
+        self._get_or_spawn_runtime(_primary_active_chat_id(self.agent))
 
         try:
             self._httpd.serve_forever(poll_interval=0.5)
@@ -897,19 +1047,36 @@ class ServeApp:
                 pass
         return 0
 
-    def _run_agent_loop(self) -> None:
+    def _run_chat_loop(self, rt: "_ChatRuntime") -> None:
+        """Run one chat's agent loop on its own thread, bound to its session.
+
+        The chat's :class:`SessionState` is expected to already hold its
+        conversation (loaded by the startup activation, ``select_chat``, or
+        ``new_chat`` before input is routed here); this thread only binds to it
+        so every per-session attribute the loop touches resolves correctly.
+        """
         try:
+            try:
+                self.agent._bind_session(rt.chat_id)
+            except Exception:
+                pass
+
             from ..runtime.runtime_loop import run_agent_loop
 
             run_agent_loop(self.agent)
         except Exception:
-            # Best-effort: surface fatal loop errors to subscribers.
+            # Best-effort: surface fatal loop errors to subscribers (scoped to
+            # this chat) without taking down the other chats' loops.
             try:
-                self.broadcaster.publish("output", {"text": "\n[agent loop terminated]\n"})
+                self.broadcaster.publish(
+                    "output", {"text": "\n[agent loop terminated]\n", "chatId": rt.chat_id}
+                )
             except Exception:
                 pass
         finally:
-            self.request_shutdown()
+            with self._runtimes_lock:
+                if self._runtimes.get(rt.chat_id) is rt:
+                    self._runtimes.pop(rt.chat_id, None)
 
 
 def _make_handler(app: ServeApp):
@@ -1052,7 +1219,10 @@ def _make_handler(app: ServeApp):
                 if len(text) > _MAX_INPUT_CHARS:
                     self._send_json(413, {"error": "input too large"})
                     return
-                app.submit_input(text, as_prompt=bool(body.get("asPrompt")))
+                chat_id = str(body.get("chatId") or "")[:256]
+                app.submit_input(
+                    text, chat_id=chat_id, as_prompt=bool(body.get("asPrompt"))
+                )
                 self._send_json(200, {"ok": True})
                 return
             if path == "/confirm":

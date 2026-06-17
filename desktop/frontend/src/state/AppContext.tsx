@@ -40,6 +40,8 @@ interface AppContextValue {
   historyTotal: number;
   historyLoading: boolean;
   busy: boolean;
+  /** Per-chat busy flags so the sidebar can mark every running chat. */
+  busyByChat: Record<string, boolean>;
   connected: boolean;
   now: number;
   confirmRequest: ConfirmRequest | null;
@@ -56,7 +58,7 @@ interface AppContextValue {
   runCommand: (command: string) => Promise<void>;
   interrupt: () => Promise<void>;
   answerConfirm: (answer: string) => Promise<void>;
-  clearTurns: () => void;
+  clearTurns: (chatId?: string) => void;
   switchToChat: (chatId: string, workspaceId?: string) => Promise<void>;
   selectWorkspace: (workspaceId: string) => Promise<void>;
   newChat: () => Promise<void>;
@@ -88,6 +90,9 @@ interface HostApiBridge {
 const AppContext = createContext<AppContextValue | null>(null);
 
 const THEME_STORAGE_KEY = "codewood.theme";
+// Stable empty reference so the exposed `turns` doesn't change identity when a
+// chat has no live turns (avoids needless re-renders / effect churn).
+const EMPTY_TURNS: Turn[] = [];
 
 function loadInitialTheme(): Theme {
   const stored = window.localStorage.getItem(THEME_STORAGE_KEY);
@@ -116,13 +121,20 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const client = clientRef.current;
 
   const [state, setState] = useState<AppState | null>(null);
-  const [turns, setTurns] = useState<Turn[]>([]);
+  // Live (in-session) turns are tracked per chat so a chat's in-progress work
+  // is preserved when the user switches to another chat. The active chat's
+  // list is exposed as `turns` below.
+  const [turnsByChat, setTurnsByChat] = useState<Record<string, Turn[]>>({});
+  // Mirror of turnsByChat readable synchronously (e.g. while loading history we
+  // must know whether a chat still has an in-progress live turn).
+  const turnsByChatRef = useRef<Record<string, Turn[]>>({});
   const [historyTurns, setHistoryTurns] = useState<HistoryTurn[]>([]);
   const [historyStart, setHistoryStart] = useState(0);
   const [historyTotal, setHistoryTotal] = useState(0);
   const [historyLoading, setHistoryLoading] = useState(false);
   const historyChatRef = useRef<string>("\u0000");
-  const [busy, setBusy] = useState(false);
+  // Per-chat busy flags so each running chat shows its own state.
+  const [busyByChat, setBusyByChat] = useState<Record<string, boolean>>({});
   const [connected, setConnected] = useState(false);
   const [now, setNow] = useState(() => Date.now());
   const [confirmRequest, setConfirmRequest] = useState<ConfirmRequest | null>(null);
@@ -137,6 +149,20 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const nextIdRef = useRef(1);
   const seededExpandRef = useRef(false);
   const themeInitRef = useRef(false);
+  const activeChatIdRef = useRef<string>("");
+
+  const activeChatId = state?.activeChatId ?? "";
+  useEffect(() => {
+    activeChatIdRef.current = activeChatId;
+  }, [activeChatId]);
+
+  useEffect(() => {
+    turnsByChatRef.current = turnsByChat;
+  }, [turnsByChat]);
+
+  // The active chat's live turns / busy flag are what the chat view renders.
+  const turns = turnsByChat[activeChatId] ?? EMPTY_TURNS;
+  const busy = busyByChat[activeChatId] ?? false;
   // When set, the next `idle` event reloads chat history even if the active
   // chat id is unchanged (e.g. after `/chat edit` truncates the conversation).
   const pendingHistoryReloadRef = useRef(false);
@@ -270,60 +296,85 @@ export function AppProvider({ children }: { children: ReactNode }) {
   // Append text to the last segment of the active turn when it matches the
   // requested kind; otherwise open a new segment. This keeps streamed deltas
   // append-only (no full-block rewrites) and separates steps from the answer.
-  const appendSegment = useCallback((kind: SegmentKind, text: string) => {
-    if (!text) {
+  const appendSegment = useCallback(
+    (kind: SegmentKind, text: string, chatId: string) => {
+      if (!text || !chatId) {
+        return;
+      }
+      setTurnsByChat((prev) => {
+        const next = prev[chatId] ? [...prev[chatId]] : [];
+        let turn = next[next.length - 1];
+        if (!turn) {
+          turn = {
+            id: nextIdRef.current++,
+            userText: "",
+            segments: [],
+            startedAt: Date.now(),
+            endedAt: null,
+          };
+          next.push(turn);
+        }
+        const segments = [...turn.segments];
+        const last = segments[segments.length - 1];
+        if (last && last.kind === kind) {
+          segments[segments.length - 1] = { ...last, text: last.text + text };
+        } else {
+          segments.push({ id: nextIdRef.current++, kind, text });
+        }
+        next[next.length - 1] = { ...turn, segments };
+        return { ...prev, [chatId]: next };
+      });
+    },
+    [],
+  );
+
+  const startTurn = useCallback((userText: string, chatId: string) => {
+    if (!chatId) {
       return;
     }
-    setTurns((prev) => {
-      const next = prev.length > 0 ? [...prev] : [];
-      let turn = next[next.length - 1];
-      if (!turn) {
-        turn = {
+    setTurnsByChat((prev) => ({
+      ...prev,
+      [chatId]: [
+        ...(prev[chatId] ?? []),
+        {
           id: nextIdRef.current++,
-          userText: "",
+          userText,
           segments: [],
           startedAt: Date.now(),
           endedAt: null,
-        };
-        next.push(turn);
-      }
-      const segments = [...turn.segments];
-      const last = segments[segments.length - 1];
-      if (last && last.kind === kind) {
-        segments[segments.length - 1] = { ...last, text: last.text + text };
-      } else {
-        segments.push({ id: nextIdRef.current++, kind, text });
-      }
-      next[next.length - 1] = { ...turn, segments };
-      return next;
-    });
+        },
+      ],
+    }));
   }, []);
 
-  const startTurn = useCallback((userText: string) => {
-    setTurns((prev) => [
-      ...prev,
-      {
-        id: nextIdRef.current++,
-        userText,
-        segments: [],
-        startedAt: Date.now(),
-        endedAt: null,
-      },
-    ]);
-  }, []);
-
-  const endActiveTurn = useCallback(() => {
-    setTurns((prev) => {
-      if (prev.length === 0) {
+  const endActiveTurn = useCallback((chatId: string) => {
+    if (!chatId) {
+      return;
+    }
+    setTurnsByChat((prev) => {
+      const list = prev[chatId];
+      if (!list || list.length === 0) {
         return prev;
       }
-      const last = prev[prev.length - 1];
+      const last = list[list.length - 1];
       if (last.endedAt !== null) {
         return prev;
       }
-      const copy = [...prev];
+      const copy = [...list];
       copy[copy.length - 1] = { ...last, endedAt: Date.now() };
-      return copy;
+      return { ...prev, [chatId]: copy };
+    });
+  }, []);
+
+  const setBusyForChat = useCallback((chatId: string, value: boolean) => {
+    if (!chatId) {
+      return;
+    }
+    setBusyByChat((prev) => {
+      if ((prev[chatId] ?? false) === value) {
+        return prev;
+      }
+      return { ...prev, [chatId]: value };
     });
   }, []);
 
@@ -331,14 +382,27 @@ export function AppProvider({ children }: { children: ReactNode }) {
     let source: EventSource | null = null;
 
     const handleEvent = (event: ServerEvent) => {
+      const data = event.data as {
+        state?: AppState;
+        text?: string;
+        chatId?: string;
+      };
+      // Every per-chat event carries the id of the chat it belongs to. We must
+      // NOT fall back to the focused chat: with several chats running in
+      // parallel that would mis-route a background chat's turn/output (and the
+      // connection-priming idle, which has no chatId) into whichever chat the
+      // user is currently viewing — surfacing a phantom second "Working..." and
+      // stealing the real chat's render. Untagged events only sync state; the
+      // turn/busy mutators below all no-op on an empty chatId.
+      const chatId = String(data.chatId || "");
       switch (event.event) {
         case "idle": {
-          const next = (event.data as { state?: AppState }).state;
+          const next = data.state;
           if (next) {
             setState(next);
           }
-          endActiveTurn();
-          setBusy(false);
+          endActiveTurn(chatId);
+          setBusyForChat(chatId, false);
           if (pendingHistoryReloadRef.current) {
             pendingHistoryReloadRef.current = false;
             reloadHistoryRef.current();
@@ -346,17 +410,16 @@ export function AppProvider({ children }: { children: ReactNode }) {
           break;
         }
         case "turn_start": {
-          const text = String((event.data as { text?: string }).text ?? "");
-          startTurn(text);
-          setBusy(true);
+          startTurn(String(data.text ?? ""), chatId);
+          setBusyForChat(chatId, true);
           break;
         }
         case "output": {
-          appendSegment("step", String((event.data as { text?: string }).text ?? ""));
+          appendSegment("step", String(data.text ?? ""), chatId);
           break;
         }
         case "assistant": {
-          appendSegment("answer", String((event.data as { text?: string }).text ?? ""));
+          appendSegment("answer", String(data.text ?? ""), chatId);
           break;
         }
         case "confirm": {
@@ -383,7 +446,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     return () => {
       source?.close();
     };
-  }, [client, appendSegment, startTurn, endActiveTurn]);
+  }, [client, appendSegment, startTurn, endActiveTurn, setBusyForChat]);
 
   const sendInput = useCallback(
     async (text: string) => {
@@ -392,8 +455,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
         return;
       }
       // Composer input is always a model prompt; the GUI never executes
-      // built-in commands or "!" direct shell typed by the user.
-      await client.sendInput(trimmed, true);
+      // built-in commands or "!" direct shell typed by the user. Route it to
+      // the focused chat explicitly so it reaches that chat's loop even while
+      // another chat is mid-task.
+      await client.sendInput(trimmed, true, activeChatIdRef.current);
     },
     [client],
   );
@@ -420,22 +485,89 @@ export function AppProvider({ children }: { children: ReactNode }) {
     [client, confirmRequest],
   );
 
-  const clearTurns = useCallback(() => setTurns([]), []);
+  const clearLiveTurns = useCallback((chatId: string) => {
+    if (!chatId) {
+      return;
+    }
+    setTurnsByChat((prev) => {
+      if (!(chatId in prev)) {
+        return prev;
+      }
+      const next = { ...prev };
+      delete next[chatId];
+      return next;
+    });
+  }, []);
+
+  const clearTurns = useCallback(
+    (chatId?: string) => clearLiveTurns(chatId ?? activeChatIdRef.current),
+    [clearLiveTurns],
+  );
+
+  // Drop a chat's settled (ended) live turns but keep any in-progress one. Used
+  // when switching to a still-running chat: its completed turns are now in the
+  // reloaded history, but the streaming turn is not yet persisted and must be
+  // preserved so it keeps rendering live.
+  const dropSettledLiveTurns = useCallback((chatId: string) => {
+    if (!chatId) {
+      return;
+    }
+    setTurnsByChat((prev) => {
+      const list = prev[chatId];
+      if (!list || list.length === 0) {
+        return prev;
+      }
+      const active = list.filter((tt) => tt.endedAt === null);
+      if (active.length === list.length) {
+        return prev;
+      }
+      const next = { ...prev };
+      if (active.length === 0) {
+        delete next[chatId];
+      } else {
+        next[chatId] = active;
+      }
+      return next;
+    });
+  }, []);
 
   const INITIAL_HISTORY = 12;
   const HISTORY_PAGE = 8;
 
-  const loadChatHistory = useCallback(async () => {
-    setHistoryLoading(true);
-    try {
-      const page = await client.getChatHistory(undefined, INITIAL_HISTORY);
-      setHistoryTurns(page.turns);
-      setHistoryStart(page.start);
-      setHistoryTotal(page.total);
-    } finally {
-      setHistoryLoading(false);
-    }
-  }, [client]);
+  // Load the most recent history page for the active chat. `forChatId` names
+  // the chat being loaded (it may differ from the focused chat momentarily,
+  // right after a switch before the idle state arrives); its live turns are
+  // dropped since they are now part of the persisted history.
+  const loadChatHistory = useCallback(
+    async (forChatId?: string) => {
+      const cid = forChatId ?? activeChatIdRef.current;
+      setHistoryLoading(true);
+      try {
+        const page = await client.getChatHistory(undefined, INITIAL_HISTORY);
+        // If the chat we're loading is still streaming a turn, that same
+        // in-progress turn also appears as the trailing persisted history entry
+        // (its user message, no final answer yet). Drop that trailing entry and
+        // keep the live turn so the streaming content (and "Working…") survives
+        // the switch; otherwise show full history and clear the settled turns.
+        const live = turnsByChatRef.current[cid] ?? [];
+        const hasActive = live.some((tt) => tt.endedAt === null);
+        if (hasActive && page.turns.length > 0) {
+          setHistoryTurns(page.turns.slice(0, -1));
+          setHistoryStart(page.start);
+          setHistoryTotal(page.total);
+          dropSettledLiveTurns(cid);
+        } else {
+          setHistoryTurns(page.turns);
+          setHistoryStart(page.start);
+          setHistoryTotal(page.total);
+          clearLiveTurns(cid);
+        }
+      } finally {
+        setHistoryLoading(false);
+      }
+    },
+    [client, clearLiveTurns, dropSettledLiveTurns],
+  );
 
   // Keep a stable ref to the latest loadChatHistory so the SSE idle handler
   // (which closes over an old render) can trigger a reload on demand.
@@ -468,7 +600,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       return;
     }
     historyChatRef.current = cid;
-    void loadChatHistory();
+    void loadChatHistory(cid);
   }, [state?.activeChatId, loadChatHistory]);
 
   const switchToChat = useCallback(
@@ -478,10 +610,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
         return;
       }
       historyChatRef.current = chatId;
-      clearTurns();
-      await loadChatHistory();
+      await loadChatHistory(chatId);
     },
-    [client, clearTurns, loadChatHistory],
+    [client, loadChatHistory],
   );
 
   const selectWorkspace = useCallback(
@@ -502,12 +633,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
     const id = await client.newChat();
     if (id) {
       historyChatRef.current = id;
+      clearLiveTurns(id);
     }
-    clearTurns();
     setHistoryTurns([]);
     setHistoryStart(0);
     setHistoryTotal(0);
-  }, [client, clearTurns]);
+  }, [client, clearLiveTurns]);
 
   // Fork the chat at the given (negative, from-end) genuine-user index into a
   // new chat, mirroring the TUI `/chat fork` command. The backend switches the
@@ -692,6 +823,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     historyTotal,
     historyLoading,
     busy,
+    busyByChat,
     connected,
     now,
     confirmRequest,

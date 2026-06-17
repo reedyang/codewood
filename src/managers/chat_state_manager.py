@@ -197,6 +197,19 @@ class ChatStateManager:
             self._agent._last_context_window = 0
 
     def save_chat_state(self) -> None:
+        # Serialize all writers under the agent's reentrant chat-state lock.
+        # When several chat loops run concurrently they each persist their own
+        # chat; without this guard two saves could interleave and tear the
+        # shared index/records, or the stale-record sweep below could race a
+        # sibling save. The lock is an RLock, so callers that already hold it
+        # (activate_chat, sync_active_chat_messages, ...) are unaffected.
+        lock = getattr(self._agent, "_chat_state_lock", None)
+        if lock is None:
+            return self._save_chat_state_locked()
+        with lock:
+            return self._save_chat_state_locked()
+
+    def _save_chat_state_locked(self) -> None:
         try:
             index_path = self.chat_state_path()
             records_dir = self.chat_records_dir()
@@ -586,6 +599,13 @@ class ChatStateManager:
             chat = self.find_chat_by_id(chat_id)
             if not chat:
                 return f"❌ Chat not found: {chat_id}"
+            # Bind the calling thread to this chat's session so every
+            # per-session assignment below (conversation_history, plan,
+            # usage, ...) targets the right SessionState when multiple chat
+            # loops run concurrently.
+            bind = getattr(self._agent, "_bind_session", None)
+            if callable(bind):
+                bind(chat_id)
             self._agent._chat_state["active"] = chat_id
             self._agent.active_chat_id = chat_id
             self._agent.active_chat_name = str(chat.get("name") or "New Chat")
@@ -602,6 +622,16 @@ class ChatStateManager:
             self._agent._last_llm_summary_pair_count = 0
             try:
                 self._agent._apply_chat_model_from_entry(chat, persist_if_missing=True)
+            except Exception:
+                pass
+            # Always pin this chat's model onto the (now bound) session, even
+            # when _apply_chat_model_from_entry short-circuited because the
+            # selector already matched the globals: a concurrent chat could
+            # have left the globals pointing at a different model.
+            try:
+                pin = getattr(self._agent, "_pin_session_model", None)
+                if callable(pin):
+                    pin()
             except Exception:
                 pass
             self._apply_chat_usage_snapshot(chat)
