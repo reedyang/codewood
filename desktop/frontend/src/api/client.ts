@@ -115,6 +115,16 @@ export class ApiClient {
     return res.ok;
   }
 
+  /** Delete a chat, allowing the workspace to become chat-less (GUI-only). */
+  async deleteChat(id: string, workspaceId = ""): Promise<boolean> {
+    const res = await fetch(`${this.base}/delete-chat`, {
+      method: "POST",
+      headers: this.headers(),
+      body: JSON.stringify({ id, workspaceId }),
+    });
+    return res.ok;
+  }
+
   /** Persist the GUI theme preference to the backend config file. */
   async setTheme(theme: string): Promise<boolean> {
     const res = await fetch(`${this.base}/set-theme`, {
