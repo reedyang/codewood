@@ -620,13 +620,14 @@ def _build_state(agent: Any) -> Dict[str, Any]:
     theme = ""
     ui_prefs: Dict[str, Any] = {}
     try:
-        cfg = agent._load_runtime_config_data()
-        theme = str(cfg.get("theme") or "")
-        raw_prefs = cfg.get("guiUiPrefs")
-        if isinstance(raw_prefs, dict):
-            ui_prefs = raw_prefs
+        from ..core.config.gui_config import load_gui_config, normalize_ui_prefs
+
+        gui_cfg = load_gui_config(agent.config_dir)
+        theme = str(gui_cfg.get("theme") or "")
+        ui_prefs = normalize_ui_prefs(gui_cfg.get("uiPrefs"))
     except Exception:
         theme = ""
+        ui_prefs = {}
 
     return {
         "app": {"name": get_app_name(), "version": get_app_version()},
@@ -987,76 +988,44 @@ class ServeApp:
         return True
 
     def set_theme(self, theme: str) -> bool:
-        """Persist the GUI theme preference to config.jsonc."""
-        value = str(theme or "").strip().lower()
-        if value not in ("light", "dark", "system"):
-            return False
+        """Persist the GUI theme preference to the GUI-only config file."""
         agent = self.agent
         try:
-            from ..core.config.config_jsonc import (
-                CONFIG_JSONC_FILENAME,
-                load_config_jsonc,
-                save_config_jsonc,
+            from ..core.config.gui_config import (
+                load_gui_config,
+                normalize_theme,
+                save_gui_config,
             )
 
-            cfg_path = agent.config_dir / CONFIG_JSONC_FILENAME
-            cfg_data: Dict[str, Any] = {}
-            if cfg_path.exists():
-                try:
-                    cfg_data = load_config_jsonc(cfg_path) or {}
-                except Exception:
-                    cfg_data = {}
-            cfg_data["theme"] = value
-            save_config_jsonc(cfg_path, cfg_data)
-            cache = getattr(agent, "_resolved_config_data", None)
-            if isinstance(cache, dict):
-                cache["theme"] = value
+            value = normalize_theme(theme)
+            if not value:
+                return False
+            data = load_gui_config(agent.config_dir)
+            data["theme"] = value
+            save_gui_config(agent.config_dir, data)
         except Exception:
             return False
         return True
 
     def set_ui_prefs(self, prefs: Dict[str, Any]) -> bool:
-        """Persist GUI presentation prefs (pin/archive) to config.jsonc.
+        """Persist GUI presentation prefs (pin/archive) to the GUI-only file.
 
         These are GUI-only and never affect the TUI; storing them server-side
         keeps them across restarts even when the webview clears localStorage.
         """
         if not isinstance(prefs, dict):
             return False
-
-        def _str_ids(value: Any) -> List[str]:
-            out: List[str] = []
-            if isinstance(value, list):
-                for item in value:
-                    if isinstance(item, str) and item:
-                        out.append(item[:512])
-            return out[:2000]
-
-        normalized = {
-            "pinnedWorkspaceIds": _str_ids(prefs.get("pinnedWorkspaceIds")),
-            "pinnedChatIds": _str_ids(prefs.get("pinnedChatIds")),
-            "archivedChatIds": _str_ids(prefs.get("archivedChatIds")),
-        }
         agent = self.agent
         try:
-            from ..core.config.config_jsonc import (
-                CONFIG_JSONC_FILENAME,
-                load_config_jsonc,
-                save_config_jsonc,
+            from ..core.config.gui_config import (
+                load_gui_config,
+                normalize_ui_prefs,
+                save_gui_config,
             )
 
-            cfg_path = agent.config_dir / CONFIG_JSONC_FILENAME
-            cfg_data: Dict[str, Any] = {}
-            if cfg_path.exists():
-                try:
-                    cfg_data = load_config_jsonc(cfg_path) or {}
-                except Exception:
-                    cfg_data = {}
-            cfg_data["guiUiPrefs"] = normalized
-            save_config_jsonc(cfg_path, cfg_data)
-            cache = getattr(agent, "_resolved_config_data", None)
-            if isinstance(cache, dict):
-                cache["guiUiPrefs"] = normalized
+            data = load_gui_config(agent.config_dir)
+            data["uiPrefs"] = normalize_ui_prefs(prefs)
+            save_gui_config(agent.config_dir, data)
         except Exception:
             return False
         return True
