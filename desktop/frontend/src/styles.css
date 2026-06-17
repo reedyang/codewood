@@ -1605,11 +1605,12 @@ h6.md-h {
   cursor: not-allowed;
 }
 
-/* Interrupt: no background, just a white square (the stop glyph). */
+/* Interrupt: no background, just a white square (the stop glyph) inside a
+   subtle gray-bordered box. */
 .send-btn.is-stop {
   width: 26px;
   height: 26px;
-  border: none;
+  border: 1px solid var(--border);
   border-radius: 6px;
   background: transparent;
   color: #ffffff;
