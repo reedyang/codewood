@@ -15,6 +15,7 @@ import type {
   ConfirmRequest,
   GeneralConfig,
   HistoryTurn,
+  McpServerConfigEntry,
   McpServerDetails,
   McpServerSummary,
   SegmentKind,
@@ -107,6 +108,17 @@ interface AppContextValue {
     enabled: boolean,
   ) => Promise<boolean>;
   getCompletionCatalog: () => Promise<CompletionCatalog>;
+  getMcpServerConfig: (name: string) => Promise<McpServerConfigEntry>;
+  addMcpServer: (
+    name: string,
+    config: McpServerConfigEntry,
+  ) => Promise<{ ok: boolean; error?: string }>;
+  updateMcpServer: (
+    originalName: string,
+    name: string,
+    config: McpServerConfigEntry,
+  ) => Promise<{ ok: boolean; error?: string }>;
+  deleteMcpServer: (name: string) => Promise<{ ok: boolean; error?: string }>;
   setExecutionPolicy: (policy: string) => Promise<void>;
   toggleWorkspaceExpanded: (id: string) => void;
   refreshWorkspaceChats: (id: string) => Promise<void>;
@@ -1166,6 +1178,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setMcpToolEnabled: (server: string, tool: string, enabled: boolean) =>
       client.setMcpToolEnabled(server, tool, enabled),
     getCompletionCatalog: () => client.getCompletionCatalog(),
+    getMcpServerConfig: (name: string) => client.getMcpServerConfig(name),
+    addMcpServer: (name: string, config: McpServerConfigEntry) =>
+      client.addMcpServer(name, config),
+    updateMcpServer: (
+      originalName: string,
+      name: string,
+      config: McpServerConfigEntry,
+    ) => client.updateMcpServer(originalName, name, config),
+    deleteMcpServer: (name: string) => client.deleteMcpServer(name),
     setExecutionPolicy,
     toggleWorkspaceExpanded,
     refreshWorkspaceChats,

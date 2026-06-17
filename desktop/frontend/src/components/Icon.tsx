@@ -35,6 +35,7 @@ import eye from "../assets/icons/eye.svg";
 import eyeOff from "../assets/icons/eye-off.svg";
 import panelRight from "../assets/icons/panel-right.svg";
 import cube from "../assets/icons/cube.svg";
+import trash from "../assets/icons/trash.svg";
 
 const SOURCES = {
   panel,
@@ -73,6 +74,7 @@ const SOURCES = {
   "eye-off": eyeOff,
   "panel-right": panelRight,
   cube,
+  trash,
 } as const;
 
 export type IconName = keyof typeof SOURCES;

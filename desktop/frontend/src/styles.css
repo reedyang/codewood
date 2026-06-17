@@ -1699,6 +1699,58 @@ body.resizing-x {
   transform: translateX(16px);
 }
 
+.modal.mcp-editor {
+  width: 560px;
+}
+.modal.mcp-editor .modal-body {
+  max-height: 60vh;
+  overflow-y: auto;
+}
+.modal.mcp-editor .setting-row {
+  align-items: flex-start;
+  flex-direction: column;
+  gap: 6px;
+}
+.modal.mcp-editor .setting-row > label {
+  font-size: 12px;
+  font-weight: 600;
+}
+.modal.mcp-editor .setting-row > .input,
+.modal.mcp-editor .setting-row > textarea.input {
+  width: 100%;
+  box-sizing: border-box;
+}
+.modal.mcp-editor .setting-input-row .radio {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-right: 16px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.icon-btn.ghost {
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  padding: 4px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.icon-btn.ghost:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.btn.btn-danger {
+  background: #c54545;
+  color: #fff;
+  border-color: #b03737;
+}
+.btn.btn-danger:hover {
+  background: #b03737;
+}
+
 .mcp-server-body {
   padding: 4px 14px 14px;
   border-top: 1px solid var(--border);

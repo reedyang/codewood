@@ -1610,6 +1610,21 @@ class ServeApp:
             pass
         return True
 
+    def get_mcp_server_config(self, name: str) -> Dict[str, Any]:
+        """Return the raw mcp.jsonc entry for a single server (or ``{}``)."""
+        srv = str(name or "").strip()
+        if not srv:
+            return {}
+        try:
+            cfg = self._mcp_load_jsonc()
+            servers = cfg.get("mcpServers")
+            if not isinstance(servers, dict):
+                return {}
+            entry = servers.get(srv)
+            return entry if isinstance(entry, dict) else {}
+        except Exception:
+            return {}
+
     def set_mcp_tool_enabled(self, server: str, tool: str, enabled: bool) -> bool:
         """Toggle a single tool's disabled-by-policy state."""
         srv = str(server or "").strip()
@@ -1627,6 +1642,218 @@ class ServeApp:
         except Exception:
             return False
         return True
+
+    # ------------------------------------------------------------------
+    # MCP add / update / delete
+    #
+    # The GUI editor for MCP servers writes to ``mcp.jsonc`` and then asks
+    # the live ``mcp_manager`` to pick up the change (reconnect on add /
+    # update, disconnect on delete). The form is intentionally minimal —
+    # only the fields the UI exposes are read; anything else in the
+    # original entry is preserved so the user can keep custom fields like
+    # ``description`` or ``trust`` by hand.
+    # ------------------------------------------------------------------
+
+    _ALLOWED_MCP_FIELDS = (
+        "command",
+        "args",
+        "env",
+        "url",
+        "headers",
+        "skip_preload",
+        "transport",
+        "timeout",
+    )
+
+    def _normalize_mcp_entry(self, payload: Any) -> Optional[Dict[str, Any]]:
+        """Validate an MCP server entry coming from the GUI.
+
+        Returns the cleaned dict on success or ``None`` if the payload is
+        unusable. We require AT LEAST one of ``command`` (stdio) or ``url``
+        (http/sse) so the entry actually addresses a server.
+        """
+        if not isinstance(payload, dict):
+            return None
+        out: Dict[str, Any] = {}
+        cmd = payload.get("command")
+        if isinstance(cmd, str) and cmd.strip():
+            out["command"] = cmd.strip()
+            args = payload.get("args")
+            if isinstance(args, list):
+                out["args"] = [str(a) for a in args if isinstance(a, (str, int, float))]
+            env = payload.get("env")
+            if isinstance(env, dict):
+                out["env"] = {
+                    str(k): str(v) for k, v in env.items() if isinstance(k, str) and k
+                }
+        url = payload.get("url")
+        if isinstance(url, str) and url.strip():
+            # Reject anything that isn't HTTP(S) — file:// / javascript: etc.
+            # are not valid MCP transports and shouldn't be smuggled into
+            # the config from the GUI even if the user pastes one in.
+            u = url.strip()
+            lower = u.lower()
+            if not (lower.startswith("http://") or lower.startswith("https://")):
+                return None
+            out["url"] = u
+            headers = payload.get("headers")
+            if isinstance(headers, dict):
+                out["headers"] = {
+                    str(k): str(v) for k, v in headers.items() if isinstance(k, str) and k
+                }
+        if "command" not in out and "url" not in out:
+            return None
+        if "skip_preload" in payload:
+            out["skip_preload"] = bool(payload.get("skip_preload"))
+        if "transport" in payload and isinstance(payload["transport"], str):
+            t = payload["transport"].strip().lower()
+            if t in ("stdio", "http", "sse"):
+                out["transport"] = t
+        return out
+
+    def _refresh_mcp_after_edit(self, cfg: Dict[str, Any], server: str, *, reconnect: bool) -> None:
+        """Apply a freshly-written mcp.jsonc to the running agent + manager."""
+        try:
+            agent = self.agent
+            agent.mcp_config = cfg
+            agent._mcp_config_struct_sig = agent._calc_mcp_config_sig(cfg)
+            mgr = getattr(agent, "mcp_manager", None)
+            if mgr is not None:
+                try:
+                    mgr.mcp_config = cfg
+                except Exception:
+                    pass
+                if reconnect:
+                    try:
+                        mgr.reconnect_server(server, timeout_s=12.0)
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+        try:
+            self.broadcaster.publish(
+                "idle", {"state": _build_state(self.agent), "chatId": self._active_chat_id()}
+            )
+        except Exception:
+            pass
+
+    def add_mcp_server(self, name: str, config: Any) -> Dict[str, Any]:
+        """Create a new MCP server entry. Returns ``{ok, error?}``."""
+        srv = str(name or "").strip()
+        if not srv or not srv.replace("-", "").replace("_", "").replace(".", "").isalnum():
+            # Restrict to a conservative character set so the name is safe to
+            # use as a JSON key / log identifier and matches what users
+            # already see in the existing mcp.jsonc samples.
+            return {"ok": False, "error": "invalid_name"}
+        clean = self._normalize_mcp_entry(config)
+        if clean is None:
+            return {"ok": False, "error": "invalid_config"}
+        try:
+            cfg = self._mcp_load_jsonc()
+            servers = cfg.get("mcpServers")
+            if not isinstance(servers, dict):
+                servers = {}
+            if srv in servers:
+                return {"ok": False, "error": "duplicate"}
+            servers[srv] = clean
+            cfg["mcpServers"] = servers
+            if not self._mcp_save_jsonc(cfg):
+                return {"ok": False, "error": "save_failed"}
+        except Exception:
+            return {"ok": False, "error": "save_failed"}
+        # Reconnect by default unless the user explicitly added it disabled.
+        self._refresh_mcp_after_edit(
+            cfg, srv, reconnect=not bool(clean.get("skip_preload", False))
+        )
+        return {"ok": True}
+
+    def update_mcp_server(
+        self, original_name: str, name: str, config: Any
+    ) -> Dict[str, Any]:
+        """Update an existing MCP server entry. Supports rename."""
+        old = str(original_name or "").strip()
+        new = str(name or old or "").strip()
+        if not old or not new:
+            return {"ok": False, "error": "invalid_name"}
+        if not new.replace("-", "").replace("_", "").replace(".", "").isalnum():
+            return {"ok": False, "error": "invalid_name"}
+        clean = self._normalize_mcp_entry(config)
+        if clean is None:
+            return {"ok": False, "error": "invalid_config"}
+        try:
+            cfg = self._mcp_load_jsonc()
+            servers = cfg.get("mcpServers")
+            if not isinstance(servers, dict):
+                servers = {}
+            if old not in servers:
+                return {"ok": False, "error": "missing"}
+            if new != old and new in servers:
+                return {"ok": False, "error": "duplicate"}
+            # Preserve fields the GUI form doesn't expose (e.g. custom
+            # ``description`` / ``trust`` flags) by merging onto the prior
+            # entry rather than replacing it wholesale.
+            prior = servers[old] if isinstance(servers[old], dict) else {}
+            merged = dict(prior)
+            for k in self._ALLOWED_MCP_FIELDS:
+                if k in merged:
+                    del merged[k]
+            merged.update(clean)
+            del servers[old]
+            servers[new] = merged
+            cfg["mcpServers"] = servers
+            if not self._mcp_save_jsonc(cfg):
+                return {"ok": False, "error": "save_failed"}
+        except Exception:
+            return {"ok": False, "error": "save_failed"}
+        self._refresh_mcp_after_edit(
+            cfg, new, reconnect=not bool(clean.get("skip_preload", False))
+        )
+        return {"ok": True}
+
+    def delete_mcp_server(self, name: str) -> Dict[str, Any]:
+        """Remove an MCP server entry from ``mcp.jsonc``."""
+        srv = str(name or "").strip()
+        if not srv:
+            return {"ok": False, "error": "invalid_name"}
+        try:
+            cfg = self._mcp_load_jsonc()
+            servers = cfg.get("mcpServers")
+            if not isinstance(servers, dict) or srv not in servers:
+                return {"ok": False, "error": "missing"}
+            del servers[srv]
+            cfg["mcpServers"] = servers
+            if not self._mcp_save_jsonc(cfg):
+                return {"ok": False, "error": "save_failed"}
+        except Exception:
+            return {"ok": False, "error": "save_failed"}
+        # Best-effort disconnect of the live session; failures are tolerable
+        # since the next manager tick will notice the server is gone.
+        try:
+            mgr = getattr(self.agent, "mcp_manager", None)
+            if mgr is not None:
+                try:
+                    self.agent.mcp_config = cfg
+                except Exception:
+                    pass
+                try:
+                    mgr.mcp_config = cfg
+                except Exception:
+                    pass
+                disconnect = getattr(mgr, "disconnect_server", None)
+                if callable(disconnect):
+                    try:
+                        disconnect(srv)
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+        try:
+            self.broadcaster.publish(
+                "idle", {"state": _build_state(self.agent), "chatId": self._active_chat_id()}
+            )
+        except Exception:
+            pass
+        return {"ok": True}
 
     def get_models_config(self) -> List[Dict[str, Any]]:
         """Return the raw (unresolved) ``model_providers`` list for editing."""
@@ -2277,11 +2504,33 @@ def _make_handler(app: ServeApp):
                 payload = app.get_mcp_server_details(srv)
                 self._send_json(200 if payload.get("ok") else 400, payload)
                 return
+            if path == "/mcp-server-config":
+                srv = str(body.get("name") or "")[:256]
+                self._send_json(200, {"ok": True, "config": app.get_mcp_server_config(srv)})
+                return
             if path == "/set-mcp-server-enabled":
                 srv = str(body.get("name") or "")[:256]
                 enabled = bool(body.get("enabled", True))
                 ok = app.set_mcp_server_enabled(srv, enabled)
                 self._send_json(200 if ok else 400, {"ok": ok})
+                return
+            if path == "/add-mcp-server":
+                srv = str(body.get("name") or "")[:64]
+                conf = body.get("config")
+                result = app.add_mcp_server(srv, conf)
+                self._send_json(200 if result.get("ok") else 400, result)
+                return
+            if path == "/update-mcp-server":
+                old = str(body.get("originalName") or "")[:64]
+                new = str(body.get("name") or "")[:64]
+                conf = body.get("config")
+                result = app.update_mcp_server(old, new, conf)
+                self._send_json(200 if result.get("ok") else 400, result)
+                return
+            if path == "/delete-mcp-server":
+                srv = str(body.get("name") or "")[:64]
+                result = app.delete_mcp_server(srv)
+                self._send_json(200 if result.get("ok") else 400, result)
                 return
             if path == "/set-mcp-tool-enabled":
                 srv = str(body.get("server") or "")[:256]

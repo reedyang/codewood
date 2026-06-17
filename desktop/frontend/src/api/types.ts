@@ -60,6 +60,20 @@ export interface CompletionCatalog {
   mcpPrompts: { server: string; name: string; description: string }[];
 }
 
+/** Editable MCP server entry. Matches the JSONC shape in mcp.jsonc; only the
+ *  subset of fields the GUI exposes is enumerated, but ``[unknown: string]``
+ *  is allowed so the editor round-trips fields it doesn't render. */
+export interface McpServerConfigEntry {
+  command?: string;
+  args?: string[];
+  env?: Record<string, string>;
+  url?: string;
+  headers?: Record<string, string>;
+  skip_preload?: boolean;
+  transport?: string;
+  [extra: string]: unknown;
+}
+
 export interface AppState {
   app: { name: string; version: string };
   workspace: { name: string; id: string; root: string; workDirectory: string };
