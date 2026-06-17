@@ -235,6 +235,16 @@ function restoreCaret(root: HTMLElement, snap: CaretSnapshot | null) {
   sel.addRange(r);
 }
 
+/** True iff the text node's previous DOM sibling is a pill element. We use
+ *  this to detect the "caret sits right after a pill" boundary that should
+ *  allow ``/`` to reopen the slash popup. */
+function isPreviousSiblingPill(node: Node): boolean {
+  const prev = node.previousSibling;
+  if (!prev) return false;
+  if (prev.nodeType !== Node.ELEMENT_NODE) return false;
+  return (prev as HTMLElement).hasAttribute("data-token-kind");
+}
+
 function kindIconName(kind: TokenKind): string {
   switch (kind) {
     case "attach":
@@ -419,18 +429,38 @@ export function RichComposer({
     }
     const text = node.textContent ?? "";
     const upto = text.slice(0, range.startOffset);
-    // Find the last '/' that follows a boundary (start-of-text or whitespace).
+    // Find the last '/' that follows a "word boundary". A boundary is one of:
+    //   * the start of the text node;
+    //   * standard whitespace (space, newline, tab);
+    //   * the zero-width space (U+200B) we insert next to pills, so typing
+    //     ``/`` immediately after a pill still opens the menu;
+    //   * (when the slash is at index 0) a pill DOM sibling immediately to
+    //     the left of this text node, since the caret can otherwise sit at
+    //     the very front of a text node whose ZWSP was eaten by previous
+    //     edits.
     let slashAt = -1;
     for (let i = upto.length - 1; i >= 0; i -= 1) {
       const ch = upto[i];
       if (ch === "/") {
         const prev = i === 0 ? "" : upto[i - 1];
-        if (i === 0 || /\s/.test(prev)) {
+        const startBoundary =
+          i === 0 &&
+          isPreviousSiblingPill(node) &&
+          // If the text node already contains non-whitespace BEFORE the
+          // slash, the slash is mid-word; that case is handled above with
+          // ``i === 0`` always being false there.
+          true;
+        if (
+          i === 0 ||
+          /\s/.test(prev) ||
+          prev === "\u200B" ||
+          startBoundary
+        ) {
           slashAt = i;
         }
         break;
       }
-      if (/\s/.test(ch)) {
+      if (/\s/.test(ch) || ch === "\u200B") {
         break;
       }
     }
@@ -490,7 +520,7 @@ export function RichComposer({
           slashAt = i;
           break;
         }
-        if (/\s/.test(before[i])) break;
+        if (/\s/.test(before[i]) || before[i] === "\u200B") break;
       }
       if (slashAt < 0) return;
       const head = before.slice(0, slashAt);
