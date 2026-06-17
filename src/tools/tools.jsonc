@@ -702,21 +702,24 @@
     "type": "function",
     "function": {
       "name": "ask_more_info",
-      "description": "When key input is missing, ask the user for supplementary information and pause auto-continuation until the user responds. Call this only after trying memory_search and other tools/skills/MCP in order and still being unable to obtain the information reliably.",
+      "description": "When key input is missing, ask the user a single-choice question and pause auto-continuation until the user responds. Call this only after trying memory_search and other tools/skills/MCP in order and still being unable to obtain the information reliably. The host renders the options as buttons; the user picks one (or chooses 'Other' to type a freeform answer) and execution resumes with that selection as the supplement.",
       "parameters": {
         "type": "object",
         "properties": {
           "question": {
-            "type": "string"
+            "type": "string",
+            "description": "The clarifying question shown to the user. Keep it short and answerable from the option list below."
           },
-          "expected_fields": {
+          "options": {
             "type": "array",
+            "description": "Two or more discrete answer choices the user can pick from. Each item is a short label (ideally under 8 words). The host always appends an extra 'Other' option for freeform input, so do NOT include one here.",
             "items": {
               "type": "string"
-            }
+            },
+            "minItems": 2
           }
         },
-        "required": ["question"]
+        "required": ["question", "options"]
       }
     }
   },

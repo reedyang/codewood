@@ -22,7 +22,7 @@ Before finishing, check whether the request requires missing user-side facts, pa
 
 Before `ask_more_info`, check whether missing information can be obtained through tools. Required order: built-in tools, loaded skills, MCP tools/resources/prompts, and only then ask the user. When experiential memory tools are available (see the dedicated section below if injected), consult them first per their rules. If the missing information depends only on current input or the external environment, use the relevant tool directly.
 
-If you call `ask_more_info`, include `question` and `expected_fields`. The host will return to the command prompt for user input and then continue the same original request. If the supplement is still insufficient, call `ask_more_info` again. If the user clearly switches to an unrelated request, treat it as a new request and proceed accordingly.
+If you call `ask_more_info`, include `question` and `options` (at least two discrete answer choices, each a short label). The host renders the options as buttons (and always appends an extra "Other" button so the user can type a freeform answer — do NOT add an "Other" option yourself). The host returns the user's selection as the supplement and continues the same original request. If the supplement is still insufficient, call `ask_more_info` again with refined options. If the user clearly switches to an unrelated request, treat it as a new request and proceed accordingly.
 
 ## MCP Status Output
 

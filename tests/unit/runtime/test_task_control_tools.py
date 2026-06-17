@@ -19,13 +19,49 @@ class TaskControlToolTests(unittest.TestCase):
     def test_ask_more_info_returns_need_user_input_payload(self):
         result = self.agent.execute_tool_call(
             "ask_more_info",
-            {"question": "Please provide project name", "expected_fields": ["project_name"]},
+            {
+                "question": "Which environment?",
+                "options": ["Production", "Staging"],
+            },
         )
         self.assertTrue(result.get("success"))
         self.assertTrue(result.get("needs_user_input"))
         self.assertEqual(result.get("input_type"), "supplement")
-        self.assertEqual(result.get("question"), "Please provide project name")
-        self.assertEqual(result.get("expected_fields"), ["project_name"])
+        self.assertEqual(result.get("question"), "Which environment?")
+        self.assertEqual(result.get("options"), ["Production", "Staging"])
+
+    def test_ask_more_info_rejects_fewer_than_two_options(self):
+        # The new contract: model MUST provide at least two discrete
+        # choices so the host can render real option buttons. A
+        # missing/short ``options`` array is a retryable error so the
+        # model can re-issue the call without ending the turn.
+        for params in (
+            {"question": "Pick a colour"},
+            {"question": "Pick a colour", "options": []},
+            {"question": "Pick a colour", "options": ["Only"]},
+        ):
+            with self.subTest(params=params):
+                result = self.agent.execute_tool_call("ask_more_info", params)
+                self.assertFalse(result.get("success", True))
+                self.assertTrue(result.get("retryable"))
+                self.assertIn("options", str(result.get("error") or ""))
+
+    def test_ask_more_info_dedupes_and_caps_options(self):
+        # Duplicates collapse in arrival order; the cap (16) protects
+        # the UI from a runaway list of choices. Empty/whitespace
+        # entries are dropped silently.
+        many = [f"opt-{i}" for i in range(40)]
+        params = {
+            "question": "Pick one",
+            "options": ["A", " ", "A", "B", "", "C", *many],
+        }
+        result = self.agent.execute_tool_call("ask_more_info", params)
+        self.assertTrue(result.get("success"))
+        opts = result.get("options")
+        self.assertIsInstance(opts, list)
+        self.assertEqual(opts[:3], ["A", "B", "C"])
+        self.assertLessEqual(len(opts), 16)
+        self.assertEqual(len(opts), len(set(opts)))
 
     def test_task_changed_tool_is_no_longer_registered(self):
         result = self.agent.execute_tool_call(
