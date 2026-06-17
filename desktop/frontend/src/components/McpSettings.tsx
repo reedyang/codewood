@@ -175,8 +175,12 @@ export function McpSettings() {
         const isCollapsed = collapsed[server.name] !== false;
         const detail = details[server.name];
         const isLoadingDetail = !!loadingDetails[server.name];
-        const stateLabel = serverStateLabel(server, t);
         const disabledNames = new Set(server.disabledTools);
+        // Only surface a textual status while the server is enabled — when
+        // disabled, the toggle below already conveys that state, so an
+        // extra "Disabled" pill would be redundant noise.
+        const showStatus = server.enabled;
+        const stateLabel = showStatus ? serverStateLabel(server, t) : "";
         return (
           <div className="mcp-server" key={server.name}>
             <div className="mcp-server-head">
@@ -191,23 +195,27 @@ export function McpSettings() {
               {server.transport && (
                 <span className="mcp-badge">{server.transport.toUpperCase()}</span>
               )}
-              <span className={`mcp-status mcp-status-${serverStateClass(server)}`}>
-                {stateLabel}
-              </span>
+              {showStatus && (
+                <span className={`mcp-status mcp-status-${serverStateClass(server)}`}>
+                  {stateLabel}
+                </span>
+              )}
               <span className="mcp-counts">
                 {t("mcp.toolsCount").replace("{n}", String(server.toolsCount))}
                 {" · "}
                 {t("mcp.promptsCount").replace("{n}", String(server.promptsCount))}
               </span>
-              <label className="mcp-enable">
-                <input
-                  type="checkbox"
-                  checked={server.enabled}
-                  disabled={!!busyServer[server.name]}
-                  onChange={() => void onToggleServer(server)}
-                />
-                <span>{t("mcp.enabled")}</span>
-              </label>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={server.enabled}
+                className={`mcp-toggle ${server.enabled ? "is-on" : ""}`}
+                disabled={!!busyServer[server.name]}
+                title={t("mcp.enabled")}
+                onClick={() => void onToggleServer(server)}
+              >
+                <span className="mcp-toggle-thumb" />
+              </button>
             </div>
             {!isCollapsed && (
               <div className="mcp-server-body">
