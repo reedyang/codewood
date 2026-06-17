@@ -1198,6 +1198,167 @@ body.resizing-x {
   color: var(--text);
 }
 
+/* Rich-mixed composer — a contentEditable surface that flows text and pills
+ * inline. The popup is positioned relative to the wrapper so it follows the
+ * composer when the bottom dock animates open/closed. */
+.rich-composer {
+  position: relative;
+  width: 100%;
+}
+.rich-composer-editor {
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 12px;
+  font-family: inherit;
+  font-size: 14px;
+  background: var(--bg-input);
+  color: var(--text);
+  line-height: 1.5;
+  outline: none;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  overflow-y: auto;
+  max-height: 240px;
+}
+.rich-composer-editor:focus {
+  border-color: var(--accent);
+}
+.rich-composer-editor[data-empty]::before {
+  content: attr(data-placeholder);
+  color: var(--text-muted);
+  pointer-events: none;
+}
+
+.composer-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 8px;
+  margin: 0 2px;
+  border-radius: 999px;
+  font-size: 12px;
+  line-height: 1.6;
+  background: var(--bg-hover);
+  border: 1px solid var(--border);
+  color: var(--text);
+  vertical-align: baseline;
+  user-select: none;
+  cursor: default;
+  white-space: nowrap;
+}
+.composer-pill-attach {
+  background: color-mix(in srgb, var(--accent) 12%, var(--bg-input));
+  border-color: color-mix(in srgb, var(--accent) 30%, var(--border));
+}
+.composer-pill-skill {
+  background: color-mix(in srgb, var(--accent-warn, #d2a35a) 15%, var(--bg-input));
+  border-color: color-mix(in srgb, var(--accent-warn, #d2a35a) 35%, var(--border));
+}
+.composer-pill-mcp-tool {
+  background: color-mix(in srgb, #5aa0d2 15%, var(--bg-input));
+  border-color: color-mix(in srgb, #5aa0d2 35%, var(--border));
+}
+.composer-pill-mcp-prompt {
+  background: color-mix(in srgb, #9a7ad2 15%, var(--bg-input));
+  border-color: color-mix(in srgb, #9a7ad2 35%, var(--border));
+}
+.composer-pill-readonly {
+  cursor: text;
+}
+.composer-pill-label {
+  display: inline-block;
+}
+.composer-pill-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  margin-left: 4px;
+  border-radius: 50%;
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+}
+.composer-pill-close:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+.composer-pill-secondary {
+  color: var(--text-muted);
+  font-weight: 500;
+}
+.composer-pill-sep {
+  color: var(--text-muted);
+  margin: 0 2px;
+}
+.composer-pill-primary {
+  font-weight: 500;
+}
+
+.rich-composer-popup {
+  position: absolute;
+  left: 0;
+  bottom: calc(100% + 6px);
+  width: min(420px, 100%);
+  max-height: 260px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-elevated);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
+  padding: 6px;
+  z-index: 30;
+}
+.rich-composer-popup-hint {
+  font-size: 11px;
+  color: var(--text-muted);
+  padding: 4px 8px 6px;
+}
+.rich-composer-popup-item {
+  display: grid;
+  grid-template-columns: 16px auto 1fr;
+  gap: 8px;
+  align-items: center;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: none;
+  padding: 6px 8px;
+  border-radius: 6px;
+  color: var(--text);
+  cursor: pointer;
+  font: inherit;
+}
+.rich-composer-popup-item:hover,
+.rich-composer-popup-item.is-active {
+  background: var(--bg-hover);
+}
+.rich-composer-popup-label {
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.rich-composer-popup-desc {
+  font-size: 12px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.message-body {
+  display: block;
+  line-height: 1.55;
+}
+.message-text {
+  white-space: pre-wrap;
+}
+
 .composer-actions {
   display: flex;
   align-items: center;

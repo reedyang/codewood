@@ -1,6 +1,7 @@
 import type {
   AppState,
   ChatHistoryPage,
+  CompletionCatalog,
   GeneralConfig,
   McpServerDetails,
   McpServerSummary,
@@ -257,6 +258,26 @@ export class ApiClient {
       body: JSON.stringify({ server, tool, enabled }),
     });
     return res.ok;
+  }
+
+  async getCompletionCatalog(): Promise<CompletionCatalog> {
+    const empty: CompletionCatalog = { skills: [], mcpTools: [], mcpPrompts: [] };
+    const res = await fetch(`${this.base}/completion-catalog`, {
+      method: "POST",
+      headers: this.headers(),
+      body: "{}",
+    });
+    if (!res.ok) return empty;
+    try {
+      const data = (await res.json()) as Partial<CompletionCatalog>;
+      return {
+        skills: Array.isArray(data.skills) ? data.skills : [],
+        mcpTools: Array.isArray(data.mcpTools) ? data.mcpTools : [],
+        mcpPrompts: Array.isArray(data.mcpPrompts) ? data.mcpPrompts : [],
+      };
+    } catch {
+      return empty;
+    }
   }
 
   /** Fetch a provider's advertised model list from its /models endpoint. */

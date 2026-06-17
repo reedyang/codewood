@@ -5,7 +5,10 @@ import { Icon } from "./Icon";
 import { MarkdownText } from "./Markdown";
 import { StepsView } from "./Steps";
 import { ChatTitleBar } from "./ChatTitleBar";
-import { decodeAttachments, encodeAttachments } from "../utils/attachments";
+import { decodeAttachments } from "../utils/attachments";
+import { composeMessageText, parseMessageToSegments } from "../utils/tokens";
+import type { Segment } from "../utils/tokens";
+import { RichComposer } from "./RichComposer";
 
 function quote(value: string): string {
   return `"${value.replace(/"/g, "")}"`;
@@ -270,18 +273,14 @@ export function ChatView() {
     setDraftWorkspace,
     t,
   } = useApp();
-  // Drafts (in-progress composer text + attachments) are kept per chat so
-  // switching between chats never bleeds an unsent message into a sibling. A
-  // synthetic key is used while we're still in "draft mode" (no chat exists
-  // yet) so that first composition survives until the user sends or discards.
+  // Drafts (in-progress composer segments) are kept per chat so switching
+  // between chats never bleeds an unsent message into a sibling. A synthetic
+  // key is used while we're still in "draft mode" (no chat exists yet) so
+  // that first composition survives until the user sends or discards.
   const DRAFT_KEY = "__draft__";
   const draftKey = draftMode ? DRAFT_KEY : state?.activeChatId || "";
-  const [draftsByChat, setDraftsByChat] = useState<Record<string, string>>({});
-  const [attachmentsByChat, setAttachmentsByChat] = useState<
-    Record<string, string[]>
-  >({});
-  const draft = draftsByChat[draftKey] ?? "";
-  const attachments = attachmentsByChat[draftKey] ?? [];
+  const [segmentsByChat, setSegmentsByChat] = useState<Record<string, Segment[]>>({});
+  const segments = segmentsByChat[draftKey] ?? [];
   // Per-chat compose mode (Agent or Plan). Stored only in-memory: switching
   // chats restores the last-known mode for that chat without persisting it
   // across restarts (so re-opening a project doesn't trap the user in Plan
@@ -292,43 +291,40 @@ export function ChatView() {
   const chatMode: ChatMode = chatModeMap[draftKey] ?? "agent";
   const setChatMode = (m: ChatMode) =>
     setChatModeMap((prev) => ({ ...prev, [draftKey]: m }));
-  const setDraft = (value: string | ((prev: string) => string)) => {
-    setDraftsByChat((prev) => {
-      const current = prev[draftKey] ?? "";
-      const next = typeof value === "function" ? (value as (p: string) => string)(current) : value;
-      if (next === current) {
-        return prev;
-      }
-      return { ...prev, [draftKey]: next };
-    });
-  };
-  const setAttachments = (
-    value: string[] | ((prev: string[]) => string[]),
+  const setSegments = (
+    value: Segment[] | ((prev: Segment[]) => Segment[]),
   ) => {
-    setAttachmentsByChat((prev) => {
+    setSegmentsByChat((prev) => {
       const current = prev[draftKey] ?? [];
       const next =
         typeof value === "function"
-          ? (value as (p: string[]) => string[])(current)
+          ? (value as (p: Segment[]) => Segment[])(current)
           : value;
       return { ...prev, [draftKey]: next };
     });
   };
   const scrollRef = useRef<HTMLDivElement | null>(null);
-  const composerRef = useRef<HTMLTextAreaElement | null>(null);
   const prevHeightRef = useRef<number | null>(null);
+
+  // Derived view of just the attachment paths for callers that still want a
+  // flat list (the empty-state workspace selector, the send-button enabling
+  // check). Order matches their order in the composer.
+  const attachmentPaths = segments
+    .filter((s) => s.kind === "attach")
+    .map((s) => s.value);
+  const draftText = segments
+    .filter((s) => s.kind === "text")
+    .map((s) => s.value)
+    .join("");
 
   const messageHandlers: MessageHandlers = {
     onCopy: (text) => {
       void navigator.clipboard?.writeText(text);
     },
     onEdit: (index, text) => {
-      // Restore both the textual body and any structured attachments so the
-      // composer re-renders the same chips that were on the original message.
-      const { paths, body } = decodeAttachments(text);
-      setDraft(body);
-      setAttachments(paths);
-      composerRef.current?.focus();
+      // Restore the original segment list so the composer re-renders the
+      // same attachment chips and prose that the user originally sent.
+      setSegments(parseMessageToSegments(text));
       void editChat(index);
     },
     onFork: (index) => {
@@ -370,32 +366,29 @@ export function ChatView() {
     }
   };
 
-  const canSend = Boolean(draft.trim()) || attachments.length > 0;
+  const canSend = draftText.trim().length > 0 || attachmentPaths.length > 0;
 
   const submit = async () => {
-    const text = draft.trim();
-    if (!text && attachments.length === 0) {
+    if (!canSend) {
       return;
     }
-    // Attach files by reference (path), not by inlining content. This mirrors
-    // Codex's approach: the agent reads each file with its tools and decides
-    // how much to load, which avoids blowing the context window on large
-    // files. We use a structured Unicode-sentinel envelope so the GUI can
-    // safely round-trip attachments through history/edit, without having to
-    // parse a free-form "Attached files:" header that a user could
-    // accidentally collide with in their own message.
-    let body = text;
+    // Build the over-the-wire string from the composer segments. Attachments
+    // go into the legacy ATTACH header (so the agent + chat history layer can
+    // still pick them off the front of the message); everything else flows
+    // into the body, with skill / MCP tokens flattened to readable inline
+    // markers the LLM can reason about naturally.
+    let workingSegments = segments;
     if (chatMode === "plan") {
-      // Inject a planning instruction so the agent treats this turn as a
-      // plan-and-discuss step (no destructive tool calls). The instruction is
-      // a normal natural-language prefix — keeping it model-agnostic and
-      // easy for the user to tweak via Edit if they want.
       const planHeader = t("composer.planInstruction");
-      body = planHeader ? `${planHeader}\n\n${text}` : text;
+      if (planHeader) {
+        workingSegments = [
+          { kind: "text", value: `${planHeader}\n\n` },
+          ...segments,
+        ];
+      }
     }
-    const message = encodeAttachments(attachments, body);
-    setDraft("");
-    setAttachments([]);
+    const message = composeMessageText(workingSegments);
+    setSegments([]);
     await sendInput(message);
   };
 
@@ -404,21 +397,23 @@ export function ChatView() {
     if (picked.length === 0) {
       return;
     }
-    setAttachments((prev) => {
-      const seen = new Set(prev);
-      const merged = [...prev];
+    setSegments((prev) => {
+      const existing = new Set(
+        prev.filter((s) => s.kind === "attach").map((s) => s.value),
+      );
+      const additions: Segment[] = [];
       for (const p of picked) {
-        if (!seen.has(p)) {
-          seen.add(p);
-          merged.push(p);
+        if (!existing.has(p)) {
+          existing.add(p);
+          additions.push({ kind: "attach", value: p });
         }
       }
-      return merged;
+      if (additions.length === 0) return prev;
+      // Insert new attachments at the very start so they show as a header of
+      // pills, matching the visual convention from the previous chip strip.
+      return [...additions, ...prev];
     });
   };
-
-  const removeAttachment = (path: string) =>
-    setAttachments((prev) => prev.filter((p) => p !== path));
 
   const currentPolicy = state?.executionPolicy || "moderate";
   const currentModel = state?.model.current || "";
@@ -454,37 +449,12 @@ export function ChatView() {
 
   const composer = (
     <div className="composer">
-      {attachments.length > 0 && (
-        <div className="attachments">
-          {attachments.map((path) => (
-            <span className="attachment-chip" key={path} title={path}>
-              <Icon name="info" size={13} className="muted-icon" />
-              <span className="attachment-name">{baseName(path)}</span>
-              <span className="attachment-ext">{fileExt(path)}</span>
-              <button
-                className="attachment-remove"
-                aria-label={t("attach.remove")}
-                onClick={() => removeAttachment(path)}
-              >
-                <Icon name="win-close" size={10} />
-              </button>
-            </span>
-          ))}
-        </div>
-      )}
-      <textarea
-        ref={composerRef}
-        className="composer-input"
-        value={draft}
+      <RichComposer
+        segments={segments}
+        onChange={setSegments}
+        onSubmit={() => void submit()}
         placeholder={t("chat.inputPlaceholder")}
         rows={3}
-        onChange={(e) => setDraft(e.target.value)}
-        onKeyDown={(e) => {
-          if (e.key === "Enter" && !e.shiftKey) {
-            e.preventDefault();
-            void submit();
-          }
-        }}
       />
       <div className="composer-toolbar">
         <div className="composer-left">
