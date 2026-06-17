@@ -963,6 +963,17 @@ def main(argv: list[str] | None = None):
         return 0
     except Exception as e:
         print(text("main.runtime_error", ui_language, error=str(e)))
+        # In serve mode the GUI only ever sees the handshake line; an
+        # exception here means it never came, so record the traceback to the
+        # app log to make "Backend exited before sending a handshake"
+        # diagnosable after the fact.
+        if config_dir:
+            try:
+                from src.core.logging.app_logging import get_logger
+
+                get_logger().exception("Backend startup failed before handshake")
+            except Exception:
+                pass
         return 1
     finally:
         if agent is not None:

@@ -173,8 +173,22 @@ def main() -> int:
     try:
         port, token = backend.start()
     except BackendError as exc:
-        # No window yet; surface the failure in a minimal error window.
-        webview.create_window(WINDOW_TITLE, html=f"<h2>Failed to start backend</h2><p>{exc}</p>")
+        # No window yet; surface the failure in a minimal error window. Escape
+        # the backend's output so a stray ``<`` in a traceback can't break the
+        # markup, and preserve line breaks so multi-line diagnostics read
+        # cleanly.
+        import html
+
+        safe = html.escape(str(exc)).replace("\n", "<br>")
+        error_html = (
+            "<body style=\"font-family:Segoe UI,Arial,sans-serif;"
+            "padding:24px;color:#111;\">"
+            "<h2>Failed to start backend</h2>"
+            f"<pre style=\"white-space:pre-wrap;word-break:break-word;"
+            "font-size:13px;line-height:1.5;\">"
+            f"{safe}</pre></body>"
+        )
+        webview.create_window(WINDOW_TITLE, html=error_html)
         webview.start()
         return 1
 
