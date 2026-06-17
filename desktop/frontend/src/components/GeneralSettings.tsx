@@ -3,25 +3,24 @@ import { useApp } from "../state/AppContext";
 import type { GeneralConfig } from "../api/types";
 
 interface GeneralSettingsProps {
+  /** Kept for compatibility with ``SettingsView`` even though the page now
+   *  auto-saves: passing a no-op keeps the unsaved-changes guard quiet. */
   onDirtyChange?: (dirty: boolean) => void;
   saveSignal?: number;
 }
 
-/** General-runtime settings: a thin form over the top-level ``config.jsonc``
- *  fields the user is most likely to want to flip from the GUI without
- *  hand-editing the file. Mirrors ``ModelsSettings``' load/dirty/save shape so
- *  ``SettingsView`` can apply its unsaved-changes prompt the same way. */
-export function GeneralSettings({ onDirtyChange, saveSignal }: GeneralSettingsProps) {
+/** General-runtime settings page. Every change auto-saves immediately to
+ *  ``config.jsonc`` so there is no Save button and no leave-confirmation
+ *  prompt — losing focus or navigating away can't lose state. */
+export function GeneralSettings({ onDirtyChange }: GeneralSettingsProps) {
   const { getGeneralConfig, saveGeneralConfig, t } = useApp();
-  const [loaded, setLoaded] = useState<GeneralConfig | null>(null);
   const [draft, setDraft] = useState<GeneralConfig | null>(null);
-  // The text input lets the user clear ``max_tool_rounds`` to mean "unlimited";
-  // we keep the raw string so an in-progress edit doesn't get re-normalized
-  // back to a number while typing.
+  // ``max_tool_rounds`` accepts an empty input meaning "unlimited"; we hold
+  // the raw text so an in-progress edit doesn't get re-normalized while the
+  // user is still typing.
   const [maxRoundsText, setMaxRoundsText] = useState("");
-  const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
-  const lastSaveSignal = useRef<number | undefined>(saveSignal);
+  const debounceRef = useRef<number | null>(null);
 
   useEffect(() => {
     let alive = true;
@@ -29,7 +28,6 @@ export function GeneralSettings({ onDirtyChange, saveSignal }: GeneralSettingsPr
       if (!alive || !cfg) {
         return;
       }
-      setLoaded(cfg);
       setDraft(cfg);
       setMaxRoundsText(cfg.max_tool_rounds == null ? "" : String(cfg.max_tool_rounds));
     });
@@ -38,34 +36,23 @@ export function GeneralSettings({ onDirtyChange, saveSignal }: GeneralSettingsPr
     };
   }, [getGeneralConfig]);
 
-  const dirty = (() => {
-    if (!loaded || !draft) return false;
-    if (draft.auto_compact_trigger_percent !== loaded.auto_compact_trigger_percent) return true;
-    if (draft.memory_enabled !== loaded.memory_enabled) return true;
-    if (draft.mcp_tools_enabled !== loaded.mcp_tools_enabled) return true;
-    // Treat empty/whitespace as "unlimited" (null).
-    const text = maxRoundsText.trim();
-    const parsed = text === "" ? null : Number(text);
-    const draftMtr = parsed === null || !Number.isFinite(parsed) || parsed <= 0 ? null : Math.floor(parsed);
-    if (draftMtr !== loaded.max_tool_rounds) return true;
-    return false;
-  })();
-
+  // The page no longer has a dirty state — every edit is committed
+  // immediately. Tell the parent so its leave-confirmation can stay quiet.
   useEffect(() => {
-    onDirtyChange?.(dirty);
-  }, [dirty, onDirtyChange]);
+    onDirtyChange?.(false);
+  }, [onDirtyChange]);
 
-  const handleSave = async () => {
-    if (!draft || saving) return;
+  /** Persist a partial update. Numeric / range validation lives here so an
+   *  out-of-range value is visibly rejected without bouncing the user's
+   *  edit back to the previous value mid-keypress. */
+  const persist = (next: GeneralConfig, mtrText: string) => {
     setError("");
-    // Validate before submitting; the backend repeats these checks but giving
-    // immediate feedback keeps the dialog interaction snappy.
-    const pct = Number(draft.auto_compact_trigger_percent);
+    const pct = Number(next.auto_compact_trigger_percent);
     if (!Number.isFinite(pct) || pct < 0 || pct > 100) {
       setError(t("general.errAutoCompactRange"));
       return;
     }
-    const text = maxRoundsText.trim();
+    const text = mtrText.trim();
     let mtr: number | null = null;
     if (text !== "") {
       const parsed = Number(text);
@@ -75,40 +62,38 @@ export function GeneralSettings({ onDirtyChange, saveSignal }: GeneralSettingsPr
       }
       mtr = parsed <= 0 ? null : parsed;
     }
-    setSaving(true);
     const payload: Partial<GeneralConfig> = {
       auto_compact_trigger_percent: Math.floor(pct),
       max_tool_rounds: mtr,
-      memory_enabled: draft.memory_enabled,
-      mcp_tools_enabled: draft.mcp_tools_enabled,
+      memory_enabled: next.memory_enabled,
+      mcp_tools_enabled: next.mcp_tools_enabled,
     };
-    const ok = await saveGeneralConfig(payload);
-    setSaving(false);
-    if (!ok) {
-      setError(t("general.errSave"));
-      return;
-    }
-    const next: GeneralConfig = {
-      auto_compact_trigger_percent: payload.auto_compact_trigger_percent!,
-      max_tool_rounds: payload.max_tool_rounds!,
-      memory_enabled: payload.memory_enabled!,
-      mcp_tools_enabled: payload.mcp_tools_enabled!,
-    };
-    setLoaded(next);
-    setDraft(next);
-    setMaxRoundsText(next.max_tool_rounds == null ? "" : String(next.max_tool_rounds));
+    void saveGeneralConfig(payload).then((ok) => {
+      if (!ok) setError(t("general.errSave"));
+    });
   };
 
-  // External save trigger from the SettingsView leave-confirmation dialog.
-  useEffect(() => {
-    if (saveSignal !== undefined && saveSignal !== lastSaveSignal.current) {
-      lastSaveSignal.current = saveSignal;
-      if (dirty) {
-        void handleSave();
-      }
+  /** Debounced text-input save: holds back the network call for ~280ms after
+   *  the last keystroke so typing in the percent / max-rounds inputs doesn't
+   *  fire one request per character. */
+  const persistDebounced = (next: GeneralConfig, mtrText: string) => {
+    if (debounceRef.current !== null) {
+      window.clearTimeout(debounceRef.current);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [saveSignal]);
+    debounceRef.current = window.setTimeout(() => {
+      debounceRef.current = null;
+      persist(next, mtrText);
+    }, 280);
+  };
+
+  useEffect(() => {
+    return () => {
+      if (debounceRef.current !== null) {
+        window.clearTimeout(debounceRef.current);
+        debounceRef.current = null;
+      }
+    };
+  }, []);
 
   if (!draft) {
     return (
@@ -134,12 +119,14 @@ export function GeneralSettings({ onDirtyChange, saveSignal }: GeneralSettingsPr
               min={0}
               max={100}
               value={draft.auto_compact_trigger_percent}
-              onChange={(e) =>
-                setDraft({
+              onChange={(e) => {
+                const next = {
                   ...draft,
                   auto_compact_trigger_percent: Number(e.target.value) || 0,
-                })
-              }
+                };
+                setDraft(next);
+                persistDebounced(next, maxRoundsText);
+              }}
             />
             <span className="setting-unit">%</span>
           </div>
@@ -158,7 +145,10 @@ export function GeneralSettings({ onDirtyChange, saveSignal }: GeneralSettingsPr
               min={0}
               placeholder={t("general.maxToolRoundsUnlimited")}
               value={maxRoundsText}
-              onChange={(e) => setMaxRoundsText(e.target.value)}
+              onChange={(e) => {
+                setMaxRoundsText(e.target.value);
+                persistDebounced(draft, e.target.value);
+              }}
             />
           </div>
           <p className="setting-hint">{t("general.maxToolRoundsHint")}</p>
@@ -173,7 +163,12 @@ export function GeneralSettings({ onDirtyChange, saveSignal }: GeneralSettingsPr
               id="general-memory"
               type="checkbox"
               checked={draft.memory_enabled}
-              onChange={(e) => setDraft({ ...draft, memory_enabled: e.target.checked })}
+              onChange={(e) => {
+                const next = { ...draft, memory_enabled: e.target.checked };
+                setDraft(next);
+                // Checkbox toggles are discrete: save without debouncing.
+                persist(next, maxRoundsText);
+              }}
             />
           </div>
           <p className="setting-hint">{t("general.memoryEnabledHint")}</p>
@@ -188,7 +183,11 @@ export function GeneralSettings({ onDirtyChange, saveSignal }: GeneralSettingsPr
               id="general-mcp"
               type="checkbox"
               checked={draft.mcp_tools_enabled}
-              onChange={(e) => setDraft({ ...draft, mcp_tools_enabled: e.target.checked })}
+              onChange={(e) => {
+                const next = { ...draft, mcp_tools_enabled: e.target.checked };
+                setDraft(next);
+                persist(next, maxRoundsText);
+              }}
             />
           </div>
           <p className="setting-hint">{t("general.mcpToolsEnabledHint")}</p>
@@ -196,16 +195,6 @@ export function GeneralSettings({ onDirtyChange, saveSignal }: GeneralSettingsPr
       </div>
 
       {error && <p className="setting-error">{error}</p>}
-
-      <div className="settings-action-row">
-        <button
-          className="btn btn-primary"
-          disabled={!dirty || saving}
-          onClick={() => void handleSave()}
-        >
-          {saving ? t("models.saving") : t("models.save")}
-        </button>
-      </div>
     </div>
   );
 }
