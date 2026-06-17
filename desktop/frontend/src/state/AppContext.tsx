@@ -194,6 +194,24 @@ export function AppProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     activeChatIdRef.current = activeChatId;
   }, [activeChatId]);
+
+  // Auto-open the plan panel when the active chat has a plan and either
+  // (a) the plan just went from empty to non-empty (new plan), or
+  // (b) we switched to a chat that already has a saved plan.
+  const planAutoOpenRef = useRef<{ chatId: string; planLen: number }>({
+    chatId: "",
+    planLen: 0,
+  });
+  const activePlanLen = state?.plan?.plan?.length ?? 0;
+  useEffect(() => {
+    const prev = planAutoOpenRef.current;
+    const chatChanged = prev.chatId !== activeChatId;
+    const grewFromEmpty = !chatChanged && prev.planLen === 0 && activePlanLen > 0;
+    if (activePlanLen > 0 && (chatChanged || grewFromEmpty)) {
+      setPlanOpen(true);
+    }
+    planAutoOpenRef.current = { chatId: activeChatId, planLen: activePlanLen };
+  }, [activeChatId, activePlanLen]);
   useEffect(() => {
     activeWorkspaceIdRef.current = state?.workspace.id ?? "";
   }, [state?.workspace.id]);
@@ -357,6 +375,27 @@ export function AppProvider({ children }: { children: ReactNode }) {
         const rounds = [...turn.rounds];
         let round = rounds[rounds.length - 1];
         if (!round) {
+          round = {
+            id: nextIdRef.current++,
+            waitStartedAt: Date.now(),
+            waitEndedAt: null,
+            segments: [],
+          };
+          rounds.push(round);
+        } else if (
+          kind === "answer" &&
+          round.segments.some((s) => s.kind === "step") &&
+          !round.segments.some((s) => s.kind === "answer")
+        ) {
+          // The model finished its tool calls for this round and is now
+          // replying. Freeze the tool group's timer and open a fresh round so
+          // the answer (and the live "Working" timer that follows for the next
+          // tool call) sits BELOW the tools, in natural order — instead of the
+          // tool group's running timer hovering above the just-streamed reply.
+          rounds[rounds.length - 1] = {
+            ...round,
+            waitEndedAt: round.waitEndedAt ?? Date.now(),
+          };
           round = {
             id: nextIdRef.current++,
             waitStartedAt: Date.now(),
