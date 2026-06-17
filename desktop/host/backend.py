@@ -64,6 +64,12 @@ class BackendProcess:
             raise BackendError(f"Backend entry script not found: {main_py}")
         return [sys.executable, str(main_py), "serve", "--port", "0"], str(repo_root)
 
+    # Keep the last few non-handshake output lines so a startup failure can
+    # be reported back to the user with the backend's own diagnostics (e.g.
+    # "model provider unsupported", a config parse error, a traceback) rather
+    # than the opaque "exited before handshake" message.
+    _MAX_CAPTURED_LINES = 40
+
     def start(self, timeout: float = 45.0) -> Tuple[int, str]:
         command, cwd = self._resolve()
         creationflags = 0
@@ -81,18 +87,42 @@ class BackendProcess:
         )
 
         assert self.proc.stdout is not None
+        captured: List[str] = []
+
+        def _remember(text_line: str) -> None:
+            line_str = text_line.rstrip("\r\n")
+            if not line_str:
+                return
+            captured.append(line_str)
+            if len(captured) > self._MAX_CAPTURED_LINES:
+                del captured[0 : len(captured) - self._MAX_CAPTURED_LINES]
+
         deadline = time.time() + timeout
         while time.time() < deadline:
             line = self.proc.stdout.readline()
             if not line:
                 if self.proc.poll() is not None:
-                    raise BackendError("Backend exited before sending a handshake.")
+                    # Drain whatever remains so the user sees the real cause.
+                    try:
+                        for tail in self.proc.stdout:
+                            _remember(tail)
+                    except Exception:
+                        pass
+                    raise BackendError(
+                        self._format_exit_error(
+                            "Backend exited before sending a handshake.",
+                            captured,
+                        )
+                    )
                 continue
             stripped = line.strip()
             try:
                 data = json.loads(stripped)
             except Exception:
-                # Non-JSON startup lines (e.g. environment warnings) are ignored.
+                # Non-JSON startup lines (e.g. environment warnings, config
+                # errors, tracebacks) are not the handshake — keep them for
+                # diagnostics in case the process exits without handshaking.
+                _remember(line)
                 continue
             if isinstance(data, dict) and "port" in data and "token" in data:
                 self.port = int(data["port"])
@@ -101,10 +131,33 @@ class BackendProcess:
 
         if not self.token or not self.port:
             self.stop()
-            raise BackendError("Timed out waiting for the backend handshake.")
+            raise BackendError(
+                self._format_exit_error(
+                    "Timed out waiting for the backend handshake.",
+                    captured,
+                )
+            )
 
         threading.Thread(target=self._drain_stdout, daemon=True).start()
         return self.port, self.token
+
+    @staticmethod
+    def _format_exit_error(headline: str, captured: List[str]) -> str:
+        """Combine a headline with the backend's captured output (if any).
+
+        Strips ANSI color sequences so the error window stays readable, and
+        bounds the appended detail to the last handful of lines.
+        """
+        if not captured:
+            return headline
+        import re
+
+        ansi = re.compile(r"\x1b\[[0-9;]*m")
+        tail = [ansi.sub("", ln) for ln in captured[-12:]]
+        detail = "\n".join(ln for ln in tail if ln.strip())
+        if not detail:
+            return headline
+        return f"{headline}\n\nBackend output:\n{detail}"
 
     def _drain_stdout(self) -> None:
         if self.proc is None or self.proc.stdout is None:
