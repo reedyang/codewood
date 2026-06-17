@@ -144,6 +144,52 @@ export class ApiClient {
     return res.ok;
   }
 
+  /** Read the raw (unresolved) model_providers list for editing. */
+  async getModelsConfig(): Promise<unknown[]> {
+    const res = await fetch(`${this.base}/models-config`, {
+      method: "POST",
+      headers: this.headers(),
+      body: "{}",
+    });
+    if (!res.ok) {
+      return [];
+    }
+    try {
+      const data = (await res.json()) as { providers?: unknown[] };
+      return Array.isArray(data.providers) ? data.providers : [];
+    } catch {
+      return [];
+    }
+  }
+
+  /** Persist a new model_providers list; takes effect immediately. */
+  async saveModelsConfig(providers: unknown[]): Promise<boolean> {
+    const res = await fetch(`${this.base}/save-models-config`, {
+      method: "POST",
+      headers: this.headers(),
+      body: JSON.stringify({ providers }),
+    });
+    return res.ok;
+  }
+
+  /** Fetch a provider's advertised model list from its /models endpoint. */
+  async fetchProviderModels(params: {
+    base_url: string;
+    api_key?: string;
+    api_mode?: string;
+  }): Promise<{ ok: boolean; models?: string[]; error?: string }> {
+    const res = await fetch(`${this.base}/fetch-models`, {
+      method: "POST",
+      headers: this.headers(),
+      body: JSON.stringify(params),
+    });
+    try {
+      return (await res.json()) as { ok: boolean; models?: string[]; error?: string };
+    } catch {
+      return { ok: false, error: "Bad response" };
+    }
+  }
+
   /** Silently create and activate a new chat; returns its id (or ""). */
   async newChat(): Promise<string> {
     const res = await fetch(`${this.base}/new-chat`, {

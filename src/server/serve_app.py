@@ -1071,6 +1071,134 @@ class ServeApp:
             return False
         return True
 
+    def get_models_config(self) -> List[Dict[str, Any]]:
+        """Return the raw (unresolved) ``model_providers`` list for editing."""
+        agent = self.agent
+        try:
+            from ..core.config.config_jsonc import (
+                CONFIG_JSONC_FILENAME,
+                load_config_jsonc,
+            )
+
+            cfg_path = agent.config_dir / CONFIG_JSONC_FILENAME
+            if not cfg_path.exists():
+                return []
+            cfg = load_config_jsonc(cfg_path) or {}
+            providers = cfg.get("model_providers")
+            return providers if isinstance(providers, list) else []
+        except Exception:
+            return []
+
+    def save_models_config(self, providers: List[Dict[str, Any]]) -> bool:
+        """Persist a new ``model_providers`` list and apply it immediately.
+
+        The raw list is written verbatim (env placeholders like ``${X}`` are
+        preserved). The agent's resolved-config cache is cleared so the next
+        catalog read reflects the change without an app restart.
+        """
+        if not isinstance(providers, list):
+            return False
+        agent = self.agent
+        try:
+            from ..core.config.config_jsonc import (
+                CONFIG_JSONC_FILENAME,
+                load_config_jsonc,
+                save_config_jsonc,
+            )
+
+            cfg_path = agent.config_dir / CONFIG_JSONC_FILENAME
+            cfg_data: Dict[str, Any] = {}
+            if cfg_path.exists():
+                try:
+                    cfg_data = load_config_jsonc(cfg_path) or {}
+                except Exception:
+                    cfg_data = {}
+            cfg_data["model_providers"] = providers
+            save_config_jsonc(cfg_path, cfg_data)
+            # Drop the resolved-config cache so the catalog re-reads from disk.
+            try:
+                agent._resolved_config_data = {}
+            except Exception:
+                pass
+        except Exception:
+            return False
+        # Refresh GUI clients with the new available-model list.
+        try:
+            self.broadcaster.publish({"event": "idle", "data": {"state": self.state()}})
+        except Exception:
+            pass
+        return True
+
+    def fetch_provider_models(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """Fetch the model list from an OpenAI-compatible provider.
+
+        Expects ``{base_url, api_key, api_mode}`` (api_key may be a ``${ENV}``
+        placeholder, which is resolved before the call). Returns
+        ``{ok, models:[name,...]}`` or ``{ok:false, error}``.
+        """
+        from ..core.config.config_env import resolve_string_values_in_data
+
+        base_url = str(params.get("base_url") or "").strip()
+        api_key_raw = str(params.get("api_key") or "").strip()
+        if not base_url:
+            return {"ok": False, "error": "base_url is required"}
+        try:
+            resolved = resolve_string_values_in_data({"api_key": api_key_raw})
+            api_key = str((resolved or {}).get("api_key") or "").strip()
+        except Exception:
+            api_key = api_key_raw
+        try:
+            from ..ai.ai_provider_clients import fetch_openai_compatible_models
+
+            models = fetch_openai_compatible_models(base_url=base_url, api_key=api_key)
+            return {"ok": True, "models": models}
+        except Exception as e:  # noqa: BLE001 - surface a clean message to UI
+            return {"ok": False, "error": str(e)[:300]}
+
+    def _auto_refresh_models_on_startup(self) -> None:
+        """For providers with ``auto_refresh: true``, refetch and enable all
+        models on launch, then persist if anything changed.
+
+        Failures (offline, bad key) are ignored so startup is never blocked.
+        """
+        providers = self.get_models_config()
+        if not isinstance(providers, list) or not providers:
+            return
+        changed = False
+        for entry in providers:
+            if not isinstance(entry, dict):
+                continue
+            params = entry.get("params")
+            if not isinstance(params, dict) or not params.get("auto_refresh"):
+                continue
+            result = self.fetch_provider_models(
+                {
+                    "base_url": params.get("base_url"),
+                    "api_key": params.get("api_key"),
+                    "api_mode": params.get("api_mode"),
+                }
+            )
+            if not result.get("ok"):
+                continue
+            fetched = result.get("models") or []
+            if not isinstance(fetched, list) or not fetched:
+                continue
+            # Select all supported models, preserving any per-model overrides
+            # already present in config (context_window/multimodal/headers).
+            existing = {}
+            for m in params.get("models") or []:
+                if isinstance(m, dict) and m.get("name"):
+                    existing[str(m.get("name"))] = m
+                elif isinstance(m, str) and m:
+                    existing[m] = {"name": m}
+            new_models = []
+            for name in fetched:
+                new_models.append(existing.get(str(name), {"name": str(name)}))
+            params["models"] = new_models
+            changed = True
+        if changed:
+            self.save_models_config(providers)
+
     def new_chat(self) -> Optional[str]:
         """Silently create and activate a new chat; return its id.
 
@@ -1249,6 +1377,13 @@ class ServeApp:
                 json.dumps({"port": actual_port, "token": self._token}) + "\n"
             )
             real_stdout.flush()
+        except Exception:
+            pass
+
+        # Auto-refresh model lists for providers that opted in, before the agent
+        # loop starts, so newly published models are selectable immediately.
+        try:
+            self._auto_refresh_models_on_startup()
         except Exception:
             pass
 
@@ -1526,6 +1661,20 @@ def _make_handler(app: ServeApp):
                 prefs = body.get("prefs")
                 ok = app.set_ui_prefs(prefs if isinstance(prefs, dict) else {})
                 self._send_json(200 if ok else 400, {"ok": ok})
+                return
+            if path == "/models-config":
+                self._send_json(200, {"ok": True, "providers": app.get_models_config()})
+                return
+            if path == "/save-models-config":
+                providers = body.get("providers")
+                ok = app.save_models_config(providers if isinstance(providers, list) else [])
+                self._send_json(200 if ok else 400, {"ok": ok})
+                return
+            if path == "/fetch-models":
+                result = app.fetch_provider_models(body if isinstance(body, dict) else {})
+                self._send_json(
+                    200 if result.get("ok") else 400, result
+                )
                 return
             if path == "/shutdown":
                 self._send_json(200, {"ok": True})

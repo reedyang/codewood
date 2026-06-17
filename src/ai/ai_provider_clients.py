@@ -1299,6 +1299,68 @@ def _truncate_error_body(raw: str, limit: int = 1200) -> str:
     return text[:limit] + "...(truncated)"
 
 
+def fetch_openai_compatible_models(*, base_url: str, api_key: str = "") -> List[str]:
+    """Return the model ids advertised by an OpenAI-compatible ``/models`` API.
+
+    Raises on transport/HTTP errors so the caller can surface a message. The
+    base URL is normalized to end at ``/v1`` style roots; both ``{base}/models``
+    and ``{base}/v1/models`` are attempted.
+    """
+    import requests
+
+    root = str(base_url or "").strip().rstrip("/")
+    if not root:
+        raise ValueError("base_url is required")
+    headers = {"Accept": "application/json"}
+    key = str(api_key or "").strip()
+    if key:
+        headers["Authorization"] = f"Bearer {key}"
+
+    candidates = [f"{root}/models"]
+    if not root.endswith("/v1"):
+        candidates.append(f"{root}/v1/models")
+
+    last_error: Optional[Exception] = None
+    for url in candidates:
+        try:
+            resp = requests.get(url, headers=headers, verify=False, timeout=30)
+            resp.raise_for_status()
+            data = resp.json()
+        except Exception as e:  # noqa: BLE001 - try next candidate
+            last_error = e
+            continue
+        return _extract_model_ids(data)
+    if last_error is not None:
+        raise last_error
+    return []
+
+
+def _extract_model_ids(data: Any) -> List[str]:
+    """Pull model ids from an OpenAI ``/models`` style response."""
+    items: Any = None
+    if isinstance(data, dict):
+        items = data.get("data") if isinstance(data.get("data"), list) else None
+        if items is None and isinstance(data.get("models"), list):
+            items = data.get("models")
+    elif isinstance(data, list):
+        items = data
+    if not isinstance(items, list):
+        return []
+    out: List[str] = []
+    seen = set()
+    for item in items:
+        name = ""
+        if isinstance(item, str):
+            name = item.strip()
+        elif isinstance(item, dict):
+            name = str(item.get("id") or item.get("name") or "").strip()
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        out.append(name)
+    return out
+
+
 def _post_openai_request(
     *,
     url: str,
