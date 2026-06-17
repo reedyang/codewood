@@ -15,6 +15,15 @@ from .localization import DEFAULT_DISPLAY_LANGUAGE, normalize_display_language, 
 GUI_CMD_OUTPUT_BEGIN = "\ue000"
 GUI_CMD_OUTPUT_END = "\ue001"
 
+# Private-use sentinels wrapping the command feedback prompt line (the
+# "• Ran <command>" / "• You ran <command>" line) in GUI mode. The desktop GUI
+# renders the wrapped text with a hanging indent so the bullet keeps its own
+# column and continuation lines stay left-aligned under the command text,
+# instead of relying on the TUI's hard-wrapped "  │ " continuation prefix.
+# Keep in sync with the frontend (desktop/frontend/src/components/Steps.tsx).
+GUI_CMD_PROMPT_BEGIN = "\ue004"
+GUI_CMD_PROMPT_END = "\ue005"
+
 # Private-use sentinel prepended to composer input by the desktop GUI to force
 # the runtime loop to treat the line as a model prompt, never as a built-in
 # slash command or "!" direct-shell execution. The GUI does not allow users to

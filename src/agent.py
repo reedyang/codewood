@@ -68,6 +68,8 @@ from .policy.path_policy import PathPolicy
 from .core.console_utils import (
     GUI_CMD_OUTPUT_BEGIN,
     GUI_CMD_OUTPUT_END,
+    GUI_CMD_PROMPT_BEGIN,
+    GUI_CMD_PROMPT_END,
     _WorkingStatusTicker,
     _ansi_blue,
     _ansi_gray,
@@ -2473,6 +2475,14 @@ class Agent:
     def _format_wrapped_command_feedback_line(self, lead_prefix: str, command_text: str) -> str:
         lead = str(lead_prefix or "")
         cmd = str(command_text or "").replace("\r", " ").replace("\n", " ").strip()
+        if bool(getattr(self, "_gui_no_wrap", False)):
+            # GUI soft-wraps in the browser. Emit the bullet + command on one
+            # logical line wrapped in prompt sentinels so the frontend can give
+            # the bullet its own column and keep wrapped command text
+            # left-aligned (hanging indent) instead of hard-wrapping with the
+            # TUI's "  │ " continuation prefix.
+            highlighted = highlight_assistant_display_line(cmd)
+            return f"{GUI_CMD_PROMPT_BEGIN}{lead}{highlighted}{GUI_CMD_PROMPT_END}"
         cols = max(8, int(self._terminal_columns_for_command_feedback() or 80))
         cont_prefix = _ansi_gray("  │ ")
         first_line_width = max(1, cols - self._feedback_text_display_width(lead))

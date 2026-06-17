@@ -1380,6 +1380,33 @@ body.resizing-x {
   padding-left: 2ch;
 }
 
+/* "• Ran <command>" prompt: bullet keeps its own column; the command text
+   wraps naturally and stays left-aligned under itself (hanging indent). */
+.activity-steps .cmd-prompt {
+  display: flex;
+  align-items: flex-start;
+}
+
+.activity-steps .cmd-prompt + .cmd-prompt,
+.activity-steps .step-text + .cmd-prompt,
+.activity-steps .cmd-prompt + .step-text,
+.activity-steps .cmd-prompt + .cmd-output,
+.activity-steps .cmd-output + .cmd-prompt {
+  margin-top: 4px;
+}
+
+.activity-steps .cmd-prompt-bullet {
+  flex: 0 0 auto;
+  margin-right: 0.6ch;
+}
+
+.activity-steps .cmd-prompt-body {
+  flex: 1 1 auto;
+  min-width: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 .answer {
   font-family: inherit;
   font-size: 14px;
