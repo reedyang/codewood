@@ -38,6 +38,13 @@ def _clean_frozen_env() -> dict:
     for key in list(env):
         if key.startswith("_PYI") or key.startswith("_MEI"):
             env.pop(key, None)
+    # Force the child's stdio to UTF-8 from the very first byte. ``main()``
+    # also reconfigures the streams, but interpreter-level output (faulthandler,
+    # warnings, an early import error) can fire before that runs; setting the
+    # env var covers those too. Harmless for a frozen child that has no
+    # separate Python interpreter env to honor it.
+    env["PYTHONIOENCODING"] = "utf-8"
+    env["PYTHONUTF8"] = "1"
     return env
 
 
@@ -81,6 +88,14 @@ class BackendProcess:
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
+            # The backend forces its stdout to UTF-8 (see ``_force_utf8_std_streams``
+            # in main.py) so it can emit Unicode banners on any locale. Decode
+            # with the matching codec here — otherwise on a non-UTF-8 system
+            # locale (e.g. GBK on Chinese Windows) the parent would mis-decode
+            # the handshake/diagnostics. ``errors="replace"`` keeps a stray byte
+            # from ever raising while reading.
+            encoding="utf-8",
+            errors="replace",
             bufsize=1,
             creationflags=creationflags,
             env=_clean_frozen_env(),
