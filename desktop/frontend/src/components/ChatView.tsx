@@ -437,25 +437,29 @@ export function ChatView() {
 
 /** One model round laid out in natural order: the tool group first (its wait
  *  timer + collapsible tool output), then the model's natural-language reply.
- *  `running` marks a live, in-flight round so the timer animates and its tools
- *  default to expanded. The timer is shown only when the round has a tool group
- *  (or is still running); a pure-answer round renders just its text. */
+ *  `running` marks a live, in-flight round so the timer animates. `autoExpand`
+ *  keeps the tool output open while the turn is still streaming — it stays open
+ *  across the brief round_end→round_start gap between back-to-back tool calls,
+ *  so the tools don't collapse-then-reopen. It only auto-collapses once the
+ *  whole turn settles. The timer shows only for a tool group (or while live). */
 function RoundShell({
   timerText,
   running,
+  autoExpand,
   toolText,
   textNode,
 }: {
   timerText: string;
   running: boolean;
+  autoExpand: boolean;
   toolText: string;
   textNode: ReactNode;
 }) {
   const hasTools = toolText.trim().length > 0;
-  const [expanded, setExpanded] = useState(running);
+  const [expanded, setExpanded] = useState(autoExpand);
   useEffect(() => {
-    setExpanded(running);
-  }, [running]);
+    setExpanded(autoExpand);
+  }, [autoExpand]);
 
   const showTimer = hasTools || running;
   return (
@@ -487,6 +491,7 @@ function HistoryRoundView({ round }: { round: HistoryRound }) {
     <RoundShell
       timerText={timerText}
       running={false}
+      autoExpand={false}
       toolText={round.tools}
       textNode={
         round.text.trim().length > 0 ? (
@@ -552,7 +557,15 @@ function Dropdown({
   );
 }
 
-function LiveRoundView({ round, now }: { round: TurnRound; now: number }) {
+function LiveRoundView({
+  round,
+  now,
+  turnActive,
+}: {
+  round: TurnRound;
+  now: number;
+  turnActive: boolean;
+}) {
   const { t } = useApp();
   const running = round.waitEndedAt === null;
   const elapsedMs = (round.waitEndedAt ?? now) - round.waitStartedAt;
@@ -572,6 +585,10 @@ function LiveRoundView({ round, now }: { round: TurnRound; now: number }) {
     <RoundShell
       timerText={timerText}
       running={running}
+      // Keep tools expanded while the turn is still streaming so back-to-back
+      // tool calls (round_end then round_start on the same merged group) don't
+      // collapse and immediately re-open. Collapse only once the turn settles.
+      autoExpand={turnActive}
       toolText={toolText}
       textNode={
         answer.trim().length > 0 ? (
@@ -606,7 +623,12 @@ function TurnView({
         />
       )}
       {turn.rounds.map((round) => (
-        <LiveRoundView key={round.id} round={round} now={now} />
+        <LiveRoundView
+          key={round.id}
+          round={round}
+          now={now}
+          turnActive={turn.endedAt === null}
+        />
       ))}
     </div>
   );
