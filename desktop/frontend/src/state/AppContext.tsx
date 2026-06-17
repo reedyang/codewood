@@ -625,6 +625,17 @@ export function AppProvider({ children }: { children: ReactNode }) {
           }
           break;
         }
+        case "state": {
+          // State-only refresh fired mid-turn (e.g. when the agent calls
+          // ``update_plan``). Update the snapshot so the plan panel can
+          // re-render but DO NOT close the active turn or clear the busy
+          // flag — the model is still streaming its reply.
+          const next = data.state;
+          if (next) {
+            setState(next);
+          }
+          break;
+        }
         case "turn_start": {
           startTurn(String(data.text ?? ""), chatId);
           setBusyForChat(chatId, true);

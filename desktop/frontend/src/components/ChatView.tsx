@@ -11,6 +11,7 @@ import {
   encodeHiddenInstruction,
   parseMessageToSegments,
   stripHiddenControl,
+  stripPlanModePrefix,
 } from "../utils/tokens";
 import type { Segment } from "../utils/tokens";
 import { RichComposer } from "./RichComposer";
@@ -107,7 +108,12 @@ function UserEntry({
   const time = formatMessageTime(timeMs);
   const canAct = index < 0;
   const { paths: attachedPaths, body } = decodeAttachments(text);
-  const visibleBody = stripHiddenControl(body);
+  // Backend prepends a Plan-mode directive to outgoing user messages while
+  // ``_plan_mode_sticky`` is on; it lives in chat history so the model sees
+  // the same instruction context on reload, but the GUI should never show
+  // it as if the user typed it. ``stripHiddenControl`` then unwraps the
+  // CONTROL envelope used by the GUI's own "Execute now" nudge.
+  const visibleBody = stripHiddenControl(stripPlanModePrefix(body));
   // A message that consists ONLY of a CONTROL envelope (e.g. the GUI's
   // "Execute now" nudge) becomes invisible in the chat transcript — we
   // don't render an empty bubble for it, since the user never typed it.
@@ -630,14 +636,32 @@ export function ChatView() {
             handlers={messageHandlers}
           />
         ))}
-        {chatMode === "plan" &&
-          !busy &&
-          turns.length > 0 &&
-          // Don't surface the Execute now button while the planning turn
-          // is still streaming — the plan isn't finalized until the last
-          // round closes, and showing the button mid-stream invites the
-          // user to advance before the model has even finished writing.
-          turns[turns.length - 1].endedAt !== null && (
+        {(() => {
+          // The Execute-now button represents "carry out the plan we just
+          // drafted". Gate it on the actual plan rather than the composer's
+          // mode so:
+          //   * Switching the composer to Agent mode after seeing the plan
+          //     does NOT make the button vanish — the plan is still the
+          //     latest thing the model produced and the user might still
+          //     want to advance it.
+          //   * Chats with no plan (or a fully-completed plan) never see
+          //     the button, even in Plan mode.
+          // We also wait until the streaming turn has fully closed so the
+          // button doesn't appear before the rendered plan content lands.
+          if (busy || turns.length === 0) {
+            return null;
+          }
+          if (turns[turns.length - 1].endedAt === null) {
+            return null;
+          }
+          const planSteps = state?.plan?.plan ?? [];
+          const hasUnfinished = planSteps.some(
+            (s) => s.status !== "completed",
+          );
+          if (!hasUnfinished) {
+            return null;
+          }
+          return (
             <div className="plan-execute-row">
               <button
                 type="button"
@@ -649,7 +673,8 @@ export function ChatView() {
               </button>
               <span className="plan-execute-hint">{t("composer.executeNowHint")}</span>
             </div>
-          )}
+          );
+        })()}
       </div>
       <div className="composer-dock">{composer}</div>
     </div>

@@ -153,6 +153,35 @@ export function stripHiddenControl(text: string): string {
   );
 }
 
+/** Known Plan-mode prefixes the backend prepends to outgoing user messages
+ *  when ``_plan_mode_sticky`` is on. We strip them from the GUI's displayed
+ *  user bubble so reload doesn't show the planning directive as if the user
+ *  had typed it — while still leaving the prefix in chat history so the
+ *  model sees the same instruction context it had during the original turn.
+ *
+ *  The list mirrors ``builtin.plan_mode_prefix`` in every locale we ship
+ *  under ``src/config/locales``; the lookup is exact-prefix only so a
+ *  user who genuinely types one of these sentences first will (deliberately)
+ *  see it stripped. The cost of that edge case is very low compared to the
+ *  benefit of never surfacing the directive as a user message. */
+const PLAN_MODE_PREFIXES: readonly string[] = [
+  "Plan mode: please outline the proposed approach as a step-by-step plan first. Do not run write or execute tools yet; ask for confirmation before making changes.",
+  "Plan 模式：请先以分步骤计划的形式给出建议方案。在我确认前不要调用写入或执行类工具。",
+];
+
+export function stripPlanModePrefix(text: string): string {
+  let s = String(text ?? "");
+  for (const prefix of PLAN_MODE_PREFIXES) {
+    if (s.startsWith(prefix)) {
+      // Drop the prefix and any whitespace separator the backend inserted
+      // between the directive and the original user input.
+      s = s.slice(prefix.length).replace(/^\s+/, "");
+      break;
+    }
+  }
+  return s;
+}
+
 export function composeMessageText(segments: readonly Segment[]): string {
   const attachPaths: string[] = [];
   const bodyParts: string[] = [];
