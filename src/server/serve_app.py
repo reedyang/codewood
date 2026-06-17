@@ -1610,6 +1610,22 @@ class ServeApp:
             pass
         return True
 
+    def set_plan_mode(self, enabled: bool) -> bool:
+        """Toggle the agent's sticky plan mode.
+
+        The GUI uses this to keep the user's message bubble free of any
+        injected planning instruction: instead of prefixing the outgoing
+        message text, the GUI flips this flag and lets ``runtime_loop``
+        prepend the localized instruction inside the agent boundary. The
+        flag is shared with the TUI's ``/plan`` command — flipping it from
+        the GUI is equivalent to a TUI ``/plan on`` for the same process.
+        """
+        try:
+            self.agent._plan_mode_sticky = bool(enabled)
+        except Exception:
+            return False
+        return True
+
     def get_mcp_server_config(self, name: str) -> Dict[str, Any]:
         """Return the raw mcp.jsonc entry for a single server (or ``{}``)."""
         srv = str(name or "").strip()
@@ -2507,6 +2523,10 @@ def _make_handler(app: ServeApp):
             if path == "/mcp-server-config":
                 srv = str(body.get("name") or "")[:256]
                 self._send_json(200, {"ok": True, "config": app.get_mcp_server_config(srv)})
+                return
+            if path == "/set-plan-mode":
+                ok = app.set_plan_mode(bool(body.get("enabled")))
+                self._send_json(200 if ok else 400, {"ok": ok})
                 return
             if path == "/set-mcp-server-enabled":
                 srv = str(body.get("name") or "")[:256]

@@ -1751,6 +1751,26 @@ body.resizing-x {
   background: #b03737;
 }
 
+.plan-execute-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 12px 0 20px 0;
+  padding: 12px 14px;
+  border: 1px dashed color-mix(in srgb, var(--accent) 50%, var(--border));
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--accent) 8%, var(--bg-elevated));
+}
+.plan-execute-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.plan-execute-hint {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
 .mcp-server-body {
   padding: 4px 14px 14px;
   border-top: 1px solid var(--border);

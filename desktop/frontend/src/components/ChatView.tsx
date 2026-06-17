@@ -268,6 +268,7 @@ export function ChatView() {
     pickFiles,
     forkChat,
     editChat,
+    setPlanMode,
     draftMode,
     draftWorkspaceId,
     setDraftWorkspace,
@@ -305,6 +306,17 @@ export function ChatView() {
   };
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const prevHeightRef = useRef<number | null>(null);
+
+  // Sync the agent's sticky plan-mode flag with the active chat's mode so
+  // that switching back into a chat that was last left in Plan mode keeps
+  // the runtime injection in step with the visible "Plan" badge. We
+  // intentionally don't persist the per-chat mode across restarts — the
+  // sticky flag itself is process-scoped — so a fresh launch starts every
+  // chat in Agent mode.
+  useEffect(() => {
+    void setPlanMode(chatMode === "plan");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [draftKey, chatMode]);
 
   // Derived view of just the attachment paths for callers that still want a
   // flat list (the empty-state workspace selector, the send-button enabling
@@ -376,20 +388,26 @@ export function ChatView() {
     // go into the legacy ATTACH header (so the agent + chat history layer can
     // still pick them off the front of the message); everything else flows
     // into the body, with skill / MCP tokens flattened to readable inline
-    // markers the LLM can reason about naturally.
-    let workingSegments = segments;
-    if (chatMode === "plan") {
-      const planHeader = t("composer.planInstruction");
-      if (planHeader) {
-        workingSegments = [
-          { kind: "text", value: `${planHeader}\n\n` },
-          ...segments,
-        ];
-      }
-    }
-    const message = composeMessageText(workingSegments);
+    // markers the LLM can reason about naturally. The planning instruction
+    // is NOT prefixed to the visible message: instead we toggle the agent's
+    // sticky plan-mode flag so the runtime loop injects the instruction on
+    // the agent side. That keeps the user's bubble showing only what they
+    // actually typed.
+    await setPlanMode(chatMode === "plan");
+    const message = composeMessageText(segments);
     setSegments([]);
     await sendInput(message);
+  };
+
+  // Continue a plan-mode turn by clicking "Execute now". We disable plan
+  // mode for the follow-up so the agent moves from planning to execution,
+  // and we send a short prompt asking it to carry out the plan. The exact
+  // wording is localized and intentionally short — the model already has
+  // the plan in context.
+  const continueFromPlan = async () => {
+    await setPlanMode(false);
+    setChatMode("agent");
+    await sendInput(t("composer.executePlanPrompt"));
   };
 
   const addFiles = async () => {
@@ -461,7 +479,13 @@ export function ChatView() {
           <ComposerPlusMenu
             onAttach={() => void addFiles()}
             mode={chatMode}
-            onChangeMode={(m) => setChatMode(m)}
+            onChangeMode={(m) => {
+              setChatMode(m);
+              // Keep the backend's sticky flag aligned with the GUI's
+              // per-chat mode so the runtime loop sees the right value
+              // even before the user hits Send.
+              void setPlanMode(m === "plan");
+            }}
           />
           {chatMode === "plan" && (
             <span className="mode-badge mode-badge-plan" title={t("composer.modePlanHint")}>
@@ -587,6 +611,19 @@ export function ChatView() {
             handlers={messageHandlers}
           />
         ))}
+        {chatMode === "plan" && !busy && turns.length > 0 && (
+          <div className="plan-execute-row">
+            <button
+              type="button"
+              className="btn btn-primary plan-execute-btn"
+              onClick={() => void continueFromPlan()}
+            >
+              <Icon name="send" size={13} />
+              <span>{t("composer.executeNow")}</span>
+            </button>
+            <span className="plan-execute-hint">{t("composer.executeNowHint")}</span>
+          </div>
+        )}
       </div>
       <div className="composer-dock">{composer}</div>
     </div>

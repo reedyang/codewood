@@ -119,6 +119,7 @@ interface AppContextValue {
     config: McpServerConfigEntry,
   ) => Promise<{ ok: boolean; error?: string }>;
   deleteMcpServer: (name: string) => Promise<{ ok: boolean; error?: string }>;
+  setPlanMode: (enabled: boolean) => Promise<boolean>;
   setExecutionPolicy: (policy: string) => Promise<void>;
   toggleWorkspaceExpanded: (id: string) => void;
   refreshWorkspaceChats: (id: string) => Promise<void>;
@@ -1187,6 +1188,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       config: McpServerConfigEntry,
     ) => client.updateMcpServer(originalName, name, config),
     deleteMcpServer: (name: string) => client.deleteMcpServer(name),
+    setPlanMode: (enabled: boolean) => client.setPlanMode(enabled),
     setExecutionPolicy,
     toggleWorkspaceExpanded,
     refreshWorkspaceChats,
