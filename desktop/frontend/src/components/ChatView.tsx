@@ -220,7 +220,15 @@ export function ChatView() {
     if (!text && attachments.length === 0) {
       return;
     }
-    const message = [...attachments, text].filter(Boolean).join("\n");
+    // Attach files by reference (path), not by inlining content. This mirrors
+    // Codex's approach: the agent reads each file with its tools and decides how
+    // much to load, which avoids blowing the context window on large files.
+    let message = text;
+    if (attachments.length > 0) {
+      const list = attachments.map((p) => `- ${p}`).join("\n");
+      const block = `${t("attach.contextHeader")}\n${list}`;
+      message = text ? `${block}\n\n${text}` : block;
+    }
     setDraft("");
     setAttachments([]);
     await sendInput(message);
