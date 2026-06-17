@@ -513,10 +513,7 @@ export function ChatView() {
           />
         ))}
       </div>
-      <div className="composer-dock">
-        {composer}
-        <WorkspaceSelector />
-      </div>
+      <div className="composer-dock">{composer}</div>
     </div>
   );
 }
