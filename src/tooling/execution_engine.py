@@ -36,23 +36,10 @@ def execute_tool_call_legacy(agent: Any, tool_name: str, arguments: Dict[str, An
         delegated = handler(self, action, params)
         if delegated is not None:
             return delegated
-    if action == "ask_more_info":
-        question = str(params.get("question") or "").strip()
-        if not question:
-            question = "Please provide the additional information needed to finish the task."
-        expected = params.get("expected_fields")
-        if not isinstance(expected, list):
-            expected = []
-        expected_fields = [str(x).strip() for x in expected if str(x).strip()]
-        return {
-            "success": True,
-            "needs_user_input": True,
-            "input_type": "supplement",
-            "question": question,
-            "expected_fields": expected_fields,
-            "retryable": False,
-            "message": "Requested additional information from the user",
-        }
+    # ``ask_more_info`` is dispatched by ``dispatch_core_tool`` above and
+    # always returns a result (success or a retryable error), so we do
+    # not need a fallback branch here. Leaving the legacy branch in
+    # place would risk a stale schema sneaking back in.
     if action == "shell":
         shell_cmd = params.get("command")
         if shell_cmd:

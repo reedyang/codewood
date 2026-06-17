@@ -5,6 +5,7 @@ import { Icon } from "./Icon";
 import { MarkdownText } from "./Markdown";
 import { StepsView } from "./Steps";
 import { ChatTitleBar } from "./ChatTitleBar";
+import { AskMoreInfoPanel } from "./AskMoreInfoPanel";
 import { decodeAttachments } from "../utils/attachments";
 import {
   composeMessageText,
@@ -636,6 +637,7 @@ export function ChatView() {
             handlers={messageHandlers}
           />
         ))}
+        <AskMoreInfoPanel />
         {(() => {
           // The Execute-now button represents "carry out the plan we just
           // drafted". Gate it on the actual plan rather than the composer's

@@ -11,6 +11,7 @@ import {
 import { ApiClient } from "../api/client";
 import type {
   AppState,
+  AskMoreInfoRequest,
   CompletionCatalog,
   ConfirmRequest,
   GeneralConfig,
@@ -50,6 +51,8 @@ interface AppContextValue {
   connected: boolean;
   now: number;
   confirmRequest: ConfirmRequest | null;
+  /** Pending ``ask_more_info`` clarification surfaced for the active chat. */
+  askMoreInfo: AskMoreInfoRequest | null;
   theme: Theme;
   lang: Lang;
   uiPrefs: UiPrefs;
@@ -66,6 +69,8 @@ interface AppContextValue {
   runCommand: (command: string) => Promise<void>;
   interrupt: () => Promise<void>;
   answerConfirm: (answer: string) => Promise<void>;
+  /** Resolve the active ``ask_more_info`` prompt with the user's answer. */
+  answerAskMoreInfo: (answer: string) => Promise<void>;
   clearTurns: (chatId?: string) => void;
   switchToChat: (chatId: string, workspaceId?: string) => Promise<void>;
   selectWorkspace: (workspaceId: string) => Promise<void>;
@@ -192,6 +197,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [connected, setConnected] = useState(false);
   const [now, setNow] = useState(() => Date.now());
   const [confirmRequest, setConfirmRequest] = useState<ConfirmRequest | null>(null);
+  // Keyed per chat so a clarifying prompt fired in one chat stays visible
+  // there even if the user temporarily switches away; the panel for the
+  // active chat is derived in the value below.
+  const [askMoreInfoByChat, setAskMoreInfoByChat] = useState<
+    Record<string, AskMoreInfoRequest>
+  >({});
   const [theme, setThemeState] = useState<Theme>(loadInitialTheme);
   const [uiPrefs, setUiPrefs] = useState<UiPrefs>(loadInitialUiPrefs);
   const [workspaceChats, setWorkspaceChats] = useState<
@@ -661,6 +672,21 @@ export function AppProvider({ children }: { children: ReactNode }) {
           setConfirmRequest(event.data as ConfirmRequest);
           break;
         }
+        case "ask_more_info": {
+          // Bucket per chat so switching chats while one is pending
+          // doesn't drop the panel; the value selector below picks the
+          // entry for the currently active chat.
+          const req = event.data as AskMoreInfoRequest;
+          const ownerChat = String(req.chatId || chatId || "");
+          if (!ownerChat) {
+            break;
+          }
+          setAskMoreInfoByChat((prev) => ({
+            ...prev,
+            [ownerChat]: { ...req, chatId: ownerChat },
+          }));
+          break;
+        }
         default:
           break;
       }
@@ -735,6 +761,36 @@ export function AppProvider({ children }: { children: ReactNode }) {
       }
     },
     [client, confirmRequest],
+  );
+
+  const answerAskMoreInfo = useCallback(
+    async (answer: string) => {
+      // Snapshot the active chat's pending request, dismiss the panel
+      // optimistically, then forward the answer to the backend. We dismiss
+      // first so a slow network round-trip doesn't leave a "live" panel
+      // that the user could double-click.
+      const chatKey = activeChatId;
+      const current = chatKey ? askMoreInfoByChat[chatKey] : undefined;
+      if (!current) {
+        return;
+      }
+      setAskMoreInfoByChat((prev) => {
+        if (!prev[chatKey]) {
+          return prev;
+        }
+        const next = { ...prev };
+        delete next[chatKey];
+        return next;
+      });
+      try {
+        await client.answerAskMoreInfo(current.id, answer);
+      } catch {
+        // Network errors are swallowed; the backend will eventually
+        // drain the queue on shutdown (delivering an empty answer that
+        // pauses the task) and the user can re-issue the request.
+      }
+    },
+    [askMoreInfoByChat, client, activeChatId],
   );
 
   const clearLiveTurns = useCallback((chatId: string) => {
@@ -1143,6 +1199,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     connected,
     now,
     confirmRequest,
+    askMoreInfo: activeChatId ? (askMoreInfoByChat[activeChatId] ?? null) : null,
     theme,
     lang,
     uiPrefs,
@@ -1159,6 +1216,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     runCommand,
     interrupt,
     answerConfirm,
+    answerAskMoreInfo,
     clearTurns,
     switchToChat,
     selectWorkspace,

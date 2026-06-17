@@ -1475,6 +1475,118 @@ def _format_worked_for_summary_line(elapsed_seconds: int, terminal_width: int, l
     return head + ("─" * (width - head_width))
 
 
+def _solicit_ask_more_info_answer(
+    agent: Any,
+    question: str,
+    options: List[str],
+) -> Tuple[str, bool]:
+    """Collect the user's answer to an ``ask_more_info`` clarifying question.
+
+    Returns ``(supplement_text, handoff_to_main_loop)``. An empty
+    ``supplement_text`` means the user cancelled — the caller pauses the
+    task. ``handoff_to_main_loop`` becomes ``True`` when the user typed a
+    leading ``/`` or ``!`` (TUI only); the input is re-queued so the next
+    main-loop iteration handles it just like any normal turn.
+
+    The host can install ``agent._ask_more_info_provider`` to fully replace
+    the TUI prompt (used by the GUI to surface clickable option buttons via
+    SSE). When that hook is set we delegate the entire elicitation to it
+    and consider its return value the user's freeform answer; any leading
+    ``/`` / ``!`` returned by the host still triggers a main-loop handoff
+    so behaviour matches the TUI path.
+    """
+    from ..core.localization import translate as _translate
+
+    lang = getattr(agent, "display_language", None) or "en"
+    t = lambda key, fallback=None, **kwargs: _translate(key, lang, fallback, **kwargs)
+
+    provider = getattr(agent, "_ask_more_info_provider", None)
+    if callable(provider):
+        try:
+            raw = provider(question, list(options))
+        except KeyboardInterrupt:
+            try:
+                print(t("runtime.ask_more_info.supplement_cancelled"))
+            except Exception:
+                pass
+            return ("", False)
+        except Exception:
+            return ("", False)
+        answer = str(raw or "").strip()
+        if not answer:
+            return ("", False)
+        if answer.startswith("/") or answer.startswith("!"):
+            agent._queued_user_input = answer
+            return (answer, True)
+        return (answer, False)
+
+    # TUI fallback: render numbered options + a final "Other" slot, then
+    # read one line. Digits 1..N select an option; N+1 (or "o") asks for a
+    # freeform answer on the next prompt; anything else is taken as the
+    # freeform answer directly.
+    try:
+        print(t("runtime.ask_more_info.required"))
+        print(t("runtime.ask_more_info.question", question=question))
+    except Exception:
+        pass
+
+    visible_options = list(options)
+    other_label = t("runtime.ask_more_info.option_other")
+    try:
+        for idx, label in enumerate(visible_options, start=1):
+            print(f"  {idx}. {label}")
+        print(f"  {len(visible_options) + 1}. {other_label}")
+    except Exception:
+        pass
+
+    supplement_text = ""
+    while True:
+        try:
+            raw_input_line = agent._get_user_input_with_history().strip()
+        except KeyboardInterrupt:
+            try:
+                print(t("runtime.ask_more_info.supplement_cancelled"))
+            except Exception:
+                pass
+            return ("", False)
+        if not raw_input_line:
+            try:
+                print(t("runtime.ask_more_info.no_supplement"))
+            except Exception:
+                pass
+            return ("", False)
+        if raw_input_line.startswith("/") or raw_input_line.startswith("!"):
+            agent._queued_user_input = raw_input_line
+            return (raw_input_line, True)
+        # Numeric selection.
+        if raw_input_line.isdigit():
+            try:
+                pick = int(raw_input_line)
+            except ValueError:
+                pick = -1
+            if 1 <= pick <= len(visible_options):
+                supplement_text = visible_options[pick - 1]
+                break
+            if pick == len(visible_options) + 1:
+                # User explicitly chose "Other"; loop once more to read
+                # their freeform reply.
+                try:
+                    print(t("runtime.ask_more_info.other_prompt"))
+                except Exception:
+                    pass
+                continue
+            # Out-of-range digit: nudge and re-ask without aborting.
+            try:
+                print(t("runtime.ask_more_info.invalid_choice"))
+            except Exception:
+                pass
+            continue
+        # Treat anything else as the freeform supplement.
+        supplement_text = raw_input_line
+        break
+    return (supplement_text, False)
+
+
 def _print_worked_for_summary_line(agent: Any, elapsed_seconds: int) -> None:
     printer = getattr(agent, "_print_task_worked_summary_line", None)
     if callable(printer):
@@ -3287,27 +3399,15 @@ def run_agent_loop(agent: Any):
                         q = str(result.get("question") or "").strip() or t(
                             "runtime.ask_more_info.default_question"
                         )
-                        print(t("runtime.ask_more_info.required"))
-                        print(t("runtime.ask_more_info.question", question=q))
-                        supplement_text = ""
-                        handoff_to_main_loop = False
-                        while True:
-                            try:
-                                supplement_text = self._get_user_input_with_history().strip()
-                            except KeyboardInterrupt:
-                                print(t("runtime.ask_more_info.supplement_cancelled"))
-                                supplement_text = ""
-                                break
-                            if not supplement_text:
-                                print(t("runtime.ask_more_info.no_supplement"))
-                                break
-                            if supplement_text.startswith("/") or supplement_text.startswith("!"):
-                                # Route prefixed input back to the main loop so it shares
-                                # the exact same parsing/execution path as a normal turn.
-                                self._queued_user_input = supplement_text
-                                handoff_to_main_loop = True
-                                break
-                            break
+                        raw_options = result.get("options")
+                        options_list = (
+                            [str(o) for o in raw_options if str(o or "").strip()]
+                            if isinstance(raw_options, list)
+                            else []
+                        )
+                        supplement_text, handoff_to_main_loop = _solicit_ask_more_info_answer(
+                            self, q, options_list
+                        )
                         if handoff_to_main_loop:
                             _refresh_context_usage_after_task_boundary(
                                 self,

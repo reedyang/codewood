@@ -775,6 +775,11 @@ class ServeApp:
         self.broadcaster = _Broadcaster()
         self._confirms: Dict[str, "queue.Queue[str]"] = {}
         self._confirms_lock = threading.Lock()
+        # Pending ``ask_more_info`` prompts: id -> reply queue. The agent
+        # blocks on a per-prompt queue until the frontend POSTs the chosen
+        # option (or freeform answer) to ``/answer-ask-more-info``.
+        self._ask_more_info: Dict[str, "queue.Queue[str]"] = {}
+        self._ask_more_info_lock = threading.Lock()
         self._shutdown_event = threading.Event()
         self._token = secrets.token_urlsafe(32)
         self._httpd: Optional[ThreadingHTTPServer] = None
@@ -910,6 +915,49 @@ class ServeApp:
                 self._confirms.pop(cid, None)
         return str(answer or "")
 
+    def _ask_more_info_provider(self, question: str, options: List[str]) -> str:
+        """Replacement for the TUI ``ask_more_info`` prompt.
+
+        Broadcasts an ``ask_more_info`` SSE event carrying the question, the
+        model-supplied options, and a per-prompt id, then blocks until the
+        frontend POSTs the user's chosen answer back via
+        ``/answer-ask-more-info``. The returned string is the answer the
+        agent should treat as the user's supplement; it is NOT broadcast as
+        a normal user message so the chat transcript stays clean.
+
+        An empty answer means the user dismissed/cancelled the prompt — the
+        runtime loop interprets that as "no selection received" and pauses
+        the task, matching the TUI behaviour.
+        """
+        pid = secrets.token_hex(8)
+        reply: "queue.Queue[str]" = queue.Queue()
+        with self._ask_more_info_lock:
+            self._ask_more_info[pid] = reply
+        # Sanitize once at the boundary so the frontend never sees ANSI
+        # escapes or untrusted control codes from the model. ``strip_ansi``
+        # also collapses lone CRs; the option labels are model output but
+        # bounded to 120 chars by the tool handler.
+        safe_options: List[str] = []
+        for raw in options or []:
+            label = strip_ansi(str(raw or ""))[:120]
+            if label:
+                safe_options.append(label)
+        self.broadcaster.publish(
+            "ask_more_info",
+            {
+                "id": pid,
+                "question": strip_ansi(str(question or "")),
+                "options": safe_options,
+                "chatId": self._active_chat_id(),
+            },
+        )
+        try:
+            answer = reply.get()
+        finally:
+            with self._ask_more_info_lock:
+                self._ask_more_info.pop(pid, None)
+        return str(answer or "")
+
     # ----- API surface used by the HTTP handler ---------------------------
     @property
     def token(self) -> str:
@@ -951,6 +999,21 @@ class ServeApp:
     def answer_confirm(self, cid: str, answer: str) -> bool:
         with self._confirms_lock:
             reply = self._confirms.get(str(cid or ""))
+        if reply is None:
+            return False
+        reply.put(str(answer or ""))
+        return True
+
+    def answer_ask_more_info(self, pid: str, answer: str) -> bool:
+        """Resolve a pending ``ask_more_info`` prompt with the user's answer.
+
+        Returns ``False`` when no such pending prompt exists (e.g. the
+        request was cancelled, already answered, or the chat was reset
+        between rendering and answering); the frontend treats that as a
+        no-op and just dismisses the panel.
+        """
+        with self._ask_more_info_lock:
+            reply = self._ask_more_info.get(str(pid or ""))
         if reply is None:
             return False
         reply.put(str(answer or ""))
@@ -2218,6 +2281,16 @@ class ServeApp:
                 reply.put_nowait("n")
             except Exception:
                 pass
+        # Same for any unresolved ``ask_more_info`` prompts; pushing an
+        # empty answer makes the runtime treat it as "no selection" and
+        # pause the task cleanly instead of hanging the loop thread.
+        with self._ask_more_info_lock:
+            pending_ami = list(self._ask_more_info.values())
+        for reply in pending_ami:
+            try:
+                reply.put_nowait("")
+            except Exception:
+                pass
         if self._httpd is not None:
             threading.Thread(target=self._httpd.shutdown, daemon=True).start()
 
@@ -2247,6 +2320,9 @@ class ServeApp:
         # Install agent loop hooks before swapping stdout so output is captured.
         self.agent._get_user_input_with_history = self._input_provider  # type: ignore[assignment]
         self.agent._suspended_input = self._confirm_provider  # type: ignore[assignment]
+        # The runtime loop calls this for ``ask_more_info`` so the GUI can
+        # render clickable option chips instead of a raw text prompt.
+        self.agent._ask_more_info_provider = self._ask_more_info_provider  # type: ignore[assignment]
 
         bridge = _OutputBridge(self.broadcaster, chat_id_getter=self._active_chat_id)
         self._bridge = bridge
@@ -2490,6 +2566,16 @@ def _make_handler(app: ServeApp):
                 cid = str(body.get("id") or "")
                 answer = str(body.get("answer") or "")[:_MAX_CONFIRM_ANSWER_CHARS]
                 ok = app.answer_confirm(cid, answer)
+                self._send_json(200 if ok else 404, {"ok": ok})
+                return
+            if path == "/answer-ask-more-info":
+                pid = str(body.get("id") or "")[:64]
+                # Allow the "Other" freeform reply to carry a short
+                # sentence (4 KB) but still bound it so a malicious
+                # caller can't pile unbounded payloads onto the loop's
+                # reply queue.
+                answer = str(body.get("answer") or "")[:4096]
+                ok = app.answer_ask_more_info(pid, answer)
                 self._send_json(200 if ok else 404, {"ok": ok})
                 return
             if path == "/interrupt":

@@ -120,6 +120,16 @@ export interface ConfirmRequest {
   prompt: string;
 }
 
+/** Pending ``ask_more_info`` prompt surfaced by the backend.
+ *  ``options`` is the model-supplied option list; the GUI always appends
+ *  an additional "Other" choice that lets the user type a freeform answer. */
+export interface AskMoreInfoRequest {
+  id: string;
+  question: string;
+  options: string[];
+  chatId: string;
+}
+
 export type ServerEvent =
   | { event: "idle"; data: { state: AppState } }
   | { event: "turn_start"; data: { text: string } }
@@ -128,6 +138,7 @@ export type ServerEvent =
   | { event: "output"; data: { text: string } }
   | { event: "assistant"; data: { text: string } }
   | { event: "confirm"; data: ConfirmRequest }
+  | { event: "ask_more_info"; data: AskMoreInfoRequest }
   | { event: string; data: Record<string, unknown> };
 
 /** A streamed segment within a round: model text ("answer") or tool output ("step"). */

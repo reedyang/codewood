@@ -235,6 +235,12 @@ const en: Dict = {
   "confirm.answerPlaceholder": "Type a response…",
   "confirm.submit": "Submit",
 
+  "askMoreInfo.regionLabel": "Pick how to proceed",
+  "askMoreInfo.other": "Other (type your own answer)",
+  "askMoreInfo.otherPlaceholder": "Type your answer and press Enter…",
+  "askMoreInfo.submit": "Send",
+  "askMoreInfo.cancel": "Cancel",
+
   "common.cancel": "Cancel",
   "common.ok": "OK",
   "common.connecting": "Connecting to backend…",
@@ -470,6 +476,12 @@ const zhCN: Dict = {
   "confirm.always": "总是",
   "confirm.answerPlaceholder": "输入回复……",
   "confirm.submit": "提交",
+
+  "askMoreInfo.regionLabel": "请选择如何继续",
+  "askMoreInfo.other": "其它（自行输入）",
+  "askMoreInfo.otherPlaceholder": "输入你的回答并按回车…",
+  "askMoreInfo.submit": "发送",
+  "askMoreInfo.cancel": "取消",
 
   "common.cancel": "取消",
   "common.ok": "确定",
