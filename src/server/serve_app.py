@@ -2267,9 +2267,14 @@ class ServeApp:
             "round_end", {"chatId": self._active_chat_id()}
         )
         # When the model updates its plan mid-turn, push a fresh state snapshot
-        # so the GUI's plan panel reflects it immediately (not only at idle).
+        # so the GUI's plan panel reflects it immediately. We use the dedicated
+        # ``state`` event (not ``idle``) because the loop is still actively
+        # running — emitting ``idle`` here would falsely flip the GUI's busy
+        # flag and freeze the current turn's "Working…" timer, which made the
+        # Plan-mode "Execute now" button appear before the model had finished
+        # streaming its plan reply.
         self.agent._gui_plan_changed = lambda: self.broadcaster.publish(  # type: ignore[attr-defined]
-            "idle", {"state": _build_state(self.agent), "chatId": self._active_chat_id()}
+            "state", {"state": _build_state(self.agent), "chatId": self._active_chat_id()}
         )
         # The GUI renders its own layout, so disable terminal hard-wrapping and
         # force SGR color emission (stdout is not a TTY here). The bridge keeps
