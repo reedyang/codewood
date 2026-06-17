@@ -11,6 +11,7 @@ import {
 import { ApiClient } from "../api/client";
 import type {
   AppState,
+  CompletionCatalog,
   ConfirmRequest,
   GeneralConfig,
   HistoryTurn,
@@ -105,6 +106,7 @@ interface AppContextValue {
     tool: string,
     enabled: boolean,
   ) => Promise<boolean>;
+  getCompletionCatalog: () => Promise<CompletionCatalog>;
   setExecutionPolicy: (policy: string) => Promise<void>;
   toggleWorkspaceExpanded: (id: string) => void;
   refreshWorkspaceChats: (id: string) => Promise<void>;
@@ -1163,6 +1165,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       client.setMcpServerEnabled(name, enabled),
     setMcpToolEnabled: (server: string, tool: string, enabled: boolean) =>
       client.setMcpToolEnabled(server, tool, enabled),
+    getCompletionCatalog: () => client.getCompletionCatalog(),
     setExecutionPolicy,
     toggleWorkspaceExpanded,
     refreshWorkspaceChats,

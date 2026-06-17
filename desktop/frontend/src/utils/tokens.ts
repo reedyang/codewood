@@ -127,3 +127,68 @@ export function extractAttachments(text: string): string[] {
 
 export const TOKEN_OPEN = OPEN;
 export const TOKEN_CLOSE = CLOSE;
+
+/** Compose the over-the-wire message string for a list of composer segments.
+ *
+ *  Attachment tokens are emitted as the legacy ATTACH header (one wrapped
+ *  line per file path, followed by a blank line) so the existing backend
+ *  consumer in ``serve_app`` continues to recognize and surface them. All
+ *  other token kinds become readable inline markers (``[skill: foo]``,
+ *  ``[mcp tool: srv/name]``, ``[mcp prompt: srv/name]``) so the LLM sees a
+ *  sensible representation of what the user pinned. */
+export function composeMessageText(segments: readonly Segment[]): string {
+  const attachPaths: string[] = [];
+  const bodyParts: string[] = [];
+  for (const seg of segments) {
+    if (seg.kind === "attach") {
+      const v = sanitizePayload(seg.value);
+      if (v) attachPaths.push(v);
+    } else if (seg.kind === "text") {
+      bodyParts.push(sanitizePlainText(seg.value));
+    } else if (seg.kind === "skill") {
+      bodyParts.push(`[skill: ${sanitizePayload(seg.value)}]`);
+    } else if (seg.kind === "mcp-tool") {
+      const [srv, name] = seg.value.split("::");
+      bodyParts.push(`[mcp tool: ${sanitizePayload(srv)}/${sanitizePayload(name ?? "")}]`);
+    } else if (seg.kind === "mcp-prompt") {
+      const [srv, name] = seg.value.split("::");
+      bodyParts.push(`[mcp prompt: ${sanitizePayload(srv)}/${sanitizePayload(name ?? "")}]`);
+    }
+  }
+  const body = bodyParts.join("");
+  if (attachPaths.length === 0) {
+    return body;
+  }
+  const head = attachPaths.map((p) => `${OPEN}ATTACH:${p}${CLOSE}`).join("\n");
+  return body ? `${head}\n\n${body}` : head;
+}
+
+/** Inverse of ``composeMessageText`` for use in the edit flow: re-parse a
+ *  message string back into composer segments. Attachments are picked off
+ *  the header (matching the legacy parser in ``attachments.ts``) and the
+ *  remaining body is exposed as a single text segment. Inline pills for
+ *  skills / MCP tools / prompts are intentionally NOT re-tokenized — they
+ *  were emitted as readable plain text, so re-editing surfaces them as
+ *  text that the user can keep, rephrase, or delete naturally. */
+export function parseMessageToSegments(text: string): Segment[] {
+  const src = String(text ?? "");
+  const out: Segment[] = [];
+  const TOKEN_LINE = new RegExp(
+    `^${OPEN}ATTACH:([^${OPEN}${CLOSE}\\r\\n]+)${CLOSE}[ \\t]*(?:\\r?\\n|$)`,
+  );
+  let rest = src;
+  while (true) {
+    const m = TOKEN_LINE.exec(rest);
+    if (!m) break;
+    out.push({ kind: "attach", value: m[1] });
+    rest = rest.slice(m[0].length);
+  }
+  if (out.length > 0) {
+    const sep = /^\r?\n/.exec(rest);
+    if (sep) rest = rest.slice(sep[0].length);
+  }
+  if (rest) {
+    out.push({ kind: "text", value: rest });
+  }
+  return out;
+}

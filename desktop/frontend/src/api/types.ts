@@ -53,6 +53,13 @@ export interface McpServerDetails {
   disabledTools: string[];
 }
 
+/** Catalog used by the composer's slash popup. */
+export interface CompletionCatalog {
+  skills: { name: string; description: string }[];
+  mcpTools: { server: string; name: string; description: string }[];
+  mcpPrompts: { server: string; name: string; description: string }[];
+}
+
 export interface AppState {
   app: { name: string; version: string };
   workspace: { name: string; id: string; root: string; workDirectory: string };

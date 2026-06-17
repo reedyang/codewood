@@ -1307,6 +1307,89 @@ class ServeApp:
             pass
         return True
 
+    def get_completion_catalog(self) -> Dict[str, Any]:
+        """Return suggestion sources used by the composer's slash popup.
+
+        Includes:
+          - ``skills``: list of {name, description}. Sourced from the loaded
+            skill records on the agent (already merged across builtin/global/
+            workspace skill roots and respecting language).
+          - ``mcpTools``: list of {server, name, description} for every
+            enabled MCP server with a cached catalog. Disabled tools (via
+            ``disabled_tools`` policy) are filtered out so the user can't
+            invoke them by typing ``/``.
+          - ``mcpPrompts``: list of {server, name, description} sourced the
+            same way.
+
+        The endpoint is intentionally cheap (cache-only, no live MCP I/O) so
+        it can be polled on every slash keypress without throttling.
+        """
+        agent = self.agent
+        out_skills: List[Dict[str, str]] = []
+        try:
+            for record in getattr(agent, "skills", []) or []:
+                name = str(getattr(record, "name", "") or "")
+                desc = str(getattr(record, "description", "") or "")
+                if name:
+                    out_skills.append({"name": name, "description": desc})
+        except Exception:
+            out_skills = []
+        out_tools: List[Dict[str, str]] = []
+        out_prompts: List[Dict[str, str]] = []
+        try:
+            mgr = getattr(agent, "mcp_manager", None)
+            if mgr is not None:
+                cfg = getattr(mgr, "mcp_config", {}) or {}
+                servers_cfg = cfg.get("mcpServers") if isinstance(cfg, dict) else {}
+                if isinstance(servers_cfg, dict):
+                    for srv, conf in servers_cfg.items():
+                        if not isinstance(conf, dict):
+                            continue
+                        if bool(conf.get("skip_preload", False)):
+                            continue
+                        try:
+                            tools, _ = mgr.list_tools(str(srv), use_cache=True)
+                        except Exception:
+                            tools = []
+                        try:
+                            prompts, _ = mgr.list_prompts(str(srv), use_cache=True)
+                        except Exception:
+                            prompts = []
+                        for t in tools or []:
+                            if not isinstance(t, dict):
+                                continue
+                            tn = str(t.get("name") or "")
+                            if not tn:
+                                continue
+                            out_tools.append(
+                                {
+                                    "server": str(srv),
+                                    "name": tn,
+                                    "description": str(t.get("description") or ""),
+                                }
+                            )
+                        for p in prompts or []:
+                            if not isinstance(p, dict):
+                                continue
+                            pn = str(p.get("name") or "")
+                            if not pn:
+                                continue
+                            out_prompts.append(
+                                {
+                                    "server": str(srv),
+                                    "name": pn,
+                                    "description": str(p.get("description") or ""),
+                                }
+                            )
+        except Exception:
+            out_tools = out_tools or []
+            out_prompts = out_prompts or []
+        return {
+            "skills": out_skills,
+            "mcpTools": out_tools,
+            "mcpPrompts": out_prompts,
+        }
+
     # MCP settings: per-server enable/disable + per-tool toggle.
     # ----------------------------------------------------------------------
     # The GUI's MCP page reads ``mcp.jsonc`` (server list) and the live
@@ -2159,6 +2242,9 @@ def _make_handler(app: ServeApp):
                 return
             if path == "/mcp-overview":
                 self._send_json(200, {"ok": True, **app.get_mcp_overview()})
+                return
+            if path == "/completion-catalog":
+                self._send_json(200, {"ok": True, **app.get_completion_catalog()})
                 return
             if path == "/mcp-server-details":
                 srv = str(body.get("name") or "")[:256]
