@@ -4,6 +4,7 @@ import { SUPPORTED_LANGS } from "../i18n";
 import { Icon, type IconName } from "./Icon";
 import { ModelsSettings } from "./ModelsSettings";
 import { GeneralSettings } from "./GeneralSettings";
+import { McpSettings } from "./McpSettings";
 
 const THEME_OPTIONS: { value: Theme; icon: IconName }[] = [
   { value: "light", icon: "sun" },
@@ -15,7 +16,7 @@ const NAV_MIN = 160;
 const NAV_MAX = 360;
 const NAV_WIDTH_KEY = "codewood.settingsNavWidth";
 
-type PageId = "appearance" | "general" | "models";
+type PageId = "appearance" | "general" | "models" | "mcp";
 
 function loadNavWidth(): number {
   const raw = Number(window.localStorage.getItem(NAV_WIDTH_KEY));
@@ -143,6 +144,7 @@ export function SettingsView() {
     { id: "general", label: t("settings.page.general"), icon: "gear" },
     { id: "appearance", label: t("settings.page.appearance"), icon: "sun" },
     { id: "models", label: t("settings.page.models"), icon: "cube" },
+    { id: "mcp", label: t("settings.page.mcp"), icon: "plus" },
   ];
 
   return (
@@ -218,6 +220,7 @@ export function SettingsView() {
         {page === "models" && (
           <ModelsSettings onDirtyChange={handleModelsDirtyChange} saveSignal={saveSignal} />
         )}
+        {page === "mcp" && <McpSettings />}
       </section>
 
       {pendingLeave !== null && (

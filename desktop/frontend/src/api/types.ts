@@ -33,6 +33,26 @@ export interface GeneralConfig {
   mcp_tools_enabled: boolean;
 }
 
+/** Per-server summary on the MCP settings page. */
+export interface McpServerSummary {
+  name: string;
+  enabled: boolean;
+  transport: string;
+  state: string;
+  lastError: string;
+  toolsCount: number;
+  promptsCount: number;
+  disabledTools: string[];
+}
+
+/** Lazy-loaded tool/prompt catalog for a single MCP server. */
+export interface McpServerDetails {
+  ok: boolean;
+  tools: { name: string; description: string }[];
+  prompts: { name: string; description: string }[];
+  disabledTools: string[];
+}
+
 export interface AppState {
   app: { name: string; version: string };
   workspace: { name: string; id: string; root: string; workDirectory: string };

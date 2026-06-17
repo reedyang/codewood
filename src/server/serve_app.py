@@ -1307,6 +1307,218 @@ class ServeApp:
             pass
         return True
 
+    # MCP settings: per-server enable/disable + per-tool toggle.
+    # ----------------------------------------------------------------------
+    # The GUI's MCP page reads ``mcp.jsonc`` (server list) and the live
+    # mcp_manager (status + tool/prompt catalog + per-tool policy), exposes a
+    # consolidated view, and applies changes back to both. Per-server enable
+    # state maps to the ``skip_preload`` flag — ``true`` skips startup preload
+    # and reconnection, ``false`` makes the server eligible. Per-tool toggles
+    # use the manager's existing ``disable_tools/enable_tools`` policy.
+
+    def _mcp_load_jsonc(self) -> Dict[str, Any]:
+        try:
+            from ..core.config.config_jsonc import load_config_jsonc
+
+            path = self.agent.config_dir / "mcp.jsonc"
+            if not path.is_file():
+                return {"mcpServers": {}}
+            data = load_config_jsonc(path) or {}
+            if not isinstance(data, dict):
+                return {"mcpServers": {}}
+            servers = data.get("mcpServers")
+            if not isinstance(servers, dict):
+                data["mcpServers"] = {}
+            return data
+        except Exception:
+            return {"mcpServers": {}}
+
+    def _mcp_save_jsonc(self, data: Dict[str, Any]) -> bool:
+        try:
+            from ..core.config.config_jsonc import save_config_jsonc
+
+            path = self.agent.config_dir / "mcp.jsonc"
+            save_config_jsonc(path, data)
+            return True
+        except Exception:
+            return False
+
+    def get_mcp_overview(self) -> Dict[str, Any]:
+        """Return a snapshot of every configured MCP server for the GUI page.
+
+        Each entry combines: configured (``skip_preload`` flipped to ``enabled``),
+        live status (state/source/tool counts) from ``mcp_manager.get_status``,
+        and the per-server disabled-tool list. Tools and prompts themselves are
+        intentionally NOT fetched here to keep the page snappy — the frontend
+        requests them lazily when the user expands a server.
+        """
+        agent = self.agent
+        cfg = self._mcp_load_jsonc()
+        servers_cfg = cfg.get("mcpServers")
+        if not isinstance(servers_cfg, dict):
+            servers_cfg = {}
+        statuses: Dict[str, Any] = {}
+        disabled_by_server: Dict[str, List[str]] = {}
+        try:
+            mgr = getattr(agent, "mcp_manager", None)
+            if mgr is not None:
+                snap = mgr.get_status() or {}
+                items = snap.get("items") if isinstance(snap, dict) else None
+                if isinstance(items, dict):
+                    statuses = items
+                try:
+                    disabled_by_server = {
+                        str(k): list(v) for k, v in (mgr.list_disabled_tools() or {}).items()
+                    }
+                except Exception:
+                    disabled_by_server = {}
+        except Exception:
+            statuses = {}
+            disabled_by_server = {}
+
+        out: List[Dict[str, Any]] = []
+        for name, conf in servers_cfg.items():
+            if not isinstance(conf, dict):
+                conf = {}
+            enabled = not bool(conf.get("skip_preload", False))
+            status = statuses.get(name) if isinstance(statuses, dict) else None
+            status_dict = status if isinstance(status, dict) else {}
+            transport = ""
+            if "url" in conf:
+                transport = "http"
+            elif "command" in conf:
+                transport = "stdio"
+            out.append(
+                {
+                    "name": str(name),
+                    "enabled": enabled,
+                    "transport": transport,
+                    "state": str(status_dict.get("state") or ""),
+                    "lastError": str(status_dict.get("last_error") or ""),
+                    "toolsCount": int(status_dict.get("tools_count") or 0),
+                    "promptsCount": int(status_dict.get("prompts_count") or 0),
+                    "disabledTools": disabled_by_server.get(str(name), []),
+                }
+            )
+        return {"servers": out}
+
+    def get_mcp_server_details(self, name: str) -> Dict[str, Any]:
+        """Fetch the tool/prompt catalog for a single server (cache-first)."""
+        srv = str(name or "").strip()
+        if not srv:
+            return {"ok": False, "tools": [], "prompts": []}
+        agent = self.agent
+        mgr = getattr(agent, "mcp_manager", None)
+        if mgr is None:
+            return {"ok": False, "tools": [], "prompts": []}
+        tools: List[Dict[str, Any]] = []
+        prompts: List[Dict[str, Any]] = []
+        try:
+            t, _ = mgr.list_tools(srv, use_cache=True)
+            tools = list(t) if isinstance(t, list) else []
+        except Exception:
+            tools = []
+        try:
+            p, _ = mgr.list_prompts(srv, use_cache=True)
+            prompts = list(p) if isinstance(p, list) else []
+        except Exception:
+            prompts = []
+        disabled_names: List[str] = []
+        try:
+            mapping = mgr.list_disabled_tools(srv) or {}
+            disabled_names = list(mapping.get(srv, []))
+        except Exception:
+            disabled_names = []
+        # Trim each tool/prompt to the fields the GUI actually renders to
+        # keep payloads small (some MCP catalogs are very chatty).
+        def _slim(item: Dict[str, Any]) -> Dict[str, Any]:
+            if not isinstance(item, dict):
+                return {}
+            return {
+                "name": str(item.get("name") or ""),
+                "description": str(item.get("description") or ""),
+            }
+
+        return {
+            "ok": True,
+            "tools": [_slim(x) for x in tools],
+            "prompts": [_slim(x) for x in prompts],
+            "disabledTools": sorted({str(x) for x in disabled_names if str(x)}),
+        }
+
+    def set_mcp_server_enabled(self, name: str, enabled: bool) -> bool:
+        """Toggle a server's ``skip_preload`` flag and apply the change live.
+
+        When enabling we attempt an immediate reconnect so the GUI can show
+        live status without waiting for the next manual refresh; when
+        disabling we just flip the flag (existing sessions are left to time
+        out naturally rather than ripped down here).
+        """
+        srv = str(name or "").strip()
+        if not srv:
+            return False
+        try:
+            cfg = self._mcp_load_jsonc()
+            servers = cfg.get("mcpServers")
+            if not isinstance(servers, dict) or srv not in servers:
+                return False
+            entry = servers.get(srv)
+            if not isinstance(entry, dict):
+                entry = {}
+            entry = dict(entry)
+            entry["skip_preload"] = not bool(enabled)
+            servers[srv] = entry
+            cfg["mcpServers"] = servers
+            if not self._mcp_save_jsonc(cfg):
+                return False
+        except Exception:
+            return False
+        # Apply to the live agent: refresh in-memory config + reconnect on
+        # enable so the user sees status update right away.
+        try:
+            agent = self.agent
+            agent.mcp_config = cfg
+            agent._mcp_config_struct_sig = agent._calc_mcp_config_sig(cfg)
+            mgr = getattr(agent, "mcp_manager", None)
+            if mgr is not None:
+                try:
+                    mgr.mcp_config = cfg
+                except Exception:
+                    pass
+                if enabled:
+                    try:
+                        mgr.reconnect_server(srv, timeout_s=12.0)
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+        # Push fresh state so the page reflects the change immediately.
+        try:
+            self.broadcaster.publish(
+                "idle", {"state": _build_state(self.agent), "chatId": self._active_chat_id()}
+            )
+        except Exception:
+            pass
+        return True
+
+    def set_mcp_tool_enabled(self, server: str, tool: str, enabled: bool) -> bool:
+        """Toggle a single tool's disabled-by-policy state."""
+        srv = str(server or "").strip()
+        name = str(tool or "").strip()
+        if not srv or not name:
+            return False
+        mgr = getattr(self.agent, "mcp_manager", None)
+        if mgr is None:
+            return False
+        try:
+            if enabled:
+                mgr.enable_tools(srv, [name])
+            else:
+                mgr.disable_tools(srv, [name])
+        except Exception:
+            return False
+        return True
+
     def get_models_config(self) -> List[Dict[str, Any]]:
         """Return the raw (unresolved) ``model_providers`` list for editing."""
         agent = self.agent
@@ -1943,6 +2155,27 @@ def _make_handler(app: ServeApp):
             if path == "/save-general-config":
                 general = body.get("general")
                 ok = app.save_general_config(general if isinstance(general, dict) else {})
+                self._send_json(200 if ok else 400, {"ok": ok})
+                return
+            if path == "/mcp-overview":
+                self._send_json(200, {"ok": True, **app.get_mcp_overview()})
+                return
+            if path == "/mcp-server-details":
+                srv = str(body.get("name") or "")[:256]
+                payload = app.get_mcp_server_details(srv)
+                self._send_json(200 if payload.get("ok") else 400, payload)
+                return
+            if path == "/set-mcp-server-enabled":
+                srv = str(body.get("name") or "")[:256]
+                enabled = bool(body.get("enabled", True))
+                ok = app.set_mcp_server_enabled(srv, enabled)
+                self._send_json(200 if ok else 400, {"ok": ok})
+                return
+            if path == "/set-mcp-tool-enabled":
+                srv = str(body.get("server") or "")[:256]
+                tool = str(body.get("tool") or "")[:256]
+                enabled = bool(body.get("enabled", True))
+                ok = app.set_mcp_tool_enabled(srv, tool, enabled)
                 self._send_json(200 if ok else 400, {"ok": ok})
                 return
             if path == "/fetch-models":
