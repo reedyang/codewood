@@ -386,11 +386,18 @@ export function ChatView() {
   );
 
   if (turns.length === 0 && historyTurns.length === 0 && !historyLoading) {
-    const workspaceName = state?.workspace.name || t("workspace.none");
+    const activeWs = state?.workspaces?.find((w) => w.active);
+    // The Default workspace is not a real project, so omit its name from the
+    // greeting (and any workspace-less state shows the generic prompt too).
+    const inDefaultWs = !activeWs || activeWs.isDefault;
+    const workspaceName = state?.workspace.name || "";
+    const emptyTitle = inDefaultWs
+      ? t("empty.promptNoWorkspace")
+      : t("empty.prompt").replace("{workspace}", workspaceName);
     return (
       <div className="chat-view">
         <div className="empty-state">
-          <h1 className="empty-title">{t("empty.prompt").replace("{workspace}", workspaceName)}</h1>
+          <h1 className="empty-title">{emptyTitle}</h1>
           <div className="empty-composer">
             {composer}
             <WorkspaceSelector />
@@ -643,10 +650,13 @@ function WorkspaceSelector() {
   const ref = useOutsideClose(open, () => setOpen(false));
 
   const workspaces = state?.workspaces ?? [];
-  const current = state?.workspace.name || t("workspace.none");
   const defaultWs = workspaces.find((w) => w.isDefault);
-  const filtered = workspaces.filter((w) =>
-    w.name.toLowerCase().includes(search.trim().toLowerCase()),
+  // The Default workspace is not a real project; surface it only through the
+  // dedicated "Don't work in a workspace" entry, never in the workspace list.
+  const filtered = workspaces.filter(
+    (w) =>
+      !w.isDefault &&
+      w.name.toLowerCase().includes(search.trim().toLowerCase()),
   );
 
   const close = () => {
@@ -682,7 +692,7 @@ function WorkspaceSelector() {
     <div className="ws-selector" ref={ref}>
       <button className="ws-selector-trigger" onClick={() => setOpen((v) => !v)}>
         <Icon name="folder" size={14} className="muted-icon" />
-        <span className="ws-selector-label">{current}</span>
+        <span className="ws-selector-label">{t("workspace.selectorLabel")}</span>
         <Icon name="chevron" size={13} className={`chevron ${open ? "open" : ""}`} />
       </button>
       {open && (
@@ -704,7 +714,9 @@ function WorkspaceSelector() {
                   className={`ws-selector-item ${ws.active ? "active" : ""}`}
                   onClick={() => void switchTo(ws.id)}
                 >
-                  {ws.active && <Icon name="check" size={13} />}
+                  <span className="ws-selector-check">
+                    {ws.active && <Icon name="check" size={13} />}
+                  </span>
                   <span>{ws.name}</span>
                 </button>
               </li>
@@ -743,7 +755,8 @@ function WorkspaceSelector() {
           )}
           {defaultWs && !defaultWs.active && (
             <button className="ws-selector-item" onClick={() => void switchTo(defaultWs.id)}>
-              {t("workspace.none")}
+              <span className="ws-selector-check" />
+              <span>{t("workspace.none")}</span>
             </button>
           )}
         </div>

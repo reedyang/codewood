@@ -36,13 +36,15 @@ const en: Dict = {
   "menu.more": "More",
 
   "empty.prompt": "What should we work on in {workspace}?",
+  "empty.promptNoWorkspace": "What should we work on?",
 
   "status.online": "Connected",
   "status.offline": "Disconnected",
 
-  "workspace.none": "Don't work in a project",
-  "workspace.search": "Search projects…",
-  "workspace.addNew": "Add new project",
+  "workspace.selectorLabel": "Work in a workspace",
+  "workspace.none": "Don't work in a workspace",
+  "workspace.search": "Search workspaces…",
+  "workspace.addNew": "Add new workspace",
   "workspace.useExisting": "Use an existing folder",
 
   "model.label": "Model",
@@ -159,13 +161,15 @@ const zhCN: Dict = {
   "menu.more": "更多",
 
   "empty.prompt": "在 {workspace} 中我们要做点什么？",
+  "empty.promptNoWorkspace": "我们要做点什么？",
 
   "status.online": "已连接",
   "status.offline": "未连接",
 
-  "workspace.none": "不在任何项目中工作",
-  "workspace.search": "搜索项目……",
-  "workspace.addNew": "新增项目",
+  "workspace.selectorLabel": "在工作区中工作",
+  "workspace.none": "不在任何工作区中工作",
+  "workspace.search": "搜索工作区……",
+  "workspace.addNew": "新增工作区",
   "workspace.useExisting": "使用已有文件夹",
 
   "model.label": "模型",
