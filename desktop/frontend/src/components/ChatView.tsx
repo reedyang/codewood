@@ -648,10 +648,20 @@ export function ChatView() {
           //     the button, even in Plan mode.
           // We also wait until the streaming turn has fully closed so the
           // button doesn't appear before the rendered plan content lands.
-          if (busy || turns.length === 0) {
+          //
+          // After an app restart there are no live ``turns`` (the plan turn
+          // lives in ``historyTurns`` instead), so we must NOT require a live
+          // turn — the presence of an unfinished plan in ``state`` plus an
+          // idle agent and at least one rendered turn is enough. We only
+          // suppress the button while a LIVE turn is mid-stream.
+          if (busy) {
             return null;
           }
-          if (turns[turns.length - 1].endedAt === null) {
+          const lastLive = turns.length > 0 ? turns[turns.length - 1] : null;
+          if (lastLive && lastLive.endedAt === null) {
+            return null;
+          }
+          if (turns.length === 0 && historyTurns.length === 0) {
             return null;
           }
           const planSteps = state?.plan?.plan ?? [];

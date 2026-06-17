@@ -233,6 +233,11 @@ export function parseMessageToSegments(text: string): Segment[] {
     const sep = /^\r?\n/.exec(rest);
     if (sep) rest = rest.slice(sep[0].length);
   }
+  // Drop GUI-internal decorations the user never typed: the Plan-mode
+  // directive the backend prepends while plan mode is sticky, and any
+  // CONTROL envelope from the "Execute now" nudge. Without this the Edit
+  // flow would re-populate the composer with that machine-authored text.
+  rest = stripHiddenControl(stripPlanModePrefix(rest));
   if (rest) {
     out.push({ kind: "text", value: rest });
   }
