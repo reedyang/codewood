@@ -45,6 +45,12 @@ export interface AppState {
     reasoningLevel?: string;
     reasoningLevels?: string[];
   };
+  /** Active chat's last-known context-window usage snapshot. */
+  contextUsage?: {
+    percent: number;
+    tokens: number;
+    window: number;
+  };
   language: string;
   theme?: string;
   uiPrefs?: {

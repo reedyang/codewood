@@ -439,6 +439,14 @@ export function ChatView() {
               onSelectReasoning={(level) => void setReasoning(level)}
             />
           )}
+          {state?.contextUsage && state.contextUsage.window > 0 && (
+            <ContextUsageRing
+              percent={state.contextUsage.percent}
+              tokens={state.contextUsage.tokens}
+              window={state.contextUsage.window}
+              label={t("context.usage")}
+            />
+          )}
           <button
             className={`send-btn ${busy ? "is-stop" : ""}`}
             aria-label={busy ? t("chat.interrupt") : t("chat.send")}
@@ -646,6 +654,63 @@ function Dropdown({
 }
 
 const FIXED_REASONING_EFFORTS = ["low", "medium", "high"] as const;
+
+/** Compact circular progress badge that mirrors the TUI status bar's context
+ *  usage indicator. Sized to fit on the composer toolbar next to the model
+ *  selector; uses CSS variables for stroke colors so it follows the theme. */
+function ContextUsageRing({
+  percent,
+  tokens,
+  window: ctxWindow,
+  label,
+}: {
+  percent: number;
+  tokens: number;
+  window: number;
+  label: string;
+}) {
+  // Clamp to a printable range; tokens can briefly overshoot the configured
+  // window between turns when streaming usage updates arrive out of order, so
+  // we cap the visual at 100% rather than overflowing the ring.
+  const pct = Math.max(0, Math.min(100, Math.round(percent)));
+  // Mirrors the SVG's coordinate system below: r=8 stroke=2 viewBox 0..20.
+  const radius = 8;
+  const circumference = 2 * Math.PI * radius;
+  const dash = (pct / 100) * circumference;
+  const title = `${label}: ${pct}% (${tokens} / ${ctxWindow})`;
+  const danger = pct >= 90;
+  const warn = !danger && pct >= 75;
+  return (
+    <span
+      className={`context-ring ${danger ? "danger" : warn ? "warn" : ""}`}
+      title={title}
+      aria-label={title}
+    >
+      <svg viewBox="0 0 20 20" width={20} height={20} aria-hidden="true">
+        <circle
+          className="context-ring-track"
+          cx="10"
+          cy="10"
+          r={radius}
+          fill="none"
+          strokeWidth="2"
+        />
+        <circle
+          className="context-ring-bar"
+          cx="10"
+          cy="10"
+          r={radius}
+          fill="none"
+          strokeWidth="2"
+          strokeLinecap="round"
+          strokeDasharray={`${dash} ${circumference - dash}`}
+          transform="rotate(-90 10 10)"
+        />
+      </svg>
+      <span className="context-ring-text">{pct}%</span>
+    </span>
+  );
+}
 
 /** Two-level model menu: the first level always lists the three reasoning
  *  effort levels (greying out ones the active model doesn't support) plus a

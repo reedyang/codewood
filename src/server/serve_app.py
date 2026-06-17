@@ -625,6 +625,9 @@ def _build_state(agent: Any) -> Dict[str, Any]:
 
     chats: List[Dict[str, Any]] = []
     active_chat_model = ""
+    active_context_percent = 0
+    active_context_tokens = 0
+    active_context_window = 0
     try:
         active_chat_id = _primary_active_chat_id(agent)
         for i, c in enumerate(agent._chat_entries(), start=1):
@@ -636,6 +639,23 @@ def _build_state(agent: Any) -> Dict[str, Any]:
             cid = str(c.get("id") or "")
             if cid == active_chat_id:
                 active_chat_model = chat_model
+                # Pull the focused chat's context-usage snapshot so the GUI can
+                # surface it next to the model selector without a separate
+                # request-per-tick. These numbers are kept in sync by the
+                # session manager every time the model returns input-token
+                # accounting.
+                try:
+                    active_context_percent = int(c.get("context_usage_percent") or 0)
+                except Exception:
+                    active_context_percent = 0
+                try:
+                    active_context_tokens = int(c.get("context_input_tokens") or 0)
+                except Exception:
+                    active_context_tokens = 0
+                try:
+                    active_context_window = int(c.get("context_window") or 0)
+                except Exception:
+                    active_context_window = 0
             chats.append(
                 {
                     "index": i,
@@ -712,6 +732,11 @@ def _build_state(agent: Any) -> Dict[str, Any]:
             "available": model_available,
             "reasoningLevel": _safe_reasoning_level(agent),
             "reasoningLevels": _safe_reasoning_levels(agent),
+        },
+        "contextUsage": {
+            "percent": active_context_percent,
+            "tokens": active_context_tokens,
+            "window": active_context_window,
         },
         "language": language,
         "theme": theme,
