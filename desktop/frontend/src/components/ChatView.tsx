@@ -381,64 +381,14 @@ export function ChatView() {
         </div>
         <div className="composer-right">
           {models.length > 0 && (
-            <Dropdown
-              trigger={
-                <>
-                  <span>{currentModel || t("model.label")}</span>
-                  {reasoningLevel && (
-                    <span className="model-reasoning-level">{reasoningLevel}</span>
-                  )}
-                  <Icon name="chevron" size={13} className="chevron down" />
-                </>
-              }
-              className="model-dropdown"
-              align="right"
-            >
-              {(close) => (
-                <>
-                  {groupModelsByProvider(models).map((group) => (
-                    <div className="model-group" key={group.provider}>
-                      <div className="model-group-header">{group.provider}</div>
-                      {group.items.map((item) => (
-                        <button
-                          key={item.selector}
-                          className={`dropdown-item ${item.selector === currentModel ? "active" : ""}`}
-                          onClick={() => {
-                            close();
-                            void setModel(item.selector);
-                          }}
-                        >
-                          <span className="dropdown-check">
-                            {item.selector === currentModel && <Icon name="check" size={13} />}
-                          </span>
-                          <span>{item.name}</span>
-                        </button>
-                      ))}
-                    </div>
-                  ))}
-                  {reasoningLevels.length > 0 && (
-                    <div className="model-group">
-                      <div className="model-group-header">{t("reasoning.label")}</div>
-                      {reasoningLevels.map((level) => (
-                        <button
-                          key={level}
-                          className={`dropdown-item ${level === reasoningLevel ? "active" : ""}`}
-                          onClick={() => {
-                            close();
-                            void setReasoning(level);
-                          }}
-                        >
-                          <span className="dropdown-check">
-                            {level === reasoningLevel && <Icon name="check" size={13} />}
-                          </span>
-                          <span>{level}</span>
-                        </button>
-                      ))}
-                    </div>
-                  )}
-                </>
-              )}
-            </Dropdown>
+            <ModelMenu
+              models={models}
+              currentModel={currentModel}
+              reasoningLevels={reasoningLevels}
+              reasoningLevel={reasoningLevel}
+              onSelectModel={(selector) => void setModel(selector)}
+              onSelectReasoning={(level) => void setReasoning(level)}
+            />
           )}
           <button
             className={`send-btn ${busy ? "is-stop" : ""}`}
@@ -640,6 +590,194 @@ function Dropdown({
       {open && (
         <div className={`dropdown-menu ${align === "right" ? "align-right" : ""}`}>
           {children(() => setOpen(false))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+const FIXED_REASONING_EFFORTS = ["low", "medium", "high"] as const;
+
+/** Two-level model menu: the first level always lists the three reasoning
+ *  effort levels (greying out ones the active model doesn't support) plus a
+ *  "current model" entry. Hovering that entry flies the model list out to the
+ *  side (right by default, flipping left when there isn't room). */
+function ModelMenu({
+  models,
+  currentModel,
+  reasoningLevels,
+  reasoningLevel,
+  onSelectModel,
+  onSelectReasoning,
+}: {
+  models: string[];
+  currentModel: string;
+  reasoningLevels: string[];
+  reasoningLevel: string;
+  onSelectModel: (selector: string) => void;
+  onSelectReasoning: (level: string) => void;
+}) {
+  const { t } = useApp();
+  const [open, setOpen] = useState(false);
+  const [flyoutOpen, setFlyoutOpen] = useState(false);
+  // Fixed-position coordinates so the flyout escapes the parent menu's
+  // overflow/scroll clipping and renders as a standalone panel beside it.
+  const [flyoutPos, setFlyoutPos] = useState<{
+    side: "right" | "left";
+    left: number;
+    top: number;
+  } | null>(null);
+  const ref = useOutsideClose(open, () => setOpen(false));
+  const entryRef = useRef<HTMLDivElement>(null);
+  const flyoutRef = useRef<HTMLDivElement>(null);
+  const closeTimer = useRef<number | null>(null);
+  const close = () => setOpen(false);
+
+  const cancelClose = () => {
+    if (closeTimer.current !== null) {
+      window.clearTimeout(closeTimer.current);
+      closeTimer.current = null;
+    }
+  };
+  // Delay closing so the cursor can cross the small gap to the flyout.
+  const scheduleClose = () => {
+    cancelClose();
+    closeTimer.current = window.setTimeout(() => setFlyoutOpen(false), 140);
+  };
+
+  useEffect(() => {
+    if (!open) setFlyoutOpen(false);
+    return cancelClose;
+  }, [open]);
+
+  // After the flyout renders, clamp it within the viewport: if it would
+  // overflow the bottom, shift it up so the whole menu stays visible.
+  useLayoutEffect(() => {
+    if (!flyoutOpen || !flyoutPos) return;
+    const el = flyoutRef.current;
+    if (!el) return;
+    const margin = 8;
+    const height = el.offsetHeight;
+    const maxTop = window.innerHeight - height - margin;
+    const clampedTop = Math.max(margin, Math.min(flyoutPos.top, maxTop));
+    if (clampedTop !== flyoutPos.top) {
+      setFlyoutPos((prev) => (prev ? { ...prev, top: clampedTop } : prev));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [flyoutOpen, flyoutPos?.top, flyoutPos?.left]);
+
+  const supported = new Set(reasoningLevels.map((l) => l.toLowerCase()));
+  const selectedLower = reasoningLevel.toLowerCase();
+  const currentName = currentModel.includes(":")
+    ? currentModel.slice(currentModel.indexOf(":") + 1)
+    : currentModel;
+
+  const FLYOUT_WIDTH = 220;
+  const FLYOUT_GAP = 4;
+  // Decide which side the flyout opens on based on available viewport space.
+  const openFlyout = () => {
+    const el = entryRef.current;
+    if (!el) {
+      setFlyoutOpen(true);
+      return;
+    }
+    const rect = el.getBoundingClientRect();
+    const spaceRight = window.innerWidth - rect.right;
+    const side: "right" | "left" =
+      spaceRight < FLYOUT_WIDTH + FLYOUT_GAP && rect.left > spaceRight ? "left" : "right";
+    const left =
+      side === "right"
+        ? rect.right + FLYOUT_GAP
+        : rect.left - FLYOUT_GAP - FLYOUT_WIDTH;
+    cancelClose();
+    setFlyoutPos({ side, left, top: rect.top });
+    setFlyoutOpen(true);
+  };
+
+  return (
+    <div className="dropdown model-dropdown" ref={ref}>
+      <button className="dropdown-trigger" onClick={() => setOpen((v) => !v)}>
+        <span>{currentModel || t("model.label")}</span>
+        {reasoningLevel && (
+          <span className="model-reasoning-level">{reasoningLevel}</span>
+        )}
+        <Icon name="chevron" size={13} className="chevron down" />
+      </button>
+      {open && (
+        <div className="dropdown-menu align-right">
+          <div className="model-group">
+            <div className="model-group-header">{t("reasoning.label")}</div>
+            {FIXED_REASONING_EFFORTS.map((level) => {
+              const enabled = supported.has(level);
+              const active = enabled && level === selectedLower;
+              return (
+                <button
+                  key={level}
+                  className={`dropdown-item ${active ? "active" : ""}`}
+                  disabled={!enabled}
+                  onClick={() => {
+                    if (!enabled) return;
+                    close();
+                    onSelectReasoning(level);
+                  }}
+                >
+                  <span className="dropdown-check">
+                    {active && <Icon name="check" size={13} />}
+                  </span>
+                  <span>{t(`reasoning.effort.${level}`)}</span>
+                </button>
+              );
+            })}
+          </div>
+          <div className="model-group">
+            <div className="model-group-header">{t("model.label")}</div>
+            <div
+              className="model-flyout-anchor"
+              ref={entryRef}
+              onMouseEnter={openFlyout}
+              onMouseLeave={scheduleClose}
+            >
+              <button className="dropdown-item model-submenu-entry">
+                <span className="dropdown-check" />
+                <span>{currentName || t("model.label")}</span>
+                <Icon name="arrow-right" size={13} className="model-submenu-arrow" />
+              </button>
+              {flyoutOpen && flyoutPos && (
+                <div
+                  ref={flyoutRef}
+                  className={`model-flyout ${flyoutPos.side}`}
+                  style={{
+                    left: flyoutPos.left,
+                    top: flyoutPos.top,
+                    width: FLYOUT_WIDTH,
+                  }}
+                  onMouseEnter={cancelClose}
+                  onMouseLeave={scheduleClose}
+                >
+                  {groupModelsByProvider(models).map((group) => (
+                    <div className="model-group" key={group.provider}>
+                      <div className="model-group-header">{group.provider}</div>
+                      {group.items.map((item) => (
+                        <button
+                          key={item.selector}
+                          className={`dropdown-item ${item.selector === currentModel ? "active" : ""}`}
+                          onClick={() => {
+                            close();
+                            onSelectModel(item.selector);
+                          }}
+                        >
+                          <span className="dropdown-check">
+                            {item.selector === currentModel && <Icon name="check" size={13} />}
+                          </span>
+                          <span>{item.name}</span>
+                        </button>
+                      ))}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
         </div>
       )}
     </div>

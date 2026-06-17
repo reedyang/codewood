@@ -22,6 +22,14 @@
             "context_window": 131072,
             "streaming": true,               // optional, default is true
             "multimodal": true,              // optional, default is true; set false to hide image tools (read_image)
+            // optional: enable reasoning-effort selection for this model.
+            // List the effort levels the model supports (any labels accepted by
+            // the provider, e.g. OpenAI uses low/medium/high). When set, the
+            // level is sent as ``reasoning_effort`` (chat API) or
+            // ``reasoning.effort`` (responses API), is selectable per chat in
+            // the TUI (``/model reasoning <level>``) and GUI model menu, and is
+            // saved per chat. Omit or leave empty to disable.
+            "reasoning_effort": ["low", "medium", "high"],
             "extra_headers": {
               "X-Model": "<YOUR MODEL NAME>" // optional, model-level custom headers
             }

@@ -562,15 +562,20 @@ def _safe_active_plan(agent: Any) -> Dict[str, Any]:
 
 
 def _safe_reasoning_level(agent: Any) -> str:
+    # Reasoning level is session-scoped; bind to the active chat so HTTP
+    # handler threads read the focused chat's saved selection (restored from
+    # its chat record on activation), not the ambient/unbound session.
     try:
-        return str(agent._current_reasoning_level() or "")
+        with agent._session_scope(_primary_active_chat_id(agent)):
+            return str(agent._current_reasoning_level() or "")
     except Exception:
         return ""
 
 
 def _safe_reasoning_levels(agent: Any) -> List[str]:
     try:
-        return [str(x) for x in (agent._current_model_reasoning_levels() or []) if str(x)]
+        with agent._session_scope(_primary_active_chat_id(agent)):
+            return [str(x) for x in (agent._current_model_reasoning_levels() or []) if str(x)]
     except Exception:
         return []
 
