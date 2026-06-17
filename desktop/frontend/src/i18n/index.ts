@@ -53,6 +53,10 @@ const en: Dict = {
   "attach.remove": "Remove file",
   "attach.contextHeader": "Attached files (read these as needed):",
   "reasoning.label": "Reasoning",
+  "plan.toggle": "Toggle plan",
+  "plan.title": "Plan",
+  "plan.close": "Close plan",
+  "plan.empty": "No plan yet.",
 
   "menu.file": "File",
   "menu.help": "Help",
@@ -182,6 +186,10 @@ const zhCN: Dict = {
   "attach.remove": "移除文件",
   "attach.contextHeader": "附带的文件（按需读取）：",
   "reasoning.label": "推理强度",
+  "plan.toggle": "切换计划面板",
+  "plan.title": "计划",
+  "plan.close": "关闭计划面板",
+  "plan.empty": "暂无计划。",
 
   "menu.file": "文件",
   "menu.help": "帮助",

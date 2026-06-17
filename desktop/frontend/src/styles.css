@@ -667,6 +667,155 @@ body.resizing-x {
   color: var(--text);
 }
 
+.chat-titlebar-plan {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 6px;
+  border-radius: 6px;
+}
+
+.chat-titlebar-plan:hover {
+  background: var(--user-bg);
+  color: var(--text);
+}
+
+.chat-titlebar-plan.active {
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  color: var(--accent);
+}
+
+/* Right-hand plan panel. */
+.plan-panel {
+  flex: 0 0 300px;
+  display: flex;
+  flex-direction: column;
+  border-left: 1px solid var(--border);
+  background: var(--bg);
+  overflow: hidden;
+}
+
+.plan-panel-head {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  height: 44px;
+  padding: 0 8px 0 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.plan-panel-title {
+  font-weight: 600;
+  flex: 1;
+}
+
+.plan-panel-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 6px;
+  border-radius: 6px;
+}
+
+.plan-panel-close:hover {
+  background: var(--user-bg);
+  color: var(--text);
+}
+
+.plan-empty {
+  padding: 18px 16px;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+.plan-progress {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 16px 6px;
+}
+
+.plan-progress-bar {
+  flex: 1;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--border);
+  overflow: hidden;
+}
+
+.plan-progress-fill {
+  height: 100%;
+  background: var(--accent);
+  transition: width 0.3s ease;
+}
+
+.plan-progress-label {
+  font-size: 12px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.plan-steps {
+  list-style: none;
+  margin: 0;
+  padding: 8px 12px 16px;
+  overflow-y: auto;
+}
+
+.plan-step {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 6px 4px;
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.plan-step-icon {
+  flex: 0 0 auto;
+  margin-top: 1px;
+}
+
+.plan-step-icon.pending {
+  color: var(--text-muted);
+}
+
+.plan-step-icon.completed {
+  color: var(--accent);
+}
+
+.plan-step-icon.in-progress {
+  color: var(--accent);
+  animation: plan-spin 0.9s linear infinite;
+}
+
+.plan-step.completed .plan-step-text {
+  color: var(--text-muted);
+  text-decoration: line-through;
+}
+
+.plan-step.in_progress .plan-step-text {
+  font-weight: 600;
+}
+
+@keyframes plan-spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 .transcript {
   flex: 1;
   overflow-y: auto;

@@ -526,6 +526,27 @@ def _primary_active_chat_id(agent: Any) -> str:
     return ""
 
 
+def _safe_active_plan(agent: Any) -> Dict[str, Any]:
+    """Return the active chat's plan ({plan:[{step,status}], explanation})."""
+    try:
+        snapshot = agent._chat_state_manager.active_chat_plan()
+    except Exception:
+        snapshot = None
+    if not isinstance(snapshot, dict):
+        return {"plan": [], "explanation": ""}
+    steps = []
+    for item in snapshot.get("plan") or []:
+        if not isinstance(item, dict):
+            continue
+        steps.append(
+            {
+                "step": str(item.get("step") or ""),
+                "status": str(item.get("status") or ""),
+            }
+        )
+    return {"plan": steps, "explanation": str(snapshot.get("explanation") or "")}
+
+
 def _safe_reasoning_level(agent: Any) -> str:
     try:
         return str(agent._current_reasoning_level() or "")
@@ -663,6 +684,7 @@ def _build_state(agent: Any) -> Dict[str, Any]:
         "language": language,
         "theme": theme,
         "uiPrefs": ui_prefs,
+        "plan": _safe_active_plan(agent),
         "executionPolicy": str(getattr(agent, "execution_policy", "") or ""),
     }
 

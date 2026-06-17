@@ -26,6 +26,10 @@ import winMax from "../assets/icons/win-max.svg";
 import winRestore from "../assets/icons/win-restore.svg";
 import winClose from "../assets/icons/win-close.svg";
 import arrowLeft from "../assets/icons/arrow-left.svg";
+import listCheck from "../assets/icons/list-check.svg";
+import circle from "../assets/icons/circle.svg";
+import checkCircle from "../assets/icons/check-circle.svg";
+import spinner from "../assets/icons/spinner.svg";
 
 const SOURCES = {
   panel,
@@ -55,6 +59,10 @@ const SOURCES = {
   "win-restore": winRestore,
   "win-close": winClose,
   "arrow-left": arrowLeft,
+  "list-check": listCheck,
+  circle,
+  "check-circle": checkCircle,
+  spinner,
 } as const;
 
 export type IconName = keyof typeof SOURCES;
