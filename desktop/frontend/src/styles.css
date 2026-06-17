@@ -1368,6 +1368,56 @@ body.resizing-x {
   margin-top: 24px;
 }
 
+/* Circular context-window usage badge on the composer toolbar. The ring uses
+   the same accent color as buttons, escalating to warn/danger as the window
+   fills up so it draws the eye before the model gets pushed into auto-compact. */
+.context-ring {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 8px 2px 2px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--bg-elevated);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+  user-select: none;
+}
+
+.context-ring svg {
+  flex: none;
+}
+
+.context-ring-track {
+  stroke: var(--border);
+}
+
+.context-ring-bar {
+  stroke: var(--accent);
+  transition: stroke-dasharray 240ms ease;
+}
+
+.context-ring.warn .context-ring-bar {
+  stroke: #d49b1a;
+}
+
+.context-ring.warn {
+  color: #b27a00;
+}
+
+.context-ring.danger .context-ring-bar {
+  stroke: #c54545;
+}
+
+.context-ring.danger {
+  color: #c54545;
+}
+
+.context-ring-text {
+  font-variant-numeric: tabular-nums;
+}
+
 .segmented {
   display: inline-flex;
   border: 1px solid var(--border);
