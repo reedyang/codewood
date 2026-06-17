@@ -697,7 +697,7 @@ function ModelMenu({
   return (
     <div className="dropdown model-dropdown" ref={ref}>
       <button className="dropdown-trigger" onClick={() => setOpen((v) => !v)}>
-        <span>{currentModel || t("model.label")}</span>
+        <span>{currentName || t("model.label")}</span>
         {reasoningLevel && (
           <span className="model-reasoning-level">{reasoningLevel}</span>
         )}
