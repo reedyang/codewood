@@ -10,6 +10,30 @@ function quote(value: string): string {
   return `"${value.replace(/"/g, "")}"`;
 }
 
+interface ModelGroup {
+  provider: string;
+  items: { selector: string; name: string }[];
+}
+
+/** Group "provider:name" model selectors under their provider, preserving order. */
+function groupModelsByProvider(selectors: string[]): ModelGroup[] {
+  const groups: ModelGroup[] = [];
+  const byProvider = new Map<string, ModelGroup>();
+  for (const sel of selectors) {
+    const idx = sel.indexOf(":");
+    const provider = idx > 0 ? sel.slice(0, idx) : "Other";
+    const name = idx > 0 ? sel.slice(idx + 1) : sel;
+    let group = byProvider.get(provider);
+    if (!group) {
+      group = { provider, items: [] };
+      byProvider.set(provider, group);
+      groups.push(group);
+    }
+    group.items.push({ selector: sel, name });
+  }
+  return groups;
+}
+
 function baseName(path: string): string {
   const parts = path.split(/[\\/]/);
   return parts[parts.length - 1] || path;
@@ -365,20 +389,25 @@ export function ChatView() {
               align="right"
             >
               {(close) =>
-                models.map((m) => (
-                  <button
-                    key={m}
-                    className={`dropdown-item ${m === currentModel ? "active" : ""}`}
-                    onClick={() => {
-                      close();
-                      void setModel(m);
-                    }}
-                  >
-                    <span className="dropdown-check">
-                      {m === currentModel && <Icon name="check" size={13} />}
-                    </span>
-                    <span>{m}</span>
-                  </button>
+                groupModelsByProvider(models).map((group) => (
+                  <div className="model-group" key={group.provider}>
+                    <div className="model-group-header">{group.provider}</div>
+                    {group.items.map((item) => (
+                      <button
+                        key={item.selector}
+                        className={`dropdown-item ${item.selector === currentModel ? "active" : ""}`}
+                        onClick={() => {
+                          close();
+                          void setModel(item.selector);
+                        }}
+                      >
+                        <span className="dropdown-check">
+                          {item.selector === currentModel && <Icon name="check" size={13} />}
+                        </span>
+                        <span>{item.name}</span>
+                      </button>
+                    ))}
+                  </div>
                 ))
               }
             </Dropdown>
