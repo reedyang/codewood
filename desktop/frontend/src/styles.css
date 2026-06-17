@@ -1206,6 +1206,7 @@ body.resizing-x {
   width: 100%;
 }
 .rich-composer-editor {
+  position: relative;
   width: 100%;
   border: 1px solid var(--border);
   border-radius: 10px;
@@ -1228,6 +1229,9 @@ body.resizing-x {
   content: attr(data-placeholder);
   color: var(--text-muted);
   pointer-events: none;
+  position: absolute;
+  top: 10px;
+  left: 12px;
 }
 
 .composer-pill {
