@@ -52,6 +52,8 @@ interface AppContextValue {
   expandedWorkspaceIds: string[];
   settingsOpen: boolean;
   aboutOpen: boolean;
+  planOpen: boolean;
+  togglePlan: () => void;
   t: (key: string) => string;
   setTheme: (theme: Theme) => void;
   sendInput: (text: string) => Promise<void>;
@@ -156,6 +158,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [expandedWorkspaceIds, setExpandedWorkspaceIds] = useState<string[]>([]);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [aboutOpen, setAboutOpen] = useState(false);
+  const [planOpen, setPlanOpen] = useState(false);
   // Draft (compose) mode: "New Chat" shows the empty composer without creating
   // a chat yet; the chat is materialized only when the first message is sent.
   // ``draftWorkspaceId`` is the workspace the new chat will be created in.
@@ -1040,6 +1043,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
     expandedWorkspaceIds,
     settingsOpen,
     aboutOpen,
+    planOpen,
+    togglePlan: () => setPlanOpen((v) => !v),
     t,
     setTheme,
     sendInput,

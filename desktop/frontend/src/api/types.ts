@@ -43,7 +43,20 @@ export interface AppState {
     pinnedChatIds?: string[];
     archivedChatIds?: string[];
   };
+  plan?: PlanState;
   executionPolicy: string;
+}
+
+export type PlanStepStatus = "pending" | "in_progress" | "completed";
+
+export interface PlanStep {
+  step: string;
+  status: PlanStepStatus | string;
+}
+
+export interface PlanState {
+  plan: PlanStep[];
+  explanation: string;
 }
 
 export interface ConfirmRequest {

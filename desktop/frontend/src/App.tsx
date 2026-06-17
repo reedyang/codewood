@@ -2,6 +2,7 @@ import { useEffect, useState, type CSSProperties, type MouseEvent as ReactMouseE
 import { AppProvider, useApp } from "./state/AppContext";
 import { Sidebar } from "./components/Sidebar";
 import { ChatView } from "./components/ChatView";
+import { PlanPanel } from "./components/PlanPanel";
 import { SettingsView } from "./components/SettingsView";
 import { AboutDialog } from "./components/AboutDialog";
 import { ConfirmDialog } from "./components/ConfirmDialog";
@@ -104,6 +105,7 @@ function Shell() {
           )}
           <main className="main">
             <ChatView />
+            <PlanPanel />
           </main>
         </div>
       )}

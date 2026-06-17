@@ -25,6 +25,8 @@ export function ChatTitleBar() {
     deleteChat,
     toggleChatPin,
     toggleChatArchive,
+    planOpen,
+    togglePlan,
   } = useApp();
   const [menu, setMenu] = useState<MenuState | null>(null);
   const [renaming, setRenaming] = useState(false);
@@ -99,6 +101,15 @@ export function ChatTitleBar() {
         onClick={openMenu}
       >
         <Icon name="dots" size={16} />
+      </button>
+      <button
+        className={`chat-titlebar-plan ${planOpen ? "active" : ""}`}
+        aria-label={t("plan.toggle")}
+        aria-pressed={planOpen}
+        title={t("plan.toggle")}
+        onClick={togglePlan}
+      >
+        <Icon name="list-check" size={16} />
       </button>
       {menu && (
         <ContextMenu
