@@ -80,6 +80,7 @@ interface AppContextValue {
   toggleChatArchive: (id: string) => void;
   archiveChats: (ids: string[]) => void;
   setModel: (selector: string) => Promise<void>;
+  setReasoning: (level: string) => Promise<void>;
   setExecutionPolicy: (policy: string) => Promise<void>;
   toggleWorkspaceExpanded: (id: string) => void;
   refreshWorkspaceChats: (id: string) => Promise<void>;
@@ -911,6 +912,18 @@ export function AppProvider({ children }: { children: ReactNode }) {
     [client],
   );
 
+  const setReasoning = useCallback(
+    async (level: string) => {
+      // Route to the focused chat, same as model switches.
+      await client.sendInput(
+        `/model reasoning ${level.trim()}`,
+        false,
+        activeChatIdRef.current,
+      );
+    },
+    [client],
+  );
+
   const setExecutionPolicy = useCallback(
     async (policy: string) => {
       const value = policy.trim();
@@ -1050,6 +1063,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     toggleChatArchive,
     archiveChats,
     setModel,
+    setReasoning,
     setExecutionPolicy,
     toggleWorkspaceExpanded,
     refreshWorkspaceChats,

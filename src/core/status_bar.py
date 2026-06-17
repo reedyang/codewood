@@ -27,20 +27,34 @@ def build_status_bar_render_data(
     workspace_name: str,
     active_chat_name: str,
     last_context_usage_percent: Any,
+    reasoning_level: str = "",
 ) -> Tuple[List[Tuple[str, str]], str]:
     usage_pct = clamp_status_token_usage_percent(last_context_usage_percent)
     usage_text = f"({usage_pct}%)"
+    level = str(reasoning_level or "").strip()
     status_bar_fragments: List[Tuple[str, str]] = [
         ("", "  "),
         (f"fg:{STATUS_MODEL_COLOR_HEX}", str(model_name)),
-        ("", " "),
-        (f"fg:{STATUS_WORKSPACE_COLOR_HEX}", str(workspace_name)),
-        ("", " "),
-        ("", str(active_chat_name)),
-        ("fg:ansibrightblack", usage_text),
     ]
+    if level:
+        status_bar_fragments.append((f"fg:{STATUS_MODEL_COLOR_HEX} italic", f" {level}"))
+    status_bar_fragments.extend(
+        [
+            ("", " "),
+            (f"fg:{STATUS_WORKSPACE_COLOR_HEX}", str(workspace_name)),
+            ("", " "),
+            ("", str(active_chat_name)),
+            ("fg:ansibrightblack", usage_text),
+        ]
+    )
+    # ESC[3m = italic (ESC[23m clears italic). Keep it in the model color.
+    level_plain = (
+        f"\x1b[3m{_ansi_rgb(' ' + level, *STATUS_MODEL_COLOR_RGB)}\x1b[23m"
+        if level
+        else ""
+    )
     status_bar_plain = (
-        f"  {_ansi_rgb(str(model_name), *STATUS_MODEL_COLOR_RGB)} "
+        f"  {_ansi_rgb(str(model_name), *STATUS_MODEL_COLOR_RGB)}{level_plain} "
         f"{_ansi_rgb(str(workspace_name), *STATUS_WORKSPACE_COLOR_RGB)} "
         f"{str(active_chat_name)}"
         f"{_ansi_gray(usage_text)}"

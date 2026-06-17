@@ -175,6 +175,7 @@ export function ChatView() {
     interrupt,
     setExecutionPolicy,
     setModel,
+    setReasoning,
     pickFiles,
     forkChat,
     editChat,
@@ -282,6 +283,8 @@ export function ChatView() {
   const currentPolicy = state?.executionPolicy || "moderate";
   const currentModel = state?.model.current || "";
   const models = state?.model.available ?? [];
+  const reasoningLevels = state?.model.reasoningLevels ?? [];
+  const reasoningLevel = state?.model.reasoningLevel || "";
 
   // From-end genuine-user indices (e.g. -1 = last user turn) so Fork/Edit can
   // address a turn the same way the TUI `/chat fork|edit <index>` commands do.
@@ -382,34 +385,59 @@ export function ChatView() {
               trigger={
                 <>
                   <span>{currentModel || t("model.label")}</span>
+                  {reasoningLevel && (
+                    <span className="model-reasoning-level">{reasoningLevel}</span>
+                  )}
                   <Icon name="chevron" size={13} className="chevron down" />
                 </>
               }
               className="model-dropdown"
               align="right"
             >
-              {(close) =>
-                groupModelsByProvider(models).map((group) => (
-                  <div className="model-group" key={group.provider}>
-                    <div className="model-group-header">{group.provider}</div>
-                    {group.items.map((item) => (
-                      <button
-                        key={item.selector}
-                        className={`dropdown-item ${item.selector === currentModel ? "active" : ""}`}
-                        onClick={() => {
-                          close();
-                          void setModel(item.selector);
-                        }}
-                      >
-                        <span className="dropdown-check">
-                          {item.selector === currentModel && <Icon name="check" size={13} />}
-                        </span>
-                        <span>{item.name}</span>
-                      </button>
-                    ))}
-                  </div>
-                ))
-              }
+              {(close) => (
+                <>
+                  {groupModelsByProvider(models).map((group) => (
+                    <div className="model-group" key={group.provider}>
+                      <div className="model-group-header">{group.provider}</div>
+                      {group.items.map((item) => (
+                        <button
+                          key={item.selector}
+                          className={`dropdown-item ${item.selector === currentModel ? "active" : ""}`}
+                          onClick={() => {
+                            close();
+                            void setModel(item.selector);
+                          }}
+                        >
+                          <span className="dropdown-check">
+                            {item.selector === currentModel && <Icon name="check" size={13} />}
+                          </span>
+                          <span>{item.name}</span>
+                        </button>
+                      ))}
+                    </div>
+                  ))}
+                  {reasoningLevels.length > 0 && (
+                    <div className="model-group">
+                      <div className="model-group-header">{t("reasoning.label")}</div>
+                      {reasoningLevels.map((level) => (
+                        <button
+                          key={level}
+                          className={`dropdown-item ${level === reasoningLevel ? "active" : ""}`}
+                          onClick={() => {
+                            close();
+                            void setReasoning(level);
+                          }}
+                        >
+                          <span className="dropdown-check">
+                            {level === reasoningLevel && <Icon name="check" size={13} />}
+                          </span>
+                          <span>{level}</span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </>
+              )}
             </Dropdown>
           )}
           <button

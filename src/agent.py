@@ -370,10 +370,25 @@ class Agent:
         if sess is None:
             return
         sess.call_provider = self.provider
+        # Inject the chat's reasoning level into the params/conf bags so the
+        # provider client emits ``reasoning_effort`` for this chat's calls.
+        level = self._current_reasoning_level()
         sess.call_model_name = self.model_name
-        sess.call_model_params = self.params
-        sess.call_openai_conf = self.openai_conf
+        sess.call_model_params = self._with_reasoning_effort(self.params, level)
+        sess.call_openai_conf = self._with_reasoning_effort(self.openai_conf, level)
         sess.call_model_set = True
+
+    @staticmethod
+    def _with_reasoning_effort(conf: Any, level: str) -> Any:
+        """Return a copy of ``conf`` carrying ``reasoning_effort`` (or stripped)."""
+        if not isinstance(conf, dict):
+            return conf
+        out = dict(conf)
+        if level:
+            out["reasoning_effort"] = level
+        else:
+            out.pop("reasoning_effort", None)
+        return out
 
     def _session_model_for_call(self):
         """Return ``(provider, model_name, params, openai_conf)`` for this thread.
@@ -654,6 +669,9 @@ class Agent:
                 params["streaming"] = streaming
                 params["multimodal"] = multimodal
                 params["extra_headers"] = dict(model_item.get("extra_headers") or {})
+                params["reasoning_levels"] = list(
+                    model_item.get("reasoning_levels") or []
+                )
                 out.append(
                     {
                         "provider": provider,
@@ -673,6 +691,36 @@ class Agent:
         if not provider or not model_name:
             return ""
         return f"{provider}:{model_name}"
+
+    def _current_model_reasoning_levels(self) -> List[str]:
+        """Reasoning levels the active model supports (empty if none)."""
+        params = getattr(self, "params", {}) or {}
+        raw = params.get("reasoning_levels") if isinstance(params, dict) else None
+        if not isinstance(raw, list):
+            return []
+        return [str(x).strip() for x in raw if str(x).strip()]
+
+    def _current_reasoning_level(self) -> str:
+        """The active chat's selected reasoning level ("" if unset/unsupported)."""
+        level = str(getattr(self, "reasoning_level", "") or "").strip()
+        if not level:
+            return ""
+        levels = self._current_model_reasoning_levels()
+        # Match case-insensitively but return the configured canonical casing.
+        for candidate in levels:
+            if candidate.lower() == level.lower():
+                return candidate
+        return ""
+
+    def _normalize_reasoning_level(self, value: str) -> str:
+        """Return the canonical configured level matching ``value`` or ""."""
+        wanted = str(value or "").strip().lower()
+        if not wanted:
+            return ""
+        for candidate in self._current_model_reasoning_levels():
+            if candidate.lower() == wanted:
+                return candidate
+        return ""
 
     def _use_standard_openai_tools_call(self) -> bool:
         # Both supported backends (OpenAI-compatible HTTP and Ollama
@@ -766,6 +814,13 @@ class Agent:
                 self._validate_single_model(self.provider, self.model_name, "model")
             except Exception:
                 pass
+        # Drop any selected reasoning level the new model does not support.
+        try:
+            current_level = str(getattr(self, "reasoning_level", "") or "").strip()
+            if current_level and not self._normalize_reasoning_level(current_level):
+                self.reasoning_level = ""
+        except Exception:
+            pass
         # Pin the just-applied selection onto the calling thread's session so a
         # concurrent chat's later activation can't make this chat's loop use the
         # wrong model.
@@ -783,15 +838,53 @@ class Agent:
                 return
             chat["model_provider"] = str(provider or "").strip()
             chat["model_name"] = str(model_name or "").strip()
+            chat["reasoning_level"] = str(getattr(self, "reasoning_level", "") or "").strip()
             chat["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             if save_state:
                 self._save_chat_state()
+
+    def _set_reasoning_level(self, level: str, save_state: bool = True) -> str:
+        """Select a reasoning level for the active chat.
+
+        Returns a user-facing status message. An empty ``level`` clears the
+        selection. A level the current model does not support is rejected.
+        """
+        wanted = str(level or "").strip()
+        supported = self._current_model_reasoning_levels()
+        if not wanted:
+            self.reasoning_level = ""
+        else:
+            canonical = self._normalize_reasoning_level(wanted)
+            if not canonical:
+                lang = self._ui_language()
+                if not supported:
+                    return translate("reasoning.unsupported", lang)
+                return translate(
+                    "reasoning.invalid",
+                    lang,
+                    level=wanted,
+                    levels=", ".join(supported),
+                )
+            self.reasoning_level = canonical
+        self._pin_session_model()
+        with self._chat_state_lock:
+            chat = self._find_chat_by_id(self.active_chat_id)
+            if chat is not None:
+                chat["reasoning_level"] = self.reasoning_level
+                chat["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                if save_state:
+                    self._save_chat_state()
+        lang = self._ui_language()
+        if self.reasoning_level:
+            return translate("reasoning.set", lang, level=self.reasoning_level)
+        return translate("reasoning.cleared", lang)
 
     def _apply_chat_model_from_entry(
         self, chat: Dict[str, Any], persist_if_missing: bool = False
     ) -> bool:
         provider = str((chat or {}).get("model_provider") or "").strip()
         model_name = str((chat or {}).get("model_name") or "").strip()
+        stored_level = str((chat or {}).get("reasoning_level") or "").strip()
         if not provider or not model_name:
             if persist_if_missing:
                 chat["model_provider"] = str(getattr(self, "provider", "") or "").strip()
@@ -801,6 +894,8 @@ class Agent:
         current = self._current_model_selector().lower()
         selector = f"{provider}:{model_name}".lower()
         if selector == current:
+            # Same model, but make sure this chat's reasoning level is restored.
+            self.reasoning_level = self._normalize_reasoning_level(stored_level)
             return False
 
         choice = self._find_configured_model_choice(f"{provider}:{model_name}")
@@ -820,6 +915,9 @@ class Agent:
                 },
                 validate=False,
             )
+        # Restore this chat's reasoning level for the now-active model.
+        self.reasoning_level = self._normalize_reasoning_level(stored_level)
+        self._pin_session_model()
         return True
 
     def _restore_active_chat_model(self) -> None:
@@ -6337,6 +6435,7 @@ class Agent:
             str(getattr(self, "workspace_name", "") or ""),
             str(getattr(self, "active_chat_name", "") or ""),
             getattr(self, "_last_context_usage_percent", 0),
+            reasoning_level=self._current_reasoning_level(),
         )
 
     def _get_user_input_with_history(self) -> str:
