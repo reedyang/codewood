@@ -51,6 +51,7 @@ const en: Dict = {
   "panel.toggle": "Toggle sidebar",
   "attach.add": "Attach files",
   "attach.remove": "Remove file",
+  "attach.contextHeader": "Attached files (read these as needed):",
 
   "menu.file": "File",
   "menu.help": "Help",
@@ -176,6 +177,7 @@ const zhCN: Dict = {
   "panel.toggle": "切换侧边栏",
   "attach.add": "添加文件",
   "attach.remove": "移除文件",
+  "attach.contextHeader": "附带的文件（按需读取）：",
 
   "menu.file": "文件",
   "menu.help": "帮助",
