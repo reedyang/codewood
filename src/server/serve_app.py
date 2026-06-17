@@ -1659,6 +1659,42 @@ class ServeApp:
             return False
         return True
 
+    def set_mcp_tools_enabled(
+        self, server: str, tools: Any, enabled: bool
+    ) -> bool:
+        """Bulk-toggle several tools' disabled-by-policy state at once.
+
+        Used by the MCP settings page's "Enable all" / "Disable all" button
+        so the page can flip every tool on a server in a single round-trip
+        instead of sending one request per tool (which both flickers the UI
+        and risks the writes interleaving with a concurrent reload).
+        """
+        srv = str(server or "").strip()
+        if not srv:
+            return False
+        if not isinstance(tools, (list, tuple)):
+            return False
+        # Bound the per-name length and overall count to keep this from
+        # turning into an abuse vector via a runaway payload.
+        names: List[str] = []
+        for item in tools[:1024]:
+            n = str(item or "").strip()[:256]
+            if n:
+                names.append(n)
+        if not names:
+            return False
+        mgr = getattr(self.agent, "mcp_manager", None)
+        if mgr is None:
+            return False
+        try:
+            if enabled:
+                mgr.enable_tools(srv, names)
+            else:
+                mgr.disable_tools(srv, names)
+        except Exception:
+            return False
+        return True
+
     # ------------------------------------------------------------------
     # MCP add / update / delete
     #
@@ -2557,6 +2593,13 @@ def _make_handler(app: ServeApp):
                 tool = str(body.get("tool") or "")[:256]
                 enabled = bool(body.get("enabled", True))
                 ok = app.set_mcp_tool_enabled(srv, tool, enabled)
+                self._send_json(200 if ok else 400, {"ok": ok})
+                return
+            if path == "/set-mcp-tools-enabled":
+                srv = str(body.get("server") or "")[:256]
+                tools = body.get("tools")
+                enabled = bool(body.get("enabled", True))
+                ok = app.set_mcp_tools_enabled(srv, tools, enabled)
                 self._send_json(200 if ok else 400, {"ok": ok})
                 return
             if path == "/fetch-models":
