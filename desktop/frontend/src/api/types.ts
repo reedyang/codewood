@@ -24,6 +24,15 @@ export interface WorkspaceChatSummary {
   updatedAt?: string;
 }
 
+/** General-runtime settings exposed by the GUI's General settings page. */
+export interface GeneralConfig {
+  auto_compact_trigger_percent: number;
+  /** ``null`` means unlimited tool rounds. */
+  max_tool_rounds: number | null;
+  memory_enabled: boolean;
+  mcp_tools_enabled: boolean;
+}
+
 export interface AppState {
   app: { name: string; version: string };
   workspace: { name: string; id: string; root: string; workDirectory: string };

@@ -3,6 +3,7 @@ import { useApp, type Theme } from "../state/AppContext";
 import { SUPPORTED_LANGS } from "../i18n";
 import { Icon, type IconName } from "./Icon";
 import { ModelsSettings } from "./ModelsSettings";
+import { GeneralSettings } from "./GeneralSettings";
 
 const THEME_OPTIONS: { value: Theme; icon: IconName }[] = [
   { value: "light", icon: "sun" },
@@ -14,7 +15,7 @@ const NAV_MIN = 160;
 const NAV_MAX = 360;
 const NAV_WIDTH_KEY = "codewood.settingsNavWidth";
 
-type PageId = "appearance" | "models";
+type PageId = "appearance" | "general" | "models";
 
 function loadNavWidth(): number {
   const raw = Number(window.localStorage.getItem(NAV_WIDTH_KEY));
@@ -26,10 +27,11 @@ function loadNavWidth(): number {
 
 export function SettingsView() {
   const { state, theme, setTheme, setGuiLanguage, closeSettings, t } = useApp();
-  const [page, setPage] = useState<PageId>("appearance");
+  const [page, setPage] = useState<PageId>("general");
   const [navWidth, setNavWidth] = useState(loadNavWidth);
   const [resizing, setResizing] = useState(false);
   const [modelsDirty, setModelsDirty] = useState(false);
+  const [generalDirty, setGeneralDirty] = useState(false);
   const [saveSignal, setSaveSignal] = useState(0);
   // A queued navigation that is waiting on the unsaved-changes prompt.
   const [pendingLeave, setPendingLeave] = useState<PageId | "back" | null>(null);
@@ -44,9 +46,17 @@ export function SettingsView() {
     }
   };
 
-  // Attempt to navigate; if the models page is dirty, open the prompt instead.
+  // Pages that own their own dirty state. Whenever we try to leave one of
+  // these pages while it's dirty, we open the leave-confirmation prompt
+  // instead of navigating away immediately.
+  const pageIsDirty = (id: PageId): boolean => {
+    if (id === "models") return modelsDirty;
+    if (id === "general") return generalDirty;
+    return false;
+  };
+
   const requestLeave = (target: PageId | "back") => {
-    if (page === "models" && modelsDirty) {
+    if (pageIsDirty(page)) {
       setPendingLeave(target);
       return;
     }
@@ -61,7 +71,10 @@ export function SettingsView() {
   const onDialogDiscard = () => {
     const target = pendingLeave;
     setPendingLeave(null);
+    // Drop dirty flags for any page that might have triggered the dialog so we
+    // don't reopen it immediately on the next navigation attempt.
     setModelsDirty(false);
+    setGeneralDirty(false);
     if (target) performLeave(target);
   };
 
@@ -71,8 +84,18 @@ export function SettingsView() {
   };
 
   // Once a save triggered by the dialog clears the dirty flag, finish leaving.
-  const handleDirtyChange = (d: boolean) => {
+  const handleModelsDirtyChange = (d: boolean) => {
     setModelsDirty(d);
+    if (!d && leaveAfterSave) {
+      setLeaveAfterSave(false);
+      const target = pendingLeave;
+      setPendingLeave(null);
+      if (target) performLeave(target);
+    }
+  };
+
+  const handleGeneralDirtyChange = (d: boolean) => {
+    setGeneralDirty(d);
     if (!d && leaveAfterSave) {
       setLeaveAfterSave(false);
       const target = pendingLeave;
@@ -117,6 +140,7 @@ export function SettingsView() {
   const langLabel = (code: string) => (code === "zh-CN" ? "简体中文" : "English");
 
   const pages: { id: PageId; label: string; icon: IconName }[] = [
+    { id: "general", label: t("settings.page.general"), icon: "gear" },
     { id: "appearance", label: t("settings.page.appearance"), icon: "sun" },
     { id: "models", label: t("settings.page.models"), icon: "cube" },
   ];
@@ -188,8 +212,11 @@ export function SettingsView() {
             </div>
           </div>
         )}
+        {page === "general" && (
+          <GeneralSettings onDirtyChange={handleGeneralDirtyChange} saveSignal={saveSignal} />
+        )}
         {page === "models" && (
-          <ModelsSettings onDirtyChange={handleDirtyChange} saveSignal={saveSignal} />
+          <ModelsSettings onDirtyChange={handleModelsDirtyChange} saveSignal={saveSignal} />
         )}
       </section>
 
