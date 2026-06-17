@@ -4,6 +4,7 @@ import newChat from "../assets/icons/new-chat.svg";
 import folder from "../assets/icons/folder.svg";
 import folderOpen from "../assets/icons/folder-open.svg";
 import pin from "../assets/icons/pin.svg";
+import pinFilled from "../assets/icons/pin-filled.svg";
 import gear from "../assets/icons/gear.svg";
 import shield from "../assets/icons/shield.svg";
 import plus from "../assets/icons/plus.svg";
@@ -16,6 +17,9 @@ import moon from "../assets/icons/moon.svg";
 import monitor from "../assets/icons/monitor.svg";
 import info from "../assets/icons/info.svg";
 import dots from "../assets/icons/dots.svg";
+import copy from "../assets/icons/copy.svg";
+import edit from "../assets/icons/edit.svg";
+import fork from "../assets/icons/fork.svg";
 import stop from "../assets/icons/stop.svg";
 import winMin from "../assets/icons/win-min.svg";
 import winMax from "../assets/icons/win-max.svg";
@@ -28,6 +32,7 @@ const SOURCES = {
   folder,
   "folder-open": folderOpen,
   pin,
+  "pin-filled": pinFilled,
   gear,
   shield,
   plus,
@@ -40,6 +45,9 @@ const SOURCES = {
   monitor,
   info,
   dots,
+  copy,
+  edit,
+  fork,
   stop,
   "win-min": winMin,
   "win-max": winMax,

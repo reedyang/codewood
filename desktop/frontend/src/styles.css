@@ -241,13 +241,45 @@ body {
 
 /* Sidebar */
 .sidebar {
-  width: 200px;
+  width: var(--sidebar-width, 200px);
   flex-shrink: 0;
   background: var(--bg-sidebar);
   color: var(--text-on-dark);
   display: flex;
   flex-direction: column;
   padding: 18px 14px;
+}
+
+/* Draggable divider between the sidebar and the main panel. */
+.sidebar-resizer {
+  flex: 0 0 6px;
+  align-self: stretch;
+  cursor: col-resize;
+  background: transparent;
+  position: relative;
+  z-index: 6;
+}
+
+.sidebar-resizer::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 2px;
+  transform: translateX(-50%);
+  background: transparent;
+  transition: background 0.12s ease;
+}
+
+.sidebar-resizer:hover::after,
+.sidebar-resizer.resizing::after {
+  background: var(--accent);
+}
+
+body.resizing-x {
+  cursor: col-resize;
+  user-select: none;
 }
 
 .brand-name {
@@ -463,6 +495,59 @@ body {
   min-width: 0;
 }
 
+/* Fixed bar above the transcript with the active chat name + actions. */
+.chat-titlebar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 44px;
+  padding: 0 14px 0 18px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg);
+}
+
+.chat-titlebar-pin {
+  color: var(--text-muted);
+  transform: rotate(45deg);
+  flex: 0 0 auto;
+}
+
+.chat-titlebar-name {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 1;
+  min-width: 0;
+}
+
+.chat-titlebar-rename {
+  flex: 1;
+  min-width: 0;
+  font-size: 14px;
+}
+
+.chat-titlebar-more {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 6px;
+  border-radius: 6px;
+}
+
+.chat-titlebar-more:hover {
+  background: var(--user-bg);
+  color: var(--text);
+}
+
 .transcript {
   flex: 1;
   overflow-y: auto;
@@ -497,6 +582,63 @@ body {
 .entry-text {
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+/* User message block: the bubble plus a hover-only action row beneath it. */
+.user-message {
+  max-width: 80%;
+  margin-left: auto;
+  margin-bottom: 12px;
+}
+
+.user-message .entry-input {
+  max-width: 100%;
+  width: fit-content;
+  margin-left: auto;
+}
+
+/* Always laid out so the row reserves its height; only its contents are
+   hidden until hover, which keeps messages from jumping when hovered. */
+.entry-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 4px;
+  padding: 0 2px;
+  visibility: hidden;
+}
+
+.user-message:hover .entry-actions {
+  visibility: visible;
+}
+
+.entry-time {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.entry-action-buttons {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.entry-action-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 4px;
+  border-radius: 6px;
+}
+
+.entry-action-btn:hover {
+  background: var(--user-bg);
+  color: var(--text);
 }
 
 .entry-output {
@@ -869,26 +1011,72 @@ body {
   color: var(--text-on-dark);
 }
 
-/* Workspace expand/collapse chevron: only visible on row hover. */
-.tree-chevron-btn {
+/* Workspace label: the name is followed immediately by the expand/collapse
+   chevron; a flex spacer pushes the menu button to the row's right edge. */
+.ws-label {
+  flex: 0 1 auto;
+}
+
+.ws-label .tree-name {
+  flex: 0 1 auto;
+}
+
+.tree-flex {
+  flex: 1 1 auto;
+  align-self: stretch;
+}
+
+/* Inline workspace chevron: only visible on row hover. */
+.tree-inline-chevron {
+  flex: 0 0 auto;
+  opacity: 0;
+  color: var(--text-on-dark-muted);
+}
+
+.ws-row:hover .tree-inline-chevron {
+  opacity: 1;
+}
+
+/* Pinned-chat pin badge sits next to the menu button, hover-only; the relative
+   time is hidden on hover so the badge has room. */
+/* Chat rows show only the timestamp at rest (flush right). Hovering reveals
+   the quick pin/unpin and overflow buttons in the timestamp's place, so no
+   blank slot is reserved for the hidden icons. */
+.chat-row .chat-pin-btn,
+.chat-row .tree-more {
+  display: none;
+}
+
+.chat-row:hover .chat-pin-btn,
+.chat-row:hover .tree-more {
   display: inline-flex;
+}
+
+.chat-row:hover .tree-meta {
+  display: none;
+}
+
+.chat-pin-btn {
+  flex: 0 0 auto;
   align-items: center;
   justify-content: center;
   background: transparent;
   border: none;
-  color: var(--text-on-dark-muted);
   cursor: pointer;
-  padding: 2px 4px;
+  color: var(--text-on-dark-muted);
+  padding: 2px 5px;
   border-radius: 6px;
-  opacity: 0;
+  line-height: 1;
 }
 
-.ws-row:hover .tree-chevron-btn {
-  opacity: 1;
+/* The pushpin tilts to the right; deepen color on hover. */
+.chat-pin-btn .icon {
+  transform: rotate(45deg);
 }
 
-.tree-chevron-btn:hover {
+.chat-pin-btn:hover {
   color: var(--text-on-dark);
+  background: var(--sidebar-active);
 }
 
 .tree-children {
@@ -1120,8 +1308,6 @@ body {
 }
 
 .activity-steps {
-  white-space: pre-wrap;
-  word-break: break-word;
   font-family: "Cascadia Code", "Consolas", monospace;
   font-size: 12.5px;
   background: var(--output-bg);
@@ -1130,15 +1316,124 @@ body {
   border-radius: 10px;
   margin: 6px 0 0 0;
   border: 1px solid var(--border);
+  user-select: text;
+}
+
+/* Feedback lines ("You ran ...", "Ran ...") render flush-left. */
+.activity-steps .step-text {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.activity-steps .step-text + .step-text,
+.activity-steps .step-text + .cmd-output,
+.activity-steps .cmd-output + .step-text,
+.activity-steps .cmd-output + .cmd-output {
+  margin-top: 4px;
+}
+
+/* Command output as a single padded node: the 2ch indent applies to every
+   visual line, including soft-wrapped continuations. */
+.activity-steps .cmd-output {
+  white-space: pre-wrap;
+  word-break: break-word;
+  padding-left: 2ch;
 }
 
 .answer {
-  white-space: pre-wrap;
-  word-break: break-word;
   font-family: inherit;
   font-size: 14px;
   color: var(--text);
   margin: 8px 0 0 0;
+  user-select: text;
+}
+
+/* Selectable message text */
+.entry-text,
+.entry-output {
+  user-select: text;
+}
+
+/* Markdown-rendered model reply */
+.md > :first-child {
+  margin-top: 0;
+}
+.md > :last-child {
+  margin-bottom: 0;
+}
+.md-p {
+  margin: 8px 0;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.md-h {
+  margin: 14px 0 6px 0;
+  line-height: 1.3;
+  font-weight: 650;
+  color: var(--text);
+}
+h1.md-h {
+  font-size: 1.4em;
+}
+h2.md-h {
+  font-size: 1.25em;
+}
+h3.md-h {
+  font-size: 1.12em;
+}
+h4.md-h,
+h5.md-h,
+h6.md-h {
+  font-size: 1em;
+}
+.md-list {
+  margin: 6px 0;
+  padding-left: 22px;
+  line-height: 1.55;
+}
+.md-list li {
+  margin: 2px 0;
+}
+.md-code {
+  font-family: "Cascadia Code", "Consolas", monospace;
+  font-size: 0.9em;
+  background: var(--output-bg);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 1px 5px;
+}
+.md-pre {
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: "Cascadia Code", "Consolas", monospace;
+  font-size: 12.5px;
+  background: var(--output-bg);
+  color: var(--output-text);
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  margin: 8px 0;
+}
+.md-pre code {
+  font-family: inherit;
+  background: none;
+  border: none;
+  padding: 0;
+}
+.md-quote {
+  margin: 8px 0;
+  padding: 2px 12px;
+  border-left: 3px solid var(--border);
+  color: var(--text-muted);
+}
+.md-hr {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 12px 0;
+}
+.md a {
+  color: var(--accent, #3b8eea);
 }
 
 /* Empty state */
@@ -1283,16 +1578,17 @@ body {
 }
 
 .send-btn {
-  width: 34px;
-  height: 34px;
+  width: 26px;
+  height: 26px;
   border-radius: 50%;
-  border: none;
-  background: var(--accent);
-  color: var(--accent-text);
+  border: 1px solid var(--border);
+  background: #ffffff;
+  color: #1a1a1a;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   cursor: pointer;
+  padding: 0;
 }
 
 .send-btn:disabled {
@@ -1300,8 +1596,14 @@ body {
   cursor: not-allowed;
 }
 
+/* Interrupt: no background, just a white square (the stop glyph). */
 .send-btn.is-stop {
-  background: var(--danger);
+  width: 26px;
+  height: 26px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: #ffffff;
 }
 
 /* Dropdowns (policy / model) */
@@ -1367,6 +1669,15 @@ body {
 
 .dropdown-item.active {
   font-weight: 600;
+}
+
+/* Fixed leading slot so every label left-aligns whether or not it is checked. */
+.dropdown-check {
+  flex: 0 0 auto;
+  width: 13px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
 
 /* Composer dock (workspace selector above composer in the active view) */
@@ -1520,4 +1831,83 @@ body {
 
 .mono {
   font-family: "Cascadia Code", "Consolas", monospace;
+}
+
+/* Frameless-window resize handles (driven by ResizeGrips). WebView2 swallows
+   the native edge hit-test, so thin overlays at the window border start a
+   JS-driven resize. */
+.resize-grips {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 9999;
+}
+
+.resize-grip {
+  position: fixed;
+  pointer-events: auto;
+}
+
+.resize-n {
+  top: 0;
+  left: 6px;
+  right: 6px;
+  height: 4px;
+  cursor: ns-resize;
+}
+
+.resize-s {
+  bottom: 0;
+  left: 6px;
+  right: 6px;
+  height: 4px;
+  cursor: ns-resize;
+}
+
+.resize-e {
+  top: 6px;
+  bottom: 6px;
+  right: 0;
+  width: 4px;
+  cursor: ew-resize;
+}
+
+.resize-w {
+  top: 6px;
+  bottom: 6px;
+  left: 0;
+  width: 4px;
+  cursor: ew-resize;
+}
+
+.resize-ne {
+  top: 0;
+  right: 0;
+  width: 8px;
+  height: 8px;
+  cursor: nesw-resize;
+}
+
+.resize-nw {
+  top: 0;
+  left: 0;
+  width: 8px;
+  height: 8px;
+  cursor: nwse-resize;
+}
+
+.resize-se {
+  bottom: 0;
+  right: 0;
+  width: 8px;
+  height: 8px;
+  cursor: nwse-resize;
+}
+
+.resize-sw {
+  bottom: 0;
+  left: 0;
+  width: 8px;
+  height: 8px;
+  cursor: nesw-resize;
 }
