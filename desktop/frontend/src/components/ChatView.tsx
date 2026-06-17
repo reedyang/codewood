@@ -775,7 +775,6 @@ function ContextUsageRing({
           transform="rotate(-90 10 10)"
         />
       </svg>
-      <span className="context-ring-text">{pct}%</span>
     </span>
   );
 }
