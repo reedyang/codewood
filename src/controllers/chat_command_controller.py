@@ -316,6 +316,27 @@ def handle_chat_edit_command(agent: Any, raw_index: str) -> None:
         agent.conversation_history = list(
             agent.conversation_history[:target_history_index]
         )
+        # Editing erases this turn and everything after it, so the prior tool
+        # call outcomes must not linger: operation_results feeds the model the
+        # cached tool results, and any stale entries would let the next request
+        # answer from the old tool output instead of re-running the tools.
+        try:
+            results = getattr(agent, "operation_results", None)
+            if isinstance(results, list):
+                results.clear()
+        except Exception:
+            pass
+        # Drop the rolling/LLM session summaries derived from the now-removed
+        # tail so they can't reintroduce the erased content into context.
+        for attr in ("_session_summary_llm", "_session_summary_rolling"):
+            try:
+                setattr(agent, attr, "")
+            except Exception:
+                pass
+        try:
+            agent._last_llm_summary_pair_count = 0
+        except Exception:
+            pass
         try:
             agent._sync_active_chat_messages()
         except Exception:
