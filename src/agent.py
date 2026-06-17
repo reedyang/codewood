@@ -894,8 +894,17 @@ class Agent:
         current = self._current_model_selector().lower()
         selector = f"{provider}:{model_name}".lower()
         if selector == current:
-            # Same model, but make sure this chat's reasoning level is restored.
+            # Same model, but the live ``self.params`` may have been seeded
+            # directly from config at boot (without the parsed per-model
+            # ``reasoning_effort``/``extra_headers``). Re-apply the catalog
+            # choice so the supported reasoning levels are populated before we
+            # normalize the stored level; otherwise normalization sees no
+            # levels and silently drops this chat's saved selection.
+            choice = self._find_configured_model_choice(f"{provider}:{model_name}")
+            if choice:
+                self._apply_runtime_model_choice(choice, validate=False)
             self.reasoning_level = self._normalize_reasoning_level(stored_level)
+            self._pin_session_model()
             return False
 
         choice = self._find_configured_model_choice(f"{provider}:{model_name}")
