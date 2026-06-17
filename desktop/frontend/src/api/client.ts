@@ -135,6 +135,15 @@ export class ApiClient {
     return res.ok;
   }
 
+  async setGuiLanguage(language: string): Promise<boolean> {
+    const res = await fetch(`${this.base}/set-gui-language`, {
+      method: "POST",
+      headers: this.headers(),
+      body: JSON.stringify({ language }),
+    });
+    return res.ok;
+  }
+
   async setUiPrefs(prefs: unknown): Promise<boolean> {
     const res = await fetch(`${this.base}/set-ui-prefs`, {
       method: "POST",

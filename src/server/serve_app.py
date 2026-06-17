@@ -667,21 +667,34 @@ def _build_state(agent: Any) -> Dict[str, Any]:
         pass
 
     try:
-        language = get_display_language(agent)
+        agent_language = get_display_language(agent)
     except Exception:
-        language = "en"
+        agent_language = "en"
 
     theme = ""
     ui_prefs: Dict[str, Any] = {}
+    gui_language = ""
     try:
-        from ..core.config.gui_config import load_gui_config, normalize_ui_prefs
+        from ..core.config.gui_config import (
+            load_gui_config,
+            normalize_gui_language,
+            normalize_ui_prefs,
+        )
 
         gui_cfg = load_gui_config(agent.config_dir)
         theme = str(gui_cfg.get("theme") or "")
         ui_prefs = normalize_ui_prefs(gui_cfg.get("uiPrefs"))
+        gui_language = normalize_gui_language(gui_cfg.get("language"))
     except Exception:
         theme = ""
         ui_prefs = {}
+        gui_language = ""
+
+    # The GUI's display language is intentionally decoupled from the agent's
+    # ``display_language`` (which drives TUI prompts and model system text).
+    # We override only when the GUI has its own saved preference so existing
+    # configs (no GUI language set) keep following the agent's locale.
+    language = gui_language or agent_language
 
     return {
         "app": {"name": get_app_name(), "version": get_app_version()},
@@ -1065,6 +1078,39 @@ class ServeApp:
             save_gui_config(agent.config_dir, data)
         except Exception:
             return False
+        return True
+
+    def set_gui_language(self, language: str) -> bool:
+        """Persist a GUI-only display language without touching the TUI's locale.
+
+        The agent's ``display_language`` continues to drive the TUI, system
+        prompts and tool output language. This setting overrides only the
+        webview's rendered locale.
+        """
+        agent = self.agent
+        try:
+            from ..core.config.gui_config import (
+                load_gui_config,
+                normalize_gui_language,
+                save_gui_config,
+            )
+
+            value = normalize_gui_language(language)
+            if not value:
+                return False
+            data = load_gui_config(agent.config_dir)
+            data["language"] = value
+            save_gui_config(agent.config_dir, data)
+        except Exception:
+            return False
+        # Push a fresh state snapshot so the webview immediately re-renders
+        # with the new locale without waiting for the next agent tick.
+        try:
+            self.broadcaster.publish(
+                "idle", {"state": _build_state(agent), "chatId": self._active_chat_id()}
+            )
+        except Exception:
+            pass
         return True
 
     def set_ui_prefs(self, prefs: Dict[str, Any]) -> bool:
@@ -1700,6 +1746,11 @@ def _make_handler(app: ServeApp):
             if path == "/set-theme":
                 theme = str(body.get("theme") or "")[:16]
                 ok = app.set_theme(theme)
+                self._send_json(200 if ok else 400, {"ok": ok})
+                return
+            if path == "/set-gui-language":
+                lang = str(body.get("language") or "")[:32]
+                ok = app.set_gui_language(lang)
                 self._send_json(200 if ok else 400, {"ok": ok})
                 return
             if path == "/set-ui-prefs":
