@@ -811,7 +811,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
     async (selector: string) => {
       const value = selector.trim();
       if (value) {
-        await client.sendInput(`/model ${value}`);
+        // Route the model switch to the focused chat so it only changes that
+        // chat's model (and persists onto its history), never another chat's.
+        await client.sendInput(`/model ${value}`, false, activeChatIdRef.current);
       }
     },
     [client],
