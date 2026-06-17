@@ -1600,6 +1600,15 @@ h6.md-h {
   font-weight: 600;
 }
 
+/* Fixed-width column for the active check so every row's label aligns left
+   regardless of whether it shows a checkmark. */
+.ws-selector-check {
+  flex: 0 0 13px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
 .ws-selector-item.add {
   display: flex;
   align-items: center;
