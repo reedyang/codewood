@@ -1132,6 +1132,16 @@ body.resizing-x {
   margin-bottom: 8px;
 }
 
+/* Read-only chip strip rendered inside a sent user bubble (no remove button). */
+.user-message .attachments-readonly {
+  margin-top: 6px;
+  margin-bottom: 6px;
+}
+
+.user-message .attachments-readonly .attachment-chip {
+  background: var(--bg-elevated);
+}
+
 .attachment-chip {
   display: inline-flex;
   align-items: center;

@@ -5,6 +5,7 @@ import { Icon } from "./Icon";
 import { MarkdownText } from "./Markdown";
 import { StepsView } from "./Steps";
 import { ChatTitleBar } from "./ChatTitleBar";
+import { decodeAttachments, encodeAttachments } from "../utils/attachments";
 
 function quote(value: string): string {
   return `"${value.replace(/"/g, "")}"`;
@@ -97,11 +98,23 @@ function UserEntry({
   const [copied, setCopied] = useState(false);
   const time = formatMessageTime(timeMs);
   const canAct = index < 0;
+  const { paths: attachedPaths, body } = decodeAttachments(text);
   return (
     <div className="user-message">
       <div className="entry-input">
         <span className="entry-label">{t("chat.you")}</span>
-        <div className="entry-text">{text}</div>
+        {attachedPaths.length > 0 && (
+          <div className="attachments attachments-readonly">
+            {attachedPaths.map((path) => (
+              <span className="attachment-chip" key={path} title={path}>
+                <Icon name="info" size={13} className="muted-icon" />
+                <span className="attachment-name">{baseName(path)}</span>
+                <span className="attachment-ext">{fileExt(path)}</span>
+              </span>
+            ))}
+          </div>
+        )}
+        {body && <div className="entry-text">{body}</div>}
       </div>
       <div className="entry-actions">
         <span className="entry-time">{time}</span>
@@ -111,7 +124,8 @@ function UserEntry({
             title={t("msg.copy")}
             aria-label={t("msg.copy")}
             onClick={() => {
-              handlers.onCopy(text);
+              // Copy the user-visible body, not the sentinel-wrapped envelope.
+              handlers.onCopy(body || text);
               setCopied(true);
               window.setTimeout(() => setCopied(false), 1200);
             }}
@@ -195,7 +209,11 @@ export function ChatView() {
       void navigator.clipboard?.writeText(text);
     },
     onEdit: (index, text) => {
-      setDraft(text);
+      // Restore both the textual body and any structured attachments so the
+      // composer re-renders the same chips that were on the original message.
+      const { paths, body } = decodeAttachments(text);
+      setDraft(body);
+      setAttachments(paths);
       composerRef.current?.focus();
       void editChat(index);
     },
@@ -246,14 +264,13 @@ export function ChatView() {
       return;
     }
     // Attach files by reference (path), not by inlining content. This mirrors
-    // Codex's approach: the agent reads each file with its tools and decides how
-    // much to load, which avoids blowing the context window on large files.
-    let message = text;
-    if (attachments.length > 0) {
-      const list = attachments.map((p) => `- ${p}`).join("\n");
-      const block = `${t("attach.contextHeader")}\n${list}`;
-      message = text ? `${block}\n\n${text}` : block;
-    }
+    // Codex's approach: the agent reads each file with its tools and decides
+    // how much to load, which avoids blowing the context window on large
+    // files. We use a structured Unicode-sentinel envelope so the GUI can
+    // safely round-trip attachments through history/edit, without having to
+    // parse a free-form "Attached files:" header that a user could
+    // accidentally collide with in their own message.
+    const message = encodeAttachments(attachments, text);
     setDraft("");
     setAttachments([]);
     await sendInput(message);
