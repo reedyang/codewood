@@ -322,6 +322,15 @@ export class ApiClient {
     }
   }
 
+  async setPlanMode(enabled: boolean): Promise<boolean> {
+    const res = await fetch(`${this.base}/set-plan-mode`, {
+      method: "POST",
+      headers: this.headers(),
+      body: JSON.stringify({ enabled }),
+    });
+    return res.ok;
+  }
+
   async getCompletionCatalog(): Promise<CompletionCatalog> {
     const empty: CompletionCatalog = { skills: [], mcpTools: [], mcpPrompts: [] };
     const res = await fetch(`${this.base}/completion-catalog`, {
