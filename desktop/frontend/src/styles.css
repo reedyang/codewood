@@ -1065,6 +1065,29 @@ body.resizing-x {
   display: none;
 }
 
+/* Pulsing dot marking a chat whose agent loop is running (parallel chats). */
+.chat-busy-dot {
+  flex: 0 0 auto;
+  width: 7px;
+  height: 7px;
+  margin-left: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: busy-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes busy-pulse {
+  0%,
+  100% {
+    opacity: 0.35;
+    transform: scale(0.85);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.15);
+  }
+}
+
 .chat-pin-btn {
   flex: 0 0 auto;
   align-items: center;

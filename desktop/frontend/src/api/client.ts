@@ -44,11 +44,11 @@ export class ApiClient {
     return (await res.json()) as AppState;
   }
 
-  async sendInput(text: string, asPrompt = false): Promise<void> {
+  async sendInput(text: string, asPrompt = false, chatId = ""): Promise<void> {
     await fetch(`${this.base}/input`, {
       method: "POST",
       headers: this.headers(),
-      body: JSON.stringify({ text, asPrompt }),
+      body: JSON.stringify({ text, asPrompt, chatId }),
     });
   }
 

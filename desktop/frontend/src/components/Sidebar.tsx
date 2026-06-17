@@ -53,6 +53,7 @@ export function Sidebar({ onOpenSettings }: { onOpenSettings: () => void }) {
     uiPrefs,
     workspaceChats,
     expandedWorkspaceIds,
+    busyByChat,
     t,
     runCommand,
     clearTurns,
@@ -245,10 +246,13 @@ export function Sidebar({ onOpenSettings }: { onOpenSettings: () => void }) {
     const isActive = wsId === activeWsId && chat.active;
     const rel = formatRelative(chat.updatedAt);
     const isPinned = isPinnedChat(wsId, chat.id);
+    // Chat ids are only unique within a workspace, so only trust the running
+    // marker for chats in the active workspace to avoid false positives.
+    const isBusy = wsId === activeWsId && Boolean(busyByChat[chat.id]);
     return (
       <li
         key={`${wsId}-${chat.id}`}
-        className={`tree-row chat-row ${isPinned ? "chat-row-pinned" : ""} ${isActive ? "active" : ""}`}
+        className={`tree-row chat-row ${isPinned ? "chat-row-pinned" : ""} ${isActive ? "active" : ""} ${isBusy ? "chat-row-busy" : ""}`}
         onContextMenu={(e) => openChatMenu(e, chat, wsId)}
       >
         {isRenamingChat(wsId, chat.id) ? (
@@ -257,6 +261,7 @@ export function Sidebar({ onOpenSettings }: { onOpenSettings: () => void }) {
           <>
             <button className="tree-label" title={chat.id} onClick={() => void switchChat(wsId, chat.id)}>
               <span className="tree-name">{chat.name}</span>
+              {isBusy && <span className="chat-busy-dot" aria-label={t("chat.busy")} title={t("chat.busy")} />}
               {rel && <span className="tree-meta">{rel}</span>}
             </button>
             <button

@@ -126,6 +126,11 @@ from .config.app_info import (
     get_app_runtime_attr_name,
 )
 from .runtime import bootstrap
+from .runtime.session_state import (
+    SessionState,
+    SESSION_FIELD_MAP,
+    install_session_properties,
+)
 from .services import execution_policy_service
 from .runtime import prompt_composer
 from .managers import WorkspaceStateManager, ChatStateManager
@@ -238,6 +243,12 @@ class Agent:
         """
         startup_work_directory = Path(work_directory) if work_directory else Path.cwd()
 
+        # Route the per-chat execution attributes (conversation_history, etc.)
+        # through a thread-bound SessionState so concurrent chat loops don't
+        # collide. Installed once on the class; the registry is created inside
+        # setup_core_state before any of those attributes are assigned.
+        install_session_properties(Agent)
+
         bootstrap.setup_core_state(
             self,
             startup_work_directory=startup_work_directory,
@@ -284,6 +295,127 @@ class Agent:
         bootstrap.setup_runtime_services(self)
         self._last_terminal_block_kind = ""
         self._terminal_cursor_at_line_start = True
+
+    # ----- per-chat session registry -------------------------------------
+    def _install_session_registry(self) -> None:
+        """Create the per-chat SessionState registry and thread binding.
+
+        Called at the very start of ``setup_core_state`` so the per-session
+        properties have somewhere to read/write before any field is assigned.
+        """
+        self.__dict__["_session_registry"] = {}
+        self.__dict__["_session_registry_lock"] = threading.RLock()
+        self.__dict__["_session_tls"] = threading.local()
+
+    def _current_session_chat_key(self) -> str:
+        tls = self.__dict__.get("_session_tls")
+        if tls is None:
+            return ""
+        return str(getattr(tls, "chat_id", "") or "")
+
+    def _session_for_key(self, key: str) -> "SessionState":
+        reg = self.__dict__.get("_session_registry")
+        if reg is None:
+            return SessionState()
+        lock = self.__dict__.get("_session_registry_lock")
+        if lock is None:
+            st = reg.get(key)
+            if st is None:
+                st = SessionState()
+                reg[key] = st
+            return st
+        with lock:
+            st = reg.get(key)
+            if st is None:
+                st = SessionState()
+                reg[key] = st
+            return st
+
+    def _session(self) -> "SessionState":
+        """Return the SessionState bound to the calling thread's chat.
+
+        Threads with no explicit binding share the ``""`` session (the TUI and
+        any single-loop path bind their one chat via ``activate_chat``). The
+        bound session is cached on the thread so the common access path doesn't
+        take the registry lock.
+        """
+        tls = self.__dict__.get("_session_tls")
+        if tls is not None:
+            cached = getattr(tls, "session", None)
+            if cached is not None:
+                return cached
+        return self._session_for_key(self._current_session_chat_key())
+
+    def _pin_session_model(self) -> None:
+        """Snapshot the agent's current model selection onto the bound session.
+
+        ``provider``/``model_name``/``params``/``openai_conf`` are a single
+        shared global on the agent. When several chat loops run concurrently a
+        chat's activation (or a ``/model`` switch) overwrites those globals for
+        everyone. Pinning the selection onto the activating thread's session
+        lets each chat's :meth:`call_ai` keep using the model it was activated
+        with, regardless of what another chat does afterwards.
+        """
+        try:
+            sess = self._session()
+        except Exception:
+            return
+        if sess is None:
+            return
+        sess.call_provider = self.provider
+        sess.call_model_name = self.model_name
+        sess.call_model_params = self.params
+        sess.call_openai_conf = self.openai_conf
+        sess.call_model_set = True
+
+    def _session_model_for_call(self):
+        """Return ``(provider, model_name, params, openai_conf)`` for this thread.
+
+        Falls back to the shared globals when the bound session has not pinned a
+        model yet (e.g. the default session used by HTTP/display threads).
+        """
+        sess = None
+        try:
+            sess = self._session()
+        except Exception:
+            sess = None
+        if sess is not None and getattr(sess, "call_model_set", False):
+            return (
+                sess.call_provider,
+                sess.call_model_name,
+                sess.call_model_params,
+                sess.call_openai_conf,
+            )
+        return self.provider, self.model_name, self.params, self.openai_conf
+
+    def _bind_session(self, chat_id: str) -> None:
+        """Bind the calling thread to ``chat_id``'s session (creating it)."""
+        tls = self.__dict__.get("_session_tls")
+        if tls is None:
+            self._install_session_registry()
+            tls = self.__dict__["_session_tls"]
+        key = str(chat_id or "")
+        tls.chat_id = key
+        tls.session = self._session_for_key(key)
+
+    @contextlib.contextmanager
+    def _session_scope(self, chat_id: str):
+        """Temporarily bind the calling thread to ``chat_id`` then restore.
+
+        Used by HTTP handler threads (which run on a different thread than the
+        agent loop) to read a specific chat's live session state.
+        """
+        tls = self.__dict__.get("_session_tls")
+        prev_chat = str(getattr(tls, "chat_id", "") or "") if tls is not None else ""
+        prev_session = getattr(tls, "session", None) if tls is not None else None
+        self._bind_session(chat_id)
+        try:
+            yield
+        finally:
+            tls = self.__dict__.get("_session_tls")
+            if tls is not None:
+                tls.chat_id = prev_chat
+                tls.session = prev_session
 
     def _resolve_path_lenient(self, path: Path) -> Path:
         try:
@@ -627,6 +759,10 @@ class Agent:
                 self._validate_single_model(self.provider, self.model_name, "model")
             except Exception:
                 pass
+        # Pin the just-applied selection onto the calling thread's session so a
+        # concurrent chat's later activation can't make this chat's loop use the
+        # wrong model.
+        self._pin_session_model()
 
     def _set_active_chat_model(
         self,
@@ -5541,12 +5677,28 @@ class Agent:
             messages_override=messages_override,
             record_history_override=record_history_override,
         )
-        self.ai_orchestrator.context.provider = self.provider
-        self.ai_orchestrator.context.model_name = self.model_name
-        self.ai_orchestrator.context.model_params = self.params
-        self.ai_orchestrator.context.openai_conf = self.openai_conf
-        self.ai_orchestrator.context.work_directory = str(self.work_directory)
-        return self.ai_orchestrator.call(call_ctx=call_ctx)
+        # The orchestrator and its mutable ``context`` are shared across chats;
+        # serialize the set-then-call so concurrent loops can't interleave and
+        # send one chat's request with another chat's provider/model/cwd.
+        # Resolve the model from the calling thread's session (per-chat),
+        # falling back to the shared globals, so concurrent chat loops each send
+        # their own provider/model rather than whichever chat last activated.
+        prov, mname, mparams, mconf = self._session_model_for_call()
+        lock = getattr(self, "_model_call_lock", None)
+        if lock is None:
+            self.ai_orchestrator.context.provider = prov
+            self.ai_orchestrator.context.model_name = mname
+            self.ai_orchestrator.context.model_params = mparams
+            self.ai_orchestrator.context.openai_conf = mconf
+            self.ai_orchestrator.context.work_directory = str(self.work_directory)
+            return self.ai_orchestrator.call(call_ctx=call_ctx)
+        with lock:
+            self.ai_orchestrator.context.provider = prov
+            self.ai_orchestrator.context.model_name = mname
+            self.ai_orchestrator.context.model_params = mparams
+            self.ai_orchestrator.context.openai_conf = mconf
+            self.ai_orchestrator.context.work_directory = str(self.work_directory)
+            return self.ai_orchestrator.call(call_ctx=call_ctx)
 
     def _ephemeral_path_key(self, path: Path) -> str:
         try:

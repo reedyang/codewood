@@ -49,6 +49,19 @@ def setup_core_state(agent: Any, startup_work_directory: Path, self_repo_root: P
     except Exception:
         agent.startup_initial_directory = Path(startup_work_directory).expanduser()
     agent._self_repo_root = self_repo_root
+    # Create the per-chat SessionState registry before assigning any
+    # per-session attribute below: with the session properties installed,
+    # ``agent.conversation_history = []`` routes through ``agent._session()``,
+    # which needs the registry to exist.
+    agent._install_session_registry()
+    # Serializes the shared AI orchestrator call so concurrent chat loops can't
+    # corrupt its single mutable ``context`` mid-flight. Must be re-entrant: a
+    # single call_ai builds its messages via the session-memory service, which
+    # itself issues nested call_ai requests (session summary / memory-query
+    # expansion / reflection) on the same thread. A non-reentrant lock would
+    # deadlock there (and a blocked lock acquire can't be broken by Ctrl+C on
+    # Windows). RLock still serializes across different chat-loop threads.
+    agent._model_call_lock = threading.RLock()
     agent.conversation_history = []
     agent._chat_state = {}
     agent.active_chat_id = ""
