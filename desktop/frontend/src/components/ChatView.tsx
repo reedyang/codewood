@@ -198,8 +198,40 @@ export function ChatView() {
     setDraftWorkspace,
     t,
   } = useApp();
-  const [draft, setDraft] = useState("");
-  const [attachments, setAttachments] = useState<string[]>([]);
+  // Drafts (in-progress composer text + attachments) are kept per chat so
+  // switching between chats never bleeds an unsent message into a sibling. A
+  // synthetic key is used while we're still in "draft mode" (no chat exists
+  // yet) so that first composition survives until the user sends or discards.
+  const DRAFT_KEY = "__draft__";
+  const draftKey = draftMode ? DRAFT_KEY : state?.activeChatId || "";
+  const [draftsByChat, setDraftsByChat] = useState<Record<string, string>>({});
+  const [attachmentsByChat, setAttachmentsByChat] = useState<
+    Record<string, string[]>
+  >({});
+  const draft = draftsByChat[draftKey] ?? "";
+  const attachments = attachmentsByChat[draftKey] ?? [];
+  const setDraft = (value: string | ((prev: string) => string)) => {
+    setDraftsByChat((prev) => {
+      const current = prev[draftKey] ?? "";
+      const next = typeof value === "function" ? (value as (p: string) => string)(current) : value;
+      if (next === current) {
+        return prev;
+      }
+      return { ...prev, [draftKey]: next };
+    });
+  };
+  const setAttachments = (
+    value: string[] | ((prev: string[]) => string[]),
+  ) => {
+    setAttachmentsByChat((prev) => {
+      const current = prev[draftKey] ?? [];
+      const next =
+        typeof value === "function"
+          ? (value as (p: string[]) => string[])(current)
+          : value;
+      return { ...prev, [draftKey]: next };
+    });
+  };
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
   const prevHeightRef = useRef<number | null>(null);
