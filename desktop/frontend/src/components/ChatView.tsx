@@ -154,6 +154,9 @@ export function ChatView() {
     pickFiles,
     forkChat,
     editChat,
+    draftMode,
+    draftWorkspaceId,
+    setDraftWorkspace,
     t,
   } = useApp();
   const [draft, setDraft] = useState("");
@@ -385,12 +388,19 @@ export function ChatView() {
     </div>
   );
 
-  if (turns.length === 0 && historyTurns.length === 0 && !historyLoading) {
-    const activeWs = state?.workspaces?.find((w) => w.active);
-    // The Default workspace is not a real project, so omit its name from the
-    // greeting (and any workspace-less state shows the generic prompt too).
-    const inDefaultWs = !activeWs || activeWs.isDefault;
-    const workspaceName = state?.workspace.name || "";
+  const showEmpty =
+    draftMode ||
+    (turns.length === 0 && historyTurns.length === 0 && !historyLoading);
+  if (showEmpty) {
+    // In draft mode the greeting reflects the chosen draft workspace; otherwise
+    // it reflects the active workspace. The Default workspace is not a real
+    // project, so omit its name from the greeting.
+    const workspaces = state?.workspaces ?? [];
+    const targetWs = draftMode
+      ? workspaces.find((w) => w.id === draftWorkspaceId)
+      : workspaces.find((w) => w.active);
+    const inDefaultWs = !targetWs || targetWs.isDefault;
+    const workspaceName = targetWs?.name || state?.workspace.name || "";
     const emptyTitle = inDefaultWs
       ? t("empty.promptNoWorkspace")
       : t("empty.prompt").replace("{workspace}", workspaceName);
@@ -400,7 +410,11 @@ export function ChatView() {
           <h1 className="empty-title">{emptyTitle}</h1>
           <div className="empty-composer">
             {composer}
-            <WorkspaceSelector />
+            <WorkspaceSelector
+              draft={draftMode}
+              draftWorkspaceId={draftWorkspaceId}
+              onPickDraft={setDraftWorkspace}
+            />
           </div>
         </div>
       </div>
@@ -641,7 +655,15 @@ function TurnView({
   );
 }
 
-function WorkspaceSelector() {
+function WorkspaceSelector({
+  draft = false,
+  draftWorkspaceId = "",
+  onPickDraft,
+}: {
+  draft?: boolean;
+  draftWorkspaceId?: string;
+  onPickDraft?: (id: string) => void;
+}) {
   const { state, runCommand, clearTurns, selectWorkspace, pickFolder, t } = useApp();
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState("");
@@ -651,6 +673,11 @@ function WorkspaceSelector() {
 
   const workspaces = state?.workspaces ?? [];
   const defaultWs = workspaces.find((w) => w.isDefault);
+  // The selected workspace differs between draft mode (the pending target) and
+  // an existing chat (the active workspace).
+  const selectedId = draft
+    ? draftWorkspaceId
+    : workspaces.find((w) => w.active)?.id || "";
   // The Default workspace is not a real project; surface it only through the
   // dedicated "Don't work in a workspace" entry, never in the workspace list.
   const filtered = workspaces.filter(
@@ -668,6 +695,12 @@ function WorkspaceSelector() {
 
   const switchTo = async (id: string) => {
     close();
+    // In draft mode just record the target; the backend switch + chat creation
+    // happen when the first message is sent.
+    if (draft) {
+      onPickDraft?.(id);
+      return;
+    }
     await selectWorkspace(id);
   };
 
@@ -711,11 +744,11 @@ function WorkspaceSelector() {
             {filtered.map((ws) => (
               <li key={ws.id}>
                 <button
-                  className={`ws-selector-item ${ws.active ? "active" : ""}`}
+                  className={`ws-selector-item ${ws.id === selectedId ? "active" : ""}`}
                   onClick={() => void switchTo(ws.id)}
                 >
                   <span className="ws-selector-check">
-                    {ws.active && <Icon name="check" size={13} />}
+                    {ws.id === selectedId && <Icon name="check" size={13} />}
                   </span>
                   <span>{ws.name}</span>
                 </button>
@@ -753,7 +786,7 @@ function WorkspaceSelector() {
               <span>{t("workspace.addNew")}</span>
             </button>
           )}
-          {defaultWs && !defaultWs.active && (
+          {defaultWs && defaultWs.id !== selectedId && (
             <button className="ws-selector-item" onClick={() => void switchTo(defaultWs.id)}>
               <span className="ws-selector-check" />
               <span>{t("workspace.none")}</span>
