@@ -123,11 +123,9 @@ export function Sidebar({ onOpenSettings }: { onOpenSettings: () => void }) {
     if (!expanded.has(wsId)) {
       toggleWorkspaceExpanded(wsId);
     }
-    if (wsId && wsId !== activeWsId) {
-      clearTurns();
-      await runCommand(`/workspace switch ${wsId}`);
-    }
-    await newChat();
+    // Enter compose mode targeting this workspace; the chat (and any workspace
+    // switch) is created only when the first message is sent.
+    await newChat(wsId);
   };
 
   const runChatCommand = async (wsId: string, command: string) => {

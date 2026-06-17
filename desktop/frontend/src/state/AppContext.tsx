@@ -61,7 +61,14 @@ interface AppContextValue {
   clearTurns: (chatId?: string) => void;
   switchToChat: (chatId: string, workspaceId?: string) => Promise<void>;
   selectWorkspace: (workspaceId: string) => Promise<void>;
-  newChat: () => Promise<void>;
+  /** Enter compose mode for a new chat (created on first send). */
+  newChat: (workspaceId?: string) => Promise<void>;
+  /** True while composing a not-yet-created chat. */
+  draftMode: boolean;
+  /** Target workspace id for the pending draft chat. */
+  draftWorkspaceId: string;
+  /** Choose the workspace the pending draft chat will be created in. */
+  setDraftWorkspace: (workspaceId: string) => void;
   forkChat: (index: number) => Promise<void>;
   editChat: (index: number) => Promise<void>;
   loadOlderHistory: () => Promise<void>;
@@ -146,15 +153,32 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [expandedWorkspaceIds, setExpandedWorkspaceIds] = useState<string[]>([]);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [aboutOpen, setAboutOpen] = useState(false);
+  // Draft (compose) mode: "New Chat" shows the empty composer without creating
+  // a chat yet; the chat is materialized only when the first message is sent.
+  // ``draftWorkspaceId`` is the workspace the new chat will be created in.
+  const [draftMode, setDraftMode] = useState(false);
+  const [draftWorkspaceId, setDraftWorkspaceId] = useState<string>("");
+  const draftModeRef = useRef(false);
+  const draftWorkspaceIdRef = useRef<string>("");
+  useEffect(() => {
+    draftModeRef.current = draftMode;
+  }, [draftMode]);
+  useEffect(() => {
+    draftWorkspaceIdRef.current = draftWorkspaceId;
+  }, [draftWorkspaceId]);
   const nextIdRef = useRef(1);
   const seededExpandRef = useRef(false);
   const themeInitRef = useRef(false);
   const activeChatIdRef = useRef<string>("");
+  const activeWorkspaceIdRef = useRef<string>("");
 
   const activeChatId = state?.activeChatId ?? "";
   useEffect(() => {
     activeChatIdRef.current = activeChatId;
   }, [activeChatId]);
+  useEffect(() => {
+    activeWorkspaceIdRef.current = state?.workspace.id ?? "";
+  }, [state?.workspace.id]);
 
   useEffect(() => {
     turnsByChatRef.current = turnsByChat;
@@ -553,11 +577,28 @@ export function AppProvider({ children }: { children: ReactNode }) {
       if (!trimmed) {
         return;
       }
+      // In draft (compose) mode the chat hasn't been created yet. Materialize it
+      // now: switch to the chosen workspace if needed, then create a fresh chat,
+      // so the first message lands in a brand-new chat in the right workspace.
+      let targetChatId = activeChatIdRef.current;
+      if (draftModeRef.current) {
+        const wsId = draftWorkspaceIdRef.current;
+        if (wsId && wsId !== activeWorkspaceIdRef.current) {
+          await client.selectChat("", wsId);
+        }
+        const newId = await client.newChat();
+        if (newId) {
+          targetChatId = newId;
+          historyChatRef.current = newId;
+        }
+        setDraftMode(false);
+        setDraftWorkspaceId("");
+      }
       // Composer input is always a model prompt; the GUI never executes
       // built-in commands or "!" direct shell typed by the user. Route it to
       // the focused chat explicitly so it reaches that chat's loop even while
       // another chat is mid-task.
-      await client.sendInput(trimmed, true, activeChatIdRef.current);
+      await client.sendInput(trimmed, true, targetChatId);
     },
     [client],
   );
@@ -708,6 +749,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
       if (!ok) {
         return;
       }
+      setDraftMode(false);
+      setDraftWorkspaceId("");
       historyChatRef.current = chatId;
       await loadChatHistory(chatId);
     },
@@ -728,16 +771,28 @@ export function AppProvider({ children }: { children: ReactNode }) {
     [client, clearTurns],
   );
 
-  const newChat = useCallback(async () => {
-    const id = await client.newChat();
-    if (id) {
-      historyChatRef.current = id;
-      clearLiveTurns(id);
-    }
-    setHistoryTurns([]);
-    setHistoryStart(0);
-    setHistoryTotal(0);
-  }, [client, clearLiveTurns]);
+  // Enter draft (compose) mode instead of creating a chat immediately. The chat
+  // is materialized on the first send. ``workspaceId`` selects the target
+  // workspace: from the sidebar's top New Chat button it defaults to the current
+  // chat's workspace; from a workspace row's New Chat icon it is that workspace.
+  const newChat = useCallback(
+    async (workspaceId?: string) => {
+      const wsId =
+        workspaceId ?? state?.workspace.id ?? draftWorkspaceIdRef.current ?? "";
+      setDraftWorkspaceId(wsId);
+      setDraftMode(true);
+      historyChatRef.current = "\u0000";
+      setHistoryTurns([]);
+      setHistoryStart(0);
+      setHistoryTotal(0);
+    },
+    [state?.workspace.id],
+  );
+
+  // Pick the target workspace for the pending draft chat (compose mode only).
+  const setDraftWorkspace = useCallback((workspaceId: string) => {
+    setDraftWorkspaceId(workspaceId);
+  }, []);
 
   // Fork the chat at the given (negative, from-end) genuine-user index into a
   // new chat, mirroring the TUI `/chat fork` command. The backend switches the
@@ -945,6 +1000,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
     switchToChat,
     selectWorkspace,
     newChat,
+    draftMode,
+    draftWorkspaceId,
+    setDraftWorkspace,
     forkChat,
     editChat,
     loadOlderHistory,
