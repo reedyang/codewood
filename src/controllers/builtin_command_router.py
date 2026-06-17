@@ -132,6 +132,29 @@ def dispatch_builtin_command(
         print(_t(agent, "builtin.memory_disabled_saved" if ok else "builtin.memory_disabled_session_only"))
         return True, False
 
+    # Plan-mode toggle. Plan mode is a session-only flag that asks the agent to
+    # outline a step-by-step plan and hold off on destructive tool calls until
+    # the user confirms. The flag is read by the runtime loop where it
+    # prepends a planning instruction to the user's outgoing message.
+    if bl in ("plan", "plan on", "plan status"):
+        if bl == "plan status":
+            on = bool(getattr(agent, "_plan_mode_sticky", False))
+            print(
+                _t(
+                    agent,
+                    "builtin.plan_mode_status_on" if on else "builtin.plan_mode_status_off",
+                )
+            )
+            return True, False
+        agent._plan_mode_sticky = True
+        print(_t(agent, "builtin.plan_mode_on"))
+        return True, False
+
+    if bl in ("plan off", "agent"):
+        agent._plan_mode_sticky = False
+        print(_t(agent, "builtin.plan_mode_off"))
+        return True, False
+
     if wait_for_supplement and bl == "help":
         print(_t(agent, "builtin.help_available_for_paused_task"))
         return True, False

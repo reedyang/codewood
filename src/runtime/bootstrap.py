@@ -161,6 +161,11 @@ def setup_runtime_preferences(agent: Any) -> None:
     agent.mcp_tools_enabled = False
     # None means unlimited auto-execution rounds for a single task.
     agent.max_tool_rounds = None
+    # Plan-mode is a session-sticky flag toggled via ``/plan`` /``/agent``
+    # commands. When True the runtime loop prepends a planning instruction to
+    # the user's outgoing message; defaults to off so existing flows are
+    # unchanged.
+    agent._plan_mode_sticky = False
     agent._resolved_config_data = {}
     try:
         cfg_path = agent.config_dir / CONFIG_JSONC_FILENAME

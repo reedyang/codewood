@@ -1555,6 +1555,41 @@ body.resizing-x {
   color: var(--text-muted);
 }
 
+/* Composer plus-button menu. Sits inside the regular dropdown wrapper but
+   anchors a button that switches its tint when Plan mode is engaged so the
+   user always sees which mode the next message will use. */
+.composer-plus-menu .icon-btn.is-plan {
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  color: var(--accent);
+}
+
+.composer-plus-menu .dropdown-menu {
+  bottom: calc(100% + 6px);
+  top: auto;
+  min-width: 180px;
+}
+
+.dropdown-divider {
+  height: 1px;
+  background: var(--border);
+  margin: 4px 0;
+}
+
+.mode-badge {
+  font-size: 11px;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 4px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.mode-badge-plan {
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent);
+}
+
 .segmented {
   display: inline-flex;
   border: 1px solid var(--border);
