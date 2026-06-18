@@ -1130,6 +1130,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       // back in while the backend processes the edit and clears its own
       // pending state.
       if (activeChatId) {
+        const pending = askMoreInfoByChat[activeChatId];
         setAskMoreInfoByChat((prev) => {
           if (!(activeChatId in prev)) {
             return prev;
@@ -1138,11 +1139,26 @@ export function AppProvider({ children }: { children: ReactNode }) {
           delete next[activeChatId];
           return next;
         });
+        // The turn that surfaced the ask_more_info prompt is still blocked on
+        // the backend reply queue. Clearing the panel alone leaves that turn
+        // hung with ``busy`` set — so the composer button would revert to the
+        // interrupt/stop affordance even though the user is now just editing.
+        // Drain the prompt with an empty answer so the orphaned turn unwinds
+        // and emits ``idle``, then optimistically clear busy here so the
+        // button flips back to "send" without waiting for the round-trip.
+        if (pending) {
+          setBusyForChat(activeChatId, false);
+          try {
+            await client.answerAskMoreInfo(pending.id, "");
+          } catch {
+            // Best-effort: the backend drains pending prompts on shutdown.
+          }
+        }
       }
       pendingHistoryReloadRef.current = true;
       await client.sendInput(`/chat edit ${index}`);
     },
-    [client, clearTurns, activeChatId],
+    [client, clearTurns, activeChatId, askMoreInfoByChat, setBusyForChat],
   );
 
   const openWorkspaceInExplorer = useCallback(

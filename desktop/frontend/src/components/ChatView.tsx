@@ -352,6 +352,7 @@ export function ChatView() {
     draftWorkspaceId,
     setDraftWorkspace,
     askMoreInfo,
+    answerAskMoreInfo,
     t,
   } = useApp();
   // Drafts (in-progress composer segments) are kept per chat so switching
@@ -486,6 +487,22 @@ export function ChatView() {
     if (!canSend) {
       return;
     }
+    // While an ask_more_info prompt is pending, the turn is paused waiting on
+    // the user's answer — it is NOT accepting a fresh prompt (that would just
+    // queue behind the blocked turn and never run). So a composer send here
+    // is the user's custom freeform answer: route the typed text straight to
+    // ``answerAskMoreInfo`` so the blocked turn resumes with it. Attachments /
+    // skill tokens have no meaning as a clarification, so we use the plain
+    // text body only.
+    if (askMoreInfo) {
+      const answer = draftText.trim();
+      if (!answer) {
+        return;
+      }
+      setSegments([]);
+      await answerAskMoreInfo(answer);
+      return;
+    }
     // Build the over-the-wire string from the composer segments. Attachments
     // go into the legacy ATTACH header (so the agent + chat history layer can
     // still pick them off the front of the message); everything else flows
@@ -571,6 +588,12 @@ export function ChatView() {
     }
   }
 
+  // While an ``ask_more_info`` prompt is pending the agent is paused waiting
+  // on the user's selection — it isn't actively working — so the action
+  // button must revert to "send" (not the interrupt/stop affordance) even
+  // though the backend busy flag is still set for the turn.
+  const stopMode = busy && !askMoreInfo;
+
   const composer = (
     <div className="composer">
       <RichComposer
@@ -650,12 +673,12 @@ export function ChatView() {
             />
           )}
           <button
-            className={`send-btn ${busy ? "is-stop" : ""}`}
-            aria-label={busy ? t("chat.interrupt") : t("chat.send")}
-            disabled={!busy && !canSend}
-            onClick={() => (busy ? void interrupt() : void submit())}
+            className={`send-btn ${stopMode ? "is-stop" : ""}`}
+            aria-label={stopMode ? t("chat.interrupt") : t("chat.send")}
+            disabled={!stopMode && !canSend}
+            onClick={() => (stopMode ? void interrupt() : void submit())}
           >
-            <Icon name={busy ? "stop" : "send"} size={16} />
+            <Icon name={stopMode ? "stop" : "send"} size={16} />
           </button>
         </div>
       </div>
