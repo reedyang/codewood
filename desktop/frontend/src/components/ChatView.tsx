@@ -842,6 +842,15 @@ function RoundShell({
 
 function HistoryRoundView({ round }: { round: HistoryRound }) {
   const { t } = useApp();
+  if (round.selection && round.selection.trim().length > 0) {
+    return (
+      <div className="ask-selection">
+        <Icon name="check" size={13} className="ask-selection-icon" />
+        <span className="ask-selection-label">{t("askMoreInfo.selectedLabel")}</span>
+        <span className="ask-selection-text">{round.selection}</span>
+      </div>
+    );
+  }
   const timerText = `${t("activity.workedFor")} ${formatElapsed(round.waitSeconds * 1000)}`;
   return (
     <RoundShell

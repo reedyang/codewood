@@ -3649,6 +3649,19 @@ def run_agent_loop(agent: Any):
                             )
                             break_after_batch = True
                             break
+                        # Record the user's clarifying answer as a left-side
+                        # transcript bubble (TUI + GUI). It is a reply to the
+                        # agent's question, not a user-initiated turn, so it
+                        # sits on the left and is excluded from model context
+                        # (the model already receives it via ``next_input``).
+                        try:
+                            recorder = getattr(
+                                self, "_record_ask_more_info_answer_history", None
+                            )
+                            if callable(recorder):
+                                recorder(supplement_text)
+                        except Exception:
+                            pass
                         next_input = (
                             f"[Original user request]\n{original_user_task}\n\n"
                             f"[User supplement]\n{supplement_text}\n\n"

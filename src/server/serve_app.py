@@ -280,6 +280,26 @@ def _build_structured_turns(agent: Any) -> List[Dict[str, Any]]:
             # directly, so neither the command echo nor its output is shown.
             continue
         if role == "assistant":
+            # A recorded ask_more_info selection: render it as a left-side
+            # "selection" bubble (a reply to the agent's question, distinct
+            # from a user-initiated right-side turn).
+            try:
+                ami_answer = agent._parse_ask_more_info_answer_history_content(content)
+            except Exception:
+                ami_answer = None
+            if ami_answer is not None:
+                if ami_answer:
+                    turn = _ensure_turn()
+                    wait = (
+                        (ts - prev_ts)
+                        if (ts is not None and prev_ts is not None)
+                        else 0
+                    )
+                    sel_round = _new_round(turn, wait)
+                    sel_round["selection"] = strip_ansi(str(ami_answer))
+                if ts is not None:
+                    prev_ts = ts
+                continue
             # Drop slash-command outputs and durable compaction summaries.
             try:
                 if agent._parse_internal_slash_result_history_content(content) is not None:
@@ -402,12 +422,18 @@ def _build_structured_turns(agent: Any) -> List[Dict[str, Any]]:
                 "waitSeconds": int(r.get("waitSeconds") or 0),
                 "text": str(r.get("text") or "").rstrip("\n"),
                 "tools": str(r.get("tools") or "").rstrip("\n"),
+                "selection": str(r.get("selection") or "").strip(),
             }
             for r in turn.get("rounds", [])
         ]
         # Drop rounds that produced nothing renderable (e.g. an empty model
-        # response) so we don't show a stray timer with no content.
-        turn["rounds"] = [r for r in rounds if r["text"].strip() or r["tools"].strip()]
+        # response) so we don't show a stray timer with no content. A round
+        # carrying an ask_more_info selection is always renderable.
+        turn["rounds"] = [
+            r
+            for r in rounds
+            if r["text"].strip() or r["tools"].strip() or r["selection"].strip()
+        ]
     return turns
 
 

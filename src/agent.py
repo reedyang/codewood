@@ -148,6 +148,7 @@ CONVERSATION_INTERRUPTED_HISTORY_PREFIX = "[CONVERSATION_INTERRUPTED]"
 INTERNAL_SLASH_USER_HISTORY_PREFIX = "[INTERNAL_SLASH_USER_COMMAND]"
 INTERNAL_SLASH_RESULT_HISTORY_PREFIX = "[INTERNAL_SLASH_RESULT]"
 TASK_WORKED_SUMMARY_HISTORY_PREFIX = "[TASK_WORKED_SUMMARY]"
+ASK_MORE_INFO_ANSWER_HISTORY_PREFIX = "[ASK_MORE_INFO_ANSWER]"
 # Effectively unbounded tail limit: used by transcript mode to render shell
 # output in full (no "... omitted N lines ..." truncation).
 _FULL_OUTPUT_TAIL_LIMIT = 10**9
@@ -1585,6 +1586,11 @@ class Agent:
                 print(self._format_user_chat_display_message(content))
                 print("")
             elif role == "assistant":
+                ami_answer = self._parse_ask_more_info_answer_history_content(content)
+                if ami_answer is not None:
+                    if ami_answer:
+                        self._print_ask_more_info_answer_replay(ami_answer)
+                    continue
                 compact_notice = None
                 try:
                     compact_notice = self.session_memory_service.parse_context_compaction_notice_content(content)
@@ -1800,6 +1806,37 @@ class Agent:
         self._show_separator_next_prompt = False
         self._replay_ephemeral_screen_notices()
         self._replay_pending_ask_more_info_prompt()
+
+    def _print_ask_more_info_answer_replay(self, answer: str) -> None:
+        """Render a recorded ``ask_more_info`` selection as a left-side line.
+
+        A clarifying answer is a reply to the agent's question, so it reads on
+        the left (unlike a user-initiated turn). We prefix it with a small
+        marker glyph and keep it visually distinct from the model's prose.
+        """
+        text = str(answer or "").strip()
+        if not text:
+            return
+        try:
+            self._ensure_terminal_line_start()
+        except Exception:
+            pass
+        try:
+            from .core.localization import translate as _t
+
+            label = _t(
+                "runtime.ask_more_info.answer_label",
+                getattr(self, "display_language", None) or "en",
+                "Selected",
+            )
+        except Exception:
+            label = "Selected"
+        try:
+            line = _ansi_gray(f"  ↳ {label}: {text}")
+        except Exception:
+            line = f"  > {label}: {text}"
+        print(line)
+        print("")
 
     def _replay_pending_ask_more_info_prompt(self) -> None:
         """Re-render a pending ``ask_more_info`` prompt after a history replay.
@@ -3193,6 +3230,41 @@ class Agent:
                 user_input_hint=raw_cmd,
                 context_hint="direct shell completed",
             )
+
+    def _build_ask_more_info_answer_history_content(self, answer: str) -> str:
+        return f"{ASK_MORE_INFO_ANSWER_HISTORY_PREFIX}{str(answer or '').strip()}"
+
+    def _parse_ask_more_info_answer_history_content(self, content: str) -> Optional[str]:
+        text = str(content or "")
+        if not text.startswith(ASK_MORE_INFO_ANSWER_HISTORY_PREFIX):
+            return None
+        return text[len(ASK_MORE_INFO_ANSWER_HISTORY_PREFIX):].strip()
+
+    def _record_ask_more_info_answer_history(self, answer: str) -> None:
+        """Record the user's ``ask_more_info`` selection as a left-side bubble.
+
+        The reply itself is already handed to the model as continuation
+        context, so this entry is excluded from the model context — it exists
+        purely so both the TUI transcript and the GUI render the user's choice
+        as a distinct left-aligned message (a clarifying answer is a reply to
+        the agent's question, not a user-initiated turn, so it sits on the
+        left). Persisted to chat state so it survives reload and is visible
+        cross-process.
+        """
+        text = str(answer or "").strip()
+        if not text:
+            return
+        try:
+            content = self._build_ask_more_info_answer_history_content(text)
+            msg = {
+                "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "exclude_from_model_context": True,
+                "role": "assistant",
+                "content": content,
+            }
+            self.conversation_history.append(msg)
+        except Exception:
+            pass
 
     def _build_internal_slash_user_history_content(self, raw_user_command: str) -> str:
         cmd = str(raw_user_command or "").strip()
