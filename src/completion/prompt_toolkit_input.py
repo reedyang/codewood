@@ -2706,6 +2706,9 @@ class PromptToolkitInputHandler:
             "other_on": False,
             "result": None,  # type: Optional[str]
             "editing_other": False,
+            # Set on any exit path (submit or cancel) so the key-hint footer is
+            # dropped from the final repaint instead of lingering after submit.
+            "done": False,
         }
 
         other_buffer = Buffer(multiline=False)
@@ -2764,9 +2767,19 @@ class PromptToolkitInputHandler:
             hint = translate("runtime.ask_more_info.multi_select_hint_keys", lang)
         else:
             hint = translate("runtime.ask_more_info.single_select_hint_keys", lang)
-        hint_window = Window(
-            FormattedTextControl(lambda: [("class:amisel.hint", hint)]),
-            dont_extend_height=True,
+        # The key-hint footer is only useful while the user is interacting.
+        # Once a result is committed (Enter/Space) or the prompt is cancelled,
+        # hide it so the leftover "↑/↓ to move · ..." line doesn't linger in
+        # the transcript after submit. ``erase_when_done`` stays False so the
+        # chosen option remains visible; only the hint is dropped on the final
+        # repaint triggered before ``app.exit()``.
+        hint_visible = Condition(lambda: not state["done"])
+        hint_window = ConditionalContainer(
+            Window(
+                FormattedTextControl(lambda: [("class:amisel.hint", hint)]),
+                dont_extend_height=True,
+            ),
+            filter=hint_visible,
         )
 
         kb = _KB()
@@ -2803,6 +2816,7 @@ class PromptToolkitInputHandler:
         @kb.add("escape", eager=True)
         def _(event):
             state["result"] = None
+            state["done"] = True
             event.app.exit()
 
         @kb.add("space", filter=~editing_other_filter)
@@ -2816,6 +2830,7 @@ class PromptToolkitInputHandler:
                     event.app.layout.focus(other_input_window)
                 else:
                     state["result"] = opts[cur]
+                    state["done"] = True
                     event.app.exit()
                 return
             # Multi-select: toggle the checkbox.
@@ -2836,9 +2851,11 @@ class PromptToolkitInputHandler:
                 if state["cursor"] == other_row or state["editing_other"]:
                     text = other_buffer.text.strip()
                     state["result"] = text
+                    state["done"] = True
                     event.app.exit()
                     return
                 state["result"] = opts[state["cursor"]]
+                state["done"] = True
                 event.app.exit()
                 return
             # Multi-select: Enter confirms the whole selection.
@@ -2851,6 +2868,7 @@ class PromptToolkitInputHandler:
                 if extra:
                     parts.append(extra)
             state["result"] = "; ".join(parts)
+            state["done"] = True
             event.app.exit()
 
         body = HSplit([options_window, other_input_window, hint_window])
