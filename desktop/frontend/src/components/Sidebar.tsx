@@ -54,6 +54,7 @@ export function Sidebar({ onOpenSettings }: { onOpenSettings: () => void }) {
     workspaceChats,
     expandedWorkspaceIds,
     busyByChat,
+    unreadChatIds,
     t,
     runCommand,
     clearTurns,
@@ -247,6 +248,14 @@ export function Sidebar({ onOpenSettings }: { onOpenSettings: () => void }) {
     // Chat ids are only unique within a workspace, so only trust the running
     // marker for chats in the active workspace to avoid false positives.
     const isBusy = wsId === activeWsId && Boolean(busyByChat[chat.id]);
+    // Unread: a turn finished while the user was elsewhere. Only show for the
+    // active workspace (chat ids are unique only within a workspace) and never
+    // on the chat currently being viewed.
+    const isUnread =
+      wsId === activeWsId &&
+      !isActive &&
+      !isBusy &&
+      Boolean(unreadChatIds[chat.id]);
     return (
       <li
         key={`${wsId}-${chat.id}`}
@@ -260,6 +269,13 @@ export function Sidebar({ onOpenSettings }: { onOpenSettings: () => void }) {
             <button className="tree-label" title={chat.id} onClick={() => void switchChat(wsId, chat.id)}>
               <span className="tree-name">{chat.name}</span>
               {isBusy && <span className="chat-busy-dot" aria-label={t("chat.busy")} title={t("chat.busy")} />}
+              {isUnread && (
+                <span
+                  className="chat-unread-dot"
+                  aria-label={t("chat.unread")}
+                  title={t("chat.unread")}
+                />
+              )}
               {rel && <span className="tree-meta">{rel}</span>}
             </button>
             <button

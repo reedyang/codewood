@@ -337,6 +337,16 @@ def handle_chat_edit_command(agent: Any, raw_index: str) -> None:
             agent._last_llm_summary_pair_count = 0
         except Exception:
             pass
+        # Editing erases the turn that may have surfaced an ``ask_more_info``
+        # clarification, so any pending prompt is now orphaned. Clear it (and
+        # its persisted snapshot) so the GUI/TUI don't redisplay a stale
+        # selection panel for a message that no longer exists.
+        try:
+            clearer = getattr(agent, "_clear_pending_ask_more_info", None)
+            if callable(clearer):
+                clearer()
+        except Exception:
+            pass
         try:
             agent._sync_active_chat_messages()
         except Exception:
