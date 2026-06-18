@@ -2106,6 +2106,48 @@ body.resizing-x {
   opacity: 0.5;
 }
 
+/* Sub Agents page */
+.subagent-prop {
+  display: flex;
+  gap: 10px;
+  padding: 3px 0;
+  font-size: 13px;
+}
+.subagent-prop-label {
+  flex: 0 0 120px;
+  color: var(--text-muted);
+}
+.subagent-prop-value {
+  flex: 1;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.setting-input-col {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.checkbox {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  cursor: pointer;
+}
+.subagent-tools-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.input-narrow {
+  max-width: 120px;
+}
+.subagent-editor {
+  width: min(640px, 92vw);
+  max-height: 88vh;
+  overflow-y: auto;
+}
+
 .mcp-prompt-chip {
   padding: 4px 10px;
   border: 1px dashed var(--border);

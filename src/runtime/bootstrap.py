@@ -370,11 +370,14 @@ def setup_skills(agent: Any, builtin_skills_dir: Optional[str]) -> None:
 def setup_subagents(agent: Any) -> None:
     """Load user-configured sub-agents (markdown + frontmatter)."""
     language = getattr(agent, "display_language", "en") or "en"
-    agent.subagents = load_subagents_merged(
+    merged = load_subagents_merged(
         agent.config_dir,
         agent.workspace_config_dir,
         language=language,
     )
+    # Only enabled sub-agents are offered to the model; disabled ones remain
+    # editable through the config UI but are filtered out of the runtime set.
+    agent.subagents = [r for r in merged if getattr(r, "enabled", True)]
     agent._subagents_dirs_fingerprint = calc_subagents_dirs_fingerprint(
         agent.config_dir,
         agent.workspace_config_dir,

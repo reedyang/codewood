@@ -21,6 +21,8 @@ import type {
   McpServerSummary,
   SegmentKind,
   ServerEvent,
+  SubAgentConfig,
+  SubAgentsOverview,
   Turn,
   WorkspaceChatSummary,
 } from "../api/types";
@@ -129,6 +131,15 @@ interface AppContextValue {
     config: McpServerConfigEntry,
   ) => Promise<{ ok: boolean; error?: string }>;
   deleteMcpServer: (name: string) => Promise<{ ok: boolean; error?: string }>;
+  getSubAgentsOverview: () => Promise<SubAgentsOverview>;
+  saveSubAgent: (
+    payload: Partial<SubAgentConfig> & { originalName?: string },
+  ) => Promise<{ ok: boolean; error?: string }>;
+  deleteSubAgent: (name: string) => Promise<{ ok: boolean; error?: string }>;
+  setSubAgentEnabled: (
+    name: string,
+    enabled: boolean,
+  ) => Promise<{ ok: boolean; error?: string }>;
   setPlanMode: (enabled: boolean) => Promise<boolean>;
   searchWorkspaceFiles: (query: string, limit?: number) => Promise<string[]>;
   setExecutionPolicy: (policy: string) => Promise<void>;
@@ -1321,6 +1332,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
       config: McpServerConfigEntry,
     ) => client.updateMcpServer(originalName, name, config),
     deleteMcpServer: (name: string) => client.deleteMcpServer(name),
+    getSubAgentsOverview: () => client.getSubAgentsOverview(),
+    saveSubAgent: (payload) => client.saveSubAgent(payload),
+    deleteSubAgent: (name: string) => client.deleteSubAgent(name),
+    setSubAgentEnabled: (name: string, enabled: boolean) =>
+      client.setSubAgentEnabled(name, enabled),
     setPlanMode: (enabled: boolean) => client.setPlanMode(enabled),
     searchWorkspaceFiles: (query: string, limit = 10) =>
       client.searchWorkspaceFiles(query, activeWorkspaceIdRef.current, limit),

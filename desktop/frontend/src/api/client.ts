@@ -7,6 +7,8 @@ import type {
   McpServerDetails,
   McpServerSummary,
   ServerEvent,
+  SubAgentConfig,
+  SubAgentsOverview,
   WorkspaceChatSummary,
 } from "./types";
 
@@ -338,6 +340,70 @@ export class ApiClient {
       body: JSON.stringify({ name }),
     });
     try {
+      return (await res.json()) as { ok: boolean; error?: string };
+    } catch {
+      return { ok: false, error: "network" };
+    }
+  }
+
+  async getSubAgentsOverview(): Promise<SubAgentsOverview> {
+    const empty: SubAgentsOverview = { subagents: [], models: [], tools: [] };
+    try {
+      const res = await fetch(`${this.base}/subagents-overview`, {
+        method: "POST",
+        headers: this.headers(),
+        body: "{}",
+      });
+      if (!res.ok) return empty;
+      const data = (await res.json()) as Partial<SubAgentsOverview>;
+      return {
+        subagents: Array.isArray(data.subagents) ? data.subagents : [],
+        models: Array.isArray(data.models) ? data.models : [],
+        tools: Array.isArray(data.tools) ? data.tools : [],
+      };
+    } catch {
+      return empty;
+    }
+  }
+
+  async saveSubAgent(
+    payload: Partial<SubAgentConfig> & { originalName?: string },
+  ): Promise<{ ok: boolean; error?: string }> {
+    try {
+      const res = await fetch(`${this.base}/save-subagent`, {
+        method: "POST",
+        headers: this.headers(),
+        body: JSON.stringify(payload),
+      });
+      return (await res.json()) as { ok: boolean; error?: string };
+    } catch {
+      return { ok: false, error: "network" };
+    }
+  }
+
+  async deleteSubAgent(name: string): Promise<{ ok: boolean; error?: string }> {
+    try {
+      const res = await fetch(`${this.base}/delete-subagent`, {
+        method: "POST",
+        headers: this.headers(),
+        body: JSON.stringify({ name }),
+      });
+      return (await res.json()) as { ok: boolean; error?: string };
+    } catch {
+      return { ok: false, error: "network" };
+    }
+  }
+
+  async setSubAgentEnabled(
+    name: string,
+    enabled: boolean,
+  ): Promise<{ ok: boolean; error?: string }> {
+    try {
+      const res = await fetch(`${this.base}/set-subagent-enabled`, {
+        method: "POST",
+        headers: this.headers(),
+        body: JSON.stringify({ name, enabled }),
+      });
       return (await res.json()) as { ok: boolean; error?: string };
     } catch {
       return { ok: false, error: "network" };
