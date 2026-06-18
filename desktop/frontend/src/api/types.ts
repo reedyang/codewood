@@ -15,6 +15,9 @@ export interface ChatSummary {
   active: boolean;
   /** Per-chat model selector ("provider:name"); empty if unset. */
   model?: string;
+  /** True while this chat's agent loop is actively streaming a turn. Lets the
+   *  sidebar busy dot persist across focus changes and reloads. */
+  running?: boolean;
 }
 
 /** Chat summary as returned by GET /workspace-chats for any workspace. */

@@ -696,6 +696,18 @@ def _build_state(agent: Any) -> Dict[str, Any]:
     active_context_percent = 0
     active_context_tokens = 0
     active_context_window = 0
+    # Chat ids whose agent loop is actively streaming a turn in THIS process.
+    # Serialized per-chat as ``running`` so the GUI can keep the busy/blue dot
+    # on every running chat even after the user switches focus away (the
+    # transient turn_start/idle SSE events alone can't survive a focus change
+    # or reload).
+    running_chat_ids: set = set()
+    try:
+        runner = getattr(agent, "_active_runtime_chat_ids", None)
+        if callable(runner):
+            running_chat_ids = {str(x) for x in (runner() or [])}
+    except Exception:
+        running_chat_ids = set()
     try:
         active_chat_id = _primary_active_chat_id(agent)
         for i, c in enumerate(agent._chat_entries(), start=1):
@@ -735,6 +747,9 @@ def _build_state(agent: Any) -> Dict[str, Any]:
                     # Per-chat model selector so the GUI can show the right model
                     # for the focused chat and prefill new chats from it.
                     "model": chat_model,
+                    # True while this chat's agent loop is mid-turn, so the
+                    # sidebar busy dot survives focus changes and reloads.
+                    "running": cid in running_chat_ids,
                 }
             )
     except Exception:

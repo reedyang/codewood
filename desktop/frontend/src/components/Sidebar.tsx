@@ -45,6 +45,10 @@ interface ChatRow {
   name: string;
   updatedAt?: string;
   active?: boolean;
+  /** True while this chat's agent loop is mid-turn (from the state snapshot).
+   *  Used as a durable busy signal that survives focus changes/reloads, in
+   *  addition to the transient SSE-driven ``busyByChat`` flags. */
+  running?: boolean;
 }
 
 export function Sidebar({ onOpenSettings }: { onOpenSettings: () => void }) {
@@ -247,7 +251,13 @@ export function Sidebar({ onOpenSettings }: { onOpenSettings: () => void }) {
     const isPinned = isPinnedChat(wsId, chat.id);
     // Chat ids are only unique within a workspace, so only trust the running
     // marker for chats in the active workspace to avoid false positives.
-    const isBusy = wsId === activeWsId && Boolean(busyByChat[chat.id]);
+    // Combine the durable state-snapshot ``running`` flag with the transient
+    // SSE-driven ``busyByChat`` map: the snapshot keeps the dot alive when the
+    // user switches focus to another chat mid-turn (no turn_start re-fires),
+    // while busyByChat reacts instantly to turn_start before the next snapshot.
+    const isBusy =
+      wsId === activeWsId &&
+      (Boolean(busyByChat[chat.id]) || Boolean(chat.running));
     // Unread: a turn finished while the user was elsewhere. Only show for the
     // active workspace (chat ids are unique only within a workspace) and never
     // on the chat currently being viewed.
