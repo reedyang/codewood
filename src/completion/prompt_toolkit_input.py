@@ -2652,6 +2652,236 @@ class PromptToolkitInputHandler:
         # Keep all wrapped/continued lines visually aligned with a fixed 2-space indent.
         return MULTILINE_INDENT
 
+    def prompt_ask_more_info_selection(
+        self,
+        question: str,
+        options: List[str],
+        multi_select: bool = False,
+    ) -> Optional[str]:
+        """Interactive arrow-key selector for an ``ask_more_info`` prompt.
+
+        Navigation:
+          - ↑/↓ move the highlight between options (and the trailing "Other"
+            row, which hosts an inline free-text input).
+          - Single-select: Space/Enter on a normal option submits it
+            immediately. On the "Other" row, the cursor enters the inline
+            input; Enter submits the typed text (↑/↓ leave the input).
+          - Multi-select: Space toggles the highlighted option's checkbox
+            (and reveals/hides the inline "Other" input); Enter submits every
+            checked option, appending the "Other" text when provided.
+          - Esc / Ctrl-C cancels (returns ``None``).
+
+        Returns the supplement string (single label, or "; "-joined labels +
+        free text for multi-select), an empty string when nothing is chosen,
+        or ``None`` on cancel. Falls back to ``None`` when prompt_toolkit is
+        unavailable so the caller can use its plain-text prompt instead.
+        """
+        if not PROMPT_TOOLKIT_AVAILABLE:
+            return None
+        try:
+            from prompt_toolkit.application import Application
+            from prompt_toolkit.buffer import Buffer
+            from prompt_toolkit.key_binding import KeyBindings as _KB
+            from prompt_toolkit.layout import Layout
+            from prompt_toolkit.layout.containers import HSplit, Window, ConditionalContainer
+            from prompt_toolkit.layout.controls import (
+                BufferControl,
+                FormattedTextControl,
+            )
+            from prompt_toolkit.filters import Condition
+        except Exception:
+            return None
+
+        lang = self._ui_language()
+        opts = [str(o) for o in (options or [])]
+        other_label = translate("runtime.ask_more_info.option_other", lang)
+        # Row model: indices 0..len-1 are concrete options; the last row is
+        # the "Other" free-text row.
+        other_row = len(opts)
+        total_rows = len(opts) + 1
+
+        state = {
+            "cursor": 0,
+            "checked": [False] * len(opts),
+            "other_on": False,
+            "result": None,  # type: Optional[str]
+            "editing_other": False,
+        }
+
+        other_buffer = Buffer(multiline=False)
+
+        def _is_editing_other() -> bool:
+            return bool(state["editing_other"])
+
+        editing_other_filter = Condition(_is_editing_other)
+
+        def _render_options():
+            fragments: List[Tuple[str, str]] = []
+            q = str(question or "").strip()
+            fragments.append(("bold", translate("runtime.ask_more_info.required", lang) + "\n"))
+            if q:
+                fragments.append(
+                    ("", translate("runtime.ask_more_info.question", lang, question=q) + "\n")
+                )
+            for i, label in enumerate(opts):
+                focused = state["cursor"] == i
+                pointer = "❯ " if focused else "  "
+                if multi_select:
+                    box = "[x] " if state["checked"][i] else "[ ] "
+                else:
+                    box = ""
+                style = "class:amisel.focused" if focused else ""
+                fragments.append((style, f"{pointer}{box}{label}\n"))
+            # Other row
+            focused = state["cursor"] == other_row
+            pointer = "❯ " if focused else "  "
+            if multi_select:
+                box = "[x] " if state["other_on"] else "[ ] "
+            else:
+                box = ""
+            style = "class:amisel.focused" if focused else ""
+            fragments.append((style, f"{pointer}{box}{other_label}"))
+            if not state["editing_other"]:
+                fragments.append(("", "\n"))
+            return fragments
+
+        options_control = FormattedTextControl(_render_options, focusable=False)
+        options_window = Window(options_control, dont_extend_height=True)
+
+        # Inline free-text input for the Other row; only visible while the
+        # user is editing it.
+        other_input_window = ConditionalContainer(
+            Window(
+                BufferControl(buffer=other_buffer),
+                dont_extend_height=True,
+                get_line_prefix=lambda *a: [("class:amisel.prompt", "  > ")],
+            ),
+            filter=editing_other_filter,
+        )
+
+        # Footer hint line.
+        if multi_select:
+            hint = translate("runtime.ask_more_info.multi_select_hint_keys", lang)
+        else:
+            hint = translate("runtime.ask_more_info.single_select_hint_keys", lang)
+        hint_window = Window(
+            FormattedTextControl(lambda: [("class:amisel.hint", hint)]),
+            dont_extend_height=True,
+        )
+
+        kb = _KB()
+
+        def _move(delta: int) -> None:
+            if state["editing_other"]:
+                # Leaving the inline input via arrows: commit what's typed but
+                # keep editing flag off so navigation resumes.
+                state["editing_other"] = False
+                if multi_select:
+                    state["other_on"] = bool(other_buffer.text.strip())
+            state["cursor"] = (state["cursor"] + delta) % total_rows
+            _sync_other_editing()
+
+        def _sync_other_editing() -> None:
+            # In single-select, focusing the Other row drops straight into the
+            # inline editor. In multi-select, editing is driven by Space.
+            if not multi_select and state["cursor"] == other_row:
+                state["editing_other"] = True
+                app.layout.focus(other_input_window)
+            else:
+                if not state["editing_other"]:
+                    app.layout.focus(options_window)
+
+        @kb.add("up")
+        def _(event):
+            _move(-1)
+
+        @kb.add("down")
+        def _(event):
+            _move(1)
+
+        @kb.add("c-c")
+        @kb.add("escape", eager=True)
+        def _(event):
+            state["result"] = None
+            event.app.exit()
+
+        @kb.add("space", filter=~editing_other_filter)
+        def _(event):
+            cur = state["cursor"]
+            if not multi_select:
+                # Space acts like Enter on a concrete option; on Other it
+                # enters the inline editor.
+                if cur == other_row:
+                    state["editing_other"] = True
+                    event.app.layout.focus(other_input_window)
+                else:
+                    state["result"] = opts[cur]
+                    event.app.exit()
+                return
+            # Multi-select: toggle the checkbox.
+            if cur == other_row:
+                state["other_on"] = not state["other_on"]
+                if state["other_on"]:
+                    state["editing_other"] = True
+                    event.app.layout.focus(other_input_window)
+                else:
+                    state["editing_other"] = False
+                    event.app.layout.focus(options_window)
+            else:
+                state["checked"][cur] = not state["checked"][cur]
+
+        @kb.add("enter")
+        def _(event):
+            if not multi_select:
+                if state["cursor"] == other_row or state["editing_other"]:
+                    text = other_buffer.text.strip()
+                    state["result"] = text
+                    event.app.exit()
+                    return
+                state["result"] = opts[state["cursor"]]
+                event.app.exit()
+                return
+            # Multi-select: Enter confirms the whole selection.
+            if state["editing_other"]:
+                state["other_on"] = bool(other_buffer.text.strip())
+                state["editing_other"] = False
+            parts: List[str] = [opts[i] for i, on in enumerate(state["checked"]) if on]
+            if state["other_on"]:
+                extra = other_buffer.text.strip()
+                if extra:
+                    parts.append(extra)
+            state["result"] = "; ".join(parts)
+            event.app.exit()
+
+        body = HSplit([options_window, other_input_window, hint_window])
+        try:
+            from prompt_toolkit.styles import Style as _Style
+            sel_style = _Style.from_dict(
+                {
+                    "amisel.focused": "reverse",
+                    "amisel.hint": "#888888",
+                    "amisel.prompt": "#888888",
+                }
+            )
+        except Exception:
+            sel_style = None
+
+        app = Application(
+            layout=Layout(body, focused_element=options_window),
+            key_bindings=kb,
+            full_screen=False,
+            mouse_support=False,
+            erase_when_done=False,
+            style=sel_style,
+        )
+        try:
+            app.run()
+        except (KeyboardInterrupt, EOFError):
+            return None
+        except Exception:
+            return None
+        return state["result"]
+
     def get_input_with_completion(
         self,
         prompt: str,
