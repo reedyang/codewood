@@ -105,6 +105,31 @@ class HostApi:
     def __init__(self) -> None:
         self._maximized = False
 
+    def open_external(self, url: str) -> bool:
+        """Open an http/https URL in the user's default system browser.
+
+        Validates the scheme strictly (only http/https) so the bridge can't
+        be coerced into launching arbitrary local handlers (file:, etc.).
+        """
+        raw = str(url or "").strip()
+        if not raw:
+            return False
+        try:
+            from urllib.parse import urlparse
+
+            parsed = urlparse(raw)
+        except Exception:
+            return False
+        if parsed.scheme not in ("http", "https") or not parsed.netloc:
+            return False
+        try:
+            import webbrowser
+
+            webbrowser.open(raw)
+            return True
+        except Exception:
+            return False
+
     def pick_folder(self) -> str:
         return _pick_folder()
 
