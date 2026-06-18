@@ -2006,6 +2006,7 @@ class PromptToolkitInputHandler:
         terminal_resize_callback: Optional[Callable[[int, int], bool]] = None,
         language_provider: Optional[Callable[[], Any]] = None,
         transcript_mode_callback: Optional[Callable[[], None]] = None,
+        plan_mode_provider: Optional[Callable[[], Any]] = None,
     ):
         """
         Initialize the input handler.
@@ -2016,6 +2017,9 @@ class PromptToolkitInputHandler:
         self.work_directory = work_directory
         self.workspace_directory = workspace_directory or work_directory
         self._transcript_mode_callback = transcript_mode_callback
+        # Returns True when Plan mode is active, False for Agent mode, so the
+        # status bar can show a gray PLAN MODE / AGENT MODE marker.
+        self._plan_mode_provider = plan_mode_provider
         self._transcript_mode_requested = False
         self.history = []
         self._status_bar_text = ""
@@ -2542,8 +2546,22 @@ class PromptToolkitInputHandler:
         except Exception:
             pass
 
+    def _plan_mode_status_label(self) -> str:
+        """Plain "PLAN MODE" / "AGENT MODE" marker, or empty when unknown."""
+        provider = getattr(self, "_plan_mode_provider", None)
+        if not callable(provider):
+            return ""
+        try:
+            is_plan = bool(provider())
+        except Exception:
+            return ""
+        lang = self._ui_language()
+        key = "input.plan_mode_label" if is_plan else "input.agent_mode_label"
+        return str(translate(key, lang) or "").strip()
+
     def _compose_transcript_hint_status_line(self, base_status_line: str) -> str:
-        """Append a right-aligned, gray "Shift+Alt+T" transcript hint."""
+        """Append a right-aligned, gray "Shift+Alt+T" transcript hint, with a
+        gray PLAN MODE / AGENT MODE marker immediately to its left."""
         base_colored = str(base_status_line or "")
         if not callable(getattr(self, "_transcript_mode_callback", None)):
             return base_colored
@@ -2555,8 +2573,14 @@ class PromptToolkitInputHandler:
             return base_colored
         label_colored = _ansi_gray(label_plain)
         right_padding = 1
+        # Optional mode marker sits to the LEFT of the transcript hint with a
+        # two-space gap so the two gray segments read as separate items.
+        mode_plain = self._plan_mode_status_label()
+        mode_gap = "  " if mode_plain else ""
+        mode_segment_plain = f"{mode_plain}{mode_gap}" if mode_plain else ""
+        mode_colored = _ansi_gray(mode_plain) if mode_plain else ""
         cols = _get_output_columns(self.session, default=80)
-        right_len = _display_width(label_plain)
+        right_len = _display_width(label_plain) + _display_width(mode_segment_plain)
         start_col = max(1, int(cols) - right_len - right_padding + 1)
         left_cap = max(0, start_col - 1)
         base_plain = _strip_ansi_sgr(base_colored)
@@ -2566,7 +2590,10 @@ class PromptToolkitInputHandler:
         else:
             # Avoid overlap with the right-aligned hint when the left side is wide.
             base_render = _truncate_to_display_width(base_plain, left_cap)
-        return f"{base_render}\x1b[{start_col}G{label_colored}{' ' * right_padding}"
+        right_render = (
+            f"{mode_colored}{mode_gap}{label_colored}" if mode_plain else label_colored
+        )
+        return f"{base_render}\x1b[{start_col}G{right_render}{' ' * right_padding}"
 
     def _compose_shell_mode_status_line(self, base_status_line: str) -> str:
         base_colored = str(base_status_line or "")
@@ -3208,6 +3235,7 @@ def create_prompt_toolkit_input_handler(
     terminal_resize_callback: Optional[Callable[[int, int], bool]] = None,
     language_provider: Optional[Callable[[], Any]] = None,
     transcript_mode_callback: Optional[Callable[[], None]] = None,
+    plan_mode_provider: Optional[Callable[[], Any]] = None,
 ) -> PromptToolkitInputHandler:
     """Create a prompt_toolkit input handler."""
     return PromptToolkitInputHandler(
@@ -3220,4 +3248,5 @@ def create_prompt_toolkit_input_handler(
         terminal_resize_callback,
         language_provider,
         transcript_mode_callback,
+        plan_mode_provider,
     )

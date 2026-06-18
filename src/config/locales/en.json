@@ -289,6 +289,8 @@
   "startup.tip.help": "Use /help to view built-in commands whenever you are unsure.",
   "input.shell_mode_hint": "Prefix a command with ! to run it locally",
   "input.transcript_hint": "Shift+Alt+T to enter transcript",
+  "input.plan_mode_label": "PLAN MODE",
+  "input.agent_mode_label": "AGENT MODE",
   "input.error": "Input error: {error}",
   "history.load_failed": "⚠️ Failed to load history: {error}",
   "history.save_failed": "⚠️ Failed to save history: {error}",

@@ -826,6 +826,104 @@ class CrossProcessSaveMergeTests(unittest.TestCase):
             gui_contents = [m.get("content") for m in (gui_chat_a.get("messages") or [])]
             self.assertIn("TUI reply", gui_contents)
 
+    def test_save_reloads_active_chat_when_disk_is_newer_and_idle(self):
+        # n11: a TUI sitting idle on the active chat must NOT clobber a newer
+        # record a peer (GUI) wrote for that same chat. With no in-flight turn
+        # (``_in_task_execution`` False), the strictly-newer disk record wins
+        # and is reloaded into memory.
+        with tempfile.TemporaryDirectory() as td:
+            workspace = Path(td)
+            tui = _FakeAgent(workspace)
+            tui_mgr = ChatStateManager(tui, "chats.json")
+            tui._chat_state = {
+                "version": CHAT_STATE_VERSION,
+                "active": "chat-a",
+                "chats": [
+                    self._make_chat(
+                        "chat-a",
+                        "A",
+                        "2026-06-18 09:10:00",
+                        [{"role": "user", "content": "old", "created_at": "2026-06-18 09:10:00"}],
+                    )
+                ],
+            }
+            tui.active_chat_id = "chat-a"
+            tui._in_task_execution = False
+            tui_mgr.save_chat_state()
+
+            # Peer (GUI) writes a strictly newer chat A.
+            peer = _FakeAgent(workspace)
+            peer_mgr = ChatStateManager(peer, "chats.json")
+            peer_mgr.load_chat_state()
+            peer.active_chat_id = "chat-a"
+            pc = peer_mgr.find_chat_by_id("chat-a")
+            pc["messages"] = [
+                {"role": "user", "content": "old", "created_at": "2026-06-18 09:10:00"},
+                {"role": "assistant", "content": "peer reply", "created_at": "2026-06-18 09:30:00"},
+            ]
+            pc["updated_at"] = "2026-06-18 09:30:00"
+            peer_mgr.save_chat_state()
+
+            # TUI saves again while idle on chat A (e.g. a background flush).
+            # It must reload rather than overwrite the peer's newer record.
+            tui_mgr.save_chat_state()
+
+            fresh = _FakeAgent(workspace)
+            fresh_mgr = ChatStateManager(fresh, "chats.json")
+            fresh_mgr.load_chat_state()
+            chat_a = fresh_mgr.find_chat_by_id("chat-a")
+            contents = [m.get("content") for m in (chat_a.get("messages") or [])]
+            self.assertIn("peer reply", contents)
+            # And the TUI's in-memory copy got refreshed.
+            tui_a = tui_mgr.find_chat_by_id("chat-a")
+            tui_contents = [m.get("content") for m in (tui_a.get("messages") or [])]
+            self.assertIn("peer reply", tui_contents)
+
+    def test_save_overwrites_active_chat_during_in_flight_turn(self):
+        # When a turn is in flight (``_in_task_execution`` True) the active
+        # chat is authoritative and must overwrite even a newer-looking disk
+        # record (e.g. a stale peer timestamp).
+        with tempfile.TemporaryDirectory() as td:
+            workspace = Path(td)
+            tui = _FakeAgent(workspace)
+            tui_mgr = ChatStateManager(tui, "chats.json")
+            tui._chat_state = {
+                "version": CHAT_STATE_VERSION,
+                "active": "chat-a",
+                "chats": [
+                    self._make_chat(
+                        "chat-a",
+                        "A",
+                        "2026-06-18 09:10:00",
+                        [{"role": "user", "content": "v1", "created_at": "2026-06-18 09:10:00"}],
+                    )
+                ],
+            }
+            tui.active_chat_id = "chat-a"
+            tui_mgr.save_chat_state()
+
+            peer = _FakeAgent(workspace)
+            peer_mgr = ChatStateManager(peer, "chats.json")
+            peer_mgr.load_chat_state()
+            pc = peer_mgr.find_chat_by_id("chat-a")
+            pc["messages"] = [{"role": "user", "content": "peer", "created_at": "2026-06-18 09:30:00"}]
+            pc["updated_at"] = "2026-06-18 09:30:00"
+            peer_mgr.save_chat_state()
+
+            # TUI is mid-turn and writes its own newer content.
+            tui._in_task_execution = True
+            tui_a = tui_mgr.find_chat_by_id("chat-a")
+            tui_a["messages"] = [{"role": "user", "content": "in-flight", "created_at": "2026-06-18 09:20:00"}]
+            tui_a["updated_at"] = "2026-06-18 09:20:00"
+            tui_mgr.save_chat_state()
+
+            fresh = _FakeAgent(workspace)
+            fresh_mgr = ChatStateManager(fresh, "chats.json")
+            fresh_mgr.load_chat_state()
+            chat_a = fresh_mgr.find_chat_by_id("chat-a")
+            contents = [m.get("content") for m in (chat_a.get("messages") or [])]
+            self.assertEqual(contents, ["in-flight"])
+
     def test_save_overwrites_owned_active_chat_even_if_disk_is_newer(self):
         # The active chat is owned by this process; its in-memory copy is
         # authoritative and must always be written, even when a stale disk

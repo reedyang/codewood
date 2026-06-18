@@ -421,6 +421,9 @@ def setup_input_handler(
                 transcript_mode_callback=getattr(
                     agent, "_run_transcript_mode", None
                 ),
+                plan_mode_provider=lambda: bool(
+                    getattr(agent, "_plan_mode_sticky", False)
+                ),
             )
         else:
             print(
