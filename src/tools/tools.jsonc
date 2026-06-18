@@ -702,7 +702,7 @@
     "type": "function",
     "function": {
       "name": "ask_more_info",
-      "description": "When key input is missing, ask the user a single-choice or multiple-choice question and pause auto-continuation until the user responds. Call this only after trying memory_search and other tools/skills/MCP in order and still being unable to obtain the information reliably. The host renders the options as buttons (single-choice: pick one; multi-choice: tick any subset and click Submit). The host always appends an extra 'Other' choice so the user can type a freeform answer; that freeform text is concatenated with any ticked options. Execution resumes with the user's answer as the supplement.",
+      "description": "When key input is missing, ask the user a single-choice or multiple-choice question and pause auto-continuation until the user responds. Call this only after trying memory_search and other tools/skills/MCP in order and still being unable to obtain the information reliably. The host renders the options as buttons (single-choice: pick one; multi-choice: tick any subset and click Submit). The host always appends an extra 'Other' choice so the user can type a freeform answer; that freeform text is concatenated with any ticked options. Execution resumes with the user's answer as the supplement. Important: each entry in `options` MUST be the full human-readable label the user needs to choose (not a bare index/code), and you must NOT also print the same option list in your natural-language reply — the buttons rendered from `options` are the only enumeration the user should see.",
       "parameters": {
         "type": "object",
         "properties": {
@@ -712,7 +712,7 @@
           },
           "options": {
             "type": "array",
-            "description": "Two or more discrete answer choices the user can pick from. Each item is a short label (ideally under 8 words). The host always appends an extra 'Other' option for freeform input, so do NOT include one here.",
+            "description": "Two or more discrete answer choices the user can pick from. Each item MUST be the full human-readable label (e.g. the package name, URL, file path, or short phrase the user needs to read) — NOT a bare index, code, or `1`/`2` placeholder. Ideal length is under ~10 words but use whatever is needed to make the choice meaningful. The host always appends an extra 'Other' option for freeform input, so do NOT include one here.",
             "items": {
               "type": "string"
             },
