@@ -40,6 +40,7 @@ import sparkles from "../assets/icons/sparkles.svg";
 import wrench from "../assets/icons/wrench.svg";
 import messageSquare from "../assets/icons/message-square.svg";
 import paperclip from "../assets/icons/paperclip.svg";
+import robot from "../assets/icons/robot.svg";
 
 const SOURCES = {
   panel,
@@ -83,6 +84,7 @@ const SOURCES = {
   wrench,
   "message-square": messageSquare,
   paperclip,
+  robot,
 } as const;
 
 export type IconName = keyof typeof SOURCES;

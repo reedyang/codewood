@@ -2170,6 +2170,118 @@ class ServeApp:
             pass
         return {"ok": True}
 
+    # ----- Sub-agents config CRUD ----------------------------------------
+    def _available_subagent_tool_names(self) -> List[str]:
+        """Tool names selectable for a sub-agent (core tools, no recursion)."""
+        names: List[str] = []
+        seen = set()
+        try:
+            for spec in list(getattr(self.agent, "tool_specs", []) or []):
+                fn = spec.get("function") if isinstance(spec, dict) else None
+                nm = str((fn or {}).get("name") or "").strip()
+                if not nm or nm == "run_subagent" or nm in seen:
+                    continue
+                seen.add(nm)
+                names.append(nm)
+        except Exception:
+            pass
+        return names
+
+    def get_subagents_overview(self) -> Dict[str, Any]:
+        """List configured sub-agents plus the model/tool option catalogs."""
+        from ..core.config.subagents_loader import list_subagents_for_config
+
+        try:
+            items = list_subagents_for_config(self.agent.config_dir)
+        except Exception:
+            items = []
+        try:
+            models = [s for s in self.agent._get_configured_model_selectors() if s]
+        except Exception:
+            models = []
+        return {
+            "subagents": items,
+            "models": models,
+            "tools": self._available_subagent_tool_names(),
+        }
+
+    def _reload_subagents(self) -> None:
+        """Re-scan sub-agent files into the live agent after a config change."""
+        try:
+            from ..runtime import bootstrap
+
+            bootstrap.setup_subagents(self.agent)
+        except Exception:
+            pass
+        try:
+            self.broadcaster.publish(
+                "idle", {"state": _build_state(self.agent), "chatId": self._active_chat_id()}
+            )
+        except Exception:
+            pass
+
+    def save_subagent(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Create or update a global sub-agent file from the config UI."""
+        from ..core.config.subagents_loader import (
+            DEFAULT_SUBAGENT_MAX_ROUNDS,
+            write_subagent,
+        )
+
+        if not isinstance(payload, dict):
+            return {"ok": False, "error": "invalid_payload"}
+        tools_raw = payload.get("tools")
+        tools = (
+            [str(t).strip() for t in tools_raw if str(t or "").strip()]
+            if isinstance(tools_raw, list)
+            else []
+        )
+        try:
+            max_rounds = int(payload.get("maxRounds") or DEFAULT_SUBAGENT_MAX_ROUNDS)
+        except Exception:
+            max_rounds = DEFAULT_SUBAGENT_MAX_ROUNDS
+        try:
+            result = write_subagent(
+                self.agent.config_dir,
+                original_name=str(payload.get("originalName") or ""),
+                name=str(payload.get("name") or ""),
+                description=str(payload.get("description") or ""),
+                instructions=str(payload.get("instructions") or ""),
+                model=str(payload.get("model") or ""),
+                tools=tools,
+                tools_specified=bool(payload.get("toolsSpecified", False)),
+                max_rounds=max_rounds,
+                enabled=bool(payload.get("enabled", True)),
+            )
+        except Exception:
+            return {"ok": False, "error": "io_error"}
+        if result.get("ok"):
+            self._reload_subagents()
+        return result
+
+    def delete_subagent(self, name: str) -> Dict[str, Any]:
+        """Delete a global sub-agent file by name."""
+        from ..core.config.subagents_loader import delete_subagent as _delete
+
+        try:
+            result = _delete(self.agent.config_dir, str(name or ""))
+        except Exception:
+            return {"ok": False, "error": "io_error"}
+        if result.get("ok"):
+            self._reload_subagents()
+        return result
+
+    def set_subagent_enabled(self, name: str, enabled: bool) -> Dict[str, Any]:
+        """Flip a global sub-agent's enabled flag."""
+        from ..core.config.subagents_loader import set_subagent_enabled as _set
+
+        try:
+            result = _set(self.agent.config_dir, str(name or ""), bool(enabled))
+        except Exception:
+            return {"ok": False, "error": "io_error"}
+        if result.get("ok"):
+            self._reload_subagents()
+        return result
+
     def get_models_config(self) -> List[Dict[str, Any]]:
         """Return the raw (unresolved) ``model_providers`` list for editing."""
         agent = self.agent
@@ -2902,6 +3014,24 @@ def _make_handler(app: ServeApp):
                 enabled = bool(body.get("enabled", True))
                 ok = app.set_mcp_tools_enabled(srv, tools, enabled)
                 self._send_json(200 if ok else 400, {"ok": ok})
+                return
+            if path == "/subagents-overview":
+                self._send_json(200, {"ok": True, **app.get_subagents_overview()})
+                return
+            if path == "/save-subagent":
+                result = app.save_subagent(body if isinstance(body, dict) else {})
+                self._send_json(200 if result.get("ok") else 400, result)
+                return
+            if path == "/delete-subagent":
+                nm = str(body.get("name") or "")[:128]
+                result = app.delete_subagent(nm)
+                self._send_json(200 if result.get("ok") else 400, result)
+                return
+            if path == "/set-subagent-enabled":
+                nm = str(body.get("name") or "")[:128]
+                enabled = bool(body.get("enabled", True))
+                result = app.set_subagent_enabled(nm, enabled)
+                self._send_json(200 if result.get("ok") else 400, result)
                 return
             if path == "/fetch-models":
                 result = app.fetch_provider_models(body if isinstance(body, dict) else {})

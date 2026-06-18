@@ -192,6 +192,29 @@ export interface HistoryTurn {
   timestamp?: string;
 }
 
+/** One configured sub-agent as surfaced by the config UI. */
+export interface SubAgentConfig {
+  name: string;
+  description: string;
+  instructions: string;
+  /** ``provider:model`` selector; empty = reuse the main model. */
+  model: string;
+  tools: string[];
+  toolsSpecified: boolean;
+  maxRounds: number;
+  enabled: boolean;
+  sourcePath: string;
+  global: boolean;
+}
+
+/** Response from POST /subagents-overview: the configured sub-agents plus the
+ *  option catalogs (selectable models and tools) for the editor dropdowns. */
+export interface SubAgentsOverview {
+  subagents: SubAgentConfig[];
+  models: string[];
+  tools: string[];
+}
+
 /** Paginated chat history response from GET /chat-history. */
 export interface ChatHistoryPage {
   turns: HistoryTurn[];

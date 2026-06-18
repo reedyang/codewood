@@ -53,6 +53,9 @@ class SubAgentRecord:
     tools_specified: bool = False
     max_rounds: int = DEFAULT_SUBAGENT_MAX_ROUNDS
     source_path: str = ""
+    # When False the sub-agent is parsed and surfaced in config UIs but is NOT
+    # offered to the model (filtered out of the runtime ``agent.subagents``).
+    enabled: bool = True
 
 
 def _coerce_tools_list(value: object) -> List[str]:
@@ -76,6 +79,22 @@ def _coerce_tools_list(value: object) -> List[str]:
         seen.add(name.lower())
         out.append(name)
     return out
+
+
+def _coerce_enabled(value: object) -> bool:
+    """Parse the optional ``enabled`` frontmatter flag (default: True).
+
+    Accepts real booleans and common string spellings so a hand-edited file
+    (``enabled: false`` / ``no`` / ``0``) behaves intuitively.
+    """
+    if value is None:
+        return True
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().lower()
+    if text in ("false", "no", "off", "0", "disabled"):
+        return False
+    return True
 
 
 def _coerce_max_rounds(value: object) -> int:
@@ -122,6 +141,7 @@ def _scan_subagents_root(subagents_root: Path, language: Optional[str] = None) -
         tools_specified = "tools" in meta
         tools = _coerce_tools_list(meta.get("tools"))
         max_rounds = _coerce_max_rounds(meta.get("max_rounds"))
+        enabled = _coerce_enabled(meta.get("enabled"))
         instructions = body.strip()
         if not instructions:
             print(_t(language, "subagents_loader.missing_instructions", path=child))
@@ -137,6 +157,7 @@ def _scan_subagents_root(subagents_root: Path, language: Optional[str] = None) -
                 tools_specified=tools_specified,
                 max_rounds=max_rounds,
                 source_path=str(child.resolve()),
+                enabled=enabled,
             )
         )
     return out
@@ -208,3 +229,205 @@ def calc_subagents_dirs_fingerprint(
     }
     raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha1(raw.encode("utf-8")).hexdigest()
+
+
+# --- Config-UI CRUD over the GLOBAL sub-agents root --------------------------
+#
+# The desktop GUI manages sub-agents as ``<config_dir>/subagents/<name>.md``
+# files. We deliberately scope writes to the global root (never the workspace
+# root) so a misconfigured workspace can't be silently rewritten, and so the
+# behaviour is predictable regardless of which workspace is active.
+
+import re as _re
+
+import yaml as _yaml
+
+
+_NAME_RE = _re.compile(r"^[A-Za-z0-9][A-Za-z0-9 _-]{0,63}$")
+
+
+def _sanitize_subagent_filename(name: str) -> str:
+    """Map a sub-agent ``name`` to a safe ``<stem>.md`` filename.
+
+    Rejects path separators / traversal by keeping only a conservative
+    character set; the result is always a bare filename within the root.
+    """
+    stem = str(name or "").strip().lower()
+    stem = _re.sub(r"[^a-z0-9_-]+", "-", stem).strip("-")
+    return stem or "subagent"
+
+
+def is_valid_subagent_name(name: str) -> bool:
+    return bool(_NAME_RE.match(str(name or "").strip()))
+
+
+def _resolve_within_root(root: Path, filename: str) -> Optional[Path]:
+    """Resolve ``filename`` under ``root``, rejecting traversal escapes."""
+    root = root.expanduser().resolve()
+    candidate = (root / filename).resolve()
+    try:
+        candidate.relative_to(root)
+    except ValueError:
+        return None
+    return candidate
+
+
+def subagent_to_dict(rec: SubAgentRecord) -> Dict[str, object]:
+    """Serialize a record for the config UI (round-trips through write_*)."""
+    return {
+        "name": rec.name,
+        "description": rec.description,
+        "instructions": rec.instructions,
+        "model": rec.model_selector,
+        "tools": list(rec.tools),
+        "toolsSpecified": bool(rec.tools_specified),
+        "maxRounds": int(rec.max_rounds),
+        "enabled": bool(rec.enabled),
+        "sourcePath": rec.source_path,
+        # A workspace override lives outside the global root we manage; the UI
+        # can surface it read-only so the user isn't surprised that an edit
+        # targets the global copy.
+        "global": True,
+    }
+
+
+def list_subagents_for_config(config_dir: Path) -> List[Dict[str, object]]:
+    """List GLOBAL sub-agents (including disabled ones) for the config UI."""
+    records = _scan_subagents_root(_global_subagents_root(config_dir))
+    return [subagent_to_dict(r) for r in records]
+
+
+def _render_subagent_markdown(
+    *,
+    name: str,
+    description: str,
+    instructions: str,
+    model: str,
+    tools: List[str],
+    tools_specified: bool,
+    max_rounds: int,
+    enabled: bool,
+) -> str:
+    meta: Dict[str, object] = {
+        "name": str(name).strip(),
+        "description": str(description).strip(),
+    }
+    if str(model or "").strip():
+        meta["model"] = str(model).strip()
+    if tools_specified:
+        meta["tools"] = [str(t).strip() for t in (tools or []) if str(t).strip()]
+    if int(max_rounds) != DEFAULT_SUBAGENT_MAX_ROUNDS:
+        meta["max_rounds"] = int(max_rounds)
+    if not enabled:
+        meta["enabled"] = False
+    front = _yaml.safe_dump(meta, allow_unicode=True, sort_keys=False).strip()
+    body = str(instructions or "").strip()
+    return f"---\n{front}\n---\n\n{body}\n"
+
+
+def write_subagent(
+    config_dir: Path,
+    *,
+    original_name: str,
+    name: str,
+    description: str,
+    instructions: str,
+    model: str = "",
+    tools: Optional[List[str]] = None,
+    tools_specified: bool = False,
+    max_rounds: int = DEFAULT_SUBAGENT_MAX_ROUNDS,
+    enabled: bool = True,
+) -> Dict[str, object]:
+    """Create or update a global sub-agent file. Returns ``{ok, error}``."""
+    clean_name = str(name or "").strip()
+    if not is_valid_subagent_name(clean_name):
+        return {"ok": False, "error": "invalid_name"}
+    if not str(description or "").strip():
+        return {"ok": False, "error": "description_required"}
+    if not str(instructions or "").strip():
+        return {"ok": False, "error": "instructions_required"}
+
+    root = _global_subagents_root(config_dir)
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return {"ok": False, "error": "io_error"}
+
+    new_filename = _sanitize_subagent_filename(clean_name) + ".md"
+    new_path = _resolve_within_root(root, new_filename)
+    if new_path is None:
+        return {"ok": False, "error": "invalid_name"}
+
+    orig = str(original_name or "").strip()
+    old_path: Optional[Path] = None
+    if orig:
+        old_path = _resolve_within_root(root, _sanitize_subagent_filename(orig) + ".md")
+
+    # Renames and brand-new agents must not silently clobber a different file.
+    is_rename_or_new = old_path is None or old_path.resolve() != new_path.resolve()
+    if is_rename_or_new and new_path.exists():
+        return {"ok": False, "error": "name_exists"}
+
+    content = _render_subagent_markdown(
+        name=clean_name,
+        description=description,
+        instructions=instructions,
+        model=model,
+        tools=list(tools or []),
+        tools_specified=bool(tools_specified),
+        max_rounds=int(max_rounds),
+        enabled=bool(enabled),
+    )
+    try:
+        new_path.write_text(content, encoding="utf-8")
+    except OSError:
+        return {"ok": False, "error": "io_error"}
+
+    # On a successful rename, drop the old file.
+    if old_path is not None and old_path.resolve() != new_path.resolve() and old_path.exists():
+        try:
+            old_path.unlink()
+        except OSError:
+            pass
+    return {"ok": True, "error": ""}
+
+
+def delete_subagent(config_dir: Path, name: str) -> Dict[str, object]:
+    """Delete a global sub-agent file by name. Returns ``{ok, error}``."""
+    root = _global_subagents_root(config_dir)
+    path = _resolve_within_root(root, _sanitize_subagent_filename(name) + ".md")
+    if path is None:
+        return {"ok": False, "error": "invalid_name"}
+    if not path.exists():
+        return {"ok": False, "error": "not_found"}
+    try:
+        path.unlink()
+    except OSError:
+        return {"ok": False, "error": "io_error"}
+    return {"ok": True, "error": ""}
+
+
+def set_subagent_enabled(config_dir: Path, name: str, enabled: bool) -> Dict[str, object]:
+    """Flip a global sub-agent's enabled flag in place. Returns ``{ok, error}``."""
+    root = _global_subagents_root(config_dir)
+    records = _scan_subagents_root(root)
+    target = None
+    needle = str(name or "").strip().lower()
+    for rec in records:
+        if rec.name.strip().lower() == needle:
+            target = rec
+            break
+    if target is None:
+        return {"ok": False, "error": "not_found"}
+    return write_subagent(
+        config_dir,
+        original_name=target.name,
+        name=target.name,
+        description=target.description,
+        instructions=target.instructions,
+        model=target.model_selector,
+        tools=list(target.tools),
+        tools_specified=target.tools_specified,
+        max_rounds=target.max_rounds,
+        enabled=bool(enabled),
+    )

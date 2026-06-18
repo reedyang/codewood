@@ -5,6 +5,7 @@ import { Icon, type IconName } from "./Icon";
 import { ModelsSettings } from "./ModelsSettings";
 import { GeneralSettings } from "./GeneralSettings";
 import { McpSettings } from "./McpSettings";
+import { SubAgentsSettings } from "./SubAgentsSettings";
 
 const THEME_OPTIONS: { value: Theme; icon: IconName }[] = [
   { value: "light", icon: "sun" },
@@ -16,7 +17,7 @@ const NAV_MIN = 160;
 const NAV_MAX = 360;
 const NAV_WIDTH_KEY = "codewood.settingsNavWidth";
 
-type PageId = "appearance" | "general" | "models" | "mcp";
+type PageId = "appearance" | "general" | "models" | "mcp" | "subagents";
 
 function loadNavWidth(): number {
   const raw = Number(window.localStorage.getItem(NAV_WIDTH_KEY));
@@ -145,6 +146,7 @@ export function SettingsView() {
     { id: "appearance", label: t("settings.page.appearance"), icon: "sun" },
     { id: "models", label: t("settings.page.models"), icon: "cube" },
     { id: "mcp", label: t("settings.page.mcp"), icon: "plus" },
+    { id: "subagents", label: t("settings.page.subagents"), icon: "robot" },
   ];
 
   return (
@@ -221,6 +223,7 @@ export function SettingsView() {
           <ModelsSettings onDirtyChange={handleModelsDirtyChange} saveSignal={saveSignal} />
         )}
         {page === "mcp" && <McpSettings />}
+        {page === "subagents" && <SubAgentsSettings />}
       </section>
 
       {pendingLeave !== null && (
