@@ -238,8 +238,49 @@ export function parseMessageToSegments(text: string): Segment[] {
   // CONTROL envelope from the "Execute now" nudge. Without this the Edit
   // flow would re-populate the composer with that machine-authored text.
   rest = stripHiddenControl(stripPlanModePrefix(rest));
-  if (rest) {
-    out.push({ kind: "text", value: rest });
+  // Re-tokenize the inline reference pills (``[skill: ...]``,
+  // ``[mcp tool: srv/name]``, ``[mcp prompt: srv/name]``) back into
+  // segments so editing a sent message surfaces them as image/text-mixed
+  // pills the user can keep or remove — instead of raw bracket text.
+  for (const seg of retokenizeReferencePills(rest)) {
+    out.push(seg);
+  }
+  return out;
+}
+
+/** Split a plain body into text/skill/mcp segments by recognising the inline
+ *  reference pill markers emitted by ``composeMessageText``. */
+function retokenizeReferencePills(body: string): Segment[] {
+  const out: Segment[] = [];
+  const src = String(body ?? "");
+  if (!src) {
+    return out;
+  }
+  // Order matters: try the MCP forms (which contain a "/") before the
+  // generic skill form. Each alternative is captured so we can classify.
+  const PILL = new RegExp(
+    "\\[skill:\\s*([^\\]\\r\\n]+?)\\s*\\]" +
+      "|\\[mcp\\s+tool:\\s*([^\\]\\r\\n/]+?)\\s*/\\s*([^\\]\\r\\n]+?)\\s*\\]" +
+      "|\\[mcp\\s+prompt:\\s*([^\\]\\r\\n/]+?)\\s*/\\s*([^\\]\\r\\n]+?)\\s*\\]",
+    "gi",
+  );
+  let last = 0;
+  let m: RegExpExecArray | null;
+  while ((m = PILL.exec(src)) !== null) {
+    if (m.index > last) {
+      out.push({ kind: "text", value: src.slice(last, m.index) });
+    }
+    if (m[1] != null) {
+      out.push({ kind: "skill", value: m[1] });
+    } else if (m[2] != null && m[3] != null) {
+      out.push({ kind: "mcp-tool", value: `${m[2]}::${m[3]}` });
+    } else if (m[4] != null && m[5] != null) {
+      out.push({ kind: "mcp-prompt", value: `${m[4]}::${m[5]}` });
+    }
+    last = m.index + m[0].length;
+  }
+  if (last < src.length) {
+    out.push({ kind: "text", value: src.slice(last) });
   }
   return out;
 }
