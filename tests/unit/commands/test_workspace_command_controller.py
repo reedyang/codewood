@@ -11,6 +11,9 @@ class _FakeWorkspaceSwitchAgent:
         self.work_directory = Path("D:/ws/a")
         self.refresh_calls = 0
         self.saved_workspace_ids = []
+        # Records (workspace_id, sync_messages) for each persist call so tests
+        # can assert the post-apply save is metadata-only.
+        self.saved_positions = []
         self._entries = {
             "ws-b": {
                 "id": "ws-b",
@@ -22,8 +25,9 @@ class _FakeWorkspaceSwitchAgent:
     def _workspace_entry_by_selector(self, selector: str):
         return self._entries.get(str(selector or "").strip())
 
-    def _save_current_workspace_position(self):
+    def _save_current_workspace_position(self, sync_messages: bool = True):
         self.saved_workspace_ids.append(str(self.workspace_id))
+        self.saved_positions.append((str(self.workspace_id), bool(sync_messages)))
 
     def _apply_workspace_entry(self, entry, _fallback_dir):
         self.workspace_id = str(entry.get("id") or self.workspace_id)
@@ -41,6 +45,13 @@ class WorkspaceCommandControllerTests(unittest.TestCase):
         self.assertIn("✅ Switched to workspace: Workspace B", msg)
         self.assertEqual(agent.refresh_calls, 1)
         self.assertEqual(agent.saved_workspace_ids, ["ws-a", "ws-b"])
+        # Pre-apply (source workspace) flushes live messages; post-apply (target
+        # workspace) must persist position metadata only, because the session
+        # still carries the source chat's id/history and syncing it would
+        # duplicate that history into a same-id chat of the target workspace.
+        self.assertEqual(
+            agent.saved_positions, [("ws-a", True), ("ws-b", False)]
+        )
 
     def test_workspace_switch_same_workspace_does_not_persist_again(self):
         agent = _FakeWorkspaceSwitchAgent()

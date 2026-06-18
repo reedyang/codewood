@@ -653,8 +653,10 @@ class Agent:
     def _apply_workspace_entry(self, entry: Dict[str, Any], fallback_dir: Path) -> None:
         self._workspace_state_manager.apply_workspace_entry(entry, fallback_dir)
 
-    def _save_current_workspace_position(self) -> None:
-        self._workspace_state_manager.save_current_workspace_position()
+    def _save_current_workspace_position(self, sync_messages: bool = True) -> None:
+        self._workspace_state_manager.save_current_workspace_position(
+            sync_messages=sync_messages
+        )
 
     def _shell_execution_cwd(self) -> Path:
         """Return the cwd to use when executing shell commands/scripts."""
