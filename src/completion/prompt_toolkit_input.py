@@ -24,9 +24,13 @@ ATTACH_CLOSE = "\uE101"
 ATTACH_PREFIX = "ATTACH:"
 # A recognizable "@<workspace-relative-path>" file reference the completion
 # inserts and the submit-time hoist promotes into the ATTACH envelope. The
-# path token excludes whitespace and the sentinels; the leading boundary is the
-# line start or whitespace so an email-like "a@b" is never misread as a ref.
-_AT_FILE_REF_RE = re.compile(r"(?:(?<=\s)|^)@([^\s\uE100\uE101]+)")
+# path token excludes whitespace, the sentinels and "@". The leading boundary is
+# the line start or whitespace so an email-like "a@b" is never misread as a ref;
+# additionally, a "@" that immediately follows a previous reference's path is
+# also treated as a boundary (handled in ``_hoist_at_file_references``) so that
+# back-to-back selections inserted without a separating space ("@a/b.py@c/d.py")
+# still split into two refs.
+_AT_FILE_REF_RE = re.compile(r"(?:(?<=\s)|^)@([^\s@\uE100\uE101]+)")
 MULTILINE_INDENT = "  "
 # Cap the input area to behave like a GUI text box: it grows with the content
 # up to this many visible rows, then stops growing and scrolls internally.
@@ -1418,14 +1422,14 @@ class FileCompleter(Completer):
                 file_matches = self._get_at_file_completions(at_part)
                 if file_matches:
                     # Replace the whole "@partial" fragment (including the
-                    # leading "@") with "@<workspace-relative-path> ". Keeping
+                    # leading "@") with "@<workspace-relative-path>". Keeping
                     # the leading "@" makes the inserted token a recognizable
                     # file-reference marker that the submit-time hoist
                     # (``_hoist_at_file_references``) can pick off and promote
                     # into the canonical ATTACH envelope — so the GUI renders
-                    # the same attachment chip on reload. The trailing space
-                    # ends the "@..." fragment so the completion menu dismisses
-                    # itself instead of lingering on the now-complete path.
+                    # the same attachment chip on reload. No trailing space is
+                    # appended; the hoist treats a following "@" (back-to-back
+                    # selections) or whitespace as the fragment boundary.
                     spos = -(len(at_part) + 1)
                     seen = set()
                     for mc in file_matches:
@@ -1437,7 +1441,7 @@ class FileCompleter(Completer):
                         # for disambiguation when multiple files share a name.
                         display = leaf if leaf == mc else f"{leaf}  ({mc})"
                         yield Completion(
-                            f"@{mc} ",
+                            f"@{mc}",
                             start_position=spos,
                             display=display,
                         )
@@ -1529,7 +1533,15 @@ class FileCompleter(Completer):
         # If input becomes empty, hide completion menu.
         if not text or text.strip() == "":
             return
-        
+
+        # A trailing space means the current token is finished: there is nothing
+        # left to complete, so dismiss the menu instead of running the generic
+        # file/path fallback. This also closes the menu right after a confirmed
+        # "@<file> " reference (one "@" maps to exactly one file) rather than
+        # letting the now-complete path leak into path completion.
+        if text[-1:].isspace():
+            return
+
         # Smartly detect the filename portion.
         file_part, prefix, suffix = self._extract_file_part(text)
         
@@ -2954,23 +2966,42 @@ class PromptToolkitInputHandler:
             except Exception:
                 return False
 
-        def _replace(m: "re.Match[str]") -> str:
-            rel = m.group(1) or ""
-            # Only trim a trailing period/comma/semicolon/paren so a reference
-            # at the end of a sentence ("see @a/b.py.") still resolves.
-            candidate = rel.rstrip(".,;)")
-            trailer = rel[len(candidate):]
-            if not _is_workspace_file(candidate):
-                return m.group(0)
-            norm = candidate.replace("\\", "/")
-            if norm not in seen:
-                seen.add(norm)
-                attach_paths.append(norm)
-            # Remove the inline marker from the body (the head envelope carries
-            # it). Preserve any trimmed trailing punctuation.
-            return trailer
+        # Scan manually instead of a single re.sub pass so that a "@" which
+        # immediately follows a previous reference's path (back-to-back
+        # selections inserted without a separating space, e.g. "@a/b.py@c/d.py")
+        # is also accepted as a reference boundary.
+        out: List[str] = []
+        i = 0
+        n = len(raw)
+        prev_was_ref = False
+        while i < n:
+            ch = raw[i]
+            if ch == "@" and (i == 0 or raw[i - 1].isspace() or prev_was_ref):
+                # Match the path token from this position regardless of the
+                # global anchor so a "@" right after a prior ref still resolves.
+                token_match = re.match(r"@([^\s@\uE100\uE101]+)", raw[i:])
+                if token_match:
+                    rel = token_match.group(1) or ""
+                    # Only trim a trailing period/comma/semicolon/paren so a
+                    # reference at the end of a sentence ("see @a/b.py.") still
+                    # resolves.
+                    candidate = rel.rstrip(".,;)")
+                    trailer = rel[len(candidate):]
+                    if _is_workspace_file(candidate):
+                        norm = candidate.replace("\\", "/")
+                        if norm not in seen:
+                            seen.add(norm)
+                            attach_paths.append(norm)
+                        # Drop the inline marker; keep any trimmed punctuation.
+                        out.append(trailer)
+                        i += 1 + len(rel)
+                        prev_was_ref = True
+                        continue
+            out.append(ch)
+            prev_was_ref = False
+            i += 1
 
-        body = _AT_FILE_REF_RE.sub(_replace, raw)
+        body = "".join(out)
         if not attach_paths:
             return raw
         # Collapse any whitespace left where markers were removed.
@@ -3349,6 +3380,36 @@ class PromptToolkitInputHandler:
                     buf.start_completion(select_first=False)
                     return
 
+                def _apply_completion(completion) -> None:
+                    """Apply a completion and, when it is a "@<file>" reference,
+                    append a trailing space.
+
+                    The completion text intentionally carries no trailing space
+                    so arrow-key menu navigation previews the path cleanly. The
+                    space is added only on explicit confirmation (Tab) so a
+                    following word — or the next "@<file>" selection — is kept
+                    separated from the just-inserted reference.
+                    """
+                    buf.apply_completion(completion)
+                    text = getattr(completion, "text", "") or ""
+                    if text.startswith("@") and not text.endswith(" "):
+                        before = buf.document.text_before_cursor
+                        if not before.endswith(" "):
+                            try:
+                                buf.insert_text(" ")
+                            except Exception:
+                                pass
+                        # A "@<file>" selection is complete: dismiss the menu so
+                        # one "@" maps to exactly one file. Typing another "@"
+                        # starts a fresh reference; the trailing space ensures
+                        # the now-complete path no longer matches the "@<partial>"
+                        # fragment, so the menu does not linger.
+                        try:
+                            if hasattr(buf, "cancel_completion"):
+                                buf.cancel_completion()
+                        except Exception:
+                            pass
+
                 def _prepare_delayed_trigger(text_before_cursor: str) -> bool:
                     _, slash_part = FileCompleter._slash_fragment_for_completion(
                         text_before_cursor
@@ -3391,7 +3452,7 @@ class PromptToolkitInputHandler:
                 )
                 if len(candidates) == 1:
                     try:
-                        buf.apply_completion(candidates[0])
+                        _apply_completion(candidates[0])
                     except Exception:
                         buf.start_completion(select_first=False)
                     if _prepare_delayed_trigger(buf.document.text_before_cursor):
@@ -3435,7 +3496,7 @@ class PromptToolkitInputHandler:
                     )
                     if slash_part:
                         try:
-                            buf.apply_completion(candidates[0])
+                            _apply_completion(candidates[0])
                         except Exception:
                             pass
                         if _prepare_delayed_trigger(buf.document.text_before_cursor):
@@ -3466,14 +3527,14 @@ class PromptToolkitInputHandler:
                                 )
                                 is not None
                             ):
-                                buf.apply_completion(buf.complete_state.current_completion)
+                                _apply_completion(buf.complete_state.current_completion)
                             # Fallback: if still unchanged, apply first candidate
                             # from the completion snapshot we computed for this Tab.
                             if (
                                 buf.document.text_before_cursor == before_text
                                 and len(candidates) > 0
                             ):
-                                buf.apply_completion(candidates[0])
+                                _apply_completion(candidates[0])
                     except Exception:
                         pass
                     if _prepare_delayed_trigger(buf.document.text_before_cursor):
