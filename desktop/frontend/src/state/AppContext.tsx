@@ -657,14 +657,33 @@ export function AppProvider({ children }: { children: ReactNode }) {
           if (next) {
             setState(next);
           }
-          endActiveTurn(chatId);
-          setBusyForChat(chatId, false);
-          // A turn that finishes in a chat the user isn't currently viewing
-          // leaves an unread marker (blue dot) until they open that chat.
-          if (chatId && chatId !== activeChatIdRef.current) {
-            setUnreadChatIds((prev) =>
-              prev[chatId] ? prev : { ...prev, [chatId]: true },
-            );
+          // An ``idle`` event can be emitted by paths other than a genuine
+          // turn completion — most importantly the focus-switch broadcast
+          // (``select_chat``) and any state refresh that reuses the ``idle``
+          // channel. The snapshot's per-chat ``running`` flag is the durable
+          // truth (it mirrors the backend runtime's busy state and survives
+          // focus changes). When the chat this ``idle`` is attributed to is
+          // STILL running on the backend, treating it as "finished" would
+          // wrongly call ``endActiveTurn``/clear-busy — wiping the chat's
+          // in-progress reply and the sidebar busy/blue dot with no
+          // ``turn_start`` to restore them when the user switches back. So we
+          // only terminate the turn when the backend agrees the chat is idle.
+          const stillRunning = Boolean(
+            chatId &&
+              next?.chats?.some(
+                (c) => String(c.id) === chatId && Boolean(c.running),
+              ),
+          );
+          if (!stillRunning) {
+            endActiveTurn(chatId);
+            setBusyForChat(chatId, false);
+            // A turn that finishes in a chat the user isn't currently viewing
+            // leaves an unread marker (blue dot) until they open that chat.
+            if (chatId && chatId !== activeChatIdRef.current) {
+              setUnreadChatIds((prev) =>
+                prev[chatId] ? prev : { ...prev, [chatId]: true },
+              );
+            }
           }
           if (pendingHistoryReloadRef.current) {
             pendingHistoryReloadRef.current = false;

@@ -1282,6 +1282,29 @@ class ServeApp:
         agent = self.agent
         try:
             if wsid and wsid != str(getattr(agent, "workspace_id", "") or ""):
+                # A workspace switch rebinds the agent's SHARED, workspace-level
+                # runtime: it reloads ``_chat_state`` with the target
+                # workspace's chat index, swaps ``workspace_root`` /
+                # ``work_directory``, and may tear down workspace services / MCP
+                # runtime. Those are process-global (not per-session), so doing
+                # it while another chat's loop is mid-turn destroys that chat's
+                # execution environment: when the background chat finishes,
+                # ``find_chat_by_id`` no longer locates its record in the
+                # now-replaced ``_chat_state`` and its reply is silently dropped
+                # (never persisted to history) — exactly the "switch away while
+                # waiting and the reply is lost" symptom. Refuse the switch
+                # while any chat is actively running so the in-flight task keeps
+                # its workspace context and persists normally.
+                running_ids: list = []
+                try:
+                    runner = getattr(agent, "_active_runtime_chat_ids", None)
+                    if callable(runner):
+                        running_ids = [str(x) for x in (runner() or []) if str(x)]
+                except Exception:
+                    running_ids = []
+                if running_ids:
+                    return False
+
                 from ..controllers.workspace_command_controller import (
                     workspace_switch_command,
                 )
@@ -1325,8 +1348,17 @@ class ServeApp:
                         return False
         except Exception:
             return False
+        # Use the non-terminating ``state`` event (not ``idle``) to push the
+        # refreshed snapshot. Switching focus must never flip the GUI's busy
+        # flag or freeze the live turn of the chat we land on: when the user
+        # switches back to a chat whose loop is still streaming, an ``idle``
+        # here would call ``endActiveTurn``/clear-busy for that chat even
+        # though it is genuinely still running — wiping its in-progress reply
+        # and the sidebar busy/blue dot, with no ``turn_start`` to restore
+        # them. ``state`` only re-syncs the snapshot (driving the active-chat
+        # history reload and plan panel) and leaves turn/busy state intact.
         self.broadcaster.publish(
-            "idle", {"state": _build_state(agent), "chatId": self._active_chat_id()}
+            "state", {"state": _build_state(agent), "chatId": self._active_chat_id()}
         )
         return True
 
