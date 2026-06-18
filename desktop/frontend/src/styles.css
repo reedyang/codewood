@@ -2160,9 +2160,16 @@ body.resizing-x {
   font-weight: 600;
 }
 .modal.subagent-editor .setting-row > .input,
-.modal.subagent-editor .setting-row > textarea.input {
+.modal.subagent-editor .setting-row > textarea.input,
+.modal.subagent-editor .setting-row > .select {
   width: 100%;
   box-sizing: border-box;
+}
+/* In the column layout the generic ``.setting-row .select { flex: 0 0 240px }``
+   rule would set a 240px *height* (main axis is vertical), turning the Model
+   dropdown into a tall square. Reset it to auto-height, full-width. */
+.modal.subagent-editor .setting-row > .select {
+  flex: 0 0 auto;
 }
 /* Keep the narrow numeric field (max rounds) compact even in the full-width
    column layout. */
