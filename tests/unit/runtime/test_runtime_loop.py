@@ -12,6 +12,7 @@ from src.runtime.runtime_loop import (
     _format_worked_for_summary_line,
     _format_startup_directory,
     _model_tool_result_was_aborted,
+    _parse_multi_select_line,
     _render_aborted_direct_shell_feedback,
     _refresh_context_usage_after_task_boundary,
     _resolve_worked_summary_terminal_width,
@@ -1764,6 +1765,74 @@ class WarnLoopEndedWithPendingPlanTests(unittest.TestCase):
             turn_used_ask_more_info=True,
         )
         self.assertEqual(out, "")
+
+
+class ParseMultiSelectLineTests(unittest.TestCase):
+    """Parser used by the TUI ``ask_more_info`` multi-select prompt.
+
+    Contract:
+      * Leading digit/comma/space tokens are pick indices in original
+        order; duplicates collapse.
+      * Anything after the first non-digit char is taken as the "Other"
+        freeform fragment.
+      * Out-of-range or non-digit pick tokens yield ``error="invalid"``.
+      * Ticking Other (the last index) without supplying trailing text
+        yields ``error="need_other_text"`` so the caller can re-prompt.
+    """
+
+    def test_single_pick(self):
+        picked, other, err = _parse_multi_select_line("2", 3, 4)
+        self.assertEqual((picked, other, err), ([2], "", ""))
+
+    def test_comma_separated_picks_in_order(self):
+        picked, other, err = _parse_multi_select_line("3,1", 3, 4)
+        self.assertEqual((picked, other, err), ([3, 1], "", ""))
+
+    def test_space_separated_picks(self):
+        picked, other, err = _parse_multi_select_line("1 3", 3, 4)
+        self.assertEqual((picked, other, err), ([1, 3], "", ""))
+
+    def test_duplicates_collapse(self):
+        picked, other, err = _parse_multi_select_line("1,1,2,1", 3, 4)
+        self.assertEqual((picked, other, err), ([1, 2], "", ""))
+
+    def test_picks_plus_freeform_other(self):
+        picked, other, err = _parse_multi_select_line(
+            "1,3, also include foo", 3, 4
+        )
+        self.assertEqual((picked, other, err), ([1, 3], "also include foo", ""))
+
+    def test_other_index_without_text_asks_for_text(self):
+        picked, other, err = _parse_multi_select_line("1,4", 3, 4)
+        self.assertEqual((picked, other, err), ([1], "", "need_other_text"))
+
+    def test_other_index_with_inline_text_is_accepted(self):
+        picked, other, err = _parse_multi_select_line(
+            "1,4 add new step", 3, 4
+        )
+        self.assertEqual((picked, other, err), ([1], "add new step", ""))
+
+    def test_out_of_range_is_invalid(self):
+        picked, other, err = _parse_multi_select_line("9", 3, 4)
+        self.assertEqual(err, "invalid")
+        self.assertEqual(picked, [])
+
+    def test_zero_is_invalid(self):
+        picked, other, err = _parse_multi_select_line("0,1", 3, 4)
+        self.assertEqual(err, "invalid")
+        self.assertEqual(picked, [])
+
+    def test_empty_is_invalid(self):
+        picked, other, err = _parse_multi_select_line("", 3, 4)
+        self.assertEqual(err, "invalid")
+
+    def test_pure_freeform_with_no_leading_digits_is_other(self):
+        # If the user types something that doesn't start with a digit
+        # we treat the whole line as the Other freeform answer — it's
+        # the same UX the single-select prompt offers and saves the
+        # user from having to first type the Other index.
+        picked, other, err = _parse_multi_select_line("hello", 3, 4)
+        self.assertEqual((picked, other, err), ([], "hello", ""))
 
 
 if __name__ == "__main__":

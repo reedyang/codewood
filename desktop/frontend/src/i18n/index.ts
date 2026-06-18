@@ -236,10 +236,13 @@ const en: Dict = {
   "confirm.submit": "Submit",
 
   "askMoreInfo.regionLabel": "Pick how to proceed",
+  "askMoreInfo.singleHint": "Pick one option.",
+  "askMoreInfo.multiHint": "Pick one or more options, then click Submit.",
   "askMoreInfo.other": "Other (type your own answer)",
   "askMoreInfo.otherPlaceholder": "Type your answer and press Enter…",
   "askMoreInfo.submit": "Send",
   "askMoreInfo.cancel": "Cancel",
+  "askMoreInfo.selectedLabel": "Selected:",
 
   "common.cancel": "Cancel",
   "common.ok": "OK",
@@ -478,10 +481,13 @@ const zhCN: Dict = {
   "confirm.submit": "提交",
 
   "askMoreInfo.regionLabel": "请选择如何继续",
+  "askMoreInfo.singleHint": "请选择一项。",
+  "askMoreInfo.multiHint": "可选择多项，选择完后点击发送。",
   "askMoreInfo.other": "其它（自行输入）",
   "askMoreInfo.otherPlaceholder": "输入你的回答并按回车…",
   "askMoreInfo.submit": "发送",
   "askMoreInfo.cancel": "取消",
+  "askMoreInfo.selectedLabel": "已选：",
 
   "common.cancel": "取消",
   "common.ok": "确定",

@@ -702,7 +702,7 @@
     "type": "function",
     "function": {
       "name": "ask_more_info",
-      "description": "When key input is missing, ask the user a single-choice question and pause auto-continuation until the user responds. Call this only after trying memory_search and other tools/skills/MCP in order and still being unable to obtain the information reliably. The host renders the options as buttons; the user picks one (or chooses 'Other' to type a freeform answer) and execution resumes with that selection as the supplement.",
+      "description": "When key input is missing, ask the user a single-choice or multiple-choice question and pause auto-continuation until the user responds. Call this only after trying memory_search and other tools/skills/MCP in order and still being unable to obtain the information reliably. The host renders the options as buttons (single-choice: pick one; multi-choice: tick any subset and click Submit). The host always appends an extra 'Other' choice so the user can type a freeform answer; that freeform text is concatenated with any ticked options. Execution resumes with the user's answer as the supplement.",
       "parameters": {
         "type": "object",
         "properties": {
@@ -717,6 +717,10 @@
               "type": "string"
             },
             "minItems": 2
+          },
+          "multi_select": {
+            "type": "boolean",
+            "description": "When true the user may tick multiple options and the supplement comes back as a `; `-separated list. When false (default) the user picks exactly one option."
           }
         },
         "required": ["question", "options"]

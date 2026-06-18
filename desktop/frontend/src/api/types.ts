@@ -122,11 +122,14 @@ export interface ConfirmRequest {
 
 /** Pending ``ask_more_info`` prompt surfaced by the backend.
  *  ``options`` is the model-supplied option list; the GUI always appends
- *  an additional "Other" choice that lets the user type a freeform answer. */
+ *  an additional "Other" choice that lets the user type a freeform answer.
+ *  ``multiSelect`` switches between single-pick (one option, click to
+ *  submit) and multi-pick (any subset, click Submit when done). */
 export interface AskMoreInfoRequest {
   id: string;
   question: string;
   options: string[];
+  multiSelect: boolean;
   chatId: string;
 }
 

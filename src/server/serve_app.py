@@ -915,19 +915,25 @@ class ServeApp:
                 self._confirms.pop(cid, None)
         return str(answer or "")
 
-    def _ask_more_info_provider(self, question: str, options: List[str]) -> str:
+    def _ask_more_info_provider(
+        self,
+        question: str,
+        options: List[str],
+        multi_select: bool = False,
+    ) -> str:
         """Replacement for the TUI ``ask_more_info`` prompt.
 
-        Broadcasts an ``ask_more_info`` SSE event carrying the question, the
-        model-supplied options, and a per-prompt id, then blocks until the
-        frontend POSTs the user's chosen answer back via
-        ``/answer-ask-more-info``. The returned string is the answer the
-        agent should treat as the user's supplement; it is NOT broadcast as
-        a normal user message so the chat transcript stays clean.
+        Broadcasts an ``ask_more_info`` SSE event carrying the question,
+        the model-supplied options, the single/multi-select mode, and a
+        per-prompt id, then blocks until the frontend POSTs the user's
+        chosen answer back via ``/answer-ask-more-info``. The returned
+        string is the answer the agent should treat as the user's
+        supplement; it is NOT broadcast as a normal user message so the
+        chat transcript stays clean.
 
-        An empty answer means the user dismissed/cancelled the prompt — the
-        runtime loop interprets that as "no selection received" and pauses
-        the task, matching the TUI behaviour.
+        An empty answer means the user dismissed/cancelled the prompt —
+        the runtime loop interprets that as "no selection received" and
+        pauses the task, matching the TUI behaviour.
         """
         pid = secrets.token_hex(8)
         reply: "queue.Queue[str]" = queue.Queue()
@@ -948,6 +954,7 @@ class ServeApp:
                 "id": pid,
                 "question": strip_ansi(str(question or "")),
                 "options": safe_options,
+                "multiSelect": bool(multi_select),
                 "chatId": self._active_chat_id(),
             },
         )
