@@ -1799,6 +1799,54 @@ class Agent:
                 print(content)
         self._show_separator_next_prompt = False
         self._replay_ephemeral_screen_notices()
+        self._replay_pending_ask_more_info_prompt()
+
+    def _replay_pending_ask_more_info_prompt(self) -> None:
+        """Re-render a pending ``ask_more_info`` prompt after a history replay.
+
+        When another process (e.g. the desktop GUI) is parked at an
+        ``ask_more_info`` question, it persists the prompt on the chat record.
+        On reload/switch the TUI should surface the same numbered selection
+        block instead of just showing the transcript, so the user can answer
+        from either client. We re-read the record from disk first so a prompt
+        the peer added after our last load is visible.
+        """
+        try:
+            refresh = getattr(self, "_refresh_chat_record_from_disk", None)
+            if callable(refresh) and self.active_chat_id:
+                refresh(self.active_chat_id)
+        except Exception:
+            pass
+        try:
+            pending = self._peek_pending_ask_more_info()
+        except Exception:
+            pending = None
+        if not isinstance(pending, dict):
+            return
+        question = str(pending.get("question") or "")
+        options = [str(o) for o in (pending.get("options") or []) if str(o or "").strip()]
+        if not question and not options:
+            return
+        multi_select = bool(pending.get("multi_select", False))
+        try:
+            from .runtime.runtime_loop import build_ask_more_info_prompt_block
+
+            block = build_ask_more_info_prompt_block(
+                self, question, options, multi_select
+            )
+        except Exception:
+            return
+        if not block:
+            return
+        try:
+            self._pending_ask_more_info_render = block  # type: ignore[attr-defined]
+        except Exception:
+            pass
+        try:
+            self._ensure_terminal_line_start()
+        except Exception:
+            pass
+        print(block)
 
     def _render_transcript_single_message(
         self, idx: int, msg: Dict[str, Any], hist: List[Dict[str, Any]]

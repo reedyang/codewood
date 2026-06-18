@@ -1475,6 +1475,40 @@ def _format_worked_for_summary_line(elapsed_seconds: int, terminal_width: int, l
     return head + ("─" * (width - head_width))
 
 
+def build_ask_more_info_prompt_block(
+    agent: Any,
+    question: str,
+    options: List[str],
+    multi_select: bool = False,
+) -> str:
+    """Build the TUI ``ask_more_info`` prompt text (numbered options + hint).
+
+    Shared by the live prompt and the history-replay re-render so a pending
+    clarifying prompt created by another process (e.g. the GUI) shows the
+    exact same selection block when the TUI reloads/switches to that chat.
+    """
+    from ..core.localization import translate as _translate
+
+    lang = getattr(agent, "display_language", None) or "en"
+    t = lambda key, fallback=None, **kwargs: _translate(key, lang, fallback, **kwargs)
+
+    visible_options = [str(o) for o in (options or [])]
+    other_index = len(visible_options) + 1
+    other_label = t("runtime.ask_more_info.option_other")
+    lines: List[str] = [
+        t("runtime.ask_more_info.required"),
+        t("runtime.ask_more_info.question", question=str(question or "")),
+    ]
+    for idx, label in enumerate(visible_options, start=1):
+        lines.append(f"  {idx}. {label}")
+    lines.append(f"  {other_index}. {other_label}")
+    if multi_select:
+        lines.append(t("runtime.ask_more_info.multi_hint", other_index=other_index))
+    else:
+        lines.append(t("runtime.ask_more_info.single_hint", other_index=other_index))
+    return "\n".join(lines)
+
+
 def _solicit_ask_more_info_answer(
     agent: Any,
     question: str,
@@ -1558,23 +1592,13 @@ def _solicit_ask_more_info_answer(
     #   multi-select   -> "Pick one or more (comma-separated, or include Other):"
     visible_options = list(options)
     other_index = len(visible_options) + 1
-    other_label = t("runtime.ask_more_info.option_other")
     # Build the prompt block once so we can stash it for resize re-rendering
     # too — without that, prompt_toolkit's redraw after a terminal resize
     # would scroll the options off the screen and the user is left typing
     # blindly.
-    lines: List[str] = [
-        t("runtime.ask_more_info.required"),
-        t("runtime.ask_more_info.question", question=question),
-    ]
-    for idx, label in enumerate(visible_options, start=1):
-        lines.append(f"  {idx}. {label}")
-    lines.append(f"  {other_index}. {other_label}")
-    if multi_select:
-        lines.append(t("runtime.ask_more_info.multi_hint", other_index=other_index))
-    else:
-        lines.append(t("runtime.ask_more_info.single_hint", other_index=other_index))
-    prompt_block = "\n".join(lines)
+    prompt_block = build_ask_more_info_prompt_block(
+        agent, question, visible_options, multi_select
+    )
     try:
         agent._pending_ask_more_info_render = prompt_block  # type: ignore[attr-defined]
     except Exception:
