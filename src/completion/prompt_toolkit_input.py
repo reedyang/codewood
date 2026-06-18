@@ -2685,6 +2685,8 @@ class PromptToolkitInputHandler:
         question: str,
         options: List[str],
         multi_select: bool = False,
+        other_label: Optional[str] = None,
+        required_label: Optional[str] = None,
     ) -> Optional[str]:
         """Interactive arrow-key selector for an ``ask_more_info`` prompt.
 
@@ -2722,7 +2724,13 @@ class PromptToolkitInputHandler:
 
         lang = self._ui_language()
         opts = [str(o) for o in (options or [])]
-        other_label = translate("runtime.ask_more_info.option_other", lang)
+        # Callers (e.g. the Plan-mode execute/modify chooser) can override the
+        # trailing free-text row's label; default to the ask_more_info wording.
+        other_label = (
+            str(other_label)
+            if other_label is not None
+            else translate("runtime.ask_more_info.option_other", lang)
+        )
         # Row model: indices 0..len-1 are concrete options; the last row is
         # the "Other" free-text row.
         other_row = len(opts)
@@ -2749,7 +2757,12 @@ class PromptToolkitInputHandler:
         def _render_options():
             fragments: List[Tuple[str, str]] = []
             q = str(question or "").strip()
-            fragments.append(("bold", translate("runtime.ask_more_info.required", lang) + "\n"))
+            header = (
+                str(required_label)
+                if required_label is not None
+                else translate("runtime.ask_more_info.required", lang)
+            )
+            fragments.append(("bold", header + "\n"))
             if q:
                 fragments.append(
                     ("", translate("runtime.ask_more_info.question", lang, question=q) + "\n")

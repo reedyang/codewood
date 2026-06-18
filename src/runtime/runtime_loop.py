@@ -698,6 +698,91 @@ def _warn_loop_ended_with_pending_plan(
         pass
 
 
+def _maybe_offer_plan_execution_choice(
+    agent: Any,
+    *,
+    turn_used_ask_more_info: bool,
+) -> Optional[str]:
+    """After a Plan-mode turn drafts a plan, ask the user how to proceed.
+
+    Mirrors the GUI's "Execute now" affordance for the TUI: once the agent
+    has finished outlining a plan (Plan mode sticky, a pending plan exists,
+    and the turn didn't pause on ``ask_more_info``), present an interactive
+    selector with two paths:
+
+      * **Execute the plan now** — leave Plan mode (switch to Agent mode) and
+        queue a short "proceed" message so the very next loop iteration runs
+        the plan.
+      * **Modify the plan** — the trailing free-text row: highlighting it
+        opens an inline input where the user types revision notes. The typed
+        text is queued (Plan mode stays on) so the agent refines the plan.
+
+    Returns the queued follow-up message string when the user chose a path,
+    or ``None`` when the chooser doesn't apply or the user cancelled (Esc),
+    in which case the caller falls back to the normal command prompt.
+    """
+    # Only offer the choice in Plan mode, and never when the turn handed off
+    # to the user via ask_more_info (that is its own pending interaction).
+    if turn_used_ask_more_info:
+        return None
+    if not bool(getattr(agent, "_plan_mode_sticky", False)):
+        return None
+    summary = _summarize_active_plan(agent)
+    if not summary or not summary.get("has_pending"):
+        return None
+
+    input_handler = getattr(agent, "input_handler", None)
+    interactive = getattr(input_handler, "prompt_ask_more_info_selection", None)
+    if not (callable(interactive) and _ask_more_info_interactive_supported(agent)):
+        return None
+
+    from ..core.localization import translate as _translate
+
+    lang = getattr(agent, "display_language", None) or "en"
+    t = lambda key, **kwargs: _translate(key, lang, **kwargs)
+
+    header = t("runtime.plan_choice.header")
+    execute_label = t("runtime.plan_choice.execute")
+    modify_label = t("runtime.plan_choice.modify")
+
+    try:
+        picked = interactive(
+            header,
+            [execute_label],
+            False,
+            modify_label,
+            header,
+        )
+    except KeyboardInterrupt:
+        picked = None
+    except Exception:
+        return None
+
+    if picked is None:
+        # Cancelled (Esc/Ctrl-C): stay in Plan mode and drop to the prompt.
+        return None
+    answer = str(picked).strip()
+    if not answer:
+        return None
+
+    if answer == execute_label:
+        # Leave Plan mode and proceed: switch to Agent mode and queue a short
+        # proceed message so the next iteration executes the drafted plan.
+        try:
+            agent._plan_mode_sticky = False
+        except Exception:
+            pass
+        try:
+            print(t("runtime.plan_choice.executing"))
+        except Exception:
+            pass
+        return t("runtime.plan_choice.execute_prompt")
+
+    # Anything else is the user's free-text modification feedback. Keep Plan
+    # mode on so the agent refines the plan rather than executing it.
+    return answer
+
+
 def _should_fire_plan_finalize_nudge(
     agent: Any,
     *,
@@ -3887,6 +3972,24 @@ def run_agent_loop(agent: Any):
                 self._clear_last_thinking_line()
             self._stop_interrupt_monitor(cancel_task_on_interrupt=True)
             self._schedule_auto_memory_reflect()
+            # Plan mode: once the agent has drafted a plan, offer an
+            # interactive "execute now / modify plan" choice (mirrors the
+            # GUI's Execute-now affordance). Choosing execute switches to
+            # Agent mode and queues a proceed message; choosing modify (or
+            # typing notes in the inline input) queues that text while
+            # staying in Plan mode. Skipped when ``auto_exit_after_turn`` is
+            # set (one-shot ``--exec`` runs must not block on a prompt).
+            if not auto_exit_after_turn:
+                try:
+                    plan_followup = _maybe_offer_plan_execution_choice(
+                        self,
+                        turn_used_ask_more_info=turn_used_ask_more_info,
+                    )
+                except Exception:
+                    plan_followup = None
+                if plan_followup:
+                    self._queued_user_input = plan_followup
+                    continue
             if auto_exit_after_turn:
                 self._save_current_workspace_position()
                 break
