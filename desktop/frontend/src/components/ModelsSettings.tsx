@@ -412,7 +412,10 @@ export function ModelsSettings({ onDirtyChange, saveSignal }: ModelsSettingsProp
                   ) : (
                     p.models.map((m) => {
                       const mkey = `${idx}:${m.name}`;
-                      const showDetails = !isOllama && Boolean(expandModel[mkey]);
+                      // Ollama models can still tune context_window / multimodal
+                      // (the backend reads both for every provider); only
+                      // reasoning effort and custom headers stay hidden for them.
+                      const showDetails = Boolean(expandModel[mkey]);
                       return (
                         <div className="models-model" key={m.name}>
                           <div className="models-item-row">
@@ -424,23 +427,21 @@ export function ModelsSettings({ onDirtyChange, saveSignal }: ModelsSettingsProp
                               />
                               <span>{m.name}</span>
                             </label>
-                            {!isOllama && (
-                              <button
-                                className="models-model-toggle"
-                                aria-expanded={showDetails}
-                                aria-label={t("models.modelOptions")}
-                                title={t("models.modelOptions")}
-                                onClick={() =>
-                                  setExpandModel((e) => ({ ...e, [mkey]: !e[mkey] }))
-                                }
-                              >
-                                <Icon
-                                  name="chevron"
-                                  size={12}
-                                  className={`chevron ${showDetails ? "down" : ""}`}
-                                />
-                              </button>
-                            )}
+                            <button
+                              className="models-model-toggle"
+                              aria-expanded={showDetails}
+                              aria-label={t("models.modelOptions")}
+                              title={t("models.modelOptions")}
+                              onClick={() =>
+                                setExpandModel((e) => ({ ...e, [mkey]: !e[mkey] }))
+                              }
+                            >
+                              <Icon
+                                name="chevron"
+                                size={12}
+                                className={`chevron ${showDetails ? "down" : ""}`}
+                              />
+                            </button>
                           </div>
                           {showDetails && (
                             <div className="models-model-details">
@@ -478,6 +479,8 @@ export function ModelsSettings({ onDirtyChange, saveSignal }: ModelsSettingsProp
                                   {t("models.multimodal")}
                                 </label>
                               </div>
+                              {!isOllama && (
+                              <>
                               <div className="models-field">
                                 <label>{t("reasoning.label")}</label>
                                 <div className="models-effort-row">
@@ -537,6 +540,8 @@ export function ModelsSettings({ onDirtyChange, saveSignal }: ModelsSettingsProp
                                   {t("models.addHeader")}
                                 </button>
                               </div>
+                              </>
+                              )}
                             </div>
                           )}
                         </div>
