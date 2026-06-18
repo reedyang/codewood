@@ -41,12 +41,23 @@ def dispatch_core_tool(agent: Any, action: str, params: Dict[str, Any]) -> Optio
                     "yourself."
                 ),
             }
+        # ``multi_select`` is optional and defaults to single-choice; we
+        # coerce explicitly so a stringy "true"/"false" from a loose JSON
+        # implementation doesn't get treated as truthy-by-accident.
+        raw_multi = params.get("multi_select", False)
+        if isinstance(raw_multi, bool):
+            multi_select = raw_multi
+        elif isinstance(raw_multi, str):
+            multi_select = raw_multi.strip().lower() in ("1", "true", "yes", "y")
+        else:
+            multi_select = bool(raw_multi)
         return {
             "success": True,
             "needs_user_input": True,
             "input_type": "supplement",
             "question": question,
             "options": options,
+            "multi_select": multi_select,
             "retryable": False,
             "message": "Waiting for user selection.",
         }

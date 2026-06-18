@@ -461,6 +461,8 @@
   "runtime.ask_more_info.option_other": "其它（自行输入）",
   "runtime.ask_more_info.other_prompt": "请输入你的回答：",
   "runtime.ask_more_info.invalid_choice": "请输入上方列表中的编号，或直接输入你的回答。",
+  "runtime.ask_more_info.single_hint": "请输入一个编号（1-{other_index}），或直接输入你的回答：",
+  "runtime.ask_more_info.multi_hint": "请输入逗号分隔的编号（如 1,3）— 包含 {other_index} 表示选择 \"其它\"，可在编号后追加自由文本：",
   "runtime.auto_continue.default_hint": "继续前需要用户输入。",
   "runtime.auto_continue.paused": "⏸️ 自动继续已暂停：{hint}",
   "runtime.no_executable_tool_call": "❌ 本轮未完成任何可执行工具调用。",

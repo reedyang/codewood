@@ -1479,6 +1479,7 @@ def _solicit_ask_more_info_answer(
     agent: Any,
     question: str,
     options: List[str],
+    multi_select: bool = False,
 ) -> Tuple[str, bool]:
     """Collect the user's answer to an ``ask_more_info`` clarifying question.
 
@@ -1488,12 +1489,16 @@ def _solicit_ask_more_info_answer(
     leading ``/`` or ``!`` (TUI only); the input is re-queued so the next
     main-loop iteration handles it just like any normal turn.
 
-    The host can install ``agent._ask_more_info_provider`` to fully replace
-    the TUI prompt (used by the GUI to surface clickable option buttons via
-    SSE). When that hook is set we delegate the entire elicitation to it
-    and consider its return value the user's freeform answer; any leading
-    ``/`` / ``!`` returned by the host still triggers a main-loop handoff
-    so behaviour matches the TUI path.
+    ``multi_select`` toggles between single-pick (one option) and
+    multi-pick (any subset, joined with ``; `` in the supplement). The
+    GUI provider receives the flag and renders checkboxes accordingly;
+    the TUI parses comma/space-separated digits (e.g. ``1,3``) and an
+    optional trailing freeform fragment (e.g. ``1,3, also include FOO``).
+
+    The host can install ``agent._ask_more_info_provider`` to fully
+    replace the TUI prompt. The hook signature is
+    ``provider(question, options, multi_select)`` — older single-arg
+    hooks are still tolerated via a graceful fallback.
     """
     from ..core.localization import translate as _translate
 
@@ -1503,7 +1508,13 @@ def _solicit_ask_more_info_answer(
     provider = getattr(agent, "_ask_more_info_provider", None)
     if callable(provider):
         try:
-            raw = provider(question, list(options))
+            # New 3-arg signature; old hooks took (question, options).
+            # Try the new shape first and fall back so an out-of-date
+            # provider doesn't crash the loop.
+            try:
+                raw = provider(question, list(options), bool(multi_select))
+            except TypeError:
+                raw = provider(question, list(options))
         except KeyboardInterrupt:
             try:
                 print(t("runtime.ask_more_info.supplement_cancelled"))
@@ -1520,10 +1531,9 @@ def _solicit_ask_more_info_answer(
             return (answer, True)
         return (answer, False)
 
-    # TUI fallback: render numbered options + a final "Other" slot, then
-    # read one line. Digits 1..N select an option; N+1 (or "o") asks for a
-    # freeform answer on the next prompt; anything else is taken as the
-    # freeform answer directly.
+    # TUI fallback. Layout depends on the mode:
+    #   single-select  -> "Pick one (or N+1 for Other):"
+    #   multi-select   -> "Pick one or more (comma-separated, or include Other):"
     try:
         print(t("runtime.ask_more_info.required"))
         print(t("runtime.ask_more_info.question", question=question))
@@ -1531,15 +1541,19 @@ def _solicit_ask_more_info_answer(
         pass
 
     visible_options = list(options)
+    other_index = len(visible_options) + 1
     other_label = t("runtime.ask_more_info.option_other")
     try:
         for idx, label in enumerate(visible_options, start=1):
             print(f"  {idx}. {label}")
-        print(f"  {len(visible_options) + 1}. {other_label}")
+        print(f"  {other_index}. {other_label}")
+        if multi_select:
+            print(t("runtime.ask_more_info.multi_hint", other_index=other_index))
+        else:
+            print(t("runtime.ask_more_info.single_hint", other_index=other_index))
     except Exception:
         pass
 
-    supplement_text = ""
     while True:
         try:
             raw_input_line = agent._get_user_input_with_history().strip()
@@ -1558,33 +1572,139 @@ def _solicit_ask_more_info_answer(
         if raw_input_line.startswith("/") or raw_input_line.startswith("!"):
             agent._queued_user_input = raw_input_line
             return (raw_input_line, True)
-        # Numeric selection.
-        if raw_input_line.isdigit():
-            try:
-                pick = int(raw_input_line)
-            except ValueError:
-                pick = -1
-            if 1 <= pick <= len(visible_options):
-                supplement_text = visible_options[pick - 1]
-                break
-            if pick == len(visible_options) + 1:
-                # User explicitly chose "Other"; loop once more to read
-                # their freeform reply.
+
+        if not multi_select:
+            # Single-select: a bare digit selects an option (or Other);
+            # anything else is taken as a direct freeform answer.
+            if raw_input_line.isdigit():
                 try:
-                    print(t("runtime.ask_more_info.other_prompt"))
+                    pick = int(raw_input_line)
+                except ValueError:
+                    pick = -1
+                if 1 <= pick <= len(visible_options):
+                    return (visible_options[pick - 1], False)
+                if pick == other_index:
+                    try:
+                        print(t("runtime.ask_more_info.other_prompt"))
+                    except Exception:
+                        pass
+                    continue
+                try:
+                    print(t("runtime.ask_more_info.invalid_choice"))
                 except Exception:
                     pass
                 continue
-            # Out-of-range digit: nudge and re-ask without aborting.
+            return (raw_input_line, False)
+
+        # Multi-select: accept "1,3", "1 3", "1,3, free text after"
+        # (split on the first non-digit/comma/space run and treat the
+        # trailing fragment as the Other freeform). Out-of-range or
+        # duplicated digits are rejected with a nudge.
+        picked, other_text, error = _parse_multi_select_line(
+            raw_input_line, len(visible_options), other_index
+        )
+        if error == "invalid":
             try:
                 print(t("runtime.ask_more_info.invalid_choice"))
             except Exception:
                 pass
             continue
-        # Treat anything else as the freeform supplement.
-        supplement_text = raw_input_line
-        break
-    return (supplement_text, False)
+        if error == "need_other_text":
+            # User ticked Other but didn't supply text; re-prompt them
+            # for the freeform fragment without losing the picks so far.
+            try:
+                print(t("runtime.ask_more_info.other_prompt"))
+            except Exception:
+                pass
+            try:
+                extra = agent._get_user_input_with_history().strip()
+            except KeyboardInterrupt:
+                try:
+                    print(t("runtime.ask_more_info.supplement_cancelled"))
+                except Exception:
+                    pass
+                return ("", False)
+            if not extra:
+                # Bare empty input cancels the Other branch but keeps
+                # any already-ticked options.
+                pass
+            else:
+                other_text = extra
+        # Build the final supplement: picked option labels in input
+        # order, then the freeform text (if any), joined with "; ".
+        parts: List[str] = [visible_options[i - 1] for i in picked]
+        if other_text:
+            parts.append(other_text)
+        if not parts:
+            try:
+                print(t("runtime.ask_more_info.invalid_choice"))
+            except Exception:
+                pass
+            continue
+        return ("; ".join(parts), False)
+
+
+def _parse_multi_select_line(
+    line: str,
+    option_count: int,
+    other_index: int,
+) -> Tuple[List[int], str, str]:
+    """Parse a TUI multi-select reply.
+
+    Returns ``(picked_indices, other_text, error)``. ``error`` is one of:
+    - ``""`` — input is valid (possibly empty picks if user only typed
+      Other text with no leading numbers)
+    - ``"invalid"`` — a digit was out of range or no usable tokens found
+    - ``"need_other_text"`` — Other was ticked but no freeform fragment
+      came with it; caller should re-prompt for the text.
+    """
+    s = (line or "").strip()
+    if not s:
+        return ([], "", "invalid")
+
+    # Walk the leading run of digit/comma/space characters as the picks;
+    # anything after that is the Other freeform fragment.
+    cut = 0
+    for ch in s:
+        if ch.isdigit() or ch in ", ":
+            cut += 1
+        else:
+            break
+    head = s[:cut]
+    tail = s[cut:].strip(" ,;\t")
+
+    picks_raw = [tok for tok in head.replace(",", " ").split() if tok]
+    picked: List[int] = []
+    other_chosen = False
+    seen_picks: set = set()
+    for tok in picks_raw:
+        if not tok.isdigit():
+            return ([], "", "invalid")
+        try:
+            n = int(tok)
+        except ValueError:
+            return ([], "", "invalid")
+        if n == other_index:
+            other_chosen = True
+            continue
+        if not (1 <= n <= option_count):
+            return ([], "", "invalid")
+        if n in seen_picks:
+            continue
+        seen_picks.add(n)
+        picked.append(n)
+
+    if not picks_raw and not tail:
+        return ([], "", "invalid")
+
+    # If the leading digits include Other but no trailing freeform was
+    # typed, ask the caller to collect the freeform text on the next
+    # prompt. Without this the model would see a useless "Other" with
+    # no content.
+    if other_chosen and not tail:
+        return (picked, "", "need_other_text")
+
+    return (picked, tail, "")
 
 
 def _print_worked_for_summary_line(agent: Any, elapsed_seconds: int) -> None:
@@ -3405,8 +3525,9 @@ def run_agent_loop(agent: Any):
                             if isinstance(raw_options, list)
                             else []
                         )
+                        multi_select_flag = bool(result.get("multi_select", False))
                         supplement_text, handoff_to_main_loop = _solicit_ask_more_info_answer(
-                            self, q, options_list
+                            self, q, options_list, multi_select_flag
                         )
                         if handoff_to_main_loop:
                             _refresh_context_usage_after_task_boundary(

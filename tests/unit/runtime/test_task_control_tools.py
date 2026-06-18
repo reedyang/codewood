@@ -29,6 +29,35 @@ class TaskControlToolTests(unittest.TestCase):
         self.assertEqual(result.get("input_type"), "supplement")
         self.assertEqual(result.get("question"), "Which environment?")
         self.assertEqual(result.get("options"), ["Production", "Staging"])
+        # ``multi_select`` defaults to False; the host must always see
+        # it explicitly so the GUI doesn't have to guess.
+        self.assertEqual(result.get("multi_select"), False)
+
+    def test_ask_more_info_supports_multi_select_flag(self):
+        # Multi-select is opt-in via ``multi_select: true``. Stringy
+        # variants ("true"/"yes") are also accepted so a loose JSON
+        # client doesn't accidentally fall back to single-select.
+        for raw_flag, expected in (
+            (True, True),
+            (False, False),
+            ("true", True),
+            ("yes", True),
+            ("false", False),
+            ("", False),
+            (1, True),
+            (0, False),
+        ):
+            with self.subTest(raw_flag=raw_flag):
+                result = self.agent.execute_tool_call(
+                    "ask_more_info",
+                    {
+                        "question": "Pick targets",
+                        "options": ["A", "B", "C"],
+                        "multi_select": raw_flag,
+                    },
+                )
+                self.assertTrue(result.get("success"))
+                self.assertEqual(result.get("multi_select"), expected)
 
     def test_ask_more_info_rejects_fewer_than_two_options(self):
         # The new contract: model MUST provide at least two discrete

@@ -681,9 +681,17 @@ export function AppProvider({ children }: { children: ReactNode }) {
           if (!ownerChat) {
             break;
           }
+          // Older backends may not send ``multiSelect``; default to
+          // single-choice so the panel doesn't get stuck waiting for a
+          // Submit click that the user has no reason to expect.
+          const normalized: AskMoreInfoRequest = {
+            ...req,
+            chatId: ownerChat,
+            multiSelect: Boolean(req.multiSelect),
+          };
           setAskMoreInfoByChat((prev) => ({
             ...prev,
-            [ownerChat]: { ...req, chatId: ownerChat },
+            [ownerChat]: normalized,
           }));
           break;
         }
