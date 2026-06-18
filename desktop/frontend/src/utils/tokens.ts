@@ -249,8 +249,10 @@ export function parseMessageToSegments(text: string): Segment[] {
 }
 
 /** Split a plain body into text/skill/mcp segments by recognising the inline
- *  reference pill markers emitted by ``composeMessageText``. */
-function retokenizeReferencePills(body: string): Segment[] {
+ *  reference pill markers emitted by ``composeMessageText``. Exported so the
+ *  sent-message bubble can render the same image/text-mixed pills the
+ *  composer shows, instead of leaking raw ``[skill: ...]`` bracket text. */
+export function retokenizeReferencePills(body: string): Segment[] {
   const out: Segment[] = [];
   const src = String(body ?? "");
   if (!src) {
