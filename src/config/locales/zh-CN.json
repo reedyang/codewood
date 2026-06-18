@@ -458,6 +458,7 @@
   "runtime.ask_more_info.question": "❓ {question}",
   "runtime.ask_more_info.supplement_cancelled": "\n⏸️ 选择已取消。本轮任务已暂停。",
   "runtime.ask_more_info.no_supplement": "⚠️ 未收到选择。本轮任务已暂停。",
+  "runtime.ask_more_info.answer_label": "已选",
   "runtime.ask_more_info.option_other": "其它（自行输入）",
   "runtime.ask_more_info.other_prompt": "请输入你的回答：",
   "runtime.ask_more_info.invalid_choice": "请输入上方列表中的编号，或直接输入你的回答。",

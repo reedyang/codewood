@@ -180,6 +180,9 @@ export interface HistoryRound {
   waitSeconds: number;
   text: string;
   tools: string;
+  /** A recorded ask_more_info selection, rendered as a left-side bubble
+   *  (a reply to the agent's question, not a user-initiated turn). */
+  selection?: string;
 }
 
 /** A previously-recorded turn loaded from chat history (already classified). */

@@ -1336,6 +1336,31 @@ body.resizing-x {
   display: inline-block;
 }
 
+/* A recorded ask_more_info selection rendered on the left (a reply to the
+   agent's question, distinct from a user-initiated right-side bubble). */
+.ask-selection {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  align-self: flex-start;
+  margin: 2px 0 8px;
+  padding: 4px 10px;
+  border-radius: 10px;
+  font-size: 13px;
+  background: color-mix(in srgb, var(--accent) 10%, var(--bg-input));
+  border: 1px solid color-mix(in srgb, var(--accent) 28%, var(--border));
+  color: var(--text);
+}
+.ask-selection-icon {
+  color: var(--accent);
+}
+.ask-selection-label {
+  color: var(--text-muted);
+}
+.ask-selection-text {
+  font-weight: 500;
+}
+
 .rich-composer-popup {
   position: absolute;
   left: 0;
