@@ -100,6 +100,10 @@ export interface AppState {
     archivedChatIds?: string[];
   };
   plan?: PlanState;
+  /** Pending ``ask_more_info`` request persisted on the active chat record
+   *  (may be set by a different backend process — e.g. the TUI — and
+   *  surfaced here so the GUI re-renders the panel on chat load/refresh). */
+  askMoreInfo?: AskMoreInfoRequest | null;
   executionPolicy: string;
 }
 

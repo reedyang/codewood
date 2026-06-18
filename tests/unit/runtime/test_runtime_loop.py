@@ -13,6 +13,7 @@ from src.runtime.runtime_loop import (
     _format_startup_directory,
     _model_tool_result_was_aborted,
     _parse_multi_select_line,
+    _solicit_ask_more_info_answer,
     _render_aborted_direct_shell_feedback,
     _refresh_context_usage_after_task_boundary,
     _resolve_worked_summary_terminal_width,
@@ -1765,6 +1766,103 @@ class WarnLoopEndedWithPendingPlanTests(unittest.TestCase):
             turn_used_ask_more_info=True,
         )
         self.assertEqual(out, "")
+
+
+class _StubAgentForAskMoreInfo:
+    """Minimal agent used to drive ``_solicit_ask_more_info_answer``.
+
+    Captures persisted/cleared markers so we can assert the helper
+    writes to the chat record before the prompt and clears it again on
+    every exit path — both behaviours matter for cross-process panels.
+    """
+
+    def __init__(self, scripted_inputs):
+        self._scripted = list(scripted_inputs)
+        self.persisted = []
+        self.cleared = 0
+        self._queued_user_input = ""
+        self._pending_ask_more_info_render = ""
+        self.display_language = "en"
+
+    def _set_pending_ask_more_info(self, payload):
+        self.persisted.append(dict(payload))
+
+    def _clear_pending_ask_more_info(self):
+        self.cleared += 1
+
+    def _get_user_input_with_history(self):
+        if not self._scripted:
+            raise AssertionError("no more scripted TUI input")
+        return self._scripted.pop(0)
+
+
+class SolicitAskMoreInfoAnswerTests(unittest.TestCase):
+    def test_tui_single_select_persists_then_clears(self):
+        agent = _StubAgentForAskMoreInfo(["2"])
+        text, handoff = _solicit_ask_more_info_answer(
+            agent, "Pick env?", ["Prod", "Stg"], multi_select=False
+        )
+        self.assertEqual(text, "Stg")
+        self.assertFalse(handoff)
+        self.assertEqual(len(agent.persisted), 1)
+        self.assertEqual(agent.persisted[0]["options"], ["Prod", "Stg"])
+        self.assertFalse(agent.persisted[0]["multi_select"])
+        self.assertEqual(agent.cleared, 1)
+        self.assertEqual(agent._pending_ask_more_info_render, "")
+
+    def test_tui_multi_select_joins_with_semicolon(self):
+        agent = _StubAgentForAskMoreInfo(["1,3"])
+        text, handoff = _solicit_ask_more_info_answer(
+            agent, "Pick targets", ["A", "B", "C"], multi_select=True
+        )
+        self.assertEqual(text, "A; C")
+        self.assertFalse(handoff)
+        self.assertEqual(agent.cleared, 1)
+
+    def test_tui_cancellation_clears_marker(self):
+        agent = _StubAgentForAskMoreInfo([""])
+        text, handoff = _solicit_ask_more_info_answer(
+            agent, "Pick", ["A", "B"], multi_select=False
+        )
+        self.assertEqual(text, "")
+        self.assertFalse(handoff)
+        # The marker must come down so a stale ask_more_info doesn't
+        # ghost in another process viewing the same chat.
+        self.assertEqual(agent.cleared, 1)
+
+    def test_slash_command_handoff_clears_marker(self):
+        agent = _StubAgentForAskMoreInfo(["/help"])
+        text, handoff = _solicit_ask_more_info_answer(
+            agent, "Pick", ["A", "B"], multi_select=False
+        )
+        self.assertEqual(text, "/help")
+        self.assertTrue(handoff)
+        self.assertEqual(agent._queued_user_input, "/help")
+        self.assertEqual(agent.cleared, 1)
+
+    def test_gui_provider_takes_precedence_and_clears(self):
+        agent = _StubAgentForAskMoreInfo([])
+
+        seen = {}
+
+        def provider(question, options, multi_select):
+            seen["question"] = question
+            seen["options"] = options
+            seen["multi_select"] = multi_select
+            return "Stg"
+
+        agent._ask_more_info_provider = provider
+        text, handoff = _solicit_ask_more_info_answer(
+            agent, "Pick env?", ["Prod", "Stg"], multi_select=False
+        )
+        self.assertEqual(text, "Stg")
+        self.assertFalse(handoff)
+        self.assertEqual(seen["options"], ["Prod", "Stg"])
+        self.assertFalse(seen["multi_select"])
+        # Persist BEFORE calling the provider so GUIs polling the chat
+        # record see the panel mid-flight; clear AFTER it returns.
+        self.assertEqual(len(agent.persisted), 1)
+        self.assertEqual(agent.cleared, 1)
 
 
 class ParseMultiSelectLineTests(unittest.TestCase):

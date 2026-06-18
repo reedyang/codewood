@@ -843,6 +843,61 @@ class Agent:
             if save_state:
                 self._save_chat_state()
 
+    def _set_pending_ask_more_info(self, payload: Dict[str, Any]) -> None:
+        """Persist a pending ``ask_more_info`` prompt on the active chat record.
+
+        Stored alongside ``model_provider``/``reasoning_level`` so any other
+        process that loads the chat (e.g. the desktop GUI when the TUI
+        originally triggered the prompt) can re-render the selection panel
+        instead of showing a stale Execute-now button. Cleared by
+        ``_clear_pending_ask_more_info`` once the user responds or by the
+        next user-message recorder so abandoned prompts don't leak.
+        """
+        if not isinstance(payload, dict):
+            return
+        with self._chat_state_lock:
+            chat = self._find_chat_by_id(self.active_chat_id)
+            if not chat:
+                return
+            chat["pending_ask_more_info"] = {
+                "id": str(payload.get("id") or ""),
+                "question": str(payload.get("question") or ""),
+                "options": [str(o) for o in (payload.get("options") or []) if str(o or "").strip()],
+                "multi_select": bool(payload.get("multi_select", False)),
+                "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            }
+            chat["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            try:
+                self._save_chat_state()
+            except Exception:
+                pass
+
+    def _clear_pending_ask_more_info(self) -> None:
+        """Remove the pending ``ask_more_info`` marker from the active chat."""
+        with self._chat_state_lock:
+            chat = self._find_chat_by_id(self.active_chat_id)
+            if not chat:
+                return
+            if "pending_ask_more_info" not in chat:
+                return
+            chat.pop("pending_ask_more_info", None)
+            chat["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            try:
+                self._save_chat_state()
+            except Exception:
+                pass
+
+    def _peek_pending_ask_more_info(self) -> Optional[Dict[str, Any]]:
+        """Return the active chat's pending ``ask_more_info`` payload, if any."""
+        with self._chat_state_lock:
+            chat = self._find_chat_by_id(self.active_chat_id)
+            if not chat:
+                return None
+            raw = chat.get("pending_ask_more_info")
+            if not isinstance(raw, dict):
+                return None
+            return dict(raw)
+
     def _set_reasoning_level(self, level: str, save_state: bool = True) -> str:
         """Select a reasoning level for the active chat.
 
@@ -1142,6 +1197,18 @@ class Agent:
             except Exception:
                 pass
         self._print_chat_history(start_index=self._get_active_chat_history_first_visible_index())
+        # Re-print any active ``ask_more_info`` selection block so a
+        # terminal resize (or a manual /chat reload) doesn't scroll the
+        # options off-screen while the loop is still blocked waiting on
+        # the user's pick. ``_pending_ask_more_info_render`` is set by
+        # ``_solicit_ask_more_info_answer`` and cleared the moment the
+        # user responds, so the print is a no-op outside that window.
+        stash = getattr(self, "_pending_ask_more_info_render", "")
+        if isinstance(stash, str) and stash:
+            try:
+                print(stash)
+            except Exception:
+                pass
 
     def add_ephemeral_screen_notice(self, text: str) -> None:
         """Record a notice that should be shown on screen and re-rendered on
