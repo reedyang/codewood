@@ -2482,6 +2482,23 @@ body.resizing-x {
   }
 }
 
+/* Steady blue dot marking a chat that finished a turn while the user was
+   viewing a different chat (unread). Sits just to the left of the time. */
+.chat-unread-dot {
+  flex: 0 0 auto;
+  width: 7px;
+  height: 7px;
+  margin-left: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+/* Hovering the row swaps the time for the action button; hide the unread dot
+   too so the row controls don't crowd. */
+.chat-row:hover .chat-unread-dot {
+  display: none;
+}
+
 .chat-pin-btn {
   flex: 0 0 auto;
   align-items: center;

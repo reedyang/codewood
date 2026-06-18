@@ -88,10 +88,14 @@ class _FakeEditAgent:
         self._chat_state_lock = _NoopLock()
         self.conversation_history = list(conversation_history)
         self.sync_calls = 0
+        self.clear_pending_calls = 0
         self.input_handler = _FakeInputHandler()
 
     def _sync_active_chat_messages(self):
         self.sync_calls += 1
+
+    def _clear_pending_ask_more_info(self):
+        self.clear_pending_calls += 1
 
 
 class _PrefixingStream:
@@ -467,6 +471,18 @@ class ChatEditCommandTests(unittest.TestCase):
         self.assertEqual(agent.input_handler.prefilled_text, "second question")
         self.assertEqual(agent.sync_calls, 1)
         mock_reload.assert_called_once_with(agent, "chat-1")
+
+    def test_edit_clears_pending_ask_more_info(self):
+        # Editing a turn that may have surfaced an ask_more_info prompt must
+        # clear the pending clarification so the GUI/TUI don't redisplay a
+        # stale selection panel for a message that no longer exists.
+        agent = _FakeEditAgent(self._history())
+        with (
+            patch("src.controllers.chat_command_controller._reload_chat_from_top"),
+            redirect_stdout(io.StringIO()),
+        ):
+            handle_chat_builtin_command(agent, "chat edit -1")
+        self.assertEqual(agent.clear_pending_calls, 1)
 
     def test_edit_negative_index_targets_last_user_message(self):
         agent = _FakeEditAgent(self._history())

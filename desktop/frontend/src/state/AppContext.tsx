@@ -50,6 +50,8 @@ interface AppContextValue {
   busy: boolean;
   /** Per-chat busy flags so the sidebar can mark every running chat. */
   busyByChat: Record<string, boolean>;
+  /** Chats with a completed turn the user hasn't opened yet (unread). */
+  unreadChatIds: Record<string, boolean>;
   connected: boolean;
   now: number;
   confirmRequest: ConfirmRequest | null;
@@ -206,6 +208,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const historyChatRef = useRef<string>("\u0000");
   // Per-chat busy flags so each running chat shows its own state.
   const [busyByChat, setBusyByChat] = useState<Record<string, boolean>>({});
+  // Chats whose turn finished while the user was looking at a different chat.
+  // They stay flagged as unread (blue dot in the sidebar) until opened.
+  const [unreadChatIds, setUnreadChatIds] = useState<Record<string, boolean>>(
+    {},
+  );
   const [connected, setConnected] = useState(false);
   const [now, setNow] = useState(() => Date.now());
   const [confirmRequest, setConfirmRequest] = useState<ConfirmRequest | null>(null);
@@ -250,6 +257,16 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const activeChatId = state?.activeChatId ?? "";
   useEffect(() => {
     activeChatIdRef.current = activeChatId;
+    // Opening (or switching to) a chat clears its unread marker.
+    if (activeChatId) {
+      setUnreadChatIds((prev) =>
+        prev[activeChatId]
+          ? Object.fromEntries(
+              Object.entries(prev).filter(([id]) => id !== activeChatId),
+            )
+          : prev,
+      );
+    }
   }, [activeChatId]);
 
   // Auto-open the plan panel when the active chat has a plan and either
@@ -642,6 +659,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
           }
           endActiveTurn(chatId);
           setBusyForChat(chatId, false);
+          // A turn that finishes in a chat the user isn't currently viewing
+          // leaves an unread marker (blue dot) until they open that chat.
+          if (chatId && chatId !== activeChatIdRef.current) {
+            setUnreadChatIds((prev) =>
+              prev[chatId] ? prev : { ...prev, [chatId]: true },
+            );
+          }
           if (pendingHistoryReloadRef.current) {
             pendingHistoryReloadRef.current = false;
             reloadHistoryRef.current();
@@ -1081,10 +1105,25 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const editChat = useCallback(
     async (index: number) => {
       clearTurns();
+      // Editing the last user message deletes that turn (and any pending
+      // ask_more_info clarification it spawned). Drop the chat's pending
+      // ask_more_info bucket up front so the selection panel doesn't flash
+      // back in while the backend processes the edit and clears its own
+      // pending state.
+      if (activeChatId) {
+        setAskMoreInfoByChat((prev) => {
+          if (!(activeChatId in prev)) {
+            return prev;
+          }
+          const next = { ...prev };
+          delete next[activeChatId];
+          return next;
+        });
+      }
       pendingHistoryReloadRef.current = true;
       await client.sendInput(`/chat edit ${index}`);
     },
-    [client, clearTurns],
+    [client, clearTurns, activeChatId],
   );
 
   const openWorkspaceInExplorer = useCallback(
@@ -1264,6 +1303,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     historyLoading,
     busy,
     busyByChat,
+    unreadChatIds,
     connected,
     now,
     confirmRequest,
