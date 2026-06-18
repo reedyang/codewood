@@ -1303,6 +1303,39 @@ body.resizing-x {
   font-weight: 500;
 }
 
+/* Inline reference pills inside a sent user-message bubble. They mirror the
+   composer pills (skill / mcp-tool / mcp-prompt colour coding) but are
+   read-only — no remove affordance. */
+.msg-ref-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 7px;
+  margin: 0 2px;
+  border-radius: 999px;
+  font-size: 12px;
+  line-height: 1.55;
+  border: 1px solid var(--border);
+  background: var(--bg-hover);
+  color: var(--text);
+  vertical-align: baseline;
+}
+.msg-ref-pill-skill {
+  background: color-mix(in srgb, var(--accent-warn, #d2a35a) 15%, var(--bg-input));
+  border-color: color-mix(in srgb, var(--accent-warn, #d2a35a) 35%, var(--border));
+}
+.msg-ref-pill-mcp-tool {
+  background: color-mix(in srgb, #5aa0d2 15%, var(--bg-input));
+  border-color: color-mix(in srgb, #5aa0d2 35%, var(--border));
+}
+.msg-ref-pill-mcp-prompt {
+  background: color-mix(in srgb, #9a7ad2 15%, var(--bg-input));
+  border-color: color-mix(in srgb, #9a7ad2 35%, var(--border));
+}
+.msg-ref-pill-label {
+  display: inline-block;
+}
+
 .rich-composer-popup {
   position: absolute;
   left: 0;

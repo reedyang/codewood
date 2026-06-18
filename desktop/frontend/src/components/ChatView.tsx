@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { useApp } from "../state/AppContext";
 import type { HistoryRound, HistoryTurn, Turn, TurnRound } from "../api/types";
-import { Icon } from "./Icon";
+import { Icon, type IconName } from "./Icon";
 import { MarkdownText } from "./Markdown";
 import { StepsView } from "./Steps";
 import { ChatTitleBar } from "./ChatTitleBar";
@@ -11,14 +11,71 @@ import {
   composeMessageText,
   encodeHiddenInstruction,
   parseMessageToSegments,
+  retokenizeReferencePills,
   stripHiddenControl,
   stripPlanModePrefix,
 } from "../utils/tokens";
-import type { Segment } from "../utils/tokens";
+import type { Segment, TokenKind } from "../utils/tokens";
 import { RichComposer } from "./RichComposer";
 
 function quote(value: string): string {
   return `"${value.replace(/"/g, "")}"`;
+}
+
+function refPillIconName(kind: TokenKind): IconName {
+  switch (kind) {
+    case "skill":
+      return "sparkles";
+    case "mcp-tool":
+      return "wrench";
+    case "mcp-prompt":
+      return "message-square";
+    default:
+      return "info";
+  }
+}
+
+function refPillLabel(kind: TokenKind, payload: string): string {
+  if (kind === "skill") {
+    return payload;
+  }
+  // mcp-tool / mcp-prompt carry "server::name".
+  const [server, name] = payload.split("::");
+  return name ? `${server} / ${name}` : payload;
+}
+
+/** Render a sent user-message body with inline reference pills so the chat
+ *  bubble mirrors the composer's image/text-mixed look for ``[skill: ...]``,
+ *  ``[mcp tool: ...]`` and ``[mcp prompt: ...]`` markers instead of leaking
+ *  the raw bracket text. Plain text is preserved verbatim. */
+function MessageBody({ text }: { text: string }) {
+  const segments = retokenizeReferencePills(text);
+  const hasPill = segments.some((s) => s.kind !== "text");
+  if (!hasPill) {
+    return <div className="entry-text">{text}</div>;
+  }
+  return (
+    <div className="entry-text">
+      {segments.map((seg, i) => {
+        if (seg.kind === "text") {
+          return <span key={i}>{seg.value}</span>;
+        }
+        const kind = seg.kind as TokenKind;
+        return (
+          <span
+            key={i}
+            className={`msg-ref-pill msg-ref-pill-${kind}`}
+            title={refPillLabel(kind, seg.value)}
+          >
+            <Icon name={refPillIconName(kind)} size={12} />
+            <span className="msg-ref-pill-label">
+              {refPillLabel(kind, seg.value)}
+            </span>
+          </span>
+        );
+      })}
+    </div>
+  );
 }
 
 interface ModelGroup {
@@ -136,7 +193,7 @@ function UserEntry({
             ))}
           </div>
         )}
-        {visibleBody && <div className="entry-text">{visibleBody}</div>}
+        {visibleBody && <MessageBody text={visibleBody} />}
       </div>
       <div className="entry-actions">
         <span className="entry-time">{time}</span>
