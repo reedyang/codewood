@@ -286,18 +286,33 @@ class ChatStateManager:
 
             active = str(state.get("active") or "").strip()
             # Chats this process is the authoritative writer for: the
-            # currently-active chat plus any chat it owns a live runtime
-            # for. For every OTHER chat we must avoid clobbering a record
-            # another codewood process (e.g. a concurrent TUI) may have
-            # amended on disk since we loaded it — otherwise switching
-            # chats in one process would silently roll back messages the
-            # other process just wrote. See task: "GUI switch chat wipes
-            # the message the TUI just sent".
-            owned_chat_ids = {active} if active else set()
+            # currently-active chat plus any chat it owns a live runtime for.
+            # For every OTHER chat we must avoid clobbering a record another
+            # codewood process (e.g. a concurrent TUI/GUI) may have amended on
+            # disk since we loaded it.
+            #
+            # The disk-newer-wins branch below ALSO guards the owned/active
+            # chat: an owned chat is only force-overwritten when our in-memory
+            # copy is at least as new as the disk record. When a peer has
+            # written a strictly newer record for the active chat (e.g. the GUI
+            # answered while the TUI sat idle on the same chat), we reload that
+            # record instead of saving over it. Our own edits always bump
+            # ``updated_at``, so a genuine local change keeps memory newer and
+            # still wins. See tasks: "GUI switch chat wipes the message the TUI
+            # just sent" and "TUI save should reload when the on-disk history is
+            # newer than memory".
+            # Chats with an in-flight turn must never defer to disk: their
+            # in-memory state is being actively mutated and is authoritative.
+            actively_running_ids: set = set()
             try:
                 runtimes = getattr(self._agent, "_active_runtime_chat_ids", None)
                 if callable(runtimes):
-                    owned_chat_ids |= {str(x) for x in (runtimes() or []) if str(x)}
+                    actively_running_ids |= {str(x) for x in (runtimes() or []) if str(x)}
+            except Exception:
+                pass
+            try:
+                if active and bool(getattr(self._agent, "_in_task_execution", False)):
+                    actively_running_ids.add(active)
             except Exception:
                 pass
 
@@ -320,7 +335,7 @@ class ChatStateManager:
                 # and if it is strictly newer we both keep it on disk
                 # (skip the overwrite) and refresh our in-memory copy so
                 # subsequent reads/saves stay consistent.
-                if cid not in owned_chat_ids and record_path.exists():
+                if cid not in actively_running_ids and record_path.exists():
                     try:
                         with open(record_path, "r", encoding="utf-8") as f:
                             disk_raw = json.load(f)

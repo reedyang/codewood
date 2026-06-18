@@ -260,10 +260,16 @@ export function retokenizeReferencePills(body: string): Segment[] {
   }
   // Order matters: try the MCP forms (which contain a "/") before the
   // generic skill form. Each alternative is captured so we can classify.
+  // We accept BOTH the GUI bracket forms (``[skill: name]``,
+  // ``[mcp tool|prompt: srv/name]``) and the TUI slash forms
+  // (``/skills/<name>``, ``/mcp/<srv>/<name>``) so a message authored in
+  // either client renders as the same image/text-mixed pill on reload.
   const PILL = new RegExp(
     "\\[skill:\\s*([^\\]\\r\\n]+?)\\s*\\]" +
       "|\\[mcp\\s+tool:\\s*([^\\]\\r\\n/]+?)\\s*/\\s*([^\\]\\r\\n]+?)\\s*\\]" +
-      "|\\[mcp\\s+prompt:\\s*([^\\]\\r\\n/]+?)\\s*/\\s*([^\\]\\r\\n]+?)\\s*\\]",
+      "|\\[mcp\\s+prompt:\\s*([^\\]\\r\\n/]+?)\\s*/\\s*([^\\]\\r\\n]+?)\\s*\\]" +
+      "|(?:^|(?<=\\s))/mcp/([^\\s/]+)/([^\\s]+)" +
+      "|(?:^|(?<=\\s))/skills/([^\\s/]+)",
     "gi",
   );
   let last = 0;
@@ -278,6 +284,12 @@ export function retokenizeReferencePills(body: string): Segment[] {
       out.push({ kind: "mcp-tool", value: `${m[2]}::${m[3]}` });
     } else if (m[4] != null && m[5] != null) {
       out.push({ kind: "mcp-prompt", value: `${m[4]}::${m[5]}` });
+    } else if (m[6] != null && m[7] != null) {
+      // Slash MCP form: tool vs prompt is indistinguishable from the token
+      // alone; treat as a tool reference for display purposes.
+      out.push({ kind: "mcp-tool", value: `${m[6]}::${m[7]}` });
+    } else if (m[8] != null) {
+      out.push({ kind: "skill", value: m[8] });
     }
     last = m.index + m[0].length;
   }
