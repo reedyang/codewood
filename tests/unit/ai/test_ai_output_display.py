@@ -18,7 +18,12 @@ class AiOutputDisplayTests(unittest.TestCase):
     def setUp(self):
         self.agent = Agent.__new__(Agent)
 
-    def test_strip_tool_json_fence_keeps_text(self):
+    def test_strip_tool_json_fence_removes_trailing_call(self):
+        # Models that emit a tool call as a ```json fenced block at the end
+        # of the assistant reply have those JSON envelopes recognised and
+        # executed by the runtime; the display path must hide the raw JSON
+        # so neither the TUI replay nor the GUI ``chat_history`` payload
+        # shows it as natural-language text.
         text = (
             "I will read the file first.\n\n"
             "```json\n"
@@ -26,7 +31,7 @@ class AiOutputDisplayTests(unittest.TestCase):
             "```\n"
         )
         out = aoh.strip_tool_json_blocks_for_display(text)
-        self.assertEqual(out, text.strip())
+        self.assertEqual(out, "I will read the file first.")
 
     def test_tool_call_summary_prefers_path_like_fields(self):
         s = self.agent._tool_call_summary(
@@ -39,6 +44,12 @@ class AiOutputDisplayTests(unittest.TestCase):
         self.assertNotIn("start_line=101", s)
 
     def test_strip_tool_json_unclosed_fence_keeps_text(self):
+        # Without the closing ```` ``` ```` the fence parser can't isolate the
+        # JSON body and ``json.loads`` would reject the candidate, so the
+        # stripper leaves the whole reply intact rather than guess.
+        # (The trailing object-opener path also can't parse multi-line JSON
+        # whose closing brace isn't followed by a recognisable end, so the
+        # stripper bails out and keeps the user-visible text untouched.)
         text = (
             "Step 2 [in_progress]: Continue reading the file.\n\n"
             "```json\n"
@@ -48,9 +59,19 @@ class AiOutputDisplayTests(unittest.TestCase):
             "}\n"
         )
         out = aoh.strip_tool_json_blocks_for_display(text)
-        self.assertEqual(out, text.strip())
+        # The trailing-object scan now does parse the inner JSON object
+        # successfully because everything after the opening ``{`` is valid
+        # JSON. That's still a recognised tool-call shape so it gets
+        # stripped along with the orphan ``\`\`\`json`` fence line above
+        # it. The natural-language prefix line must survive.
+        self.assertIn("Step 2 [in_progress]: Continue reading the file.", out)
+        self.assertNotIn('"tool": "shell"', out)
 
-    def test_strip_tool_json_fence_with_patch_text_containing_fence_markers_keeps_text(self):
+    def test_strip_tool_json_fence_with_patch_text_containing_fence_markers_strips_outer_block(self):
+        # Even when the embedded patch payload itself contains fence
+        # markers and escaped JSON, the OUTER ```json block is the real
+        # tool call and must still be stripped — otherwise the user sees
+        # the apply_patch envelope leak into the reply.
         text = (
             "Step 1 [in_progress]: Apply the patch.\n\n"
             "```json\n"
@@ -64,9 +85,13 @@ class AiOutputDisplayTests(unittest.TestCase):
             "```\n"
         )
         out = aoh.strip_tool_json_blocks_for_display(text)
-        self.assertEqual(out, text.strip())
+        self.assertIn("Step 1 [in_progress]: Apply the patch.", out)
+        self.assertNotIn('"tool": "apply_patch"', out)
 
-    def test_strip_tool_json_array_fence_keeps_text(self):
+    def test_strip_tool_json_array_fence_removes_call_array(self):
+        # A top-level JSON array of tool-call objects is the multi-call
+        # variant the runtime recognises; the display strip treats it the
+        # same as a single-call object and removes the whole array.
         text = (
             "Let's handle this in two steps first.\n\n"
             "```json\n"
@@ -77,7 +102,7 @@ class AiOutputDisplayTests(unittest.TestCase):
             "```\n"
         )
         out = aoh.strip_tool_json_blocks_for_display(text)
-        self.assertEqual(out, text.strip())
+        self.assertEqual(out, "Let's handle this in two steps first.")
 
     def test_strip_assistant_tool_call_marker_block_keeps_text(self):
         text = (
@@ -86,6 +111,40 @@ class AiOutputDisplayTests(unittest.TestCase):
         )
         out = aoh.strip_tool_json_blocks_for_display(text)
         self.assertEqual(out, text.strip())
+
+    def test_strip_multiple_chained_tool_call_blocks(self):
+        # Reproduces the live bug: the model emitted an ``update_plan``
+        # tool call followed by an ``ask_more_info`` envelope inside a
+        # single assistant turn (the runtime only stashed the final
+        # block's text into ``pseudo_tool_call_text``, leaving the
+        # earlier ``update_plan`` JSON visible in ``content``). The
+        # display stripper must peel BOTH blocks off so neither one
+        # leaks into the GUI panel or the TUI history replay.
+        text = (
+            "Hi! I searched the gmail-related skills, please pick one:\n\n"
+            "{\n"
+            '  "tool": "update_plan",\n'
+            '  "args": {\n'
+            '    "explanation": "Search completed, moving to selection",\n'
+            '    "plan": [\n'
+            '      { "step": "Search for Gmail skill", "status": "completed" },\n'
+            '      { "step": "Select detail URL", "status": "in_progress" },\n'
+            '      { "step": "Install selected Gmail skill", "status": "pending" }\n'
+            "    ]\n"
+            "  }\n"
+            "},\n"
+            "{\n"
+            '  "tool": "ask_more_info",\n'
+            '  "args": {\n'
+            '    "question": "pick one",\n'
+            '    "options": ["a", "b"]\n'
+            "  }\n"
+            "}"
+        )
+        out = aoh.strip_tool_json_blocks_for_display(text)
+        self.assertIn("Hi! I searched the gmail-related skills, please pick one:", out)
+        self.assertNotIn('"tool": "update_plan"', out)
+        self.assertNotIn('"tool": "ask_more_info"', out)
 
     def test_strip_pseudo_tool_calls_block_keeps_text(self):
         text = (

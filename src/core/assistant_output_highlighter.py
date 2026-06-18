@@ -1,9 +1,47 @@
 from __future__ import annotations
 
+import json
 import re
-from typing import Callable, List, Pattern, Tuple
+from typing import Any, Callable, List, Pattern, Tuple
 
 from .console_utils import _ansi_bright_blue, _ansi_cyan, _ansi_gray, _ansi_green, _ansi_rgb, _ansi_yellow
+
+
+def _payload_looks_like_tool_call(payload: Any) -> bool:
+    """Return True iff a parsed JSON blob looks like a model tool-call payload.
+
+    Recognized shapes (whichever the model emitted):
+      * ``{"tool_calls": [...]}`` — OpenAI-style envelope
+      * ``{"tool": "...", "args": {...}}`` — short pseudo-tool form
+      * ``{"name"/"function": ...}`` — bare single call
+      * a top-level list whose first element is one of the above shapes
+
+    Used by ``strip_tool_json_blocks_for_display`` to recognise (and remove)
+    a trailing JSON tool-call block that the model accidentally streamed
+    into its visible reply. We only need to *detect* tool-callness for the
+    display strip; the actual tool execution path uses the strict parser in
+    ``runtime_loop`` so we deliberately err on the side of "skip" here
+    (better to drop the JSON than to surface it as text).
+    """
+    if isinstance(payload, dict):
+        if "tool_calls" in payload:
+            return True
+        if "tool" in payload and ("args" in payload or "arguments" in payload):
+            return True
+        if "name" in payload and ("args" in payload or "arguments" in payload):
+            return True
+        if "function" in payload:
+            return True
+        return False
+    if isinstance(payload, list) and payload:
+        return _payload_looks_like_tool_call(payload[0])
+    return False
+
+
+# Trailing pseudo tool-call JSON sometimes arrives inside a ```json fence;
+# match the opener so we can locate the body's starting offset.
+_TRAILING_FENCE_RE = re.compile(r"(?im)^[ \t]*```(?:json|javascript|js)?[ \t]*\n")
+_TRAILING_OBJECT_RE = re.compile(r"(?m)^[ \t]*(?:\{|\[)")
 
 
 _POWERSHELL_OPERATOR_TOKENS = {
@@ -46,11 +84,87 @@ def _ansi_ps_pipe(text: str) -> str:
     return _ansi_rgb(text, 97, 175, 239)
 
 
+def _strip_trailing_tool_call_json_once(text: str) -> Tuple[str, bool]:
+    """Strip a single trailing tool-call JSON block from ``text``.
+
+    Returns ``(new_text, stripped)``. ``stripped`` is True iff exactly one
+    trailing block was recognized and removed. The caller loops to handle
+    models that emit several JSON blocks in succession (typical when the
+    model both plans a step via ``update_plan`` and then prompts via
+    ``ask_more_info`` inside one assistant turn).
+    """
+    rstripped = text.rstrip()
+    if not rstripped:
+        return text, False
+
+    candidates: List[Tuple[int, str]] = []
+    if rstripped.endswith("```"):
+        fence_matches = list(_TRAILING_FENCE_RE.finditer(rstripped))
+        if fence_matches:
+            fence = fence_matches[-1]
+            body_start = fence.end()
+            body_end = rstripped.rfind("```")
+            if body_end > body_start:
+                candidates.append((fence.start(), rstripped[body_start:body_end].strip()))
+
+    # Try the latest possible top-of-line ``{`` / ``[`` opener first so the
+    # tail-most JSON is detected even when the model concatenated multiple
+    # blocks with ``,`` separators (each loop iteration consumes one block).
+    for m in reversed(list(_TRAILING_OBJECT_RE.finditer(rstripped))):
+        start = m.start()
+        tail = rstripped[start:].strip()
+        # Strip a trailing JSON-list comma the model uses to chain blocks,
+        # otherwise ``json.loads`` would reject the candidate as malformed.
+        if tail.endswith(","):
+            tail = tail[:-1].rstrip()
+        candidates.append((start, tail))
+
+    for start, candidate in candidates:
+        try:
+            payload = json.loads(candidate)
+        except Exception:
+            continue
+        if not _payload_looks_like_tool_call(payload):
+            continue
+        stripped = rstripped[:start].rstrip()
+        # Drop a dangling comma that the model used to chain this block onto
+        # an earlier one (``…},\n{…}`` patterns).
+        if stripped.endswith(","):
+            stripped = stripped[:-1].rstrip()
+        return stripped, True
+    return text, False
+
+
 def strip_tool_json_blocks_for_display(text: str) -> str:
-    """Return assistant display text without legacy pseudo tool-call filtering."""
+    """Strip trailing pseudo tool-call JSON block(s) from assistant text.
+
+    Some models occasionally emit a tool call as a JSON object inside the
+    assistant's natural-language reply (instead of as a real ``tool_calls``
+    entry on the message). The runtime still recognises and executes the
+    embedded call, but the JSON itself must not leak into either the TUI
+    history replay or the GUI's ``chat_history`` payload — both renderers
+    funnel through ``format_assistant_display_response`` so this helper is
+    the single chokepoint for hiding it.
+
+    Loops until no more trailing tool-call JSON can be peeled off so a
+    model that concatenated several blocks (e.g. an ``update_plan`` step
+    followed by an ``ask_more_info`` prompt in the same turn) is fully
+    cleaned, not just the last block. Returns the input (whitespace-
+    trimmed) when no tool-call shaped trailing JSON is found.
+    """
     if not isinstance(text, str) or not text:
         return ""
-    return text.strip()
+    current = text
+    if not current.strip():
+        return ""
+    for _ in range(8):  # safety cap; pathological inputs can't loop forever
+        next_text, stripped = _strip_trailing_tool_call_json_once(current)
+        if not stripped:
+            break
+        current = next_text
+        if not current.strip():
+            return ""
+    return current.strip()
 
 
 def normalize_display_text(text: str) -> str:

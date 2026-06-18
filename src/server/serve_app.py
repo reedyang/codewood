@@ -536,6 +536,13 @@ def _safe_pending_ask_more_info(agent: Any) -> Optional[Dict[str, Any]]:
     submit handler will POST the marker's id; if the local backend can't
     match it the call is a no-op until cross-process answer routing
     lands.
+
+    Callers that surface this state across processes (``select_chat``,
+    ``chat_history``, ``_build_state`` after a cross-process amend) are
+    expected to refresh the chat record from disk *before* invoking this
+    helper — the refresh is intentionally NOT done here to avoid
+    clobbering an in-progress local stream (the GUI's own runtime mutates
+    ``conversation_history`` without re-persisting on every chunk).
     """
     try:
         cid = _primary_active_chat_id(agent)
@@ -825,6 +832,21 @@ class ServeApp:
         self._runtimes: Dict[str, "_ChatRuntime"] = {}
         self._runtimes_lock = threading.Lock()
         self._bridge: Optional["_OutputBridge"] = None
+        # Let the chat-state saver know which chats this process owns a
+        # live runtime for, so a cross-process merge-on-save never skips
+        # overwriting a chat whose loop is actively streaming here.
+        try:
+            self.agent._active_runtime_chat_ids = self._owned_runtime_chat_ids
+        except Exception:
+            pass
+
+    def _owned_runtime_chat_ids(self) -> List[str]:
+        """Chat ids with a live runtime in THIS process (authoritative writers)."""
+        try:
+            with self._runtimes_lock:
+                return [str(cid) for cid in self._runtimes.keys()]
+        except Exception:
+            return []
 
     def _active_chat_id(self) -> str:
         """Chat id the running turn / streamed output is attributed to.
@@ -1140,7 +1162,33 @@ class ServeApp:
         # focused chat so the per-session conversation_history resolves to that
         # chat's live session.
         try:
-            with self.agent._session_scope(_primary_active_chat_id(self.agent)):
+            focus_chat = _primary_active_chat_id(self.agent)
+            # When the active chat isn't owned by this process's runtime
+            # (e.g. another codewood TUI is driving it), pull the latest
+            # record from disk before building turns so messages and
+            # ``pending_ask_more_info`` markers written by the peer are
+            # visible to the GUI client.
+            try:
+                with self._runtimes_lock:
+                    has_runtime = focus_chat in self._runtimes
+            except Exception:
+                has_runtime = False
+            if focus_chat and not has_runtime:
+                try:
+                    refresh = getattr(self.agent, "_refresh_chat_record_from_disk", None)
+                    if callable(refresh):
+                        refresh(focus_chat)
+                        # Rebind the session so conversation_history
+                        # reflects the freshly re-validated chat dict.
+                        self.agent._activate_chat(
+                            focus_chat,
+                            announce=False,
+                            clear_screen=False,
+                            print_history=False,
+                        )
+                except Exception:
+                    pass
+            with self.agent._session_scope(focus_chat):
                 turns = _build_structured_turns(self.agent)
         except Exception:
             turns = []
@@ -1197,6 +1245,18 @@ class ServeApp:
                         agent._chat_state["active"] = rid
                         agent._save_chat_state()
                 else:
+                    # Another codewood process (typically the TUI) may be
+                    # actively driving this chat — pull its latest record
+                    # from disk so any cross-process state it persisted
+                    # (new messages, ``pending_ask_more_info``, plan
+                    # updates, ...) is visible to the local GUI before
+                    # we bind the session to it.
+                    try:
+                        refresh = getattr(agent, "_refresh_chat_record_from_disk", None)
+                        if callable(refresh):
+                            refresh(rid)
+                    except Exception:
+                        pass
                     result = agent._activate_chat(
                         rid, announce=False, clear_screen=False, print_history=False
                     )

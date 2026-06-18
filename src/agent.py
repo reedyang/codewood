@@ -1044,6 +1044,17 @@ class Agent:
     def _load_chat_state(self) -> None:
         self._chat_state_manager.load_chat_state()
 
+    def _refresh_chat_record_from_disk(self, chat_id: str) -> bool:
+        """Re-read one chat record so cross-process amendments are picked up.
+
+        Thin shim over ``ChatStateManager.refresh_chat_record_from_disk``;
+        used by the GUI server when the user focuses a chat that this
+        process doesn't own a live runtime for (typically because another
+        codewood process is the active driver and may have persisted state
+        such as a pending ``ask_more_info`` prompt since startup).
+        """
+        return self._chat_state_manager.refresh_chat_record_from_disk(chat_id)
+
     def _sync_active_chat_messages(self) -> None:
         self._chat_state_manager.sync_active_chat_messages()
 
