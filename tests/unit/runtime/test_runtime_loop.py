@@ -14,6 +14,7 @@ from src.runtime.runtime_loop import (
     _model_tool_result_was_aborted,
     _parse_multi_select_line,
     _solicit_ask_more_info_answer,
+    build_ask_more_info_prompt_block,
     _render_aborted_direct_shell_feedback,
     _refresh_context_usage_after_task_boundary,
     _resolve_worked_summary_terminal_width,
@@ -1794,6 +1795,42 @@ class _StubAgentForAskMoreInfo:
         if not self._scripted:
             raise AssertionError("no more scripted TUI input")
         return self._scripted.pop(0)
+
+
+class BuildAskMoreInfoPromptBlockTests(unittest.TestCase):
+    """The shared prompt-block builder feeds both the live TUI prompt and
+    the history-replay re-render, so a peer-created (e.g. GUI) pending
+    question shows an identical numbered selection block on TUI reload."""
+
+    def _agent(self):
+        return _StubAgentForAskMoreInfo([])
+
+    def test_numbers_options_and_appends_other(self):
+        block = build_ask_more_info_prompt_block(
+            self._agent(), "Pick env?", ["Prod", "Stg"], multi_select=False
+        )
+        self.assertIn("Pick env?", block)
+        self.assertIn("1. Prod", block)
+        self.assertIn("2. Stg", block)
+        # "Other" is appended as the option after the last real one.
+        self.assertIn("3.", block)
+
+    def test_multi_select_hint_differs_from_single(self):
+        single = build_ask_more_info_prompt_block(
+            self._agent(), "Q", ["A", "B"], multi_select=False
+        )
+        multi = build_ask_more_info_prompt_block(
+            self._agent(), "Q", ["A", "B"], multi_select=True
+        )
+        self.assertNotEqual(single, multi)
+
+    def test_handles_empty_options(self):
+        block = build_ask_more_info_prompt_block(
+            self._agent(), "Anything?", [], multi_select=False
+        )
+        self.assertIn("Anything?", block)
+        # Only the trailing "Other" option remains.
+        self.assertIn("1.", block)
 
 
 class SolicitAskMoreInfoAnswerTests(unittest.TestCase):
