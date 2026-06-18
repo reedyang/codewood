@@ -276,15 +276,25 @@ export function Sidebar({ onOpenSettings }: { onOpenSettings: () => void }) {
           <>
             <button className="tree-label" title={chat.id} onClick={() => void switchChat(wsId, chat.id)}>
               <span className="tree-name">{chat.name}</span>
-              {isBusy && <span className="chat-busy-dot" aria-label={t("chat.busy")} title={t("chat.busy")} />}
-              {isUnread && (
+              {/* While running (pulsing dot) or with an unread result (steady
+                  dot) the chat shows ONLY the dot, pushed flush to the right
+                  edge — no timestamp. Otherwise the row shows the relative time
+                  of its most recent message. */}
+              {isBusy ? (
                 <span
-                  className="chat-unread-dot"
+                  className="chat-status-dot chat-busy-dot"
+                  aria-label={t("chat.busy")}
+                  title={t("chat.busy")}
+                />
+              ) : isUnread ? (
+                <span
+                  className="chat-status-dot chat-unread-dot"
                   aria-label={t("chat.unread")}
                   title={t("chat.unread")}
                 />
+              ) : (
+                rel && <span className="tree-meta">{rel}</span>
               )}
-              {rel && <span className="tree-meta">{rel}</span>}
             </button>
             <button
               className="chat-pin-btn"

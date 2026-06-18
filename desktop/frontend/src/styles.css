@@ -2482,12 +2482,17 @@ body.resizing-x {
   display: none;
 }
 
+/* Running (pulsing) / unread (steady) status dot. Pushed flush to the row's
+   right edge with no timestamp beside it; the name (flex:1) takes the slack. */
+.chat-status-dot {
+  margin-left: auto;
+}
+
 /* Pulsing dot marking a chat whose agent loop is running (parallel chats). */
 .chat-busy-dot {
   flex: 0 0 auto;
   width: 7px;
   height: 7px;
-  margin-left: 6px;
   border-radius: 50%;
   background: var(--accent);
   animation: busy-pulse 1.2s ease-in-out infinite;
@@ -2511,7 +2516,6 @@ body.resizing-x {
   flex: 0 0 auto;
   width: 7px;
   height: 7px;
-  margin-left: 6px;
   border-radius: 50%;
   background: var(--accent);
 }
