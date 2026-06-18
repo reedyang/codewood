@@ -84,7 +84,7 @@ interface ModelGroup {
 }
 
 /** Group "provider:name" model selectors under their provider, preserving order. */
-function groupModelsByProvider(selectors: string[]): ModelGroup[] {
+export function groupModelsByProvider(selectors: string[]): ModelGroup[] {
   const groups: ModelGroup[] = [];
   const byProvider = new Map<string, ModelGroup>();
   for (const sel of selectors) {

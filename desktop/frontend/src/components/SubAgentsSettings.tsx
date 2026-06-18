@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useApp } from "../state/AppContext";
 import { Icon } from "./Icon";
+import { groupModelsByProvider } from "./ChatView";
 import type { SubAgentConfig } from "../api/types";
 
 /** Sub Agents settings page.
@@ -386,10 +387,14 @@ function SubAgentEditor({
               onChange={(e) => setModel(e.target.value)}
             >
               <option value="">{t("subagents.modelDefault")}</option>
-              {models.map((m) => (
-                <option key={m} value={m}>
-                  {m}
-                </option>
+              {groupModelsByProvider(models).map((group) => (
+                <optgroup key={group.provider} label={group.provider}>
+                  {group.items.map((item) => (
+                    <option key={item.selector} value={item.selector}>
+                      {item.name}
+                    </option>
+                  ))}
+                </optgroup>
               ))}
             </select>
           </div>
