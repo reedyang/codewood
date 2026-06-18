@@ -1616,15 +1616,12 @@ def _solicit_ask_more_info_answer(
     input_handler = getattr(agent, "input_handler", None)
     interactive = getattr(input_handler, "prompt_ask_more_info_selection", None)
     if callable(interactive) and _ask_more_info_interactive_supported(agent):
-        # Echo only the question header first so it stays in the transcript
-        # after the interactive widget tears down. The option list itself is
-        # rendered live by the selector, so printing the full numbered block
-        # here would show the options twice (a stale, non-selectable copy
-        # above the active selector).
-        try:
-            print(build_ask_more_info_header_block(agent, question))
-        except Exception:
-            pass
+        # The interactive selector renders the question header ("Need your
+        # input" + the question) itself and runs with ``erase_when_done=False``,
+        # so that header stays in the transcript after the widget tears down.
+        # We must NOT pre-print the header here too — doing so showed the
+        # "Need your input" / question block twice (a stale copy above the live
+        # selector, and again once it committed).
         try:
             picked = interactive(question, list(visible_options), bool(multi_select))
         except KeyboardInterrupt:
