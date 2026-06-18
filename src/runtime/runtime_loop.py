@@ -1587,11 +1587,54 @@ def _solicit_ask_more_info_answer(
             return (answer, True)
         return (answer, False)
 
+    visible_options = list(options)
+    other_index = len(visible_options) + 1
+
+    # Preferred TUI path: an interactive arrow-key selector (↑/↓ to move,
+    # Space/Enter to pick, inline input for "Other", Enter to submit a
+    # multi-select). Falls back to the plain numbered-prompt flow below when
+    # the input handler can't provide it (no prompt_toolkit, non-tty, etc.).
+    input_handler = getattr(agent, "input_handler", None)
+    interactive = getattr(input_handler, "prompt_ask_more_info_selection", None)
+    if callable(interactive) and _ask_more_info_interactive_supported(agent):
+        # Echo the question/options context first so it stays in the
+        # transcript after the interactive widget tears down.
+        try:
+            print(
+                build_ask_more_info_prompt_block(
+                    agent, question, visible_options, multi_select
+                )
+            )
+        except Exception:
+            pass
+        try:
+            picked = interactive(question, list(visible_options), bool(multi_select))
+        except KeyboardInterrupt:
+            picked = None
+        except Exception:
+            picked = "__fallback__"
+        if picked != "__fallback__":
+            if picked is None:
+                try:
+                    print(t("runtime.ask_more_info.supplement_cancelled"))
+                except Exception:
+                    pass
+                _clear_ask_more_info_pending(agent)
+                return ("", False)
+            answer = str(picked).strip()
+            if not answer:
+                try:
+                    print(t("runtime.ask_more_info.no_supplement"))
+                except Exception:
+                    pass
+                _clear_ask_more_info_pending(agent)
+                return ("", False)
+            _clear_ask_more_info_pending(agent)
+            return (answer, False)
+
     # TUI fallback. Layout depends on the mode:
     #   single-select  -> "Pick one (or N+1 for Other):"
     #   multi-select   -> "Pick one or more (comma-separated, or include Other):"
-    visible_options = list(options)
-    other_index = len(visible_options) + 1
     # Build the prompt block once so we can stash it for resize re-rendering
     # too — without that, prompt_toolkit's redraw after a terminal resize
     # would scroll the options off the screen and the user is left typing
@@ -1703,6 +1746,27 @@ def _solicit_ask_more_info_answer(
             continue
         _clear_ask_more_info_pending(agent)
         return ("; ".join(parts), False)
+
+
+def _ask_more_info_interactive_supported(agent: Any) -> bool:
+    """Whether the interactive arrow-key selector can run for this prompt.
+
+    Requires a real interactive stdin/stdout TTY and a non-GUI (no custom
+    ``_ask_more_info_provider``) session. The GUI installs its own provider
+    and is handled earlier, so this only gates the TUI path.
+    """
+    try:
+        if not sys.stdin or not sys.stdin.isatty():
+            return False
+        if not sys.stdout or not sys.stdout.isatty():
+            return False
+    except Exception:
+        return False
+    # GUI/headless runs route through ``_ask_more_info_provider``; never show
+    # the terminal widget there.
+    if callable(getattr(agent, "_ask_more_info_provider", None)):
+        return False
+    return True
 
 
 def _ask_more_info_pending_id(agent: Any) -> str:

@@ -1902,6 +1902,75 @@ class SolicitAskMoreInfoAnswerTests(unittest.TestCase):
         self.assertEqual(agent.cleared, 1)
 
 
+class InteractiveAskMoreInfoSelectorTests(unittest.TestCase):
+    """The TUI ``ask_more_info`` prompt prefers an interactive arrow-key
+    selector (``input_handler.prompt_ask_more_info_selection``) when running
+    on a real TTY, falling back to the numbered-prompt flow otherwise."""
+
+    def _agent_with_selector(self, picked, tty=True):
+        agent = _StubAgentForAskMoreInfo([])
+
+        class _Handler:
+            def __init__(self):
+                self.calls = []
+
+            def prompt_ask_more_info_selection(self, question, options, multi_select):
+                self.calls.append((question, list(options), bool(multi_select)))
+                return picked
+
+        agent.input_handler = _Handler()
+        return agent
+
+    def test_interactive_used_on_tty_single_select(self):
+        agent = self._agent_with_selector("Stg")
+        with (
+            patch("src.runtime.runtime_loop.sys.stdin") as stdin,
+            patch("src.runtime.runtime_loop.sys.stdout") as stdout,
+        ):
+            stdin.isatty.return_value = True
+            stdout.isatty.return_value = True
+            text, handoff = _solicit_ask_more_info_answer(
+                agent, "Pick env?", ["Prod", "Stg"], multi_select=False
+            )
+        self.assertEqual(text, "Stg")
+        self.assertFalse(handoff)
+        self.assertEqual(agent.input_handler.calls[0][1], ["Prod", "Stg"])
+        self.assertEqual(agent.cleared, 1)
+
+    def test_interactive_cancel_returns_empty_and_clears(self):
+        agent = self._agent_with_selector(None)
+        with (
+            patch("src.runtime.runtime_loop.sys.stdin") as stdin,
+            patch("src.runtime.runtime_loop.sys.stdout") as stdout,
+        ):
+            stdin.isatty.return_value = True
+            stdout.isatty.return_value = True
+            text, handoff = _solicit_ask_more_info_answer(
+                agent, "Pick", ["A", "B"], multi_select=False
+            )
+        self.assertEqual(text, "")
+        self.assertFalse(handoff)
+        self.assertEqual(agent.cleared, 1)
+
+    def test_falls_back_to_text_prompt_when_not_a_tty(self):
+        agent = self._agent_with_selector("Stg")
+        # Provide a scripted text input for the fallback path.
+        agent._scripted = ["1"]
+        with (
+            patch("src.runtime.runtime_loop.sys.stdin") as stdin,
+            patch("src.runtime.runtime_loop.sys.stdout") as stdout,
+        ):
+            stdin.isatty.return_value = False
+            stdout.isatty.return_value = False
+            text, handoff = _solicit_ask_more_info_answer(
+                agent, "Pick", ["A", "B"], multi_select=False
+            )
+        # The interactive selector must NOT have been consulted off-TTY.
+        self.assertEqual(agent.input_handler.calls, [])
+        self.assertEqual(text, "A")
+        self.assertFalse(handoff)
+
+
 class ParseMultiSelectLineTests(unittest.TestCase):
     """Parser used by the TUI ``ask_more_info`` multi-select prompt.
 
