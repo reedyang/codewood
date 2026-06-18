@@ -27,6 +27,7 @@ SLASH_BUILTIN_COMMANDS: List[str] = [
     "/execution-policy moderate",
     "/execution-policy show",
     "/execution-policy unlimited",
+    "/agent",
     "/exit",
     "/help",
     "/language",
@@ -54,6 +55,9 @@ SLASH_BUILTIN_COMMANDS: List[str] = [
     "/memory stats",
     "/memory status",
     "/model",
+    "/plan",
+    "/plan off",
+    "/plan status",
     "/quit",
     "/workspace ",
     "/workspace create ",
@@ -87,6 +91,11 @@ SLASH_BUILTIN_DISPLAY_OVERRIDES = {
     "/language": "/language [language code]",
     # /model
     "/model": "/model [model_provider:name]",
+    # plan / agent mode toggle
+    "/plan": "/plan (enable Plan mode)",
+    "/plan off": "/plan off (disable Plan mode)",
+    "/plan status": "/plan status",
+    "/agent": "/agent (switch to Agent mode)",
     # /mcp
     "/mcp list-tools ": "/mcp list-tools <server>",
     "/mcp list-resources ": "/mcp list-resources <server>",

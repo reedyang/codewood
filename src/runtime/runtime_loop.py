@@ -2836,6 +2836,31 @@ def run_agent_loop(agent: Any):
             except Exception:
                 pass
             original_user_task = task_user_input
+            # ``task_user_input`` has had any skill / MCP reference markers
+            # (``[skill: ...]``, ``[mcp tool|prompt: ...]``, ``/skills/...``)
+            # stripped so the model treats only the natural-language remainder
+            # as the task. For the *recorded* history entry, however, keep the
+            # original markers so that reloading the chat (TUI or GUI) can
+            # re-render the referenced skill / MCP as an inline pill instead of
+            # silently dropping it. The plan-mode directive, when active, is
+            # prepended the same way as for the model-facing task.
+            recorded_user_task = stripped_in
+            try:
+                if (
+                    bool(getattr(self, "_plan_mode_sticky", False))
+                    and recorded_user_task
+                ):
+                    from ..core.localization import translate as _translate_plan_rec
+                    _plan_prefix_rec = _translate_plan_rec(
+                        "builtin.plan_mode_prefix",
+                        getattr(self, "display_language", None) or "en",
+                    )
+                    if _plan_prefix_rec and not recorded_user_task.startswith(
+                        _plan_prefix_rec
+                    ):
+                        recorded_user_task = f"{_plan_prefix_rec}\n\n{recorded_user_task}"
+            except Exception:
+                recorded_user_task = stripped_in
             maybe_auto_compact = getattr(
                 getattr(self, "session_memory_service", None),
                 "maybe_auto_compact_before_user_message",
@@ -2855,7 +2880,7 @@ def run_agent_loop(agent: Any):
             last_result = None
             self._last_auto_removed_ephemeral = None
             user_message_recorded = _try_record_user_task_message(
-                self, original_user_task, already_recorded=user_message_recorded
+                self, recorded_user_task, already_recorded=user_message_recorded
             )
             in_task_execution = True
             self._active_skill_full_prompt = ""
