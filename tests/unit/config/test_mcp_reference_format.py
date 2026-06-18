@@ -88,6 +88,29 @@ class McpReferenceFormatTests(unittest.TestCase):
         parsed = self.agent._extract_forced_mcp_reference("/playwright/browser_click run this tool")
         self.assertIsNone(parsed)
 
+    def test_extract_forced_mcp_reference_supports_bracket_tool_pill(self):
+        # GUI emits ``[mcp tool: server/name]`` inline pills; the backend
+        # must resolve and inject those just like the slash form.
+        parsed = self.agent._extract_forced_mcp_reference(
+            "[mcp tool: playwright/browser_click] run this tool"
+        )
+        self.assertIsNotNone(parsed)
+        self.assertEqual(len(parsed["entries"]), 1)
+        self.assertEqual(parsed["entries"][0]["server"], "playwright")
+        self.assertEqual(parsed["entries"][0]["name"], "browser_click")
+        self.assertEqual(parsed["entries"][0]["kind"], "tool")
+        self.assertEqual(parsed["rest"], "run this tool")
+
+    def test_extract_forced_mcp_reference_supports_bracket_prompt_pill(self):
+        parsed = self.agent._extract_forced_mcp_reference(
+            "[mcp prompt: playwright/summarize_page] do it"
+        )
+        self.assertIsNotNone(parsed)
+        self.assertEqual(parsed["entries"][0]["server"], "playwright")
+        self.assertEqual(parsed["entries"][0]["name"], "summarize_page")
+        self.assertEqual(parsed["entries"][0]["kind"], "prompt")
+        self.assertEqual(parsed["rest"], "do it")
+
     def test_mcp_server_candidates_are_second_level_dynamic(self):
         self.agent._workspaces_state = {}
         self.agent._get_slash_mcp_scoped_groups = lambda: []

@@ -2584,8 +2584,86 @@ class Agent:
                     rendered.append(f"{cont_prefix_plain}{seg}")
         return "\n".join(rendered)
 
+    def _skill_reference_display_color(self, text: str) -> str:
+        # Cyan-ish pill color, matching how the GUI tints skill/MCP pills.
+        return _ansi_rgb(text, 86, 182, 194)
+
+    def _normalize_reference_pills_for_display(self, user_text: str) -> str:
+        """Render skill / MCP references as unified, highlighted inline pills.
+
+        Normalizes both the legacy slash forms (``/skills/<name>``,
+        ``/mcp/<srv>/<name>``) and the GUI bracket forms (``[skill: ...]``,
+        ``[mcp tool|prompt: ...]``) into a single highlighted bracket pill so
+        the TUI echo of a sent message — and the editor pre-fill — show the
+        same image/text-mixed presentation the GUI uses, rather than raw
+        slash tokens. Display-only: it never changes the stored message.
+        """
+        raw = str(user_text or "")
+        if not raw:
+            return raw
+
+        color = self._skill_reference_display_color
+
+        # Map known skills so a slash reference resolves to a stable label.
+        skill_by_token: Dict[str, str] = {}
+        try:
+            for s in self.skills or []:
+                sid = str(getattr(s, "skill_id", "")).strip()
+                sname = str(getattr(s, "name", "")).strip()
+                if sid:
+                    skill_by_token[sid.lower()] = sid
+                if sname:
+                    skill_by_token[sname.lower()] = sid or sname
+        except Exception:
+            skill_by_token = {}
+
+        def _slash_skill(m: "re.Match[str]") -> str:
+            token = (m.group(1) or "").strip()
+            label = skill_by_token.get(token.lower(), token)
+            return color(f"[skill: {label}]")
+
+        def _slash_mcp(m: "re.Match[str]") -> str:
+            srv = (m.group(1) or "").strip()
+            name = (m.group(2) or "").strip()
+            return color(f"[mcp: {srv}/{name}]")
+
+        def _bracket(m: "re.Match[str]") -> str:
+            return color(m.group(0))
+
+        out = raw
+        # Existing GUI bracket pills -> just colorize.
+        out = re.sub(
+            r"\[skill:\s*[^\]\r\n]+?\s*\]",
+            _bracket,
+            out,
+            flags=re.IGNORECASE,
+        )
+        out = re.sub(
+            r"\[mcp\s+(?:tool|prompt):\s*[^\]\r\n]+?\s*\]",
+            _bracket,
+            out,
+            flags=re.IGNORECASE,
+        )
+        # Legacy slash forms -> convert + colorize.
+        out = re.sub(
+            r"(?<!\S)/mcp/([^\s/]+)/([^\s\]]+)",
+            _slash_mcp,
+            out,
+            flags=re.IGNORECASE,
+        )
+        out = re.sub(
+            r"(?<!\S)/skills/([^\s/]+)",
+            _slash_skill,
+            out,
+            flags=re.IGNORECASE,
+        )
+        return out
+
     def _format_user_chat_display_message(self, user_text: str) -> str:
-        return self._format_chat_message_with_wrap("›", user_text, colored_text=False)
+        decorated = self._normalize_reference_pills_for_display(user_text)
+        # ``colored_text=True`` so the pill ANSI sequences survive the
+        # width-aware wrapper (the plain wrapper would miscount them).
+        return self._format_chat_message_with_wrap("›", decorated, colored_text=True)
 
     def _format_assistant_chat_display_message(self, assistant_text: str) -> str:
         return self._format_chat_message_with_wrap("•", assistant_text, colored_text=True)
@@ -5486,8 +5564,18 @@ class Agent:
         raw = (user_text or "").strip()
         if not raw:
             return None
+        # Accept both the legacy slash form (``/skills/<name>``) and the
+        # unified inline-pill form shared with the GUI (``[skill: <name>]``).
+        # The GUI composes skill references as ``[skill: name]`` markers, so
+        # the backend must recognise that form too — otherwise GUI skill
+        # references are never matched and the prompt is never injected
+        # (the model is forced to call ``request_skill_prompt`` instead).
         matches = list(
-            re.finditer(r"(?<!\S)/skills/([^\s/]+)", raw, flags=re.IGNORECASE)
+            re.finditer(
+                r"(?<!\S)/skills/([^\s/]+)|\[skill:\s*([^\]\r\n]+?)\s*\]",
+                raw,
+                flags=re.IGNORECASE,
+            )
         )
         if not matches:
             return None
@@ -5506,7 +5594,7 @@ class Agent:
         pieces: List[str] = []
         cursor = 0
         for m in matches:
-            token_l = (m.group(1) or "").strip().lower()
+            token_l = (m.group(1) or m.group(2) or "").strip().lower()
             matched = skill_by_token.get(token_l)
             if matched:
                 sid_l = str(matched.get("skill_id", "")).strip().lower()
@@ -5519,7 +5607,7 @@ class Agent:
             start, end = m.start(), m.end()
             if start < cursor:
                 continue
-            token_l = (m.group(1) or "").strip().lower()
+            token_l = (m.group(1) or m.group(2) or "").strip().lower()
             if token_l not in skill_by_token:
                 continue
             pieces.append(raw[cursor:start])
@@ -5537,7 +5625,19 @@ class Agent:
         raw = (user_text or "").strip()
         if not raw:
             return None
-        matches = list(re.finditer(r"(?<!\S)/mcp/([^\s/]+)/([^\s]+)", raw, flags=re.IGNORECASE))
+        # Accept the legacy slash form (``/mcp/<server>/<name>``) and the
+        # unified inline-pill form shared with the GUI
+        # (``[mcp tool: <server>/<name>]`` and ``[mcp prompt: ...]``). The
+        # GUI emits the bracket form, so recognising it here is what makes
+        # GUI-side MCP references actually resolve and inject.
+        matches = list(
+            re.finditer(
+                r"(?<!\S)/mcp/([^\s/]+)/([^\s]+)"
+                r"|\[mcp\s+(?:tool|prompt):\s*([^\]/\r\n]+?)\s*/\s*([^\]\r\n]+?)\s*\]",
+                raw,
+                flags=re.IGNORECASE,
+            )
+        )
         if not matches:
             return None
 
@@ -5557,8 +5657,9 @@ class Agent:
         pieces: List[str] = []
         cursor = 0
         for m in matches:
-            server_l = (m.group(1) or "").strip().lower()
-            target = str(m.group(2) or "").strip()
+            # Slash form populates groups 1/2; bracket form populates 3/4.
+            server_l = (m.group(1) or m.group(3) or "").strip().lower()
+            target = str(m.group(2) or m.group(4) or "").strip()
             if not server_l or not target:
                 continue
             srv = server_names.get(server_l)
