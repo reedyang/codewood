@@ -216,8 +216,19 @@ class WorkspaceStateManager:
                 ),
             }
 
-    def save_current_workspace_position(self) -> None:
-        self._agent._sync_active_chat_messages()
+    def save_current_workspace_position(self, sync_messages: bool = True) -> None:
+        # ``sync_messages`` flushes the calling thread's live session
+        # (``active_chat_id`` + ``conversation_history``) into the chat record
+        # before saving the workspace position. This is ONLY safe while the
+        # session and the workspace globals still agree on the same workspace.
+        # After a workspace switch has already swapped the globals to the target
+        # workspace the session may still carry the *previous* chat's id/history
+        # (the new workspace's active chat is not bound until ``_activate_chat``
+        # runs later); syncing then would write the carried-over history into a
+        # same-id chat of the target workspace, duplicating messages across
+        # workspaces. The post-apply caller passes ``sync_messages=False``.
+        if sync_messages:
+            self._agent._sync_active_chat_messages()
         if not hasattr(self._agent, "_workspaces_state"):
             return
         workspaces = self._agent._workspaces_state.setdefault("workspaces", {})

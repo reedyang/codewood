@@ -1,7 +1,42 @@
 import os
 import unittest
 
+from src.ai.ai_provider_clients import _build_openai_payload
 from src.core.config.config_env import resolve_env_placeholder, resolve_string_values_in_data
+
+
+def _payload(reasoning_effort):
+    return _build_openai_payload(
+        api_kind="chat",
+        model_name="m",
+        messages=[{"role": "user", "content": "hi"}],
+        stream=True,
+        image_data=None,
+        image_user_idx=None,
+        image_user_text="",
+        session_summary_mode=False,
+        memory_query_expansion_mode=False,
+        additional_drop_params=[],
+        tool_schemas=None,
+        tool_choice=None,
+        force_disable_thinking=False,
+        reasoning_effort=reasoning_effort,
+    )
+
+
+class ReasoningEffortPayloadTests(unittest.TestCase):
+    def test_single_level_string_is_sent_lowercased(self):
+        payload = _payload("High")
+        self.assertEqual(payload.get("reasoning_effort"), "high")
+
+    def test_catalog_list_is_omitted_not_serialized(self):
+        # The catalog stores supported levels as a list; it must never be sent
+        # as its repr (``"['low', 'high']"``) which the server rejects (400).
+        payload = _payload(["low", "high"])
+        self.assertNotIn("reasoning_effort", payload)
+
+    def test_empty_value_is_omitted(self):
+        self.assertNotIn("reasoning_effort", _payload(""))
 
 
 class ResolveEnvPlaceholderTests(unittest.TestCase):

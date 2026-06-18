@@ -209,7 +209,10 @@ def workspace_create_command(agent: Any, arg_text: str) -> str:
     agent._save_current_workspace_position()
     agent._apply_workspace_entry(workspaces[workspace_id], agent.work_directory)
     agent._refresh_workspace_runtime()
-    agent._save_current_workspace_position()
+    # Post-apply: globals point at the new workspace but the session still
+    # carries the previous chat. Save position metadata only (see
+    # ``workspace_switch_command``).
+    agent._save_current_workspace_position(sync_messages=False)
 
     return (
         _t(agent, "workspace.create.success", name=name, workspace_id=workspace_id, root=root, storage=storage)
@@ -226,7 +229,12 @@ def workspace_switch_command(agent: Any, selector: str) -> str:
     agent._save_current_workspace_position()
     agent._apply_workspace_entry(entry, agent.work_directory)
     agent._refresh_workspace_runtime()
-    agent._save_current_workspace_position()
+    # Globals now point at the target workspace, but the session still carries
+    # the previous chat's id/history (its active chat is bound later by
+    # ``_activate_chat``). Persist only the position metadata here; syncing
+    # messages would duplicate the previous chat's history into a same-id chat
+    # of the target workspace.
+    agent._save_current_workspace_position(sync_messages=False)
     return (
         _t(agent, "workspace.switch.success", workspace_name=agent.workspace_name, work_directory=agent.work_directory)
     )
@@ -370,7 +378,9 @@ def workspace_delete_command(agent: Any, arg_text: str) -> str:
         if isinstance(workspaces, dict):
             workspaces[default_workspace_id] = default_entry
         agent._apply_workspace_entry(default_entry, agent.work_directory)
-        agent._save_current_workspace_position()
+        # Post-apply: session still carries the deleted workspace's chat; save
+        # position metadata only (see ``workspace_switch_command``).
+        agent._save_current_workspace_position(sync_messages=False)
         agent._refresh_workspace_runtime()
     else:
         agent._save_workspace_state()

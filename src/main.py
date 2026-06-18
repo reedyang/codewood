@@ -511,7 +511,10 @@ def _apply_startup_workspace(agent: Any, selector: str | None) -> tuple[bool, st
     agent._save_current_workspace_position()
     agent._apply_workspace_entry(entry, agent.work_directory)
     agent._refresh_workspace_runtime()
-    agent._save_current_workspace_position()
+    # Post-apply: globals point at the new workspace but the session still
+    # carries the previous chat; save position metadata only to avoid
+    # duplicating its history into a same-id chat of the new workspace.
+    agent._save_current_workspace_position(sync_messages=False)
     return True, None
 
 

@@ -1234,7 +1234,13 @@ def _build_openai_payload(
     reasoning_effort: str = "",
 ) -> Dict[str, Any]:
     tools_payload = _normalize_openai_tool_schemas(tool_schemas, api_kind=api_kind)
-    reasoning_effort = str(reasoning_effort or "").strip()
+    # A list/tuple here is the model catalog's "supported levels" metadata, not
+    # a chosen level; the wire API only accepts a single level string, so treat
+    # a collection as "no selection" rather than serializing its repr.
+    if isinstance(reasoning_effort, (list, tuple, set)):
+        reasoning_effort = ""
+    else:
+        reasoning_effort = str(reasoning_effort or "").strip()
     tool_choice_payload = _normalize_openai_tool_choice(tool_choice, api_kind=api_kind)
 
     if api_kind == "responses":
@@ -1744,7 +1750,18 @@ def _call_with_openai_compatible(
     additional_drop_params = _normalize_additional_drop_params(
         conf.get("additional_drop_params")
     )
-    reasoning_effort = str(conf.get("reasoning_effort") or "").strip()
+    # ``reasoning_effort`` in the model catalog is a LIST of the levels a model
+    # supports (e.g. ``['low','high']``), used to populate the picker. The wire
+    # API only accepts a single level string ('low'/'medium'/'high'). When the
+    # turn carries an explicitly-chosen single level it is a string and is sent
+    # as-is; if it is still the catalog list (no explicit selection), coerce to
+    # "" so we omit the field rather than serializing ``"['low', 'high']"`` and
+    # tripping the server's literal validation (HTTP 400).
+    _reasoning_raw = conf.get("reasoning_effort")
+    if isinstance(_reasoning_raw, (list, tuple, set)):
+        reasoning_effort = ""
+    else:
+        reasoning_effort = str(_reasoning_raw or "").strip()
     api_kinds = _openai_api_order_for_mode(api_mode, str(base_url or ""))
     _OPENAI_ROUTE_LOG.info(
         "openai-route dispatch model=%s api_mode=%s api_order=%s base_url=%s",
