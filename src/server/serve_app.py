@@ -1610,6 +1610,39 @@ class ServeApp:
         except Exception:
             return False
 
+    def search_workspace_files(
+        self, query: str, workspace_id: str = "", limit: int = 10
+    ) -> Dict[str, Any]:
+        """Filename search for the GUI ``@`` quick file-reference dropdown.
+
+        Returns up to ``limit`` workspace-relative paths whose name matches
+        ``query`` (case-insensitive). ``query`` may be empty to surface the
+        shallowest files right after the user types a bare ``@``.
+        """
+        try:
+            from ..tools.project_context_index import search_workspace_files
+        except Exception:
+            return {"ok": False, "candidates": []}
+        root = ""
+        wsid = str(workspace_id or "").strip()
+        if wsid:
+            root = self._resolve_workspace_root(wsid) or ""
+        if not root:
+            root = str(getattr(self.agent, "workspace_root", "") or "")
+        if not root:
+            return {"ok": False, "candidates": []}
+        try:
+            cap = max(1, min(50, int(limit or 10)))
+        except Exception:
+            cap = 10
+        try:
+            from pathlib import Path as _Path
+
+            candidates = search_workspace_files(_Path(root), str(query or ""), cap)
+        except Exception:
+            candidates = []
+        return {"ok": True, "candidates": candidates}
+
     def get_mcp_overview(self) -> Dict[str, Any]:
         """Return a snapshot of every configured MCP server for the GUI page.
 
@@ -2775,6 +2808,16 @@ def _make_handler(app: ServeApp):
             if path == "/set-plan-mode":
                 ok = app.set_plan_mode(bool(body.get("enabled")))
                 self._send_json(200 if ok else 400, {"ok": ok})
+                return
+            if path == "/search-workspace-files":
+                query = str(body.get("query") or "")[:512]
+                wsid = str(body.get("workspaceId") or "")[:128]
+                try:
+                    limit = int(body.get("limit") or 10)
+                except Exception:
+                    limit = 10
+                result = app.search_workspace_files(query, wsid, limit)
+                self._send_json(200 if result.get("ok") else 400, result)
                 return
             if path == "/set-mcp-server-enabled":
                 srv = str(body.get("name") or "")[:256]
