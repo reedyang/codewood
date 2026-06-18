@@ -72,6 +72,14 @@ export const MODEL_PRESETS: ModelPreset[] = [
     kind: "openai",
   },
   {
+    id: "moonshot",
+    label: "月之暗面 (Moonshot)",
+    provider: "Moonshot",
+    base_url: "https://api.moonshot.cn/v1",
+    api_mode: "chat",
+    kind: "openai",
+  },
+  {
     id: "ollama",
     label: "Ollama",
     provider: "Ollama",
