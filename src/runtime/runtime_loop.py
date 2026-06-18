@@ -1509,6 +1509,25 @@ def build_ask_more_info_prompt_block(
     return "\n".join(lines)
 
 
+def build_ask_more_info_header_block(agent: Any, question: str) -> str:
+    """Question header only — no numbered option list or numbered-prompt hint.
+
+    Used by the interactive arrow-key selector, which renders the options
+    itself. Printing the full numbered block there too would show the
+    options twice (a non-selectable list above the live selector).
+    """
+    from ..core.localization import translate as _translate
+
+    lang = getattr(agent, "display_language", None) or "en"
+    t = lambda key, fallback=None, **kwargs: _translate(key, lang, fallback, **kwargs)
+    return "\n".join(
+        [
+            t("runtime.ask_more_info.required"),
+            t("runtime.ask_more_info.question", question=str(question or "")),
+        ]
+    )
+
+
 def _solicit_ask_more_info_answer(
     agent: Any,
     question: str,
@@ -1597,14 +1616,13 @@ def _solicit_ask_more_info_answer(
     input_handler = getattr(agent, "input_handler", None)
     interactive = getattr(input_handler, "prompt_ask_more_info_selection", None)
     if callable(interactive) and _ask_more_info_interactive_supported(agent):
-        # Echo the question/options context first so it stays in the
-        # transcript after the interactive widget tears down.
+        # Echo only the question header first so it stays in the transcript
+        # after the interactive widget tears down. The option list itself is
+        # rendered live by the selector, so printing the full numbered block
+        # here would show the options twice (a stale, non-selectable copy
+        # above the active selector).
         try:
-            print(
-                build_ask_more_info_prompt_block(
-                    agent, question, visible_options, multi_select
-                )
-            )
+            print(build_ask_more_info_header_block(agent, question))
         except Exception:
             pass
         try:

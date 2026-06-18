@@ -15,6 +15,7 @@ from src.runtime.runtime_loop import (
     _parse_multi_select_line,
     _solicit_ask_more_info_answer,
     build_ask_more_info_prompt_block,
+    build_ask_more_info_header_block,
     _render_aborted_direct_shell_feedback,
     _refresh_context_usage_after_task_boundary,
     _resolve_worked_summary_terminal_width,
@@ -1831,6 +1832,15 @@ class BuildAskMoreInfoPromptBlockTests(unittest.TestCase):
         self.assertIn("Anything?", block)
         # Only the trailing "Other" option remains.
         self.assertIn("1.", block)
+
+    def test_header_block_omits_numbered_options(self):
+        # The interactive selector renders the options itself, so the echoed
+        # header must NOT list them again (otherwise the options show twice:
+        # a stale non-selectable copy above the live selector).
+        header = build_ask_more_info_header_block(self._agent(), "Pick env?")
+        self.assertIn("Pick env?", header)
+        self.assertNotIn("1. Prod", header)
+        self.assertNotIn("2.", header)
 
 
 class SolicitAskMoreInfoAnswerTests(unittest.TestCase):
