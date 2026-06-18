@@ -325,6 +325,12 @@ export function ChatView() {
   };
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const prevHeightRef = useRef<number | null>(null);
+  // Whether the transcript should auto-stick to the bottom on live updates.
+  // Starts true (a fresh/switched chat opens pinned to the latest message)
+  // and flips off the moment the user scrolls away from the bottom, so an
+  // in-flight streaming turn can't yank them back down while they read
+  // earlier messages. Re-pins as soon as they scroll back to the bottom.
+  const stickToBottomRef = useRef<boolean>(true);
 
   // Sync the agent's sticky plan-mode flag with the active chat's mode so
   // that switching back into a chat that was last left in Plan mode keeps
@@ -363,10 +369,12 @@ export function ChatView() {
     },
   };
 
-  // Live updates and chat switches stick to the bottom.
+  // Live updates stick to the bottom ONLY while the user is already pinned
+  // there. If they scrolled up to read earlier messages, streaming tokens
+  // and the per-second timer tick must leave their viewport alone.
   useEffect(() => {
     const el = scrollRef.current;
-    if (el) {
+    if (el && stickToBottomRef.current) {
       el.scrollTop = el.scrollHeight;
     }
   }, [turns, now]);
@@ -379,16 +387,30 @@ export function ChatView() {
       return;
     }
     if (prevHeightRef.current != null) {
+      // Older page prepended: preserve the viewport (the user is reading
+      // up, so keep them away from the bottom — don't re-pin).
       el.scrollTop = el.scrollHeight - prevHeightRef.current;
       prevHeightRef.current = null;
     } else {
+      // Initial load / chat switch: jump to the latest message and re-pin.
       el.scrollTop = el.scrollHeight;
+      stickToBottomRef.current = true;
     }
   }, [historyTurns]);
 
   const onScroll = () => {
     const el = scrollRef.current;
-    if (!el || historyLoading || historyStart <= 0) {
+    if (!el) {
+      return;
+    }
+    // Re-evaluate whether the user is pinned to the bottom. A small
+    // threshold tolerates sub-pixel rounding and the in-flight growth of
+    // the streaming turn. Once unpinned, live updates stop following.
+    const distanceFromBottom =
+      el.scrollHeight - el.scrollTop - el.clientHeight;
+    stickToBottomRef.current = distanceFromBottom <= 80;
+
+    if (historyLoading || historyStart <= 0) {
       return;
     }
     if (el.scrollTop < 80) {
