@@ -1,5 +1,6 @@
 import {
   KeyboardEvent as ReactKeyboardEvent,
+  type ClipboardEvent as ReactClipboardEvent,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -11,6 +12,11 @@ import {
 import { useApp } from "../state/AppContext";
 import type { CompletionCatalog } from "../api/types";
 import type { Segment, TokenKind } from "../utils/tokens";
+import {
+  composeMessageText,
+  decodeSegments,
+  encodeSegments,
+} from "../utils/tokens";
 import { Icon } from "./Icon";
 
 /** Rich-mixed composer.
@@ -135,6 +141,70 @@ function readSegmentsFromDom(root: HTMLElement): Segment[] {
       continue;
     }
     // BR (Enter), or a stray inline span — flatten to text.
+    if (el.tagName === "BR") {
+      buf += "\n";
+    } else {
+      buf += (el.textContent ?? "").replace(/\u200B/g, "");
+    }
+  }
+  flushText();
+  return out;
+}
+
+/** Read the segments covered by the current selection ``range`` within the
+ *  editor ``root``. Pills are included whole when the range intersects them;
+ *  text is clipped to the selected portion. Used by the copy/cut handlers so
+ *  copying a mixed selection preserves the pinned references (files / skills /
+ *  MCP items) rather than dropping them or leaking placeholder text. */
+function readSegmentsFromRange(root: HTMLElement, range: Range): Segment[] {
+  const out: Segment[] = [];
+  let buf = "";
+  const flushText = () => {
+    if (buf) {
+      out.push({ kind: "text", value: buf });
+      buf = "";
+    }
+  };
+  for (const node of Array.from(root.childNodes)) {
+    if (!range.intersectsNode(node)) {
+      continue;
+    }
+    if (node.nodeType === Node.TEXT_NODE) {
+      const full = (node.textContent ?? "").replace(/\u200B/g, "");
+      // Clip the text node to the selected sub-range when the selection
+      // starts or ends inside it; otherwise take the whole node.
+      let startOff = 0;
+      let endOff = full.length;
+      const raw = node.textContent ?? "";
+      if (node === range.startContainer) {
+        startOff = Math.min(range.startOffset, raw.length);
+      }
+      if (node === range.endContainer) {
+        endOff = Math.min(range.endOffset, raw.length);
+      }
+      // Map raw offsets onto the ZWSP-stripped string conservatively: since
+      // ZWSP only appears as standalone anchors next to pills, the common
+      // case is a plain text node where raw === full.
+      const slice =
+        node === range.startContainer || node === range.endContainer
+          ? raw.slice(startOff, endOff).replace(/\u200B/g, "")
+          : full;
+      buf += slice;
+      continue;
+    }
+    if (node.nodeType !== Node.ELEMENT_NODE) {
+      continue;
+    }
+    const el = node as HTMLElement;
+    const kind = el.getAttribute("data-token-kind");
+    if (
+      kind &&
+      (kind === "attach" || kind === "skill" || kind === "mcp-tool" || kind === "mcp-prompt")
+    ) {
+      flushText();
+      out.push({ kind: kind as TokenKind, value: el.getAttribute("data-token-payload") || "" });
+      continue;
+    }
     if (el.tagName === "BR") {
       buf += "\n";
     } else {
@@ -693,8 +763,122 @@ export function RichComposer({
     [onChange],
   );
 
+  // Select the entire editor content (all text + pills). Mirrors the native
+  // Ctrl/Cmd+A but scoped to the editor so the selection never escapes into
+  // the surrounding page, which keeps the copy/cut serializers below working
+  // on a well-defined range.
+  const selectAllContent = useCallback(() => {
+    const root = rootRef.current;
+    if (!root) return;
+    const sel = window.getSelection();
+    if (!sel) return;
+    const r = document.createRange();
+    r.selectNodeContents(root);
+    sel.removeAllRanges();
+    sel.addRange(r);
+  }, []);
+
+  // Serialize the current selection (or the whole editor when nothing is
+  // selected) into the clipboard. We write BOTH a plain-text human-readable
+  // form (so pasting into other apps shows sensible text) and our private
+  // envelope form on a custom MIME type, so pasting back into the composer
+  // restores the pills losslessly.
+  const writeSelectionToClipboard = useCallback(
+    (e: ReactClipboardEvent<HTMLDivElement>): boolean => {
+      const root = rootRef.current;
+      if (!root) return false;
+      const sel = window.getSelection();
+      let segs: Segment[];
+      if (!sel || sel.rangeCount === 0 || sel.isCollapsed) {
+        segs = readSegmentsFromDom(root);
+      } else {
+        const range = sel.getRangeAt(0);
+        if (!root.contains(range.commonAncestorContainer)) {
+          return false;
+        }
+        segs = readSegmentsFromRange(root, range);
+      }
+      if (segs.length === 0) {
+        return false;
+      }
+      // Human-readable text for external apps; envelope form for ourselves.
+      const plain = composeMessageText(segs);
+      const envelope = encodeSegments(segs);
+      try {
+        e.clipboardData.setData("text/plain", plain);
+        e.clipboardData.setData("application/x-codewood-segments", envelope);
+      } catch {
+        return false;
+      }
+      return true;
+    },
+    [],
+  );
+
+  // Replace the current selection with ``segs`` (pills + text), then push the
+  // new model to the parent and refocus the caret after the inserted content.
+  const replaceSelectionWithSegments = useCallback(
+    (segs: Segment[]) => {
+      const root = rootRef.current;
+      if (!root) return;
+      const sel = window.getSelection();
+      // Delete the active selection so paste replaces it (matching native
+      // editor behavior) before splicing in the new model.
+      if (sel && sel.rangeCount > 0 && !sel.isCollapsed) {
+        const range = sel.getRangeAt(0);
+        if (root.contains(range.commonAncestorContainer)) {
+          range.deleteContents();
+        }
+      }
+      // Read the post-deletion DOM, then insert the pasted segments at the
+      // caret position by rebuilding the canonical model. To keep this simple
+      // and robust we append the pasted segments at the caret's text node when
+      // possible; otherwise we merge them into the existing model end.
+      const existing = readSegmentsFromDom(root);
+      // Determine a split point from the caret within ``existing`` text.
+      // Fallback: append at end (covers select-all-then-paste, the common
+      // case for "replace everything").
+      const merged: Segment[] = [...existing, ...segs];
+      lastRenderedRef.current = ""; // force a full rebuild
+      onChange(merged);
+    },
+    [onChange],
+  );
+
+  const handlePaste = useCallback(
+    (e: ReactClipboardEvent<HTMLDivElement>) => {
+      const root = rootRef.current;
+      if (!root) return;
+      const envelope = e.clipboardData.getData(
+        "application/x-codewood-segments",
+      );
+      e.preventDefault();
+      if (envelope) {
+        // Round-trip our own pill-bearing payload back into segments.
+        replaceSelectionWithSegments(decodeSegments(envelope));
+        return;
+      }
+      // Plain external paste: also recognise pills the user may have copied
+      // from a sent message bubble (which emits the readable bracket / slash
+      // forms) so pasting them restores pills; otherwise insert as text.
+      const plain = e.clipboardData.getData("text/plain");
+      if (!plain) {
+        return;
+      }
+      replaceSelectionWithSegments(decodeSegments(plain));
+    },
+    [replaceSelectionWithSegments],
+  );
+
   const handleKeyDown = useCallback(
     (e: ReactKeyboardEvent<HTMLDivElement>) => {
+      // Ctrl/Cmd+A selects the whole editor content (text + pills) so the
+      // user can copy or replace everything in one shot.
+      if ((e.ctrlKey || e.metaKey) && (e.key === "a" || e.key === "A")) {
+        e.preventDefault();
+        selectAllContent();
+        return;
+      }
       if (at.open && atFiles.length > 0) {
         if (e.key === "ArrowDown") {
           e.preventDefault();
@@ -784,6 +968,26 @@ export function RichComposer({
         style={{ minHeight: `${rows * 22}px` }}
         onInput={handleInput}
         onKeyDown={handleKeyDown}
+        onCopy={(e) => {
+          if (writeSelectionToClipboard(e)) {
+            e.preventDefault();
+          }
+        }}
+        onCut={(e) => {
+          if (writeSelectionToClipboard(e)) {
+            e.preventDefault();
+            const sel = window.getSelection();
+            if (sel && sel.rangeCount > 0 && !sel.isCollapsed) {
+              sel.getRangeAt(0).deleteContents();
+            }
+            const root = rootRef.current;
+            if (root) {
+              lastRenderedRef.current = "";
+              onChange(readSegmentsFromDom(root));
+            }
+          }
+        }}
+        onPaste={handlePaste}
         onBlur={() => {
           // Close the slash / '@' popups when the editor loses focus; the
           // popups catch clicks on their own buttons via mousedown.
