@@ -1,4 +1,7 @@
 :root {
+  /* Hint native form controls (number inputs, spinners, etc.) to render with
+     light-theme intrinsics so their text/affordances stay legible. */
+  color-scheme: light;
   /* Light theme (per design image 4). */
   --bg: #ffffff;
   --bg-elevated: #ffffff;
@@ -26,6 +29,11 @@
 }
 
 [data-theme="dark"] {
+  /* Make native form controls (the number inputs on the General settings
+     page, their spin buttons, etc.) render with dark-theme intrinsics so the
+     typed value uses light text instead of the unreadable default dark glyphs
+     against the dark ``--bg-input`` field. */
+  color-scheme: dark;
   /* Dark theme (per design image 1). */
   --bg: #181818;
   --bg-elevated: #181818;
@@ -1536,14 +1544,11 @@ body.resizing-x {
   font-weight: 600;
 }
 
-/* General settings page: top-align the label with the control's first row.
-   The control's input has 6px vertical padding + 1px border, so nudge the
-   label down to baseline-match it. */
+/* General settings page: top-align the setting name with the right-side
+   control. Both the label and the control's first row start at the row's top
+   edge, so no baseline nudge is applied to the label. */
 .settings-page .setting-row {
   align-items: flex-start;
-}
-.settings-page .setting-row > label {
-  padding-top: 7px;
 }
 
 .setting-row .select {
