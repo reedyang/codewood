@@ -1405,17 +1405,25 @@ class FileCompleter(Completer):
             if at_idx >= 0:
                 file_matches = self._get_at_file_completions(at_part)
                 if file_matches:
-                    # Replace the whole "@partial" fragment with the path.
+                    # Replace the whole "@partial" fragment with "@<relpath> ".
+                    # Keeping the leading "@" makes the inserted token read as a
+                    # deliberate file reference (not a bare path), and the
+                    # trailing space ends the "@..." fragment so the completion
+                    # menu dismisses itself instead of lingering.
                     spos = -(len(at_part) + 1)
                     seen = set()
                     for mc in file_matches:
                         if mc in seen:
                             continue
                         seen.add(mc)
+                        leaf = self._path_leaf_name(mc)
+                        # Display the leaf prominently plus its relative path
+                        # for disambiguation when multiple files share a name.
+                        display = leaf if leaf == mc else f"{leaf}  ({mc})"
                         yield Completion(
-                            mc,
+                            f"{mc} ",
                             start_position=spos,
-                            display=self._path_leaf_name(mc),
+                            display=display,
                         )
                     return
                 # A bare "@" with no matches yet: nothing to show, but don't

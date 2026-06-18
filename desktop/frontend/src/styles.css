@@ -2148,6 +2148,28 @@ body.resizing-x {
   overflow-y: auto;
 }
 
+/* Stack label-over-control in the sub-agent editor and let text inputs /
+   textareas (Name, Description, Instructions, …) span the full row width. */
+.modal.subagent-editor .setting-row {
+  align-items: flex-start;
+  flex-direction: column;
+  gap: 6px;
+}
+.modal.subagent-editor .setting-row > label {
+  font-size: 12px;
+  font-weight: 600;
+}
+.modal.subagent-editor .setting-row > .input,
+.modal.subagent-editor .setting-row > textarea.input {
+  width: 100%;
+  box-sizing: border-box;
+}
+/* Keep the narrow numeric field (max rounds) compact even in the full-width
+   column layout. */
+.modal.subagent-editor .setting-row > .input.input-narrow {
+  width: auto;
+}
+
 .mcp-prompt-chip {
   padding: 4px 10px;
   border: 1px dashed var(--border);
@@ -2176,6 +2198,8 @@ body.resizing-x {
 .composer-plus-menu .icon-btn.round {
   width: 30px;
   height: 30px;
+  /* Borderless "+" in the composer toolbar (matches the minimal composer look). */
+  border: none;
 }
 
 .composer-plus-menu .dropdown-menu {
@@ -3040,14 +3064,23 @@ h6.md-h {
   cursor: not-allowed;
 }
 
-/* Interrupt: no background, just a white square (the stop glyph) inside a
-   subtle gray-bordered box. */
+/* Interrupt: no button border at all — just the stop-square glyph itself.
+   The square is doubled in size (see stop.svg) and, because the icon is drawn
+   as a CSS mask, we tint it per theme. In dark mode the accent fill reads
+   clearly; in light mode we render a gray square so it stands out against the
+   light composer background (the "gray-bordered square" effect). */
 .send-btn.is-stop {
   width: 26px;
   height: 26px;
-  border: 1px solid var(--border);
+  border: none;
   border-radius: 6px;
   background: transparent;
+  /* Light theme default: gray square so it reads as a bordered glyph against
+     the light composer background. */
+  color: #6b7280;
+}
+
+[data-theme="dark"] .send-btn.is-stop {
   color: #ffffff;
 }
 
