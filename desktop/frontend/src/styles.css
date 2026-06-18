@@ -1536,6 +1536,16 @@ body.resizing-x {
   font-weight: 600;
 }
 
+/* General settings page: top-align the label with the control's first row.
+   The control's input has 6px vertical padding + 1px border, so nudge the
+   label down to baseline-match it. */
+.settings-page .setting-row {
+  align-items: flex-start;
+}
+.settings-page .setting-row > label {
+  padding-top: 7px;
+}
+
 .setting-row .select {
   flex: 0 0 240px;
 }
@@ -1562,6 +1572,7 @@ body.resizing-x {
   border: 1px solid var(--border);
   border-radius: 6px;
   background: var(--bg-input);
+  color: var(--text);
   font-size: 14px;
   text-align: right;
 }
