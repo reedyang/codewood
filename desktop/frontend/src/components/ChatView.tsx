@@ -641,14 +641,16 @@ export function ChatView() {
         <AskMoreInfoPanel />
         {(() => {
           // The Execute-now button represents "carry out the plan we just
-          // drafted". Gate it on the actual plan rather than the composer's
-          // mode so:
-          //   * Switching the composer to Agent mode after seeing the plan
-          //     does NOT make the button vanish — the plan is still the
-          //     latest thing the model produced and the user might still
-          //     want to advance it.
-          //   * Chats with no plan (or a fully-completed plan) never see
-          //     the button, even in Plan mode.
+          // drafted" and is a PLAN-MODE-only affordance: in Plan mode the
+          // agent deliberately pauses after drafting a plan and waits for
+          // the user to confirm. In Agent (non-Plan) mode the agent never
+          // pauses — it executes the plan inline during the same turn — so
+          // an unfinished plan left behind by an idle Agent-mode turn is
+          // just an artifact and must NOT surface an Execute-now button.
+          // Gating on ``chatMode`` keeps the two flows distinct:
+          //   * Agent mode: plans run directly, button never shows.
+          //   * Plan mode: button shows once the plan turn has closed and
+          //     there is still an unfinished step to advance.
           // We also wait until the streaming turn has fully closed so the
           // button doesn't appear before the rendered plan content lands.
           //
@@ -657,6 +659,9 @@ export function ChatView() {
           // turn — the presence of an unfinished plan in ``state`` plus an
           // idle agent and at least one rendered turn is enough. We only
           // suppress the button while a LIVE turn is mid-stream.
+          if (chatMode !== "plan") {
+            return null;
+          }
           if (busy) {
             return null;
           }
