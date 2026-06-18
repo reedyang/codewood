@@ -130,6 +130,7 @@ interface AppContextValue {
   ) => Promise<{ ok: boolean; error?: string }>;
   deleteMcpServer: (name: string) => Promise<{ ok: boolean; error?: string }>;
   setPlanMode: (enabled: boolean) => Promise<boolean>;
+  searchWorkspaceFiles: (query: string, limit?: number) => Promise<string[]>;
   setExecutionPolicy: (policy: string) => Promise<void>;
   toggleWorkspaceExpanded: (id: string) => void;
   refreshWorkspaceChats: (id: string) => Promise<void>;
@@ -1321,6 +1322,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
     ) => client.updateMcpServer(originalName, name, config),
     deleteMcpServer: (name: string) => client.deleteMcpServer(name),
     setPlanMode: (enabled: boolean) => client.setPlanMode(enabled),
+    searchWorkspaceFiles: (query: string, limit = 10) =>
+      client.searchWorkspaceFiles(query, activeWorkspaceIdRef.current, limit),
     setExecutionPolicy,
     toggleWorkspaceExpanded,
     refreshWorkspaceChats,

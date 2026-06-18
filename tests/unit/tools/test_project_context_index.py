@@ -4,7 +4,10 @@ import unittest
 from pathlib import Path
 
 from src.agent import Agent
-from src.tools.project_context_index import ProjectContextIndex
+from src.tools.project_context_index import (
+    ProjectContextIndex,
+    search_workspace_files,
+)
 
 
 class _DummyProjectContextIndex:
@@ -54,5 +57,63 @@ class ProjectContextIndexTests(unittest.TestCase):
             bound_root, bound_storage = dummy._project_context_index.calls[0]
             self.assertEqual(bound_root.name, workspace_root.name)
             self.assertNotEqual(bound_root.name, work_directory.name)
-            self.assertEqual(bound_storage.name, "project_context_db")
+            self.assertEqual(bound_storage.name, "indexes")
             self.assertEqual(bound_storage.parent.name, workspace_config_dir.name)
+
+
+class SearchWorkspaceFilesTests(unittest.TestCase):
+    """Filename search backing the ``@`` quick file-reference feature."""
+
+    def _make_tree(self, root: Path) -> None:
+        (root / "src" / "components").mkdir(parents=True)
+        (root / "src" / "utils").mkdir(parents=True)
+        (root / "node_modules" / "pkg").mkdir(parents=True)
+        (root / ".git").mkdir(parents=True)
+        (root / "src" / "components" / "ChatView.tsx").write_text("x", encoding="utf-8")
+        (root / "src" / "utils" / "tokens.ts").write_text("x", encoding="utf-8")
+        (root / "src" / "main.py").write_text("x", encoding="utf-8")
+        (root / "README.md").write_text("x", encoding="utf-8")
+        (root / ".hidden").write_text("x", encoding="utf-8")
+        (root / "node_modules" / "pkg" / "index.js").write_text("x", encoding="utf-8")
+        (root / ".git" / "config").write_text("x", encoding="utf-8")
+
+    def test_matches_by_basename_and_excludes_noise_dirs(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            self._make_tree(root)
+            results = search_workspace_files(root, "chatview", 10)
+            self.assertIn("src/components/ChatView.tsx", results)
+            # Excluded directories and dotfiles never surface.
+            joined = "\n".join(results)
+            self.assertNotIn("node_modules", joined)
+            self.assertNotIn(".git", joined)
+
+    def test_empty_query_returns_candidates_capped(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            self._make_tree(root)
+            results = search_workspace_files(root, "", 2)
+            self.assertEqual(len(results), 2)
+
+    def test_dotfiles_are_skipped(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            self._make_tree(root)
+            results = search_workspace_files(root, "hidden", 10)
+            self.assertEqual(results, [])
+
+    def test_basename_prefix_ranks_above_substring(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "tokens.ts").write_text("x", encoding="utf-8")
+            (root / "my_tokens_helper.ts").write_text("x", encoding="utf-8")
+            results = search_workspace_files(root, "tokens", 10)
+            self.assertEqual(results[0], "tokens.ts")
+
+    def test_subsequence_fuzzy_fallback(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "ChatView.tsx").write_text("x", encoding="utf-8")
+            # "cvt" is a subsequence of "chatview.tsx".
+            results = search_workspace_files(root, "cvt", 10)
+            self.assertIn("ChatView.tsx", results)

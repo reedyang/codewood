@@ -353,6 +353,27 @@ export class ApiClient {
     return res.ok;
   }
 
+  async searchWorkspaceFiles(
+    query: string,
+    workspaceId?: string,
+    limit = 10,
+  ): Promise<string[]> {
+    try {
+      const res = await fetch(`${this.base}/search-workspace-files`, {
+        method: "POST",
+        headers: this.headers(),
+        body: JSON.stringify({ query, workspaceId: workspaceId ?? "", limit }),
+      });
+      if (!res.ok) return [];
+      const data = (await res.json()) as { candidates?: unknown };
+      return Array.isArray(data.candidates)
+        ? data.candidates.filter((c): c is string => typeof c === "string")
+        : [];
+    } catch {
+      return [];
+    }
+  }
+
   async getCompletionCatalog(): Promise<CompletionCatalog> {
     const empty: CompletionCatalog = { skills: [], mcpTools: [], mcpPrompts: [] };
     const res = await fetch(`${this.base}/completion-catalog`, {

@@ -443,3 +443,124 @@ class ProjectContextIndex:
             out["index_refresh"] = refresh_result
         return out
 
+# ---------------------------------------------------------------------------
+# Filename search for the ``@``-file-reference feature (TUI + GUI)
+# ---------------------------------------------------------------------------
+#
+# The ``@<name>`` quick file reference needs a *filename* lookup over ALL
+# workspace files (not just code files), independent of the symbol index
+# above. To keep typing responsive we cache the relative-path listing per
+# workspace root for a short TTL and re-walk only when it expires.
+
+_FILE_LISTING_TTL_SECONDS: float = 5.0
+_file_listing_cache: Dict[str, Tuple[float, List[str]]] = {}
+_file_listing_lock = threading.RLock()
+# Hard cap on how many files we keep cached so a huge monorepo can't blow up
+# memory; the cap is generous and only matters for pathological trees.
+_FILE_LISTING_MAX_FILES: int = 50000
+
+
+def _list_workspace_files(workspace_root: Path) -> List[str]:
+    """Return workspace-relative POSIX paths for all non-excluded files.
+
+    Cached per root for ``_FILE_LISTING_TTL_SECONDS`` so repeated keystrokes
+    while typing ``@name`` don't re-walk the tree each time.
+    """
+    root = Path(workspace_root).resolve()
+    key = str(root)
+    now = _now_ts()
+    with _file_listing_lock:
+        cached = _file_listing_cache.get(key)
+        if cached and (now - cached[0]) < _FILE_LISTING_TTL_SECONDS:
+            return cached[1]
+
+    rels: List[str] = []
+    if root.is_dir():
+        root_s = str(root)
+        truncated = False
+        for dirpath, dirnames, filenames in os.walk(root_s, topdown=True, followlinks=False):
+            dirnames[:] = [
+                d for d in dirnames if str(d or "").lower() not in _DEFAULT_EXCLUDE_DIRS
+            ]
+            for fn in filenames:
+                if str(fn or "").startswith("."):
+                    # Skip dotfiles; they are rarely the target of an @ pick
+                    # and add noise to candidate lists.
+                    continue
+                full = Path(dirpath) / str(fn)
+                try:
+                    rel = full.resolve().relative_to(root).as_posix()
+                except Exception:
+                    continue
+                rels.append(rel)
+                if len(rels) >= _FILE_LISTING_MAX_FILES:
+                    truncated = True
+                    break
+            if truncated:
+                break
+
+    with _file_listing_lock:
+        _file_listing_cache[key] = (now, rels)
+    return rels
+
+
+def _score_filename_match(query_l: str, rel: str) -> float:
+    """Score a relative path against a lowercase query for @ ranking.
+
+    Favours matches on the basename, then prefix matches, then substring,
+    then subsequence (fuzzy) matches. Shorter paths win ties so the closest
+    file surfaces first.
+    """
+    if not query_l:
+        # Empty query: rank purely by shallowness/length (used right after
+        # the bare ``@`` before the user types anything).
+        return 1.0 / (1.0 + len(rel))
+    rel_l = rel.lower()
+    base_l = rel_l.rsplit("/", 1)[-1]
+    score = 0.0
+    if base_l == query_l:
+        score += 100.0
+    elif base_l.startswith(query_l):
+        score += 60.0
+    elif query_l in base_l:
+        score += 40.0
+    if rel_l.startswith(query_l):
+        score += 20.0
+    elif query_l in rel_l:
+        score += 12.0
+    if score == 0.0:
+        # Subsequence (fuzzy) fallback: all query chars appear in order.
+        it = iter(rel_l)
+        if all(ch in it for ch in query_l):
+            score += 5.0
+        else:
+            return 0.0
+    # Prefer shorter / shallower paths on ties.
+    score += 1.0 / (1.0 + len(rel_l))
+    return score
+
+
+def search_workspace_files(
+    workspace_root: Path,
+    query: str,
+    max_results: int = 10,
+) -> List[str]:
+    """Return up to ``max_results`` workspace-relative paths matching ``query``.
+
+    Used by the ``@<name>`` quick file-reference autocompletion in both the
+    TUI and the GUI. ``query`` is the partial filename the user has typed
+    after ``@`` (may be empty to list the shallowest files). Matching is
+    case-insensitive and filename-focused.
+    """
+    cap = max(1, int(max_results or 10))
+    q_l = str(query or "").strip().lower()
+    files = _list_workspace_files(workspace_root)
+    scored: List[Tuple[float, str]] = []
+    for rel in files:
+        s = _score_filename_match(q_l, rel)
+        if s > 0.0:
+            scored.append((s, rel))
+    # Sort by score desc, then path asc for stable, predictable ordering.
+    scored.sort(key=lambda x: (-x[0], x[1]))
+    return [rel for _, rel in scored[:cap]]
+

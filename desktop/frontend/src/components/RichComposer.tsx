@@ -278,7 +278,7 @@ export function RichComposer({
   placeholder,
   rows = 3,
 }: RichComposerProps) {
-  const { getCompletionCatalog, t } = useApp();
+  const { getCompletionCatalog, searchWorkspaceFiles, t } = useApp();
   const rootRef = useRef<HTMLDivElement | null>(null);
   // Track which segments are currently in the DOM to avoid redundant rebuilds
   // (and the cursor jumps they cause) while the user is typing.
@@ -289,6 +289,18 @@ export function RichComposer({
     query: string;
     selected: number;
   }>({ open: false, query: "", selected: 0 });
+  // '@' quick file reference: a popup of workspace files filtered by the
+  // partial filename typed after '@'. Selecting one inserts an attachment
+  // pill — the same effect as the "Attach files" action.
+  const [at, setAt] = useState<{
+    open: boolean;
+    query: string;
+    selected: number;
+  }>({ open: false, query: "", selected: 0 });
+  const [atFiles, setAtFiles] = useState<string[]>([]);
+  // Monotonic token so a slow file-search response can't overwrite the
+  // results of a newer query.
+  const atQuerySeq = useRef<number>(0);
 
   // Load catalog once when the composer mounts and refresh it whenever the
   // user opens the slash menu so newly-added skills / reconnected MCP servers
@@ -470,6 +482,65 @@ export function RichComposer({
     return { open: true, query: upto.slice(slashAt + 1) };
   }, []);
 
+  // Mirror of ``computeSlashQuery`` for the ``@`` file-reference trigger.
+  // The boundary rules match: ``@`` opens the popup at the start of the
+  // text node, after whitespace, or right after a pill's ZWSP.
+  const computeAtQuery = useCallback((): { open: boolean; query: string } => {
+    const root = rootRef.current;
+    if (!root) return { open: false, query: "" };
+    const sel = window.getSelection();
+    if (!sel || sel.rangeCount === 0) return { open: false, query: "" };
+    const range = sel.getRangeAt(0);
+    const node = range.startContainer;
+    if (!root.contains(node)) return { open: false, query: "" };
+    if (node.nodeType !== Node.TEXT_NODE) {
+      return { open: false, query: "" };
+    }
+    const text = node.textContent ?? "";
+    const upto = text.slice(0, range.startOffset);
+    let atPos = -1;
+    for (let i = upto.length - 1; i >= 0; i -= 1) {
+      const ch = upto[i];
+      if (ch === "@") {
+        const prev = i === 0 ? "" : upto[i - 1];
+        if (
+          i === 0 ||
+          /\s/.test(prev) ||
+          prev === "\u200B" ||
+          (i === 0 && isPreviousSiblingPill(node))
+        ) {
+          atPos = i;
+        }
+        break;
+      }
+      // A space inside the partial filename ends the trigger; filenames
+      // with spaces aren't supported by the quick reference.
+      if (/\s/.test(ch) || ch === "\u200B" || ch === "@") {
+        break;
+      }
+    }
+    if (atPos < 0) {
+      return { open: false, query: "" };
+    }
+    return { open: true, query: upto.slice(atPos + 1) };
+  }, []);
+
+  // Debounced async fetch of file candidates whenever the '@' query changes.
+  useEffect(() => {
+    if (!at.open) {
+      return;
+    }
+    const seq = (atQuerySeq.current += 1);
+    const handle = window.setTimeout(() => {
+      void searchWorkspaceFiles(at.query, 10).then((files) => {
+        // Drop stale responses.
+        if (seq !== atQuerySeq.current) return;
+        setAtFiles(files);
+      });
+    }, 80);
+    return () => window.clearTimeout(handle);
+  }, [at.open, at.query, searchWorkspaceFiles]);
+
   const filteredItems = useMemo(
     () => filterSlashItems(pool, slash.query),
     [pool, slash.query],
@@ -498,7 +569,18 @@ export function RichComposer({
       if (prev.query === sq.query && prev.open) return prev;
       return { open: true, query: sq.query, selected: 0 };
     });
-  }, [computeSlashQuery, onChange]);
+    // The slash popup takes precedence; only evaluate '@' when '/' isn't
+    // active so the two popups never overlap.
+    const aq = sq.open ? { open: false, query: "" } : computeAtQuery();
+    setAt((prev) => {
+      if (!aq.open) {
+        if (prev.open) return { open: false, query: "", selected: 0 };
+        return prev;
+      }
+      if (prev.query === aq.query && prev.open) return prev;
+      return { open: true, query: aq.query, selected: 0 };
+    });
+  }, [computeAtQuery, computeSlashQuery, onChange]);
 
   const insertSelectedSlashItem = useCallback(
     (item: SlashItem) => {
@@ -559,8 +641,85 @@ export function RichComposer({
     [onChange],
   );
 
+  const insertSelectedAtItem = useCallback(
+    (filePath: string) => {
+      const root = rootRef.current;
+      if (!root) return;
+      const sel = window.getSelection();
+      if (!sel || sel.rangeCount === 0) return;
+      const range = sel.getRangeAt(0);
+      const node = range.startContainer;
+      if (node.nodeType !== Node.TEXT_NODE || !root.contains(node)) return;
+      const text = node.textContent ?? "";
+      const before = text.slice(0, range.startOffset);
+      const after = text.slice(range.startOffset);
+      // Find the active '@' so the inserted pill replaces the "@query".
+      let atPos = -1;
+      for (let i = before.length - 1; i >= 0; i -= 1) {
+        if (before[i] === "@") {
+          atPos = i;
+          break;
+        }
+        if (/\s/.test(before[i]) || before[i] === "\u200B") break;
+      }
+      if (atPos < 0) return;
+      const head = before.slice(0, atPos);
+      node.textContent = head;
+      const pill = document.createElement("span");
+      pill.className = "composer-pill composer-pill-attach";
+      pill.setAttribute("contenteditable", "false");
+      pill.setAttribute("data-token-kind", "attach");
+      pill.setAttribute("data-token-payload", filePath);
+      const info = kindLabel("attach", filePath);
+      pill.textContent = info.primary;
+      pill.title = filePath;
+      const parent = node.parentNode;
+      if (!parent) return;
+      const tail = document.createTextNode(ZWSP + after);
+      parent.insertBefore(tail, node.nextSibling);
+      parent.insertBefore(pill, tail);
+      const r = document.createRange();
+      r.setStart(tail, 1);
+      r.collapse(true);
+      sel.removeAllRanges();
+      sel.addRange(r);
+      setAt({ open: false, query: "", selected: 0 });
+      const next = readSegmentsFromDom(root);
+      lastRenderedRef.current = next
+        .map((s) => (s.kind === "text" ? `T:${s.value}` : `${s.kind}:${s.value}`))
+        .join("\x1e");
+      onChange(next);
+    },
+    [onChange],
+  );
+
   const handleKeyDown = useCallback(
     (e: ReactKeyboardEvent<HTMLDivElement>) => {
+      if (at.open && atFiles.length > 0) {
+        if (e.key === "ArrowDown") {
+          e.preventDefault();
+          setAt((p) => ({ ...p, selected: (p.selected + 1) % atFiles.length }));
+          return;
+        }
+        if (e.key === "ArrowUp") {
+          e.preventDefault();
+          setAt((p) => ({
+            ...p,
+            selected: (p.selected - 1 + atFiles.length) % atFiles.length,
+          }));
+          return;
+        }
+        if (e.key === "Escape") {
+          e.preventDefault();
+          setAt({ open: false, query: "", selected: 0 });
+          return;
+        }
+        if (e.key === "Enter" || e.key === "Tab") {
+          e.preventDefault();
+          insertSelectedAtItem(atFiles[at.selected]);
+          return;
+        }
+      }
       if (slash.open && filteredItems.length > 0) {
         if (e.key === "ArrowDown") {
           e.preventDefault();
@@ -592,7 +751,17 @@ export function RichComposer({
         return;
       }
     },
-    [filteredItems, insertSelectedSlashItem, onSubmit, slash.open, slash.selected],
+    [
+      at.open,
+      at.selected,
+      atFiles,
+      filteredItems,
+      insertSelectedAtItem,
+      insertSelectedSlashItem,
+      onSubmit,
+      slash.open,
+      slash.selected,
+    ],
   );
 
   // Visual placeholder: shown when no segments are present (the editor has no
@@ -616,9 +785,12 @@ export function RichComposer({
         onInput={handleInput}
         onKeyDown={handleKeyDown}
         onBlur={() => {
-          // Close the slash popup when the editor loses focus; the popup
-          // catches clicks on its own buttons via mousedown.
-          window.setTimeout(() => setSlash({ open: false, query: "", selected: 0 }), 100);
+          // Close the slash / '@' popups when the editor loses focus; the
+          // popups catch clicks on their own buttons via mousedown.
+          window.setTimeout(() => {
+            setSlash({ open: false, query: "", selected: 0 });
+            setAt({ open: false, query: "", selected: 0 });
+          }, 100);
         }}
       />
       {slash.open && filteredItems.length > 0 && (
@@ -643,6 +815,32 @@ export function RichComposer({
               )}
             </button>
           ))}
+        </div>
+      )}
+      {at.open && atFiles.length > 0 && (
+        <div className="rich-composer-popup">
+          <div className="rich-composer-popup-hint">
+            {t("composer.atFileHint")}
+          </div>
+          {atFiles.map((file, idx) => {
+            const leaf = file.split(/[\\/]/).pop() || file;
+            const dir = file.slice(0, file.length - leaf.length);
+            return (
+              <button
+                key={file}
+                type="button"
+                className={`rich-composer-popup-item ${idx === at.selected ? "is-active" : ""}`}
+                onMouseDown={(e) => {
+                  e.preventDefault();
+                  insertSelectedAtItem(file);
+                }}
+              >
+                <Icon name={"paperclip" as never} size={13} />
+                <span className="rich-composer-popup-label">{leaf}</span>
+                {dir && <span className="rich-composer-popup-desc">{dir}</span>}
+              </button>
+            );
+          })}
         </div>
       )}
     </div>

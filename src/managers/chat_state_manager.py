@@ -803,6 +803,16 @@ class ChatStateManager:
                 continue
             if str(msg.get("role") or "").strip().lower() != "assistant":
                 continue
+            # Only stamp the latest assistant message if it does NOT already
+            # carry a plan. A message that already has a plan belongs to a
+            # finalized prior turn; retroactively overwriting it would erase
+            # that turn's plan snapshot (each message must keep the plan as
+            # it stood at that message). When the latest assistant message is
+            # already stamped, the new plan stays pending and attaches to the
+            # next recorded assistant message via
+            # ``attach_pending_plan_to_message``.
+            if msg.get("plan"):
+                return
             msg["plan"] = items
             msg["plan_explanation"] = str(snapshot.get("explanation") or "").strip()
             msg["plan_updated_at"] = str(snapshot.get("updated_at") or "").strip()

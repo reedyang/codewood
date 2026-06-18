@@ -1314,6 +1314,22 @@ class FileCompleter(Completer):
         return bang_idx, frag
 
     @staticmethod
+    def _at_fragment_for_completion(text: str) -> Tuple[int, str]:
+        """Return the ``@<partial>`` file-reference fragment at the cursor.
+
+        Matches a trailing ``@...`` token that begins at the line start or
+        right after whitespace, so ``@`` can be used anywhere in the input
+        to reference a workspace file. The fragment excludes the leading
+        ``@``. Returns ``(index_of_at, partial_after_at)`` or ``(-1, "")``.
+        """
+        m = re.search(r"(?:^|\s)@([^\s@]*)$", text)
+        if not m:
+            return -1, ""
+        partial = m.group(1) or ""
+        at_idx = m.end() - len(partial) - 1
+        return at_idx, partial
+
+    @staticmethod
     def _dynamic_completion_display(
         slash_part: str,
         candidate: str,
@@ -1380,6 +1396,33 @@ class FileCompleter(Completer):
                     return
 
         shell_mode_active = self._is_shell_mode_active()
+
+        # '@<partial>' quick file reference: search workspace files by name
+        # and offer up to 10 candidates. Selecting one inserts its
+        # workspace-relative path (the TUI equivalent of "Attach files").
+        if not shell_mode_active:
+            at_idx, at_part = self._at_fragment_for_completion(text)
+            if at_idx >= 0:
+                file_matches = self._get_at_file_completions(at_part)
+                if file_matches:
+                    # Replace the whole "@partial" fragment with the path.
+                    spos = -(len(at_part) + 1)
+                    seen = set()
+                    for mc in file_matches:
+                        if mc in seen:
+                            continue
+                        seen.add(mc)
+                        yield Completion(
+                            mc,
+                            start_position=spos,
+                            display=self._path_leaf_name(mc),
+                        )
+                    return
+                # A bare "@" with no matches yet: nothing to show, but don't
+                # fall through to generic path completion for the "@" token.
+                if not at_part:
+                    return
+
         if not shell_mode_active:
             # Slash built-ins: always provide command completion when applicable.
             # Special-case lone "/" on non-Windows to avoid enumerating root files.
@@ -1565,6 +1608,18 @@ class FileCompleter(Completer):
         except Exception:
             return []
     
+    def _get_at_file_completions(self, partial: str) -> List[str]:
+        """Workspace filename candidates for an ``@<partial>`` reference."""
+        try:
+            from ..tools.project_context_index import search_workspace_files
+        except Exception:
+            return []
+        base = self._matching_base_directory()
+        try:
+            return search_workspace_files(base, str(partial or ""), 10)
+        except Exception:
+            return []
+
     def _get_local_completions(self, text: str) -> List[str]:
         """Get local completions in the current directory."""
         try:
