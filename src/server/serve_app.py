@@ -841,12 +841,34 @@ class ServeApp:
             pass
 
     def _owned_runtime_chat_ids(self) -> List[str]:
-        """Chat ids with a live runtime in THIS process (authoritative writers)."""
+        """Chat ids with an ACTIVELY RUNNING turn in THIS process.
+
+        Only a chat whose runtime is busy (a turn is mid-stream) is an
+        authoritative writer whose in-memory state must not be overwritten by
+        a disk merge. An idle parked runtime does not count — its chat may
+        have been amended by a peer process and should be refreshable.
+        """
+        out: List[str] = []
         try:
             with self._runtimes_lock:
-                return [str(cid) for cid in self._runtimes.keys()]
+                for cid, rt in self._runtimes.items():
+                    if rt is not None and rt.busy.is_set():
+                        out.append(str(cid))
         except Exception:
             return []
+        return out
+
+    def _chat_is_busy(self, chat_id: str) -> bool:
+        """True iff ``chat_id`` has a runtime with a turn currently streaming."""
+        cid = str(chat_id or "")
+        if not cid:
+            return False
+        try:
+            with self._runtimes_lock:
+                rt = self._runtimes.get(cid)
+            return bool(rt is not None and rt.busy.is_set())
+        except Exception:
+            return False
 
     def _active_chat_id(self) -> str:
         """Chat id the running turn / streamed output is attributed to.
@@ -1163,17 +1185,15 @@ class ServeApp:
         # chat's live session.
         try:
             focus_chat = _primary_active_chat_id(self.agent)
-            # When the active chat isn't owned by this process's runtime
-            # (e.g. another codewood TUI is driving it), pull the latest
-            # record from disk before building turns so messages and
-            # ``pending_ask_more_info`` markers written by the peer are
-            # visible to the GUI client.
-            try:
-                with self._runtimes_lock:
-                    has_runtime = focus_chat in self._runtimes
-            except Exception:
-                has_runtime = False
-            if focus_chat and not has_runtime:
+            # When the active chat is not actively streaming a turn here
+            # (no busy runtime), pull the latest record from disk before
+            # building turns so messages, ``pending_ask_more_info`` markers
+            # and plan updates written by a peer process (e.g. another
+            # codewood TUI) are reflected. An idle parked runtime no longer
+            # blocks the refresh, which is what lets the GUI pick up a
+            # changed history on switch/reload.
+            is_busy = self._chat_is_busy(focus_chat)
+            if focus_chat and not is_busy:
                 try:
                     refresh = getattr(self.agent, "_refresh_chat_record_from_disk", None)
                     if callable(refresh):
@@ -1235,22 +1255,22 @@ class ServeApp:
                     rid = str(target.get("id") or "") if target else ""
                 if not rid:
                     return False
-                with self._runtimes_lock:
-                    has_runtime = rid in self._runtimes
-                if has_runtime:
-                    # Focus-only switch: the live loop owns this chat's session,
-                    # so just repoint the workspace's active chat and persist it
-                    # without touching conversation_history.
+                if self._chat_is_busy(rid):
+                    # A turn is actively streaming here: the live loop owns this
+                    # chat's session, so just repoint the workspace's active
+                    # chat and persist it without touching conversation_history
+                    # (reloading would clobber the in-progress turn).
                     with agent._chat_state_lock:
                         agent._chat_state["active"] = rid
                         agent._save_chat_state()
                 else:
-                    # Another codewood process (typically the TUI) may be
-                    # actively driving this chat — pull its latest record
-                    # from disk so any cross-process state it persisted
-                    # (new messages, ``pending_ask_more_info``, plan
-                    # updates, ...) is visible to the local GUI before
-                    # we bind the session to it.
+                    # The chat is idle here (it may have no runtime, or a parked
+                    # one). Another codewood process (typically the TUI) may have
+                    # amended it on disk since we last loaded it, so pull its
+                    # latest record before binding the session. This is what
+                    # makes "switch chats and pick up the peer's new messages /
+                    # pending ask_more_info / plan updates" work, even when this
+                    # process still holds an idle runtime for the chat.
                     try:
                         refresh = getattr(agent, "_refresh_chat_record_from_disk", None)
                         if callable(refresh):
