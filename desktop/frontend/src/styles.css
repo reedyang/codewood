@@ -2065,6 +2065,19 @@ body.resizing-x {
   color: var(--accent);
 }
 
+/* Size the composer's "+" button to a square whose side equals the
+   Execution-policy button's height, so the two toolbar controls line up.
+   The policy button is a ``.dropdown-trigger`` (font 12.5px, padding 6px,
+   1px border) → 30px tall; we pin both to the same explicit height. */
+.composer-left .policy-dropdown .dropdown-trigger {
+  height: 30px;
+}
+
+.composer-plus-menu .icon-btn.round {
+  width: 30px;
+  height: 30px;
+}
+
 .composer-plus-menu .dropdown-menu {
   bottom: calc(100% + 6px);
   top: auto;
