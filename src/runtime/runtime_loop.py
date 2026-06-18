@@ -1505,6 +1505,24 @@ def _solicit_ask_more_info_answer(
     lang = getattr(agent, "display_language", None) or "en"
     t = lambda key, fallback=None, **kwargs: _translate(key, lang, fallback, **kwargs)
 
+    # Persist the pending prompt to the chat record up-front so any other
+    # process opening the same chat (e.g. the desktop GUI when the TUI
+    # triggered the call) can re-render the selection panel instead of
+    # showing stale Execute-now/plan UI. The id is best-effort: GUI's own
+    # provider will overwrite it with its own per-request id below.
+    pending_payload: Dict[str, Any] = {
+        "id": _ask_more_info_pending_id(agent),
+        "question": str(question or ""),
+        "options": list(options or []),
+        "multi_select": bool(multi_select),
+    }
+    setter = getattr(agent, "_set_pending_ask_more_info", None)
+    if callable(setter):
+        try:
+            setter(pending_payload)
+        except Exception:
+            pass
+
     provider = getattr(agent, "_ask_more_info_provider", None)
     if callable(provider):
         try:
@@ -1520,12 +1538,16 @@ def _solicit_ask_more_info_answer(
                 print(t("runtime.ask_more_info.supplement_cancelled"))
             except Exception:
                 pass
+            _clear_ask_more_info_pending(agent)
             return ("", False)
         except Exception:
+            _clear_ask_more_info_pending(agent)
             return ("", False)
         answer = str(raw or "").strip()
         if not answer:
+            _clear_ask_more_info_pending(agent)
             return ("", False)
+        _clear_ask_more_info_pending(agent)
         if answer.startswith("/") or answer.startswith("!"):
             agent._queued_user_input = answer
             return (answer, True)
@@ -1534,23 +1556,31 @@ def _solicit_ask_more_info_answer(
     # TUI fallback. Layout depends on the mode:
     #   single-select  -> "Pick one (or N+1 for Other):"
     #   multi-select   -> "Pick one or more (comma-separated, or include Other):"
-    try:
-        print(t("runtime.ask_more_info.required"))
-        print(t("runtime.ask_more_info.question", question=question))
-    except Exception:
-        pass
-
     visible_options = list(options)
     other_index = len(visible_options) + 1
     other_label = t("runtime.ask_more_info.option_other")
+    # Build the prompt block once so we can stash it for resize re-rendering
+    # too — without that, prompt_toolkit's redraw after a terminal resize
+    # would scroll the options off the screen and the user is left typing
+    # blindly.
+    lines: List[str] = [
+        t("runtime.ask_more_info.required"),
+        t("runtime.ask_more_info.question", question=question),
+    ]
+    for idx, label in enumerate(visible_options, start=1):
+        lines.append(f"  {idx}. {label}")
+    lines.append(f"  {other_index}. {other_label}")
+    if multi_select:
+        lines.append(t("runtime.ask_more_info.multi_hint", other_index=other_index))
+    else:
+        lines.append(t("runtime.ask_more_info.single_hint", other_index=other_index))
+    prompt_block = "\n".join(lines)
     try:
-        for idx, label in enumerate(visible_options, start=1):
-            print(f"  {idx}. {label}")
-        print(f"  {other_index}. {other_label}")
-        if multi_select:
-            print(t("runtime.ask_more_info.multi_hint", other_index=other_index))
-        else:
-            print(t("runtime.ask_more_info.single_hint", other_index=other_index))
+        agent._pending_ask_more_info_render = prompt_block  # type: ignore[attr-defined]
+    except Exception:
+        pass
+    try:
+        print(prompt_block)
     except Exception:
         pass
 
@@ -1562,15 +1592,18 @@ def _solicit_ask_more_info_answer(
                 print(t("runtime.ask_more_info.supplement_cancelled"))
             except Exception:
                 pass
+            _clear_ask_more_info_pending(agent)
             return ("", False)
         if not raw_input_line:
             try:
                 print(t("runtime.ask_more_info.no_supplement"))
             except Exception:
                 pass
+            _clear_ask_more_info_pending(agent)
             return ("", False)
         if raw_input_line.startswith("/") or raw_input_line.startswith("!"):
             agent._queued_user_input = raw_input_line
+            _clear_ask_more_info_pending(agent)
             return (raw_input_line, True)
 
         if not multi_select:
@@ -1582,6 +1615,7 @@ def _solicit_ask_more_info_answer(
                 except ValueError:
                     pick = -1
                 if 1 <= pick <= len(visible_options):
+                    _clear_ask_more_info_pending(agent)
                     return (visible_options[pick - 1], False)
                 if pick == other_index:
                     try:
@@ -1594,6 +1628,7 @@ def _solicit_ask_more_info_answer(
                 except Exception:
                     pass
                 continue
+            _clear_ask_more_info_pending(agent)
             return (raw_input_line, False)
 
         # Multi-select: accept "1,3", "1 3", "1,3, free text after"
@@ -1623,6 +1658,7 @@ def _solicit_ask_more_info_answer(
                     print(t("runtime.ask_more_info.supplement_cancelled"))
                 except Exception:
                     pass
+                _clear_ask_more_info_pending(agent)
                 return ("", False)
             if not extra:
                 # Bare empty input cancels the Other branch but keeps
@@ -1641,7 +1677,38 @@ def _solicit_ask_more_info_answer(
             except Exception:
                 pass
             continue
+        _clear_ask_more_info_pending(agent)
         return ("; ".join(parts), False)
+
+
+def _ask_more_info_pending_id(agent: Any) -> str:
+    """Return a short opaque id for the in-flight TUI ask_more_info prompt.
+
+    The GUI provider generates its own per-request id, but the TUI path
+    has nothing to wait on, so we just need something stable enough for
+    de-dup if a second writer somehow lands. Falls back to a timestamp
+    when ``secrets`` is unavailable for any reason.
+    """
+    try:
+        import secrets as _secrets  # local: cheap, avoids touching module-level imports
+
+        return _secrets.token_hex(6)
+    except Exception:
+        return str(int(time.time() * 1000))
+
+
+def _clear_ask_more_info_pending(agent: Any) -> None:
+    """Remove both the chat-record marker and the in-memory render stash."""
+    clearer = getattr(agent, "_clear_pending_ask_more_info", None)
+    if callable(clearer):
+        try:
+            clearer()
+        except Exception:
+            pass
+    try:
+        agent._pending_ask_more_info_render = ""  # type: ignore[attr-defined]
+    except Exception:
+        pass
 
 
 def _parse_multi_select_line(
@@ -1947,6 +2014,19 @@ def _try_record_user_task_message(agent: Any, user_task: str, already_recorded: 
         append_fn = getattr(agent, "_append_chat_message", None)
         if callable(append_fn):
             append_fn("user", text)
+            # A new user turn supersedes any leftover ask_more_info
+            # prompt from a prior abandoned round, so the GUI doesn't
+            # keep showing a stale selection panel.
+            try:
+                clearer = getattr(agent, "_clear_pending_ask_more_info", None)
+                if callable(clearer):
+                    clearer()
+            except Exception:
+                pass
+            try:
+                agent._pending_ask_more_info_render = ""  # type: ignore[attr-defined]
+            except Exception:
+                pass
             return True
     except Exception:
         return False

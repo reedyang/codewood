@@ -290,6 +290,7 @@ export function ChatView() {
     draftMode,
     draftWorkspaceId,
     setDraftWorkspace,
+    askMoreInfo,
     t,
   } = useApp();
   // Drafts (in-progress composer segments) are kept per chat so switching
@@ -664,6 +665,13 @@ export function ChatView() {
             return null;
           }
           if (turns.length === 0 && historyTurns.length === 0) {
+            return null;
+          }
+          // A pending ask_more_info prompt always wins: the agent is
+          // waiting on the user's selection, so showing Execute-now
+          // would misrepresent the state and let the user advance the
+          // plan instead of answering the question.
+          if (askMoreInfo) {
             return null;
           }
           const planSteps = state?.plan?.plan ?? [];

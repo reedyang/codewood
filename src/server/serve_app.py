@@ -526,6 +526,41 @@ def _primary_active_chat_id(agent: Any) -> str:
     return ""
 
 
+def _safe_pending_ask_more_info(agent: Any) -> Optional[Dict[str, Any]]:
+    """Return the active chat's pending ``ask_more_info`` request, if any.
+
+    Reads from the chat-record marker so a GUI that loads (or refreshes)
+    a chat already mid-prompt re-renders the selection panel — including
+    the case where a *different* process (TUI) triggered the prompt and
+    the local backend never saw the in-memory request id. The panel
+    submit handler will POST the marker's id; if the local backend can't
+    match it the call is a no-op until cross-process answer routing
+    lands.
+    """
+    try:
+        cid = _primary_active_chat_id(agent)
+        with agent._session_scope(cid):
+            payload = agent._peek_pending_ask_more_info()
+    except Exception:
+        payload = None
+    if not isinstance(payload, dict):
+        return None
+    raw_options = payload.get("options")
+    options: List[str] = []
+    if isinstance(raw_options, list):
+        for raw in raw_options:
+            label = strip_ansi(str(raw or ""))[:120]
+            if label:
+                options.append(label)
+    return {
+        "id": str(payload.get("id") or ""),
+        "question": strip_ansi(str(payload.get("question") or "")),
+        "options": options,
+        "multiSelect": bool(payload.get("multi_select", False)),
+        "chatId": str(_primary_active_chat_id(agent) or ""),
+    }
+
+
 def _safe_active_plan(agent: Any) -> Dict[str, Any]:
     """Return the active chat's plan ({plan:[{step,status}], explanation}).
 
@@ -742,6 +777,7 @@ def _build_state(agent: Any) -> Dict[str, Any]:
         "theme": theme,
         "uiPrefs": ui_prefs,
         "plan": _safe_active_plan(agent),
+        "askMoreInfo": _safe_pending_ask_more_info(agent),
         "executionPolicy": str(getattr(agent, "execution_policy", "") or ""),
     }
 
@@ -948,11 +984,29 @@ class ServeApp:
             label = strip_ansi(str(raw or ""))[:120]
             if label:
                 safe_options.append(label)
+        safe_question = strip_ansi(str(question or ""))
+        # Overwrite the chat-record marker (the runtime loop wrote a
+        # short stub before invoking this provider) with our real pid so
+        # any concurrent reader of the chat JSON sees the same id we'll
+        # accept on /answer-ask-more-info.
+        try:
+            setter = getattr(self.agent, "_set_pending_ask_more_info", None)
+            if callable(setter):
+                setter(
+                    {
+                        "id": pid,
+                        "question": safe_question,
+                        "options": safe_options,
+                        "multi_select": bool(multi_select),
+                    }
+                )
+        except Exception:
+            pass
         self.broadcaster.publish(
             "ask_more_info",
             {
                 "id": pid,
-                "question": strip_ansi(str(question or "")),
+                "question": safe_question,
                 "options": safe_options,
                 "multiSelect": bool(multi_select),
                 "chatId": self._active_chat_id(),

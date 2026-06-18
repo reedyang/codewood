@@ -893,6 +893,54 @@ export function AppProvider({ children }: { children: ReactNode }) {
     };
   }, [loadChatHistory]);
 
+  // Hydrate the per-chat ``askMoreInfo`` bucket from the snapshot the
+  // backend serializes in ``state.askMoreInfo``. This lets the GUI
+  // render the selection panel on chat load (or on refresh) even when
+  // the original ``ask_more_info`` SSE event was missed — most
+  // importantly when a *different* backend process (e.g. the TUI)
+  // triggered the prompt and this GUI's backend was never asked.
+  useEffect(() => {
+    const cid = state?.activeChatId ?? "";
+    if (!cid) {
+      return;
+    }
+    const persisted = state?.askMoreInfo;
+    setAskMoreInfoByChat((prev) => {
+      const existing = prev[cid];
+      if (!persisted) {
+        if (!existing) {
+          return prev;
+        }
+        // Backend says no pending prompt for this chat -> drop stale.
+        const next = { ...prev };
+        delete next[cid];
+        return next;
+      }
+      if (
+        existing &&
+        existing.id === persisted.id &&
+        existing.question === persisted.question &&
+        existing.options.length === persisted.options.length &&
+        existing.options.every((o, i) => o === persisted.options[i]) &&
+        existing.multiSelect === Boolean(persisted.multiSelect)
+      ) {
+        return prev;
+      }
+      return {
+        ...prev,
+        [cid]: {
+          id: String(persisted.id || ""),
+          question: String(persisted.question || ""),
+          options: Array.isArray(persisted.options)
+            ? persisted.options.map((o) => String(o))
+            : [],
+          multiSelect: Boolean(persisted.multiSelect),
+          chatId: cid,
+        },
+      };
+    });
+  }, [state?.activeChatId, state?.askMoreInfo]);
+
   const loadOlderHistory = useCallback(async () => {
     if (historyLoading || historyStart <= 0) {
       return;
