@@ -6,6 +6,19 @@ interface HostWindowApi {
   minimize?: () => void;
   toggle_maximize?: () => boolean | Promise<boolean>;
   close_window?: () => void;
+  open_external?: (url: string) => boolean | Promise<boolean>;
+}
+
+const GITHUB_URL = "https://github.com/reedyang/codewood";
+
+function openExternal(url: string): void {
+  const api = hostApi();
+  if (api?.open_external) {
+    void api.open_external(url);
+    return;
+  }
+  // Browser/dev fallback when the native bridge is unavailable.
+  window.open(url, "_blank", "noopener,noreferrer");
 }
 
 function hostApi(): HostWindowApi | undefined {
@@ -87,7 +100,14 @@ export function TitleBar({ onTogglePanel }: { onTogglePanel: () => void }) {
     {
       id: "help",
       label: t("menu.help"),
-      entries: [{ label: t("menu.help.about"), onSelect: openAbout }],
+      entries: [
+        {
+          label: t("menu.help.github"),
+          onSelect: () => openExternal(GITHUB_URL),
+        },
+        "separator",
+        { label: t("menu.help.about"), onSelect: openAbout },
+      ],
     },
   ];
 
