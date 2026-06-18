@@ -411,15 +411,102 @@ class Agent:
             )
         return self.provider, self.model_name, self.params, self.openai_conf
 
-    def _bind_session(self, chat_id: str) -> None:
-        """Bind the calling thread to ``chat_id``'s session (creating it)."""
+    def _session_registry_key_for(self, chat_id: str, workspace_id: str) -> str:
+        """Like :meth:`_session_registry_key` but with an explicit workspace id.
+
+        Used by the serve loop thread, which captures its chat's workspace at
+        spawn time so a concurrent workspace switch can't mis-qualify the key.
+        """
+        cid = str(chat_id or "")
+        if not cid:
+            return ""
+        wsid = str(workspace_id or "").strip()
+        return f"{wsid}::{cid}" if wsid else cid
+
+    def _session_registry_key(self, chat_id: str) -> str:
+        """Workspace-qualified session-registry key for ``chat_id``.
+
+        Chat ids are only unique WITHIN a workspace (``chat-1``, ``chat-2``,
+        … are reassigned per workspace), so two workspaces' chats can share an
+        id. Keying the per-chat :class:`SessionState` by the bare id would make
+        a running chat in one workspace and a same-id chat in another share one
+        session — merging their conversation/plan/usage and mis-routing output.
+        Qualifying the key with the workspace id keeps them isolated. The
+        ``active_chat_id`` session FIELD still stores the bare id, so
+        persistence (``find_chat_by_id`` over the per-workspace ``_chat_state``)
+        is unaffected.
+        """
+        cid = str(chat_id or "")
+        if not cid:
+            return ""
+        wsid = str(getattr(self, "workspace_id", "") or "").strip()
+        return f"{wsid}::{cid}" if wsid else cid
+
+    def _bind_session(self, chat_id: str, workspace_id: Optional[str] = None) -> None:
+        """Bind the calling thread to ``chat_id``'s session (creating it).
+
+        ``workspace_id`` may be supplied to qualify the registry key with a
+        specific workspace (e.g. a background loop thread that captured its
+        chat's workspace at spawn time); otherwise the agent's current
+        workspace is used.
+        """
         tls = self.__dict__.get("_session_tls")
         if tls is None:
             self._install_session_registry()
             tls = self.__dict__["_session_tls"]
-        key = str(chat_id or "")
+        if workspace_id is None:
+            key = self._session_registry_key(chat_id)
+        else:
+            key = self._session_registry_key_for(chat_id, workspace_id)
         tls.chat_id = key
         tls.session = self._session_for_key(key)
+
+    # ----- per-workspace persistence override (background loops) ----------
+    # A chat's loop thread persists through the SHARED, workspace-level
+    # ``_chat_state`` index and ``workspace_config_dir``. When a turn keeps
+    # running after the user switches focus to ANOTHER workspace, those globals
+    # have been swapped to the focused workspace — so the background chat would
+    # persist its messages into the wrong workspace's index/dir (clobbering a
+    # same-id chat there and losing its own reply). To keep a background chat
+    # writing to ITS OWN workspace, its loop thread installs a thread-local
+    # persistence override carrying that workspace's index dict, chats dir, and
+    # lock; ``ChatStateManager`` consults the override (when present) instead of
+    # the agent globals. HTTP/display threads and the focused loop leave it
+    # unset and use the globals as before.
+    def _set_persist_workspace_ctx(self, ctx: Optional[Dict[str, Any]]) -> None:
+        tls = self.__dict__.get("_session_tls")
+        if tls is None:
+            self._install_session_registry()
+            tls = self.__dict__["_session_tls"]
+        tls.persist_ctx = ctx
+
+    def _persist_workspace_ctx(self) -> Optional[Dict[str, Any]]:
+        tls = self.__dict__.get("_session_tls")
+        if tls is None:
+            return None
+        ctx = getattr(tls, "persist_ctx", None)
+        return ctx if isinstance(ctx, dict) else None
+
+    @contextlib.contextmanager
+    def _suspend_persist_workspace_ctx(self):
+        """Temporarily disable the calling thread's persistence override.
+
+        The override redirects PERSISTENCE (chat index/dir) for a background
+        loop to its own workspace. It must NOT bleed into snapshot READS such
+        as building the GUI state: those describe the FOCUSED workspace, and a
+        background loop thread emitting an ``idle``/``state`` snapshot would
+        otherwise read its own (non-focused) workspace's chat list through the
+        override. Suspend the override for the duration of such reads.
+        """
+        tls = self.__dict__.get("_session_tls")
+        prev = getattr(tls, "persist_ctx", None) if tls is not None else None
+        if tls is not None:
+            tls.persist_ctx = None
+        try:
+            yield
+        finally:
+            if tls is not None:
+                tls.persist_ctx = prev
 
     @contextlib.contextmanager
     def _session_scope(self, chat_id: str):
@@ -5229,7 +5316,18 @@ class Agent:
         return None
 
     def _maybe_schedule_auto_chat_name(self) -> None:
-        with self._chat_state_lock:
+        # Use the persistence lock that matches where this chat is indexed: a
+        # background loop (chat in a non-focused workspace) carries a
+        # thread-local override so ``_find_chat_by_id`` resolves against ITS
+        # workspace index, not the focused one.
+        name_lock = self._chat_state_lock
+        mgr = getattr(self, "_chat_state_manager", None)
+        if mgr is not None:
+            try:
+                name_lock = mgr._active_chat_state_lock() or self._chat_state_lock
+            except Exception:
+                name_lock = self._chat_state_lock
+        with name_lock:
             chat = self._find_chat_by_id(self.active_chat_id)
             if not chat:
                 return

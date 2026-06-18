@@ -249,23 +249,21 @@ export function Sidebar({ onOpenSettings }: { onOpenSettings: () => void }) {
     const isActive = wsId === activeWsId && chat.active;
     const rel = formatRelative(chat.updatedAt);
     const isPinned = isPinnedChat(wsId, chat.id);
-    // Chat ids are only unique within a workspace, so only trust the running
-    // marker for chats in the active workspace to avoid false positives.
-    // Combine the durable state-snapshot ``running`` flag with the transient
-    // SSE-driven ``busyByChat`` map: the snapshot keeps the dot alive when the
-    // user switches focus to another chat mid-turn (no turn_start re-fires),
-    // while busyByChat reacts instantly to turn_start before the next snapshot.
+    // Chat ids are only unique within a workspace, so the transient
+    // ``busyByChat`` / ``unreadChatIds`` maps are keyed by a
+    // workspace-qualified composite (``wsId\x00chatId``); build the same key
+    // here so a chat's dot can't bleed onto a same-id chat in another
+    // workspace. The composite lets a BACKGROUND chat in a non-focused
+    // workspace keep its busy/unread dot too. ``chat.running`` from the
+    // snapshot only describes the focused workspace's chats, so it stays
+    // gated on ``wsId === activeWsId``.
+    const rowKey = wsId ? `${wsId}\u0000${chat.id}` : chat.id;
     const isBusy =
-      wsId === activeWsId &&
-      (Boolean(busyByChat[chat.id]) || Boolean(chat.running));
-    // Unread: a turn finished while the user was elsewhere. Only show for the
-    // active workspace (chat ids are unique only within a workspace) and never
-    // on the chat currently being viewed.
-    const isUnread =
-      wsId === activeWsId &&
-      !isActive &&
-      !isBusy &&
-      Boolean(unreadChatIds[chat.id]);
+      Boolean(busyByChat[rowKey]) ||
+      (wsId === activeWsId && Boolean(chat.running));
+    // Unread: a turn finished while the user was elsewhere. Never show on the
+    // chat currently being viewed.
+    const isUnread = !isActive && !isBusy && Boolean(unreadChatIds[rowKey]);
     return (
       <li
         key={`${wsId}-${chat.id}`}

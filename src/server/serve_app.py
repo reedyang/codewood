@@ -29,6 +29,7 @@ import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 from urllib.parse import parse_qs, urlparse
 
@@ -36,6 +37,19 @@ from ..core.console_utils import (
     GUI_FORCE_PROMPT_PREFIX,
     GUI_INTERNAL_COMMAND_PREFIX,
 )
+
+try:  # diagnostics: workspace-switch persistence routing (temporary)
+    from ..core.logging.app_logging import get_logger as _get_logger
+    from ..config.app_info import get_app_logger_root as _logger_root
+
+    def _wslog(msg: str) -> None:
+        try:
+            _get_logger(f"{_logger_root()}.serve.wsswitch").info(msg)
+        except Exception:
+            pass
+except Exception:  # pragma: no cover - logging is best-effort
+    def _wslog(msg: str) -> None:
+        return None
 
 # Matches CSI / SGR and most other ANSI escape sequences.
 _ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b[@-Z\\-_]")
@@ -476,12 +490,22 @@ class _OutputBridge(io.TextIOBase):
     becomes an ``output`` event instead of hitting the console.
     """
 
-    def __init__(self, broadcaster: _Broadcaster, chat_id_getter: Any = None) -> None:
+    def __init__(
+        self,
+        broadcaster: _Broadcaster,
+        chat_id_getter: Any = None,
+        workspace_id_getter: Any = None,
+    ) -> None:
         self._broadcaster = broadcaster
         # Returns the chat id that output is currently attributed to, so the
         # GUI can route streamed text to the correct chat when several chats
         # run concurrently. Falls back to "" when unknown.
         self._chat_id_getter = chat_id_getter
+        # Returns the workspace id the output belongs to. Chat ids repeat
+        # across workspaces, so the GUI gates per-chat events by workspace to
+        # avoid a background chat's stream landing in a same-id chat the user
+        # has since focused in another workspace.
+        self._workspace_id_getter = workspace_id_getter
         # The current output tag ("output" steps vs "assistant" reply) and the
         # suppression flag are per-thread: each concurrent chat loop runs on its
         # own thread and must not flip the other's tag or silence the other's
@@ -490,6 +514,15 @@ class _OutputBridge(io.TextIOBase):
 
     def _chat_id(self) -> str:
         getter = self._chat_id_getter
+        if not callable(getter):
+            return ""
+        try:
+            return str(getter() or "")
+        except Exception:
+            return ""
+
+    def _workspace_id(self) -> str:
+        getter = self._workspace_id_getter
         if not callable(getter):
             return ""
         try:
@@ -523,7 +556,14 @@ class _OutputBridge(io.TextIOBase):
         cleaned = strip_ansi_keep_sgr(text).replace("\r\n", "\n").replace("\r", "")
         if cleaned:
             tag = str(getattr(self._tls, "tag", "output") or "output")
-            self._broadcaster.publish(tag, {"text": cleaned, "chatId": self._chat_id()})
+            self._broadcaster.publish(
+                tag,
+                {
+                    "text": cleaned,
+                    "chatId": self._chat_id(),
+                    "workspaceId": self._workspace_id(),
+                },
+            )
         return len(text)
 
     def writable(self) -> bool:  # type: ignore[override]
@@ -649,7 +689,23 @@ def _safe_reasoning_levels(agent: Any) -> List[str]:
 
 
 def _build_state(agent: Any) -> Dict[str, Any]:
-    """Serialize a read-only snapshot of agent state for the GUI."""
+    """Serialize a read-only snapshot of agent state for the GUI.
+
+    A background chat's loop thread may build this snapshot (e.g. when it emits
+    an ``idle``/``state`` event). That thread carries a per-workspace
+    PERSISTENCE override pointing at its OWN workspace; the snapshot, however,
+    must describe the FOCUSED workspace (its chat list, active chat, etc.).
+    Suspend the override for the whole build so chat reads (``_chat_entries``)
+    resolve against the focused global index, not the background workspace's.
+    """
+    suspend = getattr(agent, "_suspend_persist_workspace_ctx", None)
+    if callable(suspend):
+        with suspend():
+            return _build_state_inner(agent)
+    return _build_state_inner(agent)
+
+
+def _build_state_inner(agent: Any) -> Dict[str, Any]:
     from ..config.app_info import get_app_name, get_app_version
     from ..core.localization import get_display_language
 
@@ -838,10 +894,32 @@ class _ChatRuntime:
     turns concurrently without sharing conversation/plan/usage state.
     """
 
-    __slots__ = ("chat_id", "input_queue", "busy", "thread", "turn_started_at", "turn_record_pending")
+    __slots__ = (
+        "chat_id",
+        "workspace_id",
+        "workspace_config_dir",
+        "input_queue",
+        "busy",
+        "thread",
+        "turn_started_at",
+        "turn_record_pending",
+    )
 
-    def __init__(self, chat_id: str) -> None:
+    def __init__(
+        self, chat_id: str, workspace_id: str = "", workspace_config_dir: str = ""
+    ) -> None:
         self.chat_id = str(chat_id or "")
+        # Absolute config dir (``…/.codewood`` or default ``…/workspace``) of
+        # this chat's workspace, captured at spawn time when the agent globals
+        # still point at it. Used to persist a background turn into ITS OWN
+        # workspace after focus moves elsewhere — the workspace registry entry
+        # is not always sufficient to re-derive this later.
+        self.workspace_config_dir = str(workspace_config_dir or "")
+        # Workspace this runtime's chat belongs to. Chat ids are only unique
+        # within a workspace, so the runtime is keyed in ``_runtimes`` by the
+        # workspace-qualified composite (see ``ServeApp._runtime_key``); the
+        # bare ``chat_id`` is kept for SSE display routing.
+        self.workspace_id = str(workspace_id or "")
         self.input_queue: "queue.Queue[Optional[str]]" = queue.Queue()
         self.busy = threading.Event()
         self.thread: Optional[threading.Thread] = None
@@ -872,6 +950,14 @@ class ServeApp:
         # chat's runtime is created lazily the first time input is routed to it.
         self._runtimes: Dict[str, "_ChatRuntime"] = {}
         self._runtimes_lock = threading.Lock()
+        # Per-workspace persistence context (config_dir + in-memory chat index +
+        # RLock), keyed by workspace id. A background chat's loop thread
+        # persists through the context for ITS workspace so its turns land in
+        # that workspace's chats dir/index even after the user switches the
+        # agent's globals to another workspace. Built lazily; the focused
+        # workspace keeps using the agent globals and is not cached here.
+        self._ws_persist_ctx: Dict[str, Dict[str, Any]] = {}
+        self._ws_persist_lock = threading.Lock()
         self._bridge: Optional["_OutputBridge"] = None
         # Let the chat-state saver know which chats this process owns a
         # live runtime for, so a cross-process merge-on-save never skips
@@ -881,6 +967,26 @@ class ServeApp:
         except Exception:
             pass
 
+    def _runtime_key(self, chat_id: str, workspace_id: Optional[str] = None) -> str:
+        """Workspace-qualified key for the ``_runtimes`` map.
+
+        Mirrors ``Agent._session_registry_key`` so a runtime, its bound
+        :class:`SessionState`, and the thread lookup all share one composite
+        key. Chat ids repeat across workspaces (``chat-1`` … per workspace), so
+        keying by the bare id would make a running chat in one workspace and a
+        same-id chat in another collide on a single runtime — routing the new
+        chat's input into the old loop and the old loop's output into the new
+        chat. ``workspace_id`` defaults to the agent's current workspace.
+        """
+        cid = str(chat_id or "")
+        if not cid:
+            return ""
+        wsid = workspace_id
+        if wsid is None:
+            wsid = str(getattr(self.agent, "workspace_id", "") or "").strip()
+        wsid = str(wsid or "").strip()
+        return f"{wsid}::{cid}" if wsid else cid
+
     def _owned_runtime_chat_ids(self) -> List[str]:
         """Chat ids with an ACTIVELY RUNNING turn in THIS process.
 
@@ -888,25 +994,43 @@ class ServeApp:
         authoritative writer whose in-memory state must not be overwritten by
         a disk merge. An idle parked runtime does not count — its chat may
         have been amended by a peer process and should be refreshable.
+
+        Returns BARE chat ids scoped to the CURRENT workspace. Chat ids repeat
+        across workspaces, and both consumers operate on the focused
+        workspace's ``_chat_state``:
+          * the disk-merge guard compares against that workspace's chat ids;
+          * ``_build_state``'s per-chat ``running`` flag enumerates that
+            workspace's chats.
+        Without the workspace filter, a chat running in workspace A would mark
+        a same-id chat in the focused workspace B as running — showing a phantom
+        "Working…" / breathing blue dot on B's chat. Filtering by the runtime's
+        own ``workspace_id`` keeps the busy state attributed to the right one.
         """
         out: List[str] = []
         try:
+            cur_ws = str(getattr(self.agent, "workspace_id", "") or "").strip()
             with self._runtimes_lock:
-                for cid, rt in self._runtimes.items():
-                    if rt is not None and rt.busy.is_set():
-                        out.append(str(cid))
+                for rt in self._runtimes.values():
+                    if rt is None or not rt.busy.is_set():
+                        continue
+                    rt_ws = str(getattr(rt, "workspace_id", "") or "").strip()
+                    # Match same-workspace runtimes; tolerate an empty rt_ws
+                    # (legacy/default workspace) against an empty current id.
+                    if rt_ws == cur_ws:
+                        out.append(str(rt.chat_id))
         except Exception:
             return []
         return out
 
-    def _chat_is_busy(self, chat_id: str) -> bool:
+    def _chat_is_busy(self, chat_id: str, workspace_id: Optional[str] = None) -> bool:
         """True iff ``chat_id`` has a runtime with a turn currently streaming."""
         cid = str(chat_id or "")
         if not cid:
             return False
         try:
+            key = self._runtime_key(cid, workspace_id)
             with self._runtimes_lock:
-                rt = self._runtimes.get(cid)
+                rt = self._runtimes.get(key)
             return bool(rt is not None and rt.busy.is_set())
         except Exception:
             return False
@@ -924,8 +1048,44 @@ class ServeApp:
             cid = ""
         return cid or _primary_active_chat_id(self.agent)
 
+    def _active_chat_workspace_id(self) -> str:
+        """Workspace id the running turn / streamed output belongs to.
+
+        Resolved from the runtime bound to the calling loop thread (so a
+        background chat's output carries ITS workspace, not whatever the user
+        has since focused). Falls back to the agent's current workspace for
+        HTTP handler threads that have no bound runtime.
+        """
+        rt = self._runtime_for_thread()
+        if rt is not None and rt.workspace_id:
+            return rt.workspace_id
+        return str(getattr(self.agent, "workspace_id", "") or "")
+
+    def _route(self, chat_id: Optional[str] = None, **extra: Any) -> Dict[str, Any]:
+        """Build a per-chat SSE payload tagged with chat + workspace id.
+
+        The GUI gates incoming per-chat events by ``workspaceId`` (chat ids
+        repeat across workspaces) and routes by ``chatId`` within the matching
+        workspace. When ``chat_id`` is omitted we use the running turn's chat
+        and its workspace; passing an explicit ``chat_id`` keeps the current
+        workspace context (used by HTTP-thread broadcasts after a switch).
+        """
+        cid = self._active_chat_id() if chat_id is None else str(chat_id or "")
+        payload: Dict[str, Any] = {
+            "chatId": cid,
+            "workspaceId": self._active_chat_workspace_id(),
+        }
+        payload.update(extra)
+        return payload
+
     def _runtime_for_thread(self) -> Optional["_ChatRuntime"]:
-        """The runtime owning the calling loop thread (bound chat)."""
+        """The runtime owning the calling loop thread (bound chat).
+
+        The thread's bound session key is already the workspace-qualified
+        composite (see ``Agent._bind_session``), which is exactly the key we
+        store runtimes under, so a same-id chat in another workspace can never
+        resolve to this thread's runtime.
+        """
         try:
             key = str(self.agent._current_session_chat_key() or "")
         except Exception:
@@ -980,7 +1140,7 @@ class ServeApp:
         if rt is not None:
             rt.busy.clear()
         self.broadcaster.publish(
-            "idle", {"state": _build_state(self.agent), "chatId": self._active_chat_id()}
+            "idle", self._route(state=_build_state(self.agent))
         )
         if rt is None:
             # No runtime bound (should not happen); block on a private queue so
@@ -992,6 +1152,38 @@ class ServeApp:
             return "/exit"
         rt.busy.set()
         rt.turn_started_at = time.monotonic()
+        # Install this loop thread's per-workspace persistence override for the
+        # whole turn. We MUST install it even though this chat is (usually)
+        # focused right now: the user may switch to another workspace mid-turn,
+        # after which the agent globals point elsewhere and this background
+        # turn must persist into ITS OWN workspace. The override carries only
+        # the workspace id + a lazy provider; the manager activates it (and
+        # resolves the concrete index/dir/lock from disk) only once focus has
+        # moved away, so a still-focused turn keeps using the globals.
+        try:
+            setter = getattr(self.agent, "_set_persist_workspace_ctx", None)
+            if callable(setter):
+                if str(rt.workspace_id or "").strip():
+                    rt_cfg = rt.workspace_config_dir
+                    setter(
+                        {
+                            "workspace_id": rt.workspace_id,
+                            "provider": (
+                                lambda wsid, _cfg=rt_cfg: self._persist_ctx_for_workspace(
+                                    wsid, _cfg
+                                )
+                            ),
+                        }
+                    )
+                    _wslog(
+                        f"install override turn chat={rt.chat_id} "
+                        f"rt_ws={rt.workspace_id} cfg={rt_cfg} "
+                        f"focused_ws={getattr(self.agent,'workspace_id','')}"
+                    )
+                else:
+                    setter(None)
+        except Exception:
+            pass
         # Composer input carries a force-prompt sentinel; strip it from the
         # displayed/broadcast text but keep it on the line the loop consumes.
         forced = str(text).startswith(GUI_FORCE_PROMPT_PREFIX)
@@ -1011,7 +1203,7 @@ class ServeApp:
         rt.turn_record_pending = not is_internal_command
         if not is_internal_command:
             self.broadcaster.publish(
-                "turn_start", {"text": display, "chatId": self._active_chat_id()}
+                "turn_start", self._route(text=display)
             )
         return text
 
@@ -1125,14 +1317,24 @@ class ServeApp:
         rt.input_queue.put(line)
 
     def _get_or_spawn_runtime(self, chat_id: str) -> "_ChatRuntime":
-        """Return the chat's runtime, starting its loop thread on first use."""
+        """Return the chat's runtime, starting its loop thread on first use.
+
+        Keyed by the workspace-qualified composite so a chat in a newly-focused
+        workspace never reuses a same-id chat's runtime from another workspace.
+        """
         cid = str(chat_id or "")
+        wsid = str(getattr(self.agent, "workspace_id", "") or "").strip()
+        key = self._runtime_key(cid, wsid)
         with self._runtimes_lock:
-            rt = self._runtimes.get(cid)
+            rt = self._runtimes.get(key)
             if rt is not None:
                 return rt
-            rt = _ChatRuntime(cid)
-            self._runtimes[cid] = rt
+            try:
+                ws_cfg = str(getattr(self.agent, "workspace_config_dir", "") or "")
+            except Exception:
+                ws_cfg = ""
+            rt = _ChatRuntime(cid, wsid, ws_cfg)
+            self._runtimes[key] = rt
             rt.thread = threading.Thread(
                 target=self._run_chat_loop,
                 args=(rt,),
@@ -1286,24 +1488,31 @@ class ServeApp:
                 # runtime: it reloads ``_chat_state`` with the target
                 # workspace's chat index, swaps ``workspace_root`` /
                 # ``work_directory``, and may tear down workspace services / MCP
-                # runtime. Those are process-global (not per-session), so doing
-                # it while another chat's loop is mid-turn destroys that chat's
-                # execution environment: when the background chat finishes,
-                # ``find_chat_by_id`` no longer locates its record in the
-                # now-replaced ``_chat_state`` and its reply is silently dropped
-                # (never persisted to history) — exactly the "switch away while
-                # waiting and the reply is lost" symptom. Refuse the switch
-                # while any chat is actively running so the in-flight task keeps
-                # its workspace context and persists normally.
-                running_ids: list = []
+                # runtime.
+                #
+                # Switching is now ALLOWED even while a chat's loop is mid-turn
+                # (per product requirement: "allow switching to a chat in a
+                # different workspace while a task is running"). Before swapping
+                # the global state we flush every actively-running chat's
+                # in-memory messages to disk, so a background turn's reply is
+                # already persisted under its own workspace and is not lost when
+                # ``_chat_state`` is replaced.
                 try:
                     runner = getattr(agent, "_active_runtime_chat_ids", None)
-                    if callable(runner):
-                        running_ids = [str(x) for x in (runner() or []) if str(x)]
+                    running_ids = (
+                        [str(x) for x in (runner() or []) if str(x)]
+                        if callable(runner)
+                        else []
+                    )
+                    if running_ids:
+                        sync = getattr(agent, "_sync_active_chat_messages", None)
+                        if callable(sync):
+                            sync()
+                        save = getattr(agent, "_save_chat_state", None)
+                        if callable(save):
+                            save()
                 except Exception:
-                    running_ids = []
-                if running_ids:
-                    return False
+                    pass
 
                 from ..controllers.workspace_command_controller import (
                     workspace_switch_command,
@@ -1313,6 +1522,16 @@ class ServeApp:
                 # output so nothing leaks into the SSE stream.
                 with contextlib.redirect_stdout(io.StringIO()):
                     workspace_switch_command(agent, wsid)
+
+                # Focus changed: drop cached per-workspace persistence
+                # snapshots so any still-running background loop rebuilds a
+                # FRESH index snapshot from disk before its next save. This
+                # prevents a stale cached index (taken before the just-finished
+                # focused edits) from overwriting newer on-disk records. The
+                # newly-focused workspace now persists through the agent
+                # globals, so its cached ctx (if any) is no longer used.
+                with self._ws_persist_lock:
+                    self._ws_persist_ctx.clear()
             if cid:
                 with agent._chat_state_lock:
                     target = agent._resolve_chat_selector(cid)
@@ -1358,7 +1577,7 @@ class ServeApp:
         # them. ``state`` only re-syncs the snapshot (driving the active-chat
         # history reload and plan panel) and leaves turn/busy state intact.
         self.broadcaster.publish(
-            "state", {"state": _build_state(agent), "chatId": self._active_chat_id()}
+            "state", self._route(state=_build_state(agent))
         )
         return True
 
@@ -1409,7 +1628,7 @@ class ServeApp:
         # with the new locale without waiting for the next agent tick.
         try:
             self.broadcaster.publish(
-                "idle", {"state": _build_state(agent), "chatId": self._active_chat_id()}
+                "idle", self._route(state=_build_state(agent))
             )
         except Exception:
             pass
@@ -1578,7 +1797,7 @@ class ServeApp:
         # Push a fresh state snapshot to refresh any open settings page.
         try:
             self.broadcaster.publish(
-                "idle", {"state": _build_state(agent), "chatId": self._active_chat_id()}
+                "idle", self._route(state=_build_state(agent))
             )
         except Exception:
             pass
@@ -1914,7 +2133,7 @@ class ServeApp:
         # Push fresh state so the page reflects the change immediately.
         try:
             self.broadcaster.publish(
-                "idle", {"state": _build_state(self.agent), "chatId": self._active_chat_id()}
+                "idle", self._route(state=_build_state(self.agent))
             )
         except Exception:
             pass
@@ -2094,7 +2313,7 @@ class ServeApp:
             pass
         try:
             self.broadcaster.publish(
-                "idle", {"state": _build_state(self.agent), "chatId": self._active_chat_id()}
+                "idle", self._route(state=_build_state(self.agent))
             )
         except Exception:
             pass
@@ -2211,7 +2430,7 @@ class ServeApp:
             pass
         try:
             self.broadcaster.publish(
-                "idle", {"state": _build_state(self.agent), "chatId": self._active_chat_id()}
+                "idle", self._route(state=_build_state(self.agent))
             )
         except Exception:
             pass
@@ -2262,7 +2481,7 @@ class ServeApp:
             pass
         try:
             self.broadcaster.publish(
-                "idle", {"state": _build_state(self.agent), "chatId": self._active_chat_id()}
+                "idle", self._route(state=_build_state(self.agent))
             )
         except Exception:
             pass
@@ -2499,7 +2718,7 @@ class ServeApp:
         except Exception:
             return None
         self.broadcaster.publish(
-            "idle", {"state": _build_state(agent), "chatId": self._active_chat_id()}
+            "idle", self._route(state=_build_state(agent))
         )
         return cid
 
@@ -2530,8 +2749,9 @@ class ServeApp:
                 return False
             # Refuse to delete a chat whose loop is mid-task; the user should
             # interrupt it first.
+            rkey = self._runtime_key(rid, wsid or None)
             with self._runtimes_lock:
-                rt = self._runtimes.get(rid)
+                rt = self._runtimes.get(rkey)
                 if rt is not None and rt.busy.is_set():
                     return False
             with agent._chat_state_lock:
@@ -2548,13 +2768,15 @@ class ServeApp:
                     # its compose (draft) state and creates a chat on next send.
                     agent._chat_state["active"] = ""
                 agent._save_chat_state()
-            # Drop the deleted chat's runtime (if any) and its session.
+            # Drop the deleted chat's runtime (if any) and its session, keyed by
+            # the workspace-qualified composite.
+            skey = agent._session_registry_key_for(rid, wsid) if wsid else agent._session_registry_key(rid)
             with self._runtimes_lock:
-                self._runtimes.pop(rid, None)
+                self._runtimes.pop(rkey, None)
             try:
                 reg = agent.__dict__.get("_session_registry")
                 if isinstance(reg, dict):
-                    reg.pop(rid, None)
+                    reg.pop(skey, None)
             except Exception:
                 pass
             if remaining and was_active:
@@ -2572,7 +2794,7 @@ class ServeApp:
         except Exception:
             return False
         self.broadcaster.publish(
-            "idle", {"state": _build_state(agent), "chatId": self._active_chat_id()}
+            "idle", self._route(state=_build_state(agent))
         )
         return True
 
@@ -2683,7 +2905,11 @@ class ServeApp:
         # render clickable option chips instead of a raw text prompt.
         self.agent._ask_more_info_provider = self._ask_more_info_provider  # type: ignore[assignment]
 
-        bridge = _OutputBridge(self.broadcaster, chat_id_getter=self._active_chat_id)
+        bridge = _OutputBridge(
+            self.broadcaster,
+            chat_id_getter=self._active_chat_id,
+            workspace_id_getter=self._active_chat_workspace_id,
+        )
         self._bridge = bridge
         # GUI streaming mode: the runtime emits clean append-only deltas and
         # brackets the assistant reply with these hooks so the bridge can tag
@@ -2696,10 +2922,10 @@ class ServeApp:
         # model text + tool output for that round in natural order. Scoped to the
         # chat bound to the calling loop thread so parallel chats stay separate.
         self.agent._gui_round_begin = lambda: self.broadcaster.publish(  # type: ignore[attr-defined]
-            "round_start", {"chatId": self._active_chat_id()}
+            "round_start", self._route()
         )
         self.agent._gui_round_end = lambda: self.broadcaster.publish(  # type: ignore[attr-defined]
-            "round_end", {"chatId": self._active_chat_id()}
+            "round_end", self._route()
         )
         # When the model updates its plan mid-turn, push a fresh state snapshot
         # so the GUI's plan panel reflects it immediately. We use the dedicated
@@ -2709,7 +2935,7 @@ class ServeApp:
         # Plan-mode "Execute now" button appear before the model had finished
         # streaming its plan reply.
         self.agent._gui_plan_changed = lambda: self.broadcaster.publish(  # type: ignore[attr-defined]
-            "state", {"state": _build_state(self.agent), "chatId": self._active_chat_id()}
+            "state", self._route(state=_build_state(self.agent))
         )
         # The GUI renders its own layout, so disable terminal hard-wrapping and
         # force SGR color emission (stdout is not a TTY here). The bridge keeps
@@ -2743,6 +2969,75 @@ class ServeApp:
                 pass
         return 0
 
+    def _workspace_config_dir_for(self, workspace_id: str) -> Optional[Path]:
+        """Resolve a workspace's config dir (``…/.codewood``) by id, without
+        switching the agent's globals. Returns ``None`` if it can't be resolved.
+        """
+        wsid = str(workspace_id or "").strip()
+        if not wsid:
+            return None
+        agent = self.agent
+        # The focused workspace's dir is already on the agent.
+        try:
+            if wsid == str(getattr(agent, "workspace_id", "") or "").strip():
+                return Path(agent.workspace_config_dir)
+        except Exception:
+            pass
+        try:
+            wsmgr = getattr(agent, "_workspace_state_manager", None)
+            state = getattr(agent, "_workspaces_state", None) or {}
+            workspaces = state.get("workspaces") if isinstance(state, dict) else None
+            entry = workspaces.get(wsid) if isinstance(workspaces, dict) else None
+            if entry and wsmgr is not None:
+                return Path(wsmgr.workspace_storage_path(entry))
+        except Exception:
+            pass
+        return None
+
+    def _persist_ctx_for_workspace(
+        self, workspace_id: str, config_dir_hint: str = ""
+    ) -> Optional[Dict[str, Any]]:
+        """Lazy provider for a background workspace's persistence context.
+
+        Called by ``ChatStateManager`` only when a loop's workspace is NOT the
+        focused one. Builds (and caches per-workspace) ``{config_dir,
+        chat_state, lock}`` by reading that workspace's chat index from disk —
+        which is current because the loop persisted through the agent globals
+        while it was still focused. The cache is invalidated on every focus
+        switch so a later activation re-reads fresh disk state. Returns
+        ``None`` if the workspace's config dir can't be resolved.
+        """
+        wsid = str(workspace_id or "").strip()
+        if not wsid:
+            return None
+        with self._ws_persist_lock:
+            ctx = self._ws_persist_ctx.get(wsid)
+            if ctx is not None:
+                return ctx
+            # Prefer the dir captured at runtime spawn (always correct); fall
+            # back to deriving from the workspace registry.
+            cfg: Optional[Path] = None
+            hint = str(config_dir_hint or "").strip()
+            if hint:
+                cfg = Path(hint)
+            if cfg is None:
+                cfg = self._workspace_config_dir_for(wsid)
+            if cfg is None:
+                return None
+            try:
+                snapshot = self.agent._chat_state_manager.load_chat_state_snapshot(cfg)
+            except Exception:
+                return None
+            ctx = {
+                "config_dir": cfg,
+                "chat_state": snapshot,
+                # RLock: sync_active_chat_messages holds it then re-enters via
+                # save_chat_state (mirrors the agent's reentrant chat lock).
+                "lock": threading.RLock(),
+            }
+            self._ws_persist_ctx[wsid] = ctx
+            return ctx
+
     def _run_chat_loop(self, rt: "_ChatRuntime") -> None:
         """Run one chat's agent loop on its own thread, bound to its session.
 
@@ -2753,7 +3048,7 @@ class ServeApp:
         """
         try:
             try:
-                self.agent._bind_session(rt.chat_id)
+                self.agent._bind_session(rt.chat_id, rt.workspace_id)
             except Exception:
                 pass
 
@@ -2765,14 +3060,20 @@ class ServeApp:
             # this chat) without taking down the other chats' loops.
             try:
                 self.broadcaster.publish(
-                    "output", {"text": "\n[agent loop terminated]\n", "chatId": rt.chat_id}
+                    "output",
+                    {
+                        "text": "\n[agent loop terminated]\n",
+                        "chatId": rt.chat_id,
+                        "workspaceId": rt.workspace_id,
+                    },
                 )
             except Exception:
                 pass
         finally:
+            key = self._runtime_key(rt.chat_id, rt.workspace_id)
             with self._runtimes_lock:
-                if self._runtimes.get(rt.chat_id) is rt:
-                    self._runtimes.pop(rt.chat_id, None)
+                if self._runtimes.get(key) is rt:
+                    self._runtimes.pop(key, None)
 
 
 def _make_handler(app: ServeApp):
