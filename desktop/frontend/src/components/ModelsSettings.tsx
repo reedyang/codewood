@@ -445,6 +445,40 @@ export function ModelsSettings({ onDirtyChange, saveSignal }: ModelsSettingsProp
                           {showDetails && (
                             <div className="models-model-details">
                               <div className="models-field">
+                                <label>{t("models.contextWindow")}</label>
+                                <input
+                                  className="text-input"
+                                  placeholder={t("models.contextWindowPlaceholder")}
+                                  value={
+                                    m.context_window === undefined
+                                      ? ""
+                                      : String(m.context_window)
+                                  }
+                                  onChange={(e) =>
+                                    patchModel(idx, m.name, {
+                                      context_window:
+                                        e.target.value.trim() === ""
+                                          ? undefined
+                                          : e.target.value,
+                                    })
+                                  }
+                                />
+                              </div>
+                              <div className="models-field">
+                                <label className="models-effort">
+                                  <input
+                                    type="checkbox"
+                                    checked={m.multimodal !== false}
+                                    onChange={(e) =>
+                                      patchModel(idx, m.name, {
+                                        multimodal: e.target.checked,
+                                      })
+                                    }
+                                  />
+                                  {t("models.multimodal")}
+                                </label>
+                              </div>
+                              <div className="models-field">
                                 <label>{t("reasoning.label")}</label>
                                 <div className="models-effort-row">
                                   {FIXED_EFFORTS.map((level) => (
