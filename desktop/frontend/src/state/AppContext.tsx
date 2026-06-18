@@ -36,6 +36,20 @@ import {
 
 export type Theme = "light" | "dark" | "system";
 
+// Workspace-qualified key for the live turn / busy / ask-more-info maps. Chat
+// ids are only unique within a workspace, so these client-side maps must be
+// keyed by ``workspaceId`` + ``chatId`` to keep a chat's live state from
+// bleeding into a same-id chat in another workspace. An empty workspace id
+// degrades to the bare chat id so single-workspace behavior is unchanged.
+function chatKey(workspaceId: string, chatId: string): string {
+  const cid = String(chatId || "");
+  if (!cid) {
+    return "";
+  }
+  const ws = String(workspaceId || "");
+  return ws ? `${ws}\u0000${cid}` : cid;
+}
+
 function quoteArg(value: string): string {
   return `"${value.replace(/"/g, "")}"`;
 }
@@ -255,19 +269,23 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }, [state]);
 
   const activeChatId = state?.activeChatId ?? "";
+  const activeChatWsId = state?.workspace.id ?? "";
   useEffect(() => {
     activeChatIdRef.current = activeChatId;
-    // Opening (or switching to) a chat clears its unread marker.
-    if (activeChatId) {
+    // Opening (or switching to) a chat clears its unread marker. The unread
+    // set is keyed by the workspace-qualified bucket so we clear only the
+    // focused workspace's chat, never a same-id chat in another workspace.
+    const key = chatKey(activeChatWsId, activeChatId);
+    if (key) {
       setUnreadChatIds((prev) =>
-        prev[activeChatId]
+        prev[key]
           ? Object.fromEntries(
-              Object.entries(prev).filter(([id]) => id !== activeChatId),
+              Object.entries(prev).filter(([id]) => id !== key),
             )
           : prev,
       );
     }
-  }, [activeChatId]);
+  }, [activeChatId, activeChatWsId]);
 
   // Auto-open the plan panel when the active chat has a plan and either
   // (a) the plan just went from empty to non-empty (new plan), or
@@ -294,9 +312,18 @@ export function AppProvider({ children }: { children: ReactNode }) {
     turnsByChatRef.current = turnsByChat;
   }, [turnsByChat]);
 
+  // Live turn / busy / ask maps are keyed by a WORKSPACE-QUALIFIED composite
+  // (``workspaceId\x00chatId``), not the bare chat id: chat ids repeat across
+  // workspaces (``chat-1``, ``chat-2``, … per workspace), so a bare-id bucket
+  // would make a chat in one workspace render another workspace's same-id
+  // chat's turns/busy/messages after a focus switch. ``chatKey`` builds the
+  // composite; an empty workspace id degrades to the bare id (single-workspace
+  // / legacy behavior unchanged).
+  const activeWorkspaceId = state?.workspace.id ?? "";
+  const activeKey = chatKey(activeWorkspaceId, activeChatId);
   // The active chat's live turns / busy flag are what the chat view renders.
-  const turns = turnsByChat[activeChatId] ?? EMPTY_TURNS;
-  const busy = busyByChat[activeChatId] ?? false;
+  const turns = turnsByChat[activeKey] ?? EMPTY_TURNS;
+  const busy = busyByChat[activeKey] ?? false;
   // When set, the next `idle` event reloads chat history even if the active
   // chat id is unchanged (e.g. after `/chat edit` truncates the conversation).
   const pendingHistoryReloadRef = useRef(false);
@@ -642,6 +669,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         state?: AppState;
         text?: string;
         chatId?: string;
+        workspaceId?: string;
       };
       // Every per-chat event carries the id of the chat it belongs to. We must
       // NOT fall back to the focused chat: with several chats running in
@@ -651,6 +679,21 @@ export function AppProvider({ children }: { children: ReactNode }) {
       // stealing the real chat's render. Untagged events only sync state; the
       // turn/busy mutators below all no-op on an empty chatId.
       const chatId = String(data.chatId || "");
+      // Chat ids repeat across workspaces (``chat-1``, ``chat-2``, … are
+      // reassigned per workspace), so a background chat running in another
+      // workspace can share an id with a chat in the focused workspace. Route
+      // every per-chat mutation into a WORKSPACE-QUALIFIED bucket keyed by the
+      // EVENT's workspace, never the focused one: that way a background WS-A
+      // turn keeps accumulating into WS-A's bucket while the user views WS-B,
+      // and switching back to WS-A shows the live, still-streaming turn. The
+      // active selectors read the bucket for the focused workspace+chat.
+      //
+      // ``eventWsId`` falls back to the focused workspace when the backend
+      // doesn't tag the event (older backend / untagged priming events), so
+      // single-workspace behavior is unchanged.
+      const activeWsId = String(stateRef.current?.workspace?.id || "");
+      const eventWsId = String(data.workspaceId || "") || activeWsId;
+      const eventKey = chatKey(eventWsId, chatId);
       switch (event.event) {
         case "idle": {
           const next = data.state;
@@ -668,20 +711,34 @@ export function AppProvider({ children }: { children: ReactNode }) {
           // in-progress reply and the sidebar busy/blue dot with no
           // ``turn_start`` to restore them when the user switches back. So we
           // only terminate the turn when the backend agrees the chat is idle.
-          const stillRunning = Boolean(
-            chatId &&
-              next?.chats?.some(
-                (c) => String(c.id) === chatId && Boolean(c.running),
-              ),
-          );
+          // The snapshot's per-chat ``running`` flag only describes the chats
+          // of the workspace that owns this ``idle`` event. Resolve it against
+          // that workspace: if the event isn't for the focused workspace the
+          // freshly-applied ``next`` snapshot is for a DIFFERENT workspace, so
+          // we can't trust its chat list for the event's chat. In that case
+          // fall back to whether a live turn is still open in the event's
+          // bucket (it stays open until a real terminal idle for that chat).
+          const idleForFocused =
+            !eventWsId || !activeWsId || eventWsId === activeWsId;
+          const stillRunning = idleForFocused
+            ? Boolean(
+                chatId &&
+                  next?.chats?.some(
+                    (c) => String(c.id) === chatId && Boolean(c.running),
+                  ),
+              )
+            : false;
           if (!stillRunning) {
-            endActiveTurn(chatId);
-            setBusyForChat(chatId, false);
+            endActiveTurn(eventKey);
+            setBusyForChat(eventKey, false);
             // A turn that finishes in a chat the user isn't currently viewing
-            // leaves an unread marker (blue dot) until they open that chat.
-            if (chatId && chatId !== activeChatIdRef.current) {
+            // (different chat, or a chat in another workspace) leaves an unread
+            // marker until they open it. The unread set is keyed by the
+            // workspace-qualified bucket so it can't bleed across workspaces.
+            const focusedKey = chatKey(activeWsId, activeChatIdRef.current);
+            if (eventKey && eventKey !== focusedKey) {
               setUnreadChatIds((prev) =>
-                prev[chatId] ? prev : { ...prev, [chatId]: true },
+                prev[eventKey] ? prev : { ...prev, [eventKey]: true },
               );
             }
           }
@@ -703,24 +760,24 @@ export function AppProvider({ children }: { children: ReactNode }) {
           break;
         }
         case "turn_start": {
-          startTurn(String(data.text ?? ""), chatId);
-          setBusyForChat(chatId, true);
+          startTurn(String(data.text ?? ""), eventKey);
+          setBusyForChat(eventKey, true);
           break;
         }
         case "round_start": {
-          startRound(chatId);
+          startRound(eventKey);
           break;
         }
         case "round_end": {
-          endRound(chatId);
+          endRound(eventKey);
           break;
         }
         case "output": {
-          appendSegment("step", String(data.text ?? ""), chatId);
+          appendSegment("step", String(data.text ?? ""), eventKey);
           break;
         }
         case "assistant": {
-          appendSegment("answer", String(data.text ?? ""), chatId);
+          appendSegment("answer", String(data.text ?? ""), eventKey);
           break;
         }
         case "confirm": {
@@ -728,14 +785,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
           break;
         }
         case "ask_more_info": {
-          // Bucket per chat so switching chats while one is pending
-          // doesn't drop the panel; the value selector below picks the
-          // entry for the currently active chat.
+          // Bucket per workspace-qualified chat so switching chats (or
+          // workspaces) while one is pending doesn't drop the panel; the value
+          // selector below picks the entry for the focused workspace+chat.
           const req = event.data as AskMoreInfoRequest;
           const ownerChat = String(req.chatId || chatId || "");
           if (!ownerChat) {
             break;
           }
+          const ownerKey = chatKey(eventWsId, ownerChat);
           // Older backends may not send ``multiSelect``; default to
           // single-choice so the panel doesn't get stuck waiting for a
           // Submit click that the user has no reason to expect.
@@ -746,7 +804,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
           };
           setAskMoreInfoByChat((prev) => ({
             ...prev,
-            [ownerChat]: normalized,
+            [ownerKey]: normalized,
           }));
           break;
         }
@@ -832,17 +890,17 @@ export function AppProvider({ children }: { children: ReactNode }) {
       // optimistically, then forward the answer to the backend. We dismiss
       // first so a slow network round-trip doesn't leave a "live" panel
       // that the user could double-click.
-      const chatKey = activeChatId;
-      const current = chatKey ? askMoreInfoByChat[chatKey] : undefined;
+      const key = chatKey(activeWorkspaceIdRef.current, activeChatId);
+      const current = key ? askMoreInfoByChat[key] : undefined;
       if (!current) {
         return;
       }
       setAskMoreInfoByChat((prev) => {
-        if (!prev[chatKey]) {
+        if (!prev[key]) {
           return prev;
         }
         const next = { ...prev };
-        delete next[chatKey];
+        delete next[key];
         return next;
       });
       try {
@@ -870,8 +928,17 @@ export function AppProvider({ children }: { children: ReactNode }) {
     });
   }, []);
 
+  // Clears the live turns for a chat. The optional ``chatId`` is a BARE chat
+  // id (public API used by views/commands); it's resolved against the focused
+  // workspace into the composite bucket key. Defaults to the focused chat.
   const clearTurns = useCallback(
-    (chatId?: string) => clearLiveTurns(chatId ?? activeChatIdRef.current),
+    (chatId?: string) =>
+      clearLiveTurns(
+        chatKey(
+          activeWorkspaceIdRef.current,
+          chatId ?? activeChatIdRef.current,
+        ),
+      ),
     [clearLiveTurns],
   );
 
@@ -912,6 +979,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const loadChatHistory = useCallback(
     async (forChatId?: string) => {
       const cid = forChatId ?? activeChatIdRef.current;
+      // ``getChatHistory`` always returns the focused chat's history, so the
+      // live-turn bucket to reconcile is the focused workspace's composite
+      // key for ``cid``.
+      const key = chatKey(activeWorkspaceIdRef.current, cid);
       setHistoryLoading(true);
       try {
         const page = await client.getChatHistory(undefined, INITIAL_HISTORY);
@@ -920,18 +991,29 @@ export function AppProvider({ children }: { children: ReactNode }) {
         // (its user message, no final answer yet). Drop that trailing entry and
         // keep the live turn so the streaming content (and "Working…") survives
         // the switch; otherwise show full history and clear the settled turns.
-        const live = turnsByChatRef.current[cid] ?? [];
+        const live = turnsByChatRef.current[key] ?? [];
         const hasActive = live.some((tt) => tt.endedAt === null);
+        const hasSettledLive = live.some((tt) => tt.endedAt !== null);
         if (hasActive && page.turns.length > 0) {
           setHistoryTurns(page.turns.slice(0, -1));
           setHistoryStart(page.start);
           setHistoryTotal(page.total);
-          dropSettledLiveTurns(cid);
+          dropSettledLiveTurns(key);
+        } else if (hasSettledLive && page.turns.length === 0) {
+          // A background turn finished in this chat while it was unfocused —
+          // its full output is captured in the live bucket — but the persisted
+          // history came back empty (its disk flush hasn't landed yet, or a
+          // cross-workspace persistence race). Keep the live turns visible
+          // instead of clearing them, so the user still sees the reply on
+          // switch-back rather than a blank chat. The next history reload
+          // (after persistence settles) reconciles them.
+          setHistoryStart(0);
+          setHistoryTotal(0);
         } else {
           setHistoryTurns(page.turns);
           setHistoryStart(page.start);
           setHistoryTotal(page.total);
-          clearLiveTurns(cid);
+          clearLiveTurns(key);
         }
       } finally {
         setHistoryLoading(false);
@@ -1089,7 +1171,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       if (!ok) {
         return;
       }
-      clearLiveTurns(chatId);
+      clearLiveTurns(chatKey(wsId, chatId));
       if (wasActive && willBeEmpty) {
         // Chat-less workspace: enter compose mode so the user can type to create
         // a fresh chat instead of auto-creating one.
@@ -1130,13 +1212,17 @@ export function AppProvider({ children }: { children: ReactNode }) {
       // back in while the backend processes the edit and clears its own
       // pending state.
       if (activeChatId) {
-        const pending = askMoreInfoByChat[activeChatId];
+        const activeBucket = chatKey(
+          activeWorkspaceIdRef.current,
+          activeChatId,
+        );
+        const pending = askMoreInfoByChat[activeBucket];
         setAskMoreInfoByChat((prev) => {
-          if (!(activeChatId in prev)) {
+          if (!(activeBucket in prev)) {
             return prev;
           }
           const next = { ...prev };
-          delete next[activeChatId];
+          delete next[activeBucket];
           return next;
         });
         // The turn that surfaced the ask_more_info prompt is still blocked on
@@ -1147,7 +1233,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         // and emits ``idle``, then optimistically clear busy here so the
         // button flips back to "send" without waiting for the round-trip.
         if (pending) {
-          setBusyForChat(activeChatId, false);
+          setBusyForChat(activeBucket, false);
           try {
             await client.answerAskMoreInfo(pending.id, "");
           } catch {
@@ -1342,7 +1428,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     connected,
     now,
     confirmRequest,
-    askMoreInfo: activeChatId ? (askMoreInfoByChat[activeChatId] ?? null) : null,
+    askMoreInfo: activeKey ? (askMoreInfoByChat[activeKey] ?? null) : null,
     theme,
     lang,
     uiPrefs,

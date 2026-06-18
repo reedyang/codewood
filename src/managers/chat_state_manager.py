@@ -54,10 +54,88 @@ class ChatStateManager:
     def _now_text() -> str:
         return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
+    def _persist_ctx(self) -> Optional[Dict[str, Any]]:
+        """Thread-local persistence override for a background chat's workspace.
+
+        When set (by a loop thread whose chat belongs to a workspace OTHER than
+        the agent's currently-focused one), persistence must target that
+        workspace's index/dir/lock instead of the swapped-out agent globals.
+        Returns ``None`` on threads with no override (the focused loop, HTTP
+        and display threads), so the normal global path is used.
+        """
+        getter = getattr(self._agent, "_persist_workspace_ctx", None)
+        if not callable(getter):
+            return None
+        try:
+            ctx = getter()
+        except Exception:
+            return None
+        if not isinstance(ctx, dict):
+            return None
+        # The override only applies while this loop's workspace is NOT the
+        # agent's currently-focused one. When the user is focused on this
+        # chat's own workspace the globals already point at the right
+        # index/dir, so use them (and let cross-process merge-on-save logic
+        # run against the live in-memory index).
+        ctx_wsid = str(ctx.get("workspace_id") or "").strip()
+        if not ctx_wsid:
+            return None
+        focused = str(getattr(self._agent, "workspace_id", "") or "").strip()
+        if ctx_wsid == focused:
+            return None
+        # Resolve the concrete {config_dir, chat_state, lock} lazily via the
+        # installed provider so the index snapshot is read from disk AFTER the
+        # focus switch (the running loop persisted through the globals while it
+        # was focused, so disk is current at switch time). The provider caches
+        # per-workspace until the next focus switch invalidates it.
+        provider = ctx.get("provider")
+        if callable(provider):
+            try:
+                resolved = provider(ctx_wsid)
+            except Exception:
+                resolved = None
+            try:
+                from ..config.app_info import get_app_logger_root
+                from ..core.logging.app_logging import get_logger
+
+                cfg = resolved.get("config_dir") if isinstance(resolved, dict) else None
+                get_logger(f"{get_app_logger_root()}.serve.wsswitch").info(
+                    f"override ACTIVE ctx_ws={ctx_wsid} focused={focused} dir={cfg}"
+                )
+            except Exception:
+                pass
+            if isinstance(resolved, dict):
+                return resolved
+            return None
+        return ctx
+
+    def _active_chat_state(self) -> Dict[str, Any]:
+        """The in-memory chat index this thread should persist into."""
+        ctx = self._persist_ctx()
+        if ctx is not None:
+            state = ctx.get("chat_state")
+            if isinstance(state, dict):
+                return state
+        state = getattr(self._agent, "_chat_state", None)
+        return state if isinstance(state, dict) else {}
+
+    def _active_chat_state_lock(self):
+        ctx = self._persist_ctx()
+        if ctx is not None:
+            lock = ctx.get("lock")
+            if lock is not None:
+                return lock
+        return getattr(self._agent, "_chat_state_lock", None)
+
     def chat_state_path(self) -> Path:
         return self.chat_records_dir() / self._chat_state_file
 
     def chat_records_dir(self) -> Path:
+        ctx = self._persist_ctx()
+        if ctx is not None:
+            cfg = ctx.get("config_dir")
+            if cfg:
+                return Path(cfg) / "chats"
         return self._agent.workspace_config_dir / "chats"
 
     def _new_chat_record_filename(self) -> str:
@@ -250,7 +328,7 @@ class ChatStateManager:
         # shared index/records, or the stale-record sweep below could race a
         # sibling save. The lock is an RLock, so callers that already hold it
         # (activate_chat, sync_active_chat_messages, ...) are unaffected.
-        lock = getattr(self._agent, "_chat_state_lock", None)
+        lock = self._active_chat_state_lock()
         if lock is None:
             return self._save_chat_state_locked()
         with lock:
@@ -279,7 +357,7 @@ class ChatStateManager:
             index_path.parent.mkdir(parents=True, exist_ok=True)
             records_dir.mkdir(parents=True, exist_ok=True)
 
-            state = self._agent._chat_state if isinstance(self._agent._chat_state, dict) else {}
+            state = self._active_chat_state()
             chats = state.get("chats", [])
             if not isinstance(chats, list):
                 chats = []
@@ -441,10 +519,11 @@ class ChatStateManager:
             )
 
     def chat_entries(self) -> List[Dict[str, Any]]:
-        chats = self._agent._chat_state.get("chats", [])
+        state = self._active_chat_state()
+        chats = state.get("chats", [])
         if not isinstance(chats, list):
             chats = []
-            self._agent._chat_state["chats"] = chats
+            state["chats"] = chats
         return chats
 
     def find_chat_by_id(self, chat_id: str) -> Optional[Dict[str, Any]]:
@@ -571,6 +650,71 @@ class ChatStateManager:
                 persist=True,
             )
 
+    def load_chat_state_snapshot(self, config_dir: Path) -> Dict[str, Any]:
+        """Load a workspace's chat index+records into a standalone dict.
+
+        Unlike :meth:`load_chat_state` this neither mutates the agent's global
+        ``_chat_state`` nor activates a chat — it just returns an in-memory
+        snapshot ``{"version", "active", "chats":[...]}`` for the workspace at
+        ``config_dir``. Used to build a background loop's per-workspace
+        persistence context so its turns persist to ITS OWN workspace while the
+        agent's globals point at the focused workspace. Falls back to a default
+        single-chat state if the index is missing/corrupt, so a background save
+        never raises.
+        """
+        records_dir = Path(config_dir) / "chats"
+        index_path = records_dir / self._chat_state_file
+        try:
+            with open(index_path, "r", encoding="utf-8") as f:
+                loaded = json.load(f)
+            if not isinstance(loaded, dict):
+                raise ValueError("chat state root must be object")
+            if int(loaded.get("version") or 0) != CHAT_STATE_VERSION:
+                raise ValueError("chat state version mismatch")
+            chats_raw = loaded.get("chats")
+            if not isinstance(chats_raw, list):
+                raise ValueError("chats must be list")
+            chats: List[Dict[str, Any]] = []
+            for index_entry in chats_raw:
+                if not isinstance(index_entry, dict):
+                    continue
+                cid = str(index_entry.get("id") or "").strip()
+                record_file = str(index_entry.get("record_file") or "").strip()
+                if not cid or not record_file:
+                    continue
+                rel = Path(record_file)
+                if rel.is_absolute() or rel.name != record_file:
+                    continue
+                record_path = (records_dir / rel).resolve()
+                try:
+                    record_path.relative_to(records_dir.resolve())
+                except ValueError:
+                    continue
+                try:
+                    with open(record_path, "r", encoding="utf-8") as f:
+                        chat_raw = json.load(f)
+                except Exception:
+                    continue
+                if not isinstance(chat_raw, dict):
+                    continue
+                if str(chat_raw.get("id") or "").strip() != cid:
+                    continue
+                chat = self._validate_chat_entry(chat_raw)
+                chat["_record_file"] = record_file
+                chats.append(chat)
+            active = str(loaded.get("active") or "").strip()
+            if chats and (
+                not active or not any(str(c.get("id") or "") == active for c in chats)
+            ):
+                active = str(chats[0].get("id") or "")
+            return {
+                "version": CHAT_STATE_VERSION,
+                "active": active,
+                "chats": chats,
+            }
+        except Exception:
+            return self.default_chat_state()
+
     def refresh_chat_record_from_disk(self, chat_id: str) -> bool:
         """Re-read a single chat record from disk and merge it into memory.
 
@@ -629,8 +773,18 @@ class ChatStateManager:
         return False
 
     def sync_active_chat_messages(self) -> None:
-        with self._agent._chat_state_lock:
+        with self._active_chat_state_lock():
             chat = self.find_chat_by_id(self._agent.active_chat_id)
+            try:
+                from ..config.app_info import get_app_logger_root
+                from ..core.logging.app_logging import get_logger
+
+                get_logger(f"{get_app_logger_root()}.serve.wsswitch").info(
+                    f"sync chat={self._agent.active_chat_id} found={bool(chat)} "
+                    f"dir={self.chat_records_dir()} hist={len(list(getattr(self._agent,'conversation_history',None) or []))}"
+                )
+            except Exception:
+                pass
             if not chat:
                 return
             msgs = []
@@ -682,7 +836,7 @@ class ChatStateManager:
             self.save_chat_state()
 
     def persist_active_chat_usage_snapshot(self) -> None:
-        with self._agent._chat_state_lock:
+        with self._active_chat_state_lock():
             chat = self.find_chat_by_id(self._agent.active_chat_id)
             if not chat:
                 return
