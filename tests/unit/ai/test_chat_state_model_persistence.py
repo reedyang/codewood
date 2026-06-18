@@ -591,5 +591,327 @@ class ChatStateModelPersistenceTests(unittest.TestCase):
             self.assertEqual([m.get("content") for m in saved_msgs], ["persisted"])
 
 
+class RefreshChatRecordFromDiskTests(unittest.TestCase):
+    """Cross-process refresh: pull a chat record from disk into memory.
+
+    Codewood may run as multiple independent processes (e.g. TUI + GUI)
+    against the same workspace. When one process amends a chat record on
+    disk — most importantly when the TUI persists ``pending_ask_more_info``
+    while waiting on the user's selection — the other process must be able
+    to refresh its in-memory ``_chat_state`` so the panel (or any other
+    cross-process state) becomes visible without restarting.
+    """
+
+    def _bootstrap_two_processes(self, workspace: Path):
+        """Return ``(driver_manager, reader_manager)`` that share a workspace."""
+        driver_agent = _FakeAgent(workspace)
+        driver_manager = ChatStateManager(driver_agent, "chats.json")
+        driver_agent._chat_state = {
+            "version": CHAT_STATE_VERSION,
+            "active": "chat-1",
+            "chats": [
+                {
+                    "id": "chat-1",
+                    "name": "Shared",
+                    "name_source": "manual",
+                    "created_at": "",
+                    "updated_at": "",
+                    "model_provider": "openai",
+                    "model_name": "gpt-4.1",
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": "search gmail skills",
+                            "created_at": "2026-06-18 09:29:00",
+                        }
+                    ],
+                    "context_usage_percent": 0,
+                    "context_input_tokens": 0,
+                    "context_window": 0,
+                }
+            ],
+        }
+        driver_agent.active_chat_id = "chat-1"
+        driver_manager.save_chat_state()
+
+        reader_agent = _FakeAgent(workspace)
+        reader_manager = ChatStateManager(reader_agent, "chats.json")
+        reader_manager.load_chat_state()
+        return driver_manager, driver_agent, reader_manager, reader_agent
+
+    def test_refresh_picks_up_pending_ask_more_info_written_by_peer(self):
+        with tempfile.TemporaryDirectory() as td:
+            workspace = Path(td)
+            driver_manager, driver_agent, reader_manager, reader_agent = (
+                self._bootstrap_two_processes(workspace)
+            )
+
+            self.assertIsNone(
+                driver_manager.find_chat_by_id("chat-1").get("pending_ask_more_info")
+            )
+            self.assertIsNone(
+                reader_manager.find_chat_by_id("chat-1").get("pending_ask_more_info")
+            )
+
+            driver_chat = driver_manager.find_chat_by_id("chat-1")
+            driver_chat["pending_ask_more_info"] = {
+                "id": "tui-prompt-1",
+                "question": "pick a skill",
+                "options": ["a", "b"],
+                "multi_select": False,
+                "created_at": "2026-06-18 09:29:21",
+            }
+            driver_manager.save_chat_state()
+
+            self.assertIsNone(
+                reader_manager.find_chat_by_id("chat-1").get("pending_ask_more_info"),
+                msg="reader should not see disk-only updates until it refreshes",
+            )
+
+            self.assertTrue(reader_manager.refresh_chat_record_from_disk("chat-1"))
+
+            refreshed = reader_manager.find_chat_by_id("chat-1").get(
+                "pending_ask_more_info"
+            )
+            self.assertIsInstance(refreshed, dict)
+            self.assertEqual(refreshed.get("id"), "tui-prompt-1")
+            self.assertEqual(refreshed.get("options"), ["a", "b"])
+            self.assertEqual(refreshed.get("multi_select"), False)
+
+    def test_refresh_pulls_new_messages_written_by_peer(self):
+        with tempfile.TemporaryDirectory() as td:
+            workspace = Path(td)
+            driver_manager, driver_agent, reader_manager, reader_agent = (
+                self._bootstrap_two_processes(workspace)
+            )
+
+            driver_chat = driver_manager.find_chat_by_id("chat-1")
+            driver_chat["messages"].append(
+                {
+                    "role": "assistant",
+                    "content": "I found 8 skills, choose one.",
+                    "created_at": "2026-06-18 09:29:21",
+                }
+            )
+            driver_manager.save_chat_state()
+
+            self.assertTrue(reader_manager.refresh_chat_record_from_disk("chat-1"))
+
+            messages = reader_manager.find_chat_by_id("chat-1").get("messages") or []
+            self.assertEqual(len(messages), 2)
+            self.assertEqual(messages[-1].get("content"), "I found 8 skills, choose one.")
+
+    def test_refresh_unknown_chat_returns_false(self):
+        with tempfile.TemporaryDirectory() as td:
+            workspace = Path(td)
+            _driver, _drag, reader_manager, _rag = self._bootstrap_two_processes(
+                workspace
+            )
+            self.assertFalse(reader_manager.refresh_chat_record_from_disk("nope"))
+
+    def test_refresh_does_not_drop_in_memory_only_data_for_other_chats(self):
+        # When chat-1 is refreshed, chat-2 (which only exists in memory on
+        # the reader side) must NOT be removed: ``refresh_chat_record_from_disk``
+        # operates on a single record, never the whole index.
+        with tempfile.TemporaryDirectory() as td:
+            workspace = Path(td)
+            _drv, _da, reader_manager, reader_agent = self._bootstrap_two_processes(
+                workspace
+            )
+            reader_agent._chat_state["chats"].append(
+                {
+                    "id": "chat-2",
+                    "name": "Local only",
+                    "name_source": "manual",
+                    "created_at": "",
+                    "updated_at": "",
+                    "model_provider": "",
+                    "model_name": "",
+                    "messages": [],
+                    "context_usage_percent": 0,
+                    "context_input_tokens": 0,
+                    "context_window": 0,
+                }
+            )
+
+            self.assertTrue(reader_manager.refresh_chat_record_from_disk("chat-1"))
+
+            ids = [c.get("id") for c in reader_agent._chat_state["chats"]]
+            self.assertIn("chat-1", ids)
+            self.assertIn("chat-2", ids)
+
+
+class CrossProcessSaveMergeTests(unittest.TestCase):
+    """``save_chat_state`` must not clobber a peer's newer on-disk records.
+
+    Reproduces: GUI opens chat A; TUI (a separate process) sends a message
+    in chat A and persists it; the GUI then switches chats, which triggers
+    a full ``save_chat_state``. With the naive full-overwrite the GUI's
+    stale in-memory chat A wiped the TUI's freshly written message. The
+    merge-on-save keeps the newer disk record for chats this process does
+    not own.
+    """
+
+    def _make_chat(self, cid, name, updated_at, messages):
+        return {
+            "id": cid,
+            "name": name,
+            "name_source": "manual",
+            "created_at": "2026-06-18 09:00:00",
+            "updated_at": updated_at,
+            "model_provider": "openai",
+            "model_name": "gpt-4.1",
+            "messages": messages,
+            "context_usage_percent": 0,
+            "context_input_tokens": 0,
+            "context_window": 0,
+        }
+
+    def test_save_preserves_newer_disk_record_for_unowned_chat(self):
+        with tempfile.TemporaryDirectory() as td:
+            workspace = Path(td)
+            # GUI process loads chat A + B.
+            gui = _FakeAgent(workspace)
+            gui_mgr = ChatStateManager(gui, "chats.json")
+            gui._chat_state = {
+                "version": CHAT_STATE_VERSION,
+                "active": "chat-a",
+                "chats": [
+                    self._make_chat(
+                        "chat-a",
+                        "A",
+                        "2026-06-18 09:10:00",
+                        [{"role": "user", "content": "old A", "created_at": "2026-06-18 09:10:00"}],
+                    ),
+                    self._make_chat(
+                        "chat-b",
+                        "B",
+                        "2026-06-18 09:05:00",
+                        [{"role": "user", "content": "B msg", "created_at": "2026-06-18 09:05:00"}],
+                    ),
+                ],
+            }
+            gui.active_chat_id = "chat-a"
+            gui_mgr.save_chat_state()
+
+            # TUI process (separate ChatStateManager) sends a message in
+            # chat A and persists with a NEWER updated_at.
+            tui = _FakeAgent(workspace)
+            tui_mgr = ChatStateManager(tui, "chats.json")
+            tui_mgr.load_chat_state()
+            tui.active_chat_id = "chat-a"
+            tui_chat_a = tui_mgr.find_chat_by_id("chat-a")
+            tui_chat_a["messages"].append(
+                {"role": "assistant", "content": "TUI reply", "created_at": "2026-06-18 09:20:00"}
+            )
+            tui_chat_a["updated_at"] = "2026-06-18 09:20:00"
+            tui_mgr.save_chat_state()
+
+            # GUI switches focus to chat B and saves. Its in-memory chat A
+            # is now stale (still "old A"); the save MUST NOT overwrite the
+            # newer disk record for chat A.
+            gui._chat_state["active"] = "chat-b"
+            gui.active_chat_id = "chat-b"
+            gui_mgr.save_chat_state()
+
+            # Verify chat A on disk still has the TUI's message.
+            fresh = _FakeAgent(workspace)
+            fresh_mgr = ChatStateManager(fresh, "chats.json")
+            fresh_mgr.load_chat_state()
+            chat_a = fresh_mgr.find_chat_by_id("chat-a")
+            contents = [m.get("content") for m in (chat_a.get("messages") or [])]
+            self.assertIn("TUI reply", contents)
+            # And the GUI's in-memory copy got refreshed to the disk version.
+            gui_chat_a = gui_mgr.find_chat_by_id("chat-a")
+            gui_contents = [m.get("content") for m in (gui_chat_a.get("messages") or [])]
+            self.assertIn("TUI reply", gui_contents)
+
+    def test_save_overwrites_owned_active_chat_even_if_disk_is_newer(self):
+        # The active chat is owned by this process; its in-memory copy is
+        # authoritative and must always be written, even when a stale disk
+        # timestamp happens to look newer.
+        with tempfile.TemporaryDirectory() as td:
+            workspace = Path(td)
+            gui = _FakeAgent(workspace)
+            gui_mgr = ChatStateManager(gui, "chats.json")
+            gui._chat_state = {
+                "version": CHAT_STATE_VERSION,
+                "active": "chat-a",
+                "chats": [
+                    self._make_chat(
+                        "chat-a",
+                        "A",
+                        "2026-06-18 09:10:00",
+                        [{"role": "user", "content": "v1", "created_at": "2026-06-18 09:10:00"}],
+                    )
+                ],
+            }
+            gui.active_chat_id = "chat-a"
+            gui_mgr.save_chat_state()
+
+            # Peer writes an even newer chat A.
+            peer = _FakeAgent(workspace)
+            peer_mgr = ChatStateManager(peer, "chats.json")
+            peer_mgr.load_chat_state()
+            peer.active_chat_id = "chat-a"
+            pc = peer_mgr.find_chat_by_id("chat-a")
+            pc["messages"] = [{"role": "user", "content": "peer", "created_at": "2026-06-18 09:30:00"}]
+            pc["updated_at"] = "2026-06-18 09:30:00"
+            peer_mgr.save_chat_state()
+
+            # GUI keeps chat-a active and edits it, then saves. Because the
+            # GUI owns the active chat, its content wins.
+            gui_a = gui_mgr.find_chat_by_id("chat-a")
+            gui_a["messages"] = [{"role": "user", "content": "gui edit", "created_at": "2026-06-18 09:40:00"}]
+            gui_a["updated_at"] = "2026-06-18 09:40:00"
+            gui_mgr.save_chat_state()
+
+            fresh = _FakeAgent(workspace)
+            fresh_mgr = ChatStateManager(fresh, "chats.json")
+            fresh_mgr.load_chat_state()
+            chat_a = fresh_mgr.find_chat_by_id("chat-a")
+            contents = [m.get("content") for m in (chat_a.get("messages") or [])]
+            self.assertEqual(contents, ["gui edit"])
+
+    def test_save_does_not_delete_peer_created_record(self):
+        # A record on disk that this process never loaded (a chat a peer
+        # created) must survive this process's save-time stale sweep.
+        with tempfile.TemporaryDirectory() as td:
+            workspace = Path(td)
+            gui = _FakeAgent(workspace)
+            gui_mgr = ChatStateManager(gui, "chats.json")
+            gui._chat_state = {
+                "version": CHAT_STATE_VERSION,
+                "active": "chat-a",
+                "chats": [
+                    self._make_chat("chat-a", "A", "2026-06-18 09:10:00", []),
+                ],
+            }
+            gui.active_chat_id = "chat-a"
+            gui_mgr.save_chat_state()
+
+            # Peer creates chat-z directly on disk (record + index entry).
+            peer_record = "ff00ff00ff00ff00ff00ff00ff00ff00.json"
+            (workspace / "chats" / peer_record).write_text(
+                json.dumps(
+                    {
+                        "id": "chat-z",
+                        "name": "Peer",
+                        "name_source": "manual",
+                        "created_at": "",
+                        "updated_at": "2026-06-18 09:15:00",
+                        "messages": [],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            # GUI saves again (chat-z is unknown to it). The peer record
+            # must NOT be swept.
+            gui_mgr.save_chat_state()
+            self.assertTrue((workspace / "chats" / peer_record).exists())
+
+
 if __name__ == "__main__":
     unittest.main()

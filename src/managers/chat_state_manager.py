@@ -201,7 +201,7 @@ class ChatStateManager:
                 raise ValueError("message item must be object")
             messages.append(self._normalize_message(item))
 
-        return {
+        entry: Dict[str, Any] = {
             "id": cid,
             "name": name,
             "name_source": source,
@@ -215,6 +215,15 @@ class ChatStateManager:
             "context_input_tokens": int(raw.get("context_input_tokens") or 0),
             "context_window": int(raw.get("context_window") or 0),
         }
+        # Preserve cross-process clarifying-prompt state. Another codewood
+        # process (typically the TUI) writes ``pending_ask_more_info`` onto
+        # the chat record while it waits for the user's selection; this
+        # process needs to surface the same panel when it focuses the chat,
+        # so keep the field as-is rather than dropping it during validation.
+        pending = raw.get("pending_ask_more_info")
+        if isinstance(pending, dict):
+            entry["pending_ask_more_info"] = dict(pending)
+        return entry
 
     def default_chat_state(self) -> Dict[str, Any]:
         default_chat = self.new_chat_entry("chat-1")
@@ -247,6 +256,22 @@ class ChatStateManager:
         with lock:
             return self._save_chat_state_locked()
 
+    @staticmethod
+    def _parse_record_timestamp(value: Any) -> float:
+        """Parse a chat ``updated_at`` text into a comparable epoch float.
+
+        Returns ``0.0`` for missing/unparseable values so a record that
+        lacks a timestamp never "wins" a freshness comparison against one
+        that has a real timestamp.
+        """
+        text = str(value or "").strip()
+        if not text:
+            return 0.0
+        try:
+            return datetime.strptime(text, "%Y-%m-%d %H:%M:%S").timestamp()
+        except Exception:
+            return 0.0
+
     def _save_chat_state_locked(self) -> None:
         try:
             index_path = self.chat_state_path()
@@ -258,6 +283,23 @@ class ChatStateManager:
             chats = state.get("chats", [])
             if not isinstance(chats, list):
                 chats = []
+
+            active = str(state.get("active") or "").strip()
+            # Chats this process is the authoritative writer for: the
+            # currently-active chat plus any chat it owns a live runtime
+            # for. For every OTHER chat we must avoid clobbering a record
+            # another codewood process (e.g. a concurrent TUI) may have
+            # amended on disk since we loaded it — otherwise switching
+            # chats in one process would silently roll back messages the
+            # other process just wrote. See task: "GUI switch chat wipes
+            # the message the TUI just sent".
+            owned_chat_ids = {active} if active else set()
+            try:
+                runtimes = getattr(self._agent, "_active_runtime_chat_ids", None)
+                if callable(runtimes):
+                    owned_chat_ids |= {str(x) for x in (runtimes() or []) if str(x)}
+            except Exception:
+                pass
 
             index_chats = []
             current_record_paths = set()
@@ -271,6 +313,44 @@ class ChatStateManager:
                 record_path = self._resolve_chat_record_path(record_file)
                 current_record_paths.add(record_path.resolve())
                 record_path.parent.mkdir(parents=True, exist_ok=True)
+
+                # For a chat this process does not own, prefer a newer
+                # on-disk record (written by a peer process) over our
+                # possibly-stale in-memory copy. We read the disk record,
+                # and if it is strictly newer we both keep it on disk
+                # (skip the overwrite) and refresh our in-memory copy so
+                # subsequent reads/saves stay consistent.
+                if cid not in owned_chat_ids and record_path.exists():
+                    try:
+                        with open(record_path, "r", encoding="utf-8") as f:
+                            disk_raw = json.load(f)
+                    except Exception:
+                        disk_raw = None
+                    if isinstance(disk_raw, dict) and str(disk_raw.get("id") or "") == cid:
+                        disk_ts = self._parse_record_timestamp(disk_raw.get("updated_at"))
+                        mem_ts = self._parse_record_timestamp(chat.get("updated_at"))
+                        if disk_ts > mem_ts:
+                            try:
+                                refreshed = self._validate_chat_entry(disk_raw)
+                                refreshed["_record_file"] = record_file
+                                chat.clear()
+                                chat.update(refreshed)
+                            except Exception:
+                                pass
+                            index_chats.append(
+                                {
+                                    "id": cid,
+                                    "name": str(chat.get("name") or "New Chat"),
+                                    "name_source": str(chat.get("name_source") or "default"),
+                                    "created_at": str(chat.get("created_at") or ""),
+                                    "updated_at": str(chat.get("updated_at") or ""),
+                                    "model_provider": str(chat.get("model_provider") or ""),
+                                    "model_name": str(chat.get("model_name") or ""),
+                                    "record_file": record_file,
+                                }
+                            )
+                            continue
+
                 record_payload = {
                     k: v for k, v in chat.items() if not str(k).startswith("_")
                 }
@@ -289,7 +369,6 @@ class ChatStateManager:
                     }
                 )
 
-            active = str(state.get("active") or "").strip()
             index_payload = {
                 "version": CHAT_STATE_VERSION,
                 "active": active,
@@ -298,14 +377,45 @@ class ChatStateManager:
             with open(index_path, "w", encoding="utf-8") as f:
                 json.dump(index_payload, f, ensure_ascii=False, indent=2)
 
+            # Only sweep record files we know used to belong to this index
+            # and are now gone from memory. A record on disk that this
+            # process never had in memory may have been created by another
+            # codewood process — deleting it would destroy a peer's chat,
+            # so leave unknown records untouched.
+            known_record_files = set()
+            try:
+                known = getattr(self._agent, "_known_record_files_seen", None)
+                if isinstance(known, set):
+                    known_record_files = known
+            except Exception:
+                known_record_files = set()
             for stale in records_dir.glob("*.json"):
                 try:
                     if stale.resolve() == index_path.resolve():
                         continue
-                    if stale.resolve() not in current_record_paths:
-                        stale.unlink()
+                    if stale.resolve() in current_record_paths:
+                        continue
+                    if stale.name not in known_record_files:
+                        # Unknown to this process: assume a peer owns it.
+                        continue
+                    stale.unlink()
                 except Exception:
                     pass
+
+            # Remember every record file we just wrote so a future save can
+            # safely sweep one that genuinely disappears from this process's
+            # memory (e.g. the user deleted the chat here).
+            try:
+                seen = getattr(self._agent, "_known_record_files_seen", None)
+                if not isinstance(seen, set):
+                    seen = set()
+                    self._agent._known_record_files_seen = seen
+                for entry in index_chats:
+                    rf = str(entry.get("record_file") or "").strip()
+                    if rf:
+                        seen.add(rf)
+            except Exception:
+                pass
         except Exception as e:
             print(
                 translate(
@@ -407,6 +517,21 @@ class ChatStateManager:
                 chats.append(chat)
             if not chats:
                 raise ValueError("chats empty")
+            # Seed the set of record files this process is aware of, so the
+            # save-time stale sweep only ever deletes records that were
+            # loaded here (and later removed locally) — never a record a
+            # peer process created that this process simply hasn't seen.
+            try:
+                seen = getattr(self._agent, "_known_record_files_seen", None)
+                if not isinstance(seen, set):
+                    seen = set()
+                    self._agent._known_record_files_seen = seen
+                for c in chats:
+                    rf = str(c.get("_record_file") or "").strip()
+                    if rf:
+                        seen.add(rf)
+            except Exception:
+                pass
             active = str(loaded.get("active") or "").strip()
             if not active or not any(str(c.get("id") or "") == active for c in chats):
                 raise ValueError("active chat invalid")
@@ -430,6 +555,63 @@ class ChatStateManager:
                 print_history=False,
                 persist=True,
             )
+
+    def refresh_chat_record_from_disk(self, chat_id: str) -> bool:
+        """Re-read a single chat record from disk and merge it into memory.
+
+        Codewood can run as several independent processes against the same
+        workspace (e.g. a TUI session and a GUI window). Each process loads
+        ``_chat_state`` once at startup; when another process amends a chat
+        on disk (most importantly, persists ``pending_ask_more_info`` while
+        waiting on the user's selection) this process won't notice unless
+        it explicitly re-reads the record. Call this just before surfacing
+        a chat the local process does not own a live runtime for, so the
+        GUI can render the prompt panel the TUI is currently driving (and
+        replay any messages that landed since startup).
+
+        Returns ``True`` when the record was successfully reloaded, else
+        ``False`` (missing file, unknown chat, parse failure, etc.). The
+        in-memory chat index is left untouched on failure.
+        """
+        cid = str(chat_id or "").strip()
+        if not cid:
+            return False
+        agent = self._agent
+        with agent._chat_state_lock:
+            chat = self.find_chat_by_id(cid)
+            if not chat:
+                return False
+            record_file = str(chat.get("_record_file") or "").strip()
+            if not record_file:
+                return False
+            try:
+                record_path = self._resolve_chat_record_path(record_file)
+            except Exception:
+                return False
+            if not record_path.exists():
+                return False
+            try:
+                with open(record_path, "r", encoding="utf-8") as f:
+                    raw = json.load(f)
+            except Exception:
+                return False
+            if not isinstance(raw, dict):
+                return False
+            if str(raw.get("id") or "").strip() != cid:
+                return False
+            try:
+                refreshed = self._validate_chat_entry(raw)
+            except Exception:
+                return False
+            refreshed["_record_file"] = record_file
+            chats = self._agent._chat_state.get("chats")
+            if not isinstance(chats, list):
+                return False
+            for idx, entry in enumerate(chats):
+                if isinstance(entry, dict) and str(entry.get("id") or "") == cid:
+                    chats[idx] = refreshed
+                    return True
+        return False
 
     def sync_active_chat_messages(self) -> None:
         with self._agent._chat_state_lock:
