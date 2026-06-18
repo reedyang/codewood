@@ -15,6 +15,18 @@ from ..config.app_info import get_app_runtime_attr_name
 
 _WIN_DRIVE_BANG = re.compile(r"^([A-Za-z]:)(/.*)?$")
 _ANSI_SGR_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+# Private-use sentinels for the canonical attachment envelope, kept identical
+# to the GUI (desktop/frontend/src/utils/attachments.ts) so a message authored
+# in either client carries file references in the same wire format. Each pinned
+# file is hoisted to the message head as ``\uE100ATTACH:<relpath>\uE101``.
+ATTACH_OPEN = "\uE100"
+ATTACH_CLOSE = "\uE101"
+ATTACH_PREFIX = "ATTACH:"
+# A recognizable "@<workspace-relative-path>" file reference the completion
+# inserts and the submit-time hoist promotes into the ATTACH envelope. The
+# path token excludes whitespace and the sentinels; the leading boundary is the
+# line start or whitespace so an email-like "a@b" is never misread as a ref.
+_AT_FILE_REF_RE = re.compile(r"(?:(?<=\s)|^)@([^\s\uE100\uE101]+)")
 MULTILINE_INDENT = "  "
 # Cap the input area to behave like a GUI text box: it grows with the content
 # up to this many visible rows, then stops growing and scrolls internally.
@@ -1405,11 +1417,15 @@ class FileCompleter(Completer):
             if at_idx >= 0:
                 file_matches = self._get_at_file_completions(at_part)
                 if file_matches:
-                    # Replace the whole "@partial" fragment with "@<relpath> ".
-                    # Keeping the leading "@" makes the inserted token read as a
-                    # deliberate file reference (not a bare path), and the
-                    # trailing space ends the "@..." fragment so the completion
-                    # menu dismisses itself instead of lingering.
+                    # Replace the whole "@partial" fragment (including the
+                    # leading "@") with "@<workspace-relative-path> ". Keeping
+                    # the leading "@" makes the inserted token a recognizable
+                    # file-reference marker that the submit-time hoist
+                    # (``_hoist_at_file_references``) can pick off and promote
+                    # into the canonical ATTACH envelope — so the GUI renders
+                    # the same attachment chip on reload. The trailing space
+                    # ends the "@..." fragment so the completion menu dismisses
+                    # itself instead of lingering on the now-complete path.
                     spos = -(len(at_part) + 1)
                     seen = set()
                     for mc in file_matches:
@@ -1421,7 +1437,7 @@ class FileCompleter(Completer):
                         # for disambiguation when multiple files share a name.
                         display = leaf if leaf == mc else f"{leaf}  ({mc})"
                         yield Completion(
-                            f"{mc} ",
+                            f"@{mc} ",
                             start_position=spos,
                             display=display,
                         )
@@ -2900,6 +2916,70 @@ class PromptToolkitInputHandler:
             return None
         return state["result"]
 
+    def _hoist_at_file_references(self, text: str) -> str:
+        """Promote inline ``@<workspace-relative-path>`` references to the
+        canonical ATTACH envelope at the message head.
+
+        The completion inserts ``@<relpath>`` markers inline. On submit we
+        rewrite each marker that resolves to an existing workspace file into a
+        leading ``\\uE100ATTACH:<relpath>\\uE101`` line (the same wire format
+        the GUI emits via ``composeMessageText``) and strip it from the body.
+        This keeps file references identical across the TUI and GUI clients, so
+        a message authored in one renders as an attachment chip in the other.
+
+        References that don't resolve to a real file are left untouched as
+        literal text (e.g. an ``@mention`` the user typed deliberately), so we
+        never silently alter free-form prose.
+        """
+        raw = str(text or "")
+        if "@" not in raw:
+            return raw
+        try:
+            base = Path(self.workspace_directory or self.work_directory).resolve()
+        except Exception:
+            return raw
+        attach_paths: List[str] = []
+        seen: set = set()
+
+        def _is_workspace_file(rel: str) -> bool:
+            cleaned = rel.strip().strip("\"'")
+            if not cleaned:
+                return False
+            try:
+                # Reject path-escape attempts; only accept paths that resolve
+                # to a real file inside the workspace root.
+                target = (base / cleaned).resolve()
+                target.relative_to(base)
+                return target.is_file()
+            except Exception:
+                return False
+
+        def _replace(m: "re.Match[str]") -> str:
+            rel = m.group(1) or ""
+            # Only trim a trailing period/comma/semicolon/paren so a reference
+            # at the end of a sentence ("see @a/b.py.") still resolves.
+            candidate = rel.rstrip(".,;)")
+            trailer = rel[len(candidate):]
+            if not _is_workspace_file(candidate):
+                return m.group(0)
+            norm = candidate.replace("\\", "/")
+            if norm not in seen:
+                seen.add(norm)
+                attach_paths.append(norm)
+            # Remove the inline marker from the body (the head envelope carries
+            # it). Preserve any trimmed trailing punctuation.
+            return trailer
+
+        body = _AT_FILE_REF_RE.sub(_replace, raw)
+        if not attach_paths:
+            return raw
+        # Collapse any whitespace left where markers were removed.
+        body = re.sub(r"[ \t]{2,}", " ", body).strip()
+        head = "\n".join(
+            f"{ATTACH_OPEN}{ATTACH_PREFIX}{p}{ATTACH_CLOSE}" for p in attach_paths
+        )
+        return f"{head}\n\n{body}" if body else head
+
     def get_input_with_completion(
         self,
         prompt: str,
@@ -3061,9 +3141,21 @@ class PromptToolkitInputHandler:
                 else:
                     user_input = f"!{shell_text}"
             
-            # Save to history.
+            # Save to history (the readable form the user typed, before the
+            # attachment hoist, so recalling it shows the same "@<path>" text).
             if user_input:
                 self.history.append(user_input)
+
+            # Promote inline "@<workspace-relative-path>" references to the
+            # canonical ATTACH head envelope so the message carries file
+            # references in the same wire format as the GUI. Skip shell-mode
+            # commands and slash commands, which never carry file attachments.
+            if (
+                user_input
+                and not bool(getattr(self, "_shell_mode_active", False))
+                and not user_input.lstrip().startswith(("!", "/"))
+            ):
+                user_input = self._hoist_at_file_references(user_input)
 
             return user_input
             

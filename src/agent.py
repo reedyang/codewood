@@ -2715,7 +2715,20 @@ class Agent:
         def _bracket(m: "re.Match[str]") -> str:
             return color(m.group(0))
 
+        def _attach(m: "re.Match[str]") -> str:
+            path = (m.group(1) or "").strip()
+            return color(f"[file: {path}]")
+
         out = raw
+        # Canonical attachment envelope (shared with the GUI):
+        # ``\uE100ATTACH:<relpath>\uE101`` -> a readable, highlighted file pill.
+        # Strips any trailing newline the head block uses to separate entries
+        # so the echo reads as inline pills instead of a stack of raw lines.
+        out = re.sub(
+            "\uE100ATTACH:([^\uE100\uE101\r\n]+)\uE101[ \t]*\r?\n?",
+            _attach,
+            out,
+        )
         # Existing GUI bracket pills -> just colorize.
         out = re.sub(
             r"\[skill:\s*[^\]\r\n]+?\s*\]",
