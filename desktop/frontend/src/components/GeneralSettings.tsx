@@ -1,6 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import { useApp } from "../state/AppContext";
+import { SUPPORTED_LANGS, normalizeLang } from "../i18n";
 import type { GeneralConfig } from "../api/types";
+
+const langLabel = (code: string) => (code === "zh-CN" ? "简体中文" : "English");
 
 interface GeneralSettingsProps {
   /** Kept for compatibility with ``SettingsView`` even though the page now
@@ -13,7 +16,7 @@ interface GeneralSettingsProps {
  *  ``config.jsonc`` so there is no Save button and no leave-confirmation
  *  prompt — losing focus or navigating away can't lose state. */
 export function GeneralSettings({ onDirtyChange }: GeneralSettingsProps) {
-  const { getGeneralConfig, saveGeneralConfig, t } = useApp();
+  const { state, setGuiLanguage, getGeneralConfig, saveGeneralConfig, t } = useApp();
   const [draft, setDraft] = useState<GeneralConfig | null>(null);
   // ``max_tool_rounds`` accepts an empty input meaning "unlimited"; we hold
   // the raw text so an in-progress edit doesn't get re-normalized while the
@@ -107,6 +110,23 @@ export function GeneralSettings({ onDirtyChange }: GeneralSettingsProps) {
   return (
     <div className="settings-page">
       <h2 className="settings-page-title">{t("settings.page.general")}</h2>
+
+      <div className="setting-row">
+        <label htmlFor="general-language">{t("settings.language")}</label>
+        <select
+          id="general-language"
+          className="select"
+          aria-label={t("settings.language")}
+          value={normalizeLang(state?.language)}
+          onChange={(e) => void setGuiLanguage(e.target.value)}
+        >
+          {SUPPORTED_LANGS.map((code) => (
+            <option key={code} value={code}>
+              {langLabel(code)}
+            </option>
+          ))}
+        </select>
+      </div>
 
       <div className="setting-row">
         <label htmlFor="general-auto-compact">{t("general.autoCompactTrigger")}</label>

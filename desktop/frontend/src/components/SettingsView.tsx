@@ -1,6 +1,5 @@
 import { useEffect, useState, type CSSProperties, type MouseEvent as ReactMouseEvent } from "react";
 import { useApp, type Theme } from "../state/AppContext";
-import { SUPPORTED_LANGS, normalizeLang } from "../i18n";
 import { Icon, type IconName } from "./Icon";
 import { ModelsSettings } from "./ModelsSettings";
 import { GeneralSettings } from "./GeneralSettings";
@@ -28,7 +27,7 @@ function loadNavWidth(): number {
 }
 
 export function SettingsView() {
-  const { state, theme, setTheme, setGuiLanguage, closeSettings, t } = useApp();
+  const { theme, setTheme, closeSettings, t } = useApp();
   const [page, setPage] = useState<PageId>("general");
   const [navWidth, setNavWidth] = useState(loadNavWidth);
   const [resizing, setResizing] = useState(false);
@@ -139,8 +138,6 @@ export function SettingsView() {
     window.addEventListener("mouseup", onUp);
   };
 
-  const langLabel = (code: string) => (code === "zh-CN" ? "简体中文" : "English");
-
   const pages: { id: PageId; label: string; icon: IconName }[] = [
     { id: "general", label: t("settings.page.general"), icon: "gear" },
     { id: "appearance", label: t("settings.page.appearance"), icon: "sun" },
@@ -197,22 +194,6 @@ export function SettingsView() {
                   </button>
                 ))}
               </div>
-            </div>
-
-            <div className="setting-row">
-              <label>{t("settings.language")}</label>
-              <select
-                className="select"
-                aria-label={t("settings.language")}
-                value={normalizeLang(state?.language)}
-                onChange={(e) => void setGuiLanguage(e.target.value)}
-              >
-                {SUPPORTED_LANGS.map((code) => (
-                  <option key={code} value={code}>
-                    {langLabel(code)}
-                  </option>
-                ))}
-              </select>
             </div>
           </div>
         )}
