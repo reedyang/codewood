@@ -155,6 +155,21 @@ html[data-has-bg] {
   );
 }
 
+/* When a background image is active, pop-up menus opt OUT of the slider-driven
+   translucency so the background barely bleeds through and the menu text stays
+   crisp. They paint from the always-opaque solid token at a high (96%) alpha —
+   nearly solid, just enough to feel cohesive with the translucent UI. This
+   covers the top menu-bar menus (``.menubar-menu``), the composer "+" menu and
+   the model / execution-policy dropdowns plus their submenus (all
+   ``.dropdown-menu``), generic context menus, and the @-mention popup. */
+html[data-has-bg] .context-menu,
+html[data-has-bg] .dropdown-menu,
+html[data-has-bg] .menubar-menu,
+html[data-has-bg] .model-flyout,
+html[data-has-bg] .rich-composer-popup {
+  background: color-mix(in srgb, var(--bg-elevated-solid) 96%, transparent);
+}
+
 /* Background image preview thumbnail in the Appearance settings page. Lets the
    user confirm the chosen image actually loaded (independent of the live
    full-window background layer). */
