@@ -36,6 +36,27 @@ class UserPreferencesPatchTool(BaseTool):
     }
 
     def execute(self, agent: Any, params: Dict[str, Any]) -> Dict[str, Any]:
-        from ._delegation import delegate_agent_state
+        params = params if isinstance(params, dict) else {}
+        try:
+            from pathlib import Path
 
-        return delegate_agent_state(agent, "user_preferences_patch", params if isinstance(params, dict) else {})
+            from ..core.state import user_preferences_manager as _upm
+
+            op = str(params.get("operation") or "upsert_section").strip().lower()
+            if op == "replace_body":
+                return _upm.replace_body(
+                    Path(agent.config_dir),
+                    str(params.get("markdown_body") or ""),
+                )
+            if op == "upsert_section":
+                sh = str(params.get("section_heading") or "").strip()
+                if not sh:
+                    return {
+                        "success": False,
+                        "error": "user_preferences_patch upsert_section requires section_heading",
+                    }
+                sb = str(params.get("section_body") or "")
+                return _upm.upsert_section(Path(agent.config_dir), sh, sb)
+            return {"success": False, "error": f"unknown operation: {op}"}
+        except Exception as e:
+            return {"success": False, "error": str(e)}

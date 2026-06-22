@@ -16,6 +16,10 @@ class MemoryStatsTool(BaseTool):
     }
 
     def execute(self, agent: Any, params: Dict[str, Any]) -> Dict[str, Any]:
-        from ._delegation import delegate_memory
-
-        return delegate_memory(agent, "memory_stats", params if isinstance(params, dict) else {})
+        if not agent._ensure_memory_service():
+            return {"success": False, "error": "memory service unavailable"}
+        try:
+            st = agent.memory_service.stats()
+            return {"success": True, "stats": st}
+        except Exception as e:
+            return {"success": False, "error": f"memory stats failed: {e}"}
