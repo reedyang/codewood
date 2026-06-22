@@ -649,8 +649,8 @@ class BangDirectExecutionTests(unittest.TestCase):
         with (
             patch("cli.agent.sys.stdout", out_buf),
             patch("cli.agent.sys.stderr", err_buf),
-            patch("cli.actions.command_actions._dynamic_tail_line_limit", return_value=3),
-            patch("cli.actions.command_actions._terminal_columns_for_tail_display", return_value=120),
+            patch("cli.tools.shell._dynamic_tail_line_limit", return_value=3),
+            patch("cli.tools.shell._terminal_columns_for_tail_display", return_value=120),
         ):
             rc = self.agent._run_direct_shell_with_prefixed_output("echo hi", Path.cwd())
 
@@ -894,7 +894,7 @@ class BangDirectExecutionTests(unittest.TestCase):
             patch("cli.agent.sys.stdout", _TtyBuffer()),
             patch("cli.agent.sys.stderr", _TtyBuffer()),
             patch.object(self.agent, "_consume_process_aborted", return_value=True),
-            patch("cli.actions.command_actions._dynamic_tail_line_limit", return_value=20),
+            patch("cli.tools.shell._dynamic_tail_line_limit", return_value=20),
         ):
             rc = self.agent._run_direct_shell_with_prefixed_output("echo hi", Path.cwd())
 
@@ -939,7 +939,7 @@ class BangDirectExecutionTests(unittest.TestCase):
             patch("cli.agent.sys.stdout", out_buf),
             patch("cli.agent.sys.stderr", _TtyBuffer()),
             patch.object(self.agent, "_consume_process_aborted", return_value=False),
-            patch("cli.actions.command_actions._dynamic_tail_line_limit", return_value=20),
+            patch("cli.tools.shell._dynamic_tail_line_limit", return_value=20),
         ):
             rc = self.agent._run_direct_shell_with_prefixed_output("echo hi", Path.cwd())
 
@@ -1092,7 +1092,7 @@ class BangDirectExecutionTests(unittest.TestCase):
             patch.object(self.agent, "_consume_process_aborted", return_value=True),
             patch.object(self.agent, "_reload_chat_history_from_anchor_on_resize") as mock_reload,
             patch(
-                "cli.actions.command_actions._dynamic_tail_line_limit",
+                "cli.tools.shell._dynamic_tail_line_limit",
                 side_effect=lambda *_args, **_kwargs: int(dynamic_limit["value"]),
             ),
         ):

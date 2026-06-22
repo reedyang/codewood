@@ -22,8 +22,6 @@ _LEGACY_MODULE_ALIASES = {
     "chat_command_controller": ".controllers.chat_command_controller",
     "mcp_shortcut_controller": ".controllers.mcp_shortcut_controller",
     "workspace_command_controller": ".controllers.workspace_command_controller",
-    "command_actions": ".actions.command_actions",
-    "filesystem_actions": ".actions.filesystem_actions",
     "bootstrap": ".runtime.bootstrap",
     "prompt_composer": ".runtime.prompt_composer",
     "runtime_loop": ".runtime.runtime_loop",

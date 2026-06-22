@@ -362,7 +362,7 @@ class PromptSeparatorBehaviorTests(unittest.TestCase):
             },
         ]
         with (
-            patch("cli.agent.command_actions._dynamic_tail_line_limit", return_value=2),
+            patch("cli.agent.tools_shell._dynamic_tail_line_limit", return_value=2),
             patch.object(agent, "_print_direct_shell_command_feedback"),
             patch.object(agent, "_print_direct_shell_history_output") as mock_shell_output,
             patch.object(agent, "_print_direct_shell_history_separator"),
@@ -1092,7 +1092,7 @@ class PromptSeparatorBehaviorTests(unittest.TestCase):
         agent.operation_results = []
         with (
             patch("builtins.print"),
-            patch("cli.agent.command_actions._dynamic_tail_line_limit", return_value=2),
+            patch("cli.agent.tools_shell._dynamic_tail_line_limit", return_value=2),
             patch.object(agent, "_print_tool_call_feedback") as mock_feedback,
             patch.object(agent, "_print_direct_shell_history_output") as mock_shell_output,
         ):

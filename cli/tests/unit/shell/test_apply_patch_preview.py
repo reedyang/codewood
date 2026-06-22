@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 from typing import Any, Dict, List
 
-from cli.actions.filesystem_actions import action_apply_unified_patch
+from cli.tools.apply_patch import action_apply_unified_patch
 from cli.core.change_preview_formatter import ChangePreviewFormatter
 
 
