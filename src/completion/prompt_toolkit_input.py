@@ -1507,9 +1507,14 @@ class FileCompleter(Completer):
                 if os.name == "nt":
                     return
 
-        # Generic token-based file/path completion (from last whitespace boundary)
-        if token:
-            if "/" in token or "\\" in token:
+        # Generic token-based file/path completion (from last whitespace boundary).
+        # Path completion (tokens containing a separator like "src/win") is always
+        # offered. Bare filename fragments are only matched against local files in
+        # shell mode (real shell-command argument completion); in normal chat input
+        # the "@<name>" reference is the intended way to search workspace files.
+        token_has_separator = "/" in token or "\\" in token
+        if token and (token_has_separator or shell_mode_active):
+            if token_has_separator:
                 token_matches = self._get_path_completions(token)
             else:
                 token_matches = self._get_local_completions(token)
@@ -1520,7 +1525,7 @@ class FileCompleter(Completer):
                     if mc in seen:
                         continue
                     seen.add(mc)
-                    if "/" in token or "\\" in token:
+                    if token_has_separator:
                         yield Completion(
                             mc,
                             start_position=-len(token),
@@ -1544,15 +1549,17 @@ class FileCompleter(Completer):
 
         # Smartly detect the filename portion.
         file_part, prefix, suffix = self._extract_file_part(text)
-        
-        # Get file-completion options.
+
+        # Path completion (separator present) is always available. Bare filename
+        # fragments are only matched against local files in shell mode; in normal
+        # chat input use the "@<name>" reference to search workspace files.
         if '/' in file_part or '\\' in file_part:
-            # Path completion.
             completions = self._get_path_completions(file_part)
-        else:
-            # Complete files/folders in the current directory.
+        elif shell_mode_active:
             completions = self._get_local_completions(file_part)
-        
+        else:
+            return
+
         # Ensure each completion option appears only once.
         seen = set()
         for completion in completions:
