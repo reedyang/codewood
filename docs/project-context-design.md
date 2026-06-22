@@ -39,18 +39,15 @@ This document describes the current lightweight project-context retrieval implem
 - `cli/runtime/runtime_loop.py`
   - Attempts first-turn project-context evidence injection before sending the user task to the model.
 
-- `cli/tooling/handlers/file_shell_handlers.py`
-  - Routes `project_context_search` through the `ToolDispatcher` handler path.
+- `cli/tools/project_context_search.py`
+  - `ProjectContextSearchTool` declares the tool schema and executes the search (via `agent.action_project_context_search`).
 
-- `cli/tooling/execution_engine.py`
-  - Keeps the legacy execution branch for `project_context_search` and prints a short console summary.
+- `cli/tools/registry.py`
+  - Registers every built-in tool class; `iter_specs` generates the model-facing tool catalog (replacing the former `tools.jsonc`).
 
 - `cli/runtime/prompt_composer.py`
-  - Loads tool schemas from `cli/tools/tools.jsonc`.
+  - Builds the injected tool catalog from the tool registry.
   - Hides `project_context_search` from the injected tool catalog when the current workspace is the Default workspace.
-
-- `cli/tools/tools.jsonc`
-  - Declares the public tool schema for `project_context_search`.
 
 - `cli/prompts/tools_prompt.md`
   - Tells the model to prefer `project_context_search` for large cross-module code tasks when the tool is available.
@@ -217,7 +214,7 @@ Tool name:
 
 - `project_context_search`
 
-Declared parameters in `cli/tools/tools.jsonc`:
+Declared parameters in `cli/tools/project_context_search.py` (`ProjectContextSearchTool.parameters`):
 
 - `query`: string, required by schema.
 - `max_files`: integer, default `12`, runtime maximum `50`.
