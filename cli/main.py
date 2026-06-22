@@ -799,23 +799,12 @@ def _resolve_gui_launch(cli_args: dict) -> int | None:
     """Decide whether to launch the GUI, and how.
 
     Returns an exit code when the GUI path handles the run, or ``None`` to
-    fall through to the terminal UI. The GUI is launched when ``app`` is
-    requested explicitly, or — on a frozen build — when the executable was
-    started on its own console (a double-click) with no arguments.
+    fall through to the terminal UI. The GUI is launched only when ``app`` is
+    requested explicitly; a double-click of the executable now falls through
+    to the terminal UI (TUI) instead of auto-launching the GUI.
     """
     detached_child = os.environ.get(_GUI_DETACHED_ENV) == "1"
     app_requested = bool(cli_args.get("app_mode", False))
-
-    if not app_requested and not detached_child and getattr(sys, "frozen", False):
-        no_arguments = not (
-            cli_args.get("exec_task")
-            or cli_args.get("serve_mode")
-            or cli_args.get("show_help")
-            or cli_args.get("workspace_selector")
-            or cli_args.get("model_selector")
-        )
-        if no_arguments and _launched_from_explorer():
-            app_requested = True
 
     if not app_requested:
         return None
