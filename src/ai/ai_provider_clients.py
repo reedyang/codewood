@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from ..config.app_info import get_app_config_dirname, get_app_logger_root
+from ..config.app_info import get_app_global_config_dir, get_app_logger_root
 from ..core.config.model_providers import (
     DEFAULT_CONTEXT_WINDOW,
     DEFAULT_OLLAMA_PORT,
@@ -299,7 +299,7 @@ class ModelCallError(RuntimeError):
 
 
 def _openai_api_route_cache_path() -> Path:
-    return (Path.home() / get_app_config_dirname() / _OPENAI_API_ROUTE_CACHE_FILE).resolve()
+    return (get_app_global_config_dir() / _OPENAI_API_ROUTE_CACHE_FILE).resolve()
 
 
 def _load_openai_api_route_cache_locked() -> None:

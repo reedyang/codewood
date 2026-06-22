@@ -8,7 +8,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
-from ..config.app_info import get_app_config_dirname, get_app_logger_root, get_app_runtime_attr_name
+from ..config.app_info import get_app_global_config_dir, get_app_logger_root, get_app_runtime_attr_name
 from ..core.localization import DEFAULT_DISPLAY_LANGUAGE, get_display_language, text, translate
 from ..core.config.model_providers import (
     DEFAULT_CONTEXT_WINDOW,
@@ -1734,7 +1734,7 @@ class SessionMemoryService:
             getattr(self.agent, "workspace_config_dir", None)
         )
         workspace_skills_dir = (Path(self.agent.workspace_config_dir) / "skills").resolve()
-        default_install_skills_dir = (Path.home() / get_app_config_dirname() / "skills").resolve()
+        default_install_skills_dir = (get_app_global_config_dir() / "skills").resolve()
         runtime_tail_raw = (
             f"Current OS info: {os_info}\n"
             f"Current workspace name: {self.agent.workspace_name}\n"
@@ -2203,7 +2203,7 @@ class SessionMemoryService:
             getattr(self.agent, "workspace_config_dir", None)
         )
         workspace_skills_dir = (Path(self.agent.workspace_config_dir) / "skills").resolve()
-        default_install_skills_dir = (Path.home() / get_app_config_dirname() / "skills").resolve()
+        default_install_skills_dir = (get_app_global_config_dir() / "skills").resolve()
         runtime_tail_raw = (
             f"Current OS info: {os_info}\n"
             f"Current workspace name: {self.agent.workspace_name}\n"

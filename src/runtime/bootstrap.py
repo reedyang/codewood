@@ -5,7 +5,7 @@ from typing import Any, Optional
 from ..ai.ai_orchestrator import AIOrchestrator, AgentAIContext
 from ..config.app_info import (
     append_windows_git_tools_to_path,
-    get_app_config_dirname,
+    get_app_global_config_dir,
     get_app_name,
     get_app_slug_kebab,
     prepend_bundled_bin_to_path,
@@ -115,14 +115,9 @@ def resolve_config_dir(config_dir: Optional[str]) -> Path:
     if config_dir:
         return Path(config_dir)
 
-    config_dirname = get_app_config_dirname()
-    current_config_dir = Path(config_dirname)
-    user_config_dir = Path.home() / config_dirname
-    if (user_config_dir / CONFIG_JSONC_FILENAME).exists():
-        return user_config_dir
-    if (current_config_dir / CONFIG_JSONC_FILENAME).exists():
-        return current_config_dir
-    return user_config_dir
+    # The global config lives under ``~/.config/<app>``. There is no fallback
+    # to a ``.codewood`` directory in the home dir or the code root.
+    return get_app_global_config_dir()
 
 
 def setup_workspace_and_history(
