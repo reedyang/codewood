@@ -289,7 +289,15 @@ APPRUN
 
   # ---- .deb (Debian/Ubuntu). Requires dpkg-deb.
   if command -v dpkg-deb >/dev/null 2>&1; then
-    local debroot="dist/codewood-deb"
+    # Stage on the native Linux filesystem rather than under dist/. When the
+    # project lives on a Windows-mounted path in WSL (DrvFs, e.g. /mnt/d/...),
+    # the mount ignores chmod and forces 0777 on every file, which dpkg-deb
+    # rejects ("control directory has bad permissions 777"). A directory under
+    # $TMPDIR/tmp honors POSIX permissions, so we build the package there and
+    # copy the finished .deb back into dist/.
+    local debstage
+    debstage="$(mktemp -d "${TMPDIR:-/tmp}/codewood-deb.XXXXXX")"
+    local debroot="$debstage/codewood-deb"
     rm -rf "$debroot"
     mkdir -p "$debroot/opt/codewood" "$debroot/usr/bin" "$debroot/usr/share/applications" "$debroot/DEBIAN"
     cp -R "dist/codewood/." "$debroot/opt/codewood/"
@@ -310,15 +318,27 @@ Maintainer: Reed Yang
 Description: Code Wood AI Agent
  Code Wood terminal UI and desktop GUI.
 CONTROL
+    # Normalize permissions. On WSL/Windows-mounted filesystems staged files
+    # default to 0777, which dpkg-deb rejects ("control directory has bad
+    # permissions 777"). Force standard dirs=0755, files=0644, then restore
+    # the executable bit on the launcher binary.
+    find "$debroot" -type d -exec chmod 0755 {} +
+    find "$debroot" -type f -exec chmod 0644 {} +
+    chmod 0755 "$debroot/usr/bin/codewood"
+    chmod 0755 "$debroot/opt/codewood/codewood" 2>/dev/null || true
+    chmod 0755 "$debroot/opt/codewood/codewood-gui" 2>/dev/null || true
+
     local deb="dist/CodeWood-${APP_VERSION}-${PLATFORM_TAG}.deb"
+    local deb_staged="$debstage/$(basename "$deb")"
     rm -f "$deb"
     echo "Creating .deb \"$deb\"..."
-    if dpkg-deb --build --root-owner-group "$debroot" "$deb" >/dev/null; then
+    if dpkg-deb --build --root-owner-group "$debroot" "$deb_staged" >/dev/null; then
+      cp -f "$deb_staged" "$deb"
       INSTALLER_NOTES+=("  $(basename "$deb")  - Debian/Ubuntu package (installs to /opt/codewood, links /usr/bin/codewood)")
     else
       echo "WARNING: dpkg-deb failed; skipping .deb." >&2
     fi
-    rm -rf "$debroot"
+    rm -rf "$debstage"
   else
     echo "WARNING: dpkg-deb not found; skipping .deb." >&2
   fi
