@@ -13,6 +13,7 @@
   --bg-elevated-solid: #ffffff;
   --bg-sidebar-solid: #f3f4f6;
   --bg-input: #ffffff;
+  --bg-input-solid: #ffffff;
   --border: #e5e7eb;
   --text: #1f2329;
   --text-muted: #6b7280;
@@ -48,6 +49,7 @@
   --bg-elevated-solid: #181818;
   --bg-sidebar-solid: #141414;
   --bg-input: #2d2d2d;
+  --bg-input-solid: #2d2d2d;
   --border: #333333;
   --text: #e6e8ee;
   --text-muted: #8b93a3;
@@ -151,6 +153,32 @@ html[data-has-bg] {
     in srgb,
     var(--bg-elevated-solid)
       calc(min(1, var(--app-surface-alpha, 0.85) + 0.15) * 100%),
+    transparent
+  );
+  /* The message input field used to stay fully opaque (``--bg-input`` had no
+     override), which looked out of place over a background image. Make it
+     translucent too, but a touch more opaque than the surrounding surfaces
+     (+0.1) so typed text keeps good contrast. */
+  --bg-input: color-mix(
+    in srgb,
+    var(--bg-input-solid)
+      calc(min(1, var(--app-surface-alpha, 0.85) + 0.1) * 100%),
+    transparent
+  );
+}
+
+/* The chat title bar, the plan (right) panel and its header, and the composer's
+   outer frame previously read as much more opaque than the rest of the UI
+   (the composer used the more-opaque ``--bg-elevated``; the bars sat directly
+   on ``--bg``). Make these noticeably MORE transparent than the default
+   surface so the background image shows through them too. We drop ~0.2 below
+   the surface alpha (floored at 0) for a clearly lighter frame. */
+html[data-has-bg] .chat-titlebar,
+html[data-has-bg] .plan-panel,
+html[data-has-bg] .composer {
+  background: color-mix(
+    in srgb,
+    var(--bg-solid) calc(max(0, var(--app-surface-alpha, 0.85) - 0.2) * 100%),
     transparent
   );
 }
@@ -1648,6 +1676,16 @@ body.resizing-x {
   margin: 0;
   font-size: 13px;
   color: var(--text-secondary, var(--text));
+}
+
+/* First-run guide shown when no model is configured. Centered single CTA. */
+.modal.no-model-guide {
+  width: 420px;
+  text-align: center;
+}
+
+.modal.no-model-guide .modal-actions {
+  justify-content: center;
 }
 
 .setting-row {
