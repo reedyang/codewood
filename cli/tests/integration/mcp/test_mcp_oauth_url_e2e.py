@@ -51,8 +51,8 @@ class McpOauthUrlE2ETests(unittest.TestCase):
     def setUpClass(cls):
         cls.mcp_module = _load_mcp_manager_module()
         cls.McpManager = cls.mcp_module.McpManager
-        cls.repo_root = Path(__file__).resolve().parents[3]
-        cls.server_script = cls.repo_root / "tests" / "integration" / "mcp" / "fake_oauth_mcp_server.py"
+        cls.repo_root = Path(__file__).resolve().parents[4]
+        cls.server_script = cls.repo_root / "cli" / "tests" / "integration" / "mcp" / "fake_oauth_mcp_server.py"
         cls._orig_webbrowser_open = cls.mcp_module.webbrowser.open
 
         def _fake_web_open(url: str, *_args, **_kwargs) -> bool:

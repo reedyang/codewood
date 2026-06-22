@@ -20,7 +20,7 @@ import unittest
 from pathlib import Path
 from typing import Iterable
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
@@ -214,8 +214,8 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--start-dir",
-        default="tests",
-        help="Directory to start discovery from (default: tests).",
+        default="cli/tests",
+        help="Directory to start discovery from (default: cli/tests).",
     )
     parser.add_argument(
         "--pattern",
@@ -254,7 +254,7 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
-    project_root = Path(__file__).resolve().parent.parent
+    project_root = Path(__file__).resolve().parent.parent.parent
     excluded_rel = {_normalize_rel(p) for p in DEFAULT_EXCLUDED_FILES}
     excluded_rel.update(_normalize_rel(p) for p in (args.exclude_file or []))
 

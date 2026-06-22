@@ -242,6 +242,7 @@ not modify any files.
 codewood/
 ├── cli/                           # Core application code
 ├── cli/server/                    # Headless serve mode (HTTP + SSE) for the GUI
+├── cli/tests/                     # Test suite
 ├── desktop/                       # Desktop GUI (TypeScript UI + pywebview host)
 │   ├── frontend/                  # Vite + React + TypeScript UI
 │   └── host/                      # pywebview host (launched via "codewood app");
@@ -251,7 +252,6 @@ codewood/
 ├── additional-subagents/          # Example sub-agents; copy them into .codewood/subagents if needed
 ├── docs/                          # Design and reference documentation
 ├── demo/                          # Demo assets
-├── tests/                         # Test suite
 ├── requirements.txt               # Python dependencies
 ├── bin/
 |   ├── codewood.bat               # Windows launch script

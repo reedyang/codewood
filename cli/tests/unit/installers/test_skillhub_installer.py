@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 
 def _load_installer_module():
-    repo_root = Path(__file__).resolve().parents[3]
+    repo_root = Path(__file__).resolve().parents[4]
     module_path = repo_root / "skills" / "skillhub-skill-installer" / "scripts" / "skillhub_installer.py"
     spec = importlib.util.spec_from_file_location("skillhub_installer_test_module", str(module_path))
     if spec is None or spec.loader is None:

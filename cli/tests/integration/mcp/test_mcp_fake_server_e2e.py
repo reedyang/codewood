@@ -43,8 +43,8 @@ class FakeMcpServerE2ETests(unittest.TestCase):
     def setUpClass(cls):
         cls.mcp_module = _load_mcp_manager_module()
         cls.McpManager = cls.mcp_module.McpManager
-        cls.repo_root = Path(__file__).resolve().parents[3]
-        cls.server_script = cls.repo_root / "tests" / "integration" / "mcp" / "fake_mcp_server.py"
+        cls.repo_root = Path(__file__).resolve().parents[4]
+        cls.server_script = cls.repo_root / "cli" / "tests" / "integration" / "mcp" / "fake_mcp_server.py"
 
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
