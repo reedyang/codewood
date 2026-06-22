@@ -1,0 +1,1202 @@
+"""Assembles the model-visible context (system + history + current turn).
+
+This manager owns the "context packing" logic: token budgeting, regular vs.
+simple-chat message assembly, aggressive compression, usage-snapshot
+accounting, and context compaction. Token counting is delegated to a shared
+:class:`~cli.runtime.token_estimator.TokenEstimator` so usage accounting here
+and in the session-memory service stays consistent.
+
+Memory/history/summary helpers continue to live on ``SessionMemoryService``;
+this manager reaches them through ``self.session_memory`` (and, for any
+attribute it does not define, via ``__getattr__`` proxying). The service keeps
+thin same-named wrappers so existing call sites and tests are unchanged.
+"""
+
+from __future__ import annotations
+
+import sys
+import threading
+from datetime import datetime
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Set, Tuple
+
+from ..config.app_info import (
+    get_app_global_config_dir,
+    get_app_logger_root,
+    get_app_runtime_attr_name,
+)
+from ..core.config.model_providers import (
+    DEFAULT_CONTEXT_WINDOW,
+    SIMPLE_CHAT_SYSTEM_PROMPT_MIN_CONTEXT_WINDOW,
+    parse_context_window,
+)
+from ..services import session_memory_service as _sms
+
+# Reference the patchable module-level symbols through the session-memory
+# service module so existing tests that patch
+# ``cli.services.session_memory_service.get_logger`` / ``._ansi_gray`` continue
+# to intercept logging and banner rendering after the logic moved here.
+def get_logger():  # type: ignore[no-redef]
+    return _sms.get_logger()
+
+
+def _ansi_gray(text: str) -> str:  # type: ignore[no-redef]
+    return _sms._ansi_gray(text)
+
+CONTEXT_OUTPUT_RESERVE_RATIO = 0.20
+CONTEXT_OUTPUT_RESERVE_MIN = 512
+CONTEXT_OUTPUT_RESERVE_MAX = 8192
+CONTEXT_SAFETY_MARGIN_RATIO = 0.10
+CONTEXT_SAFETY_MARGIN_MIN = 256
+SMALL_CTX_MAX = 16_000
+MEDIUM_CTX_MAX = 64_000
+AGGRESSIVE_COMPRESS_TRIGGER_PCT = 80
+AGGRESSIVE_COMPRESS_TARGET_PCT = 20
+AUTO_COMPACT_TRIGGER_PCT = 60
+AUTO_COMPACT_TAIL_WINDOW_RATIO = 0.05
+
+
+class LLMContextManager:
+    """Builds and budgets the LLM request context for a turn."""
+
+    def __init__(self, agent: Any, session_memory: Any, token_estimator: Any) -> None:
+        self.agent = agent
+        self.session_memory = session_memory
+        self.token_estimator = token_estimator
+        self._context_usage_refresh_lock = threading.Lock()
+        self._context_usage_refresh_inflight = False
+        self._context_usage_refresh_pending: Optional[Dict[str, str]] = None
+        self._context_compaction_lock = threading.Lock()
+        self._software_development_prompt_cache: Optional[str] = None
+
+    def __getattr__(self, name: str) -> Any:
+        # Proxy any helper not defined here (memory/history/summary utilities,
+        # localized text, path helpers, etc.) to the session-memory service.
+        # __getattr__ only fires for attributes missing on this instance, so it
+        # never shadows the methods this manager defines.
+        session_memory = self.__dict__.get("session_memory")
+        if session_memory is None:
+            raise AttributeError(name)
+        return getattr(session_memory, name)
+
+    # --- Token estimation (shared logic) -------------------------------------
+    # These delegate to the service's same-named wrappers so test monkeypatches
+    # on the service instance remain authoritative.
+    def _estimate_text_tokens(self, text: str) -> int:
+        return self.session_memory._estimate_text_tokens(text)
+
+    def _estimate_message_tokens(self, role: str, content: str) -> int:
+        return self.session_memory._estimate_message_tokens(role, content)
+
+    def _clip_text_to_token_budget(self, text: str, max_tokens: int) -> str:
+        return self.session_memory._clip_text_to_token_budget(text, max_tokens)
+
+    # --- Budgeting -----------------------------------------------------------
+    def _context_token_budgets_impl(self) -> Dict[str, int]:
+        ctx_window = parse_context_window(
+            ((getattr(self.agent, "params", None) or {}).get("context_window")),
+            default_value=DEFAULT_CONTEXT_WINDOW,
+        )
+        if ctx_window <= SMALL_CTX_MAX:
+            profile = "small"
+            system_ratio, history_ratio, op_ratio, summary_ratio = 0.50, 0.26, 0.14, 0.10
+            memory_share_ratio = 0.42
+            assistant_clip_tokens = 180
+        elif ctx_window <= MEDIUM_CTX_MAX:
+            profile = "medium"
+            system_ratio, history_ratio, op_ratio, summary_ratio = 0.45, 0.35, 0.12, 0.08
+            memory_share_ratio = 0.45
+            assistant_clip_tokens = 260
+        else:
+            profile = "large"
+            system_ratio, history_ratio, op_ratio, summary_ratio = 0.38, 0.48, 0.10, 0.06
+            memory_share_ratio = 0.55
+            assistant_clip_tokens = 400
+
+        output_reserve = int(ctx_window * CONTEXT_OUTPUT_RESERVE_RATIO)
+        output_reserve = max(CONTEXT_OUTPUT_RESERVE_MIN, min(output_reserve, CONTEXT_OUTPUT_RESERVE_MAX))
+        safety_margin = max(CONTEXT_SAFETY_MARGIN_MIN, int(ctx_window * CONTEXT_SAFETY_MARGIN_RATIO))
+        input_budget = max(512, ctx_window - output_reserve - safety_margin)
+        system_budget = max(200, int(input_budget * system_ratio))
+        history_budget = max(120, int(input_budget * history_ratio))
+        op_context_budget = max(80, int(input_budget * op_ratio))
+        history_summary_budget = max(80, int(input_budget * summary_ratio))
+        return {
+            "profile": profile,
+            "context_window": ctx_window,
+            "input_budget": input_budget,
+            "system_budget": system_budget,
+            "history_budget": history_budget,
+            "op_context_budget": op_context_budget,
+            "history_summary_budget": history_summary_budget,
+            "memory_share_ratio": int(memory_share_ratio * 100),
+            "assistant_clip_tokens": assistant_clip_tokens,
+        }
+
+    def _should_use_simple_chat_context(self, budgets: Dict[str, Any]) -> bool:
+        try:
+            ctx_window = int(budgets.get("context_window") or DEFAULT_CONTEXT_WINDOW)
+        except Exception:
+            ctx_window = DEFAULT_CONTEXT_WINDOW
+        return ctx_window < SIMPLE_CHAT_SYSTEM_PROMPT_MIN_CONTEXT_WINDOW
+
+    def _build_simple_chat_messages(
+        self,
+        user_input: str,
+        budgets: Dict[str, Any],
+    ) -> Tuple[List[Dict[str, Any]], bool]:
+        user_text = str(user_input or "")
+        user_tokens = self._estimate_message_tokens("user", user_text)
+        input_budget = int(budgets.get("input_budget") or 1024)
+        history_budget = max(0, input_budget - user_tokens)
+        history_messages, history_stats = self._build_history_messages_by_budget(
+            history_budget,
+            int(budgets.get("history_summary_budget") or 80),
+            int(budgets.get("assistant_clip_tokens") or 180),
+            source_history=self.history_for_regular_context(),
+        )
+        messages: List[Dict[str, Any]] = list(history_messages)
+        messages.append({"role": "user", "content": user_text})
+
+        try:
+            history_tokens = sum(
+                self._estimate_message_tokens(str(m.get("role") or ""), str(m.get("content") or ""))
+                for m in history_messages
+            )
+            total_input_tokens = int(history_tokens + user_tokens)
+            ctx_window = int(budgets.get("context_window") or DEFAULT_CONTEXT_WINDOW)
+            usage_pct = max(0, min(999, int(round((total_input_tokens * 100.0) / max(1, ctx_window)))))
+            self.agent._last_context_usage_percent_precompression = usage_pct
+            self.agent._last_context_aggressive_compression_applied = False
+            self._store_context_usage_snapshot(ctx_window, total_input_tokens)
+            if bool(getattr(self.agent, "_force_current_input_as_requirement_once", False)):
+                self.agent._force_current_input_as_requirement_once = False
+            get_logger().info(
+                "context-pack profile=simple-chat ctx_window=%s input_budget=%s system=0 history=%s user=%s "
+                "history_trimmed_assistant=%s history_summary_messages=%s history_dropped=%s",
+                budgets.get("context_window"),
+                budgets.get("input_budget"),
+                history_tokens,
+                user_tokens,
+                history_stats.get("assistant_trimmed", 0),
+                history_stats.get("summary_messages", 0),
+                history_stats.get("dropped_messages", 0),
+            )
+        except Exception:
+            pass
+        return messages, True
+
+    def _software_development_prompt_append(self) -> str:
+        cached = getattr(self, "_software_development_prompt_cache", None)
+        if isinstance(cached, str):
+            return cached
+        prompt_path = Path(__file__).resolve().parents[1] / "prompts" / "domain_software_development.md"
+        try:
+            text = prompt_path.read_text(encoding="utf-8").strip()
+        except Exception:
+            text = ""
+        if text:
+            text = "\n\n" + text + "\n"
+        self._software_development_prompt_cache = text
+        return text
+
+    def _summarize_history_excerpt(self, rows: List[Dict[str, Any]], summary_budget: int) -> str:
+        if not rows or summary_budget <= 0:
+            return ""
+        lines: List[str] = []
+        for item in rows:
+            role = "U" if str(item.get("role") or "").strip().lower() == "user" else "A"
+            c = str(item.get("content") or "").replace("\n", " ").strip()
+            if not c:
+                continue
+            lines.append(f"{role}:{c[:180]}")
+            if len(lines) >= 12:
+                break
+        if not lines:
+            return ""
+        summary = "[History summary]\n" + " | ".join(lines)
+        return self._clip_text_to_token_budget(summary, summary_budget)
+
+    def _build_history_messages_by_budget(
+        self,
+        history_budget: int,
+        summary_budget: int,
+        assistant_clip_tokens: int,
+        source_history: Optional[List[Dict[str, Any]]] = None,
+    ) -> Tuple[List[Dict[str, Any]], Dict[str, int]]:
+        hist = list(source_history if source_history is not None else self._context_eligible_history())
+        if not hist or history_budget <= 0:
+            return [], {"assistant_trimmed": 0, "summary_messages": 0, "dropped_messages": 0}
+
+        normalized: List[Dict[str, Any]] = []
+        assistant_trimmed = 0
+        parse_slash_result = getattr(self.agent, "_parse_internal_slash_result_history_content", None)
+        parse_worked_summary = getattr(self.agent, "_parse_task_worked_summary_history_content", None)
+        for msg in hist:
+            role = str(msg.get("role") or "").strip().lower()
+            if role not in ("user", "assistant"):
+                continue
+            raw_content = str(msg.get("content") or "")
+            if role == "user" and self._is_excluded_user_message_for_model_context(msg):
+                continue
+            if role == "user" and self._is_builtin_slash_user_message(role, raw_content):
+                continue
+            if role == "assistant" and self.parse_context_compaction_notice_content(raw_content) is not None:
+                continue
+            if role == "assistant" and callable(parse_slash_result):
+                try:
+                    slash_payload = parse_slash_result(raw_content)
+                except Exception:
+                    slash_payload = None
+                if isinstance(slash_payload, dict):
+                    continue
+            if role == "assistant" and callable(parse_worked_summary):
+                try:
+                    worked_payload = parse_worked_summary(raw_content)
+                except Exception:
+                    worked_payload = None
+                if isinstance(worked_payload, dict):
+                    continue
+            content = self._normalize_history_content_for_model(role, raw_content)
+            if role == "assistant":
+                before = content
+                content = self._clip_text_to_token_budget(content, assistant_clip_tokens)
+                if content != before:
+                    assistant_trimmed += 1
+            normalized.append({"role": role, "content": content})
+
+        if not normalized:
+            return [], {"assistant_trimmed": assistant_trimmed, "summary_messages": 0, "dropped_messages": 0}
+
+        def _total_cost(items: List[Dict[str, Any]]) -> int:
+            return sum(self._estimate_message_tokens(str(i.get("role") or ""), str(i.get("content") or "")) for i in items)
+
+        working = list(normalized)
+        dropped_for_summary: List[Dict[str, Any]] = []
+        summary_message: Optional[Dict[str, Any]] = None
+
+        # Stage 2: compress older dialogue into one summary message before dropping whole messages.
+        target_without_summary = max(24, history_budget - max(40, summary_budget))
+        while len(working) > 2 and _total_cost(working) > target_without_summary:
+            dropped_for_summary.append(working.pop(0))
+        if dropped_for_summary:
+            summary_text = self._summarize_history_excerpt(dropped_for_summary, summary_budget)
+            if summary_text:
+                summary_message = {"role": "assistant", "content": summary_text}
+                working.insert(0, summary_message)
+
+        # Stage 3: still too big -> drop whole oldest messages.
+        dropped_messages = 0
+        while len(working) > 1 and _total_cost(working) > history_budget:
+            if summary_message is not None and len(working) > 2:
+                working.pop(1)
+            else:
+                working.pop(0)
+            dropped_messages += 1
+
+        if summary_message is not None and working and working[0] is summary_message and _total_cost(working) > history_budget:
+            other_cost = _total_cost(working[1:])
+            allowed = max(16, history_budget - other_cost - 6)
+            clipped_summary = self._clip_text_to_token_budget(str(summary_message.get("content") or ""), allowed)
+            if clipped_summary:
+                summary_message["content"] = clipped_summary
+            else:
+                working.pop(0)
+
+        if not working and normalized:
+            # keep one latest message as last resort
+            last = normalized[-1]
+            max_content_tokens = max(16, history_budget - 8)
+            working = [
+                {
+                    "role": str(last.get("role") or "assistant"),
+                    "content": self._clip_text_to_token_budget(str(last.get("content") or ""), max_content_tokens),
+                }
+            ]
+
+        stats = {
+            "assistant_trimmed": assistant_trimmed,
+            "summary_messages": 1 if summary_message else 0,
+            "dropped_messages": dropped_messages,
+        }
+        return working, stats
+
+    def _message_cost_for_tail_budget(self, msg: Dict[str, Any]) -> int:
+        role = str(msg.get("role") or "").strip().lower()
+        content = self._normalize_history_content_for_model(role, str(msg.get("content") or ""))
+        return self._estimate_message_tokens(role, content)
+
+    def _auto_tail_count_within_budget(self, rows: List[Tuple[int, Dict[str, Any]]], max_tokens: int) -> int:
+        if not rows or max_tokens <= 0:
+            return 0
+        total = 0
+        tail_count = 0
+        pos = len(rows) - 1
+        while pos >= 0:
+            if self.is_context_compaction_summary_message(rows[pos][1]):
+                break
+            group_start = pos
+            role = str(rows[pos][1].get("role") or "").strip().lower()
+            if role == "assistant" and pos - 1 >= 0:
+                prev = rows[pos - 1][1]
+                if (
+                    str(prev.get("role") or "").strip().lower() == "user"
+                    and not self.is_context_compaction_summary_message(prev)
+                ):
+                    group_start = pos - 1
+            group = rows[group_start:pos + 1]
+            if any(self.is_context_compaction_summary_message(m) for _idx, m in group):
+                break
+            cost = sum(self._message_cost_for_tail_budget(m) for _idx, m in group)
+            if cost <= 0:
+                break
+            if total + cost > max_tokens:
+                break
+            total += cost
+            tail_count += len(group)
+            pos = group_start - 1
+        return tail_count
+
+    def _compaction_candidate_rows(self, mode: str) -> List[Tuple[int, Dict[str, Any]]]:
+        rows = self._history_with_indices_for_regular_context()
+        if not rows:
+            return []
+        normalized_mode = str(mode or "").strip().lower()
+        _ = normalized_mode
+        compact_until_pos = len(rows) - 1
+        budgets = self._context_token_budgets()
+        ctx_window = int(budgets.get("context_window") or DEFAULT_CONTEXT_WINDOW)
+        tail_budget = max(1, int(ctx_window * AUTO_COMPACT_TAIL_WINDOW_RATIO))
+        tail_count = self._auto_tail_count_within_budget(rows, tail_budget)
+        compact_until_pos = len(rows) - tail_count - 1
+        if compact_until_pos < 0:
+            return []
+        candidates = rows[:compact_until_pos + 1]
+        has_new_dialogue = any(
+            not self.is_context_compaction_summary_message(m)
+            and not self.is_context_compaction_notice_message(m)
+            for _idx, m in candidates
+        )
+        if normalized_mode == "manual" and not has_new_dialogue and tail_count > 0:
+            last_group_size = 0
+            pos = len(rows) - 1
+            while pos >= 0:
+                if self.is_context_compaction_summary_message(rows[pos][1]):
+                    break
+                group_start = pos
+                role = str(rows[pos][1].get("role") or "").strip().lower()
+                if role == "assistant" and pos - 1 >= 0:
+                    prev = rows[pos - 1][1]
+                    if (
+                        str(prev.get("role") or "").strip().lower() == "user"
+                        and not self.is_context_compaction_summary_message(prev)
+                    ):
+                        group_start = pos - 1
+                group = rows[group_start:pos + 1]
+                if any(self.is_context_compaction_summary_message(m) for _idx, m in group):
+                    break
+                last_group_size = len(group)
+                break
+            if last_group_size > 0 and tail_count > last_group_size:
+                compact_until_pos = len(rows) - last_group_size - 1
+                if compact_until_pos >= 0:
+                    candidates = rows[:compact_until_pos + 1]
+                    has_new_dialogue = any(
+                        not self.is_context_compaction_summary_message(m)
+                        and not self.is_context_compaction_notice_message(m)
+                        for _idx, m in candidates
+                    )
+        if not has_new_dialogue:
+            if normalized_mode == "manual" and compact_until_pos < len(rows) - 1:
+                return candidates
+            return []
+        return candidates
+
+    # --- Compaction ----------------------------------------------------------
+    def build_compaction_messages(
+        self,
+        mode: str,
+        source_history: List[Dict[str, Any]],
+        compact_until_index: int,
+    ) -> List[Dict[str, Any]]:
+        import os
+
+        _ = compact_until_index
+        self.agent._reload_skills()
+        try:
+            system_prompt = self.agent._compose_system_prompt_snapshot(include_tools=True)
+        except Exception:
+            system_prompt = str(getattr(self.agent, "system_prompt", "") or "")
+        budgets = self._context_token_budgets()
+        history_budget = max(160, int(int(budgets.get("input_budget") or 1024) * 0.72))
+        summary_budget = max(80, int(history_budget * 0.10))
+        assistant_clip = max(120, int(budgets.get("assistant_clip_tokens") or 260))
+        history_messages, _stats = self._build_history_messages_by_budget(
+            history_budget,
+            summary_budget,
+            assistant_clip,
+            source_history=source_history,
+        )
+        os_info = os.uname() if hasattr(os, "uname") else os.name
+        workspace_root_text = self._model_visible_workspace_directory_text()
+        workspace_data_dir_text = self._model_visible_path_text(
+            getattr(self.agent, "workspace_config_dir", None)
+        )
+        workspace_skills_dir = (Path(self.agent.workspace_config_dir) / "skills").resolve()
+        default_install_skills_dir = (get_app_global_config_dir() / "skills").resolve()
+        runtime_tail_raw = (
+            f"Current OS info: {os_info}\n"
+            f"Current workspace name: {self.agent.workspace_name}\n"
+            f"Current chat name (weak hint, session label only, not this turn's task goal): {self.agent.active_chat_name}\n"
+            f"Current workspace root (absolute path): {workspace_root_text}\n"
+            f"Current workspace data directory (absolute path): {workspace_data_dir_text}\n"
+            f"Default skill install path (absolute path): {default_install_skills_dir}\n"
+            f"Current workspace skills directory (absolute path): {workspace_skills_dir}\n"
+            "When installing a third-party skill: if the user does not specify an install location, you must use the Default skill install path (absolute path); "
+            "use the Current workspace skills directory (absolute path) only when the user explicitly asks to install into the workspace.\n"
+        )
+        prompt_path = Path(__file__).resolve().parents[1] / "prompts" / "compact_prompt.md"
+        compact_prompt_text = prompt_path.read_text(encoding="utf-8").strip()
+        sys_content = (
+            f"{str(getattr(self.agent, '_skills_routing_prefix', '') or '')}"
+            f"{system_prompt}\n"
+            f"{self._software_development_prompt_append()}"
+            f"{runtime_tail_raw}"
+            f"{compact_prompt_text}\n"
+        )
+        user_content = (
+            f"compact_mode={str(mode or '').strip().lower() or 'manual'}\n"
+            "Based on the history above, generate a concise checkpoint handoff summary that can replace those messages."
+        )
+        return [{"role": "system", "content": sys_content}] + history_messages + [{"role": "user", "content": user_content}]
+
+    def _format_compaction_banner_line(self, text: str) -> str:
+        label = f" {str(text or '').strip()} "
+        width = self._terminal_columns_for_compaction_banner()
+        label_width = self._text_display_width(label)
+        if label_width >= width:
+            return self._truncate_text_to_display_width(label.strip(), width)
+        pad = width - label_width
+        left = pad // 2
+        right = pad - left
+        return ("─" * left) + label + ("─" * right)
+
+    def _compaction_output_stream(self) -> Any:
+        stream = sys.stdout
+        seen: Set[int] = set()
+        while stream is not None:
+            sid = id(stream)
+            if sid in seen:
+                break
+            seen.add(sid)
+            nxt = getattr(stream, "_primary", None)
+            if nxt is None:
+                nxt = getattr(stream, "_base_stream", None)
+            if nxt is None:
+                break
+            stream = nxt
+        return stream or sys.stdout
+
+    def _terminal_columns_for_compaction_banner(self) -> int:
+        stream = self._compaction_output_stream()
+        fn_prompt = getattr(self.agent, "_terminal_columns_for_prompt_separator", None)
+        if callable(fn_prompt):
+            try:
+                width0 = int(fn_prompt(default=80) or 0)
+                if width0 > 0:
+                    return max(1, width0)
+            except Exception:
+                pass
+        if stream is not sys.stdout:
+            width_raw = self._terminal_columns_from_compaction_streams(stream)
+            if width_raw > 0:
+                return max(1, width_raw - 1)
+        width_raw = self._terminal_columns_from_compaction_streams(stream)
+        if width_raw > 0:
+            return width_raw
+        return 80
+
+    def _terminal_columns_from_compaction_streams(self, stream: Any) -> int:
+        candidates: List[int] = []
+        terminal_columns_attr = get_app_runtime_attr_name("terminal_columns")
+        for obj in (sys.stdout, stream, sys.__stdout__):
+            try:
+                fn = getattr(obj, terminal_columns_attr, None)
+                if callable(fn):
+                    candidates.append(int(fn() or 0))
+            except Exception:
+                pass
+        for obj in (stream, sys.__stdout__, sys.stdout):
+            try:
+                if hasattr(obj, "fileno"):
+                    candidates.append(int(__import__("os").get_terminal_size(obj.fileno()).columns or 0))
+            except Exception:
+                pass
+        for name in ("_terminal_columns_for_line_estimate",):
+            fn2 = getattr(self.agent, name, None)
+            if callable(fn2):
+                try:
+                    candidates.append(int(fn2() or 0))
+                except Exception:
+                    pass
+        width = max([c for c in candidates if c > 0], default=80)
+        return max(1, int(width))
+
+    def _write_compaction_raw(self, text: str) -> None:
+        stream = self._compaction_output_stream()
+        try:
+            stream.write(str(text or ""))
+            stream.flush()
+        except Exception:
+            try:
+                sys.stdout.write(str(text or ""))
+                sys.stdout.flush()
+            except Exception:
+                pass
+
+    def _print_compaction_banner(self, text: str) -> int:
+        line = self._format_compaction_banner_line(text)
+        self._write_compaction_raw("\n" + _ansi_gray(line) + "\n\n")
+        try:
+            self.agent._terminal_cursor_at_line_start = True
+        except Exception:
+            pass
+        return 3
+
+    def _clear_compaction_banner(self, rendered_lines: int) -> None:
+        rows = max(0, int(rendered_lines or 0))
+        if rows <= 0:
+            return
+        stream = self._compaction_output_stream()
+        try:
+            if not (hasattr(stream, "isatty") and stream.isatty()):
+                return
+        except Exception:
+            return
+        try:
+            for _ in range(min(rows, 20)):
+                stream.write("\x1b[1A\r\x1b[2K")
+            stream.flush()
+        except Exception:
+            pass
+
+    def compact_context(self, mode: str = "manual") -> bool:
+        normalized_mode = str(mode or "").strip().lower() or "manual"
+        if normalized_mode not in {"auto", "manual"}:
+            normalized_mode = "manual"
+        if not self._context_compaction_lock.acquire(blocking=False):
+            if normalized_mode == "manual":
+                print(self._t("compaction.already_running"))
+            return False
+        try:
+            return self._compact_context_locked(normalized_mode)
+        finally:
+            self._context_compaction_lock.release()
+
+    def _compact_context_locked(self, mode: str) -> bool:
+        candidates_with_idx = self._compaction_candidate_rows(mode)
+        if not candidates_with_idx:
+            if mode == "manual":
+                print(self._t("compaction.no_context"))
+            return False
+        start_text = self._t("compaction.start.auto") if mode == "auto" else self._t("compaction.start.manual")
+        start_banner_lines = self._print_compaction_banner(start_text)
+        source_history = [m for _idx, m in candidates_with_idx]
+        insert_after_idx = int(candidates_with_idx[-1][0])
+        messages = self.build_compaction_messages(mode, source_history, insert_after_idx)
+        try:
+            raw = self.agent.call_ai(
+                "Generate context compaction summary.",
+                context="",
+                stream=False,
+                return_message=False,
+                messages_override=messages,
+                record_history_override=False,
+            )
+        except Exception as e:
+            get_logger().exception("context compact: model call failed")
+            if mode == "manual":
+                print(self._t("compaction.failed", error=e))
+            return False
+        summary = str(raw or "").strip() if isinstance(raw, str) else ""
+        if summary.startswith("❌") or summary.startswith("Error calling LLM API") or not summary:
+            if mode == "manual":
+                print(summary or self._t("compaction.failed_empty_summary"))
+            return False
+        summary = summary.replace("```", "").strip()
+        content = self.build_context_compaction_summary_content(
+            summary=summary,
+            mode=mode,
+            covered_message_count=len(source_history),
+        )
+        created_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        msg = {
+            "role": "assistant",
+            "content": content,
+            "created_at": created_at,
+        }
+        notice_msg = {
+            "role": "assistant",
+            "content": self.build_context_compaction_notice_content(mode=mode),
+            "created_at": created_at,
+        }
+        try:
+            self.agent.conversation_history.insert(insert_after_idx + 1, msg)
+            self.agent.conversation_history.append(notice_msg)
+            self.agent._sync_active_chat_messages()
+            self.refresh_context_usage_snapshot(context_hint="context compacted")
+        except Exception:
+            get_logger().exception("context compact: failed to persist summary")
+            if mode == "manual":
+                print(self._t("compaction.failed_saving_summary"))
+            return False
+        self._clear_compaction_banner(start_banner_lines)
+        self._print_compaction_banner(self._default_context_compaction_notice_message(mode))
+        return True
+
+    def maybe_auto_compact_before_user_message(self, user_input: str) -> bool:
+        if not self._context_compaction_lock.acquire(blocking=False):
+            return False
+        try:
+            self.refresh_context_usage_snapshot(user_input_hint=str(user_input or ""))
+            usage_pct = int(getattr(self.agent, "_last_context_usage_percent", 0) or 0)
+            try:
+                trigger_pct = int(getattr(self.agent, "auto_compact_trigger_percent", AUTO_COMPACT_TRIGGER_PCT) or AUTO_COMPACT_TRIGGER_PCT)
+            except Exception:
+                trigger_pct = AUTO_COMPACT_TRIGGER_PCT
+            trigger_pct = max(1, min(100, trigger_pct))
+            if usage_pct < trigger_pct:
+                return False
+            if not self._compaction_candidate_rows("auto"):
+                return False
+            return self._compact_context_locked("auto")
+        finally:
+            self._context_compaction_lock.release()
+
+    # --- Usage snapshot ------------------------------------------------------
+    def _store_context_usage_snapshot(self, context_window: int, total_input_tokens: int) -> None:
+        ctx_window = max(1, int(context_window or DEFAULT_CONTEXT_WINDOW))
+        total = max(0, int(total_input_tokens or 0))
+        usage_pct = max(0, min(999, int(round((total * 100.0) / ctx_window))))
+        self.agent._last_context_window = ctx_window
+        self.agent._last_context_input_tokens = total
+        self.agent._last_context_usage_percent = usage_pct
+
+    def _persist_context_usage_snapshot(self) -> None:
+        persisted = False
+        try:
+            persist_fn = getattr(self.agent, "_persist_active_chat_usage_snapshot", None)
+            if callable(persist_fn):
+                persist_fn()
+                persisted = True
+        except Exception:
+            persisted = False
+        try:
+            sync_fn = getattr(self.agent, "_sync_active_chat_messages", None)
+            if callable(sync_fn) and not persisted:
+                sync_fn()
+        except Exception:
+            pass
+
+    def _first_user_requirement(self, fallback: str) -> str:
+        hist = self.history_for_regular_context()
+        for msg in hist:
+            if str(msg.get("role") or "").strip().lower() != "user":
+                continue
+            if self._is_excluded_user_message_for_model_context(msg):
+                continue
+            c = str(msg.get("content") or "").strip()
+            if self._is_builtin_slash_user_message("user", c):
+                continue
+            if c:
+                return c
+        return str(fallback or "").strip()
+
+    def _refresh_context_usage_snapshot_impl(
+        self,
+        user_input_hint: str = "",
+        context_hint: str = "",
+        expected_chat_id: str = "",
+        expected_state_key: str = "",
+    ) -> None:
+        """
+        Refresh status-bar usage percentage from current chat/model state
+        without invoking memory retrieval or LLM calls.
+        """
+        try:
+            expected = str(expected_chat_id or "").strip()
+            if expected:
+                current = str(getattr(self.agent, "active_chat_id", "") or "").strip()
+                if current != expected:
+                    return
+            expected_key = str(expected_state_key or "").strip()
+            budgets = self._context_token_budgets()
+            if self._should_use_simple_chat_context(budgets):
+                user_text = str(user_input_hint or "")
+                history_messages, _stats = self._build_history_messages_by_budget(
+                    int(budgets["history_budget"]),
+                    int(budgets["history_summary_budget"]),
+                    int(budgets["assistant_clip_tokens"]),
+                    source_history=self.history_for_regular_context(),
+                )
+                history_tokens = sum(
+                    self._estimate_message_tokens(str(m.get("role") or ""), str(m.get("content") or ""))
+                    for m in history_messages
+                )
+                user_tokens = self._estimate_message_tokens("user", user_text)
+                total_input_tokens = int(history_tokens + user_tokens)
+                if expected:
+                    current = str(getattr(self.agent, "active_chat_id", "") or "").strip()
+                    if current != expected:
+                        return
+                if expected_key and self._context_usage_state_key() != expected_key:
+                    return
+                self._store_context_usage_snapshot(
+                    int(budgets.get("context_window") or DEFAULT_CONTEXT_WINDOW),
+                    total_input_tokens,
+                )
+                self._persist_context_usage_snapshot()
+                return
+
+            filtered_history = self.history_for_regular_context()
+            history_messages, _stats = self._build_history_messages_by_budget(
+                int(budgets["history_budget"]),
+                int(budgets["history_summary_budget"]),
+                int(budgets["assistant_clip_tokens"]),
+                source_history=filtered_history,
+            )
+            history_tokens = sum(
+                self._estimate_message_tokens(str(m.get("role") or ""), str(m.get("content") or ""))
+                for m in history_messages
+            )
+            compose_prompt = getattr(self.agent, "_compose_system_prompt_snapshot", None)
+            if callable(compose_prompt):
+                try:
+                    system_prompt_snapshot = str(compose_prompt(include_tools=True) or "")
+                except Exception:
+                    system_prompt_snapshot = str(getattr(self.agent, "system_prompt", "") or "")
+            else:
+                system_prompt_snapshot = str(getattr(self.agent, "system_prompt", "") or "")
+            sys_text = (
+                f"{str(getattr(self.agent, '_skills_routing_prefix', '') or '')}"
+                f"{system_prompt_snapshot}\n"
+                f"{self._software_development_prompt_append()}"
+                f"Current workspace name: {str(getattr(self.agent, 'workspace_name', '') or '')}\n"
+                f"Current chat name: {str(getattr(self.agent, 'active_chat_name', '') or '')}\n"
+            )
+            system_tokens = self._estimate_message_tokens("system", sys_text)
+            force_new_requirement = bool(
+                getattr(self.agent, "_force_current_input_as_requirement_once", False)
+            )
+            requirement = (
+                str(user_input_hint or "").strip()
+                if force_new_requirement
+                else self._first_user_requirement(str(user_input_hint or "").strip())
+            )
+            user_anchor = (
+                "[Key constraints]\n"
+                "1) The original user request must remain satisfied.\n"
+                "2) This turn's user input has highest priority.\n\n"
+                f"Original user request: {requirement}\n"
+                f"User input: {str(user_input_hint or '').strip()}\n"
+            )
+            if context_hint:
+                user_anchor += f"Operation context: {str(context_hint)}\n"
+            user_tokens = self._estimate_message_tokens("user", user_anchor)
+            total_input_tokens = int(system_tokens + history_tokens + user_tokens)
+            if expected:
+                current = str(getattr(self.agent, "active_chat_id", "") or "").strip()
+                if current != expected:
+                    return
+            if expected_key and self._context_usage_state_key() != expected_key:
+                return
+            self._store_context_usage_snapshot(
+                int(budgets.get("context_window") or DEFAULT_CONTEXT_WINDOW),
+                total_input_tokens,
+            )
+            self._persist_context_usage_snapshot()
+        except Exception:
+            # Keep previous snapshot on refresh failure.
+            pass
+
+    def schedule_context_usage_refresh_async(
+        self,
+        user_input_hint: str = "",
+        context_hint: str = "",
+        expected_chat_id: str = "",
+    ) -> bool:
+        """
+        Recompute context usage in background to avoid blocking UI/input loop.
+        """
+        target_chat_id = str(expected_chat_id or "").strip()
+        if not target_chat_id:
+            target_chat_id = str(getattr(self.agent, "active_chat_id", "") or "").strip()
+        request_payload = {
+            "user_input_hint": str(user_input_hint or ""),
+            "context_hint": str(context_hint or ""),
+            "expected_chat_id": target_chat_id,
+            "expected_state_key": self._context_usage_state_key(),
+        }
+        with self._context_usage_refresh_lock:
+            if self._context_usage_refresh_inflight:
+                # Coalesce requests while one refresh is in flight; keep only the latest snapshot intent.
+                self._context_usage_refresh_pending = dict(request_payload)
+                return False
+            self._context_usage_refresh_inflight = True
+
+        def _run(initial_payload: Dict[str, str]) -> None:
+            payload = dict(initial_payload)
+            try:
+                while True:
+                    self.refresh_context_usage_snapshot(
+                        user_input_hint=str(payload.get("user_input_hint") or ""),
+                        context_hint=str(payload.get("context_hint") or ""),
+                        expected_chat_id=str(payload.get("expected_chat_id") or ""),
+                        expected_state_key=str(payload.get("expected_state_key") or ""),
+                    )
+                    with self._context_usage_refresh_lock:
+                        pending = self._context_usage_refresh_pending
+                        self._context_usage_refresh_pending = None
+                        if not pending:
+                            self._context_usage_refresh_inflight = False
+                            break
+                        payload = dict(pending)
+            finally:
+                with self._context_usage_refresh_lock:
+                    self._context_usage_refresh_inflight = False
+                    self._context_usage_refresh_pending = None
+
+        threading.Thread(
+            target=_run,
+            args=(request_payload,),
+            daemon=True,
+            name=f"{get_app_logger_root()}-context-usage-refresh",
+        ).start()
+        return True
+
+    # --- Regular task message assembly ---------------------------------------
+    def build_regular_task_messages(self, user_input: str, context: str = "") -> Tuple[List[Dict[str, Any]], bool]:
+        budgets = self._context_token_budgets()
+        if self._should_use_simple_chat_context(budgets):
+            return self._build_simple_chat_messages(user_input, budgets)
+
+        import os
+
+        os_info = os.uname() if hasattr(os, "uname") else os.name
+        date_time = datetime.now().strftime("%Y-%m-%d %A %H:%M:%S")
+
+        self.update_session_summary_rolling()
+        self.maybe_refresh_session_summary_llm()
+        self.agent._reload_skills()
+        self.agent.system_prompt = self.agent._compose_system_prompt_snapshot(include_tools=True)
+        op_context_budget = int(budgets["op_context_budget"])
+        memory_share = float(int(budgets.get("memory_share_ratio", 45))) / 100.0
+        mem_budget = max(80, int(int(budgets["system_budget"]) * memory_share))
+        tail_budget = max(120, int(int(budgets["system_budget"]) - mem_budget))
+        mem_block_raw = self.memory_context_for_prompt(user_input)
+        mem_block = mem_block_raw
+        if mem_block:
+            mem_block = self._clip_text_to_token_budget(mem_block, mem_budget)
+        def _build_memory_system_content(block: str, compressed: bool = False) -> str:
+            if not block:
+                return ""
+            header = (
+                "[Experiential memory - compressed mode]"
+                if compressed
+                else "[Experiential memory - must be applied proactively]"
+            )
+            return (
+                f"{header}\n"
+                "The following entries are persisted for the current workspace. Before each subsequent reply, first decide whether they are relevant; "
+                "if relevant, natural-language output must follow this section and must not replace it with a generic cloud/provider default persona.\n\n"
+                f"{block}"
+            )
+        memory_system_content = _build_memory_system_content(mem_block)
+        active_skill_prompt = str(getattr(self.agent, "_active_skill_full_prompt", "") or "").strip()
+        active_skill_id = str(getattr(self.agent, "_active_skill_id", "") or "").strip()
+        active_skill_source = str(getattr(self.agent, "_active_skill_source", "") or "").strip()
+        active_skill_chunked = bool(getattr(self.agent, "_active_skill_chunked", False))
+        active_skill_section = int(getattr(self.agent, "_active_skill_section", 0) or 0)
+        active_skill_total_sections = int(getattr(self.agent, "_active_skill_total_sections", 0) or 0)
+        skill_front_system_content = ""
+        skill_tail_system_content = ""
+        if active_skill_prompt:
+            skill_id_display = active_skill_id or "unknown"
+            source_suffix = f", source={active_skill_source}" if active_skill_source else ""
+            section_suffix = ""
+            if active_skill_chunked and active_skill_total_sections > 0:
+                section_suffix = f", section={max(1, active_skill_section)}/{active_skill_total_sections}"
+            content_scope = "the currently loaded section" if active_skill_chunked else "the full body"
+            skill_front_system_content = (
+                "[Dynamic skill body (front-loaded full injection)]\n"
+                f"active_skill_id={skill_id_display}{source_suffix}{section_suffix}\n"
+                "Execution priority: if this conflicts with ordinary history narration, follow this skill body first (except for safety hard constraints).\n"
+                f"The following is {content_scope} of the currently active skill, not a summary; "
+                "unless the body explicitly requires reading additional reference files or file state must be diagnosed, "
+                "do not read SKILL.md again through shell/type/cat to compensate for this section.\n"
+                "----- BEGIN ACTIVE SKILL PROMPT -----\n"
+                f"{active_skill_prompt}\n"
+                "----- END ACTIVE SKILL PROMPT -----"
+            )
+            skill_tail_system_content = (
+                "[Skill anchor]"
+                f"active_skill_id={skill_id_display}; for this turn, prioritize the front-loaded skill body."
+            )
+        immutable_system_core = (
+            f"{self.agent._skills_routing_prefix}{self.agent.system_prompt}\n"
+            f"{self._software_development_prompt_append()}"
+        )
+        # Key runtime metadata is intentionally non-clippable.
+        workspace_root_text = self._model_visible_workspace_directory_text()
+        workspace_data_dir_text = self._model_visible_path_text(
+            getattr(self.agent, "workspace_config_dir", None)
+        )
+        workspace_skills_dir = (Path(self.agent.workspace_config_dir) / "skills").resolve()
+        default_install_skills_dir = (get_app_global_config_dir() / "skills").resolve()
+        runtime_tail_raw = (
+            f"Current OS info: {os_info}\n"
+            f"Current workspace name: {self.agent.workspace_name}\n"
+            f"Current chat name (weak hint, session label only, not this turn's task goal): {self.agent.active_chat_name}\n"
+            f"Current workspace root (absolute path): {workspace_root_text}\n"
+            f"Current workspace data directory (absolute path): {workspace_data_dir_text}\n"
+            f"Default skill install path (absolute path): {default_install_skills_dir}\n"
+            f"Current workspace skills directory (absolute path): {workspace_skills_dir}\n"
+            "When installing a third-party skill: if the user does not specify an install location, you must use the Default skill install path (absolute path); "
+            "use the Current workspace skills directory (absolute path) only when the user explicitly asks to install into the workspace.\n"
+        )
+        tail_context = immutable_system_core + runtime_tail_raw
+        sys_prefix = tail_context
+        messages: List[Dict[str, Any]] = [{"role": "system", "content": sys_prefix}]
+        if skill_front_system_content:
+            messages.append({"role": "system", "content": skill_front_system_content})
+        filtered_history = self.history_for_regular_context()
+        history_messages, history_stats = self._build_history_messages_by_budget(
+            int(budgets["history_budget"]),
+            int(budgets["history_summary_budget"]),
+            int(budgets["assistant_clip_tokens"]),
+            source_history=filtered_history,
+        )
+        interruption_line = self._latest_interruption_context_line(filtered_history)
+        for msg in history_messages:
+            messages.append(msg)
+        if memory_system_content:
+            messages.append({"role": "system", "content": memory_system_content})
+
+        force_new_requirement = bool(
+            getattr(self.agent, "_force_current_input_as_requirement_once", False)
+        )
+        workspace_directory = self._model_visible_workspace_directory_text()
+        original_requirement = (
+            str(user_input or "").strip()
+            if force_new_requirement
+            else self._first_user_requirement(user_input)
+        )
+        current_input = ""
+        current_input += (
+            "[Key constraints]\n"
+            "1) The original user request must remain satisfied.\n"
+            "2) This turn's user input has highest priority.\n"
+            "3) If there is a recent operation result, conclusions must be consistent with it.\n\n"
+        )
+        if force_new_requirement:
+            last_cancelled_task = str(getattr(self.agent, "_last_cancelled_task", "") or "").strip()
+            current_input += (
+                "4) The previous task was cancelled by the user. If this turn is a new task, do not proactively resume or redo the cancelled task "
+                "unless the user explicitly asks to continue.\n\n"
+            )
+            if last_cancelled_task:
+                current_input += f"Recently cancelled task: {last_cancelled_task}\n"
+        if mem_block:
+            current_input += (
+                "[Hard requirement] Before answering, check the experiential memory block placed after the history messages: "
+                "entries relevant to this turn's user question must be reflected in the answer; do not replace them with generic assistant or provider settings unrelated to those records.\n\n"
+            )
+        if skill_front_system_content:
+            current_input += (
+                "[Hard requirement] This turn has an active skill (see the front-loaded skill body and trailing anchor); "
+                "if it conflicts with ordinary history narration, execution must prioritize that skill (except for safety hard constraints).\n\n"
+            )
+        current_input += (
+            f"Current workspace: {self.agent.workspace_name}\n"
+            f"Current directory (workspace): {workspace_directory}\n"
+        )
+        if self.agent.operation_results:
+            latest_op = self.agent.operation_results[-1]
+            if isinstance(latest_op, dict) and ("timestamp" in latest_op):
+                latest_op = dict(latest_op)
+                latest_op.pop("timestamp", None)
+            op_line = f"Most recent operation result: {latest_op}\n"
+            current_input += self._clip_text_to_token_budget(op_line, op_context_budget)
+        if context:
+            ctx_line = f"Operation context: {context}\n"
+            current_input += self._clip_text_to_token_budget(ctx_line, op_context_budget)
+        if interruption_line:
+            current_input += f"Most recent interruption status: {interruption_line}\n"
+        # The original user request must enter context even when history is compressed.
+        current_input += f"Original user request: {original_requirement}\n"
+        # Keep timestamp at the tail to preserve upstream cache prefix stability.
+        current_input += f"User input: {user_input}\n"
+        current_input += f"Local time reference: {date_time}"
+        if skill_tail_system_content:
+            messages.append({"role": "system", "content": skill_tail_system_content})
+        current_user_msg = {"role": "user", "content": current_input}
+        messages.append(current_user_msg)
+
+        system_tokens = 0
+        history_tokens = 0
+        user_tokens = 0
+        try:
+            system_tokens = self._estimate_message_tokens("system", sys_prefix)
+            if skill_front_system_content:
+                system_tokens += self._estimate_message_tokens("system", skill_front_system_content)
+            if memory_system_content:
+                system_tokens += self._estimate_message_tokens("system", memory_system_content)
+            if skill_tail_system_content:
+                system_tokens += self._estimate_message_tokens("system", skill_tail_system_content)
+            history_tokens = sum(
+                self._estimate_message_tokens(str(m.get("role") or ""), str(m.get("content") or ""))
+                for m in history_messages
+            )
+            user_tokens = self._estimate_message_tokens("user", current_input)
+            total_input_tokens = int(system_tokens + history_tokens + user_tokens)
+            ctx_window = int(budgets.get("context_window") or DEFAULT_CONTEXT_WINDOW)
+            usage_pct = max(0, min(999, int(round((total_input_tokens * 100.0) / max(1, ctx_window)))))
+            self.agent._last_context_usage_percent_precompression = usage_pct
+            self.agent._last_context_aggressive_compression_applied = False
+            if usage_pct > AGGRESSIVE_COMPRESS_TRIGGER_PCT:
+                target_tokens = max(256, int((ctx_window * AGGRESSIVE_COMPRESS_TARGET_PCT) / 100))
+                aggressive_user_budget = max(120, int(target_tokens * 0.45))
+                aggressive_system_budget = max(80, int(target_tokens * 0.35))
+                aggressive_history_budget = max(40, int(target_tokens * 0.20))
+                aggressive_history_summary_budget = max(30, int(aggressive_history_budget * 0.55))
+                aggressive_assistant_clip = max(48, int(int(budgets.get("assistant_clip_tokens") or 180) * 0.35))
+                aggressive_op_context_budget = max(24, int(op_context_budget * 0.35))
+                aggressive_mem_budget = max(24, int(aggressive_system_budget * 0.35))
+
+                mem_block2 = ""
+                if mem_block_raw:
+                    mem_block2 = self._clip_text_to_token_budget(mem_block_raw, aggressive_mem_budget)
+                memory_system_content2 = _build_memory_system_content(mem_block2, compressed=True)
+                tail_context2 = immutable_system_core + runtime_tail_raw
+                sys_prefix2 = tail_context2
+
+                history_messages2, history_stats2 = self._build_history_messages_by_budget(
+                    aggressive_history_budget,
+                    aggressive_history_summary_budget,
+                    aggressive_assistant_clip,
+                    source_history=filtered_history,
+                )
+                current_input2_head = ""
+                current_input2_head += (
+                    "[Key constraints]\n"
+                    "1) The original user request must remain satisfied.\n"
+                    "2) This turn's user input has highest priority.\n"
+                    "3) If there is a recent operation result, conclusions must be consistent with it.\n\n"
+                )
+                if skill_front_system_content:
+                    current_input2_head += (
+                        "[Hard requirement] This turn has an active skill (see the front-loaded skill body and trailing anchor); "
+                        "if it conflicts with ordinary history narration, execution must prioritize that skill (except for safety hard constraints).\n\n"
+                    )
+                if force_new_requirement:
+                    last_cancelled_task = str(getattr(self.agent, "_last_cancelled_task", "") or "").strip()
+                    current_input2_head += (
+                        "4) The previous task was cancelled by the user. If this turn is a new task, do not proactively resume or redo the cancelled task "
+                        "unless the user explicitly asks to continue.\n\n"
+                    )
+                    if last_cancelled_task:
+                        current_input2_head += f"Recently cancelled task: {last_cancelled_task}\n"
+                if interruption_line:
+                    current_input2_head += f"Most recent interruption status: {interruption_line}\n"
+                if mem_block2:
+                    current_input2_head += (
+                        "[Hard requirement] Before answering, check the experiential memory block placed after the history messages: "
+                        "entries relevant to this turn's user question must be reflected in the answer; do not replace them with generic assistant or provider settings unrelated to those records.\n\n"
+                    )
+                if self.agent.operation_results:
+                    latest_op2 = self.agent.operation_results[-1]
+                    if isinstance(latest_op2, dict) and ("timestamp" in latest_op2):
+                        latest_op2 = dict(latest_op2)
+                        latest_op2.pop("timestamp", None)
+                    op_line2 = f"Most recent operation result: {latest_op2}\n"
+                    current_input2_head += self._clip_text_to_token_budget(
+                        op_line2,
+                        max(48, aggressive_op_context_budget),
+                    )
+                current_input2_optional = (
+                    f"Current workspace: {self.agent.workspace_name}\n"
+                    f"Current directory (workspace): {workspace_directory}\n"
+                )
+                if context:
+                    ctx_line2 = f"Operation context: {context}\n"
+                    current_input2_optional += self._clip_text_to_token_budget(ctx_line2, aggressive_op_context_budget)
+                # Hard anchors: never clip original requirement and current input.
+                current_input2_tail = (
+                    f"Original user request: {original_requirement}\n"
+                    f"User input: {user_input}\n"
+                    f"Local time reference: {date_time}"
+                )
+                required_anchor = current_input2_head + current_input2_tail
+                optional_budget = max(0, aggressive_user_budget - self._estimate_text_tokens(required_anchor))
+                current_input2_optional = self._clip_text_to_token_budget(current_input2_optional, optional_budget)
+                current_input2 = current_input2_head + current_input2_optional + current_input2_tail
+
+                system_tokens2 = self._estimate_message_tokens("system", sys_prefix2)
+                if skill_front_system_content:
+                    system_tokens2 += self._estimate_message_tokens("system", skill_front_system_content)
+                if memory_system_content2:
+                    system_tokens2 += self._estimate_message_tokens("system", memory_system_content2)
+                if skill_tail_system_content:
+                    system_tokens2 += self._estimate_message_tokens("system", skill_tail_system_content)
+                history_tokens2 = sum(
+                    self._estimate_message_tokens(str(m.get("role") or ""), str(m.get("content") or ""))
+                    for m in history_messages2
+                )
+                user_tokens2 = self._estimate_message_tokens("user", current_input2)
+                total_input_tokens2 = int(system_tokens2 + history_tokens2 + user_tokens2)
+
+                if total_input_tokens2 < total_input_tokens:
+                    messages = [{"role": "system", "content": sys_prefix2}]
+                    if skill_front_system_content:
+                        messages.append({"role": "system", "content": skill_front_system_content})
+                    messages += list(history_messages2)
+                    if memory_system_content2:
+                        messages.append({"role": "system", "content": memory_system_content2})
+                    if skill_tail_system_content:
+                        messages.append({"role": "system", "content": skill_tail_system_content})
+                    messages.append({"role": "user", "content": current_input2})
+                    sys_prefix = sys_prefix2
+                    history_messages = history_messages2
+                    current_input = current_input2
+                    history_stats = history_stats2
+                    system_tokens = system_tokens2
+                    history_tokens = history_tokens2
+                    user_tokens = user_tokens2
+                    total_input_tokens = total_input_tokens2
+                    self.agent._last_context_aggressive_compression_applied = True
+                    get_logger().info(
+                        "context-pack aggressive-compress triggered pre_pct=%s target_pct=%s post_pct=%s",
+                        usage_pct,
+                        AGGRESSIVE_COMPRESS_TARGET_PCT,
+                        int(round((total_input_tokens2 * 100.0) / max(1, ctx_window))),
+                    )
+
+            self._store_context_usage_snapshot(ctx_window, total_input_tokens)
+            if force_new_requirement:
+                self.agent._force_current_input_as_requirement_once = False
+            get_logger().info(
+                "context-pack profile=%s ctx_window=%s input_budget=%s system=%s history=%s user=%s "
+                "history_trimmed_assistant=%s history_summary_messages=%s history_dropped=%s",
+                budgets.get("profile"),
+                budgets.get("context_window"),
+                budgets.get("input_budget"),
+                system_tokens,
+                history_tokens,
+                user_tokens,
+                history_stats.get("assistant_trimmed", 0),
+                history_stats.get("summary_messages", 0),
+                history_stats.get("dropped_messages", 0),
+            )
+        except Exception:
+            pass
+        return messages, True
