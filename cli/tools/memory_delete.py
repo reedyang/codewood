@@ -23,6 +23,14 @@ class MemoryDeleteTool(BaseTool):
     }
 
     def execute(self, agent: Any, params: Dict[str, Any]) -> Dict[str, Any]:
-        from ._delegation import delegate_memory
-
-        return delegate_memory(agent, "memory_delete", params if isinstance(params, dict) else {})
+        params = params if isinstance(params, dict) else {}
+        if not agent._ensure_memory_service():
+            return {"success": False, "error": "memory service unavailable"}
+        mid = str(params.get("memory_id") or params.get("id") or "").strip()
+        if not mid:
+            return {"success": False, "error": "missing memory_id"}
+        try:
+            ok = agent.memory_service.delete_memory(mid)
+            return {"success": ok, "memory_id": mid}
+        except Exception as e:
+            return {"success": False, "error": f"memory delete failed: {e}"}

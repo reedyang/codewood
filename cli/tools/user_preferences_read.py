@@ -21,6 +21,22 @@ class UserPreferencesReadTool(BaseTool):
     }
 
     def execute(self, agent: Any, params: Dict[str, Any]) -> Dict[str, Any]:
-        from ._delegation import delegate_agent_state
+        params = params if isinstance(params, dict) else {}
+        try:
+            from pathlib import Path
 
-        return delegate_agent_state(agent, "user_preferences_read", params if isinstance(params, dict) else {})
+            from ..core.state import user_preferences_manager as _upm
+
+            meta, body = _upm.read_body(Path(agent.config_dir))
+            lim = int(params.get("max_chars") or 16000)
+            truncated = len(body) > lim
+            text = body if not truncated else body[:lim] + "..."
+            return {
+                "success": True,
+                "meta": meta,
+                "body": text,
+                "truncated": truncated,
+                "path": str(Path(agent.config_dir) / _upm.DEFAULT_FILENAME),
+            }
+        except Exception as e:
+            return {"success": False, "error": str(e)}

@@ -34,6 +34,20 @@ class RunSubagentTool(BaseTool):
     }
 
     def execute(self, agent: Any, params: Dict[str, Any]) -> Dict[str, Any]:
-        from ._delegation import delegate_subagent
+        from ..core.localization import get_display_language, translate
 
-        return delegate_subagent(agent, "run_subagent", params if isinstance(params, dict) else {})
+        def _t(key: str, **kwargs: object) -> str:
+            return translate(key, get_display_language(agent), **kwargs)
+
+        args = params if isinstance(params, dict) else {}
+        subagent = str(args.get("subagent") or "").strip()
+        prompt = str(args.get("prompt") or "").strip()
+        image = str(args.get("image") or "").strip() or None
+        if not subagent:
+            return {"success": False, "error": _t("subagents.error.missing_subagent")}
+        if not prompt:
+            return {"success": False, "error": _t("subagents.error.empty_prompt")}
+
+        from ..subagents.executor import run_subagent
+
+        return run_subagent(agent, subagent, prompt, image=image)

@@ -23,6 +23,16 @@ class MemorySearchTool(BaseTool):
     }
 
     def execute(self, agent: Any, params: Dict[str, Any]) -> Dict[str, Any]:
-        from ._delegation import delegate_memory
-
-        return delegate_memory(agent, "memory_search", params if isinstance(params, dict) else {})
+        params = params if isinstance(params, dict) else {}
+        if not agent._ensure_memory_service():
+            return {"success": False, "error": "memory service unavailable"}
+        query = str(params.get("query") or "").strip()
+        top_k = int(params.get("top_k", params.get("limit", 6)) or 6)
+        if not query:
+            return {"success": False, "error": "missing query"}
+        try:
+            sk = agent._memory_scope_key()
+            results = agent.memory_service.search_memories(query, top_k=top_k, scope_key=sk)
+            return {"success": True, "results": results, "query": query, "scope": sk}
+        except Exception as e:
+            return {"success": False, "error": f"memory search failed: {e}"}
