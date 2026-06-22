@@ -2629,7 +2629,9 @@ def run_agent_loop(agent: Any):
                             continue
 
                         if bl == "always_confirm-reset":
-                            self.execute_tool_call("always_confirm_reset", {})
+                            reset_result = self._reset_always_confirm_skip()
+                            if isinstance(reset_result, dict) and reset_result.get("success"):
+                                print(reset_result.get("message", "always-confirm skip list reset"))
                             continue
 
                         if bl == 'help':

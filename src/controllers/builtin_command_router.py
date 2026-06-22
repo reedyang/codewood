@@ -113,7 +113,9 @@ def dispatch_builtin_command(
         return True, False
 
     if bl == "always_confirm-reset":
-        agent.execute_tool_call("always_confirm_reset", {})
+        result = agent._reset_always_confirm_skip()
+        if isinstance(result, dict) and result.get("success"):
+            print(result.get("message", "always-confirm skip list reset"))
         return True, False
 
     if bl == "memory status":
