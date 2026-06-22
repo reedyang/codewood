@@ -13,7 +13,6 @@ This document describes the current lightweight project-context retrieval implem
 
 - No embedding/vector database for project-context search.
 - No semantic model serving.
-- No call graph construction.
 - No automatic patch generation from the index.
 - No use in the Default workspace.
 
