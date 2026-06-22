@@ -470,21 +470,21 @@ def build_subagents_system_append(agent: Any) -> str:
 def compose_system_prompt_snapshot(agent: Any, include_tools: bool) -> str:
     """Assemble the current model-visible system snapshot.
 
-    Ordering note: the tools, sub-agents, and MCP sections appear in that order
-    (tools first), ahead of the MCP section, so the model attends to its
-    available tools and sub-agents before the longer MCP catalog.
+    Each section is modeled as a :class:`ModelContextPart` (see the
+    ``cli.runtime.context`` package); this function iterates the ordered part
+    registry and concatenates each part's rendered text. Ordering note: the
+    tools, sub-agents, and MCP sections appear in that order (tools first),
+    ahead of the MCP section, so the model attends to its available tools and
+    sub-agents before the longer MCP catalog.
     """
-    parts = [
-        agent._base_system_prompt,
-        build_agents_md_system_append(agent),
-        build_user_preferences_system_append(agent),
-    ]
-    if include_tools:
-        parts.append("\n" + build_tools_prompt_append(agent))
-    parts.append(build_subagents_system_append(agent))
-    parts.append(build_mcp_system_append(agent))
-    parts.append(build_runtime_cache_prompt_append(agent, default_workspace_id="default"))
-    return "".join(parts)
+    from .context import ordered_context_parts
+
+    rendered: List[str] = []
+    for part in ordered_context_parts():
+        if not part.should_include(include_tools):
+            continue
+        rendered.append(part.render(agent, include_tools))
+    return "".join(rendered)
 
 
 def build_runtime_cache_prompt_append(agent: Any, default_workspace_id: str) -> str:
