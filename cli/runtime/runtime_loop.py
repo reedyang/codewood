@@ -34,9 +34,7 @@ from ..core.console_utils import (
     GUI_INTERNAL_COMMAND_PREFIX,
 )
 from ..controllers.builtin_command_router import dispatch_builtin_command
-from ..tooling.handlers.mcp_handlers import MCP_MANAGEMENT_GATED_TOOLS
-from ..tooling.handlers.memory_handlers import MEMORY_TOOLS
-from .prompt_composer import IMAGE_INPUT_TOOLS
+from ..tools.registry import IMAGE_INPUT_TOOLS, MCP_MANAGEMENT_GATED_TOOLS, MEMORY_TOOLS
 from ..tools.plan import (
     PLAN_STATUS_COMPLETED,
     PLAN_STATUS_IN_PROGRESS,

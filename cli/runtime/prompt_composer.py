@@ -7,13 +7,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from ..config.app_info import get_app_config_dirname
 from ..core.localization import DEFAULT_DISPLAY_LANGUAGE, get_display_language, translate
 from ..core.config.skills_loader import _list_bundled_script_paths
-from ..tooling.handlers.mcp_handlers import MCP_MANAGEMENT_GATED_TOOLS
-from ..tooling.handlers.memory_handlers import MEMORY_TOOLS
-
-
-# Tools that require the model to accept image input. Hidden from prompts and
-# tool schemas when the active model is not multimodal.
-IMAGE_INPUT_TOOLS = frozenset({"read_image"})
+from ..tools.registry import IMAGE_INPUT_TOOLS, MCP_MANAGEMENT_GATED_TOOLS, MEMORY_TOOLS
 
 
 def _model_supports_multimodal(agent: Any) -> bool:

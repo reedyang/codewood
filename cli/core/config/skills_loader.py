@@ -297,7 +297,7 @@ def build_skills_routing_prefix(skills: List[SkillRecord]) -> str:
             "",
             "**The `tool` field and skills (required):** the directory `skill_id` values above are not legal tool names. Do not output a skill directory name as a tool name. "
             "First call the built-in tool **`request_skill_prompt`** with `args.skill_id` set to the directory name to inject the full SKILL body, then follow the body using business tools such as `shell`. "
-            "Do not invent tool names outside `tools.jsonc` / the later Available tools list, for example mapping a weather request to a nonexistent `weather` tool.",
+            "Do not invent tool names outside the injected Available tools list, for example mapping a weather request to a nonexistent `weather` tool.",
             "",
             "**Bundled files:** paths such as `scripts/...` inside a skill body are relative to that skill's on-disk directory (see **Skill bundle root** below). "
             "`shell` runs in the user's working directory and does not automatically enter the skill directory; when calling bundled scripts, use absolute paths. Detected `.py` script paths below may be copied directly.",

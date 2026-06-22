@@ -85,6 +85,13 @@ ALL_TOOLS: List[Type[BaseTool]] = [
 _BY_NAME: Dict[str, Type[BaseTool]] = {t.name: t for t in ALL_TOOLS}
 _INSTANCES: Dict[str, BaseTool] = {}
 
+# Tool-name groups derived from class gating flags, kept as module-level
+# frozensets for callers that gate tool *injection* at runtime (not just spec
+# generation), e.g. prompt_composer and the runtime loop.
+MCP_MANAGEMENT_GATED_TOOLS = frozenset(t.name for t in ALL_TOOLS if t.requires_mcp)
+IMAGE_INPUT_TOOLS = frozenset(t.name for t in ALL_TOOLS if t.requires_multimodal)
+MEMORY_TOOLS = frozenset(t.name for t in ALL_TOOLS if t.name.startswith("memory_"))
+
 
 def tool_class_by_name(name: str) -> Optional[Type[BaseTool]]:
     return _BY_NAME.get(str(name or "").strip())
