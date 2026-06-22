@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import unittest
 
-from cli.actions.command_actions import (
+from cli.tools.shell import (
     _classify_no_match_exit,
     _shell_command_has_compound_operator,
 )

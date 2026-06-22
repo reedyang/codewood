@@ -117,8 +117,9 @@ from .completion.slash_dynamic_completions import (
     build_slash_dynamic_rules,
     build_workspace_action_commands,
 )
-from .actions import filesystem_actions
-from .actions import command_actions
+from .tools import apply_patch as tools_apply_patch
+from .tools import read_image as tools_read_image
+from .tools import shell as tools_shell
 from .config.app_info import (
     get_app_config_dirname,
     get_app_env_var,
@@ -1500,9 +1501,9 @@ class Agent:
             out_limit = (
                 _FULL_OUTPUT_TAIL_LIMIT
                 if full_output
-                else command_actions._dynamic_tail_line_limit(sys.stdout)
+                else tools_shell._dynamic_tail_line_limit(sys.stdout)
             )
-            out_text = command_actions._build_tail_output_for_display(
+            out_text = tools_shell._build_tail_output_for_display(
                 raw_out,
                 sys.stdout,
                 out_limit,
@@ -1562,9 +1563,9 @@ class Agent:
             out_limit = (
                 _FULL_OUTPUT_TAIL_LIMIT
                 if full_output
-                else command_actions._dynamic_tail_line_limit(sys.stdout)
+                else tools_shell._dynamic_tail_line_limit(sys.stdout)
             )
-            out_text = command_actions._build_tail_output_for_display(
+            out_text = tools_shell._build_tail_output_for_display(
                 raw_out,
                 sys.stdout,
                 out_limit,
@@ -1576,9 +1577,9 @@ class Agent:
             err_limit = (
                 _FULL_OUTPUT_TAIL_LIMIT
                 if full_output
-                else command_actions._dynamic_tail_line_limit(sys.stderr)
+                else tools_shell._dynamic_tail_line_limit(sys.stderr)
             )
-            err_text = command_actions._build_tail_output_for_display(
+            err_text = tools_shell._build_tail_output_for_display(
                 raw_err,
                 sys.stderr,
                 err_limit,
@@ -4963,7 +4964,7 @@ class Agent:
                     if isinstance(capture_chunks, list):
                         capture_chunks.append(text_chunk)
                     if isinstance(completed_lines, list) and isinstance(pending_line_state, dict):
-                        command_actions._append_completed_output_lines(
+                        tools_shell._append_completed_output_lines(
                             text_chunk,
                             completed_lines,
                             pending_line_state,
@@ -4980,7 +4981,7 @@ class Agent:
                 if isinstance(capture_chunks, list):
                     capture_chunks.append(tail)
                 if isinstance(completed_lines, list) and isinstance(pending_line_state, dict):
-                    command_actions._append_completed_output_lines(
+                    tools_shell._append_completed_output_lines(
                         tail,
                         completed_lines,
                         pending_line_state,
@@ -5041,10 +5042,10 @@ class Agent:
             "apply_gray": False,
             "max_visible_lines": max(
                 1,
-                int(command_actions._dynamic_tail_line_limit(sys.stdout, reserved_lines=1)),
+                int(tools_shell._dynamic_tail_line_limit(sys.stdout, reserved_lines=1)),
             ),
             "max_visible_lines_provider": (
-                lambda: command_actions._dynamic_tail_line_limit(sys.stdout, reserved_lines=1)
+                lambda: tools_shell._dynamic_tail_line_limit(sys.stdout, reserved_lines=1)
             ),
             "suppress_leading_blank_once": True,
             "on_text_emitted": _stop_status_ticker,
@@ -5094,9 +5095,9 @@ class Agent:
                 live_limit = max(
                     1,
                     int(stream_state.get("max_visible_lines", 0) or 0),
-                    int(command_actions._dynamic_tail_line_limit(sys.stdout, reserved_lines=1) or 0),
+                    int(tools_shell._dynamic_tail_line_limit(sys.stdout, reserved_lines=1) or 0),
                 )
-                snapshot_out, omitted_base = command_actions._select_logical_tail_output_for_live_replay(
+                snapshot_out, omitted_base = tools_shell._select_logical_tail_output_for_live_replay(
                     snapshot_out,
                     sys.stdout,
                     live_limit,
@@ -5120,7 +5121,7 @@ class Agent:
                 stream_state["suspend_drop_until_next_newline"] = True
                 stream_state["max_visible_lines"] = max(
                     int(live_limit or 0) + 1000,
-                    int(command_actions.SHELL_OUTPUT_DISPLAY_TAIL_LINES or 0) + 1000,
+                    int(tools_shell.SHELL_OUTPUT_DISPLAY_TAIL_LINES or 0) + 1000,
                 )
                 stream_state["max_visible_lines_provider"] = None
                 preview_out, _ = self._create_direct_shell_output_streams(stream_state)
@@ -5235,29 +5236,29 @@ class Agent:
             displayed_stdout = ""
             displayed_stderr = ""
             if stdout_text:
-                out_tail_limit = command_actions._dynamic_tail_line_limit(sys.stdout)
-                displayed_stdout = command_actions._build_tail_output_for_display(
+                out_tail_limit = tools_shell._dynamic_tail_line_limit(sys.stdout)
+                displayed_stdout = tools_shell._build_tail_output_for_display(
                     stdout_text,
                     sys.stdout,
                     out_tail_limit,
                     display_indent_width=4,
                     language=self._ui_language(),
                 )
-                displayed_stdout = command_actions._strip_console_color_controls(displayed_stdout)
+                displayed_stdout = tools_shell._strip_console_color_controls(displayed_stdout)
             if stderr_text:
-                err_tail_limit = command_actions._dynamic_tail_line_limit(sys.stderr)
-                displayed_stderr = command_actions._build_tail_output_for_display(
+                err_tail_limit = tools_shell._dynamic_tail_line_limit(sys.stderr)
+                displayed_stderr = tools_shell._build_tail_output_for_display(
                     stderr_text,
                     sys.stderr,
                     err_tail_limit,
                     display_indent_width=4,
                     language=self._ui_language(),
                 )
-                displayed_stderr = command_actions._strip_console_color_controls(displayed_stderr)
+                displayed_stderr = tools_shell._strip_console_color_controls(displayed_stderr)
             lock_obj = stream_state.get("_write_lock")
             lock_ctx = lock_obj if hasattr(lock_obj, "__enter__") and hasattr(lock_obj, "__exit__") else contextlib.nullcontext()
             with lock_ctx:
-                command_actions._clear_streamed_output_window(
+                tools_shell._clear_streamed_output_window(
                     sys.stdout,
                     int(stream_state.get("rendered_line_count", 0) or 0),
                     bool(stream_state.get("cursor_at_line_start", True)),
@@ -6277,7 +6278,7 @@ class Agent:
             return False
 
     def _parse_shell_invoked_script_path(self, command: str) -> Optional[Path]:
-        return command_actions.parse_shell_invoked_script_path(self, command)
+        return tools_shell.parse_shell_invoked_script_path(self, command)
 
     def _get_path_policy(self) -> PathPolicy:
         pol = getattr(self, "path_policy", None)
@@ -6380,7 +6381,7 @@ class Agent:
         return_code: int,
         merge_path: Optional[str],
     ) -> str:
-        return command_actions.append_shell_merge_output_path(stdout_text, return_code, merge_path)
+        return tools_shell.append_shell_merge_output_path(stdout_text, return_code, merge_path)
 
     def action_shell_command(
         self,
@@ -6390,7 +6391,7 @@ class Agent:
         input_data: Optional[str] = None,
     ) -> dict:
         """Run a shell command; capture stdout/stderr for AI context while echoing to the terminal."""
-        return command_actions.action_shell_command(
+        return tools_shell.action_shell_command(
             self,
             command=command,
             confirmed=confirmed,
@@ -6402,13 +6403,13 @@ class Agent:
         self, file_path: str, patch: str, confirmed: bool = False
     ) -> dict:
         """Apply a unified patch to the specified text file."""
-        return filesystem_actions.action_apply_unified_patch(
+        return tools_apply_patch.action_apply_unified_patch(
             self, file_path=file_path, patch=patch, confirmed=confirmed
         )
 
     def action_read_image(self, file_path: str, prompt: str = "") -> dict:
         """Read image contents and support multiple image formats."""
-        return filesystem_actions.action_read_image(self, file_path=file_path, prompt=prompt)
+        return tools_read_image.action_read_image(self, file_path=file_path, prompt=prompt)
 
     def action_project_context_search(self, params: Dict[str, Any]) -> dict:
         """
@@ -6416,7 +6417,7 @@ class Agent:
         - keep a lightweight incremental index
         - return ranked candidate files/symbols for the query
         """
-        return command_actions.action_project_context_search(self, params=params)
+        return tools_shell.action_project_context_search(self, params=params)
 
     def _render_evidence_block_from_project_context_result(self, res: Dict[str, Any]) -> str:
         if not isinstance(res, dict) or not res.get("success", False):
@@ -6487,9 +6488,9 @@ class Agent:
                         summary = summary.replace("''", "'")
                 if not summary:
                     summary = cmd
-                return command_actions.normalize_shell_command_for_summary(summary)
+                return tools_shell.normalize_shell_command_for_summary(summary)
             if cmd:
-                return command_actions.normalize_shell_command_for_summary(cmd)
+                return tools_shell.normalize_shell_command_for_summary(cmd)
         for k in (
             "skill_id",
             "mcp",

@@ -52,7 +52,7 @@ def shell_script_hash(agent: Any, script_path: Path) -> Optional[str]:
 
 
 def shell_executable_allowlist_key(agent: Any, command: str) -> str:
-    from ...actions.command_actions import _split_shell_like, _unwrap_shell_command_layers
+    from ...tools.shell import _split_shell_like, _unwrap_shell_command_layers
 
     s = _unwrap_shell_command_layers(command.strip())
     if not s:
@@ -176,7 +176,7 @@ def shell_command_in_allowlist(agent: Any, command: str) -> bool:
 
 
 def _is_workspace_read_command(agent: Any, command: str) -> bool:
-    from ...actions.command_actions import (
+    from ...tools.shell import (
         _split_shell_like,
         _strip_wrapping_quotes,
         _token_exe_base,
