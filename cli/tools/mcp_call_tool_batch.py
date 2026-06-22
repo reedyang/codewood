@@ -36,6 +36,61 @@ class McpCallToolBatchTool(BaseTool):
     }
 
     def execute(self, agent: Any, params: Dict[str, Any]) -> Dict[str, Any]:
-        from ._delegation import delegate_mcp
+        from ..integrations.mcp import McpError
 
-        return delegate_mcp(agent, "mcp_call_tool_batch", params if isinstance(params, dict) else {})
+        params = params if isinstance(params, dict) else {}
+        server = params.get("server")
+        calls = params.get("calls", [])
+        timeout_s = float(params.get("timeout_s", 30.0))
+        allow_partial_failure = bool(params.get("allow_partial_failure", False))
+        if not server:
+            return {"success": False, "error": "missing server"}
+        if not isinstance(calls, list):
+            return {"success": False, "error": "calls must be list"}
+        try:
+            st = agent.mcp_manager.get_status().get("servers", {}).get(str(server), {})
+            state_raw = str(st.get("state", "pending") or "pending").lower()
+            if state_raw != "success":
+                return {
+                    "success": False,
+                    "error": (
+                        f"server={server} is not ready (state={state_raw}); "
+                        "run mcp_list_tools(use_cache=false) first"
+                    ),
+                }
+        except Exception:
+            pass
+        try:
+            results = agent.mcp_manager.call_tools_batch(
+                str(server),
+                calls,
+                timeout_s=timeout_s,
+                allow_partial_failure=allow_partial_failure,
+            )
+            total_count = len(results) if isinstance(results, list) else 0
+            if allow_partial_failure and isinstance(results, list):
+                ok_count = 0
+                error_count = 0
+                for item in results:
+                    if isinstance(item, dict) and item.get("ok") is True:
+                        ok_count += 1
+                    else:
+                        error_count += 1
+            else:
+                ok_count = total_count
+                error_count = 0
+            return {
+                "success": True,
+                "server": server,
+                "results": results,
+                "count": total_count,
+                "total_count": total_count,
+                "ok_count": ok_count,
+                "error_count": error_count,
+                "has_error": error_count > 0,
+                "message": f"MCP tool batch called (server={server})",
+            }
+        except McpError as e:
+            return {"success": False, "error": f"MCP tool batch failed: {e}"}
+        except Exception as e:
+            return {"success": False, "error": f"MCP tool batch exception: {e}"}

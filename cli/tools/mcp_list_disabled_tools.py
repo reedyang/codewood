@@ -21,6 +21,19 @@ class McpListDisabledToolsTool(BaseTool):
     }
 
     def execute(self, agent: Any, params: Dict[str, Any]) -> Dict[str, Any]:
-        from ._delegation import delegate_mcp
-
-        return delegate_mcp(agent, "mcp_list_disabled_tools", params if isinstance(params, dict) else {})
+        params = params if isinstance(params, dict) else {}
+        server = params.get("server")
+        try:
+            result = agent.mcp_manager.list_disabled_tools(
+                str(server).strip() if server else None
+            )
+            total = sum(len(v) for v in result.values()) if isinstance(result, dict) else 0
+            return {
+                "success": True,
+                "server": server,
+                "disabled_tools": result,
+                "count": total,
+                "message": "MCP disabled tools listed",
+            }
+        except Exception as e:
+            return {"success": False, "error": f"MCP list disabled tools failed: {e}"}

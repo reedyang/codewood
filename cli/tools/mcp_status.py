@@ -20,6 +20,12 @@ class McpStatusTool(BaseTool):
     }
 
     def execute(self, agent: Any, params: Dict[str, Any]) -> Dict[str, Any]:
-        from ._delegation import delegate_mcp
-
-        return delegate_mcp(agent, "mcp_status", params if isinstance(params, dict) else {})
+        params = params if isinstance(params, dict) else {}
+        log_limit = int(params.get("log_limit", 20))
+        status = agent.mcp_manager.get_status(log_limit=log_limit)
+        return {
+            "success": True,
+            "cache_only": True,
+            "status": status,
+            "message": "MCP cached status fetched",
+        }
