@@ -280,4 +280,9 @@ export const zhCN: Dict = {
   "common.cancel": "取消",
   "common.ok": "确定",
   "common.connecting": "正在连接后端……",
+
+  "noModel.title": "请先配置模型",
+  "noModel.body":
+    "尚未配置任何模型。请打开“设置 → 模型”添加供应商和模型，然后返回即可开始对话。",
+  "noModel.openSettings": "打开模型设置",
 };
