@@ -833,6 +833,7 @@ function RoundShell({
   toolText: string;
   textNode: ReactNode;
 }) {
+  const { t } = useApp();
   const hasTools = toolText.trim().length > 0;
   const [expanded, setExpanded] = useState(autoExpand);
   useEffect(() => {
@@ -856,7 +857,19 @@ function RoundShell({
           <Icon name="chevron" size={14} className={`chevron ${expanded ? "open" : ""}`} />
         )}
       </button>
-      {hasTools && expanded && <StepsView text={toolText} />}
+      {hasTools && expanded && (
+        <>
+          <StepsView text={toolText} />
+          <button
+            className="activity-collapse"
+            onClick={() => setExpanded(false)}
+            title={t("activity.collapse")}
+            aria-label={t("activity.collapse")}
+          >
+            <Icon name="chevron" size={14} className="chevron up" />
+          </button>
+        </>
+      )}
     </div>
   ) : null;
   return (

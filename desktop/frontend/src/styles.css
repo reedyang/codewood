@@ -2815,6 +2815,10 @@ html[data-has-bg] .select {
   transform: rotate(90deg);
 }
 
+.chevron.up {
+  transform: rotate(-90deg);
+}
+
 .sidebar-footer {
   padding: 8px 6px 2px;
   border-top: 1px solid var(--sidebar-border);
@@ -2976,6 +2980,24 @@ html[data-has-bg] .select {
   100% {
     background-position: -200% 0;
   }
+}
+
+.activity-collapse {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  margin-top: 4px;
+  padding: 2px 0;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  color: var(--text-on-dark-muted);
+  border-radius: 4px;
+}
+
+.activity-collapse:hover {
+  background: var(--output-bg);
 }
 
 .activity-steps {
