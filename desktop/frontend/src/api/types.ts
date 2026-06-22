@@ -18,6 +18,10 @@ export interface ChatSummary {
   /** True while this chat's agent loop is actively streaming a turn. Lets the
    *  sidebar busy dot persist across focus changes and reloads. */
   running?: boolean;
+  /** Sticky Plan-mode flag recorded on the chat record root, so the GUI can
+   *  restore the per-chat compose mode after a restart instead of defaulting
+   *  every chat to Agent mode. */
+  planMode?: boolean;
 }
 
 /** Chat summary as returned by GET /workspace-chats for any workspace. */

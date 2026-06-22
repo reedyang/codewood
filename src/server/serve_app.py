@@ -806,6 +806,10 @@ def _build_state_inner(agent: Any) -> Dict[str, Any]:
                     # True while this chat's agent loop is mid-turn, so the
                     # sidebar busy dot survives focus changes and reloads.
                     "running": cid in running_chat_ids,
+                    # Sticky Plan-mode flag recorded on the chat record root.
+                    # Surfaced so the GUI can restore the per-chat compose mode
+                    # after a restart instead of defaulting every chat to Agent.
+                    "planMode": bool(c.get("plan_mode", False)),
                 }
             )
     except Exception:

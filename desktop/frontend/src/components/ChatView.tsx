@@ -364,13 +364,16 @@ export function ChatView() {
   const draftKey = draftMode ? DRAFT_KEY : state?.activeChatId || "";
   const [segmentsByChat, setSegmentsByChat] = useState<Record<string, Segment[]>>({});
   const segments = segmentsByChat[draftKey] ?? [];
-  // Per-chat compose mode (Agent or Plan). Stored only in-memory: switching
-  // chats restores the last-known mode for that chat without persisting it
-  // across restarts (so re-opening a project doesn't trap the user in Plan
-  // mode they forgot to leave). The Plan mode is conveyed to the agent by
-  // prepending a planning instruction to the outgoing message; the backend
-  // doesn't need a dedicated flag for this minimal implementation.
+  // Per-chat compose mode (Agent or Plan). The backend records a sticky
+  // Plan-mode flag on each chat record root (``planMode`` in the chat
+  // summary), so the mode survives an app restart: we seed each chat's
+  // entry from that persisted flag the first time we encounter it, then
+  // track in-session toggles locally. User toggles are written back to the
+  // backend (see ``setPlanMode``), keeping the persisted flag in step.
   const [chatModeMap, setChatModeMap] = useState<Record<string, ChatMode>>({});
+  // Chat ids already seeded from the persisted ``planMode`` flag, so a later
+  // state refresh never overrides an in-session toggle the user just made.
+  const seededPlanModeRef = useRef<Set<string>>(new Set());
   const chatMode: ChatMode = chatModeMap[draftKey] ?? "agent";
   const setChatMode = (m: ChatMode) =>
     setChatModeMap((prev) => ({ ...prev, [draftKey]: m }));
@@ -395,12 +398,36 @@ export function ChatView() {
   // earlier messages. Re-pins as soon as they scroll back to the bottom.
   const stickToBottomRef = useRef<boolean>(true);
 
+  // Seed each chat's compose mode from the backend's persisted Plan-mode flag
+  // the first time we see it (e.g. after an app restart). Only seeds chats not
+  // yet tracked locally, so an in-session toggle is never overridden by a later
+  // state refresh.
+  useEffect(() => {
+    const chats = state?.chats ?? [];
+    if (chats.length === 0) {
+      return;
+    }
+    const seeds: Record<string, ChatMode> = {};
+    for (const c of chats) {
+      const id = c?.id || "";
+      if (!id || seededPlanModeRef.current.has(id)) {
+        continue;
+      }
+      seededPlanModeRef.current.add(id);
+      if (c.planMode) {
+        seeds[id] = "plan";
+      }
+    }
+    if (Object.keys(seeds).length > 0) {
+      setChatModeMap((prev) => ({ ...seeds, ...prev }));
+    }
+  }, [state?.chats]);
+
   // Sync the agent's sticky plan-mode flag with the active chat's mode so
   // that switching back into a chat that was last left in Plan mode keeps
-  // the runtime injection in step with the visible "Plan" badge. We
-  // intentionally don't persist the per-chat mode across restarts — the
-  // sticky flag itself is process-scoped — so a fresh launch starts every
-  // chat in Agent mode.
+  // the runtime injection in step with the visible "Plan" badge. The per-chat
+  // mode is persisted on the backend (see the seeding effect above), so a
+  // fresh launch resumes each chat in the mode it was last left in.
   useEffect(() => {
     void setPlanMode(chatMode === "plan");
     // eslint-disable-next-line react-hooks/exhaustive-deps
