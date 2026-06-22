@@ -21,29 +21,17 @@ class ToolDispatcher:
         action = (tool_name or "").strip()
         args = arguments if isinstance(arguments, dict) else {}
 
-        core = dispatch_core_tool(self._agent, action, args)
-        if core is not None:
-            return core
+        from ..tools.registry import tool_by_name
 
-        file_shell = dispatch_file_shell_tool(self._agent, action, args)
-        if file_shell is not None:
-            return file_shell
+        tool = tool_by_name(action)
+        if tool is not None:
+            return tool.execute(self._agent, args)
 
-        mcp = dispatch_mcp_tool(self._agent, action, args)
-        if mcp is not None:
-            return mcp
-
-        memory = dispatch_memory_tool(self._agent, action, args)
-        if memory is not None:
-            return memory
-
+        # Actions that are not model-facing tools (e.g. execution_policy_set)
+        # are still handled by the legacy handler groups.
         agent_state = dispatch_agent_state_tool(self._agent, action, args)
         if agent_state is not None:
             return agent_state
-
-        subagent = dispatch_subagent_tool(self._agent, action, args)
-        if subagent is not None:
-            return subagent
 
         return None
 

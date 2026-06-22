@@ -170,40 +170,11 @@ def strip_jsonc_comments(text: str) -> str:
 
 
 def load_tools_spec_from_jsonc(agent: Any) -> List[Dict[str, Any]]:
-    """Load tool specs from tools.jsonc with comment stripping."""
-    path = _src_root() / "tools" / "tools.jsonc"
+    """Return the gated, ordered tool spec generated from the tool registry."""
     try:
-        raw = path.read_text(encoding="utf-8")
-        clean = strip_jsonc_comments(raw)
-        parsed = json.loads(clean)
-        if not isinstance(parsed, list):
-            raise ValueError("tools.jsonc root must be array")
-        specs = [x for x in parsed if isinstance(x, dict)]
+        from ..tools.registry import iter_specs
 
-        if not bool(getattr(agent, "mcp_tools_enabled", False)):
-            specs = [
-                x
-                for x in specs
-                if str((x.get("function", {}) or {}).get("name", "")).strip()
-                not in MCP_MANAGEMENT_GATED_TOOLS
-            ]
-
-        if not list(getattr(agent, "subagents", []) or []):
-            specs = [
-                x
-                for x in specs
-                if str((x.get("function", {}) or {}).get("name", "")).strip() != "run_subagent"
-            ]
-
-        if not _model_supports_multimodal(agent):
-            specs = [
-                x
-                for x in specs
-                if str((x.get("function", {}) or {}).get("name", "")).strip()
-                not in IMAGE_INPUT_TOOLS
-            ]
-
-        return specs
+        return iter_specs(agent)
     except Exception as e:
         print(_t(agent, "prompt_composer.tools_jsonc_load_failed", error=e))
         return []
