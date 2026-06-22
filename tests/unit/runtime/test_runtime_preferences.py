@@ -5,8 +5,8 @@ from contextlib import redirect_stdout
 from io import StringIO
 from pathlib import Path
 
-from src.core.config.config_jsonc import CONFIG_JSONC_FILENAME
-from src.runtime.bootstrap import setup_runtime_preferences
+from cli.core.config.config_jsonc import CONFIG_JSONC_FILENAME
+from cli.runtime.bootstrap import setup_runtime_preferences
 
 
 class _FakeAgent:

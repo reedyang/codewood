@@ -1,6 +1,6 @@
 import unittest
 
-from src.ai.ai_provider_clients import _make_stream_sanitizer, _sanitize_assistant_text
+from cli.ai.ai_provider_clients import _make_stream_sanitizer, _sanitize_assistant_text
 
 
 def _stream(deltas):

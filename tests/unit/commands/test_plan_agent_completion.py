@@ -1,6 +1,6 @@
 import unittest
 
-from src.completion.builtin_slash_commands import (
+from cli.completion.builtin_slash_commands import (
     SLASH_BUILTIN_COMMANDS,
     SLASH_BUILTIN_DISPLAY_OVERRIDES,
     slash_builtin_completions,

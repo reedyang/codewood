@@ -10,7 +10,7 @@ rem One-dir is used (instead of one-file) so each process runs directly
 rem without an extra self-extracting bootloader process: the GUI then uses
 rem two processes (app + serve backend) and the terminal UI uses one.
 
-set ENTRY_SCRIPT=src\main.py
+set ENTRY_SCRIPT=cli\main.py
 
 rem ---- Prepare the Python virtual environment so all build/runtime
 rem ---- dependencies (PyInstaller, pywebview, ...) are ready before packaging.
@@ -48,7 +48,7 @@ if errorlevel 1 (
   exit /b 1
 )
 
-rem Include required resources: rg.exe, skills, src resources, and the
+rem Include required resources: rg.exe, skills, cli resources, and the
 rem desktop GUI (frontend bundle + pywebview host modules).
 rem Using multiple --add-data flags (Windows uses ';' as separator)
 rem Include virtual environment packages from .venv-windows
@@ -85,7 +85,7 @@ rem    functionality. Output: dist\codewood\codewood.exe (+ _internal\).
   --icon "../../build/app_icon.ico" ^
   --add-data "../../vendors/rg.exe;bin" ^
   --add-data "../../skills;skills" ^
-  --add-data "../../src;src" ^
+  --add-data "../../cli;cli" ^
   --add-data "../../desktop/frontend/dist;frontend" ^
   --add-data "../../desktop/host;host" ^
   --paths "%VENV_PATH%" ^

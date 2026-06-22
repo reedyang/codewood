@@ -1,7 +1,7 @@
 import unittest
 from unittest.mock import patch
 
-from src.tooling.execution_engine import _print_with_auto_hide_tracking
+from cli.tooling.execution_engine import _print_with_auto_hide_tracking
 
 
 class _DummyAgent:

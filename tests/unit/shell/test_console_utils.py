@@ -3,10 +3,10 @@ import sys
 import unittest
 from unittest.mock import patch
 
-from src.core.console_utils import _ansi_blue
-from src.core.console_utils import _ansi_green
-from src.core.console_utils import _format_elapsed_minutes_seconds
-from src.core.console_utils import _render_working_status_line
+from cli.core.console_utils import _ansi_blue
+from cli.core.console_utils import _ansi_green
+from cli.core.console_utils import _format_elapsed_minutes_seconds
+from cli.core.console_utils import _render_working_status_line
 
 
 def _force_color_env() -> dict:
@@ -31,8 +31,8 @@ class ConsoleUtilsTests(unittest.TestCase):
             def isatty(self):
                 return True
 
-        with patch.dict("src.core.console_utils.os.environ", _force_color_env(), clear=True), patch(
-            "src.core.console_utils._enable_windows_console_vt"
+        with patch.dict("cli.core.console_utils.os.environ", _force_color_env(), clear=True), patch(
+            "cli.core.console_utils._enable_windows_console_vt"
         ), patch.object(sys, "stdout", DummyStdout()):
             out = _ansi_blue("hello")
 
@@ -43,8 +43,8 @@ class ConsoleUtilsTests(unittest.TestCase):
             def isatty(self):
                 return True
 
-        with patch.dict("src.core.console_utils.os.environ", _force_color_env(), clear=True), patch(
-            "src.core.console_utils._enable_windows_console_vt"
+        with patch.dict("cli.core.console_utils.os.environ", _force_color_env(), clear=True), patch(
+            "cli.core.console_utils._enable_windows_console_vt"
         ), patch.object(sys, "stdout", DummyStdout()):
             out = _ansi_green("hello")
 
@@ -61,8 +61,8 @@ class ConsoleUtilsTests(unittest.TestCase):
             def isatty(self):
                 return True
 
-        with patch.dict("src.core.console_utils.os.environ", _force_color_env(), clear=True), patch(
-            "src.core.console_utils._enable_windows_console_vt"
+        with patch.dict("cli.core.console_utils.os.environ", _force_color_env(), clear=True), patch(
+            "cli.core.console_utils._enable_windows_console_vt"
         ), patch.object(sys, "stdout", DummyStdout()):
             frame0 = _render_working_status_line(65, frame=0)
             frame1 = _render_working_status_line(65, frame=1)
@@ -80,8 +80,8 @@ class ConsoleUtilsTests(unittest.TestCase):
             def isatty(self):
                 return True
 
-        with patch.dict("src.core.console_utils.os.environ", _force_color_env(), clear=True), patch(
-            "src.core.console_utils._enable_windows_console_vt"
+        with patch.dict("cli.core.console_utils.os.environ", _force_color_env(), clear=True), patch(
+            "cli.core.console_utils._enable_windows_console_vt"
         ), patch.object(sys, "stdout", DummyStdout()):
             line = _render_working_status_line(65, frame=0, language="zh-CN")
 

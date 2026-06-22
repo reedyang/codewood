@@ -1,7 +1,7 @@
 import unittest
 from unittest.mock import patch
 
-from src.services.execution_policy_service import _print_with_auto_hide_tracking
+from cli.services.execution_policy_service import _print_with_auto_hide_tracking
 
 
 class _DummyAgent:

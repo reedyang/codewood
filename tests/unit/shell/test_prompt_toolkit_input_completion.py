@@ -4,9 +4,9 @@ from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
 
-from src.config.app_info import get_app_runtime_attr_name
-from src.completion import prompt_toolkit_input as pti
-from src.completion.prompt_toolkit_input import FileCompleter
+from cli.config.app_info import get_app_runtime_attr_name
+from cli.completion import prompt_toolkit_input as pti
+from cli.completion.prompt_toolkit_input import FileCompleter
 
 _RESIZE_ATTR_DRAFT = get_app_runtime_attr_name("resize_draft", leading_underscore=True)
 _RESIZE_ATTR_CURSOR = get_app_runtime_attr_name("resize_cursor_position", leading_underscore=True)

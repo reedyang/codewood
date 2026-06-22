@@ -3,8 +3,8 @@ from unittest.mock import patch
 
 import requests
 
-import src.ai.ai_provider_clients as ai_provider_clients
-from src.ai.ai_provider_clients import ProviderCallContext, call_ai_with_provider
+import cli.ai.ai_provider_clients as ai_provider_clients
+from cli.ai.ai_provider_clients import ProviderCallContext, call_ai_with_provider
 
 
 class _FakeResponse:
@@ -720,7 +720,7 @@ class ProviderContextWindowTests(unittest.TestCase):
             status_code=400,
             body='{"error":"model does not support tools"}',
         )
-        from src.ai.ai_provider_clients import ModelCallError
+        from cli.ai.ai_provider_clients import ModelCallError
 
         with patch("requests.post", return_value=response):
             with self.assertRaises(ModelCallError) as ctx:

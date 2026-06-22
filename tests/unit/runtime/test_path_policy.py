@@ -2,7 +2,7 @@
 import unittest
 from pathlib import Path
 
-from src.policy.path_policy import PathPolicy
+from cli.policy.path_policy import PathPolicy
 
 
 class _DummyAgent:

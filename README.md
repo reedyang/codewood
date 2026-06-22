@@ -26,21 +26,21 @@ pip install -r requirements.txt
 ### Run the App
 
 ```bash
-python src/main.py
+python cli/main.py
 
 # Start with a specific workspace by name or path
-python src/main.py --workspace <workspace name or path>
-python src/main.py -w <workspace name or path>
+python cli/main.py --workspace <workspace name or path>
+python cli/main.py -w <workspace name or path>
 
 # Run one task and exit
-python src/main.py exec "your task request"
+python cli/main.py exec "your task request"
 
 # Start with a workspace and run one task before exiting
-python src/main.py --workspace <workspace name or path> exec "your task request"
+python cli/main.py --workspace <workspace name or path> exec "your task request"
 
 # Choose a model at startup
-python src/main.py --model <model name>
-python src/main.py -m <model name>
+python cli/main.py --model <model name>
+python cli/main.py -m <model name>
 ```
 
 ## Desktop GUI
@@ -62,7 +62,7 @@ and a settings screen (theme, language, model, execution policy).
 
 ```bash
 # Development
-python src/main.py app
+python cli/main.py app
 
 # Packaged build
 codewood app
@@ -72,7 +72,7 @@ Launching `app` opens the desktop window without a console window. In a
 packaged build, `codewood app` starts the GUI in a detached process and
 returns control to the command prompt immediately. The GUI process spawns
 the backend by re-launching the same executable in `serve` mode
-(development: `python src/main.py serve`).
+(development: `python cli/main.py serve`).
 
 The packaged build is a single **one-dir folder** (`dist/codewood/`) holding
 **two executables** plus a shared `_internal/` runtime:
@@ -109,8 +109,8 @@ and the terminal UI uses **one**.
 
 ```bash
 # Headless server for the GUI (ephemeral port by default).
-python src/main.py serve
-python src/main.py serve --host 127.0.0.1 --port 8765
+python cli/main.py serve
+python cli/main.py serve --host 127.0.0.1 --port 8765
 ```
 
 On startup it prints a single JSON handshake line
@@ -129,13 +129,13 @@ npm run build           # produces desktop/frontend/dist used by the host
 
 # 3. Launch the GUI
 cd ../..
-python src/main.py app
+python cli/main.py app
 ```
 
 For live frontend development, run `npm run dev` in `desktop/frontend`
 and point the host at it with the `CODEWOOD_GUI_URL` environment
 variable (for example `http://localhost:5173`) before launching
-`python src/main.py app`.
+`python cli/main.py app`.
 
 ### Package
 
@@ -240,8 +240,8 @@ not modify any files.
 
 ```text
 codewood/
-├── src/                           # Core application code
-├── src/server/                    # Headless serve mode (HTTP + SSE) for the GUI
+├── cli/                           # Core application code
+├── cli/server/                    # Headless serve mode (HTTP + SSE) for the GUI
 ├── desktop/                       # Desktop GUI (TypeScript UI + pywebview host)
 │   ├── frontend/                  # Vite + React + TypeScript UI
 │   └── host/                      # pywebview host (launched via "codewood app");

@@ -1,6 +1,6 @@
 import unittest
 
-from src.core import status_bar as sb
+from cli.core import status_bar as sb
 
 
 class StatusBarTokenUsageTests(unittest.TestCase):

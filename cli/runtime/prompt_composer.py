@@ -36,7 +36,7 @@ def _t(language: Any, key: str, **kwargs: Any) -> str:
 
 
 def _src_root() -> Path:
-    """Return absolute src/ root regardless of current module subdirectory."""
+    """Return absolute cli/ root regardless of current module subdirectory."""
     return Path(__file__).resolve().parent.parent
 
 

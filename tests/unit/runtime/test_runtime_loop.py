@@ -6,7 +6,7 @@ import unicodedata
 from pathlib import Path
 from unittest.mock import patch
 
-from src.runtime.runtime_loop import (
+from cli.runtime.runtime_loop import (
     _consume_streaming_ai_response,
     _format_active_plan_reminder,
     _format_worked_for_summary_line,
@@ -85,7 +85,7 @@ class RuntimeLoopTests(unittest.TestCase):
             inside_path.mkdir(parents=True, exist_ok=True)
             outside_path.parent.mkdir(parents=True, exist_ok=True)
 
-            with patch("src.runtime.runtime_loop.Path.home", return_value=fake_home):
+            with patch("cli.runtime.runtime_loop.Path.home", return_value=fake_home):
                 self.assertEqual(
                     _format_startup_directory(str(inside_path)),
                     f"~{os.sep}projects{os.sep}demo",
@@ -373,7 +373,7 @@ class RuntimeLoopTests(unittest.TestCase):
 
     def test_project_context_priority_detection_targets_software_development_tasks(self):
         self.assertTrue(_should_prioritize_project_context_for_task("请帮我修复这个 bug"))
-        self.assertTrue(_should_prioritize_project_context_for_task("Explain this function in src/runtime/runtime_loop.py"))
+        self.assertTrue(_should_prioritize_project_context_for_task("Explain this function in cli/runtime/runtime_loop.py"))
         self.assertTrue(_should_prioritize_project_context_for_task("帮我重构这个模块并补测试"))
         self.assertFalse(_should_prioritize_project_context_for_task("帮我写一封邮件"))
         self.assertFalse(_should_prioritize_project_context_for_task("今天上海天气怎么样"))
@@ -722,7 +722,7 @@ class RuntimeLoopTests(unittest.TestCase):
         def _before_first_visible_output():
             state["stopped"] = True
 
-        with patch("src.runtime.runtime_loop.sys.stdout", _FakeStream(state)):
+        with patch("cli.runtime.runtime_loop.sys.stdout", _FakeStream(state)):
             ai_response, streamed_any = _consume_streaming_ai_response(
                 _Agent(),
                 ["he", "llo"],
@@ -757,7 +757,7 @@ class RuntimeLoopTests(unittest.TestCase):
             nonlocal callback_calls
             callback_calls += 1
 
-        with patch("src.runtime.runtime_loop.sys.stdout", _FakeStream()):
+        with patch("cli.runtime.runtime_loop.sys.stdout", _FakeStream()):
             ai_response, streamed_any = _consume_streaming_ai_response(
                 _Agent(),
                 [],
@@ -800,7 +800,7 @@ class RuntimeLoopTests(unittest.TestCase):
                 return None
 
         stream = _FakeAiStream()
-        with patch("src.runtime.runtime_loop.sys.stdout", _FakeStdout()):
+        with patch("cli.runtime.runtime_loop.sys.stdout", _FakeStdout()):
             with self.assertRaises(KeyboardInterrupt):
                 _consume_streaming_ai_response(_Agent(), stream)
         self.assertTrue(stream.closed)
@@ -845,7 +845,7 @@ class RuntimeLoopTests(unittest.TestCase):
                 return _AppendStream(base_stream)
 
         fake_out = _FakeTtyStream()
-        with patch("src.runtime.runtime_loop.sys.stdout", fake_out):
+        with patch("cli.runtime.runtime_loop.sys.stdout", fake_out):
             ai_response, streamed_any = _consume_streaming_ai_response(
                 _Agent(),
                 ["he", "llo"],
@@ -885,7 +885,7 @@ class RuntimeLoopTests(unittest.TestCase):
             "{\"tool",
             "\":\"done\",\"args\":{}}",
         ]
-        with patch("src.runtime.runtime_loop.sys.stdout", fake_out):
+        with patch("cli.runtime.runtime_loop.sys.stdout", fake_out):
             ai_response, streamed_any = _consume_streaming_ai_response(_Agent(), chunks)
 
         rendered = "".join(fake_out.writes)
@@ -922,7 +922,7 @@ class RuntimeLoopTests(unittest.TestCase):
             "Hello!\n\n",
             "{\"tool\":\"done\",\"args\":{}}",
         ]
-        with patch("src.runtime.runtime_loop.sys.stdout", fake_out):
+        with patch("cli.runtime.runtime_loop.sys.stdout", fake_out):
             ai_response, streamed_any = _consume_streaming_ai_response(_Agent(), chunks)
 
         rendered = "".join(fake_out.writes)
@@ -959,7 +959,7 @@ class RuntimeLoopTests(unittest.TestCase):
             "<|assistant",
             " tool_calls|>{\"tool\":\"done\",\"args\":{}}<|assistant tool_calls|>",
         ]
-        with patch("src.runtime.runtime_loop.sys.stdout", fake_out):
+        with patch("cli.runtime.runtime_loop.sys.stdout", fake_out):
             ai_response, streamed_any = _consume_streaming_ai_response(_Agent(), chunks)
 
         rendered = "".join(fake_out.writes)
@@ -1008,7 +1008,7 @@ class RuntimeLoopTests(unittest.TestCase):
                 return None
 
         stream = _FakeStream()
-        with patch("src.runtime.runtime_loop.sys.stdout", _FakeStdout()):
+        with patch("cli.runtime.runtime_loop.sys.stdout", _FakeStdout()):
             ai_response, streamed_any = _consume_streaming_ai_response(_Agent(), stream)
         self.assertEqual(ai_response, "Reading")
         self.assertTrue(streamed_any)
@@ -1934,8 +1934,8 @@ class InteractiveAskMoreInfoSelectorTests(unittest.TestCase):
     def test_interactive_used_on_tty_single_select(self):
         agent = self._agent_with_selector("Stg")
         with (
-            patch("src.runtime.runtime_loop.sys.stdin") as stdin,
-            patch("src.runtime.runtime_loop.sys.stdout") as stdout,
+            patch("cli.runtime.runtime_loop.sys.stdin") as stdin,
+            patch("cli.runtime.runtime_loop.sys.stdout") as stdout,
         ):
             stdin.isatty.return_value = True
             stdout.isatty.return_value = True
@@ -1950,8 +1950,8 @@ class InteractiveAskMoreInfoSelectorTests(unittest.TestCase):
     def test_interactive_cancel_returns_empty_and_clears(self):
         agent = self._agent_with_selector(None)
         with (
-            patch("src.runtime.runtime_loop.sys.stdin") as stdin,
-            patch("src.runtime.runtime_loop.sys.stdout") as stdout,
+            patch("cli.runtime.runtime_loop.sys.stdin") as stdin,
+            patch("cli.runtime.runtime_loop.sys.stdout") as stdout,
         ):
             stdin.isatty.return_value = True
             stdout.isatty.return_value = True
@@ -1967,8 +1967,8 @@ class InteractiveAskMoreInfoSelectorTests(unittest.TestCase):
         # Provide a scripted text input for the fallback path.
         agent._scripted = ["1"]
         with (
-            patch("src.runtime.runtime_loop.sys.stdin") as stdin,
-            patch("src.runtime.runtime_loop.sys.stdout") as stdout,
+            patch("cli.runtime.runtime_loop.sys.stdin") as stdin,
+            patch("cli.runtime.runtime_loop.sys.stdout") as stdout,
         ):
             stdin.isatty.return_value = False
             stdout.isatty.return_value = False

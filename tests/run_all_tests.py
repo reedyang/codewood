@@ -24,7 +24,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.config.app_info import get_app_env_var
+from cli.config.app_info import get_app_env_var
 
 
 DEFAULT_EXCLUDED_FILES = ()

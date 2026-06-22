@@ -1,8 +1,8 @@
 import unittest
 from unittest.mock import patch
 
-from src.ai.ai_orchestrator import AgentAIContext, AIOrchestrator
-from src.ai.ai_provider_clients import AICallContext, ModelCallError
+from cli.ai.ai_orchestrator import AgentAIContext, AIOrchestrator
+from cli.ai.ai_provider_clients import AICallContext, ModelCallError
 
 
 class AIOrchestratorTests(unittest.TestCase):
@@ -33,7 +33,7 @@ class AIOrchestratorTests(unittest.TestCase):
             append_history("compact summary")
             return "compact summary"
 
-        with patch("src.ai.ai_orchestrator.call_ai_with_provider", _fake_provider_call):
+        with patch("cli.ai.ai_orchestrator.call_ai_with_provider", _fake_provider_call):
             result = orchestrator.call(
                 call_ctx=AICallContext(
                     user_input="ignored",
@@ -68,7 +68,7 @@ class AIOrchestratorTests(unittest.TestCase):
             captured_messages.extend(context.messages)
             return "ok"
 
-        with patch("src.ai.ai_orchestrator.call_ai_with_provider", _fake_provider_call):
+        with patch("cli.ai.ai_orchestrator.call_ai_with_provider", _fake_provider_call):
             result = orchestrator.call(
                 call_ctx=AICallContext(
                     user_input='{"command":"python -c \\"print(1)\\""}',
@@ -104,7 +104,7 @@ class AIOrchestratorTests(unittest.TestCase):
             append_history("")
             return ""
 
-        with patch("src.ai.ai_orchestrator.call_ai_with_provider", _fake_provider_call):
+        with patch("cli.ai.ai_orchestrator.call_ai_with_provider", _fake_provider_call):
             result = orchestrator.call(
                 call_ctx=AICallContext(user_input="hello", stream=True)
             )
@@ -147,7 +147,7 @@ class AIOrchestratorTests(unittest.TestCase):
             _ = context, append_history, ollama_importer
             raise ModelCallError("405 Method Not Allowed", attempt_errors=attempts)
 
-        with patch("src.ai.ai_orchestrator.call_ai_with_provider", _raise_full_trail):
+        with patch("cli.ai.ai_orchestrator.call_ai_with_provider", _raise_full_trail):
             result = orchestrator.call(call_ctx=AICallContext(user_input="hello", stream=False))
 
         self.assertIsInstance(result, str)

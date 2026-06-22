@@ -1,6 +1,6 @@
 import unittest
 
-from src.main import _parse_startup_cli_args
+from cli.main import _parse_startup_cli_args
 
 
 class MainCliArgsTests(unittest.TestCase):

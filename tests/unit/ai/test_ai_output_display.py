@@ -3,15 +3,15 @@ import types
 import unittest
 from unittest.mock import patch
 
-from src.config.app_info import get_app_name
-from src.core import assistant_output_highlighter as aoh
+from cli.config.app_info import get_app_name
+from cli.core import assistant_output_highlighter as aoh
 
 
 if "ollama" not in sys.modules:
     fake_ollama = types.SimpleNamespace(list=lambda: {"models": []})
     sys.modules["ollama"] = fake_ollama
 
-from src.agent import Agent
+from cli.agent import Agent
 
 
 class AiOutputDisplayTests(unittest.TestCase):
@@ -36,10 +36,10 @@ class AiOutputDisplayTests(unittest.TestCase):
     def test_tool_call_summary_prefers_path_like_fields(self):
         s = self.agent._tool_call_summary(
             "read",
-            {"path": "src/main.py", "line_count": 10, "start_line": 101},
+            {"path": "cli/main.py", "line_count": 10, "start_line": 101},
         )
         self.assertIn("read", s)
-        self.assertIn("path=src/main.py", s)
+        self.assertIn("path=cli/main.py", s)
         self.assertNotIn("line_count=10", s)
         self.assertNotIn("start_line=101", s)
 
@@ -55,7 +55,7 @@ class AiOutputDisplayTests(unittest.TestCase):
             "```json\n"
             "{\n"
             '  "tool": "shell",\n'
-            '  "args": {"command": "Get-Content src/main.py"}\n'
+            '  "args": {"command": "Get-Content cli/main.py"}\n'
             "}\n"
         )
         out = aoh.strip_tool_json_blocks_for_display(text)
@@ -161,9 +161,9 @@ class AiOutputDisplayTests(unittest.TestCase):
             "1. Check https://127.0.0.1:4001 and OPENAI_API_KEY\n"
             "./scripts/start-gateway.ps1 # Windows wrapper"
         )
-        with patch("src.core.assistant_output_highlighter._ansi_bright_blue", side_effect=lambda s: f"<BB>{s}</BB>"), patch(
-            "src.core.assistant_output_highlighter._ansi_cyan", side_effect=lambda s: f"<C>{s}</C>"
-        ), patch("src.core.assistant_output_highlighter._ansi_gray", side_effect=lambda s: f"<G>{s}</G>"):
+        with patch("cli.core.assistant_output_highlighter._ansi_bright_blue", side_effect=lambda s: f"<BB>{s}</BB>"), patch(
+            "cli.core.assistant_output_highlighter._ansi_cyan", side_effect=lambda s: f"<C>{s}</C>"
+        ), patch("cli.core.assistant_output_highlighter._ansi_gray", side_effect=lambda s: f"<G>{s}</G>"):
             out = aoh.format_assistant_display_response(text)
 
         self.assertIn("<BB>1. </BB>", out)
@@ -178,15 +178,15 @@ class AiOutputDisplayTests(unittest.TestCase):
             ".\\.venv\\Scripts\\python -m pip install \"litellm[proxy]==1.83.14\"\n"
             "Get-Content -Path agent.py -Raw"
         )
-        with patch("src.core.assistant_output_highlighter._ansi_bright_blue", side_effect=lambda s: f"<BB>{s}</BB>"), patch(
-            "src.core.assistant_output_highlighter._ansi_yellow", side_effect=lambda s: f"<Y>{s}</Y>"
-        ), patch("src.core.assistant_output_highlighter._ansi_green", side_effect=lambda s: f"<G>{s}</G>"), patch(
-            "src.core.assistant_output_highlighter._ansi_cyan", side_effect=lambda s: f"<C>{s}</C>"
+        with patch("cli.core.assistant_output_highlighter._ansi_bright_blue", side_effect=lambda s: f"<BB>{s}</BB>"), patch(
+            "cli.core.assistant_output_highlighter._ansi_yellow", side_effect=lambda s: f"<Y>{s}</Y>"
+        ), patch("cli.core.assistant_output_highlighter._ansi_green", side_effect=lambda s: f"<G>{s}</G>"), patch(
+            "cli.core.assistant_output_highlighter._ansi_cyan", side_effect=lambda s: f"<C>{s}</C>"
         ), patch(
-            "src.core.assistant_output_highlighter._ansi_ps_command", side_effect=lambda s: f"<PSC>{s}</PSC>"
+            "cli.core.assistant_output_highlighter._ansi_ps_command", side_effect=lambda s: f"<PSC>{s}</PSC>"
         ), patch(
-            "src.core.assistant_output_highlighter._ansi_ps_parameter", side_effect=lambda s: f"<PSP>{s}</PSP>"
-        ), patch("src.core.assistant_output_highlighter._ansi_gray", side_effect=lambda s: f"<GR>{s}</GR>"):
+            "cli.core.assistant_output_highlighter._ansi_ps_parameter", side_effect=lambda s: f"<PSP>{s}</PSP>"
+        ), patch("cli.core.assistant_output_highlighter._ansi_gray", side_effect=lambda s: f"<GR>{s}</GR>"):
             out = aoh.format_assistant_display_response(text)
 
         self.assertIn("<PSC>powershell</PSC>", out)
@@ -204,16 +204,16 @@ class AiOutputDisplayTests(unittest.TestCase):
 
     def test_highlight_parenthesized_powershell_cmdlet_line(self):
         text = '(Get-Content -Path helloworld.py) -replace "print(\\"Hello\\")", "print(\\"Hi\\")"'
-        with patch("src.core.assistant_output_highlighter._ansi_bright_blue", side_effect=lambda s: f"<BB>{s}</BB>"), patch(
-            "src.core.assistant_output_highlighter._ansi_yellow", side_effect=lambda s: f"<Y>{s}</Y>"
-        ), patch("src.core.assistant_output_highlighter._ansi_cyan", side_effect=lambda s: f"<C>{s}</C>"), patch(
-            "src.core.assistant_output_highlighter._ansi_green", side_effect=lambda s: f"<G>{s}</G>"
+        with patch("cli.core.assistant_output_highlighter._ansi_bright_blue", side_effect=lambda s: f"<BB>{s}</BB>"), patch(
+            "cli.core.assistant_output_highlighter._ansi_yellow", side_effect=lambda s: f"<Y>{s}</Y>"
+        ), patch("cli.core.assistant_output_highlighter._ansi_cyan", side_effect=lambda s: f"<C>{s}</C>"), patch(
+            "cli.core.assistant_output_highlighter._ansi_green", side_effect=lambda s: f"<G>{s}</G>"
         ), patch(
-            "src.core.assistant_output_highlighter._ansi_ps_command", side_effect=lambda s: f"<PSC>{s}</PSC>"
+            "cli.core.assistant_output_highlighter._ansi_ps_command", side_effect=lambda s: f"<PSC>{s}</PSC>"
         ), patch(
-            "src.core.assistant_output_highlighter._ansi_ps_parameter", side_effect=lambda s: f"<PSP>{s}</PSP>"
+            "cli.core.assistant_output_highlighter._ansi_ps_parameter", side_effect=lambda s: f"<PSP>{s}</PSP>"
         ), patch(
-            "src.core.assistant_output_highlighter._ansi_ps_operator", side_effect=lambda s: f"<PSO>{s}</PSO>"
+            "cli.core.assistant_output_highlighter._ansi_ps_operator", side_effect=lambda s: f"<PSO>{s}</PSO>"
         ):
             out = aoh.highlight_assistant_display_line(text)
 
@@ -224,14 +224,14 @@ class AiOutputDisplayTests(unittest.TestCase):
 
     def test_highlight_quoted_path_with_trailing_parenthesis_keeps_replace_as_operator(self):
         text = "(Get-Content -Path 'helloworld.py') -replace 'a', 'b'"
-        with patch("src.core.assistant_output_highlighter._ansi_cyan", side_effect=lambda s: f"<C>{s}</C>"), patch(
-            "src.core.assistant_output_highlighter._ansi_green", side_effect=lambda s: f"<G>{s}</G>"
+        with patch("cli.core.assistant_output_highlighter._ansi_cyan", side_effect=lambda s: f"<C>{s}</C>"), patch(
+            "cli.core.assistant_output_highlighter._ansi_green", side_effect=lambda s: f"<G>{s}</G>"
         ), patch(
-            "src.core.assistant_output_highlighter._ansi_ps_command", side_effect=lambda s: f"<PSC>{s}</PSC>"
+            "cli.core.assistant_output_highlighter._ansi_ps_command", side_effect=lambda s: f"<PSC>{s}</PSC>"
         ), patch(
-            "src.core.assistant_output_highlighter._ansi_ps_parameter", side_effect=lambda s: f"<PSP>{s}</PSP>"
+            "cli.core.assistant_output_highlighter._ansi_ps_parameter", side_effect=lambda s: f"<PSP>{s}</PSP>"
         ), patch(
-            "src.core.assistant_output_highlighter._ansi_ps_operator", side_effect=lambda s: f"<PSO>{s}</PSO>"
+            "cli.core.assistant_output_highlighter._ansi_ps_operator", side_effect=lambda s: f"<PSO>{s}</PSO>"
         ):
             out = aoh.highlight_assistant_display_line(text)
 
@@ -240,15 +240,15 @@ class AiOutputDisplayTests(unittest.TestCase):
 
     def test_highlight_shell_pipeline_colors_pipe_and_following_cmdlet(self):
         text = "Get-Content -Path a.txt | Set-Content -Path b.txt"
-        with patch("src.core.assistant_output_highlighter._ansi_bright_blue", side_effect=lambda s: f"<BB>{s}</BB>"), patch(
-            "src.core.assistant_output_highlighter._ansi_yellow", side_effect=lambda s: f"<Y>{s}</Y>"
+        with patch("cli.core.assistant_output_highlighter._ansi_bright_blue", side_effect=lambda s: f"<BB>{s}</BB>"), patch(
+            "cli.core.assistant_output_highlighter._ansi_yellow", side_effect=lambda s: f"<Y>{s}</Y>"
         ), patch(
-            "src.core.assistant_output_highlighter._ansi_ps_command", side_effect=lambda s: f"<PSC>{s}</PSC>"
+            "cli.core.assistant_output_highlighter._ansi_ps_command", side_effect=lambda s: f"<PSC>{s}</PSC>"
         ), patch(
-            "src.core.assistant_output_highlighter._ansi_ps_parameter", side_effect=lambda s: f"<PSP>{s}</PSP>"
+            "cli.core.assistant_output_highlighter._ansi_ps_parameter", side_effect=lambda s: f"<PSP>{s}</PSP>"
         ), patch(
-            "src.core.assistant_output_highlighter._ansi_ps_pipe", side_effect=lambda s: f"<PSPIPE>{s}</PSPIPE>"
-        ), patch("src.core.assistant_output_highlighter._ansi_cyan", side_effect=lambda s: f"<C>{s}</C>"):
+            "cli.core.assistant_output_highlighter._ansi_ps_pipe", side_effect=lambda s: f"<PSPIPE>{s}</PSPIPE>"
+        ), patch("cli.core.assistant_output_highlighter._ansi_cyan", side_effect=lambda s: f"<C>{s}</C>"):
             out = aoh.highlight_assistant_display_line(text)
         self.assertIn("<PSC>Get-Content</PSC>", out)
         self.assertIn("<PSPIPE>|</PSPIPE>", out)
@@ -259,8 +259,8 @@ class AiOutputDisplayTests(unittest.TestCase):
             "- Used PowerShell `Get-Content -Path agent.py -Raw` to read the file.\n"
             "- The command ran on Windows via `powershell -ExecutionPolicy Bypass`."
         )
-        with patch("src.core.assistant_output_highlighter._ansi_bright_blue", side_effect=lambda s: f"<BB>{s}</BB>"), patch(
-            "src.core.assistant_output_highlighter._ansi_cyan", side_effect=lambda s: f"<C>{s}</C>"
+        with patch("cli.core.assistant_output_highlighter._ansi_bright_blue", side_effect=lambda s: f"<BB>{s}</BB>"), patch(
+            "cli.core.assistant_output_highlighter._ansi_cyan", side_effect=lambda s: f"<C>{s}</C>"
         ):
             out = aoh.format_assistant_display_response(text)
 
@@ -272,14 +272,14 @@ class AiOutputDisplayTests(unittest.TestCase):
 
     def test_bang_prefixed_powershell_command_with_inner_command_string_is_highlighted(self):
         text = '!powershell -ExecutionPolicy Bypass -Command "Get-Content -Path agent.py -Raw"'
-        with patch("src.core.assistant_output_highlighter._ansi_bright_blue", side_effect=lambda s: f"<BB>{s}</BB>"), patch(
-            "src.core.assistant_output_highlighter._ansi_yellow", side_effect=lambda s: f"<Y>{s}</Y>"
-        ), patch("src.core.assistant_output_highlighter._ansi_cyan", side_effect=lambda s: f"<C>{s}</C>"), patch(
-            "src.core.assistant_output_highlighter._ansi_green", side_effect=lambda s: f"<G>{s}</G>"
+        with patch("cli.core.assistant_output_highlighter._ansi_bright_blue", side_effect=lambda s: f"<BB>{s}</BB>"), patch(
+            "cli.core.assistant_output_highlighter._ansi_yellow", side_effect=lambda s: f"<Y>{s}</Y>"
+        ), patch("cli.core.assistant_output_highlighter._ansi_cyan", side_effect=lambda s: f"<C>{s}</C>"), patch(
+            "cli.core.assistant_output_highlighter._ansi_green", side_effect=lambda s: f"<G>{s}</G>"
         ), patch(
-            "src.core.assistant_output_highlighter._ansi_ps_command", side_effect=lambda s: f"<PSC>{s}</PSC>"
+            "cli.core.assistant_output_highlighter._ansi_ps_command", side_effect=lambda s: f"<PSC>{s}</PSC>"
         ), patch(
-            "src.core.assistant_output_highlighter._ansi_ps_parameter", side_effect=lambda s: f"<PSP>{s}</PSP>"
+            "cli.core.assistant_output_highlighter._ansi_ps_parameter", side_effect=lambda s: f"<PSP>{s}</PSP>"
         ):
             out = aoh.highlight_assistant_display_line(text)
 
@@ -293,14 +293,14 @@ class AiOutputDisplayTests(unittest.TestCase):
 
     def test_highlight_rg_pipeline_command_line_is_treated_as_shell(self):
         text = "rg -i 'token' -n . | select-String -Pattern 'usage|rate'"
-        with patch("src.core.assistant_output_highlighter._ansi_bright_blue", side_effect=lambda s: f"<BB>{s}</BB>"), patch(
-            "src.core.assistant_output_highlighter._ansi_yellow", side_effect=lambda s: f"<Y>{s}</Y>"
-        ), patch("src.core.assistant_output_highlighter._ansi_green", side_effect=lambda s: f"<G>{s}</G>"), patch(
-            "src.core.assistant_output_highlighter._ansi_ps_command", side_effect=lambda s: f"<PSC>{s}</PSC>"
+        with patch("cli.core.assistant_output_highlighter._ansi_bright_blue", side_effect=lambda s: f"<BB>{s}</BB>"), patch(
+            "cli.core.assistant_output_highlighter._ansi_yellow", side_effect=lambda s: f"<Y>{s}</Y>"
+        ), patch("cli.core.assistant_output_highlighter._ansi_green", side_effect=lambda s: f"<G>{s}</G>"), patch(
+            "cli.core.assistant_output_highlighter._ansi_ps_command", side_effect=lambda s: f"<PSC>{s}</PSC>"
         ), patch(
-            "src.core.assistant_output_highlighter._ansi_ps_parameter", side_effect=lambda s: f"<PSP>{s}</PSP>"
+            "cli.core.assistant_output_highlighter._ansi_ps_parameter", side_effect=lambda s: f"<PSP>{s}</PSP>"
         ), patch(
-            "src.core.assistant_output_highlighter._ansi_ps_pipe", side_effect=lambda s: f"<PSPIPE>{s}</PSPIPE>"
+            "cli.core.assistant_output_highlighter._ansi_ps_pipe", side_effect=lambda s: f"<PSPIPE>{s}</PSPIPE>"
         ):
             out = aoh.highlight_assistant_display_line(text)
 
@@ -317,8 +317,8 @@ class AiOutputDisplayTests(unittest.TestCase):
         self.assertEqual(s, "Get-ChildItem -Force")
 
     def test_format_tool_call_feedback_line_uses_ran_and_default_bullet_color(self):
-        with patch("src.agent._ansi_rgb", side_effect=lambda text, r, g, b: f"<RGB:{r},{g},{b}>{text}</RGB>"), patch(
-            "src.agent.highlight_assistant_display_line", side_effect=lambda s: f"<H>{s}</H>"
+        with patch("cli.agent._ansi_rgb", side_effect=lambda text, r, g, b: f"<RGB:{r},{g},{b}>{text}</RGB>"), patch(
+            "cli.agent.highlight_assistant_display_line", side_effect=lambda s: f"<H>{s}</H>"
         ):
             line = self.agent._format_tool_call_feedback_line("read", {"path": "a.txt"}, failed=False)
         self.assertTrue(line.startswith("<RGB:19,161,14>•</RGB> Ran "))
@@ -326,24 +326,24 @@ class AiOutputDisplayTests(unittest.TestCase):
 
     def test_format_tool_call_feedback_line_uses_language_specific_prefix(self):
         self.agent.display_language = "zh-CN"
-        with patch("src.agent._ansi_rgb", side_effect=lambda text, r, g, b: f"<RGB:{r},{g},{b}>{text}</RGB>"), patch(
-            "src.agent.highlight_assistant_display_line", side_effect=lambda s: f"<H>{s}</H>"
+        with patch("cli.agent._ansi_rgb", side_effect=lambda text, r, g, b: f"<RGB:{r},{g},{b}>{text}</RGB>"), patch(
+            "cli.agent.highlight_assistant_display_line", side_effect=lambda s: f"<H>{s}</H>"
         ):
             line = self.agent._format_tool_call_feedback_line("read", {"path": "a.txt"}, failed=False)
         self.assertTrue(line.startswith("<RGB:19,161,14>•</RGB> 执行 "))
         self.assertIn("<H>read (path=a.txt)</H>", line)
 
     def test_format_tool_call_feedback_line_switches_bullet_color_when_failed(self):
-        with patch("src.agent._ansi_rgb", side_effect=lambda text, r, g, b: f"<RGB:{r},{g},{b}>{text}</RGB>"), patch(
-            "src.agent.highlight_assistant_display_line", side_effect=lambda s: f"<H>{s}</H>"
+        with patch("cli.agent._ansi_rgb", side_effect=lambda text, r, g, b: f"<RGB:{r},{g},{b}>{text}</RGB>"), patch(
+            "cli.agent.highlight_assistant_display_line", side_effect=lambda s: f"<H>{s}</H>"
         ):
             line = self.agent._format_tool_call_feedback_line("read", {"path": "a.txt"}, failed=True)
         self.assertTrue(line.startswith("<RGB:197,15,31>•</RGB> Ran "))
         self.assertIn("<H>read (path=a.txt)</H>", line)
 
     def test_format_direct_shell_command_feedback_line_uses_shared_highlighter(self):
-        with patch("src.agent._ansi_rgb", side_effect=lambda text, r, g, b: f"<RGB:{r},{g},{b}>{text}</RGB>"), patch(
-            "src.agent.highlight_assistant_display_line", side_effect=lambda s: f"<H>{s}</H>"
+        with patch("cli.agent._ansi_rgb", side_effect=lambda text, r, g, b: f"<RGB:{r},{g},{b}>{text}</RGB>"), patch(
+            "cli.agent.highlight_assistant_display_line", side_effect=lambda s: f"<H>{s}</H>"
         ):
             line = self.agent._format_direct_shell_command_feedback_line("git status", failed=False)
         self.assertTrue(line.startswith("<RGB:19,161,14>•</RGB> You ran "))
@@ -351,8 +351,8 @@ class AiOutputDisplayTests(unittest.TestCase):
 
     def test_format_direct_shell_command_feedback_line_uses_language_specific_prefix(self):
         self.agent.display_language = "zh-CN"
-        with patch("src.agent._ansi_rgb", side_effect=lambda text, r, g, b: f"<RGB:{r},{g},{b}>{text}</RGB>"), patch(
-            "src.agent.highlight_assistant_display_line", side_effect=lambda s: f"<H>{s}</H>"
+        with patch("cli.agent._ansi_rgb", side_effect=lambda text, r, g, b: f"<RGB:{r},{g},{b}>{text}</RGB>"), patch(
+            "cli.agent.highlight_assistant_display_line", side_effect=lambda s: f"<H>{s}</H>"
         ):
             line = self.agent._format_direct_shell_command_feedback_line("git status", failed=False)
         self.assertTrue(line.startswith("<RGB:19,161,14>•</RGB> 你执行了 "))
@@ -362,9 +362,9 @@ class AiOutputDisplayTests(unittest.TestCase):
         with (
             patch.object(self.agent, "_tool_call_summary", return_value="abcdef ghijkl mnopqrstuvwxyz"),
             patch.object(self.agent, "_terminal_columns_for_command_feedback", return_value=16),
-            patch("src.agent._ansi_rgb", side_effect=lambda text, r, g, b: f"<RGB:{r},{g},{b}>{text}</RGB>"),
-            patch("src.agent._ansi_gray", side_effect=lambda s: f"<G>{s}</G>"),
-            patch("src.agent.highlight_assistant_display_line", side_effect=lambda s: s),
+            patch("cli.agent._ansi_rgb", side_effect=lambda text, r, g, b: f"<RGB:{r},{g},{b}>{text}</RGB>"),
+            patch("cli.agent._ansi_gray", side_effect=lambda s: f"<G>{s}</G>"),
+            patch("cli.agent.highlight_assistant_display_line", side_effect=lambda s: s),
         ):
             line = self.agent._format_tool_call_feedback_line("read", {"path": "a.txt"}, failed=False)
         rows = line.splitlines()
@@ -374,9 +374,9 @@ class AiOutputDisplayTests(unittest.TestCase):
     def test_format_direct_shell_command_feedback_line_wraps_long_command_with_gray_pipe_prefix(self):
         with (
             patch.object(self.agent, "_terminal_columns_for_command_feedback", return_value=18),
-            patch("src.agent._ansi_rgb", side_effect=lambda text, r, g, b: f"<RGB:{r},{g},{b}>{text}</RGB>"),
-            patch("src.agent._ansi_gray", side_effect=lambda s: f"<G>{s}</G>"),
-            patch("src.agent.highlight_assistant_display_line", side_effect=lambda s: s),
+            patch("cli.agent._ansi_rgb", side_effect=lambda text, r, g, b: f"<RGB:{r},{g},{b}>{text}</RGB>"),
+            patch("cli.agent._ansi_gray", side_effect=lambda s: f"<G>{s}</G>"),
+            patch("cli.agent.highlight_assistant_display_line", side_effect=lambda s: s),
         ):
             line = self.agent._format_direct_shell_command_feedback_line("git status --short --branch --untracked-files", failed=False)
         rows = line.splitlines()
@@ -386,9 +386,9 @@ class AiOutputDisplayTests(unittest.TestCase):
     def test_format_direct_shell_command_feedback_line_rewraps_tail_with_continuation_width(self):
         with (
             patch.object(self.agent, "_terminal_columns_for_command_feedback", return_value=20),
-            patch("src.agent._ansi_rgb", side_effect=lambda text, r, g, b: text),
-            patch("src.agent._ansi_gray", side_effect=lambda s: s),
-            patch("src.agent.highlight_assistant_display_line", side_effect=lambda s: s),
+            patch("cli.agent._ansi_rgb", side_effect=lambda text, r, g, b: text),
+            patch("cli.agent._ansi_gray", side_effect=lambda s: s),
+            patch("cli.agent.highlight_assistant_display_line", side_effect=lambda s: s),
         ):
             line = self.agent._format_direct_shell_command_feedback_line(
                 "alpha beta gamma delta",
@@ -402,9 +402,9 @@ class AiOutputDisplayTests(unittest.TestCase):
     def test_format_direct_shell_command_feedback_line_highlights_once_before_wrapping(self):
         with (
             patch.object(self.agent, "_terminal_columns_for_command_feedback", return_value=16),
-            patch("src.agent._ansi_rgb", side_effect=lambda text, r, g, b: f"<RGB:{r},{g},{b}>{text}</RGB>"),
-            patch("src.agent._ansi_gray", side_effect=lambda s: f"<G>{s}</G>"),
-            patch("src.agent.highlight_assistant_display_line", side_effect=lambda s: s) as mock_hl,
+            patch("cli.agent._ansi_rgb", side_effect=lambda text, r, g, b: f"<RGB:{r},{g},{b}>{text}</RGB>"),
+            patch("cli.agent._ansi_gray", side_effect=lambda s: f"<G>{s}</G>"),
+            patch("cli.agent.highlight_assistant_display_line", side_effect=lambda s: s) as mock_hl,
         ):
             line = self.agent._format_direct_shell_command_feedback_line(
                 "Get-Content -Path helloworld.py -replace 'print(\\\"Hello\\\")'",
@@ -423,9 +423,9 @@ class AiOutputDisplayTests(unittest.TestCase):
         )
         with (
             patch.object(self.agent, "_terminal_columns_for_command_feedback", return_value=42),
-            patch("src.agent._ansi_rgb", side_effect=lambda text, r, g, b: text),
-            patch("src.agent._ansi_gray", side_effect=lambda s: s),
-            patch("src.agent.highlight_assistant_display_line", side_effect=lambda s: s),
+            patch("cli.agent._ansi_rgb", side_effect=lambda text, r, g, b: text),
+            patch("cli.agent._ansi_gray", side_effect=lambda s: s),
+            patch("cli.agent.highlight_assistant_display_line", side_effect=lambda s: s),
         ):
             line = self.agent._format_direct_shell_command_feedback_line(command, failed=False)
         rows = line.splitlines()
@@ -460,11 +460,11 @@ class AiOutputDisplayTests(unittest.TestCase):
         fake_stdout = _FakeStdout()
         stream = self.agent._build_internal_slash_output_stream(fake_stdout, terminal_columns=42)
         with (
-            patch("src.agent.sys.stdout", stream),
-            patch("src.agent.shutil.get_terminal_size", return_value=types.SimpleNamespace(columns=80)),
-            patch("src.agent._ansi_rgb", side_effect=lambda text, r, g, b: text),
-            patch("src.agent._ansi_gray", side_effect=lambda s: s),
-            patch("src.agent.highlight_assistant_display_line", side_effect=lambda s: s),
+            patch("cli.agent.sys.stdout", stream),
+            patch("cli.agent.shutil.get_terminal_size", return_value=types.SimpleNamespace(columns=80)),
+            patch("cli.agent._ansi_rgb", side_effect=lambda text, r, g, b: text),
+            patch("cli.agent._ansi_gray", side_effect=lambda s: s),
+            patch("cli.agent.highlight_assistant_display_line", side_effect=lambda s: s),
         ):
             print(self.agent._format_direct_shell_command_feedback_line(command, failed=False))
 
@@ -478,10 +478,10 @@ class AiOutputDisplayTests(unittest.TestCase):
     def test_format_direct_shell_command_feedback_line_preserves_color_after_wrap_prefix_reset(self):
         with (
             patch.object(self.agent, "_terminal_columns_for_command_feedback", return_value=22),
-            patch("src.agent._ansi_rgb", side_effect=lambda text, r, g, b: text),
-            patch("src.agent._ansi_gray", side_effect=lambda s: f"\x1b[90m{s}\x1b[0m"),
+            patch("cli.agent._ansi_rgb", side_effect=lambda text, r, g, b: text),
+            patch("cli.agent._ansi_gray", side_effect=lambda s: f"\x1b[90m{s}\x1b[0m"),
             patch(
-                "src.agent.highlight_assistant_display_line",
+                "cli.agent.highlight_assistant_display_line",
                 side_effect=lambda s: f"\x1b[32m{s}\x1b[0m",
             ),
         ):
@@ -497,7 +497,7 @@ class AiOutputDisplayTests(unittest.TestCase):
     def test_format_user_chat_display_message_wraps_by_window_width_and_indents_continuation(self):
         with (
             patch.object(self.agent, "_terminal_columns_for_line_estimate", return_value=8),
-            patch("src.agent._ansi_gray", side_effect=lambda s: s),
+            patch("cli.agent._ansi_gray", side_effect=lambda s: s),
         ):
             rendered = self.agent._format_user_chat_display_message("123456 7890")
         rows = rendered.splitlines()
@@ -508,7 +508,7 @@ class AiOutputDisplayTests(unittest.TestCase):
     def test_format_slash_command_display_wraps_with_two_space_continuation(self):
         with (
             patch.object(self.agent, "_terminal_columns_for_line_estimate", return_value=8),
-            patch("src.agent._ansi_gray", side_effect=lambda s: s),
+            patch("cli.agent._ansi_gray", side_effect=lambda s: s),
         ):
             rendered = self.agent._format_user_chat_display_message("/abcde fghi")
         rows = rendered.splitlines()
@@ -517,7 +517,7 @@ class AiOutputDisplayTests(unittest.TestCase):
     def test_format_slash_command_display_does_not_split_single_word(self):
         with (
             patch.object(self.agent, "_terminal_columns_for_line_estimate", return_value=8),
-            patch("src.agent._ansi_gray", side_effect=lambda s: s),
+            patch("cli.agent._ansi_gray", side_effect=lambda s: s),
         ):
             rendered = self.agent._format_user_chat_display_message("/abcdefghij")
         self.assertEqual(rendered.splitlines(), ["› /abcdefghij"])
@@ -525,7 +525,7 @@ class AiOutputDisplayTests(unittest.TestCase):
     def test_format_assistant_chat_display_message_keeps_ansi_color_after_wrap(self):
         with (
             patch.object(self.agent, "_terminal_columns_for_line_estimate", return_value=10),
-            patch("src.agent._ansi_gray", side_effect=lambda s: s),
+            patch("cli.agent._ansi_gray", side_effect=lambda s: s),
         ):
             rendered = self.agent._format_assistant_chat_display_message("\x1b[32mabcdef ghijk\x1b[0m")
         rows = rendered.splitlines()
@@ -558,7 +558,7 @@ class AiOutputDisplayTests(unittest.TestCase):
 
         fake_stdout = _FakeStdout()
         with (
-            patch("src.agent.sys.stdout", fake_stdout),
+            patch("cli.agent.sys.stdout", fake_stdout),
             patch.object(self.agent, "_terminal_columns_for_line_estimate", return_value=8),
         ):
             self.agent._print_internal_slash_history_output("alpha beta\n")
@@ -586,12 +586,12 @@ class AiOutputDisplayTests(unittest.TestCase):
 
         fake_stdout = _FakeStdout()
         stream = self.agent._build_internal_slash_output_stream(fake_stdout)
-        with patch("src.agent.shutil.get_terminal_size", return_value=_Sz()):
+        with patch("cli.agent.shutil.get_terminal_size", return_value=_Sz()):
             stream.write("alpha beta\nabc")
         self.assertEqual("".join(fake_stdout.writes), "  alpha\n  beta\n  abc")
 
     def test_startup_overview_inside_slash_stream_stays_within_terminal_width(self):
-        from src.runtime.runtime_loop import _print_startup_overview
+        from cli.runtime.runtime_loop import _print_startup_overview
 
         class _FakeStdout:
             encoding = "utf-8"
@@ -622,14 +622,14 @@ class AiOutputDisplayTests(unittest.TestCase):
         stream = self.agent._build_internal_slash_output_stream(fake_stdout, terminal_columns=_Sz.columns)
         identity = lambda s: s
         with (
-            patch("src.agent.shutil.get_terminal_size", return_value=types.SimpleNamespace(columns=80)),
-            patch("src.runtime.runtime_loop.sys.stdout", stream),
-            patch("src.runtime.runtime_loop.get_app_name", return_value=get_app_name()),
-            patch("src.runtime.runtime_loop.get_app_display_version", return_value="v0.1.0"),
-            patch("src.runtime.runtime_loop.get_random_startup_tip_entry", return_value={"text": "", "highlights": []}),
-            patch("src.runtime.runtime_loop._ansi_gray", side_effect=identity),
-            patch("src.runtime.runtime_loop._ansi_cyan", side_effect=identity),
-            patch("src.runtime.runtime_loop._ansi_bold", side_effect=identity),
+            patch("cli.agent.shutil.get_terminal_size", return_value=types.SimpleNamespace(columns=80)),
+            patch("cli.runtime.runtime_loop.sys.stdout", stream),
+            patch("cli.runtime.runtime_loop.get_app_name", return_value=get_app_name()),
+            patch("cli.runtime.runtime_loop.get_app_display_version", return_value="v0.1.0"),
+            patch("cli.runtime.runtime_loop.get_random_startup_tip_entry", return_value={"text": "", "highlights": []}),
+            patch("cli.runtime.runtime_loop._ansi_gray", side_effect=identity),
+            patch("cli.runtime.runtime_loop._ansi_cyan", side_effect=identity),
+            patch("cli.runtime.runtime_loop._ansi_bold", side_effect=identity),
         ):
             _print_startup_overview(_Agent())
         out = "".join(fake_stdout.writes)
@@ -650,7 +650,7 @@ class AiOutputDisplayTests(unittest.TestCase):
         a longer ``model_change_hint`` translation, shifting the right border
         only on that row."""
         import unicodedata as _ud
-        from src.runtime.runtime_loop import _print_startup_overview, _startup_text_display_width
+        from cli.runtime.runtime_loop import _print_startup_overview, _startup_text_display_width
 
         class _FakeStdout:
             encoding = "utf-8"
@@ -697,24 +697,24 @@ class AiOutputDisplayTests(unittest.TestCase):
                 )
                 with (
                     patch(
-                        "src.agent.shutil.get_terminal_size",
+                        "cli.agent.shutil.get_terminal_size",
                         return_value=types.SimpleNamespace(columns=80),
                     ),
-                    patch("src.runtime.runtime_loop.sys.stdout", stream),
+                    patch("cli.runtime.runtime_loop.sys.stdout", stream),
                     patch(
-                        "src.runtime.runtime_loop.get_app_name",
+                        "cli.runtime.runtime_loop.get_app_name",
                         return_value=get_app_name(),
                     ),
                     patch(
-                        "src.runtime.runtime_loop.get_app_display_version",
+                        "cli.runtime.runtime_loop.get_app_display_version",
                         return_value="v0.1.0",
                     ),
                     patch(
-                        "src.runtime.runtime_loop.get_random_startup_tip_entry",
+                        "cli.runtime.runtime_loop.get_random_startup_tip_entry",
                         return_value={"text": "", "highlights": []},
                     ),
                     patch(
-                        "src.core.localization.get_display_language",
+                        "cli.core.localization.get_display_language",
                         return_value=lang,
                     ),
                 ):
@@ -761,7 +761,7 @@ class AiOutputDisplayTests(unittest.TestCase):
         rather than a ragged left edge."""
         import re as _re
         import unicodedata as _ud
-        from src.runtime.runtime_loop import _print_startup_overview
+        from cli.runtime.runtime_loop import _print_startup_overview
 
         class _FakeStdout:
             encoding = "utf-8"
@@ -826,24 +826,24 @@ class AiOutputDisplayTests(unittest.TestCase):
                 )
                 with (
                     patch(
-                        "src.agent.shutil.get_terminal_size",
+                        "cli.agent.shutil.get_terminal_size",
                         return_value=types.SimpleNamespace(columns=80),
                     ),
-                    patch("src.runtime.runtime_loop.sys.stdout", stream),
+                    patch("cli.runtime.runtime_loop.sys.stdout", stream),
                     patch(
-                        "src.runtime.runtime_loop.get_app_name",
+                        "cli.runtime.runtime_loop.get_app_name",
                         return_value=get_app_name(),
                     ),
                     patch(
-                        "src.runtime.runtime_loop.get_app_display_version",
+                        "cli.runtime.runtime_loop.get_app_display_version",
                         return_value="v0.1.0",
                     ),
                     patch(
-                        "src.runtime.runtime_loop.get_random_startup_tip_entry",
+                        "cli.runtime.runtime_loop.get_random_startup_tip_entry",
                         return_value={"text": "", "highlights": []},
                     ),
                     patch(
-                        "src.core.localization.get_display_language",
+                        "cli.core.localization.get_display_language",
                         return_value=lang,
                     ),
                 ):
@@ -897,9 +897,9 @@ class AiOutputDisplayTests(unittest.TestCase):
         fake_stdout = _FakeStdout()
         stream = self.agent._build_internal_slash_output_stream(fake_stdout, terminal_columns=_Sz.columns)
         with (
-            patch("src.agent.sys.stdout", stream),
-            patch("src.agent.shutil.get_terminal_size", return_value=types.SimpleNamespace(columns=80)),
-            patch("src.agent._ansi_gray", side_effect=lambda s: s),
+            patch("cli.agent.sys.stdout", stream),
+            patch("cli.agent.shutil.get_terminal_size", return_value=types.SimpleNamespace(columns=80)),
+            patch("cli.agent._ansi_gray", side_effect=lambda s: s),
         ):
             self.agent._print_direct_shell_history_separator()
             self.agent._print_task_worked_summary_line(14)
@@ -929,9 +929,9 @@ class AiOutputDisplayTests(unittest.TestCase):
         fake_stdout = _FakeStdout()
         stream = self.agent._build_internal_slash_output_stream(fake_stdout, terminal_columns=20)
         with (
-            patch("src.agent.sys.stdout", stream),
-            patch("src.agent.shutil.get_terminal_size", return_value=types.SimpleNamespace(columns=80)),
-            patch("src.agent._ansi_gray", side_effect=lambda s: s),
+            patch("cli.agent.sys.stdout", stream),
+            patch("cli.agent.shutil.get_terminal_size", return_value=types.SimpleNamespace(columns=80)),
+            patch("cli.agent._ansi_gray", side_effect=lambda s: s),
         ):
             print(self.agent._format_user_chat_display_message("alpha beta gamma delta"))
 
@@ -955,7 +955,7 @@ class AiOutputDisplayTests(unittest.TestCase):
 
         fake_stdout = _FakeStdout()
         with (
-            patch("src.agent.sys.stdout", fake_stdout),
+            patch("cli.agent.sys.stdout", fake_stdout),
             patch.object(self.agent, "_format_tool_call_feedback_line", return_value="FAILED-LINE"),
         ):
             self.agent._repaint_tool_call_feedback_if_failed(
@@ -973,7 +973,7 @@ class AiOutputDisplayTests(unittest.TestCase):
                 return False
 
         with (
-            patch("src.agent.sys.stdout", _FakeStdout()),
+            patch("cli.agent.sys.stdout", _FakeStdout()),
             patch.object(self.agent, "_print_tool_call_feedback") as print_feedback,
         ):
             self.agent._repaint_tool_call_feedback_if_failed(
@@ -1011,10 +1011,10 @@ class AiOutputDisplayTests(unittest.TestCase):
 
         self.agent.input_handler = _InputHandlerCols80()
         with (
-            patch("src.agent.os.get_terminal_size", side_effect=[_Sz(120), _Sz(120)]),
-            patch("src.agent._ansi_rgb", side_effect=lambda text, r, g, b: text),
-            patch("src.agent._ansi_gray", side_effect=lambda s: s),
-            patch("src.agent.highlight_assistant_display_line", side_effect=lambda s: s),
+            patch("cli.agent.os.get_terminal_size", side_effect=[_Sz(120), _Sz(120)]),
+            patch("cli.agent._ansi_rgb", side_effect=lambda text, r, g, b: text),
+            patch("cli.agent._ansi_gray", side_effect=lambda s: s),
+            patch("cli.agent.highlight_assistant_display_line", side_effect=lambda s: s),
         ):
             line = self.agent._format_direct_shell_command_feedback_line("x" * 90, failed=False)
         self.assertNotIn("\n", line)

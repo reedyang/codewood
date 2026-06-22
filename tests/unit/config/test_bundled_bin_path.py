@@ -20,7 +20,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from src.config import app_info
+from cli.config import app_info
 
 
 class PrependBundledBinToPathTests(unittest.TestCase):

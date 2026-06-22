@@ -3,7 +3,7 @@
 Application main entry point.
 
 Usage:
-    python src/main.py   # Run with model settings from the config file
+    python cli/main.py   # Run with model settings from the config file
 """
 
 import sys
@@ -17,13 +17,13 @@ from typing import Any, Optional
 current_dir = Path(__file__).resolve().parent
 project_root = current_dir.parent
 sys.path.insert(0, str(project_root))
-from src.core.config.config_env import resolve_string_values_in_data
-from src.core.config.config_jsonc import (
+from cli.core.config.config_env import resolve_string_values_in_data
+from cli.core.config.config_jsonc import (
     CONFIG_JSONC_FILENAME,
     load_config_jsonc,
     save_config_jsonc,
 )
-from src.config.app_info import (
+from cli.config.app_info import (
     append_windows_git_tools_to_path,
     get_app_config_dirname,
     get_app_global_config_dir,
@@ -31,24 +31,24 @@ from src.config.app_info import (
     get_app_version,
     prepend_bundled_bin_to_path,
 )
-from src.core.localization import DEFAULT_DISPLAY_LANGUAGE, normalize_display_language, text
-from src.core.config.model_providers import DEFAULT_OLLAMA_PORT
-from src.core.config.model_providers import basic_chat_only_context_warning
-from src.core.config.model_providers import parse_configured_models
-from src.core.config.model_providers import parse_port
-from src.core.console_utils import _ansi_red
-from src.core.console_title import restore_app_console_title
+from cli.core.localization import DEFAULT_DISPLAY_LANGUAGE, normalize_display_language, text
+from cli.core.config.model_providers import DEFAULT_OLLAMA_PORT
+from cli.core.config.model_providers import basic_chat_only_context_warning
+from cli.core.config.model_providers import parse_configured_models
+from cli.core.config.model_providers import parse_port
+from cli.core.console_utils import _ansi_red
+from cli.core.console_title import restore_app_console_title
 
-CONFIG_TEMPLATE_RELATIVE_PATH = Path("src/config") / "config.template.jsonc"
+CONFIG_TEMPLATE_RELATIVE_PATH = Path("cli/config") / "config.template.jsonc"
 PROJECT_DOCS_URL = "https://github.com/reedyang/codewood"
 
 
 def _format_startup_usage() -> str:
-    return _format_startup_usage_with_executable("python src/main.py")
+    return _format_startup_usage_with_executable("python cli/main.py")
 
 
 def _format_startup_usage_with_executable(executable_name: str) -> str:
-    command = str(executable_name or "").strip() or "python src/main.py"
+    command = str(executable_name or "").strip() or "python cli/main.py"
     return (
         "Usage:\n"
         f"  {command} [OPTIONS]\n"
@@ -56,7 +56,7 @@ def _format_startup_usage_with_executable(executable_name: str) -> str:
     )
 
 
-def _format_startup_help(executable_name: str = "python src/main.py") -> str:
+def _format_startup_help(executable_name: str = "python cli/main.py") -> str:
     return (
         f"Version: {get_app_version()}\n"
         f"{_format_startup_usage_with_executable(executable_name)}\n"
@@ -80,7 +80,7 @@ def _format_startup_help(executable_name: str = "python src/main.py") -> str:
 
 def _parse_startup_cli_args(argv: list[str]) -> tuple[dict[str, Any] | None, str | None]:
     """Parse startup CLI args with flexible ordering."""
-    executable_name = "python src/main.py"
+    executable_name = "python cli/main.py"
     filtered_argv: list[str] = []
     idx = 0
     while idx < len(argv):
@@ -204,7 +204,7 @@ def _get_user_config_template_path() -> Path:
 
 
 def _load_user_config_template() -> dict:
-    """Load startup template content from src/config/config.template.jsonc."""
+    """Load startup template content from cli/config/config.template.jsonc."""
     template_path = _get_user_config_template_path()
     data = load_config_jsonc(template_path)
     return data if isinstance(data, dict) else {}
@@ -275,7 +275,7 @@ def _print_startup_basic_overview(
 ) -> None:
     """Reuse the exact runtime startup overview renderer for consistent style/colors."""
     try:
-        from src.runtime.runtime_loop import _print_startup_overview
+        from cli.runtime.runtime_loop import _print_startup_overview
 
         _print_startup_overview(
             SimpleNamespace(
@@ -438,7 +438,7 @@ def _extract_model_runtime_config(config: dict, requested_model: str | None = No
     # any model whose effective ``api_mode`` resolves to ``ollama``,
     # whether that came from an explicit ``api_mode: "ollama"`` or
     # from the legacy ``provider: "ollama"`` shorthand.
-    from src.ai.ai_provider_clients import resolve_api_mode
+    from cli.ai.ai_provider_clients import resolve_api_mode
 
     if resolve_api_mode(params=params, provider=provider) == "ollama":
         params["port"] = parse_port(params.get("port"), default_value=DEFAULT_OLLAMA_PORT)
@@ -700,7 +700,7 @@ def _spawn_detached_gui() -> int:
         cmd = [sys.executable, "app"]
         cwd = str(Path(sys.executable).resolve().parent)
     else:
-        cmd = [sys.executable, str(project_root / "src" / "main.py"), "app"]
+        cmd = [sys.executable, str(project_root / "cli" / "main.py"), "app"]
         cwd = str(project_root)
 
     # Strip PyInstaller's private bootstrap variables (_PYI*/_MEIPASS2) so the
@@ -869,8 +869,8 @@ def _serve_without_valid_model(
     guiding the user into Model settings, where they can configure a
     provider and have it applied without restarting.
     """
-    from src.agent import Agent
-    from src.server.serve_app import ServeApp
+    from cli.agent import Agent
+    from cli.server.serve_app import ServeApp
 
     serve_host = str(cli_args.get("serve_host") or "127.0.0.1") if isinstance(cli_args, dict) else "127.0.0.1"
     serve_port = int(cli_args.get("serve_port") or 0) if isinstance(cli_args, dict) else 0
@@ -928,7 +928,7 @@ def main(argv: list[str] | None = None):
         print(cli_error)
         return 1
     if isinstance(cli_args, dict) and bool(cli_args.get("show_help", False)):
-        executable_name = str(cli_args.get("executable_name") or "python src/main.py").strip()
+        executable_name = str(cli_args.get("executable_name") or "python cli/main.py").strip()
         print(_format_startup_help(executable_name=executable_name))
         return 0
 
@@ -951,7 +951,7 @@ def main(argv: list[str] | None = None):
     user_config = str(get_app_global_config_dir() / CONFIG_JSONC_FILENAME)
 
     config_dir = None  # Config directory used for history persistence
-    # Built-in Agent Skills live at the project root, outside src/.
+    # Built-in Agent Skills live at the project root, outside cli/.
     builtin_skills_dir = str(project_root / "skills")
 
     if os.path.exists(user_config):
@@ -969,7 +969,7 @@ def main(argv: list[str] | None = None):
             config = None
 
     if config_dir:
-        from src.core.logging.app_logging import get_logger, setup_app_logging
+        from cli.core.logging.app_logging import get_logger, setup_app_logging
         setup_app_logging(Path(config_dir))
         get_logger().info("%s started, config_dir=%s", get_app_name(), config_dir)
     
@@ -1030,7 +1030,7 @@ def main(argv: list[str] | None = None):
         model_override_selector = f"{provider}:{model_name}"
 
     # Load the heavy agent module only after configuration is ready to reduce the wait between startup and model info.
-    from src.agent import Agent
+    from cli.agent import Agent
 
     workspace_selector = ""
     exec_task = ""
@@ -1069,7 +1069,7 @@ def main(argv: list[str] | None = None):
             return 1
         _set_basic_chat_only_context_prompt_warning_for_agent(agent)
         if isinstance(cli_args, dict) and bool(cli_args.get("serve_mode", False)):
-            from src.server.serve_app import ServeApp
+            from cli.server.serve_app import ServeApp
 
             serve_host = str(cli_args.get("serve_host") or "127.0.0.1")
             serve_port = int(cli_args.get("serve_port") or 0)
@@ -1090,7 +1090,7 @@ def main(argv: list[str] | None = None):
         # diagnosable after the fact.
         if config_dir:
             try:
-                from src.core.logging.app_logging import get_logger
+                from cli.core.logging.app_logging import get_logger
 
                 get_logger().exception("Backend startup failed before handshake")
             except Exception:

@@ -8,8 +8,8 @@ if "ollama" not in sys.modules:
     fake_ollama = types.SimpleNamespace(list=lambda: {"models": []})
     sys.modules["ollama"] = fake_ollama
 
-from src.agent import Agent
-from src.completion.builtin_slash_commands import SLASH_BUILTIN_COMMANDS
+from cli.agent import Agent
+from cli.completion.builtin_slash_commands import SLASH_BUILTIN_COMMANDS
 
 
 class McpShortcutCommandTests(unittest.TestCase):
@@ -51,7 +51,7 @@ class McpShortcutCommandTests(unittest.TestCase):
         # the controller can resolve the message in the caller's
         # locale. Resolve it through the same helper the runtime uses
         # so we still assert on user-visible text.
-        from src.controllers.mcp_shortcut_controller import format_mcp_shortcut_error
+        from cli.controllers.mcp_shortcut_controller import format_mcp_shortcut_error
 
         bad_cases = [
             "mcp reconnect",

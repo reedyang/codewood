@@ -34,7 +34,7 @@ def _backend_command() -> list[str]:
         return [str(exe_dir / name), "app"]
     # Development: run the repository entry point directly.
     repo_root = Path(__file__).resolve().parents[2]
-    return [sys.executable, str(repo_root / "src" / "main.py"), "app"]
+    return [sys.executable, str(repo_root / "cli" / "main.py"), "app"]
 
 
 def main() -> int:

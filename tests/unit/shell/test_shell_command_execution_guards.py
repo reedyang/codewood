@@ -4,12 +4,12 @@ import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
-from src.actions.command_actions import action_shell_command
-from src.actions.command_actions import parse_shell_invoked_script_path
-from src.core.security.command_security import shell_command_in_allowlist
-from src.core.security.command_security import shell_executable_allowlist_key
-from src.core.security.command_security import shell_script_allowlist_key
-from src.services.execution_policy_service import freedom_auto_confirm
+from cli.actions.command_actions import action_shell_command
+from cli.actions.command_actions import parse_shell_invoked_script_path
+from cli.core.security.command_security import shell_command_in_allowlist
+from cli.core.security.command_security import shell_executable_allowlist_key
+from cli.core.security.command_security import shell_script_allowlist_key
+from cli.services.execution_policy_service import freedom_auto_confirm
 
 
 class _Policy:
@@ -83,7 +83,7 @@ class _DummyAgent:
             return False
 
     def _parse_shell_invoked_script_path(self, command: str):
-        from src.actions.command_actions import parse_shell_invoked_script_path
+        from cli.actions.command_actions import parse_shell_invoked_script_path
 
         return parse_shell_invoked_script_path(self, command)
 
@@ -223,7 +223,7 @@ class ShellCommandExecutionGuardsTests(unittest.TestCase):
         script_path = Path(tf.name).resolve()
         command = f"bash -lc 'python \"{script_path.as_posix()}\" --query demo'"
         try:
-            with patch("src.actions.command_actions.os.name", "posix"):
+            with patch("cli.actions.command_actions.os.name", "posix"):
                 parsed = parse_shell_invoked_script_path(agent, command)
             self.assertIsNotNone(parsed)
             self.assertEqual(parsed.resolve(), script_path)
@@ -237,7 +237,7 @@ class ShellCommandExecutionGuardsTests(unittest.TestCase):
         script_path = Path(tf.name).resolve()
         command = f'env FOO=bar python "{script_path.as_posix()}" --check'
         try:
-            with patch("src.actions.command_actions.os.name", "posix"):
+            with patch("cli.actions.command_actions.os.name", "posix"):
                 parsed = parse_shell_invoked_script_path(agent, command)
             self.assertIsNotNone(parsed)
             self.assertEqual(parsed.resolve(), script_path)
@@ -264,8 +264,8 @@ class ShellCommandExecutionGuardsTests(unittest.TestCase):
         script_path = Path(tf.name).resolve()
         command = f"bash -c 'python \"{script_path.as_posix()}\" install --confirm YES'"
         try:
-            with patch("src.actions.command_actions.os.name", "posix"), patch(
-                "src.core.security.command_security.os.name", "posix"
+            with patch("cli.actions.command_actions.os.name", "posix"), patch(
+                "cli.core.security.command_security.os.name", "posix"
             ):
                 key = shell_script_allowlist_key(agent, command)
             self.assertEqual(key, str(script_path))
@@ -300,7 +300,7 @@ class ShellCommandExecutionGuardsTests(unittest.TestCase):
             f'env -S "sudo -u root pwsh -File {script_path.as_posix()} --mode dry-run"'
         )
         try:
-            with patch("src.actions.command_actions.os.name", "posix"):
+            with patch("cli.actions.command_actions.os.name", "posix"):
                 parsed = parse_shell_invoked_script_path(agent, command)
             self.assertIsNotNone(parsed)
             self.assertEqual(parsed.resolve(), script_path)
@@ -314,7 +314,7 @@ class ShellCommandExecutionGuardsTests(unittest.TestCase):
         script_path = Path(tf.name).resolve()
         command = f'sudo -u buildbot python "{script_path.as_posix()}" --check'
         try:
-            with patch("src.actions.command_actions.os.name", "posix"):
+            with patch("cli.actions.command_actions.os.name", "posix"):
                 parsed = parse_shell_invoked_script_path(agent, command)
             self.assertIsNotNone(parsed)
             self.assertEqual(parsed.resolve(), script_path)
@@ -356,8 +356,8 @@ class ShellCommandExecutionGuardsTests(unittest.TestCase):
             f'env -S "sudo -u root pwsh -File {script_path.as_posix()} --sync"'
         )
         try:
-            with patch("src.actions.command_actions.os.name", "posix"), patch(
-                "src.core.security.command_security.os.name", "posix"
+            with patch("cli.actions.command_actions.os.name", "posix"), patch(
+                "cli.core.security.command_security.os.name", "posix"
             ):
                 key = shell_script_allowlist_key(agent, command)
             self.assertEqual(key, str(script_path))
@@ -368,10 +368,10 @@ class ShellCommandExecutionGuardsTests(unittest.TestCase):
         agent = _DummyAgent()
         agent.execution_policy = "moderate"
 
-        with patch("src.services.execution_policy_service.ai_assess_reversible", return_value=(False, "not reversible")), patch(
-            "src.services.execution_policy_service._print_with_auto_hide_tracking"
+        with patch("cli.services.execution_policy_service.ai_assess_reversible", return_value=(False, "not reversible")), patch(
+            "cli.services.execution_policy_service._print_with_auto_hide_tracking"
         ), patch(
-            "src.services.execution_policy_service.shell_command_in_allowlist", return_value=False
+            "cli.services.execution_policy_service.shell_command_in_allowlist", return_value=False
         ):
             ok = freedom_auto_confirm(
                 agent,
@@ -385,10 +385,10 @@ class ShellCommandExecutionGuardsTests(unittest.TestCase):
         agent = _DummyAgent()
         agent.execution_policy = "moderate"
 
-        with patch("src.services.execution_policy_service.ai_assess_reversible") as assess, patch(
-            "src.services.execution_policy_service._print_with_auto_hide_tracking"
+        with patch("cli.services.execution_policy_service.ai_assess_reversible") as assess, patch(
+            "cli.services.execution_policy_service._print_with_auto_hide_tracking"
         ), patch(
-            "src.services.execution_policy_service.shell_command_in_allowlist", return_value=True
+            "cli.services.execution_policy_service.shell_command_in_allowlist", return_value=True
         ):
             ok = freedom_auto_confirm(
                 agent,
@@ -538,10 +538,10 @@ class ShellCommandExecutionGuardsTests(unittest.TestCase):
             return None
 
         with patch("subprocess.Popen", return_value=_FakePopenResult("stream-line\n")) as popen_mock, patch(
-            "src.actions.command_actions._dynamic_tail_line_limit",
+            "cli.actions.command_actions._dynamic_tail_line_limit",
             return_value=2,
         ), patch(
-            "src.actions.command_actions._safe_console_write",
+            "cli.actions.command_actions._safe_console_write",
             side_effect=_capture_write,
         ):
             result = action_shell_command(agent, command, confirmed=False, interactive=True, input_data=None)
@@ -565,9 +565,9 @@ class ShellCommandExecutionGuardsTests(unittest.TestCase):
             return None
 
         with patch("subprocess.Popen", return_value=_FakePopenResult(big_out)) as popen_mock, patch(
-            "src.actions.command_actions._dynamic_tail_line_limit", return_value=5
+            "cli.actions.command_actions._dynamic_tail_line_limit", return_value=5
         ), patch(
-            "src.actions.command_actions._safe_console_write",
+            "cli.actions.command_actions._safe_console_write",
             side_effect=_capture_write,
         ):
             result = action_shell_command(agent, command, confirmed=False, interactive=False, input_data=None)
@@ -585,7 +585,7 @@ class ShellCommandExecutionGuardsTests(unittest.TestCase):
         command = 'python -c "print(1)"'
 
         with patch("subprocess.Popen", return_value=_FakePopenResult("line1\nline2\n")) as popen_mock, patch(
-            "src.actions.command_actions._dynamic_tail_line_limit", return_value=5
+            "cli.actions.command_actions._dynamic_tail_line_limit", return_value=5
         ):
             result = action_shell_command(agent, command, confirmed=False, interactive=False, input_data=None)
 
@@ -600,7 +600,7 @@ class ShellCommandExecutionGuardsTests(unittest.TestCase):
         agent._print_conversation_interrupted_banner = lambda: 2
 
         with patch("subprocess.Popen", return_value=_FakePopenResult("line1\n", return_code=130)), patch(
-            "src.actions.command_actions._dynamic_tail_line_limit", return_value=5
+            "cli.actions.command_actions._dynamic_tail_line_limit", return_value=5
         ):
             result = action_shell_command(agent, command, confirmed=False, interactive=False, input_data=None)
 
@@ -619,7 +619,7 @@ class ShellCommandExecutionGuardsTests(unittest.TestCase):
             return None
 
         with patch("subprocess.Popen", return_value=_FakePopenResult("", "")) as popen_mock, patch(
-            "src.actions.command_actions._safe_console_write",
+            "cli.actions.command_actions._safe_console_write",
             side_effect=_capture_write,
         ):
             result = action_shell_command(agent, command, confirmed=False, interactive=False, input_data=None)

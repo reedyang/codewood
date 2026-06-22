@@ -6,8 +6,8 @@ from contextlib import redirect_stdout
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-import src.main as main_module
-from src.config.app_info import get_app_slug_compact
+import cli.main as main_module
+from cli.config.app_info import get_app_slug_compact
 
 
 class MainStartupConfigTests(unittest.TestCase):
@@ -49,7 +49,7 @@ class MainStartupConfigTests(unittest.TestCase):
 
     @classmethod
     def _write_template_file(cls, project_dir: Path) -> Path:
-        template_path = project_dir / "src/config" / "config.template.jsonc"
+        template_path = project_dir / "cli/config" / "config.template.jsonc"
         template_path.parent.mkdir(parents=True, exist_ok=True)
         template_path.write_text(
             json.dumps(cls._template_data(), ensure_ascii=False, indent=2) + "\n",
@@ -63,8 +63,8 @@ class MainStartupConfigTests(unittest.TestCase):
             global_cfg_dir = self._global_config_dir(td_home)
             with patch.object(main_module, "project_root", Path(td_project)), patch.object(
                 main_module, "get_app_global_config_dir", return_value=global_cfg_dir
-            ), patch("src.core.logging.app_logging.setup_app_logging"), patch(
-                "src.core.logging.app_logging.get_logger", return_value=MagicMock()
+            ), patch("cli.core.logging.app_logging.setup_app_logging"), patch(
+                "cli.core.logging.app_logging.get_logger", return_value=MagicMock()
             ):
                 buf = io.StringIO()
                 with redirect_stdout(buf):
@@ -157,7 +157,7 @@ class MainStartupConfigTests(unittest.TestCase):
         self.assertEqual(code, 0)
         out = buf.getvalue()
         self.assertIn("start.bat", out)
-        self.assertNotIn("python src/main.py", out)
+        self.assertNotIn("python cli/main.py", out)
         self.assertNotIn("--executable-name", out)
 
     def test_explicit_model_arg_reapplies_active_chat_model(self):
@@ -224,7 +224,7 @@ class MainStartupConfigTests(unittest.TestCase):
 
             with patch.object(main_module, "project_root", Path(td_project)), patch.object(
                 main_module, "get_app_global_config_dir", return_value=user_cfg_dir
-            ), patch("src.agent.Agent", FakeAgent):
+            ), patch("cli.agent.Agent", FakeAgent):
                 code = main_module.main(["-m", "openai:Gemma-4-31B"])
 
             self.assertEqual(code, 0)
@@ -279,7 +279,7 @@ class MainStartupConfigTests(unittest.TestCase):
 
             with patch.object(main_module, "project_root", Path(td_project)), patch.object(
                 main_module, "get_app_global_config_dir", return_value=user_cfg_dir
-            ), patch("src.agent.Agent", FakeAgent):
+            ), patch("cli.agent.Agent", FakeAgent):
                 buf = io.StringIO()
                 with redirect_stdout(buf):
                     code = main_module.main()

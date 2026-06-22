@@ -1,7 +1,7 @@
 import unittest
 from pathlib import Path
 
-from src.controllers.workspace_command_controller import workspace_switch_command
+from cli.controllers.workspace_command_controller import workspace_switch_command
 
 
 class _FakeWorkspaceSwitchAgent:

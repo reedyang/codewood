@@ -2,8 +2,8 @@
 
 SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 ROOT_DIR="$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)"
-ENTRY="$ROOT_DIR/src/main.py"
-APP_INFO="$ROOT_DIR/src/config/app_info.py"
+ENTRY="$ROOT_DIR/cli/main.py"
+APP_INFO="$ROOT_DIR/cli/config/app_info.py"
 VENV_DIR="$ROOT_DIR/.venv"
 VENV_PYTHON="$VENV_DIR/bin/python"
 REQ_FILE="$ROOT_DIR/requirements.txt"

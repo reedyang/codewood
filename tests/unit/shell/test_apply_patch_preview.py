@@ -4,8 +4,8 @@ import unittest
 from pathlib import Path
 from typing import Any, Dict, List
 
-from src.actions.filesystem_actions import action_apply_unified_patch
-from src.core.change_preview_formatter import ChangePreviewFormatter
+from cli.actions.filesystem_actions import action_apply_unified_patch
+from cli.core.change_preview_formatter import ChangePreviewFormatter
 
 
 class _DummyPolicy:

@@ -10,7 +10,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$PROJECT_ROOT"
 
-ENTRY_SCRIPT="src/main.py"
+ENTRY_SCRIPT="cli/main.py"
 VENV_DIR=".venv"
 VENV_PYTHON="$VENV_DIR/bin/python"
 REQ_FILE="requirements.txt"
@@ -68,7 +68,7 @@ PYINSTALLER="$VENV_DIR/bin/pyinstaller"
 ARGS=(
   --onedir --noconfirm --name codewood
   --add-data "../../skills:skills"
-  --add-data "../../src:src"
+  --add-data "../../cli:cli"
   --add-data "../../desktop/frontend/dist:frontend"
   --add-data "../../desktop/host:host"
   # pathex is resolved relative to the working dir (project root), unlike

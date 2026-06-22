@@ -2,7 +2,7 @@ import io
 import unittest
 from contextlib import redirect_stdout
 
-from src.controllers.model_command_controller import handle_model_builtin_command
+from cli.controllers.model_command_controller import handle_model_builtin_command
 
 
 class _FakeModelAgent:

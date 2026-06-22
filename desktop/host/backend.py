@@ -2,7 +2,7 @@
 
 In a frozen build the GUI re-launches the same ``codewood.exe`` in
 ``serve`` mode. During development it launches
-``python <repo>/src/main.py serve`` instead. Either way the backend
+``python <repo>/cli/main.py serve`` instead. Either way the backend
 prints a one-line JSON handshake (``{"port", "token"}``) on stdout that
 this module reads to learn where to connect.
 """
@@ -59,14 +59,14 @@ class BackendProcess:
 
         The GUI and the backend share a single executable. In a frozen
         build the GUI re-launches itself with the ``serve`` command; in
-        development it launches ``python src/main.py serve``.
+        development it launches ``python cli/main.py serve``.
         """
         if getattr(sys, "frozen", False):
             exe = Path(sys.executable).resolve()
             return [str(exe), "serve", "--port", "0"], str(exe.parent)
 
         repo_root = Path(__file__).resolve().parents[2]
-        main_py = repo_root / "src" / "main.py"
+        main_py = repo_root / "cli" / "main.py"
         if not main_py.exists():
             raise BackendError(f"Backend entry script not found: {main_py}")
         return [sys.executable, str(main_py), "serve", "--port", "0"], str(repo_root)

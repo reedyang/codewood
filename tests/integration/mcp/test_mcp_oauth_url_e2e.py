@@ -12,10 +12,10 @@ import unittest
 from pathlib import Path
 import urllib.error
 import urllib.request
-from src.config.app_info import get_app_slug_snake
+from cli.config.app_info import get_app_slug_snake
 
 def _load_mcp_manager_module():
-    return importlib.import_module("src.integrations.mcp.manager")
+    return importlib.import_module("cli.integrations.mcp.manager")
 
 
 def _get_free_port() -> int:

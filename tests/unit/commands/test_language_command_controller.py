@@ -6,7 +6,7 @@ import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
 
-from src.controllers.language_command_controller import handle_language_builtin_command
+from cli.controllers.language_command_controller import handle_language_builtin_command
 
 
 class _FakeLanguageAgent:
