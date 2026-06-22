@@ -1636,6 +1636,27 @@ body.resizing-x {
   font-size: 13px;
   background: var(--bg-input);
   color: var(--text);
+  /* Inherit the theme's colour scheme so the native dropdown popup the OS
+     renders for a <select> follows light/dark (dark text on a dark sheet). */
+  color-scheme: inherit;
+}
+
+/* In dark mode, force the native dropdown popup and its options to a dark
+   surface. ``color-scheme`` alone is not always honoured for the popup sheet
+   on every engine, so we set the option colours explicitly as well. */
+[data-theme="dark"] .select,
+[data-theme="dark"] .select option,
+[data-theme="dark"] .select optgroup {
+  background-color: var(--bg-input);
+  color: var(--text);
+}
+
+/* Over a background image, make the (closed) dropdown control translucent to
+   match the pop-up menu UI — the same near-solid 96% surface used by
+   ``.dropdown-menu`` / ``.menubar-menu``. The OS-drawn option sheet stays
+   opaque (not stylable), which is fine for readability. */
+html[data-has-bg] .select {
+  background: color-mix(in srgb, var(--bg-elevated-solid) 96%, transparent);
 }
 
 /* Modals */
