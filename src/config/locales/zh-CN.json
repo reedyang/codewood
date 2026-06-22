@@ -297,6 +297,7 @@
   "main.update_model_settings": "请更新以下位置的模型设置：{path}",
   "main.config_read_failed": "读取配置文件失败：{error}",
   "main.config_created_template": "未找到配置文件。已成功创建模板。",
+  "main.config_template_docs_hint": "请编辑模板填写你的供应商和模型。详情参考 {url}",
   "main.config_create_template_failed": "未找到配置文件，且创建模板失败：{error}",
   "main.startup_workspace_failed": "❌ 应用启动工作区失败。",
   "main.startup_model_override_failed": "❌ 应用启动模型覆盖失败。",

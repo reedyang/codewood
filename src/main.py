@@ -40,6 +40,7 @@ from src.core.console_utils import _ansi_red
 from src.core.console_title import restore_app_console_title
 
 CONFIG_TEMPLATE_RELATIVE_PATH = Path("src/config") / "config.template.jsonc"
+PROJECT_DOCS_URL = "https://github.com/reedyang/codewood"
 
 
 def _format_startup_usage() -> str:
@@ -209,13 +210,43 @@ def _load_user_config_template() -> dict:
     return data if isinstance(data, dict) else {}
 
 
+def _starter_user_config() -> dict:
+    """Minimal starter config written for a first-run TUI user.
+
+    Defined inline (not read from the repo template file) so we ship a single,
+    fill-in-the-blanks OpenAI provider example. Users edit the ``<YOUR ...>``
+    placeholders; see https://github.com/reedyang/codewood for all options.
+    """
+    return {
+        "model_providers": [
+            {
+                "provider": "OpenAI",
+                "params": {
+                    "api_key": "<YOUR API KEY>",
+                    "base_url": "https://api.openai.com/v1",
+                    "api_mode": "chat",
+                    "models": [
+                        {
+                            "name": "<YOUR MODEL NAME>",
+                            "context_window": "256k",
+                            "streaming": True,
+                            "multimodal": True,
+                            "reasoning_effort": ["low", "medium", "high"],
+                        }
+                    ],
+                },
+            }
+        ],
+    }
+
+
 def _create_user_config_template() -> Path:
     """Create ``~/.config/<app>/config.jsonc`` with a starter template.
 
     Returns the created config file path.
     """
     config_path = get_app_global_config_dir() / CONFIG_JSONC_FILENAME
-    save_config_jsonc(config_path, _load_user_config_template())
+    save_config_jsonc(config_path, _starter_user_config())
     return config_path
 
 
@@ -945,26 +976,25 @@ def main(argv: list[str] | None = None):
     serve_mode = bool(cli_args.get("serve_mode", False)) if isinstance(cli_args, dict) else False
 
     if not config:
+        # In GUI/serve mode we must not abort and must NOT create a template
+        # config file. Start the backend with a placeholder (no-model) agent so
+        # the GUI shows the main UI and guides the user into Model settings.
+        if serve_mode:
+            return _serve_without_valid_model(cli_args, config_dir, work_directory, builtin_skills_dir)
+        # TUI mode: create a single starter template config (only when none
+        # exists) and point the user at the docs, then exit so they can fill it.
         _print_startup_basic_overview()
         if not config_path:
             try:
                 created_path = _create_user_config_template()
                 print(_ansi_red(text("main.config_created_template", ui_language)))
+                print(text("main.config_template_docs_hint", ui_language, url=PROJECT_DOCS_URL))
                 _print_model_settings_update_notice(created_path, ui_language)
-                # The freshly created template now becomes the active config dir
-                # so serve mode persists model edits to the right place.
-                if config_dir is None:
-                    config_dir = str(Path(created_path).parent)
             except Exception as e:
                 print(_ansi_red(text("main.config_create_template_failed", ui_language, error=e)))
                 _print_model_settings_update_notice(get_app_global_config_dir() / CONFIG_JSONC_FILENAME, ui_language)
         else:
             _print_model_settings_update_notice(config_path, ui_language)
-        # In GUI/serve mode we must not abort: start the backend with a
-        # placeholder (no-model) agent so the GUI shows the main UI and can
-        # guide the user into Model settings. The TUI still exits.
-        if serve_mode:
-            return _serve_without_valid_model(cli_args, config_dir, work_directory, builtin_skills_dir)
         return 1
     model_selector = ""
     if isinstance(cli_args, dict):
