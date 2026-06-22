@@ -8,7 +8,12 @@ import time
 from contextlib import redirect_stdout
 from unittest.mock import MagicMock, patch
 
-from src.config.app_info import get_app_config_dirname, get_app_runtime_attr_name, get_app_slug_kebab
+from src.config.app_info import (
+    get_app_config_dirname,
+    get_app_global_config_dir,
+    get_app_runtime_attr_name,
+    get_app_slug_kebab,
+)
 from src.ai.ai_special_mode_prompts import SESSION_SUMMARY_SYSTEM_PROMPT
 from src.services.session_memory_service import SessionMemoryService
 
@@ -1306,7 +1311,7 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
             system_content,
         )
         self.assertIn(
-            f"Default skill install path (absolute path): {(Path.home() / get_app_config_dirname() / 'skills').resolve()}",
+            f"Default skill install path (absolute path): {(get_app_global_config_dir() / 'skills').resolve()}",
             system_content,
         )
         self.assertIn(

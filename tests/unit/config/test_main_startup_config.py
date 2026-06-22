@@ -7,10 +7,20 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import src.main as main_module
-from src.config.app_info import get_app_config_dirname
+from src.config.app_info import get_app_slug_compact
 
 
 class MainStartupConfigTests(unittest.TestCase):
+    @staticmethod
+    def _global_config_dir(td_home) -> Path:
+        """Mirror :func:`get_app_global_config_dir` under a temp home.
+
+        The application stores its global config at
+        ``~/.config/<app-slug>``; tests patch ``main_module``'s
+        ``get_app_global_config_dir`` to point at this temp location.
+        """
+        return Path(td_home) / ".config" / get_app_slug_compact()
+
     @staticmethod
     def _template_data():
         return {
@@ -50,8 +60,9 @@ class MainStartupConfigTests(unittest.TestCase):
     def test_creates_user_config_template_when_no_config_exists(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as td_home, tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as td_project:
             self._write_template_file(Path(td_project))
-            with patch.object(main_module, "project_root", Path(td_project)), patch(
-                "src.main.Path.home", return_value=Path(td_home)
+            global_cfg_dir = self._global_config_dir(td_home)
+            with patch.object(main_module, "project_root", Path(td_project)), patch.object(
+                main_module, "get_app_global_config_dir", return_value=global_cfg_dir
             ), patch("src.core.logging.app_logging.setup_app_logging"), patch(
                 "src.core.logging.app_logging.get_logger", return_value=MagicMock()
             ):
@@ -60,10 +71,10 @@ class MainStartupConfigTests(unittest.TestCase):
                     code = main_module.main()
 
                 self.assertEqual(code, 1)
-                created = Path(td_home) / get_app_config_dirname() / "config.jsonc"
+                created = global_cfg_dir / "config.jsonc"
                 self.assertTrue(created.exists())
                 got = json.loads(created.read_text(encoding="utf-8").strip())
-                self.assertEqual(got, self._template_data())
+                self.assertEqual(got, main_module._starter_user_config())
                 out = buf.getvalue()
                 self.assertLess(out.find("╭"), out.find("Config file not found. Created template successfully."))
                 self.assertIn("Config file not found. Created template successfully.", out)
@@ -73,13 +84,13 @@ class MainStartupConfigTests(unittest.TestCase):
     def test_invalid_model_config_prints_english_reminder(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as td_home, tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as td_project:
             self._write_template_file(Path(td_project))
-            user_cfg_dir = Path(td_home) / get_app_config_dirname()
+            user_cfg_dir = self._global_config_dir(td_home)
             user_cfg_dir.mkdir(parents=True, exist_ok=True)
             cfg_path = user_cfg_dir / "config.jsonc"
             cfg_path.write_text(json.dumps({"execution_policy": "moderate"}) + "\n", encoding="utf-8")
 
-            with patch.object(main_module, "project_root", Path(td_project)), patch(
-                "src.main.Path.home", return_value=Path(td_home)
+            with patch.object(main_module, "project_root", Path(td_project)), patch.object(
+                main_module, "get_app_global_config_dir", return_value=user_cfg_dir
             ):
                 buf = io.StringIO()
                 with redirect_stdout(buf):
@@ -98,7 +109,7 @@ class MainStartupConfigTests(unittest.TestCase):
     def test_template_placeholder_values_are_rejected(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as td_home, tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as td_project:
             self._write_template_file(Path(td_project))
-            user_cfg_dir = Path(td_home) / get_app_config_dirname()
+            user_cfg_dir = self._global_config_dir(td_home)
             user_cfg_dir.mkdir(parents=True, exist_ok=True)
             cfg_path = user_cfg_dir / "config.jsonc"
             cfg_path.write_text(
@@ -106,8 +117,8 @@ class MainStartupConfigTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            with patch.object(main_module, "project_root", Path(td_project)), patch(
-                "src.main.Path.home", return_value=Path(td_home)
+            with patch.object(main_module, "project_root", Path(td_project)), patch.object(
+                main_module, "get_app_global_config_dir", return_value=user_cfg_dir
             ):
                 buf = io.StringIO()
                 with redirect_stdout(buf):
@@ -152,7 +163,7 @@ class MainStartupConfigTests(unittest.TestCase):
     def test_explicit_model_arg_reapplies_active_chat_model(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as td_home, tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as td_project:
             self._write_template_file(Path(td_project))
-            user_cfg_dir = Path(td_home) / get_app_config_dirname()
+            user_cfg_dir = self._global_config_dir(td_home)
             user_cfg_dir.mkdir(parents=True, exist_ok=True)
             cfg_path = user_cfg_dir / "config.jsonc"
             cfg_path.write_text(
@@ -211,8 +222,8 @@ class MainStartupConfigTests(unittest.TestCase):
                 def shutdown(self, wait=False):
                     return None
 
-            with patch.object(main_module, "project_root", Path(td_project)), patch(
-                "src.main.Path.home", return_value=Path(td_home)
+            with patch.object(main_module, "project_root", Path(td_project)), patch.object(
+                main_module, "get_app_global_config_dir", return_value=user_cfg_dir
             ), patch("src.agent.Agent", FakeAgent):
                 code = main_module.main(["-m", "openai:Gemma-4-31B"])
 
@@ -226,7 +237,7 @@ class MainStartupConfigTests(unittest.TestCase):
     def test_startup_warns_when_selected_model_context_window_is_below_64k(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as td_home, tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as td_project:
             self._write_template_file(Path(td_project))
-            user_cfg_dir = Path(td_home) / get_app_config_dirname()
+            user_cfg_dir = self._global_config_dir(td_home)
             user_cfg_dir.mkdir(parents=True, exist_ok=True)
             cfg_path = user_cfg_dir / "config.jsonc"
             cfg_path.write_text(
@@ -266,8 +277,8 @@ class MainStartupConfigTests(unittest.TestCase):
                     _ = wait
                     return None
 
-            with patch.object(main_module, "project_root", Path(td_project)), patch(
-                "src.main.Path.home", return_value=Path(td_home)
+            with patch.object(main_module, "project_root", Path(td_project)), patch.object(
+                main_module, "get_app_global_config_dir", return_value=user_cfg_dir
             ), patch("src.agent.Agent", FakeAgent):
                 buf = io.StringIO()
                 with redirect_stdout(buf):
