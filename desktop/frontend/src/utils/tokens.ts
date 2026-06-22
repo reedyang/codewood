@@ -153,11 +153,13 @@ export function stripHiddenControl(text: string): string {
   );
 }
 
-/** Known Plan-mode prefixes the backend prepends to outgoing user messages
- *  when ``_plan_mode_sticky`` is on. We strip them from the GUI's displayed
- *  user bubble so reload doesn't show the planning directive as if the user
- *  had typed it — while still leaving the prefix in chat history so the
- *  model sees the same instruction context it had during the original turn.
+/** Known Plan-mode prefixes the backend USED TO prepend to recorded user
+ *  messages when ``_plan_mode_sticky`` was on. The backend no longer writes the
+ *  directive into history at all (it is appended only to the model-facing send),
+ *  so new chats never carry it. This stripper is retained purely for backward
+ *  compatibility with chat records written by older versions, where the prefix
+ *  was prepended to the stored user message; it keeps those legacy bubbles from
+ *  showing the planning directive as if the user had typed it.
  *
  *  The list mirrors ``builtin.plan_mode_prefix`` in every locale we ship
  *  under ``src/config/locales``; the lookup is exact-prefix only so a

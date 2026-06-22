@@ -157,10 +157,19 @@ def setup_runtime_preferences(agent: Any) -> None:
     # None means unlimited auto-execution rounds for a single task.
     agent.max_tool_rounds = None
     # Plan-mode is a session-sticky flag toggled via ``/plan`` /``/agent``
-    # commands. When True the runtime loop prepends a planning instruction to
-    # the user's outgoing message; defaults to off so existing flows are
-    # unchanged.
+    # commands. When True the runtime loop appends a planning directive to every
+    # message it sends to the model; defaults to off so existing flows are
+    # unchanged. The active chat may have already been loaded (and its mode
+    # restored) before this runs, so seed from the active chat record's
+    # ``plan_mode`` field when available and only fall back to off otherwise.
     agent._plan_mode_sticky = False
+    try:
+        manager = getattr(agent, "_chat_state_manager", None)
+        restore = getattr(manager, "restore_active_chat_plan_mode", None)
+        if callable(restore):
+            restore()
+    except Exception:
+        pass
     agent._resolved_config_data = {}
     try:
         cfg_path = agent.config_dir / CONFIG_JSONC_FILENAME

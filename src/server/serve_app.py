@@ -2344,15 +2344,23 @@ class ServeApp:
 
         The GUI uses this to keep the user's message bubble free of any
         injected planning instruction: instead of prefixing the outgoing
-        message text, the GUI flips this flag and lets ``runtime_loop``
-        prepend the localized instruction inside the agent boundary. The
-        flag is shared with the TUI's ``/plan`` command — flipping it from
-        the GUI is equivalent to a TUI ``/plan on`` for the same process.
+        message text, the GUI flips this flag and lets ``runtime_loop`` append
+        the localized directive (send-time only) inside the agent boundary. The
+        flag is shared with the TUI's ``/plan`` command — flipping it from the
+        GUI is equivalent to a TUI ``/plan on`` for the same process — and is
+        mirrored onto the active chat record root so a chat reload resumes it.
         """
         try:
             self.agent._plan_mode_sticky = bool(enabled)
         except Exception:
             return False
+        try:
+            manager = getattr(self.agent, "_chat_state_manager", None)
+            persist = getattr(manager, "persist_active_chat_plan_mode", None)
+            if callable(persist):
+                persist(bool(enabled))
+        except Exception:
+            pass
         return True
 
     def get_mcp_server_config(self, name: str) -> Dict[str, Any]:

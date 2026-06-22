@@ -223,6 +223,7 @@ class ChatStateManager:
             "context_usage_percent": usage_pct,
             "context_input_tokens": usage_tokens,
             "context_window": usage_window,
+            "plan_mode": False,
         }
 
     def _normalize_message(
@@ -292,6 +293,11 @@ class ChatStateManager:
             "context_usage_percent": int(raw.get("context_usage_percent") or 0),
             "context_input_tokens": int(raw.get("context_input_tokens") or 0),
             "context_window": int(raw.get("context_window") or 0),
+            # Whether this chat is in Plan mode. Recorded on the chat record
+            # root so reloading the chat (TUI or GUI) restores the sticky mode
+            # the user last left it in. Older records lack the field and
+            # default to Agent mode (False).
+            "plan_mode": bool(raw.get("plan_mode", False)),
         }
         # Preserve cross-process clarifying-prompt state. Another codewood
         # process (typically the TUI) writes ``pending_ask_more_info`` onto
@@ -908,6 +914,47 @@ class ChatStateManager:
         self._agent._active_chat_plan = snapshot
         self._agent._active_chat_plan_pending = False
 
+    def active_chat_plan_mode(self) -> bool:
+        """Return whether the active chat is recorded as being in Plan mode."""
+        with self._agent._chat_state_lock:
+            chat = self.find_chat_by_id(self._agent.active_chat_id)
+            if not chat:
+                return False
+            return bool(chat.get("plan_mode", False))
+
+    def persist_active_chat_plan_mode(self, enabled: bool) -> bool:
+        """Record the Plan-mode flag on the active chat's record root.
+
+        Kept separate from the in-memory ``_plan_mode_sticky`` session flag:
+        callers flip the session flag (so the running loop reacts immediately)
+        and then call this so the choice survives a restart / chat reload.
+        Returns True when there is an active chat to write to.
+        """
+        with self._agent._chat_state_lock:
+            chat = self.find_chat_by_id(self._agent.active_chat_id)
+            if not chat:
+                return False
+            if bool(chat.get("plan_mode", False)) == bool(enabled):
+                return True
+            chat["plan_mode"] = bool(enabled)
+            chat["updated_at"] = self._now_text()
+            try:
+                self.save_chat_state()
+            except Exception:
+                pass
+        return True
+
+    def restore_active_chat_plan_mode(self) -> None:
+        """Sync the session ``_plan_mode_sticky`` flag from the active chat.
+
+        Called when (re)activating a chat so the loaded conversation resumes in
+        whatever mode it was last left in. Best-effort; never raises.
+        """
+        try:
+            self._agent._plan_mode_sticky = self.active_chat_plan_mode()
+        except Exception:
+            pass
+
     def active_chat_plan(self) -> Optional[Dict[str, Any]]:
         """Return a copy of the active chat's latest plan, or None if unset."""
         with self._agent._chat_state_lock:
@@ -1043,6 +1090,8 @@ class ChatStateManager:
             self._agent.active_chat_name = str(chat.get("name") or "New Chat")
             self._agent.conversation_history = list(chat.get("messages") or [])
             self.refresh_active_chat_plan_from_messages()
+            # Resume the sticky Plan/Agent mode this chat was last left in.
+            self.restore_active_chat_plan_mode()
             # Keep in-memory tool outcomes when reloading the same chat so
             # history replay can preserve failed/success visual markers.
             if chat_id == prev_active_chat_id:
