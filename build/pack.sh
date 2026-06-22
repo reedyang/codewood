@@ -220,6 +220,52 @@ PLIST
 # ---------------------------------------------------------------------------
 # Linux native installers (AppImage + .deb)
 # ---------------------------------------------------------------------------
+# Render an SVG to a 256x256 PNG using whichever rasterizer is available.
+# Returns 0 and writes "$2" on success; non-zero (no output) on failure.
+render_svg_to_png() {
+  local svg="$1" png="$2"
+  [ -f "$svg" ] || return 1
+  if command -v rsvg-convert >/dev/null 2>&1; then
+    rsvg-convert -w 256 -h 256 "$svg" -o "$png" >/dev/null 2>&1 && [ -s "$png" ] && return 0
+  fi
+  if command -v inkscape >/dev/null 2>&1; then
+    inkscape "$svg" --export-type=png -w 256 -h 256 -o "$png" >/dev/null 2>&1 && [ -s "$png" ] && return 0
+  fi
+  if command -v magick >/dev/null 2>&1; then
+    magick -background none -density 384 "$svg" -resize 256x256 "$png" >/dev/null 2>&1 && [ -s "$png" ] && return 0
+  fi
+  if command -v convert >/dev/null 2>&1; then
+    convert -background none -density 384 "$svg" -resize 256x256 "$png" >/dev/null 2>&1 && [ -s "$png" ] && return 0
+  fi
+  # Python fallbacks (cairosvg, then svglib) if a CLI rasterizer is absent.
+  local py="${VENV_PYTHON:-python3}"
+  command -v "$py" >/dev/null 2>&1 || py="python3"
+  "$py" - "$svg" "$png" >/dev/null 2>&1 <<'PYSVG' && [ -s "$png" ] && return 0
+import sys
+svg, png = sys.argv[1], sys.argv[2]
+try:
+    import cairosvg
+    cairosvg.svg2png(url=svg, write_to=png, output_width=256, output_height=256)
+    sys.exit(0)
+except Exception:
+    pass
+try:
+    from svglib.svglib import svg2rlg
+    from reportlab.graphics import renderPM
+    drawing = svg2rlg(svg)
+    if drawing is None:
+        sys.exit(1)
+    sx, sy = 256.0 / drawing.width, 256.0 / drawing.height
+    drawing.width, drawing.height = 256, 256
+    drawing.scale(sx, sy)
+    renderPM.drawToFile(drawing, png, fmt="PNG")
+    sys.exit(0)
+except Exception:
+    sys.exit(1)
+PYSVG
+  return 1
+}
+
 build_linux_installers() {
   # Map uname -m to Debian arch naming for the .deb control file.
   local deb_arch
@@ -255,11 +301,28 @@ Comment=Code Wood AI Agent
 Exec=codewood app
 Icon=codewood
 Terminal=false
-Categories=Development;Utility;
+Categories=Development;
 DESKTOP
 
+  # The icon is mandatory for AppImage: appimagetool aborts when the icon
+  # named by the .desktop "Icon=" key is missing from the AppDir. Prefer a
+  # shipped 256x256 PNG; otherwise render build/app_icon.svg with whatever
+  # SVG rasterizer is available; only as a last resort fall back to a minimal
+  # placeholder PNG so packaging never fails on a missing asset.
+  local icon_dest="$appdir/usr/share/icons/hicolor/256x256/apps/codewood.png"
   if [ -f "build/app_icon.png" ]; then
-    cp "build/app_icon.png" "$appdir/usr/share/icons/hicolor/256x256/apps/codewood.png"
+    cp "build/app_icon.png" "$icon_dest"
+  elif [ -f "build/app_icon.svg" ] && render_svg_to_png "build/app_icon.svg" "$icon_dest"; then
+    echo "Rendered build/app_icon.svg -> $(basename "$icon_dest")"
+  else
+    echo "WARNING: no usable app icon; generating a placeholder icon." >&2
+    # 1x1 transparent PNG (valid, minimal). Enough to satisfy appimagetool.
+    printf '%s' \
+'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M8AAAMBAQDJ/pLvAAAAAElFTkSuQmCC' \
+      | base64 -d > "$icon_dest" 2>/dev/null || \
+    printf '%s' \
+'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M8AAAMBAQDJ/pLvAAAAAElFTkSuQmCC' \
+      | base64 --decode > "$icon_dest"
   fi
 
   # ---- AppImage (universal, no root). Requires appimagetool + FUSE.
@@ -277,12 +340,33 @@ APPRUN
     local appimage="dist/CodeWood-${APP_VERSION}-${PLATFORM_TAG}.AppImage"
     rm -f "$appimage"
     echo "Creating AppImage \"$appimage\"..."
-    if ARCH="$ARCH_TAG" appimagetool "$appdir" "$appimage" >/dev/null 2>&1; then
+
+    # Build on the native Linux filesystem and without FUSE. Under WSL the
+    # project often lives on a Windows mount (DrvFs) that ignores chmod/owner
+    # bits, and FUSE is frequently unavailable — both make appimagetool fail.
+    # Staging in $TMPDIR/tmp restores POSIX permissions, and
+    # APPIMAGE_EXTRACT_AND_RUN=1 lets the (AppImage-packaged) appimagetool run
+    # without mounting itself via FUSE. The finished image is copied to dist/.
+    local aistage aiappdir aiout ai_staged
+    aistage="$(mktemp -d "${TMPDIR:-/tmp}/codewood-appimage.XXXXXX")"
+    aiappdir="$aistage/CodeWood.AppDir"
+    cp -R "$appdir" "$aiappdir"
+    find "$aiappdir" -type d -exec chmod 0755 {} +
+    find "$aiappdir" -type f -exec chmod 0644 {} +
+    chmod 0755 "$aiappdir/AppRun" "$aiappdir/usr/bin/codewood"
+    chmod 0755 "$aiappdir/opt/codewood/codewood" 2>/dev/null || true
+    chmod 0755 "$aiappdir/opt/codewood/codewood-gui" 2>/dev/null || true
+    ai_staged="$aistage/$(basename "$appimage")"
+    aiout="$aistage/appimagetool.log"
+    if ARCH="$ARCH_TAG" APPIMAGE_EXTRACT_AND_RUN=1 appimagetool "$aiappdir" "$ai_staged" >"$aiout" 2>&1; then
+      cp -f "$ai_staged" "$appimage"
       chmod +x "$appimage"
       INSTALLER_NOTES+=("  $(basename "$appimage")  - Linux universal, no-install (chmod +x then run)")
     else
-      echo "WARNING: appimagetool failed; skipping AppImage." >&2
+      echo "WARNING: appimagetool failed; skipping AppImage. Details:" >&2
+      sed 's/^/  /' "$aiout" >&2 || true
     fi
+    rm -rf "$aistage"
   else
     echo "WARNING: appimagetool not found; skipping AppImage." >&2
   fi
