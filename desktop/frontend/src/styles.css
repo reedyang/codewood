@@ -573,6 +573,9 @@ body.resizing-x {
   border-radius: 10px;
   padding: 16px;
   margin-bottom: 16px;
+  /* Match the MCP server cards so each model/provider card (collapsed or
+     expanded) reads as a distinct surface. */
+  background: var(--bg-elevated);
 }
 
 .models-provider-head {
