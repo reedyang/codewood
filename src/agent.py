@@ -5984,25 +5984,6 @@ class Agent:
             print(translate("warning.memory_enabled_save_failed", self._ui_language(), error=e))
             return False
 
-    def _enable_freedom(self) -> Dict[str, Any]:
-        """Compatibility command: set execution_policy=moderate."""
-        if self.execution_policy == "moderate":
-            return {"success": True, "message": "execution_policy is already set to moderate"}
-        self.execution_policy = "moderate"
-        saved = self._save_execution_policy_to_config()
-        return {
-            "success": True,
-            "message": f"execution_policy set to moderate{' (config saved)' if saved else ''}",
-        }
-
-    def _disable_freedom(self) -> Dict[str, Any]:
-        """Compatibility command: set execution_policy=confirmation."""
-        if self.execution_policy == "confirmation":
-            return {"success": True, "message": "execution_policy is already set to confirmation"}
-        self.execution_policy = "confirmation"
-        saved = self._save_execution_policy_to_config()
-        return {"success": True, "message": f"execution_policy set to confirmation{' (config saved)' if saved else ''}"}
-
     def _set_execution_policy(self, policy: str) -> Dict[str, Any]:
         pol = str(policy or "").strip().lower()
         if pol not in ("unlimited", "moderate", "confirmation"):

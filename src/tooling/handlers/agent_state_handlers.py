@@ -54,26 +54,4 @@ def dispatch_agent_state_tool(agent: Any, action: str, params: Dict[str, Any]) -
             print(result.get("error", "execution_policy update failed"))
         return result
 
-    if action in ("freedom_enable", "freedom_on"):
-        result = agent._enable_freedom()
-        if result.get("success"):
-            print(result.get("message", "freedom mode enabled"))
-        else:
-            print(result.get("error", "failed to enable freedom mode"))
-        return result
-
-    if action in ("freedom_disable", "freedom_off"):
-        result = agent._disable_freedom()
-        if result.get("success"):
-            print(result.get("message", "freedom mode disabled"))
-        else:
-            print(result.get("error", "failed to disable freedom mode"))
-        return result
-
-    if action == "always_confirm_reset":
-        result = agent._reset_always_confirm_skip()
-        if result.get("success"):
-            print(result.get("message", "always-confirm skip list reset"))
-        return result
-
     return None
