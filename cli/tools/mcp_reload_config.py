@@ -16,6 +16,13 @@ class McpReloadConfigTool(BaseTool):
     }
 
     def execute(self, agent: Any, params: Dict[str, Any]) -> Dict[str, Any]:
-        from ._delegation import delegate_mcp
-
-        return delegate_mcp(agent, "mcp_reload_config", params if isinstance(params, dict) else {})
+        params = params if isinstance(params, dict) else {}
+        result = agent._reload_mcp_config_now()
+        if result.get("success"):
+            return {
+                "success": True,
+                "changed": bool(result.get("changed", False)),
+                "summary": result.get("summary", {}),
+                "message": str(result.get("message", "MCP config reloaded")),
+            }
+        return {"success": False, "error": str(result.get("error", "MCP config reload failed"))}

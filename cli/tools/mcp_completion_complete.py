@@ -31,6 +31,29 @@ class McpCompletionCompleteTool(BaseTool):
     }
 
     def execute(self, agent: Any, params: Dict[str, Any]) -> Dict[str, Any]:
-        from ._delegation import delegate_mcp
+        from ..integrations.mcp import McpError
 
-        return delegate_mcp(agent, "mcp_completion_complete", params if isinstance(params, dict) else {})
+        params = params if isinstance(params, dict) else {}
+        server = params.get("server")
+        completion_params = params.get("completion_params", {})
+        timeout_s = float(params.get("timeout_s", 20.0))
+        if not server:
+            return {"success": False, "error": "missing server"}
+        if not isinstance(completion_params, dict):
+            return {"success": False, "error": "completion_params must be object"}
+        try:
+            result = agent.mcp_manager.completion_complete(
+                str(server),
+                completion_params,
+                timeout_s=timeout_s,
+            )
+            return {
+                "success": True,
+                "server": server,
+                "result": result,
+                "message": f"MCP completion/complete called (server={server})",
+            }
+        except McpError as e:
+            return {"success": False, "error": f"MCP completion/complete failed: {e}"}
+        except Exception as e:
+            return {"success": False, "error": f"MCP completion/complete exception: {e}"}

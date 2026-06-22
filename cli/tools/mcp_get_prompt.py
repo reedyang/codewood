@@ -33,6 +33,34 @@ class McpGetPromptTool(BaseTool):
     }
 
     def execute(self, agent: Any, params: Dict[str, Any]) -> Dict[str, Any]:
-        from ._delegation import delegate_mcp
+        from ..integrations.mcp import McpError
 
-        return delegate_mcp(agent, "mcp_get_prompt", params if isinstance(params, dict) else {})
+        params = params if isinstance(params, dict) else {}
+        server = params.get("server")
+        prompt_name = params.get("prompt")
+        arguments = params.get("arguments", {})
+        timeout_s = float(params.get("timeout_s", 20.0))
+        if not server:
+            return {"success": False, "error": "missing server"}
+        if not prompt_name:
+            return {"success": False, "error": "missing prompt"}
+        if not isinstance(arguments, dict):
+            return {"success": False, "error": "arguments must be object"}
+        try:
+            result = agent.mcp_manager.get_prompt(
+                str(server),
+                str(prompt_name),
+                arguments,
+                timeout_s=timeout_s,
+            )
+            return {
+                "success": True,
+                "server": server,
+                "prompt": prompt_name,
+                "result": result,
+                "message": f"MCP prompt fetched ({server}/{prompt_name})",
+            }
+        except McpError as e:
+            return {"success": False, "error": f"MCP get prompt failed: {e}"}
+        except Exception as e:
+            return {"success": False, "error": f"MCP get prompt exception: {e}"}

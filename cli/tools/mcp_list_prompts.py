@@ -29,6 +29,30 @@ class McpListPromptsTool(BaseTool):
     }
 
     def execute(self, agent: Any, params: Dict[str, Any]) -> Dict[str, Any]:
-        from ._delegation import delegate_mcp
+        from ..integrations.mcp import McpError
 
-        return delegate_mcp(agent, "mcp_list_prompts", params if isinstance(params, dict) else {})
+        params = params if isinstance(params, dict) else {}
+        server = params.get("server")
+        use_cache = bool(params.get("use_cache", True))
+        timeout_s = float(params.get("timeout_s", 8.0))
+        if not server:
+            return {"success": False, "error": "missing server"}
+        try:
+            prompts, from_cache = agent.mcp_manager.list_prompts(
+                str(server),
+                timeout_s=timeout_s,
+                use_cache=use_cache,
+            )
+            agent.system_prompt = agent._compose_system_prompt_snapshot(include_tools=False)
+            return {
+                "success": True,
+                "server": server,
+                "prompts": prompts,
+                "from_cache": from_cache,
+                "count": len(prompts) if isinstance(prompts, list) else 0,
+                "message": f"MCP prompts fetched (server={server})",
+            }
+        except McpError as e:
+            return {"success": False, "error": f"MCP list prompts failed: {e}"}
+        except Exception as e:
+            return {"success": False, "error": f"MCP list prompts exception: {e}"}

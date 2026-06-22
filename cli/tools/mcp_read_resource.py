@@ -30,6 +30,30 @@ class McpReadResourceTool(BaseTool):
     }
 
     def execute(self, agent: Any, params: Dict[str, Any]) -> Dict[str, Any]:
-        from ._delegation import delegate_mcp
+        from ..integrations.mcp import McpError
 
-        return delegate_mcp(agent, "mcp_read_resource", params if isinstance(params, dict) else {})
+        params = params if isinstance(params, dict) else {}
+        server = params.get("server")
+        uri = params.get("uri")
+        timeout_s = float(params.get("timeout_s", 20.0))
+        if not server:
+            return {"success": False, "error": "missing server"}
+        if not uri:
+            return {"success": False, "error": "missing uri"}
+        try:
+            result = agent.mcp_manager.read_resource(
+                str(server),
+                str(uri),
+                timeout_s=timeout_s,
+            )
+            return {
+                "success": True,
+                "server": server,
+                "uri": uri,
+                "result": result,
+                "message": f"MCP resource read ({server}::{uri})",
+            }
+        except McpError as e:
+            return {"success": False, "error": f"MCP read resource failed: {e}"}
+        except Exception as e:
+            return {"success": False, "error": f"MCP read resource exception: {e}"}
