@@ -8,12 +8,12 @@ from unittest.mock import patch
 if "ollama" not in sys.modules:
     sys.modules["ollama"] = types.SimpleNamespace(list=lambda: {"models": []})
 
-from src.agent import (
+from cli.agent import (
     DIRECT_SHELL_USER_HISTORY_PREFIX,
     INTERNAL_SLASH_USER_HISTORY_PREFIX,
 )
-from src.completion.builtin_slash_commands import slash_builtin_completions
-from src.controllers.chat_command_controller import handle_chat_builtin_command
+from cli.completion.builtin_slash_commands import slash_builtin_completions
+from cli.controllers.chat_command_controller import handle_chat_builtin_command
 
 
 class _FakeChatAgent:
@@ -125,8 +125,8 @@ class ChatCommandControllerTests(unittest.TestCase):
         agent = _FakeChatAgent()
         buf = io.StringIO()
         with (
-            patch("src.controllers.chat_command_controller._clear_terminal_screen") as mock_clear,
-            patch("src.controllers.chat_command_controller._print_startup_overview_safe") as mock_startup,
+            patch("cli.controllers.chat_command_controller._clear_terminal_screen") as mock_clear,
+            patch("cli.controllers.chat_command_controller._print_startup_overview_safe") as mock_startup,
             redirect_stdout(buf),
         ):
             handled = handle_chat_builtin_command(agent, "chat reload")
@@ -154,8 +154,8 @@ class ChatCommandControllerTests(unittest.TestCase):
         agent.activate_result = "❌ chat not found: chat-2"
         buf = io.StringIO()
         with (
-            patch("src.controllers.chat_command_controller._clear_terminal_screen"),
-            patch("src.controllers.chat_command_controller._print_startup_overview_safe"),
+            patch("cli.controllers.chat_command_controller._clear_terminal_screen"),
+            patch("cli.controllers.chat_command_controller._print_startup_overview_safe"),
             redirect_stdout(buf),
         ):
             handled = handle_chat_builtin_command(agent, "chat reload")
@@ -171,8 +171,8 @@ class ChatCommandControllerTests(unittest.TestCase):
         agent = _FakeChatAgent()
         buf = io.StringIO()
         with (
-            patch("src.controllers.chat_command_controller._clear_terminal_screen") as mock_clear,
-            patch("src.controllers.chat_command_controller._print_startup_overview_safe") as mock_startup,
+            patch("cli.controllers.chat_command_controller._clear_terminal_screen") as mock_clear,
+            patch("cli.controllers.chat_command_controller._print_startup_overview_safe") as mock_startup,
             redirect_stdout(buf),
         ):
             handled = handle_chat_builtin_command(agent, "chat switch chat-3")
@@ -203,10 +203,10 @@ class ChatCommandControllerTests(unittest.TestCase):
         base_out = io.StringIO()
         wrapped_out = _PrefixingStream(base_out)
         with (
-            patch("src.controllers.chat_command_controller.sys.stdout", wrapped_out),
-            patch("src.controllers.chat_command_controller.sys.stderr", wrapped_out),
-            patch("src.controllers.chat_command_controller._clear_terminal_screen") as mock_clear,
-            patch("src.controllers.chat_command_controller._print_startup_overview_safe") as mock_startup,
+            patch("cli.controllers.chat_command_controller.sys.stdout", wrapped_out),
+            patch("cli.controllers.chat_command_controller.sys.stderr", wrapped_out),
+            patch("cli.controllers.chat_command_controller._clear_terminal_screen") as mock_clear,
+            patch("cli.controllers.chat_command_controller._print_startup_overview_safe") as mock_startup,
         ):
             handled = handle_chat_builtin_command(agent, "chat reload")
         self.assertTrue(handled)
@@ -292,7 +292,7 @@ class ChatForkCommandTests(unittest.TestCase):
         agent = _FakeForkAgent(self._history())
         buf = io.StringIO()
         with (
-            patch("src.controllers.chat_command_controller._reload_chat_from_top") as mock_reload,
+            patch("cli.controllers.chat_command_controller._reload_chat_from_top") as mock_reload,
             redirect_stdout(buf),
         ):
             handled = handle_chat_builtin_command(agent, "chat fork")
@@ -312,7 +312,7 @@ class ChatForkCommandTests(unittest.TestCase):
     def test_fork_minus_one_equivalent_to_default(self):
         agent = _FakeForkAgent(self._history())
         with (
-            patch("src.controllers.chat_command_controller._reload_chat_from_top"),
+            patch("cli.controllers.chat_command_controller._reload_chat_from_top"),
             redirect_stdout(io.StringIO()),
         ):
             handle_chat_builtin_command(agent, "chat fork -1")
@@ -325,7 +325,7 @@ class ChatForkCommandTests(unittest.TestCase):
     def test_fork_positive_index_copies_single_turn(self):
         agent = _FakeForkAgent(self._history())
         with (
-            patch("src.controllers.chat_command_controller._reload_chat_from_top"),
+            patch("cli.controllers.chat_command_controller._reload_chat_from_top"),
             redirect_stdout(io.StringIO()),
         ):
             handle_chat_builtin_command(agent, "chat fork 1")
@@ -339,7 +339,7 @@ class ChatForkCommandTests(unittest.TestCase):
     def test_fork_second_index_copies_two_turns(self):
         agent = _FakeForkAgent(self._history())
         with (
-            patch("src.controllers.chat_command_controller._reload_chat_from_top"),
+            patch("cli.controllers.chat_command_controller._reload_chat_from_top"),
             redirect_stdout(io.StringIO()),
         ):
             handle_chat_builtin_command(agent, "chat fork 2")
@@ -352,7 +352,7 @@ class ChatForkCommandTests(unittest.TestCase):
     def test_fork_copied_messages_are_independent(self):
         agent = _FakeForkAgent(self._history())
         with (
-            patch("src.controllers.chat_command_controller._reload_chat_from_top"),
+            patch("cli.controllers.chat_command_controller._reload_chat_from_top"),
             redirect_stdout(io.StringIO()),
         ):
             handle_chat_builtin_command(agent, "chat fork 1")
@@ -365,7 +365,7 @@ class ChatForkCommandTests(unittest.TestCase):
         extra = [{"id": "other", "name": "Demo (2)", "messages": []}]
         agent = _FakeForkAgent(self._history(), extra_chats=extra)
         with (
-            patch("src.controllers.chat_command_controller._reload_chat_from_top"),
+            patch("cli.controllers.chat_command_controller._reload_chat_from_top"),
             redirect_stdout(io.StringIO()),
         ):
             handle_chat_builtin_command(agent, "chat fork")
@@ -376,7 +376,7 @@ class ChatForkCommandTests(unittest.TestCase):
         agent = _FakeForkAgent(self._history())
         buf = io.StringIO()
         with (
-            patch("src.controllers.chat_command_controller._reload_chat_from_top") as mock_reload,
+            patch("cli.controllers.chat_command_controller._reload_chat_from_top") as mock_reload,
             redirect_stdout(buf),
         ):
             handle_chat_builtin_command(agent, "chat fork 4")
@@ -419,7 +419,7 @@ class ChatForkCommandTests(unittest.TestCase):
     def test_fork_increments_existing_numeric_suffix(self):
         agent = _FakeForkAgent(self._history(), name="Demo (2)")
         with (
-            patch("src.controllers.chat_command_controller._reload_chat_from_top"),
+            patch("cli.controllers.chat_command_controller._reload_chat_from_top"),
             redirect_stdout(io.StringIO()),
         ):
             handle_chat_builtin_command(agent, "chat fork")
@@ -430,7 +430,7 @@ class ChatForkCommandTests(unittest.TestCase):
         extra = [{"id": "other", "name": "Demo (3)", "messages": []}]
         agent = _FakeForkAgent(self._history(), name="Demo (2)", extra_chats=extra)
         with (
-            patch("src.controllers.chat_command_controller._reload_chat_from_top"),
+            patch("cli.controllers.chat_command_controller._reload_chat_from_top"),
             redirect_stdout(io.StringIO()),
         ):
             handle_chat_builtin_command(agent, "chat fork")
@@ -458,7 +458,7 @@ class ChatEditCommandTests(unittest.TestCase):
         agent = _FakeEditAgent(self._history())
         buf = io.StringIO()
         with (
-            patch("src.controllers.chat_command_controller._reload_chat_from_top") as mock_reload,
+            patch("cli.controllers.chat_command_controller._reload_chat_from_top") as mock_reload,
             redirect_stdout(buf),
         ):
             handled = handle_chat_builtin_command(agent, "chat edit 2")
@@ -478,7 +478,7 @@ class ChatEditCommandTests(unittest.TestCase):
         # stale selection panel for a message that no longer exists.
         agent = _FakeEditAgent(self._history())
         with (
-            patch("src.controllers.chat_command_controller._reload_chat_from_top"),
+            patch("cli.controllers.chat_command_controller._reload_chat_from_top"),
             redirect_stdout(io.StringIO()),
         ):
             handle_chat_builtin_command(agent, "chat edit -1")
@@ -487,7 +487,7 @@ class ChatEditCommandTests(unittest.TestCase):
     def test_edit_negative_index_targets_last_user_message(self):
         agent = _FakeEditAgent(self._history())
         with (
-            patch("src.controllers.chat_command_controller._reload_chat_from_top"),
+            patch("cli.controllers.chat_command_controller._reload_chat_from_top"),
             redirect_stdout(io.StringIO()),
         ):
             handle_chat_builtin_command(agent, "chat edit -1")
@@ -500,7 +500,7 @@ class ChatEditCommandTests(unittest.TestCase):
     def test_edit_negative_index_full_span(self):
         agent = _FakeEditAgent(self._history())
         with (
-            patch("src.controllers.chat_command_controller._reload_chat_from_top"),
+            patch("cli.controllers.chat_command_controller._reload_chat_from_top"),
             redirect_stdout(io.StringIO()),
         ):
             handle_chat_builtin_command(agent, "chat edit -3")
@@ -520,7 +520,7 @@ class ChatEditCommandTests(unittest.TestCase):
         ]
         agent = _FakeEditAgent(history)
         with (
-            patch("src.controllers.chat_command_controller._reload_chat_from_top"),
+            patch("cli.controllers.chat_command_controller._reload_chat_from_top"),
             redirect_stdout(io.StringIO()),
         ):
             handle_chat_builtin_command(agent, "chat edit -1")
@@ -532,7 +532,7 @@ class ChatEditCommandTests(unittest.TestCase):
         agent = _FakeEditAgent(self._history())
         buf = io.StringIO()
         with (
-            patch("src.controllers.chat_command_controller._reload_chat_from_top") as mock_reload,
+            patch("cli.controllers.chat_command_controller._reload_chat_from_top") as mock_reload,
             redirect_stdout(buf),
         ):
             handle_chat_builtin_command(agent, "chat edit 4")
@@ -545,7 +545,7 @@ class ChatEditCommandTests(unittest.TestCase):
         agent = _FakeEditAgent(self._history())
         buf = io.StringIO()
         with (
-            patch("src.controllers.chat_command_controller._reload_chat_from_top"),
+            patch("cli.controllers.chat_command_controller._reload_chat_from_top"),
             redirect_stdout(buf),
         ):
             handle_chat_builtin_command(agent, "chat edit -4")

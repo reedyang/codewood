@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from src.config.startup_tips import (
+from cli.config.startup_tips import (
     DEFAULT_STARTUP_TIP,
     DEFAULT_STARTUP_TIP_ENTRY,
     format_tip_with_highlights,

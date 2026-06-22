@@ -1,8 +1,8 @@
 import unittest
 from unittest.mock import patch
 
-from src.config.app_info import get_app_runtime_attr_name
-from src.actions.command_actions import (
+from cli.config.app_info import get_app_runtime_attr_name
+from cli.actions.command_actions import (
     SHELL_OUTPUT_DISPLAY_TAIL_LINES,
     _build_tail_output_for_display,
     _build_logical_tail_output_for_live_replay,
@@ -29,15 +29,15 @@ class _FakeSmartWidthStream:
 
 class ShellOutputSuppressionTests(unittest.TestCase):
     def test_dynamic_tail_line_limit_caps_at_30(self):
-        with patch("src.actions.command_actions._terminal_rows_for_tail_display", return_value=100):
+        with patch("cli.actions.command_actions._terminal_rows_for_tail_display", return_value=100):
             self.assertEqual(_dynamic_tail_line_limit(_FakePipe()), 30)
 
     def test_dynamic_tail_line_limit_uses_terminal_height(self):
-        with patch("src.actions.command_actions._terminal_rows_for_tail_display", return_value=20):
+        with patch("cli.actions.command_actions._terminal_rows_for_tail_display", return_value=20):
             self.assertEqual(_dynamic_tail_line_limit(_FakePipe()), 17)
 
     def test_dynamic_tail_line_limit_keeps_at_least_one_line_after_reserve(self):
-        with patch("src.actions.command_actions._terminal_rows_for_tail_display", return_value=2):
+        with patch("cli.actions.command_actions._terminal_rows_for_tail_display", return_value=2):
             self.assertEqual(_dynamic_tail_line_limit(_FakePipe()), 1)
 
     def test_count_output_lines_handles_crlf(self):
@@ -47,8 +47,8 @@ class ShellOutputSuppressionTests(unittest.TestCase):
 
     def test_tail_display_width_prefers_wrapped_stream_columns(self):
         with (
-            patch("src.actions.command_actions.os.get_terminal_size", return_value=type("Sz", (), {"columns": 80})()),
-            patch("src.actions.command_actions.shutil.get_terminal_size", return_value=type("Sz", (), {"columns": 80})()),
+            patch("cli.actions.command_actions.os.get_terminal_size", return_value=type("Sz", (), {"columns": 80})()),
+            patch("cli.actions.command_actions.shutil.get_terminal_size", return_value=type("Sz", (), {"columns": 80})()),
         ):
             self.assertEqual(_terminal_columns_for_tail_display(_FakeSmartWidthStream()), 42)
 
@@ -83,14 +83,14 @@ class ShellOutputSuppressionTests(unittest.TestCase):
 
     def test_build_tail_output_keeps_display_within_visual_line_limit(self):
         text = "x" * 120 + "\n"
-        with patch("src.actions.command_actions._terminal_columns_for_tail_display", return_value=10):
+        with patch("cli.actions.command_actions._terminal_columns_for_tail_display", return_value=10):
             out = _build_tail_output_for_display(text, _FakePipe(), 5)
         self.assertIn("omitted 1 lines", out)
         self.assertTrue(out.endswith(("x" * 10) + "\n" + ("x" * 10) + "\n"))
 
     def test_build_tail_output_can_avoid_partial_start_line_for_live_replay(self):
         text = "Reply from host: bytes=32\nReply from host: bytes=33\n"
-        with patch("src.actions.command_actions._terminal_columns_for_tail_display", return_value=10):
+        with patch("cli.actions.command_actions._terminal_columns_for_tail_display", return_value=10):
             out = _build_tail_output_for_display(
                 text,
                 _FakePipe(),
@@ -117,7 +117,7 @@ class ShellOutputSuppressionTests(unittest.TestCase):
             f"Reply from 127.0.0.1: bytes=32 time={i:02d}ms TTL=52"
             for i in range(1, 5)
         ) + "\n"
-        with patch("src.actions.command_actions._terminal_columns_for_tail_display", return_value=44):
+        with patch("cli.actions.command_actions._terminal_columns_for_tail_display", return_value=44):
             out = _build_logical_tail_output_for_live_replay(
                 text,
                 _FakePipe(),
@@ -138,14 +138,14 @@ class ShellOutputSuppressionTests(unittest.TestCase):
 
     def test_build_tail_output_omitted_count_uses_real_lines_not_wrapped_visual_lines(self):
         text = "\n".join(("a" * 18) for _ in range(4)) + "\n"
-        with patch("src.actions.command_actions._terminal_columns_for_tail_display", return_value=80):
+        with patch("cli.actions.command_actions._terminal_columns_for_tail_display", return_value=80):
             out = _build_tail_output_for_display(text, _FakePipe(), 3)
         self.assertIn("omitted 2 lines", out)
         self.assertNotIn("omitted 5 lines", out)
 
     def test_build_tail_output_accounts_for_cjk_visual_width(self):
         text = ("🙂" * 40) + "\n"
-        with patch("src.actions.command_actions._terminal_columns_for_tail_display", return_value=30):
+        with patch("cli.actions.command_actions._terminal_columns_for_tail_display", return_value=30):
             out = _build_tail_output_for_display(text, _FakePipe(), 2)
         self.assertIn("omitted 1 lines", out)
         self.assertTrue(out.endswith(("🙂" * 10) + "\n"))

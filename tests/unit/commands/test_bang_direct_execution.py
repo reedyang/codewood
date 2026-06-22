@@ -15,7 +15,7 @@ if "ollama" not in sys.modules:
     fake_ollama = types.SimpleNamespace(list=lambda: {"models": []})
     sys.modules["ollama"] = fake_ollama
 
-from src.agent import Agent
+from cli.agent import Agent
 
 
 class BangDirectExecutionTests(unittest.TestCase):
@@ -79,7 +79,7 @@ class BangDirectExecutionTests(unittest.TestCase):
                 return True
 
         buf = _TtyBuffer()
-        with patch("src.agent.sys.stdout", buf):
+        with patch("cli.agent.sys.stdout", buf):
             self.agent._print_direct_shell_command_feedback("git status")
 
         out = buf.getvalue()
@@ -101,8 +101,8 @@ class BangDirectExecutionTests(unittest.TestCase):
 
         out_buf = _TtyBuffer()
         err_buf = _TtyBuffer()
-        with patch("src.agent.sys.stdout", out_buf), patch(
-            "src.agent.sys.stderr", err_buf
+        with patch("cli.agent.sys.stdout", out_buf), patch(
+            "cli.agent.sys.stderr", err_buf
         ):
             out_stream, err_stream = self.agent._create_direct_shell_output_streams()
             out_stream.write("line1\nline2\n")
@@ -123,7 +123,7 @@ class BangDirectExecutionTests(unittest.TestCase):
                 return 1
 
         out_buf = _TtyBuffer()
-        with patch("src.agent.sys.stdout", out_buf):
+        with patch("cli.agent.sys.stdout", out_buf):
             out_stream, _ = self.agent._create_direct_shell_output_streams()
             out_stream.write("\nline1\n")
 
@@ -141,7 +141,7 @@ class BangDirectExecutionTests(unittest.TestCase):
                 return 1
 
         out_buf = _TtyBuffer()
-        with patch("src.agent.sys.stdout", out_buf):
+        with patch("cli.agent.sys.stdout", out_buf):
             out_stream, _ = self.agent._create_direct_shell_output_streams()
             out_stream.write("\r\nline1\n")
 
@@ -159,8 +159,8 @@ class BangDirectExecutionTests(unittest.TestCase):
                 return 1
 
         out_buf = _TtyBuffer()
-        with patch("src.agent.sys.stdout", out_buf), patch(
-            "src.agent.Agent._DirectShellOutputStream._terminal_columns",
+        with patch("cli.agent.sys.stdout", out_buf), patch(
+            "cli.agent.Agent._DirectShellOutputStream._terminal_columns",
             return_value=10,
         ):
             out_stream, _ = self.agent._create_direct_shell_output_streams()
@@ -183,7 +183,7 @@ class BangDirectExecutionTests(unittest.TestCase):
             "_suppress_first_write_clear": True,
             "apply_gray": False,
         }
-        with patch("src.agent.sys.stdout", out_buf):
+        with patch("cli.agent.sys.stdout", out_buf):
             out_stream, _ = self.agent._create_direct_shell_output_streams(state)
             out_stream.write("line1\n")
 
@@ -204,7 +204,7 @@ class BangDirectExecutionTests(unittest.TestCase):
             "apply_gray": False,
             "drop_until_next_newline": True,
         }
-        with patch("src.agent.sys.stdout", out_buf):
+        with patch("cli.agent.sys.stdout", out_buf):
             out_stream, _ = self.agent._create_direct_shell_output_streams(state)
             out_stream.write("bytes=32 time=15ms TTL=52\nReply from host\n")
 
@@ -228,7 +228,7 @@ class BangDirectExecutionTests(unittest.TestCase):
             "drop_until_next_newline": True,
             "suspend_drop_until_next_newline": True,
         }
-        with patch("src.agent.sys.stdout", out_buf):
+        with patch("cli.agent.sys.stdout", out_buf):
             out_stream, _ = self.agent._create_direct_shell_output_streams(state)
             out_stream.write("... omitted 55 lines ...\nline56\nline57\n")
 
@@ -252,7 +252,7 @@ class BangDirectExecutionTests(unittest.TestCase):
             "max_visible_lines": 4,
             "_live_omitted_base_lines": 55,
         }
-        with patch("src.agent.sys.stdout", out_buf):
+        with patch("cli.agent.sys.stdout", out_buf):
             out_stream, _ = self.agent._create_direct_shell_output_streams(state)
             out_stream.write("line56\nline57\nline58\n")
             out_stream.write("line59\n")
@@ -278,7 +278,7 @@ class BangDirectExecutionTests(unittest.TestCase):
             "_live_omitted_base_lines": 6,
             "first_line_emitted": True,
         }
-        with patch("src.agent.sys.stdout", out_buf):
+        with patch("cli.agent.sys.stdout", out_buf):
             out_stream, _ = self.agent._create_direct_shell_output_streams(state)
             out_stream.write("Reply from host\nReply from host 2\n")
 
@@ -303,7 +303,7 @@ class BangDirectExecutionTests(unittest.TestCase):
             "apply_gray": False,
             "max_visible_lines": 2,
         }
-        with patch("src.agent.sys.stdout", out_buf):
+        with patch("cli.agent.sys.stdout", out_buf):
             out_stream, _ = self.agent._create_direct_shell_output_streams(state)
             out_stream.write("line1\nline2\nline3\n")
 
@@ -337,7 +337,7 @@ class BangDirectExecutionTests(unittest.TestCase):
             "max_visible_lines_provider": _provider,
             "on_live_window_desynced": _on_desync,
         }
-        with patch("src.agent.sys.stdout", out_buf):
+        with patch("cli.agent.sys.stdout", out_buf):
             out_stream, _ = self.agent._create_direct_shell_output_streams(state)
             out_stream.write("line1\nline2\nline3\nline4\nline5\nline6\n")
             dynamic_limit["v"] = 2
@@ -369,9 +369,9 @@ class BangDirectExecutionTests(unittest.TestCase):
             "on_live_window_desynced": _on_desync,
         }
         with (
-            patch("src.agent.sys.stdout", out_buf),
+            patch("cli.agent.sys.stdout", out_buf),
             patch(
-                "src.agent.Agent._DirectShellOutputStream._terminal_columns",
+                "cli.agent.Agent._DirectShellOutputStream._terminal_columns",
                 side_effect=lambda: int(dynamic_cols["v"]),
             ),
         ):
@@ -418,7 +418,7 @@ class BangDirectExecutionTests(unittest.TestCase):
             "on_live_window_desynced": _on_desync,
             "suppress_desync_when": lambda: bool(abort_pending["v"]),
         }
-        with patch("src.agent.sys.stdout", out_buf):
+        with patch("cli.agent.sys.stdout", out_buf):
             out_stream, _ = self.agent._create_direct_shell_output_streams(state)
             out_stream.write("line1\nline2\nline3\nline4\nline5\nline6\n")
             dynamic_limit["v"] = 2
@@ -468,7 +468,7 @@ class BangDirectExecutionTests(unittest.TestCase):
                 state["suspend_desync_detection"] = False
 
         state["on_live_window_desynced"] = _on_desync
-        with patch("src.agent.sys.stdout", out_buf):
+        with patch("cli.agent.sys.stdout", out_buf):
             out_stream, _ = self.agent._create_direct_shell_output_streams(state)
             out_stream.write("line1\nline2\nline3\nline4\nline5\nline6\n")
             dynamic_limit["v"] = 2
@@ -487,8 +487,8 @@ class BangDirectExecutionTests(unittest.TestCase):
 
         out_buf = _TtyBuffer()
         err_buf = _TtyBuffer()
-        with patch("src.agent.sys.stdout", out_buf), patch(
-            "src.agent.sys.stderr", err_buf
+        with patch("cli.agent.sys.stdout", out_buf), patch(
+            "cli.agent.sys.stderr", err_buf
         ):
             self.agent._print_direct_shell_history_output(
                 "command aborted by user\n",
@@ -511,8 +511,8 @@ class BangDirectExecutionTests(unittest.TestCase):
 
         out_buf = _TtyBuffer()
         err_buf = _TtyBuffer()
-        with patch("src.agent.sys.stdout", out_buf), patch(
-            "src.agent.sys.stderr", err_buf
+        with patch("cli.agent.sys.stdout", out_buf), patch(
+            "cli.agent.sys.stderr", err_buf
         ):
             self.agent._print_direct_shell_history_output("\nline1\n", "")
 
@@ -534,8 +534,8 @@ class BangDirectExecutionTests(unittest.TestCase):
         err_buf = _TtyBuffer()
         self.agent._last_terminal_block_kind = "assistant"
         self.agent._terminal_cursor_at_line_start = False
-        with patch("src.agent.sys.stdout", out_buf), patch(
-            "src.agent.sys.stderr", err_buf
+        with patch("cli.agent.sys.stdout", out_buf), patch(
+            "cli.agent.sys.stderr", err_buf
         ):
             self.agent._print_direct_shell_history_output("command output\n", "")
 
@@ -555,8 +555,8 @@ class BangDirectExecutionTests(unittest.TestCase):
         err_buf = _TtyBuffer()
         slash_out = self.agent._build_internal_slash_output_stream(out_buf, terminal_columns=80)
         slash_err = self.agent._build_internal_slash_output_stream(err_buf, terminal_columns=80)
-        with patch("src.agent.sys.stdout", slash_out), patch(
-            "src.agent.sys.stderr", slash_err
+        with patch("cli.agent.sys.stdout", slash_out), patch(
+            "cli.agent.sys.stderr", slash_err
         ):
             self.agent._print_direct_shell_history_output("At Line:1 char:41\n", "")
 
@@ -577,10 +577,10 @@ class BangDirectExecutionTests(unittest.TestCase):
         slash_out = self.agent._build_internal_slash_output_stream(out_buf, terminal_columns=24)
         slash_err = self.agent._build_internal_slash_output_stream(err_buf, terminal_columns=24)
         with (
-            patch("src.agent.sys.stdout", slash_out),
-            patch("src.agent.sys.stderr", slash_err),
-            patch("src.agent.os.get_terminal_size", return_value=types.SimpleNamespace(columns=80)),
-            patch("src.agent.shutil.get_terminal_size", return_value=types.SimpleNamespace(columns=80)),
+            patch("cli.agent.sys.stdout", slash_out),
+            patch("cli.agent.sys.stderr", slash_err),
+            patch("cli.agent.os.get_terminal_size", return_value=types.SimpleNamespace(columns=80)),
+            patch("cli.agent.shutil.get_terminal_size", return_value=types.SimpleNamespace(columns=80)),
         ):
             self.agent._print_direct_shell_history_output("12345678901234567890\n", "")
 
@@ -647,10 +647,10 @@ class BangDirectExecutionTests(unittest.TestCase):
         out_buf = _TtyBuffer()
         err_buf = _TtyBuffer()
         with (
-            patch("src.agent.sys.stdout", out_buf),
-            patch("src.agent.sys.stderr", err_buf),
-            patch("src.actions.command_actions._dynamic_tail_line_limit", return_value=3),
-            patch("src.actions.command_actions._terminal_columns_for_tail_display", return_value=120),
+            patch("cli.agent.sys.stdout", out_buf),
+            patch("cli.agent.sys.stderr", err_buf),
+            patch("cli.actions.command_actions._dynamic_tail_line_limit", return_value=3),
+            patch("cli.actions.command_actions._terminal_columns_for_tail_display", return_value=120),
         ):
             rc = self.agent._run_direct_shell_with_prefixed_output("echo hi", Path.cwd())
 
@@ -703,8 +703,8 @@ class BangDirectExecutionTests(unittest.TestCase):
                 return 1
 
         with (
-            patch("src.agent.sys.stdout", _TtyBuffer()),
-            patch("src.agent.sys.stderr", _TtyBuffer()),
+            patch("cli.agent.sys.stdout", _TtyBuffer()),
+            patch("cli.agent.sys.stderr", _TtyBuffer()),
             patch.object(self.agent, "_stream_direct_shell_pipe_to_prefixed_output", side_effect=_spy_stream),
         ):
             rc = self.agent._run_direct_shell_with_prefixed_output("echo hi", Path.cwd())
@@ -757,7 +757,7 @@ class BangDirectExecutionTests(unittest.TestCase):
     def test_consume_conversation_interrupted_banner_recent_returns_true_when_fresh(self):
         self.agent._conversation_interrupt_banner_recent = True
         self.agent._conversation_interrupt_banner_recent_at = 100.0
-        with patch("src.agent.time.monotonic", return_value=102.0):
+        with patch("cli.agent.time.monotonic", return_value=102.0):
             self.assertTrue(self.agent._consume_conversation_interrupted_banner_recent())
         self.assertFalse(bool(getattr(self.agent, "_conversation_interrupt_banner_recent", True)))
         self.assertEqual(float(getattr(self.agent, "_conversation_interrupt_banner_recent_at", -1.0)), 0.0)
@@ -765,7 +765,7 @@ class BangDirectExecutionTests(unittest.TestCase):
     def test_consume_conversation_interrupted_banner_recent_ignores_stale_marker(self):
         self.agent._conversation_interrupt_banner_recent = True
         self.agent._conversation_interrupt_banner_recent_at = 100.0
-        with patch("src.agent.time.monotonic", return_value=120.0):
+        with patch("cli.agent.time.monotonic", return_value=120.0):
             self.assertFalse(self.agent._consume_conversation_interrupted_banner_recent())
         self.assertFalse(bool(getattr(self.agent, "_conversation_interrupt_banner_recent", True)))
         self.assertEqual(float(getattr(self.agent, "_conversation_interrupt_banner_recent_at", -1.0)), 0.0)
@@ -843,8 +843,8 @@ class BangDirectExecutionTests(unittest.TestCase):
         out_buf = _TtyBuffer()
         err_buf = _TtyBuffer()
         with (
-            patch("src.agent.sys.stdout", out_buf),
-            patch("src.agent.sys.stderr", err_buf),
+            patch("cli.agent.sys.stdout", out_buf),
+            patch("cli.agent.sys.stderr", err_buf),
             patch.object(self.agent, "_consume_process_aborted", return_value=True),
         ):
             rc = self.agent._run_direct_shell_with_prefixed_output("echo hi", Path.cwd())
@@ -891,10 +891,10 @@ class BangDirectExecutionTests(unittest.TestCase):
                 return 1
 
         with (
-            patch("src.agent.sys.stdout", _TtyBuffer()),
-            patch("src.agent.sys.stderr", _TtyBuffer()),
+            patch("cli.agent.sys.stdout", _TtyBuffer()),
+            patch("cli.agent.sys.stderr", _TtyBuffer()),
             patch.object(self.agent, "_consume_process_aborted", return_value=True),
-            patch("src.actions.command_actions._dynamic_tail_line_limit", return_value=20),
+            patch("cli.actions.command_actions._dynamic_tail_line_limit", return_value=20),
         ):
             rc = self.agent._run_direct_shell_with_prefixed_output("echo hi", Path.cwd())
 
@@ -936,10 +936,10 @@ class BangDirectExecutionTests(unittest.TestCase):
         self.agent._process_interrupt_requested = True
         out_buf = _TtyBuffer()
         with (
-            patch("src.agent.sys.stdout", out_buf),
-            patch("src.agent.sys.stderr", _TtyBuffer()),
+            patch("cli.agent.sys.stdout", out_buf),
+            patch("cli.agent.sys.stderr", _TtyBuffer()),
             patch.object(self.agent, "_consume_process_aborted", return_value=False),
-            patch("src.actions.command_actions._dynamic_tail_line_limit", return_value=20),
+            patch("cli.actions.command_actions._dynamic_tail_line_limit", return_value=20),
         ):
             rc = self.agent._run_direct_shell_with_prefixed_output("echo hi", Path.cwd())
 
@@ -982,8 +982,8 @@ class BangDirectExecutionTests(unittest.TestCase):
                 return 1
 
         with (
-            patch("src.agent.sys.stdout", _TtyBuffer()),
-            patch("src.agent.sys.stderr", _TtyBuffer()),
+            patch("cli.agent.sys.stdout", _TtyBuffer()),
+            patch("cli.agent.sys.stderr", _TtyBuffer()),
             patch.object(self.agent, "_consume_process_aborted", return_value=True),
         ):
             rc = self.agent._run_direct_shell_with_prefixed_output("echo hi", Path.cwd())
@@ -1031,8 +1031,8 @@ class BangDirectExecutionTests(unittest.TestCase):
                 return 1
 
         with (
-            patch("src.agent.sys.stdout", _TtyBuffer()),
-            patch("src.agent.sys.stderr", _TtyBuffer()),
+            patch("cli.agent.sys.stdout", _TtyBuffer()),
+            patch("cli.agent.sys.stderr", _TtyBuffer()),
             patch.object(self.agent, "_consume_process_aborted", return_value=True),
         ):
             rc = self.agent._run_direct_shell_with_prefixed_output("echo hi", Path.cwd())
@@ -1087,12 +1087,12 @@ class BangDirectExecutionTests(unittest.TestCase):
         popen_mock.return_value = _Proc()
 
         with (
-            patch("src.agent.sys.stdout", _TtyBuffer()),
-            patch("src.agent.sys.stderr", _TtyBuffer()),
+            patch("cli.agent.sys.stdout", _TtyBuffer()),
+            patch("cli.agent.sys.stderr", _TtyBuffer()),
             patch.object(self.agent, "_consume_process_aborted", return_value=True),
             patch.object(self.agent, "_reload_chat_history_from_anchor_on_resize") as mock_reload,
             patch(
-                "src.actions.command_actions._dynamic_tail_line_limit",
+                "cli.actions.command_actions._dynamic_tail_line_limit",
                 side_effect=lambda *_args, **_kwargs: int(dynamic_limit["value"]),
             ),
         ):
@@ -1140,8 +1140,8 @@ class BangDirectExecutionTests(unittest.TestCase):
 
         started_at = time.monotonic()
         with (
-            patch("src.agent.sys.stdout", _TtyBuffer()),
-            patch("src.agent.sys.stderr", _TtyBuffer()),
+            patch("cli.agent.sys.stdout", _TtyBuffer()),
+            patch("cli.agent.sys.stderr", _TtyBuffer()),
             patch.object(self.agent, "_consume_process_aborted", return_value=True),
         ):
             rc = self.agent._run_direct_shell_with_prefixed_output("echo hi", Path.cwd())
@@ -1191,8 +1191,8 @@ class BangDirectExecutionTests(unittest.TestCase):
 
         started_at = time.monotonic()
         with (
-            patch("src.agent.sys.stdout", _TtyBuffer()),
-            patch("src.agent.sys.stderr", _TtyBuffer()),
+            patch("cli.agent.sys.stdout", _TtyBuffer()),
+            patch("cli.agent.sys.stderr", _TtyBuffer()),
             patch.object(self.agent, "_is_process_aborted", return_value=True),
             patch.object(self.agent, "_consume_process_aborted", return_value=True),
         ):

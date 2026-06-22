@@ -3,8 +3,8 @@ setlocal
 
 set "SCRIPT_DIR=%~dp0"
 set "ROOT_DIR=%SCRIPT_DIR%.."
-set "ENTRY=%SCRIPT_DIR%..\src\main.py"
-set "APP_INFO=%SCRIPT_DIR%..\src\config\app_info.py"
+set "ENTRY=%SCRIPT_DIR%..\cli\main.py"
+set "APP_INFO=%SCRIPT_DIR%..\cli\config\app_info.py"
 set "VENV_DIR=%ROOT_DIR%\.venv-windows"
 set "VENV_PYTHON=%VENV_DIR%\Scripts\python.exe"
 set "REQ_FILE=%ROOT_DIR%\requirements.txt"

@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from src.core.config.config_jsonc import load_config_jsonc, save_config_jsonc
+from cli.core.config.config_jsonc import load_config_jsonc, save_config_jsonc
 
 
 class ConfigJsoncTests(unittest.TestCase):

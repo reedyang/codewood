@@ -19,41 +19,41 @@ This document describes the current lightweight project-context retrieval implem
 
 ## Module Map
 
-- `src/tools/project_context_index.py`
+- `cli/tools/project_context_index.py`
   - Defines `ProjectContextIndex`.
   - Owns persistent JSON loading/saving, workspace binding, incremental refresh, status, and ranked search.
 
-- `src/actions/command_actions.py`
+- `cli/actions/command_actions.py`
   - Implements `action_project_context_search(agent, params)`.
   - Enforces workspace gating, parameter normalization, refresh policy, and search invocation.
 
-- `src/agent.py`
+- `cli/agent.py`
   - Provides feature/tool gating helpers.
   - Binds the project index to the active work directory and workspace storage.
   - Schedules background refresh threads.
   - Renders first-turn evidence blocks from search results.
 
-- `src/runtime/bootstrap.py`
+- `cli/runtime/bootstrap.py`
   - Creates the index during runtime service setup.
   - Schedules a startup background refresh.
 
-- `src/runtime/runtime_loop.py`
+- `cli/runtime/runtime_loop.py`
   - Attempts first-turn project-context evidence injection before sending the user task to the model.
 
-- `src/tooling/handlers/file_shell_handlers.py`
+- `cli/tooling/handlers/file_shell_handlers.py`
   - Routes `project_context_search` through the `ToolDispatcher` handler path.
 
-- `src/tooling/execution_engine.py`
+- `cli/tooling/execution_engine.py`
   - Keeps the legacy execution branch for `project_context_search` and prints a short console summary.
 
-- `src/runtime/prompt_composer.py`
-  - Loads tool schemas from `src/tools/tools.jsonc`.
+- `cli/runtime/prompt_composer.py`
+  - Loads tool schemas from `cli/tools/tools.jsonc`.
   - Hides `project_context_search` from the injected tool catalog when the current workspace is the Default workspace.
 
-- `src/tools/tools.jsonc`
+- `cli/tools/tools.jsonc`
   - Declares the public tool schema for `project_context_search`.
 
-- `src/prompts/tools_prompt.md`
+- `cli/prompts/tools_prompt.md`
   - Tells the model to prefer `project_context_search` for large cross-module code tasks when the tool is available.
 
 ## Workspace Policy
@@ -218,7 +218,7 @@ Tool name:
 
 - `project_context_search`
 
-Declared parameters in `src/tools/tools.jsonc`:
+Declared parameters in `cli/tools/tools.jsonc`:
 
 - `query`: string, required by schema.
 - `max_files`: integer, default `12`, runtime maximum `50`.
@@ -246,7 +246,7 @@ Typical success result:
   "total_matches": 37,
   "candidates": [
     {
-      "path": "src/a/b.py",
+      "path": "cli/a/b.py",
       "score": 14.5,
       "reasons": ["path_contains_query", "token_hits=4"],
       "symbols": ["Foo", "bar"],

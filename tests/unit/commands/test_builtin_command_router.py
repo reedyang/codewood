@@ -1,7 +1,7 @@
 import unittest
 from unittest.mock import patch
 
-from src.controllers.builtin_command_router import dispatch_builtin_command
+from cli.controllers.builtin_command_router import dispatch_builtin_command
 
 
 class _FakeHistoryManager:

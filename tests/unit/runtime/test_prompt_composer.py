@@ -4,7 +4,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from src.runtime import prompt_composer
+from cli.runtime import prompt_composer
 
 
 class PromptComposerTests(unittest.TestCase):
@@ -401,9 +401,9 @@ class PromptComposerTests(unittest.TestCase):
             agents_file.write_text("alpha", encoding="utf-8")
             agent = self._make_agent(config_dir=config_dir, workspace_root=workspace_root)
 
-            with patch("src.runtime.prompt_composer.build_user_preferences_system_append", return_value=""), patch(
-                "src.runtime.prompt_composer.build_mcp_system_append", return_value=""
-            ), patch("src.runtime.prompt_composer.build_runtime_cache_prompt_append", return_value=""):
+            with patch("cli.runtime.prompt_composer.build_user_preferences_system_append", return_value=""), patch(
+                "cli.runtime.prompt_composer.build_mcp_system_append", return_value=""
+            ), patch("cli.runtime.prompt_composer.build_runtime_cache_prompt_append", return_value=""):
                 first = prompt_composer.compose_system_prompt_snapshot(agent, include_tools=False)
                 agents_file.write_text("beta-different-size", encoding="utf-8")
                 second = prompt_composer.compose_system_prompt_snapshot(agent, include_tools=False)

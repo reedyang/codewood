@@ -111,7 +111,7 @@ def get_app_bundled_bin_dir() -> Path:
     The repository ships pre-built executables (notably ``rg``) in
     ``<project_root>/bin``. This helper resolves that directory based
     on this module's location: ``app_info.py`` lives at
-    ``<project_root>/src/config/app_info.py``, so the project root is
+    ``<project_root>/cli/config/app_info.py``, so the project root is
     two levels above this file.
     """
     return Path(__file__).resolve().parent.parent.parent / "bin"

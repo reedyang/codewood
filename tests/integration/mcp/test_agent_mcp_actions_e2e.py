@@ -11,12 +11,12 @@ import types
 import unittest
 from pathlib import Path
 import urllib.request
-from src.config.app_info import get_app_slug_snake
+from cli.config.app_info import get_app_slug_snake
 if "ollama" not in sys.modules:
     fake_ollama = types.SimpleNamespace(list=lambda: {"models": []})
     sys.modules["ollama"] = fake_ollama
 
-import src.agent as agent_module
+import cli.agent as agent_module
 
 
 def _get_free_port() -> int:
@@ -85,7 +85,7 @@ class AgentMcpActionsE2ETests(unittest.TestCase):
             except Exception:
                 pass
         try:
-            from src.core.logging.app_logging import shutdown_app_logging_handlers
+            from cli.core.logging.app_logging import shutdown_app_logging_handlers
 
             shutdown_app_logging_handlers()
         except Exception:

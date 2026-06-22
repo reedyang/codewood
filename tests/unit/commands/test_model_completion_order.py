@@ -1,7 +1,7 @@
 import unittest
 
-from src.completion.builtin_slash_commands import slash_builtin_completions
-from src.completion.slash_dynamic_completions import build_model_switch_commands
+from cli.completion.builtin_slash_commands import slash_builtin_completions
+from cli.completion.slash_dynamic_completions import build_model_switch_commands
 
 
 class ModelCompletionOrderTests(unittest.TestCase):

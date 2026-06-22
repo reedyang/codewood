@@ -4,7 +4,7 @@ import unittest
 import json
 from pathlib import Path
 
-from src.managers.chat_state_manager import CHAT_STATE_VERSION, ChatStateManager
+from cli.managers.chat_state_manager import CHAT_STATE_VERSION, ChatStateManager
 
 
 def _chat_index_entry(chat):

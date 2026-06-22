@@ -7,13 +7,13 @@ if "ollama" not in sys.modules:
     fake_ollama = types.SimpleNamespace(list=lambda: {"models": []})
     sys.modules["ollama"] = fake_ollama
 
-from src.completion.slash_dynamic_completions import (
+from cli.completion.slash_dynamic_completions import (
     build_mcp_scoped_groups,
     build_mcp_server_commands,
     build_slash_dynamic_rules,
 )
-from src.completion.builtin_slash_commands import slash_builtin_completions
-from src.agent import Agent
+from cli.completion.builtin_slash_commands import slash_builtin_completions
+from cli.agent import Agent
 
 
 class _FakeMcpManager:

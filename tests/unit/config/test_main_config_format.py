@@ -1,6 +1,6 @@
 import unittest
 
-from src.main import _extract_model_runtime_config
+from cli.main import _extract_model_runtime_config
 
 
 class MainConfigFormatTests(unittest.TestCase):

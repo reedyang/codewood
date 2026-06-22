@@ -7,7 +7,7 @@ if "ollama" not in sys.modules:
     fake_ollama = types.SimpleNamespace(list=lambda: {"models": []})
     sys.modules["ollama"] = fake_ollama
 
-from src.agent import Agent
+from cli.agent import Agent
 
 
 class _FakeMcpManager:

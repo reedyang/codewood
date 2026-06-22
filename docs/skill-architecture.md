@@ -73,7 +73,7 @@ Individual skills **cannot see** the host’s full tool surface or other skill b
 - Do **not** reference **MCP** or other plugin namespaces as part of this skill’s contract unless the repo defines a **neutral, portable** pattern that applies to all skills equally.
 - Prefer **subprocess result** / **merged `output`** over **tool `output`** when you mean shell stdout or merged file content, so “tool” is not confused with the host’s JSON tool API.
 
-Multi-skill orchestration and “finish the whole user goal” policies live in **host documentation** (e.g. Code Wood’s `src/system_prompt.md`, `src/tools_prompt.md`), not in per-skill `SKILL.md` files.
+Multi-skill orchestration and “finish the whole user goal” policies live in **host documentation** (e.g. Code Wood’s `cli/system_prompt.md`, `cli/tools_prompt.md`), not in per-skill `SKILL.md` files.
 
 ---
 
@@ -139,9 +139,9 @@ Hosts should:
 
 In this repository:
 
-- Loader: `src/skills_loader.py`
-- Merge / `model_context_file_env` handling for subprocess `shell`: `src/agent.py` (resolves env name from the matched skill’s `SKILL.md` frontmatter via `src/skills_loader.py`)
-- Tool-facing description: `src/tools_prompt.md`
+- Loader: `cli/skills_loader.py`
+- Merge / `model_context_file_env` handling for subprocess `shell`: `cli/agent.py` (resolves env name from the matched skill’s `SKILL.md` frontmatter via `cli/skills_loader.py`)
+- Tool-facing description: `cli/tools_prompt.md`
 
 Other products can implement the same **principles** without copying implementation details.
 
@@ -172,7 +172,7 @@ To improve large-repo navigation without changing existing skill execution flow,
 
 **Current Code Wood implementation note:**
 
-- Context Pack is prepended in `src/agent.py` (`_build_single_skill_prompt`) for both local and MCP skill paths.
+- Context Pack is prepended in `cli/agent.py` (`_build_single_skill_prompt`) for both local and MCP skill paths.
 - For long `SKILL.md`, Code Wood injects `Context Pack + first N sections` first, then allows on-demand expansion via `request_skill_prompt` arguments (`section` or `full=true`).
 - Skill merge priority in runtime is: `builtin -> config_dir -> workspace` (higher layer overrides lower layer by `skill_id`).
 

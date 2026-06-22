@@ -1,8 +1,8 @@
 import os
 import unittest
 
-from src.ai.ai_provider_clients import _build_openai_payload
-from src.core.config.config_env import resolve_env_placeholder, resolve_string_values_in_data
+from cli.ai.ai_provider_clients import _build_openai_payload
+from cli.core.config.config_env import resolve_env_placeholder, resolve_string_values_in_data
 
 
 def _payload(reasoning_effort):

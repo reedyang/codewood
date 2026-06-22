@@ -3,8 +3,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from src.agent import Agent
-from src.tools.project_context_index import (
+from cli.agent import Agent
+from cli.tools.project_context_index import (
     ProjectContextIndex,
     search_workspace_files,
 )

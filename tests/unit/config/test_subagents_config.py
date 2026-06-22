@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from src.core.config.subagents_loader import (
+from cli.core.config.subagents_loader import (
     DEFAULT_SUBAGENT_MAX_ROUNDS,
     delete_subagent,
     is_valid_subagent_name,

@@ -13,7 +13,7 @@ either the new explicit semantics or the legacy ``provider:
 
 import unittest
 
-from src.ai.ai_provider_clients import (
+from cli.ai.ai_provider_clients import (
     _normalize_openai_api_mode,
     resolve_api_mode,
 )

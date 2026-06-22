@@ -8,14 +8,14 @@ import time
 from contextlib import redirect_stdout
 from unittest.mock import MagicMock, patch
 
-from src.config.app_info import (
+from cli.config.app_info import (
     get_app_config_dirname,
     get_app_global_config_dir,
     get_app_runtime_attr_name,
     get_app_slug_kebab,
 )
-from src.ai.ai_special_mode_prompts import SESSION_SUMMARY_SYSTEM_PROMPT
-from src.services.session_memory_service import SessionMemoryService
+from cli.ai.ai_special_mode_prompts import SESSION_SUMMARY_SYSTEM_PROMPT
+from cli.services.session_memory_service import SessionMemoryService
 
 DIRECT_SHELL_USER_HISTORY_PREFIX = "[DIRECT_SHELL_USER_COMMAND]"
 DIRECT_SHELL_RESULT_HISTORY_PREFIX = "[DIRECT_SHELL_RESULT]"
@@ -443,7 +443,7 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
         svc = SessionMemoryService(agent)
         fake_stdout = _FakeTerminalStream(42)
 
-        with patch("src.services.session_memory_service.sys.stdout", fake_stdout):
+        with patch("cli.services.session_memory_service.sys.stdout", fake_stdout):
             line = svc._format_compaction_banner_line("Compacting context")
 
         self.assertEqual(len(line), 41)
@@ -454,7 +454,7 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
         svc = SessionMemoryService(agent)
         fake_stdout = _FakeWrappedTerminalStream(_FakeTerminalStream(42))
 
-        with patch("src.services.session_memory_service.sys.stdout", fake_stdout):
+        with patch("cli.services.session_memory_service.sys.stdout", fake_stdout):
             line = svc._format_compaction_banner_line("Compacting context")
 
         self.assertEqual(len(line), 41)
@@ -464,7 +464,7 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
         agent._terminal_columns_for_prompt_separator = lambda default=80: 41
         svc = SessionMemoryService(agent)
 
-        with patch("src.services.session_memory_service._ansi_gray", side_effect=lambda s: f"<gray>{s}</gray>"):
+        with patch("cli.services.session_memory_service._ansi_gray", side_effect=lambda s: f"<gray>{s}</gray>"):
             out = io.StringIO()
             with redirect_stdout(out):
                 rendered = svc._print_compaction_banner("Automatically compacting context")
@@ -1238,7 +1238,7 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
         agent.operation_results = [{"ok": True, "detail": "tool done", "blob": "x" * 400}]
         agent.conversation_history.append({"role": "user", "content": "Initial request: fix the build script"})
         svc = SessionMemoryService(agent)
-        with patch("src.services.session_memory_service.get_logger") as mock_get_logger:
+        with patch("cli.services.session_memory_service.get_logger") as mock_get_logger:
             logger = MagicMock()
             mock_get_logger.return_value = logger
             messages, _ = svc.build_regular_task_messages("Now execute the fix", context="operation-context-" + ("c" * 300))

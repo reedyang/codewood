@@ -8,7 +8,7 @@ if "ollama" not in sys.modules:
     fake_ollama = types.SimpleNamespace(list=lambda: {"models": []})
     sys.modules["ollama"] = fake_ollama
 
-from src.agent import Agent, MODEL_TOOL_RESULT_HISTORY_PREFIX
+from cli.agent import Agent, MODEL_TOOL_RESULT_HISTORY_PREFIX
 
 
 class ModelToolResultHistoryTests(unittest.TestCase):

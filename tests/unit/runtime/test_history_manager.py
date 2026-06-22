@@ -2,7 +2,7 @@ import json
 import tempfile
 import unittest
 
-from src.core.state.history_manager import HistoryManager
+from cli.core.state.history_manager import HistoryManager
 
 
 class HistoryManagerTests(unittest.TestCase):

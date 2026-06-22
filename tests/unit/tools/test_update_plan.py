@@ -12,8 +12,8 @@ if "ollama" not in sys.modules:
     sys.modules["ollama"] = types.SimpleNamespace(list=lambda: {"models": []})
 
 
-from src.managers.chat_state_manager import ChatStateManager
-from src.tools.plan import (
+from cli.managers.chat_state_manager import ChatStateManager
+from cli.tools.plan import (
     PlanValidationError,
     UpdatePlanTool,
 )
