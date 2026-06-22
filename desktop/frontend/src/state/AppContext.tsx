@@ -83,6 +83,13 @@ interface AppContextValue {
   t: (key: string) => string;
   setTheme: (theme: Theme) => void;
   setGuiLanguage: (language: string) => Promise<void>;
+  /** Pick + set a new GUI background image (returns false if cancelled/failed). */
+  setBackgroundImage: () => Promise<boolean>;
+  clearBackgroundImage: () => Promise<boolean>;
+  /** Persist the background opacity (0-100). Applies live via document styles. */
+  setBackgroundOpacity: (opacity: number) => Promise<void>;
+  /** Absolute URL of the current background image (token + cache-busting). */
+  backgroundImageUrl: (version: number) => string;
   sendInput: (text: string) => Promise<void>;
   runCommand: (command: string) => Promise<void>;
   interrupt: () => Promise<void>;
@@ -172,6 +179,7 @@ interface AppContextValue {
 interface HostApiBridge {
   pick_folder?: () => string | Promise<string>;
   pick_files?: (directory?: string) => string[] | Promise<string[]>;
+  pick_image?: (directory?: string) => string | Promise<string>;
 }
 
 const AppContext = createContext<AppContextValue | null>(null);
@@ -366,6 +374,104 @@ export function AppProvider({ children }: { children: ReactNode }) {
     },
     [client],
   );
+
+  // Live opacity override so the slider updates the background instantly while
+  // dragging, before the backend state snapshot round-trips back.
+  const [bgOpacityOverride, setBgOpacityOverride] = useState<number | null>(null);
+
+  const setBackgroundImage = useCallback(async (): Promise<boolean> => {
+    const api = (window as unknown as { pywebview?: { api?: HostApiBridge } })
+      .pywebview?.api;
+    if (!api) {
+      return false;
+    }
+    let chosen = "";
+    try {
+      if (api.pick_image) {
+        // Preferred: native single-select image picker.
+        chosen = (await api.pick_image()) || "";
+      } else if (api.pick_files) {
+        // Fallback for older hosts without ``pick_image``: use the generic
+        // multi-select picker and take the first selection. The backend still
+        // validates the extension, so a non-image pick is rejected safely.
+        const picked = (await api.pick_files()) || [];
+        chosen = Array.isArray(picked) ? String(picked[0] ?? "") : "";
+      }
+    } catch {
+      chosen = "";
+    }
+    if (!chosen) {
+      return false;
+    }
+    const ok = await client.setBackgroundImage(chosen);
+    if (ok) {
+      // Drop the optimistic override so the freshly-pushed state opacity wins.
+      setBgOpacityOverride(null);
+    }
+    return ok;
+  }, [client]);
+
+  const clearBackgroundImage = useCallback(async (): Promise<boolean> => {
+    return client.clearBackgroundImage();
+  }, [client]);
+
+  const backgroundImageUrl = useCallback(
+    (version: number) => client.backgroundImageUrl(version),
+    [client],
+  );
+
+  const setBackgroundOpacity = useCallback(
+    async (opacity: number) => {
+      const clamped = Math.max(0, Math.min(100, Math.round(opacity)));
+      setBgOpacityOverride(clamped);
+      await client.setBackgroundOpacity(clamped);
+    },
+    [client],
+  );
+
+  // Apply the GUI background image as a fixed, full-window layer behind all
+  // content (including the settings view). We drive it through document-level
+  // CSS variables so a single ``::before`` layer in the stylesheet renders it
+  // without distortion (cover) at the configured opacity.
+  const bgState = state?.background;
+  const bgHasImage = Boolean(bgState?.hasImage);
+  const bgVersion = bgState?.version ?? 0;
+  const bgServerOpacity = bgState?.opacity ?? 60;
+  useEffect(() => {
+    const root = document.documentElement;
+    if (bgHasImage) {
+      const url = client.backgroundImageUrl(bgVersion);
+      root.style.setProperty("--app-bg-image", `url("${url}")`);
+      root.setAttribute("data-has-bg", "true");
+    } else {
+      root.style.removeProperty("--app-bg-image");
+      root.removeAttribute("data-has-bg");
+    }
+  }, [client, bgHasImage, bgVersion]);
+
+  useEffect(() => {
+    // The slider value is the *image transparency* the user asked for (default
+    // 80 = faint). The background image layer itself is always fully painted;
+    // we instead control how much of it shows through by setting the opacity of
+    // the app surfaces stacked on top via ``--app-surface-alpha`` (0-1). A
+    // higher transparency keeps the surfaces more opaque, so the image stays
+    // faint; transparency 0 makes the surfaces fully opaque (image hidden) and
+    // 100 makes them fully transparent (image fully revealed). Using this
+    // single dimming lever avoids the previous compounding-opacity bug where a
+    // faint image behind semi-opaque panels became effectively invisible.
+    const transparency = Math.max(0, Math.min(100, bgOpacityOverride ?? bgServerOpacity));
+    // Map the slider (image transparency %) to the surface opacity with a gentle
+    // ease so the image is revealed progressively across the whole range instead
+    // of only near 0. A linear mapping made surfaces feel too opaque past ~50%
+    // (e.g. 60% transparency still mostly hid the image). The exponent (<1)
+    // lowers surface alpha faster as transparency drops:
+    //   t=80 -> ~0.62 (faint, default)   t=60 -> ~0.42   t=40 -> ~0.25   t=0 -> 0
+    const surfaceAlpha = Math.pow(transparency / 100, 1.6);
+    document.documentElement.style.setProperty(
+      "--app-surface-alpha",
+      String(surfaceAlpha),
+    );
+  }, [bgOpacityOverride, bgServerOpacity]);
 
   // Adopt the theme persisted in config.jsonc once it arrives from the backend,
   // unless the user has already changed it this session.
@@ -1441,6 +1547,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
     t,
     setTheme,
     setGuiLanguage,
+    setBackgroundImage,
+    clearBackgroundImage,
+    setBackgroundOpacity,
+    backgroundImageUrl,
     sendInput,
     runCommand,
     interrupt,

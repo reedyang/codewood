@@ -102,6 +102,16 @@ export interface AppState {
     pinnedChatIds?: string[];
     archivedChatIds?: string[];
   };
+  /** GUI-only background image presentation settings. */
+  background?: {
+    hasImage: boolean;
+    /** Stored background file name (e.g. "bg.png"); empty when none. */
+    fileName: string;
+    /** Opacity percentage (0-100) applied to the background image layer. */
+    opacity: number;
+    /** Cache-busting version (image file mtime); changes when the image is replaced. */
+    version: number;
+  };
   plan?: PlanState;
   /** Pending ``ask_more_info`` request persisted on the active chat record
    *  (may be set by a different backend process — e.g. the TUI — and
