@@ -297,6 +297,7 @@
   "main.update_model_settings": "Please update the model settings in: {path}",
   "main.config_read_failed": "Failed to read config file: {error}",
   "main.config_created_template": "Config file not found. Created template successfully.",
+  "main.config_template_docs_hint": "Edit the template to set your provider and model. See {url} for details.",
   "main.config_create_template_failed": "Config file not found, and failed to create template: {error}",
   "main.startup_workspace_failed": "❌ Failed to apply startup workspace.",
   "main.startup_model_override_failed": "❌ Failed to apply startup model override.",
