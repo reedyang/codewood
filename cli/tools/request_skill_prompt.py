@@ -30,6 +30,6 @@ class RequestSkillPromptTool(BaseTool):
     }
 
     def execute(self, agent: Any, params: Dict[str, Any]) -> Dict[str, Any]:
-        from ._delegation import delegate_skill
-
-        return delegate_skill(agent, "request_skill_prompt", params if isinstance(params, dict) else {})
+        # request_skill_prompt is intercepted and fully handled by the runtime
+        # loop before tool dispatch; this path is not normally reached.
+        return {"success": False, "error": "request_skill_prompt is handled by the runtime loop"}

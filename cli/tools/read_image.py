@@ -27,6 +27,9 @@ class ReadImageTool(BaseTool):
     }
 
     def execute(self, agent: Any, params: Dict[str, Any]) -> Dict[str, Any]:
-        from ._delegation import delegate_file_shell
-
-        return delegate_file_shell(agent, "read_image", params if isinstance(params, dict) else {})
+        params = params if isinstance(params, dict) else {}
+        file_path = params.get("path")
+        prompt = params.get("prompt", "")
+        if file_path:
+            return agent.action_read_image(file_path, prompt)
+        return {"success": False, "error": "missing path"}
