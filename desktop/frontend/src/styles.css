@@ -156,31 +156,27 @@ html[data-has-bg] {
     transparent
   );
   /* The message input field used to stay fully opaque (``--bg-input`` had no
-     override), which looked out of place over a background image. Make it
-     translucent too, but a touch more opaque than the surrounding surfaces
-     (+0.1) so typed text keeps good contrast. */
+     override). Make it clearly translucent — about 70% of the surface alpha —
+     so the background shows through while typed text stays readable. */
   --bg-input: color-mix(
     in srgb,
-    var(--bg-input-solid)
-      calc(min(1, var(--app-surface-alpha, 0.85) + 0.1) * 100%),
+    var(--bg-input-solid) calc(var(--app-surface-alpha, 0.85) * 70%),
     transparent
   );
 }
 
-/* The chat title bar, the plan (right) panel and its header, and the composer's
-   outer frame previously read as much more opaque than the rest of the UI
-   (the composer used the more-opaque ``--bg-elevated``; the bars sat directly
-   on ``--bg``). Make these noticeably MORE transparent than the default
-   surface so the background image shows through them too. We drop ~0.2 below
-   the surface alpha (floored at 0) for a clearly lighter frame. */
+/* The chat title bar, the plan (right) panel + its header, and the composer's
+   outer frame previously shared the SAME surface alpha as everything else, so
+   the previous "slightly more transparent" tweak read as no different. Make
+   them fully transparent so the background image shows straight through these
+   chrome frames, with only their bottom/side borders left for separation. The
+   readable surfaces (message bubbles, the input field) keep their own fills.
+   ``!important`` defeats the ``--bg`` / ``--bg-elevated`` token re-tint above. */
 html[data-has-bg] .chat-titlebar,
 html[data-has-bg] .plan-panel,
+html[data-has-bg] .plan-panel-head,
 html[data-has-bg] .composer {
-  background: color-mix(
-    in srgb,
-    var(--bg-solid) calc(max(0, var(--app-surface-alpha, 0.85) - 0.2) * 100%),
-    transparent
-  );
+  background: transparent !important;
 }
 
 /* When a background image is active, pop-up menus opt OUT of the slider-driven
