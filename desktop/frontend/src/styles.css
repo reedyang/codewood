@@ -27,8 +27,10 @@
   --accent-text: #ffffff;
   --danger: #dc2626;
   --output-bg: #f4f5f7;
+  --output-bg-solid: #f4f5f7;
   --output-text: #1f2329;
   --user-bg: #f3f3f4;
+  --user-bg-solid: #f3f3f4;
   --shadow: 0 8px 30px rgba(0, 0, 0, 0.12);
   --panel-radius: 10px;
   --scrollbar-thumb: rgba(0, 0, 0, 0.22);
@@ -63,8 +65,10 @@
   --accent-text: #ffffff;
   --danger: #ef4444;
   --output-bg: #14171c;
+  --output-bg-solid: #14171c;
   --output-text: #d7dbe3;
   --user-bg: #242424;
+  --user-bg-solid: #242424;
   --shadow: 0 8px 30px rgba(0, 0, 0, 0.5);
   --scrollbar-thumb: rgba(255, 255, 255, 0.10);
   --scrollbar-thumb-hover: rgba(255, 255, 255, 0.3);
@@ -161,6 +165,21 @@ html[data-has-bg] {
   --bg-input: color-mix(
     in srgb,
     var(--bg-input-solid) calc(var(--app-surface-alpha, 0.85) * 70%),
+    transparent
+  );
+  /* Content surfaces that used their own opaque tokens — the user message
+     bubble (``--user-bg``) and the monospace output blocks: the collapsible
+     "worked for" tool-call output, fenced/inline code, etc. (``--output-bg``).
+     Make them translucent too, a bit more opaque than the chrome (surface
+     alpha + 0.15, like cards/menus) so their text stays readable on the image. */
+  --user-bg: color-mix(
+    in srgb,
+    var(--user-bg-solid) calc(min(1, var(--app-surface-alpha, 0.85) + 0.15) * 100%),
+    transparent
+  );
+  --output-bg: color-mix(
+    in srgb,
+    var(--output-bg-solid) calc(min(1, var(--app-surface-alpha, 0.85) + 0.15) * 100%),
     transparent
   );
 }
