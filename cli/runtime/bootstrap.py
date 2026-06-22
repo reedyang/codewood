@@ -6,8 +6,6 @@ from ..ai.ai_orchestrator import AIOrchestrator, AgentAIContext
 from ..config.app_info import (
     append_windows_git_tools_to_path,
     get_app_global_config_dir,
-    get_app_name,
-    get_app_slug_kebab,
     prepend_bundled_bin_to_path,
 )
 from ..core.logging.app_logging import setup_app_logging
@@ -311,13 +309,9 @@ def setup_model_ai_stack(
 
 
 def setup_prompt_and_mcp(agent: Any) -> None:
-    prompt_path = Path(__file__).resolve().parent.parent / "prompts" / "system_prompt.md"
-    with open(prompt_path, "r", encoding="utf-8") as f:
-        agent._base_system_prompt = (
-            f.read()
-            .replace("{{APP_NAME}}", get_app_name())
-            .replace("{{APP_SLUG_KEBAB}}", get_app_slug_kebab())
-        )
+    from .context.base_system_prompt import build_base_system_prompt
+
+    agent._base_system_prompt = build_base_system_prompt()
 
     agent.mcp_config = agent._load_mcp_config()
     agent.mcp_manager = McpManager(
