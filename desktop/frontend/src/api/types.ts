@@ -86,6 +86,8 @@ export interface AppState {
   model: {
     current: string;
     available: string[];
+    /** True only when a usable (non-template) model is configured. */
+    ready?: boolean;
     reasoningLevel?: string;
     reasoningLevels?: string[];
   };

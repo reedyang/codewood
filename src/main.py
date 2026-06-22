@@ -10,7 +10,7 @@ import sys
 import os
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, Optional
 
 # Add the project root to Python path so the src package imports consistently
 # whether this file is launched as a script or imported by tests.
@@ -823,6 +823,51 @@ def _force_utf8_std_streams() -> None:
                 pass
 
 
+def _serve_without_valid_model(
+    cli_args: Any,
+    config_dir: Optional[str],
+    work_directory: Optional[str],
+    builtin_skills_dir: Optional[str],
+) -> int:
+    """Start the GUI backend with a placeholder agent (no valid model).
+
+    Used when the GUI launches but ``config.jsonc`` is missing or has no
+    usable model: instead of aborting (which would surface as a backend
+    error in the GUI), we bring up the server so the main UI loads. The
+    frontend detects the empty model catalog and shows a centered modal
+    guiding the user into Model settings, where they can configure a
+    provider and have it applied without restarting.
+    """
+    from src.agent import Agent
+    from src.server.serve_app import ServeApp
+
+    serve_host = str(cli_args.get("serve_host") or "127.0.0.1") if isinstance(cli_args, dict) else "127.0.0.1"
+    serve_port = int(cli_args.get("serve_port") or 0) if isinstance(cli_args, dict) else 0
+
+    agent = None
+    try:
+        # Construct with the constructor defaults (placeholder model). The
+        # agent can't run turns until a model is configured, but it can serve
+        # state, browse settings, and persist a new model_providers list.
+        agent = Agent(
+            work_directory=work_directory,
+            config_dir=config_dir,
+            builtin_skills_dir=builtin_skills_dir,
+        )
+        try:
+            _apply_startup_workspace(agent, None)
+        except Exception:
+            pass
+        _set_basic_chat_only_context_prompt_warning_for_agent(agent)
+        return ServeApp(agent).run(host=serve_host, port=serve_port)
+    finally:
+        if agent is not None:
+            try:
+                agent.shutdown(wait=False)
+            except Exception:
+                pass
+
+
 def main(argv: list[str] | None = None):
     """Main function."""
     # Harden the console encoding before ANYTHING prints, so a non-UTF-8
@@ -897,6 +942,8 @@ def main(argv: list[str] | None = None):
         setup_app_logging(Path(config_dir))
         get_logger().info("%s started, config_dir=%s", get_app_name(), config_dir)
     
+    serve_mode = bool(cli_args.get("serve_mode", False)) if isinstance(cli_args, dict) else False
+
     if not config:
         _print_startup_basic_overview()
         if not config_path:
@@ -904,11 +951,20 @@ def main(argv: list[str] | None = None):
                 created_path = _create_user_config_template()
                 print(_ansi_red(text("main.config_created_template", ui_language)))
                 _print_model_settings_update_notice(created_path, ui_language)
+                # The freshly created template now becomes the active config dir
+                # so serve mode persists model edits to the right place.
+                if config_dir is None:
+                    config_dir = str(Path(created_path).parent)
             except Exception as e:
                 print(_ansi_red(text("main.config_create_template_failed", ui_language, error=e)))
                 _print_model_settings_update_notice(get_app_global_config_dir() / CONFIG_JSONC_FILENAME, ui_language)
         else:
             _print_model_settings_update_notice(config_path, ui_language)
+        # In GUI/serve mode we must not abort: start the backend with a
+        # placeholder (no-model) agent so the GUI shows the main UI and can
+        # guide the user into Model settings. The TUI still exits.
+        if serve_mode:
+            return _serve_without_valid_model(cli_args, config_dir, work_directory, builtin_skills_dir)
         return 1
     model_selector = ""
     if isinstance(cli_args, dict):
@@ -923,6 +979,8 @@ def main(argv: list[str] | None = None):
     if config_error:
         _print_startup_basic_overview()
         _print_model_settings_update_notice(config_path or (get_app_global_config_dir() / CONFIG_JSONC_FILENAME), ui_language)
+        if serve_mode:
+            return _serve_without_valid_model(cli_args, config_dir, work_directory, builtin_skills_dir)
         return 1
     template_value_error = _validate_template_placeholder_values(
         provider=provider,
@@ -932,6 +990,8 @@ def main(argv: list[str] | None = None):
     if template_value_error:
         _print_startup_basic_overview(model_name=model_name)
         _print_model_settings_update_notice(config_path or (get_app_global_config_dir() / CONFIG_JSONC_FILENAME), ui_language)
+        if serve_mode:
+            return _serve_without_valid_model(cli_args, config_dir, work_directory, builtin_skills_dir)
         return 1
 
     params = model_config.get("params", {})

@@ -36,9 +36,18 @@ export function SettingsView() {
     setBackgroundOpacity,
     backgroundImageUrl,
     closeSettings,
+    settingsInitialPage,
     t,
   } = useApp();
-  const [page, setPage] = useState<PageId>("general");
+  const isPageId = (v: string | null): v is PageId =>
+    v === "appearance" ||
+    v === "general" ||
+    v === "models" ||
+    v === "mcp" ||
+    v === "subagents";
+  const [page, setPage] = useState<PageId>(
+    isPageId(settingsInitialPage) ? settingsInitialPage : "general",
+  );
   const bgHasImage = Boolean(state?.background?.hasImage);
   const bgOpacity = state?.background?.opacity ?? 60;
   const bgVersion = state?.background?.version ?? 0;

@@ -168,7 +168,10 @@ interface AppContextValue {
   setExecutionPolicy: (policy: string) => Promise<void>;
   toggleWorkspaceExpanded: (id: string) => void;
   refreshWorkspaceChats: (id: string) => Promise<void>;
-  openSettings: () => void;
+  /** Open the settings view, optionally landing directly on a given page. */
+  openSettings: (page?: string) => void;
+  /** The page the settings view should open on (consumed once on open). */
+  settingsInitialPage: string | null;
   closeSettings: () => void;
   openAbout: () => void;
   closeAbout: () => void;
@@ -251,6 +254,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   >({});
   const [expandedWorkspaceIds, setExpandedWorkspaceIds] = useState<string[]>([]);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsInitialPage, setSettingsInitialPage] = useState<string | null>(null);
   const [aboutOpen, setAboutOpen] = useState(false);
   const [planOpen, setPlanOpen] = useState(false);
   // Draft (compose) mode: "New Chat" shows the empty composer without creating
@@ -1450,8 +1454,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
     [refreshWorkspaceChats],
   );
 
-  const openSettings = useCallback(() => setSettingsOpen(true), []);
-  const closeSettings = useCallback(() => setSettingsOpen(false), []);
+  const openSettings = useCallback((page?: string) => {
+    setSettingsInitialPage(page ?? null);
+    setSettingsOpen(true);
+  }, []);
+  const closeSettings = useCallback(() => {
+    setSettingsOpen(false);
+    setSettingsInitialPage(null);
+  }, []);
   const openAbout = useCallback(() => setAboutOpen(true), []);
   const closeAbout = useCallback(() => setAboutOpen(false), []);
 
@@ -1541,6 +1551,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     workspaceChats,
     expandedWorkspaceIds,
     settingsOpen,
+    settingsInitialPage,
     aboutOpen,
     planOpen,
     togglePlan: () => setPlanOpen((v) => !v),

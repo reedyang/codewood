@@ -825,6 +825,31 @@ def _build_state_inner(agent: Any) -> Dict[str, Any]:
     except Exception:
         pass
 
+    # A model is only "ready" when the resolved config yields a usable model
+    # whose values are no longer the shipped template placeholders. The startup
+    # template lists a provider/model, so ``model_available`` alone is not a
+    # reliable signal — reuse the same validators ``main`` uses at launch so the
+    # GUI can show its "set up a model" guide until a real model is configured.
+    model_ready = False
+    try:
+        cfg_data = agent._load_runtime_config_data()
+        if isinstance(cfg_data, dict) and cfg_data.get("model_providers"):
+            from ..main import (
+                _extract_model_runtime_config,
+                _validate_template_placeholder_values,
+            )
+
+            provider, model_name, model_config, config_error = _extract_model_runtime_config(cfg_data)
+            if not config_error:
+                template_issue = _validate_template_placeholder_values(
+                    provider=provider,
+                    model_name=model_name,
+                    model_config=model_config,
+                )
+                model_ready = not template_issue and bool((model_config or {}).get("params"))
+    except Exception:
+        model_ready = False
+
     try:
         agent_language = get_display_language(agent)
     except Exception:
@@ -894,6 +919,7 @@ def _build_state_inner(agent: Any) -> Dict[str, Any]:
         "model": {
             "current": model_current,
             "available": model_available,
+            "ready": model_ready,
             "reasoningLevel": _safe_reasoning_level(agent),
             "reasoningLevels": _safe_reasoning_levels(agent),
         },

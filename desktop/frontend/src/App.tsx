@@ -21,14 +21,38 @@ function loadSidebarWidth(): number {
   return 200;
 }
 
+function NoModelGuide() {
+  const { openSettings, t } = useApp();
+  return (
+    <div className="modal-backdrop no-model-overlay">
+      <div className="modal no-model-guide" role="dialog" aria-modal="true">
+        <h2 className="modal-title">{t("noModel.title")}</h2>
+        <p className="modal-body">{t("noModel.body")}</p>
+        <div className="modal-actions">
+          <button className="btn btn-primary" onClick={() => openSettings("models")}>
+            {t("noModel.openSettings")}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function Shell() {
   const {
+    state,
     settingsOpen,
     openSettings,
     aboutOpen,
     closeAbout,
     newChat,
   } = useApp();
+  // The backend serves a state even when no usable model is configured (e.g.
+  // first launch where only the placeholder template config exists). The
+  // backend's ``model.ready`` flag is the authoritative signal: it is false
+  // until a real, non-template model is configured. Surface a centered modal
+  // that guides the user into Model settings whenever it is not ready.
+  const noModelConfigured = !!state && state.model?.ready === false;
   const [collapsed, setCollapsed] = useState(false);
   const [sidebarWidth, setSidebarWidth] = useState(loadSidebarWidth);
   const [resizing, setResizing] = useState(false);
@@ -111,6 +135,7 @@ function Shell() {
       )}
 
       {aboutOpen && <AboutDialog onClose={closeAbout} />}
+      {!settingsOpen && noModelConfigured && <NoModelGuide />}
       <ConfirmDialog />
       <ResizeGrips />
     </div>

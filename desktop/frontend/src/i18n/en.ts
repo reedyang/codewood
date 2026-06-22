@@ -284,4 +284,9 @@ export const en: Dict = {
   "common.cancel": "Cancel",
   "common.ok": "OK",
   "common.connecting": "Connecting to backend…",
+
+  "noModel.title": "Set up a model to get started",
+  "noModel.body":
+    "No model is configured yet. Open Settings → Models to add a provider and model, then come back to start chatting.",
+  "noModel.openSettings": "Open model settings",
 };
