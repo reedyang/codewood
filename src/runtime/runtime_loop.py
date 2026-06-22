@@ -629,6 +629,36 @@ def _build_plan_finalize_nudge_prompt(
     )
 
 
+def _append_plan_mode_directive(agent: Any, model_input: str) -> str:
+    """Append the localized Plan-mode directive to a model-facing message.
+
+    Plan mode injects a planning instruction so the model outlines a plan and
+    holds off on destructive tools. The directive is appended (not prepended)
+    to whatever is being sent to the model this round — the first-round user
+    task as well as every auto-generated continuation message inside the tool
+    loop — and is deliberately NOT recorded into chat history: history keeps
+    the user's verbatim text only. Centralizing this on the single send path
+    guarantees the directive rides every outgoing message while plan mode is on
+    and disappears the moment it is turned off.
+    """
+    if not bool(getattr(agent, "_plan_mode_sticky", False)):
+        return model_input
+    text = str(model_input or "")
+    if not text.strip():
+        return model_input
+    try:
+        from ..core.localization import translate as _translate_plan
+        prefix = _translate_plan(
+            "builtin.plan_mode_prefix",
+            getattr(agent, "display_language", None) or "en",
+        )
+    except Exception:
+        return model_input
+    if not prefix or prefix in text:
+        return model_input
+    return f"{text}\n\n{prefix}"
+
+
 def _warn_loop_ended_with_pending_plan(
     agent: Any,
     *,
@@ -770,6 +800,13 @@ def _maybe_offer_plan_execution_choice(
         # proceed message so the next iteration executes the drafted plan.
         try:
             agent._plan_mode_sticky = False
+        except Exception:
+            pass
+        try:
+            manager = getattr(agent, "_chat_state_manager", None)
+            persist = getattr(manager, "persist_active_chat_plan_mode", None)
+            if callable(persist):
+                persist(False)
         except Exception:
             pass
         try:
@@ -2985,22 +3022,13 @@ def run_agent_loop(agent: Any):
                 pass
             self._rewrite_previous_prompt_as_user(raw_user_input.strip())
             # Plan-mode is a session-sticky flag toggled via ``/plan`` /
-            # ``/agent`` commands. When on, prepend a planning instruction to
-            # the outgoing user task so the model is told to outline a plan
-            # rather than execute destructive tools. The original text is
-            # preserved verbatim after the prefix so models that don't
-            # interpret the directive still see the user's message.
-            try:
-                if bool(getattr(self, "_plan_mode_sticky", False)) and task_user_input:
-                    from ..core.localization import translate as _translate_plan
-                    plan_prefix = _translate_plan(
-                        "builtin.plan_mode_prefix",
-                        getattr(self, "display_language", None) or "en",
-                    )
-                    if plan_prefix and not task_user_input.startswith(plan_prefix):
-                        task_user_input = f"{plan_prefix}\n\n{task_user_input}"
-            except Exception:
-                pass
+            # ``/agent`` commands. When on, a planning directive is appended to
+            # every message sent to the model (see ``_append_plan_mode_directive``
+            # at the single ``call_ai`` send site), telling the model to outline
+            # a plan rather than execute destructive tools. The directive is a
+            # transient send-time suffix only: neither ``original_user_task``
+            # (model-facing) nor ``recorded_user_task`` (history) carries it, so
+            # chat history stores the user's verbatim text.
             original_user_task = task_user_input
             # ``task_user_input`` has had any skill / MCP reference markers
             # (``[skill: ...]``, ``[mcp tool|prompt: ...]``, ``/skills/...``)
@@ -3008,25 +3036,8 @@ def run_agent_loop(agent: Any):
             # as the task. For the *recorded* history entry, however, keep the
             # original markers so that reloading the chat (TUI or GUI) can
             # re-render the referenced skill / MCP as an inline pill instead of
-            # silently dropping it. The plan-mode directive, when active, is
-            # prepended the same way as for the model-facing task.
+            # silently dropping it.
             recorded_user_task = stripped_in
-            try:
-                if (
-                    bool(getattr(self, "_plan_mode_sticky", False))
-                    and recorded_user_task
-                ):
-                    from ..core.localization import translate as _translate_plan_rec
-                    _plan_prefix_rec = _translate_plan_rec(
-                        "builtin.plan_mode_prefix",
-                        getattr(self, "display_language", None) or "en",
-                    )
-                    if _plan_prefix_rec and not recorded_user_task.startswith(
-                        _plan_prefix_rec
-                    ):
-                        recorded_user_task = f"{_plan_prefix_rec}\n\n{recorded_user_task}"
-            except Exception:
-                recorded_user_task = stripped_in
             maybe_auto_compact = getattr(
                 getattr(self, "session_memory_service", None),
                 "maybe_auto_compact_before_user_message",
@@ -3349,8 +3360,13 @@ def run_agent_loop(agent: Any):
                     # Open this round's wait timer for the GUI just before the
                     # model request goes out.
                     _gui_round_mark(self, True)
+                    # Plan mode is a transient send-time suffix: append the
+                    # directive to whatever is sent this round (first-round task
+                    # or any in-loop continuation) without touching the recorded
+                    # ``history_user_input`` so chat history stays verbatim.
+                    model_input = _append_plan_mode_directive(self, next_input)
                     ai_result = self.call_ai(
-                        next_input,
+                        model_input,
                         context=json.dumps(last_result, ensure_ascii=False) if last_result else "",
                         stream=None,
                         return_message=task_uses_standard_openai_tools,
@@ -3885,6 +3901,23 @@ def run_agent_loop(agent: Any):
                         plan_finalize_nudged=plan_finalize_nudged,
                         turn_used_ask_more_info=turn_used_ask_more_info,
                     )
+                    break
+                # Plan mode: registering a plan is the end of the turn. When the
+                # model is in Plan mode and this batch only updated the plan
+                # (no execution / state-mutating tool ran), stop auto-looping and
+                # break out so the end-of-turn ``_maybe_offer_plan_execution_choice``
+                # presents the execute/modify selector. Without this the model
+                # would keep re-calling ``update_plan`` every round, repeatedly
+                # asking "shall I proceed?" while the host never surfaced the
+                # choice (the loop only reaches the chooser when it breaks).
+                if (
+                    bool(getattr(self, "_plan_mode_sticky", False))
+                    and executed_batch_results
+                    and all(
+                        str(entry.get("tool") or "").strip() == "update_plan"
+                        for entry in executed_batch_results
+                    )
+                ):
                     break
                 if continue_after_batch:
                     continue

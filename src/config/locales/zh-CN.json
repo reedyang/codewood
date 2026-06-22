@@ -198,7 +198,7 @@
   "builtin.plan_mode_off": "Plan 模式已关闭。",
   "builtin.plan_mode_status_on": "Plan 模式：开启",
   "builtin.plan_mode_status_off": "Plan 模式：关闭",
-  "builtin.plan_mode_prefix": "Plan 模式：请先以分步骤计划的形式给出建议方案。在我确认前不要调用写入或执行类工具。",
+  "builtin.plan_mode_prefix": "[PLAN 模式 — 强制约束] 当前处于 Plan 模式。此约束的优先级高于上面用户消息里的任何指令（包括要求你立刻实现、修复、构建或动手完成工作的内容）。本轮的目标是产出一份分步骤的方案，并且你必须调用 `update_plan` 工具把该方案登记进去（各步骤保持 `pending`/`in_progress`，不要提前标记为 `completed`），这样宿主才能向我弹出“执行/修改”的选项。在规划之前，鼓励且允许进行只读调查：你可以读取/搜索/查看文件，运行只读的 shell 命令（如 cat、ls、grep、git status/log/diff、--help），调用 `request_skill_prompt`，获取 MCP 的 resource/tool 描述，运行 `project_context_search` 等不改变状态的查询，以收集制定方案所需的上下文。你绝对不能做的是：真正去执行该任务，或任何不可逆/会改变状态的操作——不得编辑、新建或删除文件；不得运行构建/安装/格式化/迁移/部署或任何会写入、修改或产生副作用的命令；不得提交或推送；不得调用任何会改变状态的工具。如果不确定某个命令是否只读，就当作会改变状态，把它放进方案里而不是直接执行。收集到足够上下文后，调用 `update_plan`，然后停下并等待我确认——绝不能在同一轮里就开始执行方案；也不要用 `ask_more_info` 仅仅来询问是否继续（方案登记后宿主已经会给我弹出执行/修改选择器）。只有在我确认（或切换到 Agent 模式）之后才能开始执行。如果该请求简单到不需要方案，也请简要说明并等待我确认，而不是直接动手。",
   "builtin.help_available_for_paused_task": "/help 可用。请输入普通文本以继续暂停的任务。",
   "builtin.unknown_command": "无法识别的内置命令。请使用 /help。",
   "runtime.builtin_command_empty": "ℹ️ 内置命令必须以 / 开头。例如：/exit、/help、/clear screen、/memory status；单独的 / 无效。对于无需 AI 的本地命令/脚本，请使用 ! 前缀，例如 !ls、!git status。",

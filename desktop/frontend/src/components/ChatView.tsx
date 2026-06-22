@@ -165,13 +165,14 @@ function UserEntry({
   const [copied, setCopied] = useState(false);
   const time = formatMessageTime(timeMs);
   const canAct = index < 0;
-  // Backend prepends a Plan-mode directive to outgoing user messages while
-  // ``_plan_mode_sticky`` is on; it lives in chat history so the model sees
-  // the same instruction context on reload, but the GUI should never show
-  // it as if the user typed it. Strip it BEFORE decoding attachments: in Plan
-  // mode the directive is prepended ahead of the ``\uE100ATTACH:..\uE101``
-  // envelope, which would otherwise push the attachment tokens off the start
-  // of the string and make them leak into the body as garbled text.
+  // Legacy chat records (older versions) prepended a Plan-mode directive to
+  // recorded user messages while ``_plan_mode_sticky`` was on. New records no
+  // longer carry it (the directive is appended only to the model-facing send),
+  // but we still strip a leading directive here so legacy bubbles don't show it
+  // as if the user typed it. Strip it BEFORE decoding attachments: in those old
+  // records the directive sat ahead of the ``\uE100ATTACH:..\uE101`` envelope,
+  // which would otherwise push the attachment tokens off the start of the
+  // string and make them leak into the body as garbled text.
   const { paths: attachedPaths, body } = decodeAttachments(stripPlanModePrefix(text));
   // ``stripHiddenControl`` then unwraps the CONTROL envelope used by the GUI's
   // own "Execute now" nudge.

@@ -14,6 +14,22 @@ def _t(agent: Any, key: str, **kwargs: Any) -> str:
     return translate(key, get_display_language(agent), **kwargs)
 
 
+def _persist_plan_mode(agent: Any, enabled: bool) -> None:
+    """Mirror the sticky Plan-mode flag onto the active chat record root.
+
+    Best-effort: the in-memory ``_plan_mode_sticky`` flag has already been set
+    by the caller; this only records it so a chat reload resumes the same mode.
+    """
+    manager = getattr(agent, "_chat_state_manager", None)
+    persist = getattr(manager, "persist_active_chat_plan_mode", None)
+    if not callable(persist):
+        return
+    try:
+        persist(bool(enabled))
+    except Exception:
+        pass
+
+
 def dispatch_builtin_command(
     agent: Any,
     builtin_line: str,
@@ -134,10 +150,12 @@ def dispatch_builtin_command(
         print(_t(agent, "builtin.memory_disabled_saved" if ok else "builtin.memory_disabled_session_only"))
         return True, False
 
-    # Plan-mode toggle. Plan mode is a session-only flag that asks the agent to
-    # outline a step-by-step plan and hold off on destructive tool calls until
-    # the user confirms. The flag is read by the runtime loop where it
-    # prepends a planning instruction to the user's outgoing message.
+    # Plan-mode toggle. Plan mode is a session-sticky flag that asks the agent
+    # to outline a step-by-step plan and hold off on destructive tool calls
+    # until the user confirms. The runtime loop reads the flag and appends a
+    # planning directive to every message it sends to the model. The flag is
+    # also mirrored onto the active chat record root so reloading the chat
+    # resumes the same mode.
     if bl in ("plan", "plan on", "plan status"):
         if bl == "plan status":
             on = bool(getattr(agent, "_plan_mode_sticky", False))
@@ -149,11 +167,13 @@ def dispatch_builtin_command(
             )
             return True, False
         agent._plan_mode_sticky = True
+        _persist_plan_mode(agent, True)
         print(_t(agent, "builtin.plan_mode_on"))
         return True, False
 
     if bl in ("plan off", "agent"):
         agent._plan_mode_sticky = False
+        _persist_plan_mode(agent, False)
         print(_t(agent, "builtin.plan_mode_off"))
         return True, False
 
