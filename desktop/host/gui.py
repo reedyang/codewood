@@ -95,6 +95,37 @@ def _pick_files(directory: str = "") -> list[str]:
     return [str(result)]
 
 
+def _pick_image(directory: str = "") -> str:
+    """Open a native single-select image picker; return the chosen path or "".
+
+    Restricts the dialog to common image types. The returned path is still
+    re-validated server-side before any copy, so this filter is a convenience
+    only and not a trust boundary.
+    """
+    window = webview.active_window()
+    if window is None:
+        return ""
+    try:
+        kwargs: dict = {
+            "allow_multiple": False,
+            "file_types": ("Image files (*.png;*.jpg;*.jpeg;*.webp;*.gif;*.bmp)",),
+        }
+        try:
+            start = str(directory or "").strip()
+        except Exception:
+            start = ""
+        if start and os.path.isdir(start):
+            kwargs["directory"] = start
+        result = window.create_file_dialog(_open_dialog(), **kwargs)
+    except Exception:
+        return ""
+    if not result:
+        return ""
+    if isinstance(result, (list, tuple)):
+        return str(result[0]) if result else ""
+    return str(result)
+
+
 class HostApi:
     """Bridge exposed to the frontend as ``window.pywebview.api``.
 
@@ -135,6 +166,9 @@ class HostApi:
 
     def pick_files(self, directory: str = "") -> list[str]:
         return _pick_files(directory)
+
+    def pick_image(self, directory: str = "") -> str:
+        return _pick_image(directory)
 
     def minimize(self) -> None:
         window = webview.active_window()

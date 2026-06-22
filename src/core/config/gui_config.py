@@ -28,6 +28,13 @@ _ALLOWED_LANGUAGES = ("en", "zh-Hans")
 _MAX_IDS = 2000
 _MAX_ID_LEN = 512
 
+# Background image: the file is always stored next to the config as
+# ``bg.<ext>`` so only the extension needs persisting. The extension allowlist
+# doubles as the accepted upload type guard.
+BACKGROUND_IMAGE_STEM = "bg"
+_ALLOWED_BACKGROUND_EXTS = ("png", "jpg", "jpeg", "webp", "gif", "bmp")
+_DEFAULT_BACKGROUND_OPACITY = 60
+
 
 def gui_config_path(config_dir: Path) -> Path:
     return Path(config_dir) / GUI_CONFIG_FILENAME
@@ -111,3 +118,103 @@ def normalize_ui_prefs(prefs: Any) -> Dict[str, Any]:
         "pinnedChatIds": _normalize_ids(src.get("pinnedChatIds")),
         "archivedChatIds": _normalize_ids(src.get("archivedChatIds")),
     }
+
+
+def normalize_background_ext(value: Any) -> str:
+    """Return a supported background image extension (lowercase, no dot) or ``""``."""
+    raw = str(value or "").strip().lower().lstrip(".")
+    if raw == "jpeg":
+        raw = "jpeg"
+    return raw if raw in _ALLOWED_BACKGROUND_EXTS else ""
+
+
+def normalize_background_opacity(value: Any) -> int:
+    """Clamp the opacity percentage to the inclusive range [0, 100]."""
+    try:
+        pct = int(round(float(value)))
+    except (TypeError, ValueError):
+        return _DEFAULT_BACKGROUND_OPACITY
+    return max(0, min(100, pct))
+
+
+def background_filename_for_ext(ext: str) -> str:
+    """Return the canonical background file name ``bg.<ext>`` or ``""``."""
+    safe_ext = normalize_background_ext(ext)
+    return f"{BACKGROUND_IMAGE_STEM}.{safe_ext}" if safe_ext else ""
+
+
+def normalize_background_filename(value: Any) -> str:
+    """Validate a stored background file name and return it, or ``""``.
+
+    The file name must be exactly ``bg.<allowed-ext>``. Any other value
+    (path components, unexpected stem, unsupported extension) is rejected so a
+    tampered config can't point the loader at an arbitrary file.
+    """
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    # Reject anything that looks like a path; only a bare file name is allowed.
+    if "/" in raw or "\\" in raw or raw in (".", ".."):
+        return ""
+    stem, _, ext = raw.rpartition(".")
+    if stem != BACKGROUND_IMAGE_STEM:
+        return ""
+    safe_ext = normalize_background_ext(ext)
+    return f"{BACKGROUND_IMAGE_STEM}.{safe_ext}" if safe_ext else ""
+
+
+def normalize_background(value: Any) -> Dict[str, Any]:
+    """Return a normalized background settings object for storage.
+
+    Shape: ``{"fileName": "bg.<ext>"|"", "opacity": <0-100>}``. An empty
+    ``fileName`` means "no background image". The extension is intentionally
+    NOT stored separately — it is always derivable from ``fileName`` via
+    :func:`background_ext_from_filename`.
+
+    Accepts the legacy ``{"ext": ...}`` shape (pre-filename storage) so older
+    configs keep working.
+    """
+    src = value if isinstance(value, dict) else {}
+    opacity = (
+        normalize_background_opacity(src.get("opacity"))
+        if "opacity" in src
+        else _DEFAULT_BACKGROUND_OPACITY
+    )
+    file_name = normalize_background_filename(src.get("fileName"))
+    if not file_name:
+        # Legacy fallback: derive the file name from a stored bare extension.
+        file_name = background_filename_for_ext(src.get("ext"))
+    return {
+        "fileName": file_name,
+        "opacity": opacity,
+    }
+
+
+def background_ext_from_filename(file_name: str) -> str:
+    """Return the (validated) extension for a stored background file name."""
+    safe = normalize_background_filename(file_name)
+    return normalize_background_ext(safe.rpartition(".")[2]) if safe else ""
+
+
+def background_image_path(config_dir: Path, ext: str) -> Path:
+    """Path for the background image file given a (validated) extension."""
+    safe_ext = normalize_background_ext(ext)
+    if not safe_ext:
+        raise ValueError("unsupported background image extension")
+    return Path(config_dir) / f"{BACKGROUND_IMAGE_STEM}.{safe_ext}"
+
+
+def remove_background_image_files(config_dir: Path) -> None:
+    """Delete every ``bg.<ext>`` file in the config dir (across all allowed exts)."""
+    base = Path(config_dir)
+    for ext in _ALLOWED_BACKGROUND_EXTS:
+        candidate = base / f"{BACKGROUND_IMAGE_STEM}.{ext}"
+        try:
+            if candidate.exists():
+                candidate.unlink()
+        except OSError:
+            pass
+
+
+def allowed_background_exts() -> tuple:
+    return _ALLOWED_BACKGROUND_EXTS

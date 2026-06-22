@@ -27,8 +27,27 @@ function loadNavWidth(): number {
 }
 
 export function SettingsView() {
-  const { theme, setTheme, closeSettings, t } = useApp();
+  const {
+    state,
+    theme,
+    setTheme,
+    setBackgroundImage,
+    clearBackgroundImage,
+    setBackgroundOpacity,
+    backgroundImageUrl,
+    closeSettings,
+    t,
+  } = useApp();
   const [page, setPage] = useState<PageId>("general");
+  const bgHasImage = Boolean(state?.background?.hasImage);
+  const bgOpacity = state?.background?.opacity ?? 60;
+  const bgVersion = state?.background?.version ?? 0;
+  // Local mirror so the slider drags smoothly; resynced when the server value
+  // changes (e.g. after another window edits it).
+  const [opacityDraft, setOpacityDraft] = useState(bgOpacity);
+  useEffect(() => {
+    setOpacityDraft(bgOpacity);
+  }, [bgOpacity]);
   const [navWidth, setNavWidth] = useState(loadNavWidth);
   const [resizing, setResizing] = useState(false);
   const [modelsDirty, setModelsDirty] = useState(false);
@@ -193,6 +212,68 @@ export function SettingsView() {
                     {t(`settings.theme.${value}`)}
                   </button>
                 ))}
+              </div>
+            </div>
+
+            <div className="setting-row">
+              <label>{t("settings.background")}</label>
+              <div className="setting-control">
+                <div className="setting-input-row">
+                  <button
+                    className="btn"
+                    onClick={() => void setBackgroundImage()}
+                  >
+                    {t("settings.background.choose")}
+                  </button>
+                  <button
+                    className="btn"
+                    disabled={!bgHasImage}
+                    onClick={() => void clearBackgroundImage()}
+                  >
+                    {t("settings.background.clear")}
+                  </button>
+                </div>
+                <p className="setting-hint">{t("settings.background.hint")}</p>
+                {bgHasImage && (
+                  <div className="setting-bg-preview">
+                    <img
+                      src={backgroundImageUrl(bgVersion)}
+                      alt={t("settings.background")}
+                      onError={(e) => {
+                        (e.currentTarget as HTMLImageElement).dataset.error =
+                          "1";
+                      }}
+                    />
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div className="setting-row">
+              <label htmlFor="settings-bg-opacity">
+                {t("settings.background.opacity")}
+              </label>
+              <div className="setting-control">
+                <div className="setting-input-row">
+                  <input
+                    id="settings-bg-opacity"
+                    type="range"
+                    min={0}
+                    max={100}
+                    step={1}
+                    disabled={!bgHasImage}
+                    value={opacityDraft}
+                    onChange={(e) => {
+                      const v = Number(e.target.value);
+                      setOpacityDraft(v);
+                      void setBackgroundOpacity(v);
+                    }}
+                  />
+                  <span className="setting-unit">{opacityDraft}%</span>
+                </div>
+                <p className="setting-hint">
+                  {t("settings.background.opacityHint")}
+                </p>
               </div>
             </div>
           </div>

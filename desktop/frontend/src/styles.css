@@ -6,6 +6,12 @@
   --bg: #ffffff;
   --bg-elevated: #ffffff;
   --bg-sidebar: #f3f4f6;
+  /* Solid (always-opaque) mirrors of the surface tokens. These never become
+     translucent, so the background-image override can derive translucent
+     surface colours from them without a circular ``var(--bg)`` reference. */
+  --bg-solid: #ffffff;
+  --bg-elevated-solid: #ffffff;
+  --bg-sidebar-solid: #f3f4f6;
   --bg-input: #ffffff;
   --border: #e5e7eb;
   --text: #1f2329;
@@ -38,6 +44,9 @@
   --bg: #181818;
   --bg-elevated: #181818;
   --bg-sidebar: #141414;
+  --bg-solid: #181818;
+  --bg-elevated-solid: #181818;
+  --bg-sidebar-solid: #141414;
   --bg-input: #2d2d2d;
   --border: #333333;
   --text: #e6e8ee;
@@ -75,6 +84,100 @@ body {
   background: var(--bg);
   color: var(--text);
   font-size: 14px;
+}
+
+/* GUI background image layer.
+   A fixed, viewport-filling layer behind every app surface (including the
+   settings view). The image is set via the ``--app-bg-image`` document
+   variable and rendered with ``background-size: cover`` so it fills the window
+   without stretching (cropped as needed). ``--app-bg-opacity`` (0-1) controls
+   how faint the image is. The layer only exists when ``data-has-bg`` is set, so
+   there is zero cost when no background is configured. */
+html[data-has-bg]::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background-image: var(--app-bg-image, none);
+  background-size: cover;
+  background-position: center center;
+  background-repeat: no-repeat;
+  /* The image layer is always fully painted; how faint the image appears is
+     controlled entirely by the translucency of the app surfaces stacked on top
+     (driven by ``--app-surface-alpha``). Using a single dimming lever avoids the
+     compounding-opacity problem where a faint image times semi-opaque panels
+     became effectively invisible. */
+  opacity: 1;
+}
+
+/* Lift the app above the background layer and let the image show through by
+   making the top-level app surfaces transparent when a background is active.
+   Panels keep their own (semi-opaque) surfaces so text stays readable. */
+html[data-has-bg] body,
+html[data-has-bg] #root {
+  background: transparent;
+}
+
+html[data-has-bg] #root {
+  position: relative;
+  z-index: 1;
+}
+
+/* When a background image is active, let it show through EVERY app surface by
+   redefining the surface colour tokens themselves as translucent. Because
+   almost all panels paint with ``var(--bg)`` / ``var(--bg-sidebar)`` /
+   ``var(--bg-elevated)``, retinting the tokens at the document root makes the
+   whole UI semi-transparent in one place — no need to enumerate (and miss)
+   individual nested containers. ~80% of the original colour is kept so text
+   stays readable on top of the image. ``color-mix`` is evaluated once here and
+   inherited everywhere. */
+html[data-has-bg] {
+  /* ``--app-surface-alpha`` (0-1) is the opacity of the app surfaces, set from
+     the opacity slider. Higher transparency setting => lower surface alpha =>
+     more of the background image shows through. ``--bg-elevated`` (cards,
+     menus, popovers) stays a bit more opaque so floating UI keeps contrast. */
+  --bg: color-mix(
+    in srgb,
+    var(--bg-solid) calc(var(--app-surface-alpha, 0.85) * 100%),
+    transparent
+  );
+  --bg-sidebar: color-mix(
+    in srgb,
+    var(--bg-sidebar-solid) calc(var(--app-surface-alpha, 0.85) * 100%),
+    transparent
+  );
+  --bg-elevated: color-mix(
+    in srgb,
+    var(--bg-elevated-solid)
+      calc(min(1, var(--app-surface-alpha, 0.85) + 0.15) * 100%),
+    transparent
+  );
+}
+
+/* Background image preview thumbnail in the Appearance settings page. Lets the
+   user confirm the chosen image actually loaded (independent of the live
+   full-window background layer). */
+.setting-bg-preview {
+  margin-top: 8px;
+  width: 240px;
+  max-width: 100%;
+  height: 135px;
+  border: 1px solid var(--border, #ccc);
+  border-radius: 6px;
+  overflow: hidden;
+  background: var(--bg-sidebar);
+}
+
+.setting-bg-preview img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.setting-bg-preview img[data-error="1"] {
+  opacity: 0.2;
 }
 
 /* Theme-aware scrollbars (Chromium / WebView2). */

@@ -169,6 +169,45 @@ export class ApiClient {
     return res.ok;
   }
 
+  /** Copy a chosen image into the config dir as the GUI background. */
+  async setBackgroundImage(sourcePath: string): Promise<boolean> {
+    const res = await fetch(`${this.base}/set-background-image`, {
+      method: "POST",
+      headers: this.headers(),
+      body: JSON.stringify({ sourcePath }),
+    });
+    return res.ok;
+  }
+
+  /** Remove the current GUI background image. */
+  async clearBackgroundImage(): Promise<boolean> {
+    const res = await fetch(`${this.base}/clear-background-image`, {
+      method: "POST",
+      headers: this.headers(),
+      body: "{}",
+    });
+    return res.ok;
+  }
+
+  /** Persist the background image opacity (0-100). */
+  async setBackgroundOpacity(opacity: number): Promise<boolean> {
+    const res = await fetch(`${this.base}/set-background-opacity`, {
+      method: "POST",
+      headers: this.headers(),
+      body: JSON.stringify({ opacity }),
+    });
+    return res.ok;
+  }
+
+  /** Absolute URL of the current background image (token + cache-busting version). */
+  backgroundImageUrl(version: number): string {
+    const params = new URLSearchParams({
+      token: this.token,
+      v: String(version),
+    });
+    return `${this.base}/background-image?${params.toString()}`;
+  }
+
   /** Read the raw (unresolved) model_providers list for editing. */
   async getModelsConfig(): Promise<unknown[]> {
     const res = await fetch(`${this.base}/models-config`, {

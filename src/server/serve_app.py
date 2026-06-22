@@ -833,9 +833,13 @@ def _build_state_inner(agent: Any) -> Dict[str, Any]:
     theme = ""
     ui_prefs: Dict[str, Any] = {}
     gui_language = ""
+    background: Dict[str, Any] = {"hasImage": False, "fileName": "", "opacity": 60, "version": 0}
     try:
         from ..core.config.gui_config import (
+            background_ext_from_filename,
+            background_image_path,
             load_gui_config,
+            normalize_background,
             normalize_gui_language,
             normalize_ui_prefs,
         )
@@ -844,10 +848,31 @@ def _build_state_inner(agent: Any) -> Dict[str, Any]:
         theme = str(gui_cfg.get("theme") or "")
         ui_prefs = normalize_ui_prefs(gui_cfg.get("uiPrefs"))
         gui_language = normalize_gui_language(gui_cfg.get("language"))
+        bg = normalize_background(gui_cfg.get("background"))
+        bg_ext = background_ext_from_filename(bg["fileName"])
+        has_image = False
+        version = 0
+        if bg_ext:
+            try:
+                bg_path = background_image_path(agent.config_dir, bg_ext)
+                if bg_path.exists() and bg_path.is_file():
+                    has_image = True
+                    version = int(bg_path.stat().st_mtime)
+            except (ValueError, OSError):
+                has_image = False
+        background = {
+            "hasImage": has_image,
+            # Only advertise a file name when the file actually exists so the
+            # frontend never requests a missing image.
+            "fileName": bg["fileName"] if has_image else "",
+            "opacity": bg["opacity"],
+            "version": version,
+        }
     except Exception:
         theme = ""
         ui_prefs = {}
         gui_language = ""
+        background = {"hasImage": False, "fileName": "", "opacity": 60, "version": 0}
 
     # The GUI's display language is intentionally decoupled from the agent's
     # ``display_language`` (which drives TUI prompts and model system text).
@@ -880,6 +905,7 @@ def _build_state_inner(agent: Any) -> Dict[str, Any]:
         "language": language,
         "theme": theme,
         "uiPrefs": ui_prefs,
+        "background": background,
         "plan": _safe_active_plan(agent),
         "askMoreInfo": _safe_pending_ask_more_info(agent),
         "executionPolicy": str(getattr(agent, "execution_policy", "") or ""),
@@ -1656,6 +1682,154 @@ class ServeApp:
         except Exception:
             return False
         return True
+
+    # Background image (GUI-only presentation) -----------------------------
+    # The chosen image is copied into the config dir as ``bg.<ext>``; only the
+    # extension + opacity are persisted in the GUI config. Every operation runs
+    # inside a trust boundary: the source path is untrusted user input and is
+    # validated (existence, real file, extension allowlist, size bound) before
+    # any copy. The destination filename is fixed, so there is no path
+    # traversal on write.
+    _MAX_BACKGROUND_BYTES = 25 * 1024 * 1024
+
+    def set_background_image(self, source_path: str) -> bool:
+        agent = self.agent
+        try:
+            from ..core.config.gui_config import (
+                background_image_path,
+                load_gui_config,
+                normalize_background,
+                normalize_background_ext,
+                remove_background_image_files,
+                save_gui_config,
+            )
+
+            raw = str(source_path or "").strip()
+            if not raw:
+                return False
+            src = Path(raw).expanduser()
+            # Resolve to an absolute, canonical path and reject anything that is
+            # not an existing regular file (also blocks directories / symlink
+            # targets that don't resolve to a real file).
+            try:
+                src = src.resolve(strict=True)
+            except (OSError, RuntimeError):
+                return False
+            if not src.is_file():
+                return False
+            ext = normalize_background_ext(src.suffix)
+            if not ext:
+                return False
+            try:
+                size = src.stat().st_size
+            except OSError:
+                return False
+            if size <= 0 or size > self._MAX_BACKGROUND_BYTES:
+                return False
+
+            dest = background_image_path(agent.config_dir, ext)
+            try:
+                dest.parent.mkdir(parents=True, exist_ok=True)
+            except OSError:
+                return False
+            # Remove any existing bg.* first so a different extension can't
+            # leave a stale file behind, then copy the new image in.
+            remove_background_image_files(agent.config_dir)
+            import shutil
+
+            shutil.copyfile(str(src), str(dest))
+
+            data = load_gui_config(agent.config_dir)
+            bg = normalize_background(data.get("background"))
+            # Persist only the concrete file name (e.g. "bg.png"); the ext is
+            # always derived from it.
+            bg["fileName"] = dest.name
+            data["background"] = bg
+            save_gui_config(agent.config_dir, data)
+        except Exception:
+            return False
+        self._publish_state()
+        return True
+
+    def clear_background_image(self) -> bool:
+        agent = self.agent
+        try:
+            from ..core.config.gui_config import (
+                load_gui_config,
+                normalize_background,
+                remove_background_image_files,
+                save_gui_config,
+            )
+
+            remove_background_image_files(agent.config_dir)
+            data = load_gui_config(agent.config_dir)
+            bg = normalize_background(data.get("background"))
+            bg["fileName"] = ""
+            data["background"] = bg
+            save_gui_config(agent.config_dir, data)
+        except Exception:
+            return False
+        self._publish_state()
+        return True
+
+    def set_background_opacity(self, opacity: Any) -> bool:
+        agent = self.agent
+        try:
+            from ..core.config.gui_config import (
+                load_gui_config,
+                normalize_background,
+                normalize_background_opacity,
+                save_gui_config,
+            )
+
+            data = load_gui_config(agent.config_dir)
+            bg = normalize_background(data.get("background"))
+            bg["opacity"] = normalize_background_opacity(opacity)
+            data["background"] = bg
+            save_gui_config(agent.config_dir, data)
+        except Exception:
+            return False
+        self._publish_state()
+        return True
+
+    def read_background_image(self) -> Optional[tuple]:
+        """Return ``(bytes, content_type)`` for the current background, or ``None``."""
+        agent = self.agent
+        try:
+            from ..core.config.gui_config import (
+                background_ext_from_filename,
+                background_image_path,
+                load_gui_config,
+                normalize_background,
+            )
+
+            bg = normalize_background(load_gui_config(agent.config_dir).get("background"))
+            ext = background_ext_from_filename(bg["fileName"])
+            if not ext:
+                return None
+            path = background_image_path(agent.config_dir, ext)
+            if not path.exists() or not path.is_file():
+                return None
+            data = path.read_bytes()
+            content_types = {
+                "png": "image/png",
+                "jpg": "image/jpeg",
+                "jpeg": "image/jpeg",
+                "webp": "image/webp",
+                "gif": "image/gif",
+                "bmp": "image/bmp",
+            }
+            return data, content_types.get(ext, "application/octet-stream")
+        except Exception:
+            return None
+
+    def _publish_state(self) -> None:
+        try:
+            self.broadcaster.publish(
+                "idle", self._route(state=_build_state(self.agent))
+            )
+        except Exception:
+            pass
 
     # General settings (auto_compact / max_tool_rounds / memory / mcp_tools)
     # ----------------------------------------------------------------------
@@ -3139,6 +3313,19 @@ def _make_handler(app: ServeApp):
             except Exception:
                 pass
 
+        def _send_bytes(self, status: int, body: bytes, content_type: str) -> None:
+            self.send_response(status)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(body)))
+            # The cache-busting ``v`` query param lets the webview safely cache.
+            self.send_header("Cache-Control", "private, max-age=31536000")
+            self._send_cors()
+            self.end_headers()
+            try:
+                self.wfile.write(body)
+            except Exception:
+                pass
+
         def do_OPTIONS(self) -> None:  # noqa: N802
             self.send_response(204)
             self.send_header("Content-Length", "0")
@@ -3195,6 +3382,14 @@ def _make_handler(app: ServeApp):
                 except (ValueError, TypeError):
                     limit = 12
                 self._send_json(200, app.chat_history(before, limit))
+                return
+            if path == "/background-image":
+                result = app.read_background_image()
+                if result is None:
+                    self._send_json(404, {"error": "not found"})
+                else:
+                    data, content_type = result
+                    self._send_bytes(200, data, content_type)
                 return
             if path == "/events":
                 self._stream_events()
@@ -3278,6 +3473,19 @@ def _make_handler(app: ServeApp):
             if path == "/set-ui-prefs":
                 prefs = body.get("prefs")
                 ok = app.set_ui_prefs(prefs if isinstance(prefs, dict) else {})
+                self._send_json(200 if ok else 400, {"ok": ok})
+                return
+            if path == "/set-background-image":
+                source_path = str(body.get("sourcePath") or "")[:4096]
+                ok = app.set_background_image(source_path)
+                self._send_json(200 if ok else 400, {"ok": ok})
+                return
+            if path == "/clear-background-image":
+                ok = app.clear_background_image()
+                self._send_json(200 if ok else 400, {"ok": ok})
+                return
+            if path == "/set-background-opacity":
+                ok = app.set_background_opacity(body.get("opacity"))
                 self._send_json(200 if ok else 400, {"ok": ok})
                 return
             if path == "/models-config":
