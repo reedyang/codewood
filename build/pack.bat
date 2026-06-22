@@ -115,6 +115,66 @@ if errorlevel 1 (
   exit /b 1
 )
 
-echo Build completed. The shippable folder is "dist\codewood".
+echo PyInstaller build completed. The shippable folder is "dist\codewood".
 echo   codewood\codewood.exe       - terminal UI (default) and "codewood app" for the GUI
 echo   codewood\codewood-gui.exe   - double-click to open the GUI without a console window
+
+rem ---- Resolve the application version so the artifact filenames carry the
+rem ---- version + platform info (e.g. CodeWood-0.0.1-windows-x64-...).
+rem ---- Python writes the version to a temp file which is then read with
+rem ---- "set /p". This avoids the cmd quote/';'-splitting pitfalls of capturing
+rem ---- "python -c ..." output through a for /f back-quoted command (which had
+rem ---- silently left APP_VERSION undefined and fell back to 0.0.0).
+set VERSION_FILE=%TEMP%\codewood_version_%RANDOM%.txt
+"%VENV_PYTHON%" -c "import sys, pathlib; sys.path.insert(0, 'cli'); from config.app_info import get_app_version; pathlib.Path(sys.argv[1]).write_text(get_app_version())" "%VERSION_FILE%"
+set APP_VERSION=
+if exist "%VERSION_FILE%" set /p APP_VERSION=<"%VERSION_FILE%"
+del /f /q "%VERSION_FILE%" >nul 2>nul
+if not defined APP_VERSION set APP_VERSION=0.0.0
+set PLATFORM_TAG=windows-x64
+echo Packaging artifacts for version %APP_VERSION% (%PLATFORM_TAG%).
+
+rem ---- 3) Portable zip package. A self-contained, no-install bundle the user
+rem ---- can unzip and run directly. Built with PowerShell's Compress-Archive so
+rem ---- no extra tooling is required.
+set PORTABLE_ZIP=dist\CodeWood-%APP_VERSION%-%PLATFORM_TAG%-portable.zip
+if exist "%PORTABLE_ZIP%" del /f /q "%PORTABLE_ZIP%"
+echo Creating portable zip "%PORTABLE_ZIP%"...
+powershell -NoProfile -ExecutionPolicy Bypass -Command "Compress-Archive -Path 'dist\codewood\*' -DestinationPath '%PORTABLE_ZIP%' -Force"
+if errorlevel 1 (
+  echo Portable zip creation failed.
+  exit /b 1
+)
+
+rem ---- 4) EXE installer via Inno Setup. The installer lets the user pick a
+rem ---- per-user or all-users install, creates TUI + GUI shortcuts, and offers
+rem ---- to register the install dir on PATH. ISCC.exe must be on PATH or at the
+rem ---- default Inno Setup 6 install location.
+set ISCC=ISCC.exe
+where ISCC.exe >nul 2>nul
+if errorlevel 1 (
+  if exist "%ProgramFiles(x86)%\Inno Setup 6\ISCC.exe" (
+    set "ISCC=%ProgramFiles(x86)%\Inno Setup 6\ISCC.exe"
+  ) else if exist "%ProgramFiles%\Inno Setup 6\ISCC.exe" (
+    set "ISCC=%ProgramFiles%\Inno Setup 6\ISCC.exe"
+  ) else if exist "%LOCALAPPDATA%\Programs\Inno Setup 6\ISCC.exe" (
+    set "ISCC=%LOCALAPPDATA%\Programs\Inno Setup 6\ISCC.exe"
+  ) else (
+    echo WARNING: Inno Setup compiler ^(ISCC.exe^) not found. Skipping EXE installer.
+    echo          Install Inno Setup 6 from https://jrsoftware.org/isinfo.php to enable it.
+    echo          The portable zip "%PORTABLE_ZIP%" was still produced.
+    goto pack_done
+  )
+)
+echo Building EXE installer with "%ISCC%"...
+"%ISCC%" /DAppVersion=%APP_VERSION% /DSourceDir="..\dist\codewood" /DOutputDir="..\dist" "build\installer.iss"
+if errorlevel 1 (
+  echo EXE installer build failed.
+  exit /b 1
+)
+
+:pack_done
+echo.
+echo Packaging completed. Artifacts in "dist\":
+echo   CodeWood-%APP_VERSION%-%PLATFORM_TAG%-setup.exe       - EXE installer (per-user/all-users, shortcuts, PATH)
+echo   CodeWood-%APP_VERSION%-%PLATFORM_TAG%-portable.zip    - portable, no-install bundle
