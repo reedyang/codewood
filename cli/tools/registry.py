@@ -42,7 +42,7 @@ from .user_preferences_read import UserPreferencesReadTool
 from .user_preferences_patch import UserPreferencesPatchTool
 from .request_skill_prompt import RequestSkillPromptTool
 from .ask_more_info import AskMoreInfoTool
-from .update_plan import UpdatePlanTool
+from .plan import UpdatePlanTool
 from .run_subagent import RunSubagentTool
 
 

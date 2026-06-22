@@ -50,6 +50,4 @@ class ProjectContextSearchTool(BaseTool):
     }
 
     def execute(self, agent: Any, params: Dict[str, Any]) -> Dict[str, Any]:
-        from ._delegation import delegate_file_shell
-
-        return delegate_file_shell(agent, "project_context_search", params if isinstance(params, dict) else {})
+        return agent.action_project_context_search(params if isinstance(params, dict) else {})
