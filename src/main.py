@@ -26,6 +26,7 @@ from src.core.config.config_jsonc import (
 from src.config.app_info import (
     append_windows_git_tools_to_path,
     get_app_config_dirname,
+    get_app_global_config_dir,
     get_app_name,
     get_app_version,
     prepend_bundled_bin_to_path,
@@ -208,9 +209,12 @@ def _load_user_config_template() -> dict:
     return data if isinstance(data, dict) else {}
 
 
-def _create_user_config_template(user_home: Path) -> Path:
-    """Create ~/.<app>/config.jsonc with a starter template and return the file path."""
-    config_path = user_home / get_app_config_dirname() / CONFIG_JSONC_FILENAME
+def _create_user_config_template() -> Path:
+    """Create ``~/.config/<app>/config.jsonc`` with a starter template.
+
+    Returns the created config file path.
+    """
+    config_path = get_app_global_config_dir() / CONFIG_JSONC_FILENAME
     save_config_jsonc(config_path, _load_user_config_template())
     return config_path
 
@@ -866,12 +870,10 @@ def main(argv: list[str] | None = None):
     config_path = None
     ui_language = DEFAULT_DISPLAY_LANGUAGE
     
-    # Prefer the application config directory/config.jsonc under the user's home directory.
-    user_home = str(Path.home())
-    config_dirname = get_app_config_dirname()
-    user_config = os.path.join(user_home, config_dirname, CONFIG_JSONC_FILENAME)
-    local_config = os.path.join(str(project_root), config_dirname, CONFIG_JSONC_FILENAME)
-    
+    # The application config lives at ``~/.config/<app>/config.jsonc``. There is
+    # no fallback to a ``.codewood`` directory in the home dir or the code root.
+    user_config = str(get_app_global_config_dir() / CONFIG_JSONC_FILENAME)
+
     config_dir = None  # Config directory used for history persistence
     # Built-in Agent Skills live at the project root, outside src/.
     builtin_skills_dir = str(project_root / "skills")
@@ -879,9 +881,6 @@ def main(argv: list[str] | None = None):
     if os.path.exists(user_config):
         config_path = user_config
         config_dir = os.path.dirname(user_config)  # Get the directory that contains the config file.
-    elif os.path.exists(local_config):
-        config_path = local_config
-        config_dir = os.path.dirname(local_config)  # Get the directory that contains the config file.
     
     if config_path:
         try:
@@ -902,12 +901,12 @@ def main(argv: list[str] | None = None):
         _print_startup_basic_overview()
         if not config_path:
             try:
-                created_path = _create_user_config_template(Path.home())
+                created_path = _create_user_config_template()
                 print(_ansi_red(text("main.config_created_template", ui_language)))
                 _print_model_settings_update_notice(created_path, ui_language)
             except Exception as e:
                 print(_ansi_red(text("main.config_create_template_failed", ui_language, error=e)))
-                _print_model_settings_update_notice(Path.home() / get_app_config_dirname() / CONFIG_JSONC_FILENAME, ui_language)
+                _print_model_settings_update_notice(get_app_global_config_dir() / CONFIG_JSONC_FILENAME, ui_language)
         else:
             _print_model_settings_update_notice(config_path, ui_language)
         return 1
@@ -923,7 +922,7 @@ def main(argv: list[str] | None = None):
     )
     if config_error:
         _print_startup_basic_overview()
-        _print_model_settings_update_notice(config_path or (Path.home() / get_app_config_dirname() / CONFIG_JSONC_FILENAME), ui_language)
+        _print_model_settings_update_notice(config_path or (get_app_global_config_dir() / CONFIG_JSONC_FILENAME), ui_language)
         return 1
     template_value_error = _validate_template_placeholder_values(
         provider=provider,
@@ -932,7 +931,7 @@ def main(argv: list[str] | None = None):
     )
     if template_value_error:
         _print_startup_basic_overview(model_name=model_name)
-        _print_model_settings_update_notice(config_path or (Path.home() / get_app_config_dirname() / CONFIG_JSONC_FILENAME), ui_language)
+        _print_model_settings_update_notice(config_path or (get_app_global_config_dir() / CONFIG_JSONC_FILENAME), ui_language)
         return 1
 
     params = model_config.get("params", {})

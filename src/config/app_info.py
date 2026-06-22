@@ -56,7 +56,24 @@ def get_app_slug_compact() -> str:
 
 
 def get_app_config_dirname() -> str:
+    """Per-workspace config/storage directory name (e.g. ``.codewood``).
+
+    This is the hidden marker directory created *inside a workspace folder*
+    to hold that workspace's chats/cache. It is NOT the global, user-level
+    config directory — see :func:`get_app_global_config_dir` for that.
+    """
     return f".{get_app_slug_compact()}"
+
+
+def get_app_global_config_dir() -> Path:
+    """Absolute path to the user-level (global) config directory.
+
+    Resolves to ``~/.config/<appslug>`` (XDG-style), e.g.
+    ``~/.config/codewood``. This is where ``config.jsonc``, the global
+    ``skills/``, caches, etc. live. There is intentionally no fallback to a
+    ``.codewood`` directory in the user's home or in the code root.
+    """
+    return (Path.home() / ".config" / get_app_slug_compact()).resolve()
 
 
 def get_app_logger_root() -> str:
