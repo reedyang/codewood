@@ -124,7 +124,215 @@ rm -f "$PORTABLE_ARCHIVE"
 echo "Creating portable archive \"$PORTABLE_ARCHIVE\"..."
 tar -czf "$PORTABLE_ARCHIVE" -C dist codewood
 
+# Track produced installer artifacts for the final summary.
+INSTALLER_NOTES=()
+
+# ---------------------------------------------------------------------------
+# macOS native installers (.dmg + .pkg)
+# ---------------------------------------------------------------------------
+# These rely on macOS-only tooling (hdiutil / pkgbuild / productbuild) and a
+# .app bundle, so they are produced only when running on macOS. A double-
+# clickable Code Wood.app is assembled around the GUI launcher, with the
+# one-dir bundle living inside Contents/Resources so codewood-gui can find its
+# sibling codewood executable at runtime.
+build_macos_installers() {
+  local app_name="Code Wood"
+  local app_dir="dist/${app_name}.app"
+  local macos_dir="${app_dir}/Contents/MacOS"
+  local res_dir="${app_dir}/Contents/Resources"
+
+  echo "Assembling ${app_dir}..."
+  rm -rf "$app_dir"
+  mkdir -p "$macos_dir" "$res_dir"
+
+  # Place the whole one-dir bundle under Resources/codewood and expose the GUI
+  # launcher as the app's main executable via a thin wrapper.
+  cp -R "dist/codewood" "$res_dir/codewood"
+  cat > "$macos_dir/CodeWood" <<'WRAPPER'
+#!/bin/sh
+# Resolve the bundle's Resources/codewood and launch the GUI executable.
+DIR="$(cd "$(dirname "$0")/../Resources/codewood" && pwd)"
+exec "$DIR/codewood-gui" "$@"
+WRAPPER
+  chmod +x "$macos_dir/CodeWood"
+
+  # Minimal Info.plist. Icon is included when build/app_icon.icns exists.
+  local icon_line=""
+  if [ -f "build/app_icon.icns" ]; then
+    cp "build/app_icon.icns" "$res_dir/app_icon.icns"
+    icon_line="  <key>CFBundleIconFile</key><string>app_icon.icns</string>"
+  fi
+  cat > "$app_dir/Contents/Info.plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleName</key><string>${app_name}</string>
+  <key>CFBundleDisplayName</key><string>${app_name}</string>
+  <key>CFBundleIdentifier</key><string>us.zoom.codewood</string>
+  <key>CFBundleVersion</key><string>${APP_VERSION}</string>
+  <key>CFBundleShortVersionString</key><string>${APP_VERSION}</string>
+  <key>CFBundleExecutable</key><string>CodeWood</string>
+  <key>CFBundlePackageType</key><string>APPL</string>
+${icon_line}
+</dict>
+</plist>
+PLIST
+
+  # .dmg (drag-to-Applications). hdiutil is part of macOS.
+  if command -v hdiutil >/dev/null 2>&1; then
+    local dmg="dist/CodeWood-${APP_VERSION}-${PLATFORM_TAG}.dmg"
+    rm -f "$dmg"
+    local stage; stage="$(mktemp -d)"
+    cp -R "$app_dir" "$stage/"
+    ln -s /Applications "$stage/Applications"
+    echo "Creating .dmg \"$dmg\"..."
+    if hdiutil create -volname "$app_name" -srcfolder "$stage" -ov -format UDZO "$dmg" >/dev/null; then
+      INSTALLER_NOTES+=("  $(basename "$dmg")  - macOS drag-to-install disk image")
+    else
+      echo "WARNING: hdiutil failed; skipping .dmg." >&2
+    fi
+    rm -rf "$stage"
+  else
+    echo "WARNING: hdiutil not found; skipping .dmg." >&2
+  fi
+
+  # .pkg (guided installer that drops Code Wood.app into /Applications).
+  if command -v pkgbuild >/dev/null 2>&1; then
+    local pkg="dist/CodeWood-${APP_VERSION}-${PLATFORM_TAG}.pkg"
+    rm -f "$pkg"
+    local pkgroot; pkgroot="$(mktemp -d)"
+    mkdir -p "$pkgroot/Applications"
+    cp -R "$app_dir" "$pkgroot/Applications/"
+    echo "Creating .pkg \"$pkg\"..."
+    if pkgbuild --root "$pkgroot" --identifier "us.zoom.codewood" \
+        --version "$APP_VERSION" --install-location "/" "$pkg" >/dev/null; then
+      INSTALLER_NOTES+=("  $(basename "$pkg")  - macOS guided installer (installs to /Applications)")
+    else
+      echo "WARNING: pkgbuild failed; skipping .pkg." >&2
+    fi
+    rm -rf "$pkgroot"
+  else
+    echo "WARNING: pkgbuild not found; skipping .pkg." >&2
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# Linux native installers (AppImage + .deb)
+# ---------------------------------------------------------------------------
+build_linux_installers() {
+  # Map uname -m to Debian arch naming for the .deb control file.
+  local deb_arch
+  case "$ARCH_TAG" in
+    x86_64)  deb_arch="amd64" ;;
+    aarch64) deb_arch="arm64" ;;
+    armv7l)  deb_arch="armhf" ;;
+    *)       deb_arch="$ARCH_TAG" ;;
+  esac
+
+  # A small launcher placed on PATH (/usr/bin/codewood) that forwards to the
+  # installed one-dir bundle under /opt/codewood. Shared by AppImage and .deb.
+  # AppDir layout used for both AppImage and .deb staging.
+  local appdir="dist/CodeWood.AppDir"
+  echo "Assembling ${appdir}..."
+  rm -rf "$appdir"
+  mkdir -p "$appdir/opt/codewood" "$appdir/usr/bin" "$appdir/usr/share/applications" "$appdir/usr/share/icons/hicolor/256x256/apps"
+  cp -R "dist/codewood/." "$appdir/opt/codewood/"
+
+  # PATH launcher -> terminal UI by default ("codewood app" opens the GUI).
+  cat > "$appdir/usr/bin/codewood" <<'LAUNCH'
+#!/bin/sh
+exec /opt/codewood/codewood "$@"
+LAUNCH
+  chmod +x "$appdir/usr/bin/codewood"
+
+  # .desktop entry (used by both AppImage and the .deb menu integration).
+  cat > "$appdir/usr/share/applications/codewood.desktop" <<DESKTOP
+[Desktop Entry]
+Type=Application
+Name=Code Wood
+Comment=Code Wood AI Agent
+Exec=codewood app
+Icon=codewood
+Terminal=false
+Categories=Development;Utility;
+DESKTOP
+
+  if [ -f "build/app_icon.png" ]; then
+    cp "build/app_icon.png" "$appdir/usr/share/icons/hicolor/256x256/apps/codewood.png"
+  fi
+
+  # ---- AppImage (universal, no root). Requires appimagetool + FUSE.
+  if command -v appimagetool >/dev/null 2>&1; then
+    # AppImage expects an AppRun entrypoint + top-level .desktop/.icon.
+    cat > "$appdir/AppRun" <<'APPRUN'
+#!/bin/sh
+HERE="$(dirname "$(readlink -f "$0")")"
+exec "$HERE/opt/codewood/codewood" "$@"
+APPRUN
+    chmod +x "$appdir/AppRun"
+    cp "$appdir/usr/share/applications/codewood.desktop" "$appdir/codewood.desktop"
+    [ -f "$appdir/usr/share/icons/hicolor/256x256/apps/codewood.png" ] && \
+      cp "$appdir/usr/share/icons/hicolor/256x256/apps/codewood.png" "$appdir/codewood.png"
+    local appimage="dist/CodeWood-${APP_VERSION}-${PLATFORM_TAG}.AppImage"
+    rm -f "$appimage"
+    echo "Creating AppImage \"$appimage\"..."
+    if ARCH="$ARCH_TAG" appimagetool "$appdir" "$appimage" >/dev/null 2>&1; then
+      chmod +x "$appimage"
+      INSTALLER_NOTES+=("  $(basename "$appimage")  - Linux universal, no-install (chmod +x then run)")
+    else
+      echo "WARNING: appimagetool failed; skipping AppImage." >&2
+    fi
+  else
+    echo "WARNING: appimagetool not found; skipping AppImage." >&2
+  fi
+
+  # ---- .deb (Debian/Ubuntu). Requires dpkg-deb.
+  if command -v dpkg-deb >/dev/null 2>&1; then
+    local debroot="dist/codewood-deb"
+    rm -rf "$debroot"
+    mkdir -p "$debroot/opt/codewood" "$debroot/usr/bin" "$debroot/usr/share/applications" "$debroot/DEBIAN"
+    cp -R "dist/codewood/." "$debroot/opt/codewood/"
+    cp "$appdir/usr/bin/codewood" "$debroot/usr/bin/codewood"
+    chmod +x "$debroot/usr/bin/codewood"
+    cp "$appdir/usr/share/applications/codewood.desktop" "$debroot/usr/share/applications/codewood.desktop"
+    if [ -f "$appdir/usr/share/icons/hicolor/256x256/apps/codewood.png" ]; then
+      mkdir -p "$debroot/usr/share/icons/hicolor/256x256/apps"
+      cp "$appdir/usr/share/icons/hicolor/256x256/apps/codewood.png" "$debroot/usr/share/icons/hicolor/256x256/apps/codewood.png"
+    fi
+    cat > "$debroot/DEBIAN/control" <<CONTROL
+Package: codewood
+Version: ${APP_VERSION}
+Section: devel
+Priority: optional
+Architecture: ${deb_arch}
+Maintainer: Reed Yang
+Description: Code Wood AI Agent
+ Code Wood terminal UI and desktop GUI.
+CONTROL
+    local deb="dist/CodeWood-${APP_VERSION}-${PLATFORM_TAG}.deb"
+    rm -f "$deb"
+    echo "Creating .deb \"$deb\"..."
+    if dpkg-deb --build --root-owner-group "$debroot" "$deb" >/dev/null; then
+      INSTALLER_NOTES+=("  $(basename "$deb")  - Debian/Ubuntu package (installs to /opt/codewood, links /usr/bin/codewood)")
+    else
+      echo "WARNING: dpkg-deb failed; skipping .deb." >&2
+    fi
+    rm -rf "$debroot"
+  else
+    echo "WARNING: dpkg-deb not found; skipping .deb." >&2
+  fi
+}
+
+case "$(uname -s)" in
+  Darwin) build_macos_installers ;;
+  Linux)  build_linux_installers ;;
+esac
+
 echo ""
 echo "Packaging completed. Artifacts in \"dist/\":"
 echo "  CodeWood-${APP_VERSION}-${PLATFORM_TAG}-portable.tar.gz  - portable, no-install bundle"
+for note in "${INSTALLER_NOTES[@]}"; do
+  echo "$note"
+done
 echo "Note: the Windows .exe installer is produced by build/pack.bat on Windows."
