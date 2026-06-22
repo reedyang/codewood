@@ -46,8 +46,8 @@ def _wait_http_ready(url: str, timeout_s: float = 5.0) -> None:
 class AgentMcpActionsE2ETests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.repo_root = Path(__file__).resolve().parents[3]
-        cls.server_script = cls.repo_root / "tests" / "integration" / "mcp" / "fake_mcp_server.py"
+        cls.repo_root = Path(__file__).resolve().parents[4]
+        cls.server_script = cls.repo_root / "cli" / "tests" / "integration" / "mcp" / "fake_mcp_server.py"
 
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()

@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 
 def _load_installer_module():
-    repo_root = Path(__file__).resolve().parents[3]
+    repo_root = Path(__file__).resolve().parents[4]
     module_path = repo_root / "skills" / "clawhub-skill-installer" / "scripts" / "clawhub_installer.py"
     spec = importlib.util.spec_from_file_location("clawhub_installer_test_module", str(module_path))
     if spec is None or spec.loader is None:
