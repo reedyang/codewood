@@ -533,6 +533,38 @@ class PromptToolkitInputCompletionTests(unittest.TestCase):
             out = list(completer.get_completions(_Doc("de"), None))
         self.assertTrue(any(getattr(c, "text", "") == "demo.txt" for c in out))
 
+    def test_normal_mode_does_not_complete_bare_filenames(self):
+        # In normal (non-shell) chat input, a bare filename fragment must NOT be
+        # matched against workspace-root files; the "@<name>" reference is the
+        # intended way to search workspace files.
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            (base / "demo.txt").write_text("x", encoding="utf-8")
+            completer = FileCompleter(base)
+            out = list(completer.get_completions(_Doc("de"), None))
+        self.assertEqual(out, [])
+
+    def test_normal_mode_keeps_at_file_reference_completion(self):
+        # The "@<name>" workspace file search must still work in normal mode.
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            (base / "demo.txt").write_text("x", encoding="utf-8")
+            completer = FileCompleter(base)
+            out = list(completer.get_completions(_Doc("@de"), None))
+        self.assertTrue(any(getattr(c, "text", "") == "@demo.txt" for c in out))
+
+    def test_normal_mode_keeps_path_completion_with_separator(self):
+        # Path completion (fragment contains a separator) is still offered in
+        # normal mode.
+        with tempfile.TemporaryDirectory() as td:
+            completer = FileCompleter(Path(td))
+            with patch.object(
+                completer, "_get_path_completions", return_value=["src\\win"]
+            ) as mocked:
+                out = list(completer.get_completions(_Doc("src/wi"), None))
+        self.assertTrue(mocked.called)
+        self.assertTrue(out)
+
     def test_language_completion_menu_shows_native_language_names(self):
         with tempfile.TemporaryDirectory() as td:
             completer = FileCompleter(
