@@ -62,17 +62,25 @@
     "type": "function",
     "function": {
       "name": "project_context_search",
-      "description": "Lightweight code-context retrieval for large projects: returns candidate files, related symbols, and match reasons by query. Supports incremental index refresh, forced rebuild, and status checks.",
+      "description": "Lightweight code-context retrieval for large projects (SQLite-backed index): returns candidate files, related symbols, and match reasons by query. Also supports call-graph queries (callers/callees of a symbol) for change-impact and dependency analysis. Supports incremental index refresh, forced rebuild, and status checks.",
       "parameters": {
         "type": "object",
         "properties": {
           "query": {
             "type": "string",
-            "description": "Retrieval intent, for example 'where auth token validated' or 'RoomSettingsPanel timer crash'."
+            "description": "Retrieval intent, for example 'where auth token validated' or 'RoomSettingsPanel timer crash'. Required unless 'call_graph' is provided."
+          },
+          "call_graph": {
+            "type": "string",
+            "description": "Symbol (function/method name) to run a call-graph query on. When set, returns callers and/or callees of this symbol instead of a text search."
+          },
+          "call_graph_direction": {
+            "type": "string",
+            "description": "Call-graph direction when 'call_graph' is set: 'callees' (what the symbol calls), 'callers' (what calls the symbol), or 'both' (default)."
           },
           "max_files": {
             "type": "integer",
-            "description": "Maximum number of candidate files to return (default 12, max 50)."
+            "description": "Maximum number of candidate files (or call-graph edges per direction) to return (default 12, max 50)."
           },
           "refresh": {
             "type": "boolean",
@@ -91,7 +99,7 @@
             "description": "Return only index status; do not run retrieval."
           }
         },
-        "required": ["query"]
+        "required": []
       }
     }
   },

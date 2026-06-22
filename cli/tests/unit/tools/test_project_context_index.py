@@ -1,4 +1,4 @@
-import json
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
@@ -26,16 +26,22 @@ class ProjectContextIndexTests(unittest.TestCase):
 
             index = ProjectContextIndex(workspace_root=workspace, storage_dir=storage)
             self.assertFalse(index.index_path.exists())
+            self.assertTrue(str(index.index_path).endswith(".db"))
 
             result = index.refresh_index(force=False)
 
             self.assertTrue(result["success"])
             self.assertTrue(index.index_path.exists())
 
-            payload = json.loads(index.index_path.read_text(encoding="utf-8"))
-            self.assertEqual(payload["workspace_root"], str(workspace.resolve()))
-            self.assertEqual(payload["files"], {})
-            self.assertIsInstance(payload["last_index_at"], float)
+            conn = sqlite3.connect(str(index.index_path))
+            try:
+                meta = dict(conn.execute("SELECT key, value FROM meta").fetchall())
+                file_count = conn.execute("SELECT COUNT(*) FROM files").fetchone()[0]
+            finally:
+                conn.close()
+            self.assertEqual(meta["workspace_root"], str(workspace.resolve()))
+            self.assertEqual(file_count, 0)
+            self.assertIsInstance(float(meta["last_index_at"]), float)
 
     def test_bind_project_index_workspace_uses_workspace_root(self):
         with tempfile.TemporaryDirectory() as td_workspace:
@@ -59,6 +65,68 @@ class ProjectContextIndexTests(unittest.TestCase):
             self.assertNotEqual(bound_root.name, work_directory.name)
             self.assertEqual(bound_storage.name, "indexes")
             self.assertEqual(bound_storage.parent.name, workspace_config_dir.name)
+
+    def test_sqlite_roundtrip_persists_symbols_imports_and_calls(self):
+        with tempfile.TemporaryDirectory() as td_workspace, tempfile.TemporaryDirectory() as td_storage:
+            workspace = Path(td_workspace)
+            storage = Path(td_storage)
+            (workspace / "mod.py").write_text(
+                "import os\n"
+                "def helper(x):\n"
+                "    return x + 1\n"
+                "def main():\n"
+                "    helper(1)\n"
+                "    os.getcwd()\n",
+                encoding="utf-8",
+            )
+
+            index = ProjectContextIndex(workspace_root=workspace, storage_dir=storage)
+            res = index.refresh_index(force=True)
+            self.assertTrue(res["success"])
+            self.assertEqual(res["files_total"], 1)
+
+            # A fresh instance must reload everything from SQLite.
+            reloaded = ProjectContextIndex(workspace_root=workspace, storage_dir=storage)
+            entry = reloaded.files["mod.py"]
+            self.assertIn("helper", entry.symbols)
+            self.assertIn("main", entry.symbols)
+            edges = {(c.caller, c.callee) for c in entry.calls}
+            self.assertIn(("main", "helper"), edges)
+
+    def test_call_graph_callers_and_callees(self):
+        with tempfile.TemporaryDirectory() as td_workspace, tempfile.TemporaryDirectory() as td_storage:
+            workspace = Path(td_workspace)
+            storage = Path(td_storage)
+            (workspace / "a.py").write_text(
+                "def helper(x):\n"
+                "    return x\n"
+                "def main():\n"
+                "    helper(1)\n"
+                "    other()\n",
+                encoding="utf-8",
+            )
+
+            index = ProjectContextIndex(workspace_root=workspace, storage_dir=storage)
+            index.refresh_index(force=True)
+
+            callers = index.call_graph("helper", direction="callers", auto_refresh=False)
+            self.assertTrue(callers["success"])
+            self.assertEqual(callers["callers_total"], 1)
+            self.assertEqual(callers["callers"][0]["caller"], "main")
+
+            callees = index.call_graph("main", direction="callees", auto_refresh=False)
+            self.assertTrue(callees["success"])
+            callee_names = {c["callee"] for c in callees["callees"]}
+            self.assertIn("helper", callee_names)
+            self.assertIn("other", callee_names)
+
+    def test_call_graph_empty_symbol_fails(self):
+        with tempfile.TemporaryDirectory() as td_workspace, tempfile.TemporaryDirectory() as td_storage:
+            index = ProjectContextIndex(
+                workspace_root=Path(td_workspace), storage_dir=Path(td_storage)
+            )
+            res = index.call_graph("", auto_refresh=False)
+            self.assertFalse(res["success"])
 
 
 class SearchWorkspaceFilesTests(unittest.TestCase):

@@ -1263,6 +1263,8 @@ def action_project_context_search(agent: Any, params: Dict[str, Any]) -> dict:
     refresh_async = bool(params.get("refresh_async", False))
     status_only = bool(params.get("status_only", False))
     force_rebuild = bool(params.get("force_rebuild", False))
+    call_graph_symbol = str(params.get("call_graph") or "").strip()
+    call_graph_direction = str(params.get("call_graph_direction") or "both").strip()
 
     try:
         max_files_i = int(max_files)
@@ -1278,6 +1280,21 @@ def action_project_context_search(agent: Any, params: Dict[str, Any]) -> dict:
         st = agent._project_context_index.status()
         st["message"] = "Project context index status"
         return st
+    if call_graph_symbol:
+        if force_rebuild:
+            idx_res = agent._project_context_index.refresh_index(force=True)
+            if not idx_res.get("success", False):
+                return idx_res
+        return agent._project_context_index.call_graph(
+            symbol=call_graph_symbol,
+            direction=call_graph_direction,
+            max_results=max_files_i,
+            auto_refresh=(
+                ((True if refresh is None else bool(refresh)) or force_rebuild)
+                and (not refresh_async)
+            ),
+            refresh_timeout_ms=2000,
+        )
     if not query:
         return {"success": False, "error": "Missing required parameter: query for project_context_search"}
 

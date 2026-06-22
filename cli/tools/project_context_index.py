@@ -1,15 +1,20 @@
 from __future__ import annotations
 
-import json
 import os
 import re
+import sqlite3
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from ..config.app_info import get_app_config_dirname
+
+# Storage schema version for the SQLite index. Bump when the table layout
+# changes; an on-disk database with a different version is discarded and
+# rebuilt (we intentionally do NOT migrate or read legacy JSON indexes).
+_SCHEMA_VERSION = 2
 
 
 _DEFAULT_CODE_EXTS: Set[str] = {
@@ -61,6 +66,21 @@ def _normalize_token(s: str) -> str:
     return re.sub(r"[^a-z0-9_]+", "", (s or "").strip().lower())
 
 
+# A call site is an identifier immediately followed by ``(``. The leading
+# ``(?<![\w.])`` keeps it from matching the tail of ``obj.method`` as a bare
+# ``method`` while still capturing the unqualified call name in simple cases.
+_CALL_SITE_RE = re.compile(r"(?<![A-Za-z0-9_])([A-Za-z_][A-Za-z0-9_]*)\s*\(")
+
+# Control-flow / declaration keywords that look like calls (``if (...)``) but
+# are not. Kept language-agnostic and intentionally small.
+_CALL_KEYWORDS: Set[str] = {
+    "if", "for", "while", "switch", "catch", "return", "with", "elif",
+    "def", "function", "class", "and", "or", "not", "in", "is", "await",
+    "yield", "del", "assert", "raise", "lambda", "print", "super",
+    "typeof", "sizeof", "new", "delete", "throw", "case", "do", "else",
+}
+
+
 def _split_words(s: str) -> List[str]:
     raw = re.split(r"[^A-Za-z0-9_]+", str(s or ""))
     out: List[str] = []
@@ -72,6 +92,19 @@ def _split_words(s: str) -> List[str]:
 
 
 @dataclass
+class _CallEdge:
+    """A directed call edge ``caller`` -> ``callee`` extracted from a file.
+
+    ``caller`` is the enclosing function/method symbol (or an empty string for
+    module/top-level calls); ``callee`` is the called name as written at the
+    call site (best-effort, unqualified).
+    """
+
+    caller: str
+    callee: str
+
+
+@dataclass
 class _FileEntry:
     path: str
     mtime_ns: int
@@ -79,6 +112,7 @@ class _FileEntry:
     symbols: List[str]
     imports: List[str]
     tokens: List[str]
+    calls: List[_CallEdge] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -88,10 +122,18 @@ class _FileEntry:
             "symbols": self.symbols,
             "imports": self.imports,
             "tokens": self.tokens,
+            "calls": [{"caller": c.caller, "callee": c.callee} for c in self.calls],
         }
 
     @staticmethod
     def from_dict(d: Dict[str, Any]) -> "_FileEntry":
+        calls_raw = d.get("calls") or []
+        calls: List[_CallEdge] = []
+        for c in calls_raw:
+            if isinstance(c, dict):
+                callee = str(c.get("callee") or "").strip()
+                if callee:
+                    calls.append(_CallEdge(caller=str(c.get("caller") or "").strip(), callee=callee))
         return _FileEntry(
             path=str(d.get("path") or ""),
             mtime_ns=int(d.get("mtime_ns") or 0),
@@ -99,6 +141,7 @@ class _FileEntry:
             symbols=[str(x) for x in (d.get("symbols") or []) if str(x).strip()],
             imports=[str(x) for x in (d.get("imports") or []) if str(x).strip()],
             tokens=[str(x) for x in (d.get("tokens") or []) if str(x).strip()],
+            calls=calls,
         )
 
 
@@ -114,10 +157,10 @@ class ProjectContextIndex:
         self.workspace_root = Path(workspace_root).resolve()
         self.storage_dir = Path(storage_dir).resolve()
         self.storage_dir.mkdir(parents=True, exist_ok=True)
-        self.index_path = self.storage_dir / "project_context_index.json"
+        self.index_path = self.storage_dir / "project_context_index.db"
         self.files: Dict[str, _FileEntry] = {}
         self.last_index_at: float = 0.0
-        self.version: int = 1
+        self.version: int = _SCHEMA_VERSION
         self._lock = threading.RLock()
         self._load()
 
@@ -136,45 +179,203 @@ class ProjectContextIndex:
             if str(target_storage) != str(self.storage_dir):
                 self.storage_dir = target_storage
                 self.storage_dir.mkdir(parents=True, exist_ok=True)
-                self.index_path = self.storage_dir / "project_context_index.json"
+                self.index_path = self.storage_dir / "project_context_index.db"
             self.files = {}
             self.last_index_at = 0.0
             self._load()
+
+    def _connect(self) -> sqlite3.Connection:
+        # Caller controls synchronization. A fresh connection per operation
+        # keeps the index thread-safe under the class-level RLock without
+        # juggling SQLite's per-connection thread affinity.
+        conn = sqlite3.connect(str(self.index_path))
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
+        return conn
+
+    @staticmethod
+    def _create_schema(conn: sqlite3.Connection) -> None:
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS meta (
+                key TEXT PRIMARY KEY,
+                value TEXT
+            );
+            CREATE TABLE IF NOT EXISTS files (
+                rel TEXT PRIMARY KEY,
+                path TEXT NOT NULL,
+                mtime_ns INTEGER NOT NULL,
+                size INTEGER NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS symbols (
+                file_rel TEXT NOT NULL,
+                name TEXT NOT NULL,
+                ord INTEGER NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS imports (
+                file_rel TEXT NOT NULL,
+                value TEXT NOT NULL,
+                ord INTEGER NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS tokens (
+                file_rel TEXT NOT NULL,
+                token TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS calls (
+                file_rel TEXT NOT NULL,
+                caller TEXT NOT NULL,
+                callee TEXT NOT NULL,
+                ord INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_symbols_file ON symbols(file_rel);
+            CREATE INDEX IF NOT EXISTS idx_imports_file ON imports(file_rel);
+            CREATE INDEX IF NOT EXISTS idx_tokens_file ON tokens(file_rel);
+            CREATE INDEX IF NOT EXISTS idx_tokens_token ON tokens(token);
+            CREATE INDEX IF NOT EXISTS idx_calls_file ON calls(file_rel);
+            CREATE INDEX IF NOT EXISTS idx_calls_callee ON calls(callee);
+            CREATE INDEX IF NOT EXISTS idx_calls_caller ON calls(caller);
+            """
+        )
 
     def _load(self) -> None:
         # Caller controls synchronization. Keep this helper lock-free.
         if not self.index_path.is_file():
             return
         try:
-            raw = json.loads(self.index_path.read_text(encoding="utf-8"))
-            if not isinstance(raw, dict):
-                return
-            self.version = int(raw.get("version") or 1)
-            self.last_index_at = float(raw.get("last_index_at") or 0.0)
-            files = raw.get("files") if isinstance(raw.get("files"), dict) else {}
-            self.files = {}
-            for rel, obj in files.items():
-                if not isinstance(obj, dict):
-                    continue
-                e = _FileEntry.from_dict(obj)
-                if e.path:
-                    self.files[str(rel)] = e
+            conn = self._connect()
         except Exception:
             self.files = {}
             self.last_index_at = 0.0
+            return
+        try:
+            try:
+                row = conn.execute(
+                    "SELECT value FROM meta WHERE key = 'schema_version'"
+                ).fetchone()
+            except sqlite3.Error:
+                row = None
+            on_disk_version = int(row[0]) if row and str(row[0]).isdigit() else 0
+            if on_disk_version != _SCHEMA_VERSION:
+                # Incompatible / legacy database: discard and rebuild from
+                # scratch on the next refresh. We never migrate old data.
+                self.files = {}
+                self.last_index_at = 0.0
+                return
+
+            at_row = conn.execute(
+                "SELECT value FROM meta WHERE key = 'last_index_at'"
+            ).fetchone()
+            try:
+                self.last_index_at = float(at_row[0]) if at_row else 0.0
+            except Exception:
+                self.last_index_at = 0.0
+            self.version = _SCHEMA_VERSION
+
+            entries: Dict[str, _FileEntry] = {}
+            for rel, path, mtime_ns, size in conn.execute(
+                "SELECT rel, path, mtime_ns, size FROM files"
+            ):
+                entries[str(rel)] = _FileEntry(
+                    path=str(path),
+                    mtime_ns=int(mtime_ns),
+                    size=int(size),
+                    symbols=[],
+                    imports=[],
+                    tokens=[],
+                    calls=[],
+                )
+            for file_rel, name in conn.execute(
+                "SELECT file_rel, name FROM symbols ORDER BY file_rel, ord"
+            ):
+                e = entries.get(str(file_rel))
+                if e is not None:
+                    e.symbols.append(str(name))
+            for file_rel, value in conn.execute(
+                "SELECT file_rel, value FROM imports ORDER BY file_rel, ord"
+            ):
+                e = entries.get(str(file_rel))
+                if e is not None:
+                    e.imports.append(str(value))
+            for file_rel, token in conn.execute(
+                "SELECT file_rel, token FROM tokens"
+            ):
+                e = entries.get(str(file_rel))
+                if e is not None:
+                    e.tokens.append(str(token))
+            for file_rel, caller, callee in conn.execute(
+                "SELECT file_rel, caller, callee FROM calls ORDER BY file_rel, ord"
+            ):
+                e = entries.get(str(file_rel))
+                if e is not None:
+                    e.calls.append(_CallEdge(caller=str(caller), callee=str(callee)))
+            self.files = entries
+        except Exception:
+            self.files = {}
+            self.last_index_at = 0.0
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
     def _save(self) -> None:
         # Caller controls synchronization. Keep this helper lock-free.
-        payload = {
-            "version": self.version,
-            "workspace_root": str(self.workspace_root),
-            "last_index_at": self.last_index_at,
-            "files": {k: v.to_dict() for k, v in self.files.items()},
-        }
-        self.index_path.write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
+        conn = self._connect()
+        try:
+            self._create_schema(conn)
+            conn.execute("DELETE FROM files")
+            conn.execute("DELETE FROM symbols")
+            conn.execute("DELETE FROM imports")
+            conn.execute("DELETE FROM tokens")
+            conn.execute("DELETE FROM calls")
+            conn.executemany(
+                "INSERT OR REPLACE INTO files (rel, path, mtime_ns, size) VALUES (?, ?, ?, ?)",
+                [(rel, e.path, e.mtime_ns, e.size) for rel, e in self.files.items()],
+            )
+            sym_rows: List[Tuple[str, str, int]] = []
+            imp_rows: List[Tuple[str, str, int]] = []
+            tok_rows: List[Tuple[str, str]] = []
+            call_rows: List[Tuple[str, str, str, int]] = []
+            for rel, e in self.files.items():
+                for i, s in enumerate(e.symbols):
+                    sym_rows.append((rel, s, i))
+                for i, imp in enumerate(e.imports):
+                    imp_rows.append((rel, imp, i))
+                for t in e.tokens:
+                    tok_rows.append((rel, t))
+                for i, c in enumerate(e.calls):
+                    call_rows.append((rel, c.caller, c.callee, i))
+            conn.executemany(
+                "INSERT INTO symbols (file_rel, name, ord) VALUES (?, ?, ?)", sym_rows
+            )
+            conn.executemany(
+                "INSERT INTO imports (file_rel, value, ord) VALUES (?, ?, ?)", imp_rows
+            )
+            conn.executemany(
+                "INSERT INTO tokens (file_rel, token) VALUES (?, ?)", tok_rows
+            )
+            conn.executemany(
+                "INSERT INTO calls (file_rel, caller, callee, ord) VALUES (?, ?, ?, ?)",
+                call_rows,
+            )
+            conn.execute(
+                "INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', ?)",
+                (str(_SCHEMA_VERSION),),
+            )
+            conn.execute(
+                "INSERT OR REPLACE INTO meta (key, value) VALUES ('workspace_root', ?)",
+                (str(self.workspace_root),),
+            )
+            conn.execute(
+                "INSERT OR REPLACE INTO meta (key, value) VALUES ('last_index_at', ?)",
+                (repr(float(self.last_index_at)),),
+            )
+            conn.commit()
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
     def _iter_code_files(self, deadline_ts: Optional[float] = None) -> Tuple[List[Path], bool]:
         out: List[Path] = []
@@ -224,13 +425,25 @@ class ProjectContextIndex:
             r"^\s*using\s+([A-Za-z0-9_:.]+)\s*;",
             r"^\s*require\(\s*['\"]([^'\"]+)['\"]\s*\)",
         ]
+        # Patterns that introduce a new callable symbol (the enclosing
+        # "caller" for any call sites that follow it).
+        def_patterns = [
+            r"^\s*def\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(",
+            r"^\s*function\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(",
+            r"^\s*(?:export\s+)?(?:const|let|var)\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?:async\s+)?(?:function\b|\([^)]*\)\s*=>)",
+            r"^\s*(?:public|private|protected)?\s*(?:static\s+)?[A-Za-z_][A-Za-z0-9_<>\[\]]*\s+([A-Za-z_][A-Za-z0-9_]*)\s*\([^;]*\)\s*\{?\s*$",
+        ]
+        call_edges: List[_CallEdge] = []
+        current_caller = ""
         for line in text.splitlines():
+            matched_symbol = False
             for pat in symbol_patterns:
                 m = re.search(pat, line)
                 if m:
                     name = (m.group(1) or "").strip()
                     if name:
                         symbols.append(name)
+                    matched_symbol = True
                     break
             for pat in import_patterns:
                 m = re.search(pat, line)
@@ -239,9 +452,40 @@ class ProjectContextIndex:
                     if g:
                         imports.append(g)
                     break
+            # Track the enclosing callable so call edges can be attributed to a
+            # caller. Only definition-like symbols become callers (a class
+            # declaration is not a caller; methods/functions are).
+            def_name = ""
+            for pat in def_patterns:
+                m = re.search(pat, line)
+                if m:
+                    def_name = (m.group(1) or "").strip()
+                    break
+            if def_name:
+                current_caller = def_name
+            # Extract call sites: ``callee(`` occurrences on the line, skipping
+            # language keywords and the definition itself.
+            for cm in _CALL_SITE_RE.finditer(line):
+                callee = cm.group(1)
+                if not callee or callee in _CALL_KEYWORDS:
+                    continue
+                if matched_symbol and callee == def_name:
+                    continue
+                call_edges.append(_CallEdge(caller=current_caller, callee=callee))
         # de-dup while keeping order
         symbols = list(dict.fromkeys(symbols))[:120]
         imports = list(dict.fromkeys(imports))[:120]
+        # de-dup call edges (caller, callee) while keeping order, capped.
+        seen_edges: Set[Tuple[str, str]] = set()
+        calls: List[_CallEdge] = []
+        for c in call_edges:
+            key = (c.caller, c.callee)
+            if key in seen_edges:
+                continue
+            seen_edges.add(key)
+            calls.append(c)
+            if len(calls) >= 400:
+                break
 
         token_set: Set[str] = set()
         for t in _split_words(rel):
@@ -260,6 +504,7 @@ class ProjectContextIndex:
             symbols=symbols,
             imports=imports,
             tokens=tokens,
+            calls=calls,
         )
 
     def refresh_index(self, force: bool = False, timeout_ms: Optional[int] = None) -> Dict[str, Any]:
@@ -441,6 +686,66 @@ class ProjectContextIndex:
         }
         if isinstance(refresh_result, dict):
             out["index_refresh"] = refresh_result
+        return out
+
+    def call_graph(
+        self,
+        symbol: str,
+        direction: str = "both",
+        max_results: int = 50,
+        auto_refresh: bool = True,
+        refresh_timeout_ms: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """Return call-graph relationships for ``symbol``.
+
+        ``direction``:
+          - ``"callees"``: functions that ``symbol`` calls.
+          - ``"callers"``: functions/files that call ``symbol``.
+          - ``"both"`` (default): both of the above.
+
+        Each edge entry carries the file it was observed in and the caller /
+        callee names, enabling change-impact ("what calls X") and
+        dependency ("what does X call") analysis.
+        """
+        name = str(symbol or "").strip()
+        if not name:
+            return {"success": False, "error": "symbol must not be empty"}
+        dir_l = str(direction or "both").strip().lower()
+        if dir_l not in ("callees", "callers", "both"):
+            dir_l = "both"
+        cap = max(1, int(max_results or 50))
+
+        refresh_result: Optional[Dict[str, Any]] = None
+        if auto_refresh:
+            refresh_result = self.refresh_index(force=False, timeout_ms=refresh_timeout_ms)
+
+        with self._lock:
+            files_items = list(self.files.items())
+            status_snapshot = self.status()
+
+        callees: List[Dict[str, Any]] = []
+        callers: List[Dict[str, Any]] = []
+        for rel, e in files_items:
+            for c in e.calls:
+                if dir_l in ("callees", "both") and c.caller == name and c.callee:
+                    callees.append({"file": rel, "caller": c.caller, "callee": c.callee})
+                if dir_l in ("callers", "both") and c.callee == name:
+                    callers.append({"file": rel, "caller": c.caller, "callee": c.callee})
+
+        out: Dict[str, Any] = {
+            "success": True,
+            "symbol": name,
+            "direction": dir_l,
+            "index_status": status_snapshot,
+        }
+        if dir_l in ("callees", "both"):
+            out["callees"] = callees[:cap]
+            out["callees_total"] = len(callees)
+        if dir_l in ("callers", "both"):
+            out["callers"] = callers[:cap]
+            out["callers_total"] = len(callers)
+        if isinstance(refresh_result, dict):
+            out["stale"] = bool(refresh_result.get("timed_out"))
         return out
 
 # ---------------------------------------------------------------------------
