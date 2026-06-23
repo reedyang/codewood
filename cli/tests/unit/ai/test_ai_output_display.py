@@ -282,7 +282,7 @@ class AiOutputDisplayTests(unittest.TestCase):
         ):
             out = aoh.format_assistant_display_response(text)
 
-        self.assertIn("<BB>- </BB>", out)
+        self.assertIn("<BB>• </BB>", out)
         self.assertNotIn("<BB>Used</BB>", out)
         self.assertNotIn("<BB>The command</BB>", out)
         self.assertIn("<C>`Get-Content -Path agent.py -Raw`</C>", out)
@@ -1095,6 +1095,30 @@ class MarkdownRenderingTests(unittest.TestCase):
     def test_dollar_amount_is_not_italicised(self):
         out = self._render("it costs $5 and $10 total")
         self.assertNotIn("<I>", out)
+
+    def test_unordered_list_marker_renders_bullet_glyph(self):
+        for marker in ("-", "*", "+"):
+            out = self._render(f"{marker} an item")
+            self.assertIn("<BB>• </BB>", out)
+            self.assertNotIn(f"{marker} an", out.replace("•", marker))
+
+    def test_nested_list_keeps_indentation(self):
+        out = self._render("  - nested item")
+        self.assertIn("<BB>  • </BB>", out)
+
+    def test_ordered_list_marker_is_preserved(self):
+        out = self._render("1. first step")
+        self.assertIn("<BB>1. </BB>", out)
+
+    def test_bold_item_inside_bullet(self):
+        out = self._render("- **important** point")
+        self.assertIn("<BB>• </BB>", out)
+        self.assertIn("<B>important</B>", out)
+
+    def test_standalone_bold_line(self):
+        out = self._render("**Whole line bold**")
+        self.assertIn("<B>Whole line bold</B>", out)
+        self.assertNotIn("**", out)
 
 
 if __name__ == "__main__":

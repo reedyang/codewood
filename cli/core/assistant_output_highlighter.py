@@ -427,10 +427,16 @@ def highlight_assistant_display_line(line: str) -> str:
 
     marker = ""
     body = main
-    marker_match = re.match(r"^(\s*(?:[-*]|\d+\.)\s+)(.*)$", main)
-    if marker_match:
-        marker = _ansi_bright_blue(marker_match.group(1))
-        body = marker_match.group(2)
+    # Unordered list: render -, * or + as a • bullet (indent preserved so nested
+    # levels keep their depth). Ordered list: keep the "N." marker verbatim.
+    bullet_match = re.match(r"^(\s*)([-*+])(\s+)(.*)$", main)
+    ordered_match = re.match(r"^(\s*\d+\.\s+)(.*)$", main)
+    if bullet_match:
+        marker = _ansi_bright_blue(f"{bullet_match.group(1)}•{bullet_match.group(3)}")
+        body = bullet_match.group(4)
+    elif ordered_match:
+        marker = _ansi_bright_blue(ordered_match.group(1))
+        body = ordered_match.group(2)
 
     if _looks_like_shell_command_line(body):
         highlighted_body = _highlight_shell_command_line(body)
