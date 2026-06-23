@@ -1533,6 +1533,14 @@ body.resizing-x {
   background: var(--bg-hover);
   color: var(--text);
   vertical-align: baseline;
+  /* Let the pill take part in a text selection drag so it highlights together
+     with the surrounding prose (the JS in usePillSelectionHighlight then paints
+     the continuous accent band behind it). */
+  user-select: text;
+}
+.msg-ref-pill-attach {
+  background: color-mix(in srgb, var(--accent) 12%, var(--bg-input));
+  border-color: color-mix(in srgb, var(--accent) 30%, var(--border));
 }
 .msg-ref-pill-skill {
   background: color-mix(in srgb, var(--accent-warn, #d2a35a) 15%, var(--bg-input));
