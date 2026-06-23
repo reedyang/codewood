@@ -1424,7 +1424,25 @@ class ServeApp:
         return True
 
     def interrupt(self) -> None:
+        """Cancel the in-flight turn for the GUI's "stop" button.
+
+        The agent loops run on per-chat worker threads, so the CLI's
+        ``_thread.interrupt_main()`` path is unusable here (it would raise in
+        the unrelated HTTP/main thread). Instead we set the cooperative task
+        interrupt flag the loop polls on every model-stream chunk, tool-round
+        boundary, and tool dispatch (see ``runtime_loop``), and terminate any
+        running interruptible subprocess so the loop unwinds promptly.
+        """
         agent = self.agent
+        try:
+            lock = getattr(agent, "_interrupt_state_lock", None)
+            if lock is not None:
+                with lock:
+                    agent._task_interrupt_requested = True
+            else:
+                agent._task_interrupt_requested = True
+        except Exception:
+            pass
         for name in ("_mark_process_interrupt_requested", "_terminate_interruptible_processes"):
             try:
                 fn = getattr(agent, name, None)
