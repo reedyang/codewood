@@ -192,6 +192,12 @@ export interface Turn {
   rounds: TurnRound[];
   startedAt: number;
   endedAt: number | null;
+  /** True for a turn the GUI opened optimistically (the first message of a
+   *  freshly-created chat) before the backend's authoritative ``turn_start``
+   *  event arrived. The matching ``turn_start`` reconciles it in place rather
+   *  than appending a duplicate, and ``endActiveTurn`` won't settle it while it
+   *  has no rounds yet (so a premature ``idle`` can't split it in two). */
+  optimistic?: boolean;
 }
 
 /** A previously-recorded model round loaded from chat history. */

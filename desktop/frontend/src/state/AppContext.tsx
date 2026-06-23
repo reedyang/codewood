@@ -280,8 +280,25 @@ export function AppProvider({ children }: { children: ReactNode }) {
     stateRef.current = state;
   }, [state]);
 
-  const activeChatId = state?.activeChatId ?? "";
-  const activeChatWsId = state?.workspace.id ?? "";
+  // Local focus override applied when the GUI materializes a brand-new chat
+  // from draft mode. The backend's authoritative ``activeChatId`` only arrives
+  // via an SSE ``idle`` event, and EVERY incoming event calls ``setState`` —
+  // so an optimistic ``setState({activeChatId})`` can be clobbered by an
+  // in-flight/stale event, leaving the view stuck on the old/empty chat (the
+  // "slow switch / message not shown" symptom). This override forces the view
+  // onto the new chat immediately and is cleared once ``state`` catches up.
+  const [focusOverride, setFocusOverride] = useState<{
+    chatId: string;
+    wsId: string;
+  } | null>(null);
+  useEffect(() => {
+    if (focusOverride && state?.activeChatId === focusOverride.chatId) {
+      setFocusOverride(null);
+    }
+  }, [state?.activeChatId, focusOverride]);
+
+  const activeChatId = focusOverride?.chatId ?? state?.activeChatId ?? "";
+  const activeChatWsId = focusOverride?.wsId ?? state?.workspace.id ?? "";
   useEffect(() => {
     activeChatIdRef.current = activeChatId;
     // Opening (or switching to) a chat clears its unread marker. The unread
@@ -331,7 +348,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   // chat's turns/busy/messages after a focus switch. ``chatKey`` builds the
   // composite; an empty workspace id degrades to the bare id (single-workspace
   // / legacy behavior unchanged).
-  const activeWorkspaceId = state?.workspace.id ?? "";
+  const activeWorkspaceId = focusOverride?.wsId ?? state?.workspace.id ?? "";
   const activeKey = chatKey(activeWorkspaceId, activeChatId);
   // The active chat's live turns / busy flag are what the chat view renders.
   const turns = turnsByChat[activeKey] ?? EMPTY_TURNS;
@@ -644,20 +661,63 @@ export function AppProvider({ children }: { children: ReactNode }) {
     if (!chatId) {
       return;
     }
-    setTurnsByChat((prev) => ({
-      ...prev,
-      [chatId]: [
-        ...(prev[chatId] ?? []),
-        {
-          id: nextIdRef.current++,
-          userText,
-          rounds: [],
-          startedAt: Date.now(),
-          endedAt: null,
-        },
-      ],
-    }));
+    setTurnsByChat((prev) => {
+      const existing = prev[chatId] ?? [];
+      // Reconcile the optimistic first-message turn opened by ``sendInput`` for
+      // a brand-new chat: adopt the backend's authoritative user text in place
+      // instead of appending a SECOND turn (which would duplicate the message).
+      const last = existing[existing.length - 1];
+      if (last && last.optimistic && last.rounds.length === 0) {
+        const merged = [...existing];
+        merged[merged.length - 1] = {
+          ...last,
+          userText: userText || last.userText,
+          optimistic: false,
+        };
+        return { ...prev, [chatId]: merged };
+      }
+      return {
+        ...prev,
+        [chatId]: [
+          ...existing,
+          {
+            id: nextIdRef.current++,
+            userText,
+            rounds: [],
+            startedAt: Date.now(),
+            endedAt: null,
+          },
+        ],
+      };
+    });
   }, []);
+
+  // Optimistically open a turn for the user's message before the backend's
+  // ``turn_start`` event lands. Used when materializing a brand-new chat from
+  // draft mode so the first message echoes immediately (no SSE round-trip lag);
+  // ``startTurn`` reconciles it in place when the authoritative event arrives.
+  const startOptimisticTurn = useCallback(
+    (userText: string, chatId: string) => {
+      if (!chatId) {
+        return;
+      }
+      setTurnsByChat((prev) => ({
+        ...prev,
+        [chatId]: [
+          ...(prev[chatId] ?? []),
+          {
+            id: nextIdRef.current++,
+            userText,
+            rounds: [],
+            startedAt: Date.now(),
+            endedAt: null,
+            optimistic: true,
+          },
+        ],
+      }));
+    },
+    [],
+  );
 
   // Open a model round's wait timer on the active turn. Consecutive rounds
   // that only issue tool calls (no natural-language reply yet) belong to one
@@ -745,6 +805,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
       }
       const last = list[list.length - 1];
       if (last.endedAt !== null) {
+        return prev;
+      }
+      // An optimistic turn with no rounds yet is the first message of a
+      // just-created chat still waiting for its authoritative ``turn_start``.
+      // The ``new_chat`` path emits an ``idle`` snapshot before that input is
+      // processed; settling the turn here would split it (the reply would open a
+      // SECOND turn, duplicating the user message). Leave it open.
+      if (last.optimistic && last.rounds.length === 0) {
         return prev;
       }
       // Freeze any still-open round so its timer stops with the turn.
@@ -947,18 +1015,37 @@ export function AppProvider({ children }: { children: ReactNode }) {
         return;
       }
       // In draft (compose) mode the chat hasn't been created yet. Materialize it
-      // now: switch to the chosen workspace if needed, then create a fresh chat,
-      // so the first message lands in a brand-new chat in the right workspace.
+      // now in the chosen workspace as a SINGLE atomic backend op (switch +
+      // create). Doing the workspace switch and chat creation as two separate
+      // calls previously left an extra empty chat behind in the target
+      // workspace, so we let ``newChat`` take the workspace id directly.
       let targetChatId = activeChatIdRef.current;
       if (draftModeRef.current) {
         const wsId = draftWorkspaceIdRef.current;
-        if (wsId && wsId !== activeWorkspaceIdRef.current) {
-          await client.selectChat("", wsId);
-        }
-        const newId = await client.newChat();
+        const switchWs = Boolean(wsId && wsId !== activeWorkspaceIdRef.current);
+        const newId = await client.newChat(switchWs ? wsId : "");
         if (newId) {
           targetChatId = newId;
           historyChatRef.current = newId;
+          // Optimistically focus the new chat AND echo the user's message right
+          // away instead of waiting for the backend's ``idle`` / ``turn_start``
+          // SSE round-trip. Without the optimistic focus the view keeps
+          // rendering the old/empty chat's bucket (looks like it "stays on the
+          // welcome screen"); without the optimistic echo the message vanishes
+          // until ``turn_start`` lands. ``startTurn`` reconciles the echo in
+          // place when the authoritative event arrives, so there is no
+          // duplicate. The optimistic bucket uses the SAME workspace id the
+          // backend will tag the events with (the one we just switched to, or
+          // the current one), so the keys match and reconciliation works.
+          const echoWsId = switchWs
+            ? wsId
+            : wsId || activeWorkspaceIdRef.current;
+          activeChatIdRef.current = newId;
+          activeWorkspaceIdRef.current = echoWsId;
+          // Force the view onto the new chat via the focus override (survives
+          // any racing SSE ``setState``), then echo the message into its bucket.
+          setFocusOverride({ chatId: newId, wsId: echoWsId });
+          startOptimisticTurn(trimmed, chatKey(echoWsId, newId));
         }
         setDraftMode(false);
         setDraftWorkspaceId("");
@@ -969,7 +1056,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       // another chat is mid-task.
       await client.sendInput(trimmed, true, targetChatId);
     },
-    [client],
+    [client, startOptimisticTurn],
   );
 
   const runCommand = useCallback(

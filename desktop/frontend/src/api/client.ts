@@ -518,12 +518,15 @@ export class ApiClient {
     }
   }
 
-  /** Silently create and activate a new chat; returns its id (or ""). */
-  async newChat(): Promise<string> {
+  /** Silently create and activate a new chat; returns its id (or "").
+   *  When ``workspaceId`` is given the backend switches to that workspace and
+   *  creates the chat there in one atomic op (avoids a separate selectChat that
+   *  could leave an extra empty chat behind). */
+  async newChat(workspaceId = ""): Promise<string> {
     const res = await fetch(`${this.base}/new-chat`, {
       method: "POST",
       headers: this.headers(),
-      body: "{}",
+      body: JSON.stringify(workspaceId ? { workspaceId } : {}),
     });
     if (!res.ok) {
       return "";

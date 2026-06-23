@@ -2275,6 +2275,15 @@ def _try_record_user_task_message(agent: Any, user_task: str, already_recorded: 
 
 
 def _print_startup_overview(agent: Any) -> None:
+    # The startup overview is a terminal-only banner (``>_ App (version)`` plus
+    # model/workspace/directory lines). In the GUI every chat runs its own
+    # ``run_agent_loop`` thread, so a chat created while the GUI is live would
+    # otherwise emit this TUI banner as the new chat's first "output". Suppress
+    # it entirely in GUI plain-stream mode — the GUI shows this information in
+    # its own chrome.
+    if bool(getattr(agent, "_gui_plain_stream", False)):
+        return
+
     from ..core.localization import get_display_language, translate
 
     lang = get_display_language(agent)
