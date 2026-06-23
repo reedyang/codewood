@@ -16,9 +16,9 @@ class TaskControlToolTests(unittest.TestCase):
         self.agent = Agent.__new__(Agent)
         self.agent.skills = []
 
-    def test_ask_more_info_returns_need_user_input_payload(self):
+    def test_request_user_input_returns_need_user_input_payload(self):
         result = self.agent.execute_tool_call(
-            "ask_more_info",
+            "request_user_input",
             {
                 "question": "Which environment?",
                 "options": ["Production", "Staging"],
@@ -33,7 +33,7 @@ class TaskControlToolTests(unittest.TestCase):
         # it explicitly so the GUI doesn't have to guess.
         self.assertEqual(result.get("multi_select"), False)
 
-    def test_ask_more_info_supports_multi_select_flag(self):
+    def test_request_user_input_supports_multi_select_flag(self):
         # Multi-select is opt-in via ``multi_select: true``. Stringy
         # variants ("true"/"yes") are also accepted so a loose JSON
         # client doesn't accidentally fall back to single-select.
@@ -49,7 +49,7 @@ class TaskControlToolTests(unittest.TestCase):
         ):
             with self.subTest(raw_flag=raw_flag):
                 result = self.agent.execute_tool_call(
-                    "ask_more_info",
+                    "request_user_input",
                     {
                         "question": "Pick targets",
                         "options": ["A", "B", "C"],
@@ -59,7 +59,7 @@ class TaskControlToolTests(unittest.TestCase):
                 self.assertTrue(result.get("success"))
                 self.assertEqual(result.get("multi_select"), expected)
 
-    def test_ask_more_info_rejects_fewer_than_two_options(self):
+    def test_request_user_input_rejects_fewer_than_two_options(self):
         # The new contract: model MUST provide at least two discrete
         # choices so the host can render real option buttons. A
         # missing/short ``options`` array is a retryable error so the
@@ -70,12 +70,12 @@ class TaskControlToolTests(unittest.TestCase):
             {"question": "Pick a colour", "options": ["Only"]},
         ):
             with self.subTest(params=params):
-                result = self.agent.execute_tool_call("ask_more_info", params)
+                result = self.agent.execute_tool_call("request_user_input", params)
                 self.assertFalse(result.get("success", True))
                 self.assertTrue(result.get("retryable"))
                 self.assertIn("options", str(result.get("error") or ""))
 
-    def test_ask_more_info_dedupes_and_caps_options(self):
+    def test_request_user_input_dedupes_and_caps_options(self):
         # Duplicates collapse in arrival order; the cap (16) protects
         # the UI from a runaway list of choices. Empty/whitespace
         # entries are dropped silently.
@@ -84,7 +84,7 @@ class TaskControlToolTests(unittest.TestCase):
             "question": "Pick one",
             "options": ["A", " ", "A", "B", "", "C", *many],
         }
-        result = self.agent.execute_tool_call("ask_more_info", params)
+        result = self.agent.execute_tool_call("request_user_input", params)
         self.assertTrue(result.get("success"))
         opts = result.get("options")
         self.assertIsInstance(opts, list)

@@ -1,4 +1,4 @@
-"""Tool: ask_more_info."""
+"""Tool: request_user_input."""
 
 from __future__ import annotations
 
@@ -7,8 +7,8 @@ from typing import Any, Dict
 from .base import BaseTool
 
 
-class AskMoreInfoTool(BaseTool):
-    name = "ask_more_info"
+class RequestUserInputTool(BaseTool):
+    name = "request_user_input"
     description = "When key input is missing, ask the user a single-choice or multiple-choice question and pause auto-continuation until the user responds. Call this only after trying memory_search and other tools/skills/MCP in order and still being unable to obtain the information reliably. The host renders the options as buttons (single-choice: pick one; multi-choice: tick any subset and click Submit). The host always appends an extra 'Other' choice so the user can type a freeform answer; that freeform text is concatenated with any ticked options. Execution resumes with the user's answer as the supplement. Important: each entry in `options` MUST be the full human-readable label the user needs to choose (not a bare index/code), and you must NOT also print the same option list in your natural-language reply — the buttons rendered from `options` are the only enumeration the user should see."
     parameters: Dict[str, Any] = {
         "type": "object",
@@ -58,7 +58,7 @@ class AskMoreInfoTool(BaseTool):
                 "needs_user_input": False,
                 "retryable": True,
                 "error": (
-                    "ask_more_info requires at least two `options` (e.g. "
+                    "request_user_input requires at least two `options` (e.g. "
                     "[\"A\", \"B\"]). The host always appends an extra "
                     "'Other' option for freeform input, so do not include it "
                     "yourself."

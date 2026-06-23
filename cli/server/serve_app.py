@@ -294,11 +294,11 @@ def _build_structured_turns(agent: Any) -> List[Dict[str, Any]]:
             # directly, so neither the command echo nor its output is shown.
             continue
         if role == "assistant":
-            # A recorded ask_more_info selection: render it as a left-side
+            # A recorded request_user_input selection: render it as a left-side
             # "selection" bubble (a reply to the agent's question, distinct
             # from a user-initiated right-side turn).
             try:
-                ami_answer = agent._parse_ask_more_info_answer_history_content(content)
+                ami_answer = agent._parse_request_user_input_answer_history_content(content)
             except Exception:
                 ami_answer = None
             if ami_answer is not None:
@@ -442,7 +442,7 @@ def _build_structured_turns(agent: Any) -> List[Dict[str, Any]]:
         ]
         # Drop rounds that produced nothing renderable (e.g. an empty model
         # response) so we don't show a stray timer with no content. A round
-        # carrying an ask_more_info selection is always renderable.
+        # carrying an request_user_input selection is always renderable.
         turn["rounds"] = [
             r
             for r in rounds
@@ -592,8 +592,8 @@ def _primary_active_chat_id(agent: Any) -> str:
     return ""
 
 
-def _safe_pending_ask_more_info(agent: Any) -> Optional[Dict[str, Any]]:
-    """Return the active chat's pending ``ask_more_info`` request, if any.
+def _safe_pending_request_user_input(agent: Any) -> Optional[Dict[str, Any]]:
+    """Return the active chat's pending ``request_user_input`` request, if any.
 
     Reads from the chat-record marker so a GUI that loads (or refreshes)
     a chat already mid-prompt re-renders the selection panel — including
@@ -613,7 +613,7 @@ def _safe_pending_ask_more_info(agent: Any) -> Optional[Dict[str, Any]]:
     try:
         cid = _primary_active_chat_id(agent)
         with agent._session_scope(cid):
-            payload = agent._peek_pending_ask_more_info()
+            payload = agent._peek_pending_request_user_input()
     except Exception:
         payload = None
     if not isinstance(payload, dict):
@@ -937,7 +937,7 @@ def _build_state_inner(agent: Any) -> Dict[str, Any]:
         "uiPrefs": ui_prefs,
         "background": background,
         "plan": _safe_active_plan(agent),
-        "askMoreInfo": _safe_pending_ask_more_info(agent),
+        "askMoreInfo": _safe_pending_request_user_input(agent),
         "executionPolicy": str(getattr(agent, "execution_policy", "") or ""),
     }
 
@@ -993,11 +993,11 @@ class ServeApp:
         self.broadcaster = _Broadcaster()
         self._confirms: Dict[str, "queue.Queue[str]"] = {}
         self._confirms_lock = threading.Lock()
-        # Pending ``ask_more_info`` prompts: id -> reply queue. The agent
+        # Pending ``request_user_input`` prompts: id -> reply queue. The agent
         # blocks on a per-prompt queue until the frontend POSTs the chosen
         # option (or freeform answer) to ``/answer-ask-more-info``.
-        self._ask_more_info: Dict[str, "queue.Queue[str]"] = {}
-        self._ask_more_info_lock = threading.Lock()
+        self._request_user_input: Dict[str, "queue.Queue[str]"] = {}
+        self._request_user_input_lock = threading.Lock()
         self._shutdown_event = threading.Event()
         self._token = secrets.token_urlsafe(32)
         self._httpd: Optional[ThreadingHTTPServer] = None
@@ -1175,7 +1175,7 @@ class ServeApp:
             if isinstance(last, dict):
                 content = str(last.get("content") or "")
                 # Avoid a duplicate when the runtime already recorded one
-                # (e.g. on an ask_more_info pause).
+                # (e.g. on an request_user_input pause).
                 if agent._parse_task_worked_summary_history_content(content) is not None:
                     return
             rec = getattr(agent, "_record_task_worked_summary_history", None)
@@ -1284,15 +1284,15 @@ class ServeApp:
                 self._confirms.pop(cid, None)
         return str(answer or "")
 
-    def _ask_more_info_provider(
+    def _request_user_input_provider(
         self,
         question: str,
         options: List[str],
         multi_select: bool = False,
     ) -> str:
-        """Replacement for the TUI ``ask_more_info`` prompt.
+        """Replacement for the TUI ``request_user_input`` prompt.
 
-        Broadcasts an ``ask_more_info`` SSE event carrying the question,
+        Broadcasts an ``request_user_input`` SSE event carrying the question,
         the model-supplied options, the single/multi-select mode, and a
         per-prompt id, then blocks until the frontend POSTs the user's
         chosen answer back via ``/answer-ask-more-info``. The returned
@@ -1306,8 +1306,8 @@ class ServeApp:
         """
         pid = secrets.token_hex(8)
         reply: "queue.Queue[str]" = queue.Queue()
-        with self._ask_more_info_lock:
-            self._ask_more_info[pid] = reply
+        with self._request_user_input_lock:
+            self._request_user_input[pid] = reply
         # Sanitize once at the boundary so the frontend never sees ANSI
         # escapes or untrusted control codes from the model. ``strip_ansi``
         # also collapses lone CRs; the option labels are model output but
@@ -1323,7 +1323,7 @@ class ServeApp:
         # any concurrent reader of the chat JSON sees the same id we'll
         # accept on /answer-ask-more-info.
         try:
-            setter = getattr(self.agent, "_set_pending_ask_more_info", None)
+            setter = getattr(self.agent, "_set_pending_request_user_input", None)
             if callable(setter):
                 setter(
                     {
@@ -1336,7 +1336,7 @@ class ServeApp:
         except Exception:
             pass
         self.broadcaster.publish(
-            "ask_more_info",
+            "request_user_input",
             {
                 "id": pid,
                 "question": safe_question,
@@ -1348,8 +1348,8 @@ class ServeApp:
         try:
             answer = reply.get()
         finally:
-            with self._ask_more_info_lock:
-                self._ask_more_info.pop(pid, None)
+            with self._request_user_input_lock:
+                self._request_user_input.pop(pid, None)
         return str(answer or "")
 
     # ----- API surface used by the HTTP handler ---------------------------
@@ -1408,16 +1408,16 @@ class ServeApp:
         reply.put(str(answer or ""))
         return True
 
-    def answer_ask_more_info(self, pid: str, answer: str) -> bool:
-        """Resolve a pending ``ask_more_info`` prompt with the user's answer.
+    def answer_request_user_input(self, pid: str, answer: str) -> bool:
+        """Resolve a pending ``request_user_input`` prompt with the user's answer.
 
         Returns ``False`` when no such pending prompt exists (e.g. the
         request was cancelled, already answered, or the chat was reset
         between rendering and answering); the frontend treats that as a
         no-op and just dismisses the panel.
         """
-        with self._ask_more_info_lock:
-            reply = self._ask_more_info.get(str(pid or ""))
+        with self._request_user_input_lock:
+            reply = self._request_user_input.get(str(pid or ""))
         if reply is None:
             return False
         reply.put(str(answer or ""))
@@ -1504,7 +1504,7 @@ class ServeApp:
             focus_chat = _primary_active_chat_id(self.agent)
             # When the active chat is not actively streaming a turn here
             # (no busy runtime), pull the latest record from disk before
-            # building turns so messages, ``pending_ask_more_info`` markers
+            # building turns so messages, ``pending_request_user_input`` markers
             # and plan updates written by a peer process (e.g. another
             # codewood TUI) are reflected. An idle parked runtime no longer
             # blocks the refresh, which is what lets the GUI pick up a
@@ -1626,7 +1626,7 @@ class ServeApp:
                     # amended it on disk since we last loaded it, so pull its
                     # latest record before binding the session. This is what
                     # makes "switch chats and pick up the peer's new messages /
-                    # pending ask_more_info / plan updates" work, even when this
+                    # pending request_user_input / plan updates" work, even when this
                     # process still holds an idle runtime for the chat.
                     try:
                         refresh = getattr(agent, "_refresh_chat_record_from_disk", None)
@@ -3092,11 +3092,11 @@ class ServeApp:
                 reply.put_nowait("n")
             except Exception:
                 pass
-        # Same for any unresolved ``ask_more_info`` prompts; pushing an
+        # Same for any unresolved ``request_user_input`` prompts; pushing an
         # empty answer makes the runtime treat it as "no selection" and
         # pause the task cleanly instead of hanging the loop thread.
-        with self._ask_more_info_lock:
-            pending_ami = list(self._ask_more_info.values())
+        with self._request_user_input_lock:
+            pending_ami = list(self._request_user_input.values())
         for reply in pending_ami:
             try:
                 reply.put_nowait("")
@@ -3131,9 +3131,9 @@ class ServeApp:
         # Install agent loop hooks before swapping stdout so output is captured.
         self.agent._get_user_input_with_history = self._input_provider  # type: ignore[assignment]
         self.agent._suspended_input = self._confirm_provider  # type: ignore[assignment]
-        # The runtime loop calls this for ``ask_more_info`` so the GUI can
+        # The runtime loop calls this for ``request_user_input`` so the GUI can
         # render clickable option chips instead of a raw text prompt.
-        self.agent._ask_more_info_provider = self._ask_more_info_provider  # type: ignore[assignment]
+        self.agent._request_user_input_provider = self._request_user_input_provider  # type: ignore[assignment]
 
         bridge = _OutputBridge(
             self.broadcaster,
@@ -3486,7 +3486,7 @@ def _make_handler(app: ServeApp):
                 # caller can't pile unbounded payloads onto the loop's
                 # reply queue.
                 answer = str(body.get("answer") or "")[:4096]
-                ok = app.answer_ask_more_info(pid, answer)
+                ok = app.answer_request_user_input(pid, answer)
                 self._send_json(200 if ok else 404, {"ok": ok})
                 return
             if path == "/interrupt":

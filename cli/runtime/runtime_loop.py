@@ -589,7 +589,7 @@ def _format_active_plan_reminder(summary: Dict[str, Any]) -> str:
             "step is `completed` before you reply with the final natural-language "
             "answer. The plan-completion requirement does not block clarifying "
             "questions: if you genuinely need more information from the user, "
-            "call `ask_more_info` (the host will pause for the user's reply); "
+            "call `request_user_input` (the host will pause for the user's reply); "
             "do not mark pending steps as `completed` just to end the turn."
         )
     else:
@@ -661,7 +661,7 @@ def _warn_loop_ended_with_pending_plan(
     agent: Any,
     *,
     plan_finalize_nudged: bool,
-    turn_used_ask_more_info: bool,
+    turn_used_request_user_input: bool,
 ) -> None:
     """Print a user-visible warning when the loop exits with a stale plan.
 
@@ -672,11 +672,11 @@ def _warn_loop_ended_with_pending_plan(
     the user is left wondering "plan 还没完成，为什么循环结束了？" —
     exactly the symptom that motivated this helper.
 
-    Suppresses the warning when the model used ``ask_more_info`` this
+    Suppresses the warning when the model used ``request_user_input`` this
     turn, because pausing the plan to wait for the user's reply is a
     legitimate, expected handoff.
     """
-    if turn_used_ask_more_info:
+    if turn_used_request_user_input:
         return
     try:
         summary = _summarize_active_plan(agent)
@@ -729,13 +729,13 @@ def _warn_loop_ended_with_pending_plan(
 def _maybe_offer_plan_execution_choice(
     agent: Any,
     *,
-    turn_used_ask_more_info: bool,
+    turn_used_request_user_input: bool,
 ) -> Optional[str]:
     """After a Plan-mode turn drafts a plan, ask the user how to proceed.
 
     Mirrors the GUI's "Execute now" affordance for the TUI: once the agent
     has finished outlining a plan (Plan mode sticky, a pending plan exists,
-    and the turn didn't pause on ``ask_more_info``), present an interactive
+    and the turn didn't pause on ``request_user_input``), present an interactive
     selector with two paths:
 
       * **Execute the plan now** — leave Plan mode (switch to Agent mode) and
@@ -750,8 +750,8 @@ def _maybe_offer_plan_execution_choice(
     in which case the caller falls back to the normal command prompt.
     """
     # Only offer the choice in Plan mode, and never when the turn handed off
-    # to the user via ask_more_info (that is its own pending interaction).
-    if turn_used_ask_more_info:
+    # to the user via request_user_input (that is its own pending interaction).
+    if turn_used_request_user_input:
         return None
     if not bool(getattr(agent, "_plan_mode_sticky", False)):
         return None
@@ -760,8 +760,8 @@ def _maybe_offer_plan_execution_choice(
         return None
 
     input_handler = getattr(agent, "input_handler", None)
-    interactive = getattr(input_handler, "prompt_ask_more_info_selection", None)
-    if not (callable(interactive) and _ask_more_info_interactive_supported(agent)):
+    interactive = getattr(input_handler, "prompt_request_user_input_selection", None)
+    if not (callable(interactive) and _request_user_input_interactive_supported(agent)):
         return None
 
     from ..core.localization import translate as _translate
@@ -823,14 +823,14 @@ def _should_fire_plan_finalize_nudge(
     *,
     task_uses_standard_openai_tools: bool,
     plan_finalize_nudged: bool,
-    turn_used_ask_more_info: bool,
+    turn_used_request_user_input: bool,
 ) -> Optional[Dict[str, Any]]:
     """Return the active-plan summary when a plan-finalize nudge is warranted.
 
     Returns ``None`` (no nudge needed) when any precondition fails:
     the model can't actually call tools to update the plan, the
     nudge was already fired this turn, the model used
-    ``ask_more_info`` (which is a legitimate handoff to the user),
+    ``request_user_input`` (which is a legitimate handoff to the user),
     or the active plan has no pending steps.
 
     Centralizing this check guarantees every loop-exit path uses the
@@ -843,7 +843,7 @@ def _should_fire_plan_finalize_nudge(
         return None
     if plan_finalize_nudged:
         return None
-    if turn_used_ask_more_info:
+    if turn_used_request_user_input:
         return None
     summary = _summarize_active_plan(agent)
     if not summary or not summary.get("has_pending"):
@@ -1595,13 +1595,13 @@ def _format_worked_for_summary_line(elapsed_seconds: int, terminal_width: int, l
     return head + ("─" * (width - head_width))
 
 
-def build_ask_more_info_prompt_block(
+def build_request_user_input_prompt_block(
     agent: Any,
     question: str,
     options: List[str],
     multi_select: bool = False,
 ) -> str:
-    """Build the TUI ``ask_more_info`` prompt text (numbered options + hint).
+    """Build the TUI ``request_user_input`` prompt text (numbered options + hint).
 
     Shared by the live prompt and the history-replay re-render so a pending
     clarifying prompt created by another process (e.g. the GUI) shows the
@@ -1614,22 +1614,22 @@ def build_ask_more_info_prompt_block(
 
     visible_options = [str(o) for o in (options or [])]
     other_index = len(visible_options) + 1
-    other_label = t("runtime.ask_more_info.option_other")
+    other_label = t("runtime.request_user_input.option_other")
     lines: List[str] = [
-        t("runtime.ask_more_info.required"),
-        t("runtime.ask_more_info.question", question=str(question or "")),
+        t("runtime.request_user_input.required"),
+        t("runtime.request_user_input.question", question=str(question or "")),
     ]
     for idx, label in enumerate(visible_options, start=1):
         lines.append(f"  {idx}. {label}")
     lines.append(f"  {other_index}. {other_label}")
     if multi_select:
-        lines.append(t("runtime.ask_more_info.multi_hint", other_index=other_index))
+        lines.append(t("runtime.request_user_input.multi_hint", other_index=other_index))
     else:
-        lines.append(t("runtime.ask_more_info.single_hint", other_index=other_index))
+        lines.append(t("runtime.request_user_input.single_hint", other_index=other_index))
     return "\n".join(lines)
 
 
-def build_ask_more_info_header_block(agent: Any, question: str) -> str:
+def build_request_user_input_header_block(agent: Any, question: str) -> str:
     """Question header only — no numbered option list or numbered-prompt hint.
 
     Used by the interactive arrow-key selector, which renders the options
@@ -1642,19 +1642,19 @@ def build_ask_more_info_header_block(agent: Any, question: str) -> str:
     t = lambda key, fallback=None, **kwargs: _translate(key, lang, fallback, **kwargs)
     return "\n".join(
         [
-            t("runtime.ask_more_info.required"),
-            t("runtime.ask_more_info.question", question=str(question or "")),
+            t("runtime.request_user_input.required"),
+            t("runtime.request_user_input.question", question=str(question or "")),
         ]
     )
 
 
-def _solicit_ask_more_info_answer(
+def _solicit_request_user_input_answer(
     agent: Any,
     question: str,
     options: List[str],
     multi_select: bool = False,
 ) -> Tuple[str, bool]:
-    """Collect the user's answer to an ``ask_more_info`` clarifying question.
+    """Collect the user's answer to an ``request_user_input`` clarifying question.
 
     Returns ``(supplement_text, handoff_to_main_loop)``. An empty
     ``supplement_text`` means the user cancelled — the caller pauses the
@@ -1668,7 +1668,7 @@ def _solicit_ask_more_info_answer(
     the TUI parses comma/space-separated digits (e.g. ``1,3``) and an
     optional trailing freeform fragment (e.g. ``1,3, also include FOO``).
 
-    The host can install ``agent._ask_more_info_provider`` to fully
+    The host can install ``agent._request_user_input_provider`` to fully
     replace the TUI prompt. The hook signature is
     ``provider(question, options, multi_select)`` — older single-arg
     hooks are still tolerated via a graceful fallback.
@@ -1684,19 +1684,19 @@ def _solicit_ask_more_info_answer(
     # showing stale Execute-now/plan UI. The id is best-effort: GUI's own
     # provider will overwrite it with its own per-request id below.
     pending_payload: Dict[str, Any] = {
-        "id": _ask_more_info_pending_id(agent),
+        "id": _request_user_input_pending_id(agent),
         "question": str(question or ""),
         "options": list(options or []),
         "multi_select": bool(multi_select),
     }
-    setter = getattr(agent, "_set_pending_ask_more_info", None)
+    setter = getattr(agent, "_set_pending_request_user_input", None)
     if callable(setter):
         try:
             setter(pending_payload)
         except Exception:
             pass
 
-    provider = getattr(agent, "_ask_more_info_provider", None)
+    provider = getattr(agent, "_request_user_input_provider", None)
     if callable(provider):
         try:
             # New 3-arg signature; old hooks took (question, options).
@@ -1708,19 +1708,19 @@ def _solicit_ask_more_info_answer(
                 raw = provider(question, list(options))
         except KeyboardInterrupt:
             try:
-                print(t("runtime.ask_more_info.supplement_cancelled"))
+                print(t("runtime.request_user_input.supplement_cancelled"))
             except Exception:
                 pass
-            _clear_ask_more_info_pending(agent)
+            _clear_request_user_input_pending(agent)
             return ("", False)
         except Exception:
-            _clear_ask_more_info_pending(agent)
+            _clear_request_user_input_pending(agent)
             return ("", False)
         answer = str(raw or "").strip()
         if not answer:
-            _clear_ask_more_info_pending(agent)
+            _clear_request_user_input_pending(agent)
             return ("", False)
-        _clear_ask_more_info_pending(agent)
+        _clear_request_user_input_pending(agent)
         if answer.startswith("/") or answer.startswith("!"):
             agent._queued_user_input = answer
             return (answer, True)
@@ -1734,8 +1734,8 @@ def _solicit_ask_more_info_answer(
     # multi-select). Falls back to the plain numbered-prompt flow below when
     # the input handler can't provide it (no prompt_toolkit, non-tty, etc.).
     input_handler = getattr(agent, "input_handler", None)
-    interactive = getattr(input_handler, "prompt_ask_more_info_selection", None)
-    if callable(interactive) and _ask_more_info_interactive_supported(agent):
+    interactive = getattr(input_handler, "prompt_request_user_input_selection", None)
+    if callable(interactive) and _request_user_input_interactive_supported(agent):
         # The interactive selector renders the question header ("Need your
         # input" + the question) itself and runs with ``erase_when_done=False``,
         # so that header stays in the transcript after the widget tears down.
@@ -1751,20 +1751,20 @@ def _solicit_ask_more_info_answer(
         if picked != "__fallback__":
             if picked is None:
                 try:
-                    print(t("runtime.ask_more_info.supplement_cancelled"))
+                    print(t("runtime.request_user_input.supplement_cancelled"))
                 except Exception:
                     pass
-                _clear_ask_more_info_pending(agent)
+                _clear_request_user_input_pending(agent)
                 return ("", False)
             answer = str(picked).strip()
             if not answer:
                 try:
-                    print(t("runtime.ask_more_info.no_supplement"))
+                    print(t("runtime.request_user_input.no_supplement"))
                 except Exception:
                     pass
-                _clear_ask_more_info_pending(agent)
+                _clear_request_user_input_pending(agent)
                 return ("", False)
-            _clear_ask_more_info_pending(agent)
+            _clear_request_user_input_pending(agent)
             return (answer, False)
 
     # TUI fallback. Layout depends on the mode:
@@ -1774,11 +1774,11 @@ def _solicit_ask_more_info_answer(
     # too — without that, prompt_toolkit's redraw after a terminal resize
     # would scroll the options off the screen and the user is left typing
     # blindly.
-    prompt_block = build_ask_more_info_prompt_block(
+    prompt_block = build_request_user_input_prompt_block(
         agent, question, visible_options, multi_select
     )
     try:
-        agent._pending_ask_more_info_render = prompt_block  # type: ignore[attr-defined]
+        agent._pending_request_user_input_render = prompt_block  # type: ignore[attr-defined]
     except Exception:
         pass
     try:
@@ -1791,21 +1791,21 @@ def _solicit_ask_more_info_answer(
             raw_input_line = agent._get_user_input_with_history().strip()
         except KeyboardInterrupt:
             try:
-                print(t("runtime.ask_more_info.supplement_cancelled"))
+                print(t("runtime.request_user_input.supplement_cancelled"))
             except Exception:
                 pass
-            _clear_ask_more_info_pending(agent)
+            _clear_request_user_input_pending(agent)
             return ("", False)
         if not raw_input_line:
             try:
-                print(t("runtime.ask_more_info.no_supplement"))
+                print(t("runtime.request_user_input.no_supplement"))
             except Exception:
                 pass
-            _clear_ask_more_info_pending(agent)
+            _clear_request_user_input_pending(agent)
             return ("", False)
         if raw_input_line.startswith("/") or raw_input_line.startswith("!"):
             agent._queued_user_input = raw_input_line
-            _clear_ask_more_info_pending(agent)
+            _clear_request_user_input_pending(agent)
             return (raw_input_line, True)
 
         if not multi_select:
@@ -1817,20 +1817,20 @@ def _solicit_ask_more_info_answer(
                 except ValueError:
                     pick = -1
                 if 1 <= pick <= len(visible_options):
-                    _clear_ask_more_info_pending(agent)
+                    _clear_request_user_input_pending(agent)
                     return (visible_options[pick - 1], False)
                 if pick == other_index:
                     try:
-                        print(t("runtime.ask_more_info.other_prompt"))
+                        print(t("runtime.request_user_input.other_prompt"))
                     except Exception:
                         pass
                     continue
                 try:
-                    print(t("runtime.ask_more_info.invalid_choice"))
+                    print(t("runtime.request_user_input.invalid_choice"))
                 except Exception:
                     pass
                 continue
-            _clear_ask_more_info_pending(agent)
+            _clear_request_user_input_pending(agent)
             return (raw_input_line, False)
 
         # Multi-select: accept "1,3", "1 3", "1,3, free text after"
@@ -1842,7 +1842,7 @@ def _solicit_ask_more_info_answer(
         )
         if error == "invalid":
             try:
-                print(t("runtime.ask_more_info.invalid_choice"))
+                print(t("runtime.request_user_input.invalid_choice"))
             except Exception:
                 pass
             continue
@@ -1850,17 +1850,17 @@ def _solicit_ask_more_info_answer(
             # User ticked Other but didn't supply text; re-prompt them
             # for the freeform fragment without losing the picks so far.
             try:
-                print(t("runtime.ask_more_info.other_prompt"))
+                print(t("runtime.request_user_input.other_prompt"))
             except Exception:
                 pass
             try:
                 extra = agent._get_user_input_with_history().strip()
             except KeyboardInterrupt:
                 try:
-                    print(t("runtime.ask_more_info.supplement_cancelled"))
+                    print(t("runtime.request_user_input.supplement_cancelled"))
                 except Exception:
                     pass
-                _clear_ask_more_info_pending(agent)
+                _clear_request_user_input_pending(agent)
                 return ("", False)
             if not extra:
                 # Bare empty input cancels the Other branch but keeps
@@ -1875,19 +1875,19 @@ def _solicit_ask_more_info_answer(
             parts.append(other_text)
         if not parts:
             try:
-                print(t("runtime.ask_more_info.invalid_choice"))
+                print(t("runtime.request_user_input.invalid_choice"))
             except Exception:
                 pass
             continue
-        _clear_ask_more_info_pending(agent)
+        _clear_request_user_input_pending(agent)
         return ("; ".join(parts), False)
 
 
-def _ask_more_info_interactive_supported(agent: Any) -> bool:
+def _request_user_input_interactive_supported(agent: Any) -> bool:
     """Whether the interactive arrow-key selector can run for this prompt.
 
     Requires a real interactive stdin/stdout TTY and a non-GUI (no custom
-    ``_ask_more_info_provider``) session. The GUI installs its own provider
+    ``_request_user_input_provider``) session. The GUI installs its own provider
     and is handled earlier, so this only gates the TUI path.
     """
     try:
@@ -1897,15 +1897,15 @@ def _ask_more_info_interactive_supported(agent: Any) -> bool:
             return False
     except Exception:
         return False
-    # GUI/headless runs route through ``_ask_more_info_provider``; never show
+    # GUI/headless runs route through ``_request_user_input_provider``; never show
     # the terminal widget there.
-    if callable(getattr(agent, "_ask_more_info_provider", None)):
+    if callable(getattr(agent, "_request_user_input_provider", None)):
         return False
     return True
 
 
-def _ask_more_info_pending_id(agent: Any) -> str:
-    """Return a short opaque id for the in-flight TUI ask_more_info prompt.
+def _request_user_input_pending_id(agent: Any) -> str:
+    """Return a short opaque id for the in-flight TUI request_user_input prompt.
 
     The GUI provider generates its own per-request id, but the TUI path
     has nothing to wait on, so we just need something stable enough for
@@ -1920,16 +1920,16 @@ def _ask_more_info_pending_id(agent: Any) -> str:
         return str(int(time.time() * 1000))
 
 
-def _clear_ask_more_info_pending(agent: Any) -> None:
+def _clear_request_user_input_pending(agent: Any) -> None:
     """Remove both the chat-record marker and the in-memory render stash."""
-    clearer = getattr(agent, "_clear_pending_ask_more_info", None)
+    clearer = getattr(agent, "_clear_pending_request_user_input", None)
     if callable(clearer):
         try:
             clearer()
         except Exception:
             pass
     try:
-        agent._pending_ask_more_info_render = ""  # type: ignore[attr-defined]
+        agent._pending_request_user_input_render = ""  # type: ignore[attr-defined]
     except Exception:
         pass
 
@@ -2029,7 +2029,7 @@ def _refresh_context_usage_after_task_boundary(
 ) -> None:
     """
     Force a context-usage refresh at conversation boundary moments
-    (turn finished/cancelled/ask_more_info pause), so the status bar
+    (turn finished/cancelled/request_user_input pause), so the status bar
     reflects the latest in-context anchor immediately.
     """
     try:
@@ -2237,17 +2237,17 @@ def _try_record_user_task_message(agent: Any, user_task: str, already_recorded: 
         append_fn = getattr(agent, "_append_chat_message", None)
         if callable(append_fn):
             append_fn("user", text)
-            # A new user turn supersedes any leftover ask_more_info
+            # A new user turn supersedes any leftover request_user_input
             # prompt from a prior abandoned round, so the GUI doesn't
             # keep showing a stale selection panel.
             try:
-                clearer = getattr(agent, "_clear_pending_ask_more_info", None)
+                clearer = getattr(agent, "_clear_pending_request_user_input", None)
                 if callable(clearer):
                     clearer()
             except Exception:
                 pass
             try:
-                agent._pending_ask_more_info_render = ""  # type: ignore[attr-defined]
+                agent._pending_request_user_input_render = ""  # type: ignore[attr-defined]
             except Exception:
                 pass
             return True
@@ -3295,7 +3295,7 @@ def run_agent_loop(agent: Any):
             pseudo_retry_attempts = 0
             tool_round = 0
             plan_finalize_nudged = False
-            turn_used_ask_more_info = False
+            turn_used_request_user_input = False
             while max_tool_rounds is None or tool_round < max_tool_rounds:
                 if self._consume_task_interrupt_requested():
                     raise KeyboardInterrupt
@@ -3418,7 +3418,7 @@ def run_agent_loop(agent: Any):
                     _warn_loop_ended_with_pending_plan(
                         self,
                         plan_finalize_nudged=plan_finalize_nudged,
-                        turn_used_ask_more_info=turn_used_ask_more_info,
+                        turn_used_request_user_input=turn_used_request_user_input,
                     )
                     break
                 cleaned_internal_ai_response = _strip_leaked_internal_history_markers(ai_response)
@@ -3491,7 +3491,7 @@ def run_agent_loop(agent: Any):
                         _warn_loop_ended_with_pending_plan(
                             self,
                             plan_finalize_nudged=plan_finalize_nudged,
-                            turn_used_ask_more_info=turn_used_ask_more_info,
+                            turn_used_request_user_input=turn_used_request_user_input,
                         )
                         break
 
@@ -3552,7 +3552,7 @@ def run_agent_loop(agent: Any):
                     # the model can actually invoke the tool, and at most
                     # once per turn to avoid loops with stubborn models.
                     # Skip the nudge entirely if the model used
-                    # ``ask_more_info`` earlier in this turn: that path is
+                    # ``request_user_input`` earlier in this turn: that path is
                     # an explicit handoff to the user and the plan can
                     # legitimately stay open until the next user message
                     # is processed.
@@ -3560,7 +3560,7 @@ def run_agent_loop(agent: Any):
                         self,
                         task_uses_standard_openai_tools=task_uses_standard_openai_tools,
                         plan_finalize_nudged=plan_finalize_nudged,
-                        turn_used_ask_more_info=turn_used_ask_more_info,
+                        turn_used_request_user_input=turn_used_request_user_input,
                     )
                     if nudge_summary is not None:
                         plan_finalize_nudged = True
@@ -3578,7 +3578,7 @@ def run_agent_loop(agent: Any):
                     _warn_loop_ended_with_pending_plan(
                         self,
                         plan_finalize_nudged=plan_finalize_nudged,
-                        turn_used_ask_more_info=turn_used_ask_more_info,
+                        turn_used_request_user_input=turn_used_request_user_input,
                     )
                     _refresh_context_usage_after_task_boundary(
                         self,
@@ -3600,17 +3600,17 @@ def run_agent_loop(agent: Any):
                         break_after_batch = True
                         break
 
-                    if tool_name == "ask_more_info":
+                    if tool_name == "request_user_input":
                         # Remember that this turn paused for a clarifying
                         # question. The end-of-turn plan-finalization nudge
                         # below must not fire after the model used
-                        # ``ask_more_info``: the model is legitimately
+                        # ``request_user_input``: the model is legitimately
                         # waiting on the user, and forcing one more round
                         # of ``update_plan`` here would either block the
                         # handoff (model has nothing more to do without
                         # the answer) or pressure the model to mark steps
                         # ``completed`` prematurely.
-                        turn_used_ask_more_info = True
+                        turn_used_request_user_input = True
 
                     if tool_name == "apply_patch":
                         patch_path = str(args.get("path") or "").strip() if isinstance(args, dict) else ""
@@ -3819,14 +3819,14 @@ def run_agent_loop(agent: Any):
                         break
 
                     if bool(result.get("needs_user_input", False)) and str(result.get("input_type", "")).strip() == "supplement":
-                        if (not worked_summary_emitted) and tool_name == "ask_more_info":
+                        if (not worked_summary_emitted) and tool_name == "request_user_input":
                             _print_worked_for_summary_line(
                                 self,
                                 int(max(0.0, time.monotonic() - float(task_started_at))),
                             )
                             worked_summary_emitted = True
                         q = str(result.get("question") or "").strip() or t(
-                            "runtime.ask_more_info.default_question"
+                            "runtime.request_user_input.default_question"
                         )
                         raw_options = result.get("options")
                         options_list = (
@@ -3835,14 +3835,14 @@ def run_agent_loop(agent: Any):
                             else []
                         )
                         multi_select_flag = bool(result.get("multi_select", False))
-                        supplement_text, handoff_to_main_loop = _solicit_ask_more_info_answer(
+                        supplement_text, handoff_to_main_loop = _solicit_request_user_input_answer(
                             self, q, options_list, multi_select_flag
                         )
                         if handoff_to_main_loop:
                             _refresh_context_usage_after_task_boundary(
                                 self,
                                 user_input_hint=str(original_user_task or ""),
-                                context_hint="ask_more_info handoff",
+                                context_hint="request_user_input handoff",
                             )
                             break_after_batch = True
                             break
@@ -3850,7 +3850,7 @@ def run_agent_loop(agent: Any):
                             _refresh_context_usage_after_task_boundary(
                                 self,
                                 user_input_hint=str(original_user_task or ""),
-                                context_hint="ask_more_info paused",
+                                context_hint="request_user_input paused",
                             )
                             break_after_batch = True
                             break
@@ -3861,7 +3861,7 @@ def run_agent_loop(agent: Any):
                         # (the model already receives it via ``next_input``).
                         try:
                             recorder = getattr(
-                                self, "_record_ask_more_info_answer_history", None
+                                self, "_record_request_user_input_answer_history", None
                             )
                             if callable(recorder):
                                 recorder(supplement_text)
@@ -3871,7 +3871,7 @@ def run_agent_loop(agent: Any):
                             f"[Original user request]\n{original_user_task}\n\n"
                             f"[User supplement]\n{supplement_text}\n\n"
                             "Continue handling the original request together with this supplement using standard tools; "
-                            "you may call one or more tools at once. If information is still insufficient, call `ask_more_info` again."
+                            "you may call one or more tools at once. If information is still insufficient, call `request_user_input` again."
                         )
                         continue_after_batch = True
                         break
@@ -3897,7 +3897,7 @@ def run_agent_loop(agent: Any):
                     _warn_loop_ended_with_pending_plan(
                         self,
                         plan_finalize_nudged=plan_finalize_nudged,
-                        turn_used_ask_more_info=turn_used_ask_more_info,
+                        turn_used_request_user_input=turn_used_request_user_input,
                     )
                     break
                 # Plan mode: registering a plan is the end of the turn. When the
@@ -3924,7 +3924,7 @@ def run_agent_loop(agent: Any):
                     _warn_loop_ended_with_pending_plan(
                         self,
                         plan_finalize_nudged=plan_finalize_nudged,
-                        turn_used_ask_more_info=turn_used_ask_more_info,
+                        turn_used_request_user_input=turn_used_request_user_input,
                     )
                     break
 
@@ -4016,7 +4016,7 @@ def run_agent_loop(agent: Any):
                 try:
                     plan_followup = _maybe_offer_plan_execution_choice(
                         self,
-                        turn_used_ask_more_info=turn_used_ask_more_info,
+                        turn_used_request_user_input=turn_used_request_user_input,
                     )
                 except Exception:
                     plan_followup = None

@@ -94,7 +94,7 @@ class _FakeEditAgent:
     def _sync_active_chat_messages(self):
         self.sync_calls += 1
 
-    def _clear_pending_ask_more_info(self):
+    def _clear_pending_request_user_input(self):
         self.clear_pending_calls += 1
 
 
@@ -472,8 +472,8 @@ class ChatEditCommandTests(unittest.TestCase):
         self.assertEqual(agent.sync_calls, 1)
         mock_reload.assert_called_once_with(agent, "chat-1")
 
-    def test_edit_clears_pending_ask_more_info(self):
-        # Editing a turn that may have surfaced an ask_more_info prompt must
+    def test_edit_clears_pending_request_user_input(self):
+        # Editing a turn that may have surfaced an request_user_input prompt must
         # clear the pending clarification so the GUI/TUI don't redisplay a
         # stale selection panel for a message that no longer exists.
         agent = _FakeEditAgent(self._history())

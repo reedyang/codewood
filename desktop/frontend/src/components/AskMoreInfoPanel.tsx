@@ -3,7 +3,7 @@ import { useApp } from "../state/AppContext";
 
 /**
  * Inline clarification panel rendered at the bottom of the transcript when
- * the model called ``ask_more_info``. Two layouts:
+ * the model called ``request_user_input``. Two layouts:
  *
  *   * single-select (default) — each option is a button that submits
  *     immediately on click. "Other" expands a textarea + Send button.

@@ -2687,7 +2687,7 @@ class PromptToolkitInputHandler:
         # Keep all wrapped/continued lines visually aligned with a fixed 2-space indent.
         return MULTILINE_INDENT
 
-    def prompt_ask_more_info_selection(
+    def prompt_request_user_input_selection(
         self,
         question: str,
         options: List[str],
@@ -2695,7 +2695,7 @@ class PromptToolkitInputHandler:
         other_label: Optional[str] = None,
         required_label: Optional[str] = None,
     ) -> Optional[str]:
-        """Interactive arrow-key selector for an ``ask_more_info`` prompt.
+        """Interactive arrow-key selector for an ``request_user_input`` prompt.
 
         Navigation:
           - ↑/↓ move the highlight between options (and the trailing "Other"
@@ -2732,11 +2732,11 @@ class PromptToolkitInputHandler:
         lang = self._ui_language()
         opts = [str(o) for o in (options or [])]
         # Callers (e.g. the Plan-mode execute/modify chooser) can override the
-        # trailing free-text row's label; default to the ask_more_info wording.
+        # trailing free-text row's label; default to the request_user_input wording.
         other_label = (
             str(other_label)
             if other_label is not None
-            else translate("runtime.ask_more_info.option_other", lang)
+            else translate("runtime.request_user_input.option_other", lang)
         )
         # Row model: indices 0..len-1 are concrete options; the last row is
         # the "Other" free-text row.
@@ -2767,12 +2767,12 @@ class PromptToolkitInputHandler:
             header = (
                 str(required_label)
                 if required_label is not None
-                else translate("runtime.ask_more_info.required", lang)
+                else translate("runtime.request_user_input.required", lang)
             )
             fragments.append(("bold", header + "\n"))
             if q:
                 fragments.append(
-                    ("", translate("runtime.ask_more_info.question", lang, question=q) + "\n")
+                    ("", translate("runtime.request_user_input.question", lang, question=q) + "\n")
                 )
             for i, label in enumerate(opts):
                 focused = state["cursor"] == i
@@ -2812,9 +2812,9 @@ class PromptToolkitInputHandler:
 
         # Footer hint line.
         if multi_select:
-            hint = translate("runtime.ask_more_info.multi_select_hint_keys", lang)
+            hint = translate("runtime.request_user_input.multi_select_hint_keys", lang)
         else:
-            hint = translate("runtime.ask_more_info.single_select_hint_keys", lang)
+            hint = translate("runtime.request_user_input.single_select_hint_keys", lang)
         # The key-hint footer is only useful while the user is interacting.
         # Once a result is committed (Enter/Space) or the prompt is cancelled,
         # hide it so the leftover "↑/↓ to move · ..." line doesn't linger in

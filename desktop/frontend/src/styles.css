@@ -1585,7 +1585,7 @@ body.resizing-x {
   background: transparent;
 }
 
-/* A recorded ask_more_info selection rendered on the left (a reply to the
+/* A recorded request_user_input selection rendered on the left (a reply to the
    agent's question, distinct from a user-initiated right-side bubble). */
 .ask-selection {
   display: inline-flex;
@@ -2132,7 +2132,7 @@ html[data-has-bg] .select {
   font-size: 12px;
 }
 
-/* ``ask_more_info`` clarification panel: appears inline at the bottom of
+/* ``request_user_input`` clarification panel: appears inline at the bottom of
  * the transcript when the model asks the user to pick from a list. The
  * panel slides + fades in so it draws attention without jolting the layout. */
 .ask-more-info-panel {
