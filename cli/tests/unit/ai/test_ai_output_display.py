@@ -1038,6 +1038,65 @@ class AiOutputDisplayTests(unittest.TestCase):
         self.assertNotIn("\n", line)
 
 
+class MarkdownRenderingTests(unittest.TestCase):
+    """Lightweight Markdown rendering in the terminal display path."""
+
+    def _render(self, text):
+        with (
+            patch("cli.core.assistant_output_highlighter._ansi_bold", side_effect=lambda s: f"<B>{s}</B>"),
+            patch("cli.core.assistant_output_highlighter._ansi_italic", side_effect=lambda s: f"<I>{s}</I>"),
+            patch("cli.core.assistant_output_highlighter._ansi_cyan", side_effect=lambda s: f"<C>{s}</C>"),
+            patch("cli.core.assistant_output_highlighter._ansi_gray", side_effect=lambda s: f"<G>{s}</G>"),
+            patch("cli.core.assistant_output_highlighter._ansi_green", side_effect=lambda s: f"<GR>{s}</GR>"),
+            patch("cli.core.assistant_output_highlighter._ansi_bright_blue", side_effect=lambda s: f"<BB>{s}</BB>"),
+        ):
+            return aoh.highlight_assistant_display_text(text)
+
+    def test_bold_and_italic_inline_spans(self):
+        out = self._render("This is **bold** and *italic* text.")
+        self.assertIn("<B>bold</B>", out)
+        self.assertIn("<I>italic</I>", out)
+
+    def test_underscore_emphasis_does_not_fire_inside_identifiers(self):
+        out = self._render("call some_function_name and __strong__ here")
+        # snake_case must not be italicised
+        self.assertNotIn("<I>function</I>", out)
+        self.assertIn("<B>strong</B>", out)
+
+    def test_atx_heading_renders_bold_without_hashes(self):
+        out = self._render("## Heading Title")
+        self.assertIn("<B>", out)
+        self.assertNotIn("#", out)
+        self.assertIn("Heading Title", out)
+
+    def test_inline_code_keeps_backticks(self):
+        out = self._render("run `git status` now")
+        self.assertIn("<C>`git status`</C>", out)
+
+    def test_fenced_code_block_is_dimmed_and_not_token_painted(self):
+        text = "```python\nx = 1  # **keep stars**\n```"
+        out = self._render(text)
+        self.assertIn("┌─ python", out)
+        self.assertIn("└─", out)
+        # Stars inside the fence must survive verbatim (no bold painting).
+        self.assertIn("**keep stars**", out)
+        self.assertNotIn("<B>keep stars</B>", out)
+
+    def test_horizontal_rule_becomes_separator(self):
+        out = self._render("---")
+        self.assertNotIn("-", out.replace("<G>", "").replace("</G>", "").replace("─", ""))
+        self.assertIn("─", out)
+
+    def test_blockquote_prefixes_bar(self):
+        out = self._render("> quoted line")
+        self.assertIn("│", out)
+        self.assertIn("<I>quoted line</I>", out)
+
+    def test_dollar_amount_is_not_italicised(self):
+        out = self._render("it costs $5 and $10 total")
+        self.assertNotIn("<I>", out)
+
+
 if __name__ == "__main__":
     unittest.main()
 

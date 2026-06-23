@@ -195,6 +195,22 @@ def _ansi_bold(text: str) -> str:
     return f"\033[1m{text}\033[0m"
 
 
+def _ansi_italic(text: str) -> str:
+    if not _stdout_color_enabled():
+        return text
+    if sys.platform == "win32":
+        _enable_windows_console_vt()
+    return f"\033[3m{text}\033[0m"
+
+
+def _ansi_underline(text: str) -> str:
+    if not _stdout_color_enabled():
+        return text
+    if sys.platform == "win32":
+        _enable_windows_console_vt()
+    return f"\033[4m{text}\033[0m"
+
+
 def _ansi_rgb(text: str, r: int, g: int, b: int) -> str:
     if not _stdout_color_enabled():
         return text
