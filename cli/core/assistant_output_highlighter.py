@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Any, Callable, List, Pattern, Tuple
+from typing import Any, Callable, Dict, List, Pattern, Tuple
 
 from .console_utils import _ansi_bright_blue, _ansi_cyan, _ansi_gray, _ansi_green, _ansi_rgb, _ansi_yellow
 
@@ -167,11 +167,107 @@ def strip_tool_json_blocks_for_display(text: str) -> str:
     return current.strip()
 
 
+# Curated LaTeX-command -> Unicode map for inline math the model commonly
+# emits in plain narrative (e.g. ``$\rightarrow$``). Neither the TUI nor the
+# GUI runs a TeX engine, so these would otherwise render literally. Kept
+# intentionally small and arrow/operator focused; longest keys are matched
+# first so e.g. ``\leftrightarrow`` wins over ``\leftarrow``. The GUI mirrors
+# this same table in ``desktop/frontend/src/components/Markdown.tsx``.
+_LATEX_MATH_SYMBOLS: Dict[str, str] = {
+    "leftrightarrow": "\u2194",
+    "Leftrightarrow": "\u21d4",
+    "rightarrow": "\u2192",
+    "Rightarrow": "\u21d2",
+    "leftarrow": "\u2190",
+    "Leftarrow": "\u21d0",
+    "longrightarrow": "\u27f6",
+    "longleftarrow": "\u27f5",
+    "uparrow": "\u2191",
+    "downarrow": "\u2193",
+    "mapsto": "\u21a6",
+    "to": "\u2192",
+    "gets": "\u2190",
+    "times": "\u00d7",
+    "div": "\u00f7",
+    "cdot": "\u00b7",
+    "pm": "\u00b1",
+    "mp": "\u2213",
+    "leq": "\u2264",
+    "le": "\u2264",
+    "geq": "\u2265",
+    "ge": "\u2265",
+    "neq": "\u2260",
+    "ne": "\u2260",
+    "approx": "\u2248",
+    "equiv": "\u2261",
+    "infty": "\u221e",
+    "ldots": "\u2026",
+    "cdots": "\u22ef",
+}
+
+# Match a `\command` (letters only) so the replacement is whole-token.
+_LATEX_CMD_RE = re.compile(r"\\([A-Za-z]+)")
+# Inline math spans: ``$...$`` (not ``$$``) and ``\(...\)``.
+_INLINE_MATH_RE = re.compile(r"(?<!\$)\$(?!\$)([^$\n]+?)\$(?!\$)|\\\(([^\n]+?)\\\)")
+
+
+def _convert_latex_command(match: "re.Match[str]") -> str:
+    name = match.group(1)
+    repl = _LATEX_MATH_SYMBOLS.get(name)
+    return repl if repl is not None else match.group(0)
+
+
+def _render_inline_math_span(body: str) -> str:
+    """Render the inside of an inline-math span to Unicode-ish plain text.
+
+    Replaces known LaTeX commands with Unicode, drops a few formatting-only
+    wrappers, and collapses spacing macros — enough to make simple symbolic
+    expressions (especially arrows) readable without a TeX engine.
+    """
+    s = body
+    # Spacing macros and braces carry no meaning in plain text.
+    s = s.replace("\\,", "\u202f").replace("\\;", " ").replace("\\!", "")
+    s = _LATEX_CMD_RE.sub(_convert_latex_command, s)
+    s = s.replace("{", "").replace("}", "")
+    return s.strip()
+
+
+def convert_inline_latex_math(text: str) -> str:
+    """Convert common inline LaTeX math (``$...$`` / ``\\(...\\)``) to Unicode.
+
+    Only spans whose body, after conversion, no longer contains a stray
+    backslash command are unwrapped; anything we don't recognize is left
+    verbatim so we never mangle real prose or genuine ``$`` usage (prices,
+    shell vars). Display-time only — never mutates stored history.
+    """
+    if not isinstance(text, str) or "$" not in text and "\\(" not in text:
+        return text
+
+    def _repl(m: "re.Match[str]") -> str:
+        body = m.group(1) if m.group(1) is not None else m.group(2)
+        if body is None:
+            return m.group(0)
+        # Require an actual LaTeX command in the span before treating it as
+        # math. This keeps plain ``$`` usage (prices like ``$5``, shell vars)
+        # untouched — we only rewrite spans the model clearly meant as TeX.
+        if "\\" not in body:
+            return m.group(0)
+        converted = _render_inline_math_span(body)
+        # Bail out if conversion left unhandled TeX (a backslash command):
+        # rendering a half-converted span is worse than leaving it as-is.
+        if "\\" in converted:
+            return m.group(0)
+        return converted
+
+    return _INLINE_MATH_RE.sub(_repl, text)
+
+
 def normalize_display_text(text: str) -> str:
     """Normalize assistant display text for consistent terminal rendering."""
     if not isinstance(text, str) or not text:
         return ""
-    s = text.replace("\r\n", "\n").replace("\r", "\n")
+    s = convert_inline_latex_math(text)
+    s = s.replace("\r\n", "\n").replace("\r", "\n")
     if not s.strip():
         return ""
     lines = s.split("\n")
