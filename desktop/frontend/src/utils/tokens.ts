@@ -184,6 +184,44 @@ export function stripPlanModePrefix(text: string): string {
   return s;
 }
 
+/** True when assistant text contains a complete ``<proposed_plan>`` block.
+ *  Plan mode emits its finished plan wrapped in these tags (see
+ *  cli/prompts/collaboration-mode/plan.md); the GUI uses this to know when to
+ *  surface the "Implement this plan?" chooser. */
+export function hasProposedPlan(text: string): boolean {
+  const s = String(text ?? "");
+  if (!s.includes("<proposed_plan>")) return false;
+  return /<proposed_plan>[\s\S]*?<\/proposed_plan>/i.test(s);
+}
+
+/** Defense-in-depth sanitizer for assistant markdown. The backend streaming
+ *  cutter (cli/runtime/runtime_loop.py: _stream_visible_text_with_json_pause)
+ *  already withholds these, but stray fragments can survive in older chat
+ *  records or partial deltas. Strips:
+ *    - angle-bracket pseudo tool calls the model emitted as text instead of a
+ *      real tool_call, e.g. `<requestuserinput{...}>` / `<request_user_input
+ *      {...}>`;
+ *    - a dangling / incomplete `<proposed_plan` opener with no closing tag
+ *      (complete blocks are rendered as cards elsewhere and left intact);
+ *    - leaked `<tool_calls ...>` / `<|assistant ...` envelope tags.
+ *  Never touches a COMPLETE `<proposed_plan>...</proposed_plan>` block. */
+export function stripLeakedToolMarkup(text: string): string {
+  let s = String(text ?? "");
+  if (!s) return s;
+  // Angle-bracket pseudo tool calls: `<name{...}>` or `<name [...]>` where the
+  // payload may span lines. Greedy-balanced enough for the leaked shapes.
+  s = s.replace(/<[a-zA-Z_][a-zA-Z0-9_]*\s*(?:\{[\s\S]*?\}|\[[\s\S]*?\])\s*>?/g, "");
+  // Leaked tool-calls / assistant envelope openers (with optional remainder).
+  s = s.replace(/<tool_calls\b[\s\S]*?(?:<\/tool_calls>|$)/gi, "");
+  s = s.replace(/<\|assistant\b[\s\S]*$/gi, "");
+  // Dangling proposed_plan opener with no matching close: drop from the opener
+  // to end. Complete blocks (open + close) are preserved untouched.
+  if (s.includes("<proposed_plan>") && !/<proposed_plan>[\s\S]*?<\/proposed_plan>/i.test(s)) {
+    s = s.replace(/<proposed_plan\b[\s\S]*$/i, "");
+  }
+  return s;
+}
+
 export function composeMessageText(segments: readonly Segment[]): string {
   // Attachments are emitted INLINE at their authored position (wrapped in the
   // ATTACH sentinel envelope) rather than hoisted into a leading header, so the

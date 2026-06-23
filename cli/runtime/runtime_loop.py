@@ -34,7 +34,13 @@ from ..core.console_utils import (
     GUI_INTERNAL_COMMAND_PREFIX,
 )
 from ..controllers.builtin_command_router import dispatch_builtin_command
-from ..tools.registry import IMAGE_INPUT_TOOLS, MCP_MANAGEMENT_GATED_TOOLS, MEMORY_TOOLS
+from ..tools.registry import (
+    IMAGE_INPUT_TOOLS,
+    MCP_MANAGEMENT_GATED_TOOLS,
+    MEMORY_TOOLS,
+    PLAN_MODE_EXCLUDED_TOOLS,
+    PLAN_MODE_ONLY_TOOLS,
+)
 from ..tools.plan import (
     PLAN_STATUS_COMPLETED,
     PLAN_STATUS_IN_PROGRESS,
@@ -627,36 +633,6 @@ def _build_plan_finalize_nudge_prompt(
     )
 
 
-def _append_plan_mode_directive(agent: Any, model_input: str) -> str:
-    """Append the localized Plan-mode directive to a model-facing message.
-
-    Plan mode injects a planning instruction so the model outlines a plan and
-    holds off on destructive tools. The directive is appended (not prepended)
-    to whatever is being sent to the model this round — the first-round user
-    task as well as every auto-generated continuation message inside the tool
-    loop — and is deliberately NOT recorded into chat history: history keeps
-    the user's verbatim text only. Centralizing this on the single send path
-    guarantees the directive rides every outgoing message while plan mode is on
-    and disappears the moment it is turned off.
-    """
-    if not bool(getattr(agent, "_plan_mode_sticky", False)):
-        return model_input
-    text = str(model_input or "")
-    if not text.strip():
-        return model_input
-    try:
-        from ..core.localization import translate as _translate_plan
-        prefix = _translate_plan(
-            "builtin.plan_mode_prefix",
-            getattr(agent, "display_language", None) or "en",
-        )
-    except Exception:
-        return model_input
-    if not prefix or prefix in text:
-        return model_input
-    return f"{text}\n\n{prefix}"
-
-
 def _warn_loop_ended_with_pending_plan(
     agent: Any,
     *,
@@ -730,20 +706,23 @@ def _maybe_offer_plan_execution_choice(
     agent: Any,
     *,
     turn_used_request_user_input: bool,
+    plan_ready: bool,
 ) -> Optional[str]:
     """After a Plan-mode turn drafts a plan, ask the user how to proceed.
 
-    Mirrors the GUI's "Execute now" affordance for the TUI: once the agent
-    has finished outlining a plan (Plan mode sticky, a pending plan exists,
-    and the turn didn't pause on ``request_user_input``), present an interactive
+    Mirrors the GUI's "Execute now" affordance for the TUI and Codex's
+    "Implement this plan?" prompt: once the agent has finished a plan (Plan
+    mode sticky, a ``<proposed_plan>`` block was emitted this turn, and the
+    turn didn't pause on ``request_user_input``), present an interactive
     selector with two paths:
 
-      * **Execute the plan now** — leave Plan mode (switch to Agent mode) and
-        queue a short "proceed" message so the very next loop iteration runs
-        the plan.
-      * **Modify the plan** — the trailing free-text row: highlighting it
-        opens an inline input where the user types revision notes. The typed
-        text is queued (Plan mode stays on) so the agent refines the plan.
+      * **Yes, implement this plan** — leave Plan mode (switch to Agent mode)
+        and queue a short "proceed" message so the next loop iteration runs the
+        plan (the ``<proposed_plan>`` block is already in the transcript).
+      * **No, and tell <App> what to do differently** — the trailing free-text
+        row: highlighting it opens an inline input where the user types revision
+        notes. The typed text is queued (Plan mode stays on) so the agent
+        refines the plan.
 
     Returns the queued follow-up message string when the user chose a path,
     or ``None`` when the chooser doesn't apply or the user cancelled (Esc),
@@ -755,8 +734,8 @@ def _maybe_offer_plan_execution_choice(
         return None
     if not bool(getattr(agent, "_plan_mode_sticky", False)):
         return None
-    summary = _summarize_active_plan(agent)
-    if not summary or not summary.get("has_pending"):
+    # The plan-ready signal is a ``<proposed_plan>`` block emitted this turn.
+    if not plan_ready:
         return None
 
     input_handler = getattr(agent, "input_handler", None)
@@ -765,13 +744,14 @@ def _maybe_offer_plan_execution_choice(
         return None
 
     from ..core.localization import translate as _translate
+    from ..config.app_info import get_app_name
 
     lang = getattr(agent, "display_language", None) or "en"
     t = lambda key, **kwargs: _translate(key, lang, **kwargs)
 
     header = t("runtime.plan_choice.header")
     execute_label = t("runtime.plan_choice.execute")
-    modify_label = t("runtime.plan_choice.modify")
+    modify_label = t("runtime.plan_choice.modify", app=get_app_name())
 
     try:
         picked = interactive(
@@ -920,6 +900,44 @@ def _stream_visible_text_with_json_pause(text: str, *, final: bool) -> str:
         idx = lowered.find(marker)
         if idx >= 0:
             starts.append(idx)
+
+    # Angle-bracket pseudo tool calls. Some models emit a tool invocation as
+    # literal text like ``<requestuserinput{...}>`` or ``<request_user_input
+    # {...}>`` instead of a real ``tool_calls`` entry. These must never reach
+    # the user. Cut at any ``<`` that is immediately followed by an identifier
+    # and then a JSON opener / whitespace+JSON / ``(`` — a shape that natural
+    # prose effectively never produces. Matches both ``requestuserinput`` and
+    # ``request_user_input`` spellings (and any other tool the model mangles).
+    for m in re.finditer(r"(?is)<[a-z_][a-z0-9_]*\s*(?:\{|\[)", s):
+        starts.append(m.start())
+
+    # ``<proposed_plan>`` is a real protocol block we DO want to keep in the
+    # final text (the GUI renders it as a card and the host parses it), but a
+    # partial opening tag streamed before the block is complete would leak the
+    # literal ``<proposed_plan`` / ``<propose`` text. While streaming, withhold
+    # from the first ``<proposed_plan`` opener onward until the matching close
+    # tag has arrived; once complete (or final), let it through untouched.
+    if not final:
+        open_idx = lowered.find("<proposed_plan")
+        if open_idx >= 0 and "</proposed_plan>" not in lowered:
+            starts.append(open_idx)
+        else:
+            # Withhold a trailing partial of the literal ``<proposed_plan>``
+            # opener split across chunks (e.g. buffer ends with ``<propos``).
+            opener = "<proposed_plan>"
+            max_check = min(len(opener) - 1, len(s))
+            for prefix_len in range(max_check, 1, -1):
+                if lowered.endswith(opener[:prefix_len]):
+                    starts.append(len(s) - prefix_len)
+                    break
+        # Withhold a trailing partial of ``<tool_calls`` / ``<|assistant``
+        # split across chunks so ``<tool`` never flashes before the full tag.
+        for opener in ("<tool_calls", "<|assistant"):
+            max_check = min(len(opener) - 1, len(s))
+            for prefix_len in range(max_check, 1, -1):
+                if lowered.endswith(opener[:prefix_len]):
+                    starts.append(len(s) - prefix_len)
+                    break
 
     toolish_key_pattern = r"""(?is)(["']?\b(?:tool|tool_calls|args|arguments)\b["']?)\s*[:=]"""
     for m in re.finditer(r"(?im)^[ \t]*```[^\n]*\n", s):
@@ -3020,13 +3038,11 @@ def run_agent_loop(agent: Any):
                 pass
             self._rewrite_previous_prompt_as_user(raw_user_input.strip())
             # Plan-mode is a session-sticky flag toggled via ``/plan`` /
-            # ``/agent`` commands. When on, a planning directive is appended to
-            # every message sent to the model (see ``_append_plan_mode_directive``
-            # at the single ``call_ai`` send site), telling the model to outline
-            # a plan rather than execute destructive tools. The directive is a
-            # transient send-time suffix only: neither ``original_user_task``
-            # (model-facing) nor ``recorded_user_task`` (history) carries it, so
-            # chat history stores the user's verbatim text.
+            # ``/agent`` commands. When on, the active mode's instructions ride
+            # the system prompt's ``<collaboration_mode>`` section (see
+            # CollaborationModePart), telling the model to outline a plan rather
+            # than execute destructive tools. Outgoing messages and history are
+            # unaffected, so chat history stores the user's verbatim text.
             original_user_task = task_user_input
             # ``task_user_input`` has had any skill / MCP reference markers
             # (``[skill: ...]``, ``[mcp tool|prompt: ...]``, ``/skills/...``)
@@ -3296,6 +3312,10 @@ def run_agent_loop(agent: Any):
             tool_round = 0
             plan_finalize_nudged = False
             turn_used_request_user_input = False
+            # Plan mode: set once the model emits a ``<proposed_plan>`` block this
+            # turn — that, not ``update_plan`` (now blocked in Plan mode), is the
+            # signal that planning is done and the execute chooser should appear.
+            turn_emitted_proposed_plan = False
             while max_tool_rounds is None or tool_round < max_tool_rounds:
                 if self._consume_task_interrupt_requested():
                     raise KeyboardInterrupt
@@ -3355,14 +3375,30 @@ def run_agent_loop(agent: Any):
                                 ).strip()
                                 not in IMAGE_INPUT_TOOLS
                             ]
+                        # Collaboration-mode gating: in Plan mode hide mutating /
+                        # checklist tools (update_plan) and expose the Plan-only
+                        # ``request_user_input``; in Agent mode do the inverse.
+                        plan_mode_active = bool(getattr(self, "_plan_mode_sticky", False))
+                        drop_tools = (
+                            PLAN_MODE_EXCLUDED_TOOLS if plan_mode_active else PLAN_MODE_ONLY_TOOLS
+                        )
+                        if drop_tools:
+                            standard_tool_schemas = [
+                                item
+                                for item in standard_tool_schemas
+                                if str(
+                                    ((item or {}).get("function", {}) or {}).get("name", "")
+                                ).strip()
+                                not in drop_tools
+                            ]
                     # Open this round's wait timer for the GUI just before the
                     # model request goes out.
                     _gui_round_mark(self, True)
-                    # Plan mode is a transient send-time suffix: append the
-                    # directive to whatever is sent this round (first-round task
-                    # or any in-loop continuation) without touching the recorded
-                    # ``history_user_input`` so chat history stays verbatim.
-                    model_input = _append_plan_mode_directive(self, next_input)
+                    # Plan-mode instructions now ride the system prompt's
+                    # ``<collaboration_mode>`` section (see CollaborationModePart),
+                    # so outgoing messages are sent verbatim — no per-message
+                    # directive suffix and nothing extra to strip from history.
+                    model_input = next_input
                     ai_result = self.call_ai(
                         model_input,
                         context=json.dumps(last_result, ensure_ascii=False) if last_result else "",
@@ -3431,6 +3467,23 @@ def run_agent_loop(agent: Any):
                     ai_response = cleaned_internal_ai_response
                 if not user_message_recorded:
                     user_message_recorded = True
+
+                # Plan mode: capture the latest ``<proposed_plan>`` block (if any)
+                # so the end-of-turn chooser can offer execute/modify and the
+                # plan markdown is available for a clear-context implementation.
+                if bool(getattr(self, "_plan_mode_sticky", False)):
+                    try:
+                        from ..core.proposed_plan import latest_proposed_plan
+
+                        plan_md = latest_proposed_plan(ai_response)
+                    except Exception:
+                        plan_md = None
+                    if plan_md:
+                        turn_emitted_proposed_plan = True
+                        try:
+                            self._latest_proposed_plan_markdown = plan_md
+                        except Exception:
+                            pass
 
                 visible_ai_response, pseudo_text_tool_plans, pseudo_tool_call_text = (
                     _split_trailing_pseudo_tool_calls_text_details(ai_response)
@@ -3900,23 +3953,6 @@ def run_agent_loop(agent: Any):
                         turn_used_request_user_input=turn_used_request_user_input,
                     )
                     break
-                # Plan mode: registering a plan is the end of the turn. When the
-                # model is in Plan mode and this batch only updated the plan
-                # (no execution / state-mutating tool ran), stop auto-looping and
-                # break out so the end-of-turn ``_maybe_offer_plan_execution_choice``
-                # presents the execute/modify selector. Without this the model
-                # would keep re-calling ``update_plan`` every round, repeatedly
-                # asking "shall I proceed?" while the host never surfaced the
-                # choice (the loop only reaches the chooser when it breaks).
-                if (
-                    bool(getattr(self, "_plan_mode_sticky", False))
-                    and executed_batch_results
-                    and all(
-                        str(entry.get("tool") or "").strip() == "update_plan"
-                        for entry in executed_batch_results
-                    )
-                ):
-                    break
                 if continue_after_batch:
                     continue
                 if not executed_batch_results:
@@ -4017,6 +4053,7 @@ def run_agent_loop(agent: Any):
                     plan_followup = _maybe_offer_plan_execution_choice(
                         self,
                         turn_used_request_user_input=turn_used_request_user_input,
+                        plan_ready=turn_emitted_proposed_plan,
                     )
                 except Exception:
                     plan_followup = None

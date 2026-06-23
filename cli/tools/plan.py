@@ -41,6 +41,11 @@ class UpdatePlanTool(BaseTool):
     """
 
     name = "update_plan"
+    # ``update_plan`` is a TODO/checklist/progress tool; it is not how Plan mode
+    # produces a plan (Plan mode emits a ``<proposed_plan>`` block instead).
+    # Mirror Codex by hiding it from the spec while Plan mode is active and
+    # rejecting any call that slips through (see ``execute``).
+    excluded_in_plan_mode = True
     description = "Maintain an up-to-date, step-by-step plan for the current task. Provide an ordered list of short steps, each with a status (pending, in_progress, or completed). Keep at most one step in_progress at a time. The plan is stored on the active chat record as model context only and is not surfaced verbatim to the user."
     parameters: Dict[str, Any] = {
         "type": "object",
@@ -69,6 +74,16 @@ class UpdatePlanTool(BaseTool):
     }
 
     def execute(self, agent: Any, params: Dict[str, Any]) -> Dict[str, Any]:
+        if bool(getattr(agent, "_plan_mode_sticky", False)):
+            return {
+                "success": False,
+                "error": (
+                    "update_plan is a TODO/checklist tool and is not allowed in "
+                    "Plan mode. Produce the plan as a <proposed_plan> block in "
+                    "your reply instead."
+                ),
+                "retryable": False,
+            }
         return self.apply(agent, params if isinstance(params, dict) else {})
 
     @staticmethod

@@ -1,4 +1,5 @@
 import { createElement, type ReactNode } from "react";
+import { stripLeakedToolMarkup } from "../utils/tokens";
 
 // Compact, dependency-free Markdown renderer. It mirrors the structure the
 // terminal highlights (headings, emphasis, inline/fenced code, lists, quotes,
@@ -133,8 +134,79 @@ function renderInline(text: string, keyBase: string): ReactNode[] {
   return nodes;
 }
 
+// Plan-mode wraps its finished plan in `<proposed_plan>...</proposed_plan>`
+// (see cli/prompts/collaboration-mode/plan.md). Mirror the Python helper
+// cli/core/proposed_plan.py: render the block as a dedicated card instead of
+// leaking the literal tags into the bubble.
+const PROPOSED_PLAN_RE = /<proposed_plan>\s*([\s\S]*?)\s*<\/proposed_plan>/gi;
+
+/**
+ * Split assistant text into ordinary segments and proposed-plan cards. Each
+ * proposed-plan body is rendered through MarkdownText inside a styled card; the
+ * surrounding prose renders normally. Returns null when there is no plan block
+ * so the caller can fall back to the plain render path.
+ */
+function renderWithProposedPlan(text: string, baseKey: string): ReactNode[] | null {
+  if (!text || !text.includes("<proposed_plan>")) {
+    return null;
+  }
+  const nodes: ReactNode[] = [];
+  let last = 0;
+  let i = 0;
+  let m: RegExpExecArray | null;
+  // Fresh regex instance per call so the global `lastIndex` is never shared
+  // across calls (that would make matching non-deterministic / re-entrant).
+  const re = new RegExp(PROPOSED_PLAN_RE.source, "gi");
+  while ((m = re.exec(text)) !== null) {
+    const before = text.slice(last, m.index).trim();
+    if (before) {
+      // Render surrounding prose with the plain markdown body — NOT MarkdownText
+      // — so we never re-enter the proposed-plan splitter. Re-feeding text that
+      // still contains an (incomplete) `<proposed_plan>` opener into the
+      // splitter recurses forever and crashes the renderer (out of memory).
+      nodes.push(<MarkdownBody key={`${baseKey}-pre-${i}`} text={before} />);
+    }
+    const body = (m[1] || "").trim();
+    if (body) {
+      nodes.push(
+        <div key={`${baseKey}-plan-${i}`} className="proposed-plan-card">
+          <div className="proposed-plan-card-title">Proposed Plan</div>
+          <MarkdownBody text={body} />
+        </div>,
+      );
+    }
+    last = m.index + m[0].length;
+    i++;
+    if (m.index === re.lastIndex) {
+      re.lastIndex++; // defensive: avoid a stuck loop on a zero-width match
+    }
+  }
+  // No COMPLETE block matched (e.g. the closing tag has not streamed yet):
+  // fall back to plain rendering of the whole text instead of recursing.
+  if (last === 0) {
+    return null;
+  }
+  const after = text.slice(last).trim();
+  if (after) {
+    nodes.push(<MarkdownBody key={`${baseKey}-post`} text={after} />);
+  }
+  return nodes;
+}
+
 export function MarkdownText({ text }: { text: string }): ReactNode {
-  const lines = text.replace(/\r\n/g, "\n").split("\n");
+  const planNodes = renderWithProposedPlan(text, "pp");
+  if (planNodes) {
+    return <>{planNodes}</>;
+  }
+  return <MarkdownBody text={text} />;
+}
+
+function MarkdownBody({ text }: { text: string }): ReactNode {
+  // Defense-in-depth: drop any leaked pseudo tool-call / envelope markup that
+  // survived the backend streaming cutter (e.g. stale chat records). Complete
+  // <proposed_plan> blocks are handled by renderWithProposedPlan before we get
+  // here; this only removes dangling openers and angle-bracket tool fragments.
+  const lines = stripLeakedToolMarkup(text).replace(/\r\n/g, "\n").split("\n");
   const blocks: ReactNode[] = [];
   let i = 0;
   let key = 0;

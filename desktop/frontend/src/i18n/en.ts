@@ -203,6 +203,8 @@ export const en: Dict = {
   "composer.atFileHint": "Type a filename — Enter to attach, Esc to cancel",
   "composer.executeNow": "Execute now",
   "composer.executeNowHint": "Proceed to carry out the proposed plan.",
+  "composer.implementPlan": "Yes, implement this plan",
+  "composer.revisePlan": "No, and tell {app} what to do differently",
   "composer.executePlanPrompt": "Looks good — please proceed with executing this plan.",
   "models.loading": "Loading…",
   "models.platform": "Platform",

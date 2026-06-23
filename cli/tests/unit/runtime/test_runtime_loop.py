@@ -388,6 +388,46 @@ class RuntimeLoopTests(unittest.TestCase):
         out = _stream_visible_text_with_json_pause(raw, final=False)
         self.assertEqual(out, raw)
 
+    def test_stream_visible_text_cuts_angle_bracket_pseudo_tool_call(self):
+        raw = (
+            "Sure, let me ask.\n"
+            "<requestuserinput{\n"
+            '  "question": "range?",\n'
+            '  "options": ["7d", "30d"]\n'
+            "}>"
+        )
+        out = _stream_visible_text_with_json_pause(raw, final=True)
+        self.assertEqual(out, "Sure, let me ask.")
+        out_stream = _stream_visible_text_with_json_pause(raw, final=False)
+        self.assertEqual(out_stream, "Sure, let me ask.")
+
+    def test_stream_visible_text_cuts_angle_bracket_pseudo_tool_call_underscored(self):
+        raw = 'Need info.\n<request_user_input {"question": "x"}>'
+        out = _stream_visible_text_with_json_pause(raw, final=True)
+        self.assertEqual(out, "Need info.")
+
+    def test_stream_visible_text_withholds_partial_proposed_plan_while_streaming(self):
+        raw = "Here is my thinking.\n\n<proposed_plan>\n# Plan\n- step"
+        out = _stream_visible_text_with_json_pause(raw, final=False)
+        self.assertEqual(out, "Here is my thinking.")
+
+    def test_stream_visible_text_withholds_split_proposed_plan_opener(self):
+        raw = "Here is my thinking.\n\n<propose"
+        out = _stream_visible_text_with_json_pause(raw, final=False)
+        self.assertEqual(out, "Here is my thinking.")
+
+    def test_stream_visible_text_keeps_complete_proposed_plan_block(self):
+        raw = "Intro\n\n<proposed_plan>\n# Plan\n- step\n</proposed_plan>"
+        out_stream = _stream_visible_text_with_json_pause(raw, final=False)
+        self.assertEqual(out_stream, raw)
+        out_final = _stream_visible_text_with_json_pause(raw, final=True)
+        self.assertEqual(out_final, raw)
+
+    def test_stream_visible_text_withholds_partial_tool_calls_tag(self):
+        raw = "Working on it <tool"
+        out = _stream_visible_text_with_json_pause(raw, final=False)
+        self.assertEqual(out, "Working on it")
+
     def test_stream_visible_text_caches_unclosed_json_fence_before_tool_key(self):
         raw = (
             "Plan\n"

@@ -9,6 +9,10 @@ from .base import BaseTool
 
 class RequestUserInputTool(BaseTool):
     name = "request_user_input"
+    # Structured multiple-choice questions are a Plan-mode affordance (mirrors
+    # Codex gating ``request_user_input`` to Plan only); in Agent mode the model
+    # should make reasonable assumptions or ask in plain text instead.
+    requires_plan_mode = True
     description = "When key input is missing, ask the user a single-choice or multiple-choice question and pause auto-continuation until the user responds. Call this only after trying memory_search and other tools/skills/MCP in order and still being unable to obtain the information reliably. The host renders the options as buttons (single-choice: pick one; multi-choice: tick any subset and click Submit). The host always appends an extra 'Other' choice so the user can type a freeform answer; that freeform text is concatenated with any ticked options. Execution resumes with the user's answer as the supplement. Important: each entry in `options` MUST be the full human-readable label the user needs to choose (not a bare index/code), and you must NOT also print the same option list in your natural-language reply — the buttons rendered from `options` are the only enumeration the user should see."
     parameters: Dict[str, Any] = {
         "type": "object",
