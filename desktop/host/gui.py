@@ -268,8 +268,14 @@ def main() -> int:
 
     window.events.closed += _on_closed
 
+    # Opt-in debugging: ``CODEWOOD_GUI_DEBUG=1`` enables pywebview's web
+    # inspector (right-click → Inspect Element) so frontend errors behind a
+    # blank window can be diagnosed. Off by default to keep production builds
+    # locked down.
+    debug = str(os.environ.get("CODEWOOD_GUI_DEBUG", "")).strip() not in ("", "0", "false", "False")
+
     try:
-        webview.start(gui=_preferred_gui())
+        webview.start(gui=_preferred_gui(), debug=debug)
     finally:
         backend.stop()
     return 0
