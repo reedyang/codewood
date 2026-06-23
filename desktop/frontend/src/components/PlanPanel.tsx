@@ -26,7 +26,7 @@ export function PlanPanel() {
   return (
     <aside className="plan-panel" aria-label={t("plan.title")}>
       <div className="plan-panel-head">
-        <span className="plan-panel-title">{t("plan.title")}</span>
+        <span className="plan-panel-title">{`${t("plan.title")} (${total})`}</span>
         <button
           className="plan-panel-close"
           aria-label={t("plan.close")}

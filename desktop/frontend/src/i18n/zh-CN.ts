@@ -55,7 +55,7 @@ export const zhCN: Dict = {
   "reasoning.effort.medium": "中",
   "reasoning.effort.high": "高",
   "plan.toggle": "切换计划面板",
-  "plan.title": "计划",
+  "plan.title": "待办事项",
   "plan.close": "关闭计划面板",
   "plan.empty": "暂无计划。",
 
