@@ -11,29 +11,30 @@ import os
 import sys
 
 
-def _prefer_x11_on_wayland() -> None:
-    """Ask GTK to use the X11 backend when running under Wayland (Linux).
+def _prefer_wayland_when_available() -> None:
+    """Keep GTK on the native Wayland backend under WSLg/Wayland sessions.
 
-    pywebview's GTK frameless dragging and programmatic window moves rely on
-    ``window.move``, which Wayland compositors forbid — so title-bar dragging
-    and "restore from maximize" silently fail under Wayland (e.g. the default
-    WSLg session). The X11 path (XWayland) supports these operations. We only
-    set ``GDK_BACKEND`` when it is unset, so an explicit user override always
-    wins, and only on Linux under Wayland. This must run before ``webview`` /
-    GTK is imported, since GDK reads the backend at initialization.
+    Earlier builds forced ``GDK_BACKEND=x11`` because frameless dragging and
+    "restore from maximize" relied on ``window.move``, which Wayland forbids.
+    The window controls now drive moves/resizes through the window manager
+    (``begin_move_drag`` / ``begin_resize_drag``), which work natively on
+    Wayland — so the X11 force is no longer needed and is actively harmful:
+    under WSLg, an X11 *frameless* window does NOT fill the workspace when
+    maximized and offsets all clicks by that gap, while Wayland windows do not
+    have this bug (microsoft/wslg#1015, #935). We therefore leave the backend
+    alone (defaulting to Wayland when the session offers it) and only honor an
+    explicit user ``GDK_BACKEND`` override. Must run before ``webview``/GTK is
+    imported, since GDK reads the backend at initialization.
     """
+    # Intentionally a no-op beyond respecting an explicit override: do not set
+    # GDK_BACKEND so GTK selects Wayland on WSLg/Wayland and X11 elsewhere.
     if sys.platform == "win32" or os.name == "nt":
         return
-    if os.environ.get("GDK_BACKEND"):
-        return
-    on_wayland = bool(os.environ.get("WAYLAND_DISPLAY")) or (
-        str(os.environ.get("XDG_SESSION_TYPE", "")).lower() == "wayland"
-    )
-    if on_wayland:
-        os.environ["GDK_BACKEND"] = "x11"
+    # If the user pinned a backend, that wins; nothing to do either way.
+    return
 
 
-_prefer_x11_on_wayland()
+_prefer_wayland_when_available()
 
 import webview  # noqa: E402 - must follow the GDK_BACKEND setup above
 
@@ -161,6 +162,18 @@ class HostApi:
     def __init__(self) -> None:
         self._maximized = False
 
+    def host_platform(self) -> str:
+        """Report the host OS family so the frontend can pick drag strategies.
+
+        Returns ``"win32"`` on Windows (where pywebview's native
+        ``pywebview-drag-region`` is used) and ``"gtk"`` elsewhere (Linux/WSL,
+        where the frontend must drive moves/resizes through the WM-native
+        ``start_window_drag`` / ``start_window_resize`` helpers and must NOT
+        also attach the pywebview drag region, which would fight the WM drag
+        with its own unreliable ``window.move`` loop).
+        """
+        return "win32" if sys.platform == "win32" else "gtk"
+
     def open_external(self, url: str) -> bool:
         """Open an http/https URL in the user's default system browser.
 
@@ -207,6 +220,15 @@ class HostApi:
         window = webview.active_window()
         if window is None:
             return self._maximized
+        # On GTK/WSL prefer the native maximize/unmaximize so the window snaps
+        # flush to the screen edges (the frameless window's top edge otherwise
+        # leaves a gap) and the WM — not a stored geometry — owns the restore
+        # size. Track the resulting state from the GtkWindow itself to avoid the
+        # toggle flag drifting out of sync.
+        if sys.platform != "win32":
+            gtk_window = self._gtk_native_window(window)
+            if gtk_window is not None and self._toggle_maximize_gtk(gtk_window):
+                return self._maximized
         try:
             if self._maximized:
                 self._restore_window(window)
@@ -216,6 +238,39 @@ class HostApi:
         except Exception:
             pass
         return self._maximized
+
+    def _toggle_maximize_gtk(self, gtk_window) -> bool:
+        """Toggle maximize on the native GtkWindow; sync ``_maximized``.
+
+        Returns ``True`` when the GTK path handled the toggle, ``False`` to
+        let the caller fall back to pywebview's cross-backend path.
+        """
+        try:
+            from gi.repository import GLib  # type: ignore
+        except Exception:
+            return False
+        try:
+            currently_max = bool(gtk_window.is_maximized())
+        except Exception:
+            currently_max = self._maximized
+        want_max = not currently_max
+
+        def _apply() -> bool:
+            try:
+                if want_max:
+                    gtk_window.maximize()
+                else:
+                    gtk_window.unmaximize()
+            except Exception:
+                pass
+            return False  # one-shot idle callback
+
+        try:
+            GLib.idle_add(_apply)
+        except Exception:
+            return False
+        self._maximized = want_max
+        return True
 
     @staticmethod
     def _restore_window(window) -> None:
@@ -275,6 +330,109 @@ class HostApi:
                 win.destroy()
             except Exception:
                 pass
+
+    @staticmethod
+    def _gtk_native_window(window):
+        """Return the native ``GtkWindow`` for a pywebview window, or ``None``.
+
+        Only meaningful on the GTK/WebKit backend (Linux/WSL); other backends
+        expose no such handle and callers must fall back accordingly.
+        """
+        if window is None:
+            return None
+        return getattr(window, "gtk", None) or getattr(window, "native", None)
+
+    # Map the eight resize directions used by the web-rendered grips to the
+    # GDK window-edge constants. Kept as strings so the frontend contract stays
+    # backend-agnostic; resolved to ``Gdk.WindowEdge`` at call time.
+    _GDK_EDGE_NAMES = {
+        "nw": "NORTH_WEST",
+        "n": "NORTH",
+        "ne": "NORTH_EAST",
+        "w": "WEST",
+        "e": "EAST",
+        "sw": "SOUTH_WEST",
+        "s": "SOUTH",
+        "se": "SOUTH_EAST",
+    }
+
+    def start_window_drag(self) -> bool:
+        """Begin a window-manager-native move drag (GTK/WSL only).
+
+        Programmatic ``window.move`` is unreliable on WSLg/X11 with
+        mixed-DPI multi-monitor setups: the window fails to follow the
+        cursor and can lose its decorations/controls. Handing the drag to
+        the window manager via ``begin_move_drag`` makes the frameless
+        window behave like any other native GTK app. Returns ``False`` when
+        the GTK path is unavailable (e.g. Windows), so the frontend can keep
+        using the ``pywebview-drag-region`` fallback there.
+        """
+        if sys.platform == "win32":
+            return False
+        gtk_window = self._gtk_native_window(webview.active_window())
+        if gtk_window is None:
+            return False
+        return self._begin_gtk_drag(gtk_window, edge=None)
+
+    def start_window_resize(self, direction: str) -> bool:
+        """Begin a window-manager-native resize drag (GTK/WSL only).
+
+        Mirrors :meth:`start_window_drag` for the resize grips so resizing
+        across mixed-DPI monitors is handled by the compositor rather than
+        by JS-computed geometry pushed through ``set_window_geometry``.
+        """
+        if sys.platform == "win32":
+            return False
+        edge = self._GDK_EDGE_NAMES.get(str(direction or "").strip().lower())
+        if edge is None:
+            return False
+        gtk_window = self._gtk_native_window(webview.active_window())
+        if gtk_window is None:
+            return False
+        return self._begin_gtk_drag(gtk_window, edge=edge)
+
+    @staticmethod
+    def _begin_gtk_drag(gtk_window, edge) -> bool:
+        """Kick off a GTK move/resize drag anchored at the live pointer.
+
+        ``edge`` is ``None`` for a move, or a ``Gdk.WindowEdge`` member name
+        for a resize. The pointer's root coordinates are read from the
+        default GDK seat so the drag starts exactly under the cursor,
+        matching the user's grab point across monitors. All work is posted to
+        the GTK main thread to stay thread-safe.
+        """
+        try:
+            from gi.repository import Gdk, GLib  # type: ignore
+        except Exception:
+            return False
+
+        def _do_drag() -> bool:
+            try:
+                display = Gdk.Display.get_default()
+                seat = display.get_default_seat() if display is not None else None
+                pointer = seat.get_pointer() if seat is not None else None
+                gdk_window = gtk_window.get_window()
+                if pointer is None or gdk_window is None:
+                    return False
+                # ``get_device_position`` returns (window, x, y) relative to the
+                # window; use root coordinates for the WM drag anchor instead.
+                _scr, root_x, root_y = pointer.get_position()
+                timestamp = Gdk.CURRENT_TIME
+                if edge is None:
+                    gtk_window.begin_move_drag(1, root_x, root_y, timestamp)
+                else:
+                    gtk_window.begin_resize_drag(
+                        getattr(Gdk.WindowEdge, edge), 1, root_x, root_y, timestamp
+                    )
+            except Exception:
+                pass
+            return False  # one-shot idle callback
+
+        try:
+            GLib.idle_add(_do_drag)
+            return True
+        except Exception:
+            return False
 
     def set_window_geometry(self, x: float, y: float, width: float, height: float) -> None:
         """Resize/move the OS window (drives the web-rendered resize grips).
