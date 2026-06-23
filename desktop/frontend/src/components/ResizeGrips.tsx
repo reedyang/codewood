@@ -9,6 +9,7 @@ const MIN_HEIGHT = 640;
 
 interface HostGeometryApi {
   set_window_geometry?: (x: number, y: number, width: number, height: number) => void;
+  start_window_resize?: (direction: Dir) => boolean | Promise<boolean>;
 }
 
 function hostApi(): HostGeometryApi | undefined {
@@ -36,13 +37,41 @@ export function ResizeGrips() {
 
   const startResize = (dir: Dir) => (e: React.MouseEvent) => {
     const api = hostApi();
+    if (e.button !== 0) {
+      return;
+    }
+    // GTK/WSL: delegate resizing to the window manager so it tracks the
+    // cursor correctly across mixed-DPI monitors. The host returns false on
+    // Windows (and when GTK is unavailable), where we fall back to the
+    // JS-computed geometry path below.
+    // Capture the grab point eagerly so the async GTK probe below can still
+    // fall back to a geometry resize anchored at the original press position.
+    const grab = { mx: e.screenX, my: e.screenY };
+    if (api?.start_window_resize) {
+      e.preventDefault();
+      void Promise.resolve(api.start_window_resize(dir)).then((handled) => {
+        if (handled) {
+          return;
+        }
+        beginGeometryResize(dir, grab.mx, grab.my);
+      });
+      return;
+    }
     if (!api?.set_window_geometry) {
       return;
     }
     e.preventDefault();
+    beginGeometryResize(dir, grab.mx, grab.my);
+  };
+
+  const beginGeometryResize = (dir: Dir, grabX: number, grabY: number) => {
+    const api = hostApi();
+    if (!api?.set_window_geometry) {
+      return;
+    }
     const start = {
-      mx: e.screenX,
-      my: e.screenY,
+      mx: grabX,
+      my: grabY,
       x: window.screenX,
       y: window.screenY,
       w: window.innerWidth,

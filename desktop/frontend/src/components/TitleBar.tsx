@@ -7,6 +7,8 @@ interface HostWindowApi {
   toggle_maximize?: () => boolean | Promise<boolean>;
   close_window?: () => void;
   open_external?: (url: string) => boolean | Promise<boolean>;
+  start_window_drag?: () => boolean | Promise<boolean>;
+  host_platform?: () => string | Promise<string>;
 }
 
 const GITHUB_URL = "https://github.com/reedyang/codewood";
@@ -34,7 +36,28 @@ export function TitleBar({ onTogglePanel }: { onTogglePanel: () => void }) {
   const [openMenu, setOpenMenu] = useState<string | null>(null);
   const [native, setNative] = useState<boolean>(() => Boolean(hostApi()));
   const [maximized, setMaximized] = useState(false);
+  // Defaults to "win32" so the pywebview-drag-region is present on the very
+  // first paint (matching prior behavior) until the host reports otherwise.
+  const [hostOs, setHostOs] = useState<string>("win32");
   const barRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    const api = hostApi();
+    if (!api?.host_platform) {
+      return;
+    }
+    let cancelled = false;
+    void Promise.resolve(api.host_platform())
+      .then((os) => {
+        if (!cancelled && typeof os === "string" && os) {
+          setHostOs(os);
+        }
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [native]);
 
   const toggleMaximize = async () => {
     const api = hostApi();
@@ -159,7 +182,24 @@ export function TitleBar({ onTogglePanel }: { onTogglePanel: () => void }) {
       </div>
 
       <div
-        className="titlebar-drag pywebview-drag-region"
+        className={`titlebar-drag ${hostOs === "win32" ? "pywebview-drag-region" : ""}`}
+        onMouseDown={(e) => {
+          // Left button only; let double-clicks fall through to maximize.
+          if (e.button !== 0 || e.detail > 1) {
+            return;
+          }
+          // GTK/WSL: hand the drag to the window manager so the window
+          // follows the cursor across mixed-DPI monitors. The host returns
+          // false on Windows, where the native pywebview-drag-region handles
+          // it instead — so we only suppress that default when GTK took over.
+          const api = hostApi();
+          if (!api?.start_window_drag) {
+            return;
+          }
+          void Promise.resolve(api.start_window_drag()).then((handled) => {
+            void handled;
+          });
+        }}
         onDoubleClick={() => void toggleMaximize()}
       />
 
