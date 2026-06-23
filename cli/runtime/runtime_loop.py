@@ -1129,6 +1129,57 @@ def _format_stream_visible_text(text: str) -> str:
     return _reframe_proposed_plan_blocks(convert_inline_latex_math(text))
 
 
+# Block- and inline-level Markdown the live append stream cannot render
+# incrementally (rendering reflows earlier characters, breaking append-only
+# delta math). When present, the reply is re-rendered once after streaming so
+# the final terminal output matches a ``/chat reload``.
+_MD_HEADING_RE = re.compile(r"^\s*#{1,6}\s+\S")
+_MD_FENCE_RE = re.compile(r"^\s*(?:```|~~~)")
+_MD_HR_RE = re.compile(r"^\s*([-*_])(?:\s*\1){2,}\s*$")
+_MD_QUOTE_RE = re.compile(r"^\s*>\s?\S")
+_MD_LIST_RE = re.compile(r"^\s*(?:[-*+]|\d+\.)\s+\S")
+_MD_INLINE_RES = (
+    re.compile(r"\*\*[^*\n]+\*\*"),
+    re.compile(r"(?<![A-Za-z0-9_])__[^_\n]+__(?![A-Za-z0-9_])"),
+    re.compile(r"~~[^~\n]+~~"),
+    re.compile(r"`[^`\n]+`"),
+    re.compile(r"\[[^\]\n]+\]\([^)\n]+\)"),
+    re.compile(r"(?<!\*)\*(?!\s)[^*\n]+?(?<!\s)\*(?!\*)"),
+)
+
+
+def _text_has_renderable_markdown(text: str) -> bool:
+    """True when ``text`` contains Markdown the append stream cannot render live.
+
+    Used to decide whether a one-shot post-stream re-render is needed. Plain
+    prose (no Markdown) returns False so the live append output is left as-is.
+    """
+    s = str(text or "")
+    if not s:
+        return False
+    from ..core.assistant_output_highlighter import _is_md_table_delimiter_row
+
+    lines = s.split("\n")
+    for idx, line in enumerate(lines):
+        if not line.strip():
+            continue
+        if (
+            _MD_HEADING_RE.match(line)
+            or _MD_FENCE_RE.match(line)
+            or _MD_HR_RE.match(line)
+            or _MD_QUOTE_RE.match(line)
+            or _MD_LIST_RE.match(line)
+        ):
+            return True
+        if (
+            "|" in line
+            and idx + 1 < len(lines)
+            and _is_md_table_delimiter_row(lines[idx + 1])
+        ):
+            return True
+    return any(pattern.search(s) for pattern in _MD_INLINE_RES)
+
+
 def _consume_streaming_ai_response(
     agent: Any,
     ai_result: Any,
@@ -1171,6 +1222,18 @@ def _consume_streaming_ai_response(
     append_stream_builder = getattr(agent, "_build_internal_slash_output_stream", None)
     can_append_stream = bool(is_tty and callable(append_stream_builder))
     append_stream = None
+    # Mirror of every byte written to the terminal during the live append
+    # stream. The append path cannot render block/inline Markdown live (it
+    # reflows earlier text), so once the reply finishes we count the exact
+    # visual rows it occupied (from this mirror) to clear them and re-render the
+    # reply through the full Markdown path.
+    append_mirror = io.StringIO() if can_append_stream else None
+    append_sink = (
+        _TeeTextStream(sys.stdout, append_mirror) if append_mirror is not None else None
+    )
+
+    def _append_term_out() -> Any:
+        return append_sink if append_sink is not None else sys.stdout
 
     def _gui_mark(begin: bool) -> None:
         if not gui_plain:
@@ -1244,14 +1307,15 @@ def _consume_streaming_ai_response(
                 term_cols = int(term_cols_fn() or 0)
             except Exception:
                 term_cols = None
+        term_out = _append_term_out()
         try:
             if term_cols and term_cols > 0:
-                append_stream = builder(sys.stdout, terminal_columns=term_cols)
+                append_stream = builder(term_out, terminal_columns=term_cols)
             else:
-                append_stream = builder(sys.stdout)
+                append_stream = builder(term_out)
         except TypeError:
             try:
-                append_stream = builder(sys.stdout)
+                append_stream = builder(term_out)
             except Exception:
                 append_stream = None
         except Exception:
@@ -1259,12 +1323,12 @@ def _consume_streaming_ai_response(
         if append_stream is None:
             return None
         try:
-            sys.stdout.write(f"{_ansi_gray('•')} ")
-            sys.stdout.flush()
+            term_out.write(f"{_ansi_gray('•')} ")
+            term_out.flush()
         except Exception:
             try:
-                sys.stdout.write("• ")
-                sys.stdout.flush()
+                term_out.write("• ")
+                term_out.flush()
             except Exception:
                 pass
         try:
@@ -1330,12 +1394,12 @@ def _consume_streaming_ai_response(
                             target_stream.flush()
                             streamed_any = True
                         except Exception:
-                            sys.stdout.write(delta)
-                            sys.stdout.flush()
+                            _append_term_out().write(delta)
+                            _append_term_out().flush()
                             streamed_any = True
                     else:
-                        sys.stdout.write(delta)
-                        sys.stdout.flush()
+                        _append_term_out().write(delta)
+                        _append_term_out().flush()
                         streamed_any = True
                 shown_display = display_now
             elif can_format_render:
@@ -1397,12 +1461,12 @@ def _consume_streaming_ai_response(
                         target_stream.flush()
                         streamed_any = True
                     except Exception:
-                        sys.stdout.write(tail)
-                        sys.stdout.flush()
+                        _append_term_out().write(tail)
+                        _append_term_out().flush()
                         streamed_any = True
                 else:
-                    sys.stdout.write(tail)
-                    sys.stdout.flush()
+                    _append_term_out().write(tail)
+                    _append_term_out().flush()
                     streamed_any = True
             shown_display = display_final
         elif can_format_render:
@@ -1432,6 +1496,42 @@ def _consume_streaming_ai_response(
         shown_visible = visible_final
     elif visible_final:
         shown_visible = visible_final
+    # The live append path cannot render block/inline Markdown (tables,
+    # headings, lists, bold, code, ...) because doing so reflows already-printed
+    # characters and breaks append-only delta math. Once the reply is complete,
+    # re-render it once through the full Markdown path: clear the exact rows the
+    # append stream occupied (counted from the tee mirror) and reprint the
+    # formatted block so the final terminal output matches a ``/chat reload``.
+    if (
+        can_append_stream
+        and streamed_any
+        and append_mirror is not None
+        and _text_has_renderable_markdown(visible_final)
+    ):
+        try:
+            display_final_md = format_assistant_display_response(visible_final)
+            rendered_block = (
+                agent._format_assistant_chat_display_message(display_final_md)
+                if display_final_md
+                else ""
+            )
+        except Exception:
+            rendered_block = ""
+        if rendered_block:
+            mirror_text = append_mirror.getvalue()
+            streamed_rows = mirror_text.count("\n") + (
+                0 if mirror_text.endswith("\n") else 1
+            )
+            try:
+                if not mirror_text.endswith("\n"):
+                    sys.stdout.write("\n")
+                last_rendered_lines = streamed_rows
+                _clear_previous_block()
+                sys.stdout.write(f"{rendered_block}\n")
+                sys.stdout.flush()
+                shown_visible = visible_final
+            except Exception:
+                pass
     if streamed_any:
         if not shown_visible.endswith("\n"):
             sys.stdout.write("\n")

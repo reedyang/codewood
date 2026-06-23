@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import unicodedata
 from typing import Any, Callable, Dict, List, Pattern, Tuple
 
 from .console_utils import (
@@ -345,6 +346,140 @@ def format_assistant_display_response_plain(text: str) -> str:
     return normalize_display_text(cleaned)
 
 
+# --- GitHub-style Markdown tables -----------------------------------------
+# A delimiter cell is dashes with optional alignment colons (``:--``, ``--:``,
+# ``:-:``). Mirrors the GUI table parser in
+# ``desktop/frontend/src/components/Markdown.tsx`` — keep the two in sync.
+_MD_TABLE_DELIM_CELL_RE = re.compile(r"^:?-+:?$")
+_MD_TABLE_DELIM_LINE_RE = re.compile(r"^[\s|:-]+$")
+
+
+def _split_md_table_row(line: str) -> List[str]:
+    """Split a table row into trimmed cells, honoring escaped pipes (``\\|``)."""
+    s = line.strip()
+    if s.startswith("|"):
+        s = s[1:]
+    if s.endswith("|") and not s.endswith("\\|"):
+        s = s[:-1]
+    cells: List[str] = []
+    buf: List[str] = []
+    i = 0
+    length = len(s)
+    while i < length:
+        ch = s[i]
+        if ch == "\\" and i + 1 < length and s[i + 1] == "|":
+            buf.append("|")
+            i += 2
+            continue
+        if ch == "|":
+            cells.append("".join(buf).strip())
+            buf = []
+            i += 1
+            continue
+        buf.append(ch)
+        i += 1
+    cells.append("".join(buf).strip())
+    return cells
+
+
+def _is_md_table_delimiter_row(line: str) -> bool:
+    """True when ``line`` is a header/body separator like ``| --- | :--: |``."""
+    s = line.strip()
+    if "-" not in s or not _MD_TABLE_DELIM_LINE_RE.fullmatch(s):
+        return False
+    cells = _split_md_table_row(s)
+    return bool(cells) and all(
+        _MD_TABLE_DELIM_CELL_RE.fullmatch(c) for c in cells
+    )
+
+
+def _md_table_aligns(delim_line: str) -> List[str]:
+    """Per-column alignment ("left"/"center"/"right"/"") from the delimiter row."""
+    aligns: List[str] = []
+    for c in _split_md_table_row(delim_line):
+        left = c.startswith(":")
+        right = c.endswith(":")
+        if left and right:
+            aligns.append("center")
+        elif right:
+            aligns.append("right")
+        elif left:
+            aligns.append("left")
+        else:
+            aligns.append("")
+    return aligns
+
+
+def _md_cell_display_width(s: str) -> int:
+    """Terminal display width of plain (un-ANSI) text, counting CJK as 2."""
+    width = 0
+    for ch in s:
+        if unicodedata.combining(ch):
+            continue
+        width += 2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1
+    return width
+
+
+def _render_markdown_table(
+    header: List[str], aligns: List[str], body: List[List[str]]
+) -> List[str]:
+    """Render a parsed Markdown table as box-drawing lines for the terminal.
+
+    Column widths are computed from the plain cell text (so CJK double-width
+    characters align), the header row is bold, body cells reuse the inline
+    token highlighter, and the borders are dimmed.
+    """
+    ncols = max([len(header)] + [len(r) for r in body]) if (header or body) else 0
+    if ncols == 0:
+        return []
+
+    def _norm(row: List[str]) -> List[str]:
+        return [row[i] if i < len(row) else "" for i in range(ncols)]
+
+    header = _norm(header)
+    body = [_norm(r) for r in body]
+    aligns = [aligns[i] if i < len(aligns) else "" for i in range(ncols)]
+
+    widths = [_md_cell_display_width(header[i]) for i in range(ncols)]
+    for row in body:
+        for i in range(ncols):
+            widths[i] = max(widths[i], _md_cell_display_width(row[i]))
+
+    def _border(left: str, mid: str, right: str) -> str:
+        segments = mid.join("─" * (widths[i] + 2) for i in range(ncols))
+        return _ansi_gray(f"{left}{segments}{right}")
+
+    def _render_row(cells: List[str], is_header: bool) -> str:
+        bar = _ansi_gray("│")
+        rendered: List[str] = []
+        for i in range(ncols):
+            plain = cells[i]
+            pad = max(0, widths[i] - _md_cell_display_width(plain))
+            align = aligns[i]
+            if align == "right":
+                left_pad, right_pad = pad, 0
+            elif align == "center":
+                left_pad = pad // 2
+                right_pad = pad - left_pad
+            else:
+                left_pad, right_pad = 0, pad
+            if not plain:
+                content = ""
+            elif is_header:
+                content = _ansi_bold(plain)
+            else:
+                content = _highlight_assistant_inline_tokens(plain)
+            rendered.append(f" {' ' * left_pad}{content}{' ' * right_pad} ")
+        return bar + bar.join(rendered) + bar
+
+    out: List[str] = [_border("┌", "┬", "┐"), _render_row(header, True)]
+    out.append(_border("├", "┼", "┤"))
+    for row in body:
+        out.append(_render_row(row, False))
+    out.append(_border("└", "┴", "┘"))
+    return out
+
+
 # Fenced code block delimiter (``` or ~~~), optionally with a language tag.
 _CODE_FENCE_RE = re.compile(r"^(\s*)(`{3,}|~{3,})\s*([A-Za-z0-9_+\-]*)\s*$")
 # Markdown heading: 1-6 leading '#'. Captures level + text.
@@ -369,7 +504,10 @@ def highlight_assistant_display_text(text: str) -> str:
     out: List[str] = []
     in_fence = False
     fence_marker = ""
-    for line in lines:
+    i = 0
+    n = len(lines)
+    while i < n:
+        line = lines[i]
         fence_match = _CODE_FENCE_RE.match(line)
         if fence_match:
             marker = fence_match.group(2)
@@ -386,13 +524,29 @@ def highlight_assistant_display_text(text: str) -> str:
                 out.append(_ansi_gray(f"{fence_match.group(1)}└─"))
             else:
                 out.append(_ansi_green(line))
+            i += 1
             continue
         if in_fence:
             # Inside a code block: keep the source verbatim, just dim-color it
             # so it reads as code without the inline token painter mangling it.
             out.append(_ansi_green(line))
+            i += 1
+            continue
+        # GitHub-style table: a header row followed by a delimiter row, then
+        # zero or more body rows. Rendered as an aligned box-drawing table so
+        # the columns line up in the terminal instead of leaking raw pipes.
+        if "|" in line and i + 1 < n and _is_md_table_delimiter_row(lines[i + 1]):
+            header = _split_md_table_row(line)
+            aligns = _md_table_aligns(lines[i + 1])
+            i += 2
+            body: List[List[str]] = []
+            while i < n and lines[i].strip() != "" and "|" in lines[i]:
+                body.append(_split_md_table_row(lines[i]))
+                i += 1
+            out.extend(_render_markdown_table(header, aligns, body))
             continue
         out.append(highlight_assistant_display_line(line))
+        i += 1
     return "\n".join(out)
 
 
