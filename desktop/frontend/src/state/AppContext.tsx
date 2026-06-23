@@ -1191,8 +1191,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
         const live = turnsByChatRef.current[key] ?? [];
         const hasActive = live.some((tt) => tt.endedAt === null);
         const hasSettledLive = live.some((tt) => tt.endedAt !== null);
-        if (hasActive && page.turns.length > 0) {
-          setHistoryTurns(page.turns.slice(0, -1));
+        if (hasActive) {
+          // An in-progress turn is streaming for this chat (or an optimistic
+          // first-message turn just opened for a freshly materialized draft
+          // chat). It is not yet fully persisted, so keep the live turn and,
+          // when the persisted page already carries its trailing duplicate,
+          // drop that tail. A brand-new chat has no persisted history yet
+          // (empty page) — keep the live turn untouched so the optimistically
+          // echoed user message survives this reload instead of being cleared.
+          setHistoryTurns(page.turns.length > 0 ? page.turns.slice(0, -1) : page.turns);
           setHistoryStart(page.start);
           setHistoryTotal(page.total);
           dropSettledLiveTurns(key);
