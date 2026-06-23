@@ -3,6 +3,7 @@ import { useApp } from "../state/AppContext";
 import type { WorkspaceSummary } from "../api/types";
 import { ContextMenu, type MenuItem } from "./ContextMenu";
 import { Icon } from "./Icon";
+import { HoverTooltip } from "./HoverTooltip";
 import { buildChatMenuItems, chatKey } from "./chatMenu";
 
 function quote(value: string): string {
@@ -89,6 +90,14 @@ export function Sidebar({ onOpenSettings }: { onOpenSettings: () => void }) {
   // keyed by workspace + chat to avoid hiding same-id chats in other workspaces.
   const isPinnedChat = (wsId: string, chatId: string) => pinnedChat.has(chatKey(wsId, chatId));
   const isArchivedChat = (wsId: string, chatId: string) => archivedChat.has(chatKey(wsId, chatId));
+
+  const workspaceNameById = useMemo(() => {
+    const map: Record<string, string> = {};
+    for (const ws of workspaces) {
+      map[ws.id] = ws.name;
+    }
+    return map;
+  }, [workspaces]);
 
   // Chats per workspace (active workspace sourced from live state).
   const chatsByWorkspace = useMemo(() => {
@@ -274,28 +283,40 @@ export function Sidebar({ onOpenSettings }: { onOpenSettings: () => void }) {
           renderRenameRow()
         ) : (
           <>
-            <button className="tree-label" title={chat.id} onClick={() => void switchChat(wsId, chat.id)}>
-              <span className="tree-name">{chat.name}</span>
-              {/* While running (pulsing dot) or with an unread result (steady
-                  dot) the chat shows ONLY the dot, pushed flush to the right
-                  edge — no timestamp. Otherwise the row shows the relative time
-                  of its most recent message. */}
-              {isBusy ? (
-                <span
-                  className="chat-status-dot chat-busy-dot"
-                  aria-label={t("chat.busy")}
-                  title={t("chat.busy")}
-                />
-              ) : isUnread ? (
-                <span
-                  className="chat-status-dot chat-unread-dot"
-                  aria-label={t("chat.unread")}
-                  title={t("chat.unread")}
-                />
-              ) : (
-                rel && <span className="tree-meta">{rel}</span>
-              )}
-            </button>
+            <HoverTooltip
+              className="tree-label-tip"
+              content={
+                <>
+                  <div className="hover-tooltip-topic">{chat.name}</div>
+                  {isPinned && workspaceNameById[wsId] && (
+                    <div className="hover-tooltip-workspace">{workspaceNameById[wsId]}</div>
+                  )}
+                </>
+              }
+            >
+              <button className="tree-label" onClick={() => void switchChat(wsId, chat.id)}>
+                <span className="tree-name">{chat.name}</span>
+                {/* While running (pulsing dot) or with an unread result (steady
+                    dot) the chat shows ONLY the dot, pushed flush to the right
+                    edge — no timestamp. Otherwise the row shows the relative time
+                    of its most recent message. */}
+                {isBusy ? (
+                  <span
+                    className="chat-status-dot chat-busy-dot"
+                    aria-label={t("chat.busy")}
+                    title={t("chat.busy")}
+                  />
+                ) : isUnread ? (
+                  <span
+                    className="chat-status-dot chat-unread-dot"
+                    aria-label={t("chat.unread")}
+                    title={t("chat.unread")}
+                  />
+                ) : (
+                  rel && <span className="tree-meta">{rel}</span>
+                )}
+              </button>
+            </HoverTooltip>
             <button
               className="chat-pin-btn"
               aria-label={isPinned ? t("menu.unpinChat") : t("menu.pinChat")}
