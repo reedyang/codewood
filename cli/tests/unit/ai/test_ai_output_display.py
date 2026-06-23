@@ -4,7 +4,7 @@ import unittest
 from unittest.mock import patch
 
 from cli.config.app_info import get_app_name
-from cli.core import assistant_output_highlighter as aoh
+from cli.core import text_output_renderer as aoh
 
 
 if "ollama" not in sys.modules:
@@ -179,9 +179,9 @@ class AiOutputDisplayTests(unittest.TestCase):
             "1. Check https://127.0.0.1:4001 and OPENAI_API_KEY\n"
             "./scripts/start-gateway.ps1 # Windows wrapper"
         )
-        with patch("cli.core.assistant_output_highlighter._ansi_bright_blue", side_effect=lambda s: f"<BB>{s}</BB>"), patch(
-            "cli.core.assistant_output_highlighter._ansi_cyan", side_effect=lambda s: f"<C>{s}</C>"
-        ), patch("cli.core.assistant_output_highlighter._ansi_gray", side_effect=lambda s: f"<G>{s}</G>"):
+        with patch("cli.core.text_output_renderer._ansi_bright_blue", side_effect=lambda s: f"<BB>{s}</BB>"), patch(
+            "cli.core.text_output_renderer._ansi_cyan", side_effect=lambda s: f"<C>{s}</C>"
+        ), patch("cli.core.text_output_renderer._ansi_gray", side_effect=lambda s: f"<G>{s}</G>"):
             out = aoh.format_assistant_display_response(text)
 
         self.assertIn("<BB>1. </BB>", out)
@@ -196,15 +196,15 @@ class AiOutputDisplayTests(unittest.TestCase):
             ".\\.venv\\Scripts\\python -m pip install \"litellm[proxy]==1.83.14\"\n"
             "Get-Content -Path agent.py -Raw"
         )
-        with patch("cli.core.assistant_output_highlighter._ansi_bright_blue", side_effect=lambda s: f"<BB>{s}</BB>"), patch(
-            "cli.core.assistant_output_highlighter._ansi_yellow", side_effect=lambda s: f"<Y>{s}</Y>"
-        ), patch("cli.core.assistant_output_highlighter._ansi_green", side_effect=lambda s: f"<G>{s}</G>"), patch(
-            "cli.core.assistant_output_highlighter._ansi_cyan", side_effect=lambda s: f"<C>{s}</C>"
+        with patch("cli.core.text_output_renderer._ansi_bright_blue", side_effect=lambda s: f"<BB>{s}</BB>"), patch(
+            "cli.core.text_output_renderer._ansi_yellow", side_effect=lambda s: f"<Y>{s}</Y>"
+        ), patch("cli.core.text_output_renderer._ansi_green", side_effect=lambda s: f"<G>{s}</G>"), patch(
+            "cli.core.text_output_renderer._ansi_cyan", side_effect=lambda s: f"<C>{s}</C>"
         ), patch(
-            "cli.core.assistant_output_highlighter._ansi_ps_command", side_effect=lambda s: f"<PSC>{s}</PSC>"
+            "cli.core.text_output_renderer._ansi_ps_command", side_effect=lambda s: f"<PSC>{s}</PSC>"
         ), patch(
-            "cli.core.assistant_output_highlighter._ansi_ps_parameter", side_effect=lambda s: f"<PSP>{s}</PSP>"
-        ), patch("cli.core.assistant_output_highlighter._ansi_gray", side_effect=lambda s: f"<GR>{s}</GR>"):
+            "cli.core.text_output_renderer._ansi_ps_parameter", side_effect=lambda s: f"<PSP>{s}</PSP>"
+        ), patch("cli.core.text_output_renderer._ansi_gray", side_effect=lambda s: f"<GR>{s}</GR>"):
             out = aoh.format_assistant_display_response(text)
 
         self.assertIn("<PSC>powershell</PSC>", out)
@@ -222,16 +222,16 @@ class AiOutputDisplayTests(unittest.TestCase):
 
     def test_highlight_parenthesized_powershell_cmdlet_line(self):
         text = '(Get-Content -Path helloworld.py) -replace "print(\\"Hello\\")", "print(\\"Hi\\")"'
-        with patch("cli.core.assistant_output_highlighter._ansi_bright_blue", side_effect=lambda s: f"<BB>{s}</BB>"), patch(
-            "cli.core.assistant_output_highlighter._ansi_yellow", side_effect=lambda s: f"<Y>{s}</Y>"
-        ), patch("cli.core.assistant_output_highlighter._ansi_cyan", side_effect=lambda s: f"<C>{s}</C>"), patch(
-            "cli.core.assistant_output_highlighter._ansi_green", side_effect=lambda s: f"<G>{s}</G>"
+        with patch("cli.core.text_output_renderer._ansi_bright_blue", side_effect=lambda s: f"<BB>{s}</BB>"), patch(
+            "cli.core.text_output_renderer._ansi_yellow", side_effect=lambda s: f"<Y>{s}</Y>"
+        ), patch("cli.core.text_output_renderer._ansi_cyan", side_effect=lambda s: f"<C>{s}</C>"), patch(
+            "cli.core.text_output_renderer._ansi_green", side_effect=lambda s: f"<G>{s}</G>"
         ), patch(
-            "cli.core.assistant_output_highlighter._ansi_ps_command", side_effect=lambda s: f"<PSC>{s}</PSC>"
+            "cli.core.text_output_renderer._ansi_ps_command", side_effect=lambda s: f"<PSC>{s}</PSC>"
         ), patch(
-            "cli.core.assistant_output_highlighter._ansi_ps_parameter", side_effect=lambda s: f"<PSP>{s}</PSP>"
+            "cli.core.text_output_renderer._ansi_ps_parameter", side_effect=lambda s: f"<PSP>{s}</PSP>"
         ), patch(
-            "cli.core.assistant_output_highlighter._ansi_ps_operator", side_effect=lambda s: f"<PSO>{s}</PSO>"
+            "cli.core.text_output_renderer._ansi_ps_operator", side_effect=lambda s: f"<PSO>{s}</PSO>"
         ):
             out = aoh.highlight_assistant_display_line(text)
 
@@ -242,14 +242,14 @@ class AiOutputDisplayTests(unittest.TestCase):
 
     def test_highlight_quoted_path_with_trailing_parenthesis_keeps_replace_as_operator(self):
         text = "(Get-Content -Path 'helloworld.py') -replace 'a', 'b'"
-        with patch("cli.core.assistant_output_highlighter._ansi_cyan", side_effect=lambda s: f"<C>{s}</C>"), patch(
-            "cli.core.assistant_output_highlighter._ansi_green", side_effect=lambda s: f"<G>{s}</G>"
+        with patch("cli.core.text_output_renderer._ansi_cyan", side_effect=lambda s: f"<C>{s}</C>"), patch(
+            "cli.core.text_output_renderer._ansi_green", side_effect=lambda s: f"<G>{s}</G>"
         ), patch(
-            "cli.core.assistant_output_highlighter._ansi_ps_command", side_effect=lambda s: f"<PSC>{s}</PSC>"
+            "cli.core.text_output_renderer._ansi_ps_command", side_effect=lambda s: f"<PSC>{s}</PSC>"
         ), patch(
-            "cli.core.assistant_output_highlighter._ansi_ps_parameter", side_effect=lambda s: f"<PSP>{s}</PSP>"
+            "cli.core.text_output_renderer._ansi_ps_parameter", side_effect=lambda s: f"<PSP>{s}</PSP>"
         ), patch(
-            "cli.core.assistant_output_highlighter._ansi_ps_operator", side_effect=lambda s: f"<PSO>{s}</PSO>"
+            "cli.core.text_output_renderer._ansi_ps_operator", side_effect=lambda s: f"<PSO>{s}</PSO>"
         ):
             out = aoh.highlight_assistant_display_line(text)
 
@@ -258,15 +258,15 @@ class AiOutputDisplayTests(unittest.TestCase):
 
     def test_highlight_shell_pipeline_colors_pipe_and_following_cmdlet(self):
         text = "Get-Content -Path a.txt | Set-Content -Path b.txt"
-        with patch("cli.core.assistant_output_highlighter._ansi_bright_blue", side_effect=lambda s: f"<BB>{s}</BB>"), patch(
-            "cli.core.assistant_output_highlighter._ansi_yellow", side_effect=lambda s: f"<Y>{s}</Y>"
+        with patch("cli.core.text_output_renderer._ansi_bright_blue", side_effect=lambda s: f"<BB>{s}</BB>"), patch(
+            "cli.core.text_output_renderer._ansi_yellow", side_effect=lambda s: f"<Y>{s}</Y>"
         ), patch(
-            "cli.core.assistant_output_highlighter._ansi_ps_command", side_effect=lambda s: f"<PSC>{s}</PSC>"
+            "cli.core.text_output_renderer._ansi_ps_command", side_effect=lambda s: f"<PSC>{s}</PSC>"
         ), patch(
-            "cli.core.assistant_output_highlighter._ansi_ps_parameter", side_effect=lambda s: f"<PSP>{s}</PSP>"
+            "cli.core.text_output_renderer._ansi_ps_parameter", side_effect=lambda s: f"<PSP>{s}</PSP>"
         ), patch(
-            "cli.core.assistant_output_highlighter._ansi_ps_pipe", side_effect=lambda s: f"<PSPIPE>{s}</PSPIPE>"
-        ), patch("cli.core.assistant_output_highlighter._ansi_cyan", side_effect=lambda s: f"<C>{s}</C>"):
+            "cli.core.text_output_renderer._ansi_ps_pipe", side_effect=lambda s: f"<PSPIPE>{s}</PSPIPE>"
+        ), patch("cli.core.text_output_renderer._ansi_cyan", side_effect=lambda s: f"<C>{s}</C>"):
             out = aoh.highlight_assistant_display_line(text)
         self.assertIn("<PSC>Get-Content</PSC>", out)
         self.assertIn("<PSPIPE>|</PSPIPE>", out)
@@ -277,8 +277,8 @@ class AiOutputDisplayTests(unittest.TestCase):
             "- Used PowerShell `Get-Content -Path agent.py -Raw` to read the file.\n"
             "- The command ran on Windows via `powershell -ExecutionPolicy Bypass`."
         )
-        with patch("cli.core.assistant_output_highlighter._ansi_bright_blue", side_effect=lambda s: f"<BB>{s}</BB>"), patch(
-            "cli.core.assistant_output_highlighter._ansi_cyan", side_effect=lambda s: f"<C>{s}</C>"
+        with patch("cli.core.text_output_renderer._ansi_bright_blue", side_effect=lambda s: f"<BB>{s}</BB>"), patch(
+            "cli.core.text_output_renderer._ansi_cyan", side_effect=lambda s: f"<C>{s}</C>"
         ):
             out = aoh.format_assistant_display_response(text)
 
@@ -290,14 +290,14 @@ class AiOutputDisplayTests(unittest.TestCase):
 
     def test_bang_prefixed_powershell_command_with_inner_command_string_is_highlighted(self):
         text = '!powershell -ExecutionPolicy Bypass -Command "Get-Content -Path agent.py -Raw"'
-        with patch("cli.core.assistant_output_highlighter._ansi_bright_blue", side_effect=lambda s: f"<BB>{s}</BB>"), patch(
-            "cli.core.assistant_output_highlighter._ansi_yellow", side_effect=lambda s: f"<Y>{s}</Y>"
-        ), patch("cli.core.assistant_output_highlighter._ansi_cyan", side_effect=lambda s: f"<C>{s}</C>"), patch(
-            "cli.core.assistant_output_highlighter._ansi_green", side_effect=lambda s: f"<G>{s}</G>"
+        with patch("cli.core.text_output_renderer._ansi_bright_blue", side_effect=lambda s: f"<BB>{s}</BB>"), patch(
+            "cli.core.text_output_renderer._ansi_yellow", side_effect=lambda s: f"<Y>{s}</Y>"
+        ), patch("cli.core.text_output_renderer._ansi_cyan", side_effect=lambda s: f"<C>{s}</C>"), patch(
+            "cli.core.text_output_renderer._ansi_green", side_effect=lambda s: f"<G>{s}</G>"
         ), patch(
-            "cli.core.assistant_output_highlighter._ansi_ps_command", side_effect=lambda s: f"<PSC>{s}</PSC>"
+            "cli.core.text_output_renderer._ansi_ps_command", side_effect=lambda s: f"<PSC>{s}</PSC>"
         ), patch(
-            "cli.core.assistant_output_highlighter._ansi_ps_parameter", side_effect=lambda s: f"<PSP>{s}</PSP>"
+            "cli.core.text_output_renderer._ansi_ps_parameter", side_effect=lambda s: f"<PSP>{s}</PSP>"
         ):
             out = aoh.highlight_assistant_display_line(text)
 
@@ -311,14 +311,14 @@ class AiOutputDisplayTests(unittest.TestCase):
 
     def test_highlight_rg_pipeline_command_line_is_treated_as_shell(self):
         text = "rg -i 'token' -n . | select-String -Pattern 'usage|rate'"
-        with patch("cli.core.assistant_output_highlighter._ansi_bright_blue", side_effect=lambda s: f"<BB>{s}</BB>"), patch(
-            "cli.core.assistant_output_highlighter._ansi_yellow", side_effect=lambda s: f"<Y>{s}</Y>"
-        ), patch("cli.core.assistant_output_highlighter._ansi_green", side_effect=lambda s: f"<G>{s}</G>"), patch(
-            "cli.core.assistant_output_highlighter._ansi_ps_command", side_effect=lambda s: f"<PSC>{s}</PSC>"
+        with patch("cli.core.text_output_renderer._ansi_bright_blue", side_effect=lambda s: f"<BB>{s}</BB>"), patch(
+            "cli.core.text_output_renderer._ansi_yellow", side_effect=lambda s: f"<Y>{s}</Y>"
+        ), patch("cli.core.text_output_renderer._ansi_green", side_effect=lambda s: f"<G>{s}</G>"), patch(
+            "cli.core.text_output_renderer._ansi_ps_command", side_effect=lambda s: f"<PSC>{s}</PSC>"
         ), patch(
-            "cli.core.assistant_output_highlighter._ansi_ps_parameter", side_effect=lambda s: f"<PSP>{s}</PSP>"
+            "cli.core.text_output_renderer._ansi_ps_parameter", side_effect=lambda s: f"<PSP>{s}</PSP>"
         ), patch(
-            "cli.core.assistant_output_highlighter._ansi_ps_pipe", side_effect=lambda s: f"<PSPIPE>{s}</PSPIPE>"
+            "cli.core.text_output_renderer._ansi_ps_pipe", side_effect=lambda s: f"<PSPIPE>{s}</PSPIPE>"
         ):
             out = aoh.highlight_assistant_display_line(text)
 
@@ -1043,12 +1043,12 @@ class MarkdownRenderingTests(unittest.TestCase):
 
     def _render(self, text):
         with (
-            patch("cli.core.assistant_output_highlighter._ansi_bold", side_effect=lambda s: f"<B>{s}</B>"),
-            patch("cli.core.assistant_output_highlighter._ansi_italic", side_effect=lambda s: f"<I>{s}</I>"),
-            patch("cli.core.assistant_output_highlighter._ansi_cyan", side_effect=lambda s: f"<C>{s}</C>"),
-            patch("cli.core.assistant_output_highlighter._ansi_gray", side_effect=lambda s: f"<G>{s}</G>"),
-            patch("cli.core.assistant_output_highlighter._ansi_green", side_effect=lambda s: f"<GR>{s}</GR>"),
-            patch("cli.core.assistant_output_highlighter._ansi_bright_blue", side_effect=lambda s: f"<BB>{s}</BB>"),
+            patch("cli.core.text_output_renderer._ansi_bold", side_effect=lambda s: f"<B>{s}</B>"),
+            patch("cli.core.text_output_renderer._ansi_italic", side_effect=lambda s: f"<I>{s}</I>"),
+            patch("cli.core.text_output_renderer._ansi_cyan", side_effect=lambda s: f"<C>{s}</C>"),
+            patch("cli.core.text_output_renderer._ansi_gray", side_effect=lambda s: f"<G>{s}</G>"),
+            patch("cli.core.text_output_renderer._ansi_green", side_effect=lambda s: f"<GR>{s}</GR>"),
+            patch("cli.core.text_output_renderer._ansi_bright_blue", side_effect=lambda s: f"<BB>{s}</BB>"),
         ):
             return aoh.highlight_assistant_display_text(text)
 

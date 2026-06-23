@@ -161,7 +161,7 @@ def _build_structured_turns(agent: Any) -> List[Dict[str, Any]]:
     from ..controllers.chat_command_controller import (
         _genuine_user_positions_in_list,
     )
-    from ..core.assistant_output_highlighter import (
+    from ..core.text_output_renderer import (
         format_assistant_display_response,
         format_assistant_display_response_plain,
     )

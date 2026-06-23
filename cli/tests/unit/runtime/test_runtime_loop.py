@@ -901,7 +901,7 @@ class RuntimeLoopTests(unittest.TestCase):
         # The live append path cannot render block Markdown incrementally; once
         # the reply completes it must clear the streamed rows and re-render the
         # table through the full Markdown path (box-drawing output).
-        from cli.core.assistant_output_highlighter import highlight_assistant_display_text
+        from cli.core.text_output_renderer import highlight_assistant_display_text
 
         class _FakeTtyStream:
             def __init__(self):

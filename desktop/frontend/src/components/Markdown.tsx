@@ -12,7 +12,7 @@ const INLINE_RE =
 // Curated LaTeX-command -> Unicode map for inline math the model commonly
 // emits in narrative (e.g. `$\rightarrow$`). The GUI has no TeX engine, so
 // these would render literally. Mirrors `_LATEX_MATH_SYMBOLS` in
-// cli/core/assistant_output_highlighter.py — keep the two in sync.
+// cli/core/text_output_renderer.py — keep the two in sync.
 const LATEX_MATH_SYMBOLS: Record<string, string> = {
   leftrightarrow: "\u2194",
   Leftrightarrow: "\u21d4",

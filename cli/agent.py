@@ -49,7 +49,7 @@ from .core.config.model_providers import (
     parse_configured_models,
     parse_port,
 )
-from .core.assistant_output_highlighter import (
+from .core.text_output_renderer import (
     format_assistant_display_response,
     highlight_assistant_display_line,
     normalize_display_text,
