@@ -75,6 +75,13 @@ ARGS=(
   # --add-data sources which are relative to --specpath; so no "../../".
   --paths "$VENV_PATH"
   --collect-all webview
+  # tiktoken loads encodings (e.g. cl100k_base) lazily via the tiktoken_ext
+  # namespace plugin, which PyInstaller's static analysis cannot see; without
+  # these the packaged app silently drops to the heuristic token counter
+  # (openai/tiktoken#43, #469 — still no built-in hook).
+  --collect-all tiktoken
+  --hidden-import tiktoken_ext
+  --hidden-import tiktoken_ext.openai_public
   --specpath "build/codewood"
 )
 
