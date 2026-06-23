@@ -14,6 +14,29 @@ _PLAN_STATUSES = ("pending", "in_progress", "completed")
 _PLAN_MAX_ITEMS = 32
 _PLAN_MAX_STEP_CHARS = 200
 
+# Chat interaction mode, persisted on the chat record root as ``"mode"``.
+# ``"agent"`` is the default; ``"plan"`` is the sticky Plan mode.
+CHAT_MODE_AGENT = "agent"
+CHAT_MODE_PLAN = "plan"
+_CHAT_MODES = (CHAT_MODE_AGENT, CHAT_MODE_PLAN)
+
+
+def _read_chat_mode(raw: Dict[str, Any]) -> str:
+    """Return the chat's interaction mode as ``"plan"`` or ``"agent"``.
+
+    Reads the string ``"mode"`` field; anything missing or unrecognized
+    defaults to Agent mode.
+    """
+    if not isinstance(raw, dict):
+        return CHAT_MODE_AGENT
+    mode = str(raw.get("mode") or "").strip().lower()
+    return mode if mode in _CHAT_MODES else CHAT_MODE_AGENT
+
+
+def _chat_mode_is_plan(raw: Dict[str, Any]) -> bool:
+    """Convenience boolean form of :func:`_read_chat_mode`."""
+    return _read_chat_mode(raw) == CHAT_MODE_PLAN
+
 
 def _normalize_plan_items(raw_plan: Any) -> List[Dict[str, str]]:
     """Best-effort plan normalization used when loading or syncing chat state.
@@ -210,6 +233,11 @@ class ChatStateManager:
         usage_pct = int(getattr(self._agent, "_last_context_usage_percent", 0) or 0)
         usage_tokens = int(getattr(self._agent, "_last_context_input_tokens", 0) or 0)
         usage_window = int(getattr(self._agent, "_last_context_window", 0) or 0)
+        # Seed the mode from the live sticky flag so a chat created while Plan
+        # mode is active (e.g. the GUI's draft compose toggled to Plan before
+        # the first send creates the record) persists Plan rather than the bare
+        # Agent default — otherwise the choice is lost on reload.
+        mode = CHAT_MODE_PLAN if bool(getattr(self._agent, "_plan_mode_sticky", False)) else CHAT_MODE_AGENT
         return {
             "id": chat_id,
             "name": name,
@@ -223,7 +251,7 @@ class ChatStateManager:
             "context_usage_percent": usage_pct,
             "context_input_tokens": usage_tokens,
             "context_window": usage_window,
-            "plan_mode": False,
+            "mode": mode,
         }
 
     def _normalize_message(
@@ -293,11 +321,10 @@ class ChatStateManager:
             "context_usage_percent": int(raw.get("context_usage_percent") or 0),
             "context_input_tokens": int(raw.get("context_input_tokens") or 0),
             "context_window": int(raw.get("context_window") or 0),
-            # Whether this chat is in Plan mode. Recorded on the chat record
+            # Interaction mode ("plan" or "agent") recorded on the chat record
             # root so reloading the chat (TUI or GUI) restores the sticky mode
-            # the user last left it in. Older records lack the field and
-            # default to Agent mode (False).
-            "plan_mode": bool(raw.get("plan_mode", False)),
+            # the user last left it in. Missing/unknown values default to Agent.
+            "mode": _read_chat_mode(raw),
         }
         # Preserve cross-process clarifying-prompt state. Another codewood
         # process (typically the TUI) writes ``pending_request_user_input`` onto
@@ -920,7 +947,7 @@ class ChatStateManager:
             chat = self.find_chat_by_id(self._agent.active_chat_id)
             if not chat:
                 return False
-            return bool(chat.get("plan_mode", False))
+            return _chat_mode_is_plan(chat)
 
     def persist_active_chat_plan_mode(self, enabled: bool) -> bool:
         """Record the Plan-mode flag on the active chat's record root.
@@ -934,9 +961,10 @@ class ChatStateManager:
             chat = self.find_chat_by_id(self._agent.active_chat_id)
             if not chat:
                 return False
-            if bool(chat.get("plan_mode", False)) == bool(enabled):
+            new_mode = CHAT_MODE_PLAN if bool(enabled) else CHAT_MODE_AGENT
+            if _read_chat_mode(chat) == new_mode:
                 return True
-            chat["plan_mode"] = bool(enabled)
+            chat["mode"] = new_mode
             chat["updated_at"] = self._now_text()
             try:
                 self.save_chat_state()

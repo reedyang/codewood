@@ -708,6 +708,7 @@ def _build_state(agent: Any) -> Dict[str, Any]:
 def _build_state_inner(agent: Any) -> Dict[str, Any]:
     from ..config.app_info import get_app_name, get_app_version
     from ..core.localization import get_display_language
+    from ..managers.chat_state_manager import _chat_mode_is_plan
 
     default_ws_id = ""
     try:
@@ -806,10 +807,11 @@ def _build_state_inner(agent: Any) -> Dict[str, Any]:
                     # True while this chat's agent loop is mid-turn, so the
                     # sidebar busy dot survives focus changes and reloads.
                     "running": cid in running_chat_ids,
-                    # Sticky Plan-mode flag recorded on the chat record root.
-                    # Surfaced so the GUI can restore the per-chat compose mode
-                    # after a restart instead of defaulting every chat to Agent.
-                    "planMode": bool(c.get("plan_mode", False)),
+                    # Sticky Plan-mode flag recorded on the chat record root
+                    # (as ``mode: "plan"|"agent"``). Surfaced so the GUI can
+                    # restore the per-chat compose mode after a restart instead
+                    # of defaulting every chat to Agent.
+                    "planMode": _chat_mode_is_plan(c),
                 }
             )
     except Exception:
@@ -2380,7 +2382,17 @@ class ServeApp:
             manager = getattr(self.agent, "_chat_state_manager", None)
             persist = getattr(manager, "persist_active_chat_plan_mode", None)
             if callable(persist):
-                persist(bool(enabled))
+                # This runs on an HTTP handler thread where
+                # ``agent.active_chat_id`` is the thread's (empty) session, so
+                # persisting without binding to the focused chat finds no active
+                # chat and silently drops the toggle (the "sometimes not saved"
+                # bug). Bind to the stable cross-thread primary chat first.
+                cid = _primary_active_chat_id(self.agent)
+                if cid:
+                    with self.agent._session_scope(cid):
+                        persist(bool(enabled))
+                else:
+                    persist(bool(enabled))
         except Exception:
             pass
         return True
