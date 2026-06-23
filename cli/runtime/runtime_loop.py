@@ -938,6 +938,22 @@ def _stream_visible_text_with_json_pause(text: str, *, final: bool) -> str:
                 if lowered.endswith(opener[:prefix_len]):
                     starts.append(len(s) - prefix_len)
                     break
+        # Withhold a still-open inline-math span (``$\rightarrow`` before its
+        # closing ``$``, or ``\(`` before ``\)``) so the raw LaTeX never flashes
+        # in the live TUI stream before it is converted to a Unicode glyph once
+        # the span completes. Only triggers when the open marker is followed by a
+        # backslash (a LaTeX command), so ordinary prose dollar signs are left
+        # alone. The downstream formatter converts the completed span.
+        dollar_open = s.rfind("$")
+        if dollar_open >= 0 and s.count("$") % 2 == 1:
+            tail = s[dollar_open + 1 :]
+            if "\\" in tail and "\n" not in tail:
+                starts.append(dollar_open)
+        paren_open = s.rfind("\\(")
+        if paren_open >= 0 and "\\)" not in s[paren_open:]:
+            tail = s[paren_open + 2 :]
+            if "\n" not in tail:
+                starts.append(paren_open)
 
     toolish_key_pattern = r"""(?is)(["']?\b(?:tool|tool_calls|args|arguments)\b["']?)\s*[:=]"""
     for m in re.finditer(r"(?im)^[ \t]*```[^\n]*\n", s):
@@ -1088,6 +1104,31 @@ def _stream_visible_text_with_json_pause(text: str, *, final: bool) -> str:
     return s[: min(starts)].rstrip()
 
 
+def _format_stream_visible_text(text: str) -> str:
+    """Apply display-time transforms to a streamed visible-text snapshot.
+
+    The live TUI append path writes deltas of the visible text directly, which
+    bypasses the history/reload formatter — so without this the raw
+    ``$\\rightarrow$`` LaTeX and ``<proposed_plan>`` protocol tags would show
+    verbatim during streaming (and only render correctly after ``/chat reload``).
+    We convert inline LaTeX math to Unicode and reframe completed proposed-plan
+    blocks here so live output matches the reloaded output.
+
+    The streaming cutter withholds INCOMPLETE inline-math and proposed-plan
+    spans, so every span this sees is already complete; the transforms are
+    therefore append-only (a completed span converts once and stays converted),
+    which keeps the append-stream delta math valid.
+    """
+    if not text:
+        return text
+    from ..core.assistant_output_highlighter import (
+        _reframe_proposed_plan_blocks,
+        convert_inline_latex_math,
+    )
+
+    return _reframe_proposed_plan_blocks(convert_inline_latex_math(text))
+
+
 def _consume_streaming_ai_response(
     agent: Any,
     ai_result: Any,
@@ -1108,6 +1149,12 @@ def _consume_streaming_ai_response(
 
     raw_chunks: List[str] = []
     shown_visible = ""
+    # ``shown_display`` tracks the formatted (LaTeX→Unicode, proposed-plan
+    # reframed) text already written to the live append stream, so deltas are
+    # computed against the FORMATTED output rather than the raw visible text.
+    # Only the GUI keeps raw output (it formats client-side); the TUI append /
+    # plain paths format here so live output matches a later ``/chat reload``.
+    shown_display = ""
     streamed_any = False
     first_visible_output_ready = False
     last_rendered_block = ""
@@ -1266,7 +1313,15 @@ def _consume_streaming_ai_response(
                 except Exception:
                     pass
             if can_append_stream:
-                delta = visible_now[len(shown_visible) :] if visible_now.startswith(shown_visible) else visible_now
+                # Format here so the live TUI stream matches a later reload
+                # (Unicode math + reframed proposed-plan), and delta against the
+                # formatted text already shown.
+                display_now = _format_stream_visible_text(visible_now)
+                delta = (
+                    display_now[len(shown_display) :]
+                    if display_now.startswith(shown_display)
+                    else display_now
+                )
                 if delta:
                     target_stream = _ensure_append_stream()
                     if target_stream is not None:
@@ -1282,6 +1337,7 @@ def _consume_streaming_ai_response(
                         sys.stdout.write(delta)
                         sys.stdout.flush()
                         streamed_any = True
+                shown_display = display_now
             elif can_format_render:
                 rendered_ok = _render_visible_block(visible_now)
                 if rendered_ok:
@@ -1327,10 +1383,11 @@ def _consume_streaming_ai_response(
             except Exception:
                 pass
         if can_append_stream:
+            display_final = _format_stream_visible_text(visible_final)
             tail = (
-                visible_final[len(shown_visible) :]
-                if visible_final.startswith(shown_visible)
-                else visible_final
+                display_final[len(shown_display) :]
+                if display_final.startswith(shown_display)
+                else display_final
             )
             if tail:
                 target_stream = _ensure_append_stream()
@@ -1347,6 +1404,7 @@ def _consume_streaming_ai_response(
                     sys.stdout.write(tail)
                     sys.stdout.flush()
                     streamed_any = True
+            shown_display = display_final
         elif can_format_render:
             rendered_ok = _render_visible_block(visible_final)
             if rendered_ok:
