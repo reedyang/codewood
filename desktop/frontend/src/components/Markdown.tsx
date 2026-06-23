@@ -87,6 +87,72 @@ function safeHref(url: string): string | null {
   return /^(https?:|mailto:)/i.test(u) ? u : null;
 }
 
+type TableAlign = "left" | "center" | "right" | null;
+
+// Split a GitHub-style table row into trimmed cells, honoring escaped pipes
+// (``\|``) inside a cell and tolerating the optional leading/trailing pipe.
+function splitTableRow(line: string): string[] {
+  let s = line.trim();
+  if (s.startsWith("|")) {
+    s = s.slice(1);
+  }
+  if (s.endsWith("|") && !s.endsWith("\\|")) {
+    s = s.slice(0, -1);
+  }
+  const cells: string[] = [];
+  let buf = "";
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i];
+    if (ch === "\\" && s[i + 1] === "|") {
+      buf += "|";
+      i++;
+      continue;
+    }
+    if (ch === "|") {
+      cells.push(buf.trim());
+      buf = "";
+      continue;
+    }
+    buf += ch;
+  }
+  cells.push(buf.trim());
+  return cells;
+}
+
+// A delimiter row separates a table header from its body, e.g.
+// ``| --- | :--: | ---: |``. Every cell must be dashes with optional
+// alignment colons; at least one dash is required so a plain ``---`` rule or
+// prose is not mistaken for a table.
+function isTableDelimiterRow(line: string): boolean {
+  const s = line.trim();
+  if (!s.includes("-") || !/^[\s|:-]+$/.test(s)) {
+    return false;
+  }
+  const cells = splitTableRow(s);
+  return cells.length > 0 && cells.every((c) => /^:?-+:?$/.test(c));
+}
+
+function tableAligns(delimLine: string): TableAlign[] {
+  return splitTableRow(delimLine).map((c) => {
+    const left = c.startsWith(":");
+    const right = c.endsWith(":");
+    if (left && right) {
+      return "center";
+    }
+    if (right) {
+      return "right";
+    }
+    if (left) {
+      return "left";
+    }
+    return null;
+  });
+}
+
+function alignClass(align: TableAlign): string | undefined {
+  return align ? `md-table-${align}` : undefined;
+}
+
 function renderInline(text: string, keyBase: string): ReactNode[] {
   const nodes: ReactNode[] = [];
   const re = new RegExp(INLINE_RE);
@@ -211,6 +277,14 @@ function MarkdownBody({ text }: { text: string }): ReactNode {
   let i = 0;
   let key = 0;
 
+  // A table starts where the current line is a row and the next line is a
+  // delimiter row. Used both to emit the table and to stop a paragraph from
+  // swallowing a table that follows it without a blank separator line.
+  const isTableStart = (idx: number): boolean =>
+    idx + 1 < lines.length &&
+    lines[idx].includes("|") &&
+    isTableDelimiterRow(lines[idx + 1]);
+
   while (i < lines.length) {
     const line = lines[i];
 
@@ -247,6 +321,47 @@ function MarkdownBody({ text }: { text: string }): ReactNode {
     if (/^\s*([-*_])(\s*\2){2,}\s*$/.test(line)) {
       blocks.push(<hr key={key++} className="md-hr" />);
       i++;
+      continue;
+    }
+
+    if (isTableStart(i)) {
+      const headerCells = splitTableRow(line);
+      const aligns = tableAligns(lines[i + 1]);
+      i += 2;
+      const bodyRows: string[][] = [];
+      while (
+        i < lines.length &&
+        lines[i].trim() !== "" &&
+        lines[i].includes("|")
+      ) {
+        bodyRows.push(splitTableRow(lines[i]));
+        i++;
+      }
+      const tableKey = key++;
+      blocks.push(
+        <table key={tableKey} className="md-table">
+          <thead>
+            <tr>
+              {headerCells.map((cell, ci) => (
+                <th key={ci} className={alignClass(aligns[ci] ?? null)}>
+                  {renderInline(cell, `th${tableKey}-${ci}`)}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {bodyRows.map((row, ri) => (
+              <tr key={ri}>
+                {headerCells.map((_, ci) => (
+                  <td key={ci} className={alignClass(aligns[ci] ?? null)}>
+                    {renderInline(row[ci] ?? "", `td${tableKey}-${ri}-${ci}`)}
+                  </td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>,
+      );
       continue;
     }
 
@@ -298,7 +413,8 @@ function MarkdownBody({ text }: { text: string }): ReactNode {
       !/^```/.test(lines[i].trim()) &&
       !/^(#{1,6})\s+/.test(lines[i]) &&
       !/^\s*([-*+]|\d+\.)\s+/.test(lines[i]) &&
-      !/^\s*>\s?/.test(lines[i])
+      !/^\s*>\s?/.test(lines[i]) &&
+      !isTableStart(i)
     ) {
       para.push(lines[i]);
       i++;

@@ -3286,6 +3286,41 @@ h6.md-h {
   border-top: 1px solid var(--border);
   margin: 12px 0;
 }
+.md-table {
+  border-collapse: collapse;
+  margin: 10px 0;
+  width: auto;
+  max-width: 100%;
+  display: block;
+  overflow-x: auto;
+  font-size: 0.95em;
+  line-height: 1.5;
+}
+.md-table th,
+.md-table td {
+  border: 1px solid var(--border);
+  padding: 5px 10px;
+  text-align: left;
+  vertical-align: top;
+  word-break: break-word;
+}
+.md-table thead th {
+  background: var(--surface-2, rgba(127, 127, 127, 0.12));
+  font-weight: 600;
+  color: var(--text);
+}
+.md-table tbody tr:nth-child(even) td {
+  background: rgba(127, 127, 127, 0.06);
+}
+.md-table-left {
+  text-align: left;
+}
+.md-table-center {
+  text-align: center;
+}
+.md-table-right {
+  text-align: right;
+}
 .md a {
   color: var(--accent, #3b8eea);
 }

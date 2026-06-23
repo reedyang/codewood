@@ -897,6 +897,68 @@ class RuntimeLoopTests(unittest.TestCase):
         self.assertNotIn("\x1b[1A\r\x1b[2K", merged)
         self.assertIn("hello", re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", merged))
 
+    def test_consume_streaming_ai_response_tty_append_mode_rerenders_markdown_table(self):
+        # The live append path cannot render block Markdown incrementally; once
+        # the reply completes it must clear the streamed rows and re-render the
+        # table through the full Markdown path (box-drawing output).
+        from cli.core.assistant_output_highlighter import highlight_assistant_display_text
+
+        class _FakeTtyStream:
+            def __init__(self):
+                self.writes = []
+
+            def write(self, text):
+                s = str(text or "")
+                self.writes.append(s)
+                return len(s)
+
+            def flush(self):
+                return None
+
+            def isatty(self):
+                return True
+
+        class _AppendStream:
+            def __init__(self, base):
+                self._base = base
+                self._line_start = True
+                self._visual_col = 0
+
+            def write(self, text):
+                return self._base.write(text)
+
+            def flush(self):
+                return self._base.flush()
+
+        class _Agent:
+            def _hide_previous_shell_output_if_needed(self):
+                return None
+
+            def _ensure_terminal_line_start(self):
+                return None
+
+            def _build_internal_slash_output_stream(self, base_stream, terminal_columns=None):
+                _ = terminal_columns
+                return _AppendStream(base_stream)
+
+            def _terminal_columns_for_line_estimate(self):
+                return 80
+
+            def _format_assistant_chat_display_message(self, text):
+                return highlight_assistant_display_text(str(text or ""))
+
+        chunks = ["| A | B |\n", "|---|---|\n", "| 1 | 2 |"]
+        fake_out = _FakeTtyStream()
+        with patch("cli.runtime.runtime_loop.sys.stdout", fake_out):
+            ai_response, streamed_any = _consume_streaming_ai_response(_Agent(), chunks)
+
+        merged = "".join(fake_out.writes)
+        self.assertTrue(streamed_any)
+        # Streamed rows were cleared for the re-render.
+        self.assertIn("\x1b[1A\r\x1b[2K", merged)
+        # Final output is a box-drawing table, not the raw pipe markdown.
+        self.assertTrue(any(ch in merged for ch in ("─", "│", "┌", "├")))
+
     def test_consume_streaming_ai_response_does_not_duplicate_text_before_plain_tool_json(self):
         class _FakeStdout:
             def __init__(self):
