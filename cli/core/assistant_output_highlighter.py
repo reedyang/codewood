@@ -4,7 +4,16 @@ import json
 import re
 from typing import Any, Callable, Dict, List, Pattern, Tuple
 
-from .console_utils import _ansi_bright_blue, _ansi_cyan, _ansi_gray, _ansi_green, _ansi_rgb, _ansi_yellow
+from .console_utils import (
+    _ansi_bold,
+    _ansi_bright_blue,
+    _ansi_cyan,
+    _ansi_gray,
+    _ansi_green,
+    _ansi_italic,
+    _ansi_rgb,
+    _ansi_yellow,
+)
 
 
 def _payload_looks_like_tool_call(payload: Any) -> bool:
@@ -336,20 +345,77 @@ def format_assistant_display_response_plain(text: str) -> str:
     return normalize_display_text(cleaned)
 
 
+# Fenced code block delimiter (``` or ~~~), optionally with a language tag.
+_CODE_FENCE_RE = re.compile(r"^(\s*)(`{3,}|~{3,})\s*([A-Za-z0-9_+\-]*)\s*$")
+# Markdown heading: 1-6 leading '#'. Captures level + text.
+_HEADING_RE = re.compile(r"^(\s*)(#{1,6})\s+(.*?)\s*#*\s*$")
+# Horizontal rule: a line of only ---, ***, or ___ (3+).
+_HR_RE = re.compile(r"^\s*([-*_])(?:\s*\1){2,}\s*$")
+
+
 def highlight_assistant_display_text(text: str) -> str:
-    """Colorize important tokens in assistant narrative output."""
+    """Colorize important tokens in assistant narrative output.
+
+    Lightweight Markdown rendering for the terminal: fenced code blocks are
+    dimmed and left literal (no inline token painting inside them), ATX
+    headings render bold, horizontal rules become a thin separator, and inline
+    spans (``**bold**``, ``*italic*``, `` `code` ``) are styled per line. We do
+    NOT pull in a Markdown engine — this keeps the existing width-aware wrap and
+    bullet-indent pipeline (and its ANSI-aware width math) intact.
+    """
     if not isinstance(text, str) or not text:
         return ""
     lines = text.split("\n")
-    return "\n".join(highlight_assistant_display_line(line) for line in lines)
+    out: List[str] = []
+    in_fence = False
+    fence_marker = ""
+    for line in lines:
+        fence_match = _CODE_FENCE_RE.match(line)
+        if fence_match:
+            marker = fence_match.group(2)
+            if not in_fence:
+                in_fence = True
+                fence_marker = marker[0]
+                indent = fence_match.group(1)
+                lang = fence_match.group(3)
+                label = f"{indent}┌─ {lang}" if lang else f"{indent}┌─"
+                out.append(_ansi_gray(label))
+            elif marker[0] == fence_marker:
+                in_fence = False
+                fence_marker = ""
+                out.append(_ansi_gray(f"{fence_match.group(1)}└─"))
+            else:
+                out.append(_ansi_green(line))
+            continue
+        if in_fence:
+            # Inside a code block: keep the source verbatim, just dim-color it
+            # so it reads as code without the inline token painter mangling it.
+            out.append(_ansi_green(line))
+            continue
+        out.append(highlight_assistant_display_line(line))
+    return "\n".join(out)
 
 
 def highlight_assistant_display_line(line: str) -> str:
     if not line:
         return line
+
+    heading_match = _HEADING_RE.match(line)
+    if heading_match:
+        indent = heading_match.group(1)
+        body = heading_match.group(3)
+        if body:
+            return f"{indent}{_ansi_bold(_highlight_assistant_inline_tokens(body))}"
+        return _ansi_bold(line)
+
+    if _HR_RE.match(line):
+        return _ansi_gray("─" * 24)
+
     stripped = line.lstrip()
-    if stripped.startswith("#"):
-        return _ansi_gray(line)
+    if stripped.startswith(">"):
+        indent = line[: len(line) - len(stripped)]
+        quoted = stripped[1:].lstrip()
+        return f"{indent}{_ansi_gray('│ ')}{_ansi_italic(_highlight_assistant_inline_tokens(quoted))}"
 
     comment_idx = line.find(" #")
     if comment_idx >= 0:
@@ -746,8 +812,23 @@ def _highlight_assistant_inline_tokens(text: str) -> str:
     if not text:
         return text
 
+    def _paint_bold(s: str) -> str:
+        return _ansi_bold(s[2:-2])
+
+    def _paint_italic(s: str) -> str:
+        return _ansi_italic(s[1:-1])
+
     rules: List[Tuple[Pattern[str], Callable[[str], str]]] = [
+        # Inline code first so its body is never re-interpreted as bold/italic.
+        # Backticks are kept (they read as a code marker in the terminal).
+        (re.compile(r"``[^`\n]+``"), _ansi_cyan),
         (re.compile(r"`[^`\n]+`"), _ansi_cyan),
+        # ``**bold**`` / ``__bold__`` (require non-space adjacent to markers).
+        (re.compile(r"\*\*(?=\S)(?:[^*\n]|\*(?!\*))+?(?<=\S)\*\*"), _paint_bold),
+        (re.compile(r"(?<![A-Za-z0-9_])__(?=\S)[^_\n]+?(?<=\S)__(?![A-Za-z0-9_])"), _paint_bold),
+        # ``*italic*`` / ``_italic_`` (avoid bare ``*`` bullets and snake_case).
+        (re.compile(r"\*(?=\S)(?:[^*\n])+?(?<=\S)\*"), _paint_italic),
+        (re.compile(r"(?<![A-Za-z0-9_])_(?=\S)[^_\n]+?(?<=\S)_(?![A-Za-z0-9_])"), _paint_italic),
         (re.compile(r"https?://[^\s`<>)\]}]+", re.IGNORECASE), _ansi_cyan),
         (
             re.compile(
