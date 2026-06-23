@@ -10,7 +10,32 @@ from __future__ import annotations
 import os
 import sys
 
-import webview
+
+def _prefer_x11_on_wayland() -> None:
+    """Ask GTK to use the X11 backend when running under Wayland (Linux).
+
+    pywebview's GTK frameless dragging and programmatic window moves rely on
+    ``window.move``, which Wayland compositors forbid — so title-bar dragging
+    and "restore from maximize" silently fail under Wayland (e.g. the default
+    WSLg session). The X11 path (XWayland) supports these operations. We only
+    set ``GDK_BACKEND`` when it is unset, so an explicit user override always
+    wins, and only on Linux under Wayland. This must run before ``webview`` /
+    GTK is imported, since GDK reads the backend at initialization.
+    """
+    if sys.platform == "win32" or os.name == "nt":
+        return
+    if os.environ.get("GDK_BACKEND"):
+        return
+    on_wayland = bool(os.environ.get("WAYLAND_DISPLAY")) or (
+        str(os.environ.get("XDG_SESSION_TYPE", "")).lower() == "wayland"
+    )
+    if on_wayland:
+        os.environ["GDK_BACKEND"] = "x11"
+
+
+_prefer_x11_on_wayland()
+
+import webview  # noqa: E402 - must follow the GDK_BACKEND setup above
 
 try:
     from backend import BackendError, BackendProcess
@@ -184,7 +209,7 @@ class HostApi:
             return self._maximized
         try:
             if self._maximized:
-                window.restore()
+                self._restore_window(window)
             else:
                 window.maximize()
             self._maximized = not self._maximized
@@ -192,11 +217,62 @@ class HostApi:
             pass
         return self._maximized
 
+    @staticmethod
+    def _restore_window(window) -> None:
+        """Un-maximize a window across pywebview backends.
+
+        On Windows/EdgeChromium ``window.restore()`` works. On the GTK backend
+        ``restore()`` does not always un-maximize the underlying GtkWindow, so
+        fall back to calling ``unmaximize()`` on the native GTK handle directly
+        (run on the GTK main thread via ``GLib.idle_add`` to stay thread-safe).
+        """
+        restored = False
+        try:
+            window.restore()
+            restored = True
+        except Exception:
+            restored = False
+        if sys.platform == "win32":
+            return
+        # GTK-specific fallback: reach the native GtkWindow and unmaximize it.
+        gtk_window = getattr(window, "gtk", None) or getattr(window, "native", None)
+        if gtk_window is None:
+            return
+        try:
+            from gi.repository import GLib  # type: ignore
+
+            def _do_unmaximize() -> bool:
+                try:
+                    gtk_window.unmaximize()
+                except Exception:
+                    pass
+                return False  # one-shot idle callback
+
+            GLib.idle_add(_do_unmaximize)
+        except Exception:
+            if not restored:
+                try:
+                    gtk_window.unmaximize()
+                except Exception:
+                    pass
+
     def close_window(self) -> None:
-        window = webview.active_window()
-        if window is not None:
+        # Destroy the window, then make sure the whole app actually quits. On
+        # the GTK/WebKit backend ``window.destroy()`` alone can leave the GTK
+        # main loop running, so ``webview.start()`` never returns and the
+        # process lingers. Calling ``destroy()`` on every window and (when
+        # available) the top-level ``webview`` API gives a clean shutdown
+        # across backends without changing Windows behavior.
+        try:
+            windows = list(getattr(webview, "windows", []) or [])
+        except Exception:
+            windows = []
+        active = webview.active_window()
+        if active is not None and active not in windows:
+            windows.append(active)
+        for win in windows:
             try:
-                window.destroy()
+                win.destroy()
             except Exception:
                 pass
 
@@ -278,6 +354,17 @@ def main() -> int:
         webview.start(gui=_preferred_gui(), debug=debug)
     finally:
         backend.stop()
+    # Guarantee the process terminates. On the GTK/WebKit backend stray helper
+    # threads (WebKit network/web processes, GLib workers) can otherwise keep
+    # the interpreter alive after the window closes, so a plain ``return`` would
+    # hang. ``os._exit`` is safe here: the backend subprocess has already been
+    # stopped above and there is no further Python cleanup to run. Windows'
+    # EdgeChromium backend returns cleanly, so restrict the hard exit to other
+    # platforms to keep Windows behavior unchanged.
+    if sys.platform != "win32":
+        sys.stdout.flush()
+        sys.stderr.flush()
+        os._exit(0)
     return 0
 
 
