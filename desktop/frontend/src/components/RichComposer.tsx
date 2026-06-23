@@ -224,40 +224,43 @@ interface CaretSnapshot {
   textOffset: number;
 }
 
-function captureCaret(root: HTMLElement): CaretSnapshot | null {
-  const sel = window.getSelection();
-  if (!sel || sel.rangeCount === 0) return null;
-  const range = sel.getRangeAt(0);
-  if (!root.contains(range.startContainer)) return null;
+/** Map a DOM point (container + offset) to a ``CaretSnapshot`` (child index +
+ *  in-node offset). Shared by the live-caret capture and selection-range
+ *  endpoint mapping. */
+function snapshotFromPoint(
+  root: HTMLElement,
+  container: Node,
+  offset: number,
+): CaretSnapshot | null {
+  if (!root.contains(container)) return null;
   const children = Array.from(root.childNodes);
-  let segIndex = 0;
+  // Point placed directly on the root element (a child boundary), e.g. right
+  // before the first pill when there's no leading text node. ``offset`` is the
+  // index of the child the point sits before.
+  if (container === root) {
+    return { segIndex: Math.min(offset, children.length), textOffset: 0 };
+  }
   for (let i = 0; i < children.length; i += 1) {
     const child = children[i];
-    if (child === range.startContainer || child.contains(range.startContainer)) {
-      // Pill node — caret sits next to it. We don't drill into pill internals.
+    if (child === container || child.contains(container)) {
       if (
         child.nodeType === Node.ELEMENT_NODE &&
         (child as HTMLElement).hasAttribute("data-token-kind")
       ) {
         return { segIndex: i, textOffset: 0 };
       }
-      // Text-bearing node.
       const text = child.textContent ?? "";
-      const offset = Math.min(range.startOffset, text.length);
-      return { segIndex, textOffset: offset };
-    }
-    if (
-      child.nodeType === Node.ELEMENT_NODE &&
-      (child as HTMLElement).hasAttribute("data-token-kind")
-    ) {
-      segIndex += 1;
-    } else {
-      // Each contiguous text-bearing child counts as one text segment in our
-      // canonical representation.
-      segIndex += 1;
+      return { segIndex: i, textOffset: Math.min(offset, text.length) };
     }
   }
   return null;
+}
+
+function captureCaret(root: HTMLElement): CaretSnapshot | null {
+  const sel = window.getSelection();
+  if (!sel || sel.rangeCount === 0) return null;
+  const range = sel.getRangeAt(0);
+  return snapshotFromPoint(root, range.startContainer, range.startOffset);
 }
 
 function restoreCaret(root: HTMLElement, snap: CaretSnapshot | null) {
@@ -283,8 +286,10 @@ function restoreCaret(root: HTMLElement, snap: CaretSnapshot | null) {
     target.nodeType === Node.ELEMENT_NODE &&
     (target as HTMLElement).hasAttribute("data-token-kind")
   ) {
-    // Place caret just after the pill.
-    r.setStartAfter(target);
+    // A snapshot whose child index lands on a pill means "the caret position
+    // just BEFORE this pill" (canonical ``{segIdx:i, offset:0}``). Positions
+    // AFTER a pill are encoded by targeting the following node instead.
+    r.setStartBefore(target);
   } else {
     const text = target.textContent ?? "";
     const offset = Math.min(snap.textOffset, text.length);
@@ -318,9 +323,12 @@ interface CanonicalCaret {
  *  may split text across multiple nodes, whereas the canonical model collapses
  *  contiguous text into one segment and strips ZWSP. We walk the children up to
  *  the caret to count how much canonical content precedes it. */
-function canonicalCaretFromDom(root: HTMLElement): CanonicalCaret | null {
-  const snap = captureCaret(root);
-  if (!snap) return null;
+/** Convert an arbitrary selection endpoint (the ``CaretSnapshot`` shape, a
+ *  child index + offset) into canonical coordinates against the live DOM. */
+function canonicalFromSnapshot(
+  root: HTMLElement,
+  snap: CaretSnapshot,
+): CanonicalCaret {
   const kids = Array.from(root.childNodes);
   let segIdx = 0;
   let pendingTextLen = 0;
@@ -353,6 +361,12 @@ function canonicalCaretFromDom(root: HTMLElement): CanonicalCaret | null {
   return { segIdx, offset: pendingTextLen + snap.textOffset };
 }
 
+function canonicalCaretFromDom(root: HTMLElement): CanonicalCaret | null {
+  const snap = captureCaret(root);
+  if (!snap) return null;
+  return canonicalFromSnapshot(root, snap);
+}
+
 /** Convert a canonical caret position into a ``CaretSnapshot`` that
  *  ``restoreCaret`` can consume against the DOM that ``segments`` will build.
  *  In that DOM each text segment is one child node and each pill is two (pill +
@@ -363,8 +377,11 @@ function snapshotForCanonical(
   segments: Segment[],
   caret: CanonicalCaret,
 ): CaretSnapshot {
+  // The rebuild prepends a zero-width anchor node when the first segment is a
+  // pill (so the caret can sit before it); mirror that +1 child offset here.
+  const pad = segments.length > 0 && segments[0].kind !== "text" ? 1 : 0;
   const clampedSeg = Math.max(0, Math.min(caret.segIdx, segments.length));
-  let childIdx = 0;
+  let childIdx = pad;
   for (let i = 0; i < clampedSeg; i += 1) {
     childIdx += segments[i].kind === "text" ? 1 : 2;
   }
@@ -380,15 +397,18 @@ function snapshotForCanonical(
   if (lastIdx < 0) {
     return { segIndex: 0, textOffset: 0 };
   }
-  let lastChildIdx = 0;
+  let lastChildIdx = pad;
   for (let i = 0; i < lastIdx; i += 1) {
     lastChildIdx += segments[i].kind === "text" ? 1 : 2;
   }
   const last = segments[lastIdx];
-  return {
-    segIndex: lastChildIdx,
-    textOffset: last.kind === "text" ? last.value.length : 0,
-  };
+  if (last.kind === "text") {
+    return { segIndex: lastChildIdx, textOffset: last.value.length };
+  }
+  // Trailing pill: caret goes AFTER it. The pill occupies ``lastChildIdx`` and
+  // is followed by its ZWSP anchor (and the rebuild's guaranteed trailing text
+  // node), so target the node after the pill.
+  return { segIndex: lastChildIdx + 1, textOffset: 0 };
 }
 
 /** Flatten a segment model into a linear list of "atoms": one entry per text
@@ -548,6 +568,13 @@ function usePillSelectionHighlight(): void {
   }, []);
 }
 
+// Sentinel stored in ``lastRenderedRef`` to force the next rebuild. It must be
+// a value that a real segment signature can never equal — in particular it must
+// differ from "" (the signature of an EMPTY editor), otherwise deleting all
+// content would collide with the sentinel and skip the DOM rebuild, leaving the
+// stale content on screen while the model is already empty.
+const FORCE_REBUILD = "\x00force-rebuild\x00";
+
 export function RichComposer({
   segments,
   onChange,
@@ -685,6 +712,14 @@ export function RichComposer({
     while (root.firstChild) {
       root.removeChild(root.firstChild);
     }
+    // When the very first segment is a pill there is no text node before it for
+    // the caret to land in, so Home / caret-before-pill would vanish and a lone
+    // leading pill could wrap awkwardly. Prepend a zero-width anchor text node
+    // in that case. ``snapshotForCanonical`` adds the matching +1 child offset,
+    // and ``readSegmentsFromDom`` ignores the ZWSP so the model is unaffected.
+    if (segments.length > 0 && segments[0].kind !== "text") {
+      root.appendChild(document.createTextNode(ZWSP));
+    }
     for (let segIdx = 0; segIdx < segments.length; segIdx += 1) {
       const seg = segments[segIdx];
       if (seg.kind === "text") {
@@ -771,7 +806,7 @@ export function RichComposer({
         dropped.push(s);
       }
       if (!removed) return;
-      lastRenderedRef.current = ""; // force rebuild
+      lastRenderedRef.current = FORCE_REBUILD; // force rebuild
       onChange(dropped);
     };
     root.addEventListener("click", onClick);
@@ -1070,7 +1105,7 @@ export function RichComposer({
     redoStackRef.current.push(current.map((s) => ({ ...s })));
     suppressHistoryRef.current = true;
     lastHistorySigRef.current = segmentsSignature(prev);
-    lastRenderedRef.current = ""; // force the DOM to rebuild from the model
+    lastRenderedRef.current = FORCE_REBUILD; // force the DOM to rebuild from the model
     // Place the caret at the end of whatever the undo changed (insert/delete
     // rule), computed by diffing the outgoing and incoming models.
     pendingCaretRef.current = snapshotForCanonical(
@@ -1089,7 +1124,7 @@ export function RichComposer({
     undoStackRef.current.push(current.map((s) => ({ ...s })));
     suppressHistoryRef.current = true;
     lastHistorySigRef.current = segmentsSignature(next);
-    lastRenderedRef.current = "";
+    lastRenderedRef.current = FORCE_REBUILD;
     pendingCaretRef.current = snapshotForCanonical(
       next,
       caretAfterModelSwap(current, next),
@@ -1159,6 +1194,85 @@ export function RichComposer({
     [],
   );
 
+  // Delete the active (non-collapsed) selection through the canonical model.
+  // Returns false if it can't resolve the selection (caller then falls back to
+  // native behavior). Caret lands at the deletion gap (delete-text rule).
+  const deleteSelectionViaModel = useCallback((): boolean => {
+    const root = rootRef.current;
+    if (!root) return false;
+    const sel = window.getSelection();
+    if (!sel || sel.rangeCount === 0 || sel.isCollapsed) return false;
+    const range = sel.getRangeAt(0);
+    if (
+      !root.contains(range.startContainer) ||
+      !root.contains(range.endContainer)
+    ) {
+      return false;
+    }
+    const startSnap = snapshotFromPoint(
+      root,
+      range.startContainer,
+      range.startOffset,
+    );
+    const endSnap = snapshotFromPoint(root, range.endContainer, range.endOffset);
+    if (!startSnap || !endSnap) return false;
+    const existing = readSegmentsFromDom(root);
+    let startC = canonicalFromSnapshot(root, startSnap);
+    let endC = canonicalFromSnapshot(root, endSnap);
+    // Normalize so start <= end in (segIdx, offset) order.
+    const before = (p: CanonicalCaret, q: CanonicalCaret) =>
+      p.segIdx < q.segIdx || (p.segIdx === q.segIdx && p.offset <= q.offset);
+    if (!before(startC, endC)) {
+      const tmp = startC;
+      startC = endC;
+      endC = tmp;
+    }
+    if (startC.segIdx === endC.segIdx && startC.offset === endC.offset) {
+      return false;
+    }
+    // Build the kept head (everything before ``startC``) and tail (everything
+    // from ``endC`` onward), splitting text segments at the cut points.
+    const head: Segment[] = [];
+    for (let i = 0; i < startC.segIdx && i < existing.length; i += 1) {
+      head.push(existing[i]);
+    }
+    let headEndsInSplitText = false;
+    const startSeg = existing[startC.segIdx];
+    if (startSeg && startSeg.kind === "text" && startC.offset > 0) {
+      head.push({ kind: "text", value: startSeg.value.slice(0, startC.offset) });
+      headEndsInSplitText = true;
+    }
+    const tail: Segment[] = [];
+    const endSeg = existing[endC.segIdx];
+    if (endSeg) {
+      if (endSeg.kind === "text") {
+        const rest = endSeg.value.slice(endC.offset);
+        if (rest) tail.push({ kind: "text", value: rest });
+      } else if (endC.offset === 0) {
+        tail.push(endSeg);
+      }
+    }
+    for (let i = endC.segIdx + 1; i < existing.length; i += 1) {
+      tail.push(existing[i]);
+    }
+
+    // Caret target (the gap) in canonical coordinates. It sits at the end of
+    // the head: if the head ends in a split text segment, at that slice's end;
+    // otherwise at the start of the tail. We keep head/tail segments un-merged
+    // (the rebuild renders each as its own node; ``readSegmentsFromDom``
+    // coalesces adjacent text on the next read), so the index is stable.
+    const merged: Segment[] = [...head, ...tail];
+    const lastHead = head[head.length - 1];
+    const caretTarget: CanonicalCaret =
+      lastHead && lastHead.kind === "text" && headEndsInSplitText
+        ? { segIdx: head.length - 1, offset: lastHead.value.length }
+        : { segIdx: head.length, offset: 0 };
+    pendingCaretRef.current = snapshotForCanonical(merged, caretTarget);
+    lastRenderedRef.current = FORCE_REBUILD;
+    onChange(merged);
+    return true;
+  }, [onChange]);
+
   // Replace the current selection with ``segs`` (pills + text), then push the
   // new model to the parent and refocus the caret after the inserted content.
   const replaceSelectionWithSegments = useCallback(
@@ -1211,13 +1325,26 @@ export function RichComposer({
       }
       const merged: Segment[] = [...head, ...segs, ...tail];
 
-      // Caret lands right AFTER the inserted segments (insert-text rule).
-      pendingCaretRef.current = snapshotForCanonical(merged, {
-        segIdx: head.length + segs.length,
-        offset: 0,
-      });
+      // Caret lands right AFTER the inserted content (insert-text rule). Anchor
+      // it to the END of the LAST inserted segment rather than the START of the
+      // following segment: when that following segment is a pill, "start of the
+      // pill" would resolve (via setStartAfter) to AFTER the pill, wrongly
+      // jumping the caret past it. Anchoring to the end of the last pasted
+      // segment keeps the caret tucked between the paste and the pill.
+      let caretTarget: CanonicalCaret;
+      if (segs.length > 0) {
+        const lastInsertedIdx = head.length + segs.length - 1;
+        const lastSeg = merged[lastInsertedIdx];
+        caretTarget =
+          lastSeg.kind === "text"
+            ? { segIdx: lastInsertedIdx, offset: lastSeg.value.length }
+            : { segIdx: lastInsertedIdx + 1, offset: 0 };
+      } else {
+        caretTarget = { segIdx: head.length, offset: 0 };
+      }
+      pendingCaretRef.current = snapshotForCanonical(merged, caretTarget);
 
-      lastRenderedRef.current = ""; // force a full rebuild
+      lastRenderedRef.current = FORCE_REBUILD; // force a full rebuild
       onChange(merged);
     },
     [onChange],
@@ -1273,6 +1400,93 @@ export function RichComposer({
         e.preventDefault();
         selectAllContent();
         return;
+      }
+      // Deleting a non-collapsed selection: do it through our canonical model
+      // instead of letting contentEditable mutate the DOM. Native deletion can
+      // leave a stray <br>/empty node behind (e.g. removing text in front of a
+      // lone pill pushed the pill onto a phantom second line), and it bypasses
+      // our undo history. We rebuild the model with the selected span removed
+      // and drop the caret at the gap (delete-text rule).
+      if (
+        (e.key === "Backspace" || e.key === "Delete") &&
+        !e.ctrlKey &&
+        !e.metaKey &&
+        !e.altKey
+      ) {
+        const sel = window.getSelection();
+        if (
+          sel &&
+          sel.rangeCount > 0 &&
+          !sel.isCollapsed &&
+          deleteSelectionViaModel()
+        ) {
+          e.preventDefault();
+          return;
+        }
+      }
+      // Home / End: when the document starts (or ends) with a pill there is no
+      // text node for the native caret to land in, so the caret can vanish.
+      // Drive these explicitly to the document's first / last edge. We use a
+      // ZWSP anchor when the edge is a pill so the caret has a real text node to
+      // sit in. Shift extends the existing selection; otherwise it collapses.
+      if (
+        (e.key === "Home" || e.key === "End") &&
+        !e.ctrlKey &&
+        !e.metaKey &&
+        !e.altKey
+      ) {
+        const root = rootRef.current;
+        const sel = window.getSelection();
+        if (root && sel && sel.rangeCount > 0) {
+          const kids = Array.from(root.childNodes);
+          if (kids.length > 0) {
+            const r = document.createRange();
+            if (e.key === "Home") {
+              const first = kids[0];
+              if (
+                first.nodeType === Node.TEXT_NODE &&
+                (first.textContent ?? "").startsWith(ZWSP)
+              ) {
+                // Leading ZWSP anchor in front of a pill — land just after it
+                // so the caret is visible at the very start.
+                r.setStart(first, Math.min(1, (first.textContent ?? "").length));
+              } else if (
+                first.nodeType === Node.ELEMENT_NODE &&
+                (first as HTMLElement).hasAttribute("data-token-kind")
+              ) {
+                r.setStartBefore(first);
+              } else {
+                r.setStart(first, 0);
+              }
+            } else {
+              const last = kids[kids.length - 1];
+              if (
+                last.nodeType === Node.ELEMENT_NODE &&
+                (last as HTMLElement).hasAttribute("data-token-kind")
+              ) {
+                r.setStartAfter(last);
+              } else {
+                r.setStart(last, (last.textContent ?? "").length);
+              }
+            }
+            r.collapse(true);
+            if (e.shiftKey) {
+              const cur = sel.getRangeAt(0);
+              if (e.key === "Home") {
+                cur.setStart(r.startContainer, r.startOffset);
+              } else {
+                cur.setEnd(r.startContainer, r.startOffset);
+              }
+              sel.removeAllRanges();
+              sel.addRange(cur);
+            } else {
+              sel.removeAllRanges();
+              sel.addRange(r);
+            }
+            e.preventDefault();
+            return;
+          }
+        }
       }
       if (at.open && atFiles.length > 0) {
         if (e.key === "ArrowDown") {
@@ -1334,6 +1548,7 @@ export function RichComposer({
       at.open,
       at.selected,
       atFiles,
+      deleteSelectionViaModel,
       filteredItems,
       insertSelectedAtItem,
       insertSelectedSlashItem,
@@ -1374,23 +1589,14 @@ export function RichComposer({
         onCut={(e) => {
           if (writeSelectionToClipboard(e)) {
             e.preventDefault();
-            const root = rootRef.current;
-            // Record the selection START in canonical coordinates BEFORE the
-            // delete so we can drop the caret exactly where the cut content
-            // used to begin (delete-text rule: caret sits before the gap).
-            const cutAt = root ? canonicalCaretFromDom(root) : null;
-            const sel = window.getSelection();
-            if (sel && sel.rangeCount > 0 && !sel.isCollapsed) {
-              sel.getRangeAt(0).deleteContents();
-            }
-            if (root) {
-              const next = readSegmentsFromDom(root);
-              if (cutAt) {
-                pendingCaretRef.current = snapshotForCanonical(next, cutAt);
-              }
-              lastRenderedRef.current = "";
-              onChange(next);
-            }
+            // Delete through the canonical model (same path as Backspace on a
+            // selection) rather than the browser's native ``deleteContents``.
+            // Native cut could leave a stray <br> behind AND it raced our
+            // ``onChange`` so the pre-cut state was sometimes never recorded on
+            // the undo stack — which is why Ctrl+Z often failed to restore the
+            // cut text. The model path makes a single, history-tracked change
+            // and drops the caret at the gap (delete-text rule).
+            deleteSelectionViaModel();
           }
         }}
         onPaste={handlePaste}

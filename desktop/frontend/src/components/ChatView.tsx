@@ -1,4 +1,11 @@
-import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import {
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type ClipboardEvent as ReactClipboardEvent,
+  type ReactNode,
+} from "react";
 import { useApp } from "../state/AppContext";
 import type { HistoryRound, HistoryTurn, Turn, TurnRound } from "../api/types";
 import { Icon, type IconName } from "./Icon";
@@ -9,7 +16,9 @@ import { AskMoreInfoPanel } from "./AskMoreInfoPanel";
 import { decodeAttachments } from "../utils/attachments";
 import {
   composeMessageText,
+  decodeSegments,
   encodeHiddenInstruction,
+  encodeSegments,
   parseMessageToSegments,
   retokenizeReferencePills,
   stripHiddenControl,
@@ -30,6 +39,8 @@ function refPillIconName(kind: TokenKind): IconName {
       return "wrench";
     case "mcp-prompt":
       return "message-square";
+    case "attach":
+      return "paperclip";
     default:
       return "info";
   }
@@ -38,6 +49,10 @@ function refPillIconName(kind: TokenKind): IconName {
 function refPillLabel(kind: TokenKind, payload: string): string {
   if (kind === "skill") {
     return payload;
+  }
+  if (kind === "attach") {
+    // Show just the file name; the full path stays in the ``title`` tooltip.
+    return baseName(payload);
   }
   // mcp-tool / mcp-prompt carry "server::name".
   const [server, name] = payload.split("::");
@@ -48,14 +63,95 @@ function refPillLabel(kind: TokenKind, payload: string): string {
  *  bubble mirrors the composer's image/text-mixed look for ``[skill: ...]``,
  *  ``[mcp tool: ...]`` and ``[mcp prompt: ...]`` markers instead of leaking
  *  the raw bracket text. Plain text is preserved verbatim. */
+/** Serialize the current selection inside a sent-message body into segments,
+ *  turning each ``msg-ref-pill`` element back into its token. Walking the
+ *  cloned range fragment keeps text and pills in document order so a partial
+ *  selection round-trips. */
+function readSegmentsFromMessageSelection(
+  range: Range,
+): Segment[] {
+  const frag = range.cloneContents();
+  const out: Segment[] = [];
+  let textBuf = "";
+  const flush = () => {
+    if (textBuf) {
+      out.push({ kind: "text", value: textBuf });
+      textBuf = "";
+    }
+  };
+  const visit = (node: Node) => {
+    if (node.nodeType === Node.TEXT_NODE) {
+      textBuf += node.textContent ?? "";
+      return;
+    }
+    if (node.nodeType !== Node.ELEMENT_NODE) {
+      return;
+    }
+    const el = node as HTMLElement;
+    const kind = el.getAttribute("data-token-kind");
+    const payload = el.getAttribute("data-token-payload");
+    if (kind && payload != null) {
+      flush();
+      out.push({ kind: kind as TokenKind, value: payload });
+      return;
+    }
+    for (const child of Array.from(node.childNodes)) {
+      visit(child);
+    }
+  };
+  for (const child of Array.from(frag.childNodes)) {
+    visit(child);
+  }
+  flush();
+  return out;
+}
+
+/** Copy handler for sent-message bodies. When the selection contains reference
+ *  pills we write BOTH a human-readable form (with the inline ATTACH envelope,
+ *  so the LLM/other apps see something sensible) and our private segment
+ *  envelope, so pasting back into the composer restores the pills instead of
+ *  dropping them to plain label text. */
+function handleMessageBodyCopy(e: ReactClipboardEvent<HTMLDivElement>): void {
+  const sel = window.getSelection();
+  if (!sel || sel.rangeCount === 0 || sel.isCollapsed) {
+    return;
+  }
+  const range = sel.getRangeAt(0);
+  const segs = readSegmentsFromMessageSelection(range);
+  if (!segs.some((s) => s.kind !== "text")) {
+    // Plain-text-only selection: let the browser handle it natively.
+    return;
+  }
+  try {
+    e.clipboardData.setData("text/plain", composeMessageText(segs));
+    e.clipboardData.setData("application/x-codewood-segments", encodeSegments(segs));
+    e.preventDefault();
+  } catch {
+    // Fall back to the native copy if the clipboard rejects our payload.
+  }
+}
+
 function MessageBody({ text }: { text: string }) {
-  const segments = retokenizeReferencePills(text);
+  // Decode inline tokens (ATTACH sentinels) first, then re-tokenize the
+  // readable reference-pill markers inside each text run, so file/skill/mcp
+  // pills all render inline at their authored position and participate in text
+  // selection like the surrounding prose.
+  const segments: Segment[] = [];
+  for (const seg of decodeSegments(text)) {
+    if (seg.kind !== "text") {
+      segments.push(seg);
+      continue;
+    }
+    for (const inner of retokenizeReferencePills(seg.value)) {
+      segments.push(inner);
+    }
+  }
   const hasPill = segments.some((s) => s.kind !== "text");
   if (!hasPill) {
     return <div className="entry-text">{text}</div>;
   }
   return (
-    <div className="entry-text">
+    <div className="entry-text" onCopy={handleMessageBodyCopy}>
       {segments.map((seg, i) => {
         if (seg.kind === "text") {
           return <span key={i}>{seg.value}</span>;
@@ -65,7 +161,9 @@ function MessageBody({ text }: { text: string }) {
           <span
             key={i}
             className={`msg-ref-pill msg-ref-pill-${kind}`}
-            title={refPillLabel(kind, seg.value)}
+            data-token-kind={kind}
+            data-token-payload={seg.value}
+            title={kind === "attach" ? seg.value : refPillLabel(kind, seg.value)}
           >
             <Icon name={refPillIconName(kind)} size={12} />
             <span className="msg-ref-pill-label">

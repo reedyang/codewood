@@ -185,30 +185,32 @@ export function stripPlanModePrefix(text: string): string {
 }
 
 export function composeMessageText(segments: readonly Segment[]): string {
-  const attachPaths: string[] = [];
-  const bodyParts: string[] = [];
+  // Attachments are emitted INLINE at their authored position (wrapped in the
+  // ATTACH sentinel envelope) rather than hoisted into a leading header, so the
+  // file pill keeps the spot the user placed it in. This lets the sent-message
+  // echo render the pill inline (selectable like text) and the edit flow
+  // restore it to the same position. The backend's display normalizer matches
+  // the ATTACH envelope anywhere in the string (it is not anchored to the
+  // line/message start) and treats it purely as a text marker, so inline
+  // placement does not affect any file-reading logic.
+  const parts: string[] = [];
   for (const seg of segments) {
     if (seg.kind === "attach") {
       const v = sanitizePayload(seg.value);
-      if (v) attachPaths.push(v);
+      if (v) parts.push(`${OPEN}ATTACH:${v}${CLOSE}`);
     } else if (seg.kind === "text") {
-      bodyParts.push(sanitizePlainText(seg.value));
+      parts.push(sanitizePlainText(seg.value));
     } else if (seg.kind === "skill") {
-      bodyParts.push(`[skill: ${sanitizePayload(seg.value)}]`);
+      parts.push(`[skill: ${sanitizePayload(seg.value)}]`);
     } else if (seg.kind === "mcp-tool") {
       const [srv, name] = seg.value.split("::");
-      bodyParts.push(`[mcp tool: ${sanitizePayload(srv)}/${sanitizePayload(name ?? "")}]`);
+      parts.push(`[mcp tool: ${sanitizePayload(srv)}/${sanitizePayload(name ?? "")}]`);
     } else if (seg.kind === "mcp-prompt") {
       const [srv, name] = seg.value.split("::");
-      bodyParts.push(`[mcp prompt: ${sanitizePayload(srv)}/${sanitizePayload(name ?? "")}]`);
+      parts.push(`[mcp prompt: ${sanitizePayload(srv)}/${sanitizePayload(name ?? "")}]`);
     }
   }
-  const body = bodyParts.join("");
-  if (attachPaths.length === 0) {
-    return body;
-  }
-  const head = attachPaths.map((p) => `${OPEN}ATTACH:${p}${CLOSE}`).join("\n");
-  return body ? `${head}\n\n${body}` : head;
+  return parts.join("");
 }
 
 /** Inverse of ``composeMessageText`` for use in the edit flow: re-parse a
@@ -219,33 +221,48 @@ export function composeMessageText(segments: readonly Segment[]): string {
  *  were emitted as readable plain text, so re-editing surfaces them as
  *  text that the user can keep, rephrase, or delete naturally. */
 export function parseMessageToSegments(text: string): Segment[] {
-  const src = String(text ?? "");
+  let src = String(text ?? "");
+
+  // Legacy compatibility: older messages hoisted attachments into a leading
+  // header of one ``\uE100ATTACH:..\uE101`` line each, followed by a blank
+  // line. Detect that exact shape and pull those into leading attach segments
+  // so old records still edit sanely. New messages store attachments inline and
+  // skip this branch entirely.
   const out: Segment[] = [];
-  const TOKEN_LINE = new RegExp(
-    `^${OPEN}ATTACH:([^${OPEN}${CLOSE}\\r\\n]+)${CLOSE}[ \\t]*(?:\\r?\\n|$)`,
+  const HEADER_LINE = new RegExp(
+    `^${OPEN}ATTACH:([^${OPEN}${CLOSE}\\r\\n]+)${CLOSE}[ \\t]*(?:\\r?\\n)`,
   );
-  let rest = src;
+  let headerCount = 0;
   while (true) {
-    const m = TOKEN_LINE.exec(rest);
+    const m = HEADER_LINE.exec(src);
     if (!m) break;
     out.push({ kind: "attach", value: m[1] });
-    rest = rest.slice(m[0].length);
+    src = src.slice(m[0].length);
+    headerCount += 1;
   }
-  if (out.length > 0) {
-    const sep = /^\r?\n/.exec(rest);
-    if (sep) rest = rest.slice(sep[0].length);
+  if (headerCount > 0) {
+    const sep = /^\r?\n/.exec(src);
+    if (sep) src = src.slice(sep[0].length);
   }
+
   // Drop GUI-internal decorations the user never typed: the Plan-mode
   // directive the backend prepends while plan mode is sticky, and any
   // CONTROL envelope from the "Execute now" nudge. Without this the Edit
   // flow would re-populate the composer with that machine-authored text.
-  rest = stripHiddenControl(stripPlanModePrefix(rest));
-  // Re-tokenize the inline reference pills (``[skill: ...]``,
-  // ``[mcp tool: srv/name]``, ``[mcp prompt: srv/name]``) back into
-  // segments so editing a sent message surfaces them as image/text-mixed
-  // pills the user can keep or remove — instead of raw bracket text.
-  for (const seg of retokenizeReferencePills(rest)) {
-    out.push(seg);
+  src = stripHiddenControl(stripPlanModePrefix(src));
+
+  // Split the remaining body into inline tokens (ATTACH sentinels) and text,
+  // then re-tokenize the readable reference-pill markers (``[skill: ...]``,
+  // ``[mcp tool: srv/name]``, ``[mcp prompt: srv/name]``) inside each text run.
+  // This keeps every pill — files included — at its authored position.
+  for (const seg of decodeSegments(src)) {
+    if (seg.kind !== "text") {
+      out.push(seg);
+      continue;
+    }
+    for (const inner of retokenizeReferencePills(seg.value)) {
+      out.push(inner);
+    }
   }
   return out;
 }
