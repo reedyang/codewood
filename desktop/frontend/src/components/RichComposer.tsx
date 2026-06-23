@@ -305,6 +305,166 @@ function restoreCaret(root: HTMLElement, snap: CaretSnapshot | null) {
   sel.addRange(r);
 }
 
+/** A caret position expressed in the canonical ``Segment[]`` model: the index
+ *  of the segment and, for a text segment, the character offset inside it.
+ *  ``offset`` is 0 for a position at the very start of a segment. */
+interface CanonicalCaret {
+  segIdx: number;
+  offset: number;
+}
+
+/** Translate the live DOM caret into canonical-segment coordinates. The DOM
+ *  has separate child nodes for pills and the ZWSP anchors next to them, and
+ *  may split text across multiple nodes, whereas the canonical model collapses
+ *  contiguous text into one segment and strips ZWSP. We walk the children up to
+ *  the caret to count how much canonical content precedes it. */
+function canonicalCaretFromDom(root: HTMLElement): CanonicalCaret | null {
+  const snap = captureCaret(root);
+  if (!snap) return null;
+  const kids = Array.from(root.childNodes);
+  let segIdx = 0;
+  let pendingTextLen = 0;
+  for (let i = 0; i < kids.length && i < snap.segIndex; i += 1) {
+    const child = kids[i];
+    const isPill =
+      child.nodeType === Node.ELEMENT_NODE &&
+      (child as HTMLElement).hasAttribute("data-token-kind");
+    if (isPill) {
+      if (pendingTextLen > 0) {
+        segIdx += 1;
+        pendingTextLen = 0;
+      }
+      segIdx += 1;
+    } else {
+      pendingTextLen += (child.textContent ?? "").replace(/\u200B/g, "").length;
+    }
+  }
+  const at = kids[snap.segIndex];
+  const atIsPill =
+    at != null &&
+    at.nodeType === Node.ELEMENT_NODE &&
+    (at as HTMLElement).hasAttribute("data-token-kind");
+  if (atIsPill) {
+    if (pendingTextLen > 0) {
+      segIdx += 1;
+    }
+    return { segIdx, offset: 0 };
+  }
+  return { segIdx, offset: pendingTextLen + snap.textOffset };
+}
+
+/** Convert a canonical caret position into a ``CaretSnapshot`` that
+ *  ``restoreCaret`` can consume against the DOM that ``segments`` will build.
+ *  In that DOM each text segment is one child node and each pill is two (pill +
+ *  ZWSP). A position at ``segIdx`` with ``offset`` points to the start of that
+ *  segment's node plus the offset; positions past the end clamp to the end of
+ *  the last segment. */
+function snapshotForCanonical(
+  segments: Segment[],
+  caret: CanonicalCaret,
+): CaretSnapshot {
+  const clampedSeg = Math.max(0, Math.min(caret.segIdx, segments.length));
+  let childIdx = 0;
+  for (let i = 0; i < clampedSeg; i += 1) {
+    childIdx += segments[i].kind === "text" ? 1 : 2;
+  }
+  if (clampedSeg < segments.length) {
+    const seg = segments[clampedSeg];
+    if (seg.kind === "text") {
+      return { segIndex: childIdx, textOffset: caret.offset };
+    }
+    return { segIndex: childIdx, textOffset: 0 };
+  }
+  // Past the last segment: sit at the end of the final segment.
+  const lastIdx = segments.length - 1;
+  if (lastIdx < 0) {
+    return { segIndex: 0, textOffset: 0 };
+  }
+  let lastChildIdx = 0;
+  for (let i = 0; i < lastIdx; i += 1) {
+    lastChildIdx += segments[i].kind === "text" ? 1 : 2;
+  }
+  const last = segments[lastIdx];
+  return {
+    segIndex: lastChildIdx,
+    textOffset: last.kind === "text" ? last.value.length : 0,
+  };
+}
+
+/** Flatten a segment model into a linear list of "atoms": one entry per text
+ *  character and one per pill. This lets us diff two models at character
+ *  granularity to locate exactly where an edit happened. Each atom records the
+ *  canonical (segIdx, offset) of the position JUST BEFORE it. */
+interface Atom {
+  key: string; // identity for equality ("c:<char>" or "p:<kind>:<value>")
+}
+
+function flattenAtoms(segments: Segment[]): Atom[] {
+  const atoms: Atom[] = [];
+  for (const seg of segments) {
+    if (seg.kind === "text") {
+      for (const ch of seg.value) {
+        atoms.push({ key: `c:${ch}` });
+      }
+    } else {
+      atoms.push({ key: `p:${seg.kind}:${seg.value}` });
+    }
+  }
+  return atoms;
+}
+
+/** Map a linear atom index (0..total) back to a canonical caret position. */
+function atomIndexToCanonical(
+  segments: Segment[],
+  atomIndex: number,
+): CanonicalCaret {
+  let remaining = atomIndex;
+  for (let i = 0; i < segments.length; i += 1) {
+    const seg = segments[i];
+    const len = seg.kind === "text" ? Array.from(seg.value).length : 1;
+    if (remaining < len || (remaining === len && i === segments.length - 1)) {
+      if (seg.kind === "text") {
+        // Convert the char-offset (code points) into a UTF-16 offset.
+        const chars = Array.from(seg.value);
+        const slice = chars.slice(0, remaining).join("");
+        return { segIdx: i, offset: slice.length };
+      }
+      // Pill: remaining is 0 (before) or 1 (after).
+      return remaining === 0
+        ? { segIdx: i, offset: 0 }
+        : { segIdx: i + 1, offset: 0 };
+    }
+    remaining -= len;
+  }
+  return { segIdx: segments.length, offset: 0 };
+}
+
+/** Determine where the caret should land after replacing model ``from`` with
+ *  model ``to`` (e.g. an undo or redo). We diff the two at character/pill
+ *  granularity: the region between the common prefix and common suffix is the
+ *  change. Per the insert/delete rule the caret goes to the END of that region
+ *  in ``to`` — which is "after the inserted block" for a net insertion and "at
+ *  the gap" (the gap collapses to a point) for a net deletion. */
+function caretAfterModelSwap(from: Segment[], to: Segment[]): CanonicalCaret {
+  const a = flattenAtoms(from);
+  const b = flattenAtoms(to);
+  let pre = 0;
+  while (pre < a.length && pre < b.length && a[pre].key === b[pre].key) {
+    pre += 1;
+  }
+  let suf = 0;
+  while (
+    suf < a.length - pre &&
+    suf < b.length - pre &&
+    a[a.length - 1 - suf].key === b[b.length - 1 - suf].key
+  ) {
+    suf += 1;
+  }
+  // End of the changed region within ``to``.
+  const endAtom = b.length - suf;
+  return atomIndexToCanonical(to, Math.max(0, endAtom));
+}
+
 /** True iff the text node's previous DOM sibling is a pill element. We use
  *  this to detect the "caret sits right after a pill" boundary that should
  *  allow ``/`` to reopen the slash popup. */
@@ -341,6 +501,53 @@ function kindLabel(kind: TokenKind, payload: string): { primary: string; seconda
   return name ? { primary: name, secondary: server } : { primary: payload };
 }
 
+/** Toggle an ``is-selected`` class on every pill (in the composer *and* in
+ *  sent-message bodies) that the current selection range intersects.
+ *
+ *  The native ``::selection`` pseudo only tints inline text runs, not the
+ *  rounded box of an inline-flex pill, so a mixed selection looked broken
+ *  (text blue, pills not). Marking the whole pill lets CSS paint a solid
+ *  accent box that visually joins the blue text on either side. Scoped to the
+ *  document so it works uniformly across the composer and the message echo
+ *  area; installed once (guarded by a ref) even if multiple composers mount. */
+let _pillHighlightRefCount = 0;
+let _pillHighlightHandler: (() => void) | null = null;
+
+function usePillSelectionHighlight(): void {
+  useEffect(() => {
+    if (_pillHighlightRefCount === 0) {
+      _pillHighlightHandler = () => {
+        const sel = window.getSelection();
+        const hasRange = sel != null && sel.rangeCount > 0 && !sel.isCollapsed;
+        const range = hasRange ? (sel as Selection).getRangeAt(0) : null;
+        const pills = document.querySelectorAll<HTMLElement>(
+          ".composer-pill, .msg-ref-pill",
+        );
+        for (const pill of Array.from(pills)) {
+          let selected = false;
+          if (range != null) {
+            try {
+              selected = range.intersectsNode(pill);
+            } catch {
+              selected = false;
+            }
+          }
+          pill.classList.toggle("is-selected", selected);
+        }
+      };
+      document.addEventListener("selectionchange", _pillHighlightHandler);
+    }
+    _pillHighlightRefCount += 1;
+    return () => {
+      _pillHighlightRefCount -= 1;
+      if (_pillHighlightRefCount === 0 && _pillHighlightHandler) {
+        document.removeEventListener("selectionchange", _pillHighlightHandler);
+        _pillHighlightHandler = null;
+      }
+    };
+  }, []);
+}
+
 export function RichComposer({
   segments,
   onChange,
@@ -353,6 +560,54 @@ export function RichComposer({
   // Track which segments are currently in the DOM to avoid redundant rebuilds
   // (and the cursor jumps they cause) while the user is typing.
   const lastRenderedRef = useRef<string>("");
+  // When an edit knows exactly where the caret should land after the next
+  // rebuild (e.g. right after pasted content), it stashes the target here.
+  // ``useLayoutEffect`` consumes it instead of re-deriving the caret from the
+  // pre-rebuild DOM, which would otherwise leave the caret before the inserted
+  // text. Cleared after a single use.
+  const pendingCaretRef = useRef<CaretSnapshot | null>(null);
+
+  // Undo/redo history. The composer rewrites its own DOM and drives state
+  // through React, which defeats the browser's native contentEditable undo
+  // stack (so Ctrl+Z does nothing after a paste or pill edit). We keep our
+  // own snapshot stack of the canonical Segment[] model and intercept the
+  // undo/redo shortcuts. ``undoStack`` holds past states (most recent last);
+  // ``redoStack`` holds states undone-from. ``suppressHistoryRef`` prevents an
+  // undo/redo-driven onChange from itself being recorded as a new edit.
+  const undoStackRef = useRef<Segment[][]>([]);
+  const redoStackRef = useRef<Segment[][]>([]);
+  const suppressHistoryRef = useRef<boolean>(false);
+  const lastHistorySigRef = useRef<string>("");
+  const segmentsSigRef = useRef<string>("__init__");
+  const lastPrevSegmentsRef = useRef<Segment[]>(segments);
+  const MAX_HISTORY = 200;
+
+  const segmentsSignature = useCallback(
+    (segs: Segment[]) =>
+      segs
+        .map((s) => (s.kind === "text" ? `T:${s.value}` : `${s.kind}:${s.value}`))
+        .join("\x1e"),
+    [],
+  );
+
+  // Record the *current* model as a history checkpoint before the next edit
+  // mutates it. Coalesces no-op pushes via the last-recorded signature.
+  const pushHistory = useCallback(
+    (current: Segment[]) => {
+      const sig = segmentsSignature(current);
+      if (sig === lastHistorySigRef.current) {
+        return;
+      }
+      undoStackRef.current.push(current.map((s) => ({ ...s })));
+      if (undoStackRef.current.length > MAX_HISTORY) {
+        undoStackRef.current.shift();
+      }
+      lastHistorySigRef.current = sig;
+      // Any fresh edit invalidates the redo chain.
+      redoStackRef.current = [];
+    },
+    [segmentsSignature],
+  );
   const [pool, setPool] = useState<SlashItem[]>([]);
   const [slash, setSlash] = useState<{
     open: boolean;
@@ -379,6 +634,34 @@ export function RichComposer({
     void getCompletionCatalog().then((c) => setPool(buildSlashPool(c)));
   }, [getCompletionCatalog]);
 
+  // Track the incoming model and feed the undo history. When ``segments``
+  // changes for any reason other than an undo/redo we apply ourselves, record
+  // the PREVIOUS model as an undo checkpoint. Initializing the ref lazily on
+  // first run seeds the baseline without recording a phantom edit.
+  useEffect(() => {
+    const prevSig = segmentsSigRef.current;
+    const nextSig = segmentsSignature(segments);
+    if (prevSig === "__init__" || prevSig === "") {
+      // First observation: seed baseline, nothing to record.
+      segmentsSigRef.current = nextSig;
+      lastHistorySigRef.current = nextSig;
+      lastPrevSegmentsRef.current = segments;
+      return;
+    }
+    if (prevSig === nextSig) {
+      return;
+    }
+    if (!suppressHistoryRef.current) {
+      // A genuine user edit: checkpoint the previous model so Ctrl+Z restores
+      // it. ``lastPrevSegmentsRef`` holds the model as it was before this
+      // change landed.
+      pushHistory(lastPrevSegmentsRef.current);
+    }
+    suppressHistoryRef.current = false;
+    segmentsSigRef.current = nextSig;
+    lastPrevSegmentsRef.current = segments;
+  }, [segments, segmentsSignature, pushHistory]);
+
   // Render the canonical segments into the DOM whenever they change. We do
   // this with direct DOM mutation rather than React children because mixing
   // React-managed contentEditable nodes with the browser's selection model is
@@ -394,7 +677,10 @@ export function RichComposer({
       return;
     }
     lastRenderedRef.current = signature;
-    const caret = captureCaret(root);
+    // Prefer an explicitly requested caret target (set by edits that know the
+    // post-rebuild position, e.g. paste); otherwise preserve the live caret.
+    const caret = pendingCaretRef.current ?? captureCaret(root);
+    pendingCaretRef.current = null;
     // Clear and rebuild.
     while (root.firstChild) {
       root.removeChild(root.firstChild);
@@ -419,16 +705,10 @@ export function RichComposer({
         labelNode.className = "composer-pill-label";
         labelNode.textContent = labelText;
         pill.appendChild(labelNode);
-        const closeBtn = document.createElement("span");
-        closeBtn.className = "composer-pill-close";
-        closeBtn.setAttribute("role", "button");
-        closeBtn.setAttribute("aria-label", "Remove");
-        closeBtn.textContent = "×";
-        // Use a marker the input handler can detect; the actual deletion is
-        // performed via a click listener registered in a separate effect so
-        // we don't rebuild listeners on every render.
-        closeBtn.setAttribute("data-token-remove", "1");
-        pill.appendChild(closeBtn);
+        // No inline "×" remove button in the composer: it was visually noisy,
+        // appeared only after rebuilds (paste/undo) so pills looked
+        // inconsistent, and broke the selection highlight. Pills are removed
+        // with Backspace like any atomic token instead.
         pill.title = seg.value;
         root.appendChild(pill);
         // Anchor so the caret can land between two consecutive pills.
@@ -778,6 +1058,70 @@ export function RichComposer({
     sel.addRange(r);
   }, []);
 
+  // Restore the previous model from the undo stack. The current model is moved
+  // onto the redo stack first. ``suppressHistoryRef`` keeps the resulting
+  // onChange from being recorded as a brand-new edit.
+  const undo = useCallback(() => {
+    if (undoStackRef.current.length === 0) {
+      return;
+    }
+    const prev = undoStackRef.current.pop() as Segment[];
+    const current = lastPrevSegmentsRef.current;
+    redoStackRef.current.push(current.map((s) => ({ ...s })));
+    suppressHistoryRef.current = true;
+    lastHistorySigRef.current = segmentsSignature(prev);
+    lastRenderedRef.current = ""; // force the DOM to rebuild from the model
+    // Place the caret at the end of whatever the undo changed (insert/delete
+    // rule), computed by diffing the outgoing and incoming models.
+    pendingCaretRef.current = snapshotForCanonical(
+      prev,
+      caretAfterModelSwap(current, prev),
+    );
+    onChange(prev);
+  }, [onChange, segmentsSignature]);
+
+  const redo = useCallback(() => {
+    if (redoStackRef.current.length === 0) {
+      return;
+    }
+    const next = redoStackRef.current.pop() as Segment[];
+    const current = lastPrevSegmentsRef.current;
+    undoStackRef.current.push(current.map((s) => ({ ...s })));
+    suppressHistoryRef.current = true;
+    lastHistorySigRef.current = segmentsSignature(next);
+    lastRenderedRef.current = "";
+    pendingCaretRef.current = snapshotForCanonical(
+      next,
+      caretAfterModelSwap(current, next),
+    );
+    onChange(next);
+  }, [onChange, segmentsSignature]);
+
+  // Intercept the browser's native undo/redo via ``beforeinput``. This is more
+  // reliable than a keydown shortcut: WebKitGTK and Chromium emit
+  // ``historyUndo`` / ``historyRedo`` input types for Ctrl+Z / Ctrl+Shift+Z /
+  // Ctrl+Y (and menu/gesture undo) regardless of keyboard layout, and catching
+  // it here also stops the native (broken) contentEditable undo from running.
+  useEffect(() => {
+    const root = rootRef.current;
+    if (!root) return;
+    const onBeforeInput = (e: Event) => {
+      const inputType = (e as InputEvent).inputType;
+      if (inputType === "historyUndo") {
+        e.preventDefault();
+        undo();
+      } else if (inputType === "historyRedo") {
+        e.preventDefault();
+        redo();
+      }
+    };
+    root.addEventListener("beforeinput", onBeforeInput);
+    return () => root.removeEventListener("beforeinput", onBeforeInput);
+  }, [undo, redo]);
+
+  // (Pill selection highlighting is handled globally — see usePillSelectionHighlight.)
+  usePillSelectionHighlight();
+
   // Serialize the current selection (or the whole editor when nothing is
   // selected) into the clipboard. We write BOTH a plain-text human-readable
   // form (so pasting into other apps shows sensible text) and our private
@@ -830,15 +1174,49 @@ export function RichComposer({
           range.deleteContents();
         }
       }
-      // Read the post-deletion DOM, then insert the pasted segments at the
-      // caret position by rebuilding the canonical model. To keep this simple
-      // and robust we append the pasted segments at the caret's text node when
-      // possible; otherwise we merge them into the existing model end.
+      // Capture where the caret sits (in canonical-segment coordinates) BEFORE
+      // we rebuild, so we can splice the pasted segments there and leave the
+      // caret right after them — appending blindly at the end made the caret
+      // jump to the wrong place.
       const existing = readSegmentsFromDom(root);
-      // Determine a split point from the caret within ``existing`` text.
-      // Fallback: append at end (covers select-all-then-paste, the common
-      // case for "replace everything").
-      const merged: Segment[] = [...existing, ...segs];
+      const insertAt =
+        canonicalCaretFromDom(root) ?? { segIdx: existing.length, offset: 0 };
+
+      // Build the merged model by splitting the canonical segments at the caret
+      // and inserting ``segs`` between the two halves.
+      const head: Segment[] = [];
+      const tail: Segment[] = [];
+      for (let i = 0; i < existing.length; i += 1) {
+        const s = existing[i];
+        if (i < insertAt.segIdx) {
+          head.push(s);
+        } else if (i > insertAt.segIdx) {
+          tail.push(s);
+        } else if (
+          s.kind === "text" &&
+          insertAt.offset > 0 &&
+          insertAt.offset < s.value.length
+        ) {
+          // Caret is mid-text: split this segment around it.
+          head.push({ kind: "text", value: s.value.slice(0, insertAt.offset) });
+          tail.push({ kind: "text", value: s.value.slice(insertAt.offset) });
+        } else if (s.kind === "text" && insertAt.offset >= s.value.length) {
+          // Caret at the end of this text segment: it belongs to the head.
+          head.push(s);
+        } else {
+          // Caret at the start of this segment (offset 0, or a pill): it goes
+          // to the tail so the paste lands before it.
+          tail.push(s);
+        }
+      }
+      const merged: Segment[] = [...head, ...segs, ...tail];
+
+      // Caret lands right AFTER the inserted segments (insert-text rule).
+      pendingCaretRef.current = snapshotForCanonical(merged, {
+        segIdx: head.length + segs.length,
+        offset: 0,
+      });
+
       lastRenderedRef.current = ""; // force a full rebuild
       onChange(merged);
     },
@@ -872,6 +1250,23 @@ export function RichComposer({
 
   const handleKeyDown = useCallback(
     (e: ReactKeyboardEvent<HTMLDivElement>) => {
+      // Undo / redo. We own the history because manual DOM rewrites defeat the
+      // browser's native contentEditable undo (Ctrl+Z would otherwise do
+      // nothing, most visibly after pasting pill-bearing content).
+      if ((e.ctrlKey || e.metaKey) && (e.key === "z" || e.key === "Z")) {
+        e.preventDefault();
+        if (e.shiftKey) {
+          redo();
+        } else {
+          undo();
+        }
+        return;
+      }
+      if ((e.ctrlKey || e.metaKey) && (e.key === "y" || e.key === "Y")) {
+        e.preventDefault();
+        redo();
+        return;
+      }
       // Ctrl/Cmd+A selects the whole editor content (text + pills) so the
       // user can copy or replace everything in one shot.
       if ((e.ctrlKey || e.metaKey) && (e.key === "a" || e.key === "A")) {
@@ -943,8 +1338,11 @@ export function RichComposer({
       insertSelectedAtItem,
       insertSelectedSlashItem,
       onSubmit,
+      redo,
+      selectAllContent,
       slash.open,
       slash.selected,
+      undo,
     ],
   );
 
@@ -976,14 +1374,22 @@ export function RichComposer({
         onCut={(e) => {
           if (writeSelectionToClipboard(e)) {
             e.preventDefault();
+            const root = rootRef.current;
+            // Record the selection START in canonical coordinates BEFORE the
+            // delete so we can drop the caret exactly where the cut content
+            // used to begin (delete-text rule: caret sits before the gap).
+            const cutAt = root ? canonicalCaretFromDom(root) : null;
             const sel = window.getSelection();
             if (sel && sel.rangeCount > 0 && !sel.isCollapsed) {
               sel.getRangeAt(0).deleteContents();
             }
-            const root = rootRef.current;
             if (root) {
+              const next = readSegmentsFromDom(root);
+              if (cutAt) {
+                pendingCaretRef.current = snapshotForCanonical(next, cutAt);
+              }
               lastRenderedRef.current = "";
-              onChange(readSegmentsFromDom(root));
+              onChange(next);
             }
           }
         }}

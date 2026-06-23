@@ -1419,9 +1419,50 @@ body.resizing-x {
   border: 1px solid var(--border);
   color: var(--text);
   vertical-align: baseline;
-  user-select: none;
+  /* Allow the pill to participate in a selection so it highlights blue like
+     text when the user drags across it (in both the composer and a sent
+     message). The pill is contenteditable=false, so it stays atomic — the
+     browser selects the whole element rather than letting the caret enter it. */
+  user-select: text;
   cursor: default;
   white-space: nowrap;
+}
+
+/* Selection highlight for pills.
+
+   A composer pill is ``contenteditable=false`` and therefore an *atomic* inline
+   element: when it falls inside a selection the browser natively paints its
+   whole box with the system selection color (the solid bright-blue capsule we
+   want to avoid). We can't style that native paint directly, so we neutralize
+   it by forcing the pill's own (and its descendants') ``::selection`` to be
+   transparent, and instead draw our OWN continuous accent band behind the pill
+   via a ``::before`` pseudo. The band is a plain rectangle that extends ``-2px``
+   on each side to bridge the pill's horizontal margin, so it lines up with the
+   blue text-selection on either side into one uninterrupted rectangle, while
+   the pill keeps its normal rounded capsule floating on top. */
+.composer-pill.is-selected {
+  position: relative;
+  z-index: 0; /* establish a stacking context for the negative-z band */
+}
+.composer-pill.is-selected::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -2px;
+  right: -2px;
+  background: var(--accent);
+  border-radius: 0;
+  z-index: -1;
+  pointer-events: none;
+}
+.composer-pill.is-selected::selection,
+.composer-pill.is-selected *::selection {
+  background: transparent;
+}
+.composer-pill.is-selected::-moz-selection,
+.composer-pill.is-selected *::-moz-selection {
+  background: transparent;
 }
 .composer-pill-attach {
   background: color-mix(in srgb, var(--accent) 12%, var(--bg-input));
@@ -1457,6 +1498,7 @@ body.resizing-x {
   font-size: 13px;
   line-height: 1;
   cursor: pointer;
+  user-select: none;
   transition: background 0.12s, color 0.12s;
 }
 .composer-pill-close:hover {
@@ -1506,6 +1548,33 @@ body.resizing-x {
 }
 .msg-ref-pill-label {
   display: inline-block;
+}
+/* Continuous accent band behind the pill (parallels the composer pill) so a
+   mixed text+pill selection in the sent-message echo reads as one uninterrupted
+   blue rectangle, with the rounded pill floating on top. */
+.msg-ref-pill.is-selected {
+  position: relative;
+  z-index: 0;
+}
+.msg-ref-pill.is-selected::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -2px;
+  right: -2px;
+  background: var(--accent);
+  border-radius: 0;
+  z-index: -1;
+  pointer-events: none;
+}
+.msg-ref-pill.is-selected::selection,
+.msg-ref-pill.is-selected *::selection {
+  background: transparent;
+}
+.msg-ref-pill.is-selected::-moz-selection,
+.msg-ref-pill.is-selected *::-moz-selection {
+  background: transparent;
 }
 
 /* A recorded ask_more_info selection rendered on the left (a reply to the
