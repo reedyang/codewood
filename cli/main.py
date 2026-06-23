@@ -755,12 +755,40 @@ def _log_gui_error(message: str) -> None:
         pass
 
 
-def _launch_gui_app() -> int:
+def _is_missing_webview_backend_error(exc: BaseException) -> bool:
+    """True when the GUI failed only because no native webview backend exists.
+
+    On Linux, pywebview needs GTK (PyGObject + WebKit2) or Qt (qtpy) Python
+    bindings, which are system packages absent from a bare ``pip`` venv — e.g.
+    a default WSL install. pywebview signals this with a message naming both
+    backends; importing ``webview`` can also fail outright. We treat these as a
+    soft failure so the caller can fall back to the terminal UI instead of
+    aborting. Windows always ships WebView2, so this never matches there.
+    """
+    if os.name == "nt":
+        return False
+    text_blob = f"{type(exc).__name__}: {exc}".lower()
+    needles = (
+        "qt or gtk",
+        "gtk with python",
+        "pywebview",
+        "no module named 'webview'",
+        "no module named 'gi'",
+        "no module named 'qtpy'",
+    )
+    return any(n in text_blob for n in needles)
+
+
+def _launch_gui_app() -> int | None:
     """Launch the desktop GUI host (which spawns the backend serve process).
 
     The GUI host modules live under ``desktop/host``. In a frozen build they
     are bundled as data under ``<_MEIPASS>/host`` (see build/pack.bat); in
     development they are imported directly from the source tree.
+
+    Returns the GUI exit code, or ``None`` to signal the caller that no native
+    webview backend is available (Linux without GTK/Qt) and it should fall
+    back to the terminal UI.
     """
     if os.environ.get(_GUI_DETACHED_ENV) == "1":
         # The detached child owns a private console; destroy it so the GUI
@@ -787,6 +815,23 @@ def _launch_gui_app() -> int:
 
         return int(gui.main() or 0)
     except Exception as exc:  # pragma: no cover - defensive
+        # No native webview backend (typically Linux/WSL without GTK or Qt):
+        # don't abort — fall back to the terminal UI. Returning ``None`` lets
+        # the caller continue into the TUI path.
+        if _is_missing_webview_backend_error(exc):
+            note = (
+                "⚠ Desktop GUI unavailable (no GTK/Qt webview backend); "
+                "falling back to the terminal UI.\n"
+                "  To enable the GUI on Linux, install the system webview "
+                "bindings, e.g. on Debian/Ubuntu:\n"
+                "    sudo apt install python3-gi python3-gi-cairo "
+                "gir1.2-webkit2-4.1 gir1.2-gtk-3.0"
+            )
+            if os.environ.get(_GUI_DETACHED_ENV) == "1":
+                _log_gui_error(note)
+            else:
+                print(note)
+            return None
         message = f"❌ Failed to launch the desktop GUI: {exc}"
         if os.environ.get(_GUI_DETACHED_ENV) == "1":
             _log_gui_error(message)
