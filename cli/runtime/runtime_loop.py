@@ -25,7 +25,7 @@ from ..config.startup_tips import (
     get_random_startup_tip_entry,
 )
 from ..core.config.config_jsonc import CONFIG_JSONC_FILENAME
-from ..core.assistant_output_highlighter import (
+from ..core.text_output_renderer import (
     format_assistant_display_response,
 )
 from ..core.logging.app_logging import get_logger
@@ -1121,7 +1121,7 @@ def _format_stream_visible_text(text: str) -> str:
     """
     if not text:
         return text
-    from ..core.assistant_output_highlighter import (
+    from ..core.text_output_renderer import (
         _reframe_proposed_plan_blocks,
         convert_inline_latex_math,
     )
@@ -1157,7 +1157,7 @@ def _text_has_renderable_markdown(text: str) -> bool:
     s = str(text or "")
     if not s:
         return False
-    from ..core.assistant_output_highlighter import _is_md_table_delimiter_row
+    from ..core.text_output_renderer import _is_md_table_delimiter_row
 
     lines = s.split("\n")
     for idx, line in enumerate(lines):
