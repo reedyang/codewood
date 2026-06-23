@@ -156,6 +156,24 @@ class AiOutputDisplayTests(unittest.TestCase):
         out = aoh.strip_tool_json_blocks_for_display(text)
         self.assertEqual(out, text.strip())
 
+    def test_format_assistant_display_response_plain_keeps_proposed_plan(self):
+        text = (
+            "Here is my plan.\n\n"
+            "<proposed_plan>\n# Plan\n- step one\n- step two\n</proposed_plan>"
+        )
+        out = aoh.format_assistant_display_response_plain(text)
+        self.assertIn("<proposed_plan>", out)
+        self.assertIn("</proposed_plan>", out)
+        self.assertIn("- step one", out)
+        self.assertNotIn("Proposed Plan", out)
+        self.assertNotIn("\x1b[", out)
+
+    def test_format_assistant_display_response_reframes_proposed_plan(self):
+        text = "<proposed_plan>\n# Plan\n- step\n</proposed_plan>"
+        out = aoh.format_assistant_display_response(text)
+        self.assertNotIn("<proposed_plan>", out)
+        self.assertIn("Proposed Plan", out)
+
     def test_format_assistant_display_response_highlights_key_tokens(self):
         text = (
             "1. Check https://127.0.0.1:4001 and OPENAI_API_KEY\n"

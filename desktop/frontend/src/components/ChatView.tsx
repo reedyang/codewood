@@ -19,6 +19,7 @@ import {
   decodeSegments,
   encodeHiddenInstruction,
   encodeSegments,
+  hasProposedPlan,
   parseMessageToSegments,
   retokenizeReferencePills,
   stripHiddenControl,
@@ -469,6 +470,17 @@ export function ChatView() {
   // track in-session toggles locally. User toggles are written back to the
   // backend (see ``setPlanMode``), keeping the persisted flag in step.
   const [chatModeMap, setChatModeMap] = useState<Record<string, ChatMode>>({});
+  // Per-chat record of the plan text the user explicitly dismissed via
+  // "No, and tell <App> what to do differently". The plan chooser is otherwise
+  // driven purely by "does the latest assistant message contain a
+  // <proposed_plan> block" — which stays true after the user clicks No (the
+  // message is unchanged), so without this the buttons would never disappear
+  // and clicking No would look like a no-op. We hide the chooser while the
+  // latest plan equals the dismissed one; a newly proposed (different) plan
+  // re-surfaces it.
+  const [dismissedPlanMap, setDismissedPlanMap] = useState<
+    Record<string, string>
+  >({});
   // Chat ids already seeded from the persisted ``planMode`` flag, so a later
   // state refresh never overrides an in-session toggle the user just made.
   const seededPlanModeRef = useRef<Set<string>>(new Set());
@@ -657,6 +669,18 @@ export function ChatView() {
     // part of the message body and can respond as if the user said it.
     const prompt = t("composer.executePlanPrompt");
     await sendInput(encodeHiddenInstruction(prompt));
+  };
+
+  // "No, and tell <App> what to do differently": stay in Plan mode so the
+  // user's next composer message refines the plan rather than executing it
+  // (mirrors the TUI's free-text revise path), and dismiss the chooser for the
+  // current plan so the buttons disappear and the user can type their revision.
+  // Defensive: ensure Plan mode is still on in case it drifted.
+  const keepRefiningPlan = async (planText: string) => {
+    const key = draftKey;
+    setDismissedPlanMap((prev) => ({ ...prev, [key]: planText }));
+    setChatMode("plan");
+    await setPlanMode(true);
   };
 
   const addFiles = async () => {
@@ -911,11 +935,40 @@ export function ChatView() {
           if (askMoreInfo) {
             return null;
           }
-          const planSteps = state?.plan?.plan ?? [];
-          const hasUnfinished = planSteps.some(
-            (s) => s.status !== "completed",
-          );
-          if (!hasUnfinished) {
+          // Plan-ready signal: the latest assistant text carries a finished
+          // ``<proposed_plan>`` block (Plan mode no longer uses update_plan).
+          const lastLiveText = (() => {
+            for (let ti = turns.length - 1; ti >= 0; ti--) {
+              const rounds = turns[ti].rounds;
+              for (let ri = rounds.length - 1; ri >= 0; ri--) {
+                const ans = rounds[ri].segments
+                  .filter((s) => s.kind === "answer")
+                  .map((s) => s.text)
+                  .join("");
+                if (ans.trim().length > 0) return ans;
+              }
+            }
+            return "";
+          })();
+          const lastHistText = (() => {
+            for (let ti = historyTurns.length - 1; ti >= 0; ti--) {
+              const rounds = historyTurns[ti].rounds;
+              for (let ri = rounds.length - 1; ri >= 0; ri--) {
+                if (rounds[ri].text.trim().length > 0) return rounds[ri].text;
+              }
+            }
+            return "";
+          })();
+          const latestPlanText = hasProposedPlan(lastLiveText)
+            ? lastLiveText
+            : hasProposedPlan(lastHistText)
+              ? lastHistText
+              : "";
+          if (!latestPlanText) {
+            return null;
+          }
+          // Hide the chooser once the user dismissed this exact plan via "No".
+          if (dismissedPlanMap[draftKey] === latestPlanText) {
             return null;
           }
           return (
@@ -926,9 +979,20 @@ export function ChatView() {
                 onClick={() => void continueFromPlan()}
               >
                 <Icon name="send" size={13} />
-                <span>{t("composer.executeNow")}</span>
+                <span>{t("composer.implementPlan")}</span>
               </button>
-              <span className="plan-execute-hint">{t("composer.executeNowHint")}</span>
+              <button
+                type="button"
+                className="btn plan-revise-btn"
+                onClick={() => void keepRefiningPlan(latestPlanText)}
+              >
+                <span>
+                  {t("composer.revisePlan").replace(
+                    "{app}",
+                    state?.app.name || "the assistant",
+                  )}
+                </span>
+              </button>
             </div>
           );
         })()}

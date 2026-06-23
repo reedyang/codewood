@@ -163,6 +163,7 @@ def _build_structured_turns(agent: Any) -> List[Dict[str, Any]]:
     )
     from ..core.assistant_output_highlighter import (
         format_assistant_display_response,
+        format_assistant_display_response_plain,
     )
 
     hist = list(getattr(agent, "conversation_history", None) or [])
@@ -397,7 +398,11 @@ def _build_structured_turns(agent: Any) -> List[Dict[str, Any]]:
         answer_text = ""
         if _is_answer(content):
             try:
-                answer_text = format_assistant_display_response(content) or ""
+                # GUI history must preserve the raw ``<proposed_plan>`` block so
+                # the Markdown card and the plan chooser re-appear after a
+                # restart; the terminal-oriented formatter reframes/strips those
+                # tags, so use the GUI-plain variant here.
+                answer_text = format_assistant_display_response_plain(content) or ""
             except Exception:
                 answer_text = ""
             answer_text = (

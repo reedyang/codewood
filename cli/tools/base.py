@@ -38,6 +38,12 @@ class BaseTool:
     #: Only expose this tool when at least one sub-agent is configured.
     requires_subagents: bool = False
 
+    #: Only expose this tool while Plan (collaboration) mode is active.
+    requires_plan_mode: bool = False
+
+    #: Hide this tool while Plan mode is active (e.g. mutating/checklist tools).
+    excluded_in_plan_mode: bool = False
+
     @classmethod
     def schema(cls) -> Dict[str, Any]:
         """Return the OpenAI-style function spec for this tool."""
@@ -51,13 +57,24 @@ class BaseTool:
         }
 
     @classmethod
-    def is_available(cls, *, mcp_enabled: bool, multimodal_enabled: bool, has_subagents: bool) -> bool:
+    def is_available(
+        cls,
+        *,
+        mcp_enabled: bool,
+        multimodal_enabled: bool,
+        has_subagents: bool,
+        plan_mode: bool = False,
+    ) -> bool:
         """Whether this tool should appear in the model-visible spec."""
         if cls.requires_mcp and not mcp_enabled:
             return False
         if cls.requires_multimodal and not multimodal_enabled:
             return False
         if cls.requires_subagents and not has_subagents:
+            return False
+        if cls.requires_plan_mode and not plan_mode:
+            return False
+        if cls.excluded_in_plan_mode and plan_mode:
             return False
         return True
 

@@ -91,6 +91,10 @@ _INSTANCES: Dict[str, BaseTool] = {}
 MCP_MANAGEMENT_GATED_TOOLS = frozenset(t.name for t in ALL_TOOLS if t.requires_mcp)
 IMAGE_INPUT_TOOLS = frozenset(t.name for t in ALL_TOOLS if t.requires_multimodal)
 MEMORY_TOOLS = frozenset(t.name for t in ALL_TOOLS if t.name.startswith("memory_"))
+#: Tools available only while Plan mode is active (filtered out in Agent mode).
+PLAN_MODE_ONLY_TOOLS = frozenset(t.name for t in ALL_TOOLS if t.requires_plan_mode)
+#: Tools hidden while Plan mode is active (e.g. update_plan / mutating helpers).
+PLAN_MODE_EXCLUDED_TOOLS = frozenset(t.name for t in ALL_TOOLS if t.excluded_in_plan_mode)
 
 
 def tool_class_by_name(name: str) -> Optional[Type[BaseTool]]:
@@ -119,10 +123,12 @@ def _gating_flags(agent: Any) -> Dict[str, bool]:
             multimodal_enabled = bool(checker())
         except Exception:
             multimodal_enabled = True
+    plan_mode = bool(getattr(agent, "_plan_mode_sticky", False))
     return {
         "mcp_enabled": mcp_enabled,
         "multimodal_enabled": multimodal_enabled,
         "has_subagents": has_subagents,
+        "plan_mode": plan_mode,
     }
 
 

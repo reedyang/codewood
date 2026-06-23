@@ -203,6 +203,8 @@ export const zhCN: Dict = {
   "composer.atFileHint": "输入文件名；按 Enter 引用，Esc 取消",
   "composer.executeNow": "立即执行",
   "composer.executeNowHint": "按照上面给出的计划继续执行。",
+  "composer.implementPlan": "是，执行此计划",
+  "composer.revisePlan": "否，告诉 {app} 需要怎么调整",
   "composer.executePlanPrompt": "计划没问题，请按计划继续执行。",
   "models.loading": "加载中…",
   "models.platform": "平台",

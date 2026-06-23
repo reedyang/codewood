@@ -7,7 +7,13 @@ from typing import Any, Dict, List, Optional, Tuple
 from ..config.app_info import get_app_config_dirname
 from ..core.localization import DEFAULT_DISPLAY_LANGUAGE, get_display_language, translate
 from ..core.config.skills_loader import _list_bundled_script_paths
-from ..tools.registry import IMAGE_INPUT_TOOLS, MCP_MANAGEMENT_GATED_TOOLS, MEMORY_TOOLS
+from ..tools.registry import (
+    IMAGE_INPUT_TOOLS,
+    MCP_MANAGEMENT_GATED_TOOLS,
+    MEMORY_TOOLS,
+    PLAN_MODE_EXCLUDED_TOOLS,
+    PLAN_MODE_ONLY_TOOLS,
+)
 
 
 def _model_supports_multimodal(agent: Any) -> bool:
@@ -472,6 +478,7 @@ def build_tools_prompt_append(agent: Any) -> str:
             template = (template + "\n\n" + memory_side).strip()
 
     multimodal_enabled = _model_supports_multimodal(agent)
+    plan_mode_active = bool(getattr(agent, "_plan_mode_sticky", False))
 
     lines: List[str] = [
         template,
@@ -501,6 +508,10 @@ def build_tools_prompt_append(agent: Any) -> str:
         if name in MEMORY_TOOLS and not memory_enabled:
             continue
         if name in IMAGE_INPUT_TOOLS and not multimodal_enabled:
+            continue
+        if name in PLAN_MODE_ONLY_TOOLS and not plan_mode_active:
+            continue
+        if name in PLAN_MODE_EXCLUDED_TOOLS and plan_mode_active:
             continue
         if name == "project_context_search" and not agent._project_context_tool_allowed():
             continue

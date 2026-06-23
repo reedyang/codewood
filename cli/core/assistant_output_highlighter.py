@@ -290,12 +290,50 @@ def normalize_display_text(text: str) -> str:
     return "\n".join(out)
 
 
+def _reframe_proposed_plan_blocks(text: str) -> str:
+    """Replace ``<proposed_plan>`` tags with a visible "Proposed Plan" banner.
+
+    Plan mode wraps the final plan in ``<proposed_plan>...</proposed_plan>``; the
+    raw tags are an internal protocol marker, not something the user should read.
+    We keep the plan body (so the TUI still shows the plan) but swap the literal
+    tags for a clear header/footer so it reads as a dedicated section.
+    """
+    from .proposed_plan import PROPOSED_PLAN_OPEN_TAG, _PROPOSED_PLAN_RE
+
+    if not isinstance(text, str) or PROPOSED_PLAN_OPEN_TAG not in text:
+        return text
+
+    def _repl(m: "re.Match[str]") -> str:
+        body = (m.group(1) or "").strip()
+        if not body:
+            return ""
+        return f"\n\n{'─' * 8} Proposed Plan {'─' * 8}\n\n{body}\n\n{'─' * 31}\n"
+
+    return _PROPOSED_PLAN_RE.sub(_repl, text)
+
+
 def format_assistant_display_response(text: str) -> str:
     """Prepare assistant text for terminal display (clean + normalize + highlight)."""
-    normalized = normalize_display_text(strip_tool_json_blocks_for_display(text))
+    reframed = _reframe_proposed_plan_blocks(strip_tool_json_blocks_for_display(text))
+    normalized = normalize_display_text(reframed)
     if not normalized:
         return ""
     return highlight_assistant_display_text(normalized)
+
+
+def format_assistant_display_response_plain(text: str) -> str:
+    """Prepare assistant text for the GUI's persisted history.
+
+    Unlike :func:`format_assistant_display_response` (terminal-oriented), this
+    keeps the raw ``<proposed_plan>...</proposed_plan>`` block intact and applies
+    no ANSI highlighting. The GUI's Markdown renderer turns the block into a
+    "Proposed Plan" card and the chooser keys off the literal tags, so they MUST
+    survive into the reloaded history — otherwise, after an app restart, the plan
+    card and the "Implement this plan?" options disappear. Tool-call JSON is
+    still stripped so the GUI never shows a serialized tool envelope.
+    """
+    cleaned = strip_tool_json_blocks_for_display(text)
+    return normalize_display_text(cleaned)
 
 
 def highlight_assistant_display_text(text: str) -> str:

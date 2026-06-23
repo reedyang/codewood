@@ -3239,6 +3239,24 @@ h6.md-h {
   border-radius: 5px;
   padding: 1px 5px;
 }
+/* Plan-mode proposed plan, rendered as a dedicated card. */
+.proposed-plan-card {
+  margin: 10px 0;
+  padding: 4px 14px 10px 14px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent, #6aa3ff);
+  border-radius: 10px;
+  background: var(--output-bg);
+}
+.proposed-plan-card-title {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--accent, #6aa3ff);
+  margin: 8px 0 2px 0;
+}
+
 .md-pre {
   white-space: pre-wrap;
   word-break: break-word;
