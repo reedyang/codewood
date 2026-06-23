@@ -814,27 +814,70 @@ def _looks_like_env_var(text: str) -> bool:
     return bool(re.fullmatch(r"[A-Z][A-Z0-9]*_[A-Z0-9_]+", str(text or "")))
 
 
+_ANSI_RESET = "\033[0m"
+# Sentinel used to split a painter's output into (open, close) around content.
+_STYLE_SENTINEL = "\x00\x00"
+
+
+def _style_open_close(painter: Callable[[str], str]) -> Tuple[str, str]:
+    """Recover the (open, close) sequences a painter wraps content with.
+
+    Works for both the real ANSI helpers (``\x1b[1m`` … ``\x1b[0m``) and the
+    ``<B>``/``</B>`` test doubles, and yields ``("", "")`` when color is
+    disabled (the painter returns its argument unchanged).
+    """
+    wrapped = painter(_STYLE_SENTINEL)
+    open_seq, sep, close_seq = wrapped.partition(_STYLE_SENTINEL)
+    if not sep:
+        return "", ""
+    return open_seq, close_seq
+
+
+def _wrap_style_over_inner(open_seq: str, close_seq: str, inner: str) -> str:
+    """Wrap ``inner`` in a style, surviving nested resets.
+
+    Inner painters (e.g. inline code) emit their own close/reset which would
+    otherwise cancel an outer bold/italic for the remainder of the span. We
+    re-open ``open_seq`` after every embedded close so the outer emphasis stays
+    applied around nested spans (e.g. ``**bold `code` more**``). No-op when color
+    is disabled (the open sequence is empty).
+    """
+    if not open_seq:
+        return inner
+    patched = inner.replace(close_seq, close_seq + open_seq)
+    return f"{open_seq}{patched}{close_seq}"
+
+
 def _highlight_assistant_inline_tokens(text: str) -> str:
     if not text:
         return text
 
+    _bold_open, _bold_close = _style_open_close(_ansi_bold)
+    _italic_open, _italic_close = _style_open_close(_ansi_italic)
+
     def _paint_bold(s: str) -> str:
-        return _ansi_bold(s[2:-2])
+        # Recurse so nested inline code / italics inside the bold span are also
+        # styled, then keep bold applied across their resets.
+        inner = _highlight_assistant_inline_tokens(s[2:-2])
+        return _wrap_style_over_inner(_bold_open, _bold_close, inner)
 
     def _paint_italic(s: str) -> str:
-        return _ansi_italic(s[1:-1])
+        inner = _highlight_assistant_inline_tokens(s[1:-1])
+        return _wrap_style_over_inner(_italic_open, _italic_close, inner)
 
     rules: List[Tuple[Pattern[str], Callable[[str], str]]] = [
-        # Inline code first so its body is never re-interpreted as bold/italic.
-        # Backticks are kept (they read as a code marker in the terminal).
-        (re.compile(r"``[^`\n]+``"), _ansi_cyan),
-        (re.compile(r"`[^`\n]+`"), _ansi_cyan),
-        # ``**bold**`` / ``__bold__`` (require non-space adjacent to markers).
+        # Emphasis first so a bold/italic span that *contains* inline code is
+        # recognised as a whole (its body is highlighted recursively); otherwise
+        # the inner code span would be painted and the surrounding ** markers
+        # would be left raw because their region was already "occupied".
         (re.compile(r"\*\*(?=\S)(?:[^*\n]|\*(?!\*))+?(?<=\S)\*\*"), _paint_bold),
         (re.compile(r"(?<![A-Za-z0-9_])__(?=\S)[^_\n]+?(?<=\S)__(?![A-Za-z0-9_])"), _paint_bold),
         # ``*italic*`` / ``_italic_`` (avoid bare ``*`` bullets and snake_case).
         (re.compile(r"\*(?=\S)(?:[^*\n])+?(?<=\S)\*"), _paint_italic),
         (re.compile(r"(?<![A-Za-z0-9_])_(?=\S)[^_\n]+?(?<=\S)_(?![A-Za-z0-9_])"), _paint_italic),
+        # Standalone inline code (outside any emphasis span). Backticks kept.
+        (re.compile(r"``[^`\n]+``"), _ansi_cyan),
+        (re.compile(r"`[^`\n]+`"), _ansi_cyan),
         (re.compile(r"https?://[^\s`<>)\]}]+", re.IGNORECASE), _ansi_cyan),
         (
             re.compile(

@@ -1120,6 +1120,28 @@ class MarkdownRenderingTests(unittest.TestCase):
         self.assertIn("<B>Whole line bold</B>", out)
         self.assertNotIn("**", out)
 
+    def test_bold_span_containing_inline_code_keeps_no_raw_stars(self):
+        # Regression: bold wrapping inline code used to leave the ** markers raw
+        # because the inner code span was painted (occupied) first.
+        out = self._render("**translate `hello.py` output**")
+        self.assertNotIn("**", out)
+        self.assertIn("<C>`hello.py`</C>", out)
+        self.assertIn("<B>", out)
+
+    def test_bold_with_inline_code_real_ansi_reapplies_bold_after_code(self):
+        # With real ANSI, the inner code reset must not cancel the outer bold for
+        # the remainder of the span.
+        import os
+        from unittest.mock import patch as _patch
+
+        with _patch.dict(os.environ, {"FORCE_COLOR": "1"}, clear=False):
+            os.environ.pop("NO_COLOR", None)
+            out = aoh.format_assistant_display_response("**a `b` c**")
+        # bold opens, code is cyan, then bold re-opens before " c"
+        self.assertIn("\x1b[1m", out)
+        self.assertIn("\x1b[36m", out)
+        self.assertIn("\x1b[0m\x1b[1m", out)
+
 
 if __name__ == "__main__":
     unittest.main()
