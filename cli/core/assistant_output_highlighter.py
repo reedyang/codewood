@@ -91,7 +91,7 @@ def _strip_trailing_tool_call_json_once(text: str) -> Tuple[str, bool]:
     trailing block was recognized and removed. The caller loops to handle
     models that emit several JSON blocks in succession (typical when the
     model both plans a step via ``update_plan`` and then prompts via
-    ``ask_more_info`` inside one assistant turn).
+    ``request_user_input`` inside one assistant turn).
     """
     rstripped = text.rstrip()
     if not rstripped:
@@ -148,7 +148,7 @@ def strip_tool_json_blocks_for_display(text: str) -> str:
 
     Loops until no more trailing tool-call JSON can be peeled off so a
     model that concatenated several blocks (e.g. an ``update_plan`` step
-    followed by an ``ask_more_info`` prompt in the same turn) is fully
+    followed by an ``request_user_input`` prompt in the same turn) is fully
     cleaned, not just the last block. Returns the input (whitespace-
     trimmed) when no tool-call shaped trailing JSON is found.
     """

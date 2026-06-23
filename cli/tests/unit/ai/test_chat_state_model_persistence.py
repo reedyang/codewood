@@ -596,7 +596,7 @@ class RefreshChatRecordFromDiskTests(unittest.TestCase):
 
     Codewood may run as multiple independent processes (e.g. TUI + GUI)
     against the same workspace. When one process amends a chat record on
-    disk — most importantly when the TUI persists ``pending_ask_more_info``
+    disk — most importantly when the TUI persists ``pending_request_user_input``
     while waiting on the user's selection — the other process must be able
     to refresh its in-memory ``_chat_state`` so the panel (or any other
     cross-process state) becomes visible without restarting.
@@ -639,7 +639,7 @@ class RefreshChatRecordFromDiskTests(unittest.TestCase):
         reader_manager.load_chat_state()
         return driver_manager, driver_agent, reader_manager, reader_agent
 
-    def test_refresh_picks_up_pending_ask_more_info_written_by_peer(self):
+    def test_refresh_picks_up_pending_request_user_input_written_by_peer(self):
         with tempfile.TemporaryDirectory() as td:
             workspace = Path(td)
             driver_manager, driver_agent, reader_manager, reader_agent = (
@@ -647,14 +647,14 @@ class RefreshChatRecordFromDiskTests(unittest.TestCase):
             )
 
             self.assertIsNone(
-                driver_manager.find_chat_by_id("chat-1").get("pending_ask_more_info")
+                driver_manager.find_chat_by_id("chat-1").get("pending_request_user_input")
             )
             self.assertIsNone(
-                reader_manager.find_chat_by_id("chat-1").get("pending_ask_more_info")
+                reader_manager.find_chat_by_id("chat-1").get("pending_request_user_input")
             )
 
             driver_chat = driver_manager.find_chat_by_id("chat-1")
-            driver_chat["pending_ask_more_info"] = {
+            driver_chat["pending_request_user_input"] = {
                 "id": "tui-prompt-1",
                 "question": "pick a skill",
                 "options": ["a", "b"],
@@ -664,14 +664,14 @@ class RefreshChatRecordFromDiskTests(unittest.TestCase):
             driver_manager.save_chat_state()
 
             self.assertIsNone(
-                reader_manager.find_chat_by_id("chat-1").get("pending_ask_more_info"),
+                reader_manager.find_chat_by_id("chat-1").get("pending_request_user_input"),
                 msg="reader should not see disk-only updates until it refreshes",
             )
 
             self.assertTrue(reader_manager.refresh_chat_record_from_disk("chat-1"))
 
             refreshed = reader_manager.find_chat_by_id("chat-1").get(
-                "pending_ask_more_info"
+                "pending_request_user_input"
             )
             self.assertIsInstance(refreshed, dict)
             self.assertEqual(refreshed.get("id"), "tui-prompt-1")

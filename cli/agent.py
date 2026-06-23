@@ -934,14 +934,14 @@ class Agent:
             if save_state:
                 self._save_chat_state()
 
-    def _set_pending_ask_more_info(self, payload: Dict[str, Any]) -> None:
-        """Persist a pending ``ask_more_info`` prompt on the active chat record.
+    def _set_pending_request_user_input(self, payload: Dict[str, Any]) -> None:
+        """Persist a pending ``request_user_input`` prompt on the active chat record.
 
         Stored alongside ``model_provider``/``reasoning_level`` so any other
         process that loads the chat (e.g. the desktop GUI when the TUI
         originally triggered the prompt) can re-render the selection panel
         instead of showing a stale Execute-now button. Cleared by
-        ``_clear_pending_ask_more_info`` once the user responds or by the
+        ``_clear_pending_request_user_input`` once the user responds or by the
         next user-message recorder so abandoned prompts don't leak.
         """
         if not isinstance(payload, dict):
@@ -950,7 +950,7 @@ class Agent:
             chat = self._find_chat_by_id(self.active_chat_id)
             if not chat:
                 return
-            chat["pending_ask_more_info"] = {
+            chat["pending_request_user_input"] = {
                 "id": str(payload.get("id") or ""),
                 "question": str(payload.get("question") or ""),
                 "options": [str(o) for o in (payload.get("options") or []) if str(o or "").strip()],
@@ -963,28 +963,28 @@ class Agent:
             except Exception:
                 pass
 
-    def _clear_pending_ask_more_info(self) -> None:
-        """Remove the pending ``ask_more_info`` marker from the active chat."""
+    def _clear_pending_request_user_input(self) -> None:
+        """Remove the pending ``request_user_input`` marker from the active chat."""
         with self._chat_state_lock:
             chat = self._find_chat_by_id(self.active_chat_id)
             if not chat:
                 return
-            if "pending_ask_more_info" not in chat:
+            if "pending_request_user_input" not in chat:
                 return
-            chat.pop("pending_ask_more_info", None)
+            chat.pop("pending_request_user_input", None)
             chat["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             try:
                 self._save_chat_state()
             except Exception:
                 pass
 
-    def _peek_pending_ask_more_info(self) -> Optional[Dict[str, Any]]:
-        """Return the active chat's pending ``ask_more_info`` payload, if any."""
+    def _peek_pending_request_user_input(self) -> Optional[Dict[str, Any]]:
+        """Return the active chat's pending ``request_user_input`` payload, if any."""
         with self._chat_state_lock:
             chat = self._find_chat_by_id(self.active_chat_id)
             if not chat:
                 return None
-            raw = chat.get("pending_ask_more_info")
+            raw = chat.get("pending_request_user_input")
             if not isinstance(raw, dict):
                 return None
             return dict(raw)
@@ -1142,7 +1142,7 @@ class Agent:
         used by the GUI server when the user focuses a chat that this
         process doesn't own a live runtime for (typically because another
         codewood process is the active driver and may have persisted state
-        such as a pending ``ask_more_info`` prompt since startup).
+        such as a pending ``request_user_input`` prompt since startup).
         """
         return self._chat_state_manager.refresh_chat_record_from_disk(chat_id)
 
@@ -1299,13 +1299,13 @@ class Agent:
             except Exception:
                 pass
         self._print_chat_history(start_index=self._get_active_chat_history_first_visible_index())
-        # Re-print any active ``ask_more_info`` selection block so a
+        # Re-print any active ``request_user_input`` selection block so a
         # terminal resize (or a manual /chat reload) doesn't scroll the
         # options off-screen while the loop is still blocked waiting on
-        # the user's pick. ``_pending_ask_more_info_render`` is set by
-        # ``_solicit_ask_more_info_answer`` and cleared the moment the
+        # the user's pick. ``_pending_request_user_input_render`` is set by
+        # ``_solicit_request_user_input_answer`` and cleared the moment the
         # user responds, so the print is a no-op outside that window.
-        stash = getattr(self, "_pending_ask_more_info_render", "")
+        stash = getattr(self, "_pending_request_user_input_render", "")
         if isinstance(stash, str) and stash:
             try:
                 print(stash)
@@ -1676,10 +1676,10 @@ class Agent:
                 print(self._format_user_chat_display_message(content))
                 print("")
             elif role == "assistant":
-                ami_answer = self._parse_ask_more_info_answer_history_content(content)
+                ami_answer = self._parse_request_user_input_answer_history_content(content)
                 if ami_answer is not None:
                     if ami_answer:
-                        self._print_ask_more_info_answer_replay(ami_answer)
+                        self._print_request_user_input_answer_replay(ami_answer)
                     continue
                 compact_notice = None
                 try:
@@ -1895,10 +1895,10 @@ class Agent:
                 print(content)
         self._show_separator_next_prompt = False
         self._replay_ephemeral_screen_notices()
-        self._replay_pending_ask_more_info_prompt()
+        self._replay_pending_request_user_input_prompt()
 
-    def _print_ask_more_info_answer_replay(self, answer: str) -> None:
-        """Render a recorded ``ask_more_info`` selection as a left-side line.
+    def _print_request_user_input_answer_replay(self, answer: str) -> None:
+        """Render a recorded ``request_user_input`` selection as a left-side line.
 
         A clarifying answer is a reply to the agent's question, so it reads on
         the left (unlike a user-initiated turn). We prefix it with a small
@@ -1915,7 +1915,7 @@ class Agent:
             from .core.localization import translate as _t
 
             label = _t(
-                "runtime.ask_more_info.answer_label",
+                "runtime.request_user_input.answer_label",
                 getattr(self, "display_language", None) or "en",
                 "Selected",
             )
@@ -1928,11 +1928,11 @@ class Agent:
         print(line)
         print("")
 
-    def _replay_pending_ask_more_info_prompt(self) -> None:
-        """Re-render a pending ``ask_more_info`` prompt after a history replay.
+    def _replay_pending_request_user_input_prompt(self) -> None:
+        """Re-render a pending ``request_user_input`` prompt after a history replay.
 
         When another process (e.g. the desktop GUI) is parked at an
-        ``ask_more_info`` question, it persists the prompt on the chat record.
+        ``request_user_input`` question, it persists the prompt on the chat record.
         On reload/switch the TUI should surface the same numbered selection
         block instead of just showing the transcript, so the user can answer
         from either client. We re-read the record from disk first so a prompt
@@ -1945,7 +1945,7 @@ class Agent:
         except Exception:
             pass
         try:
-            pending = self._peek_pending_ask_more_info()
+            pending = self._peek_pending_request_user_input()
         except Exception:
             pending = None
         if not isinstance(pending, dict):
@@ -1956,9 +1956,9 @@ class Agent:
             return
         multi_select = bool(pending.get("multi_select", False))
         try:
-            from .runtime.runtime_loop import build_ask_more_info_prompt_block
+            from .runtime.runtime_loop import build_request_user_input_prompt_block
 
-            block = build_ask_more_info_prompt_block(
+            block = build_request_user_input_prompt_block(
                 self, question, options, multi_select
             )
         except Exception:
@@ -1966,7 +1966,7 @@ class Agent:
         if not block:
             return
         try:
-            self._pending_ask_more_info_render = block  # type: ignore[attr-defined]
+            self._pending_request_user_input_render = block  # type: ignore[attr-defined]
         except Exception:
             pass
         try:
@@ -3334,17 +3334,17 @@ class Agent:
                 context_hint="direct shell completed",
             )
 
-    def _build_ask_more_info_answer_history_content(self, answer: str) -> str:
+    def _build_request_user_input_answer_history_content(self, answer: str) -> str:
         return f"{ASK_MORE_INFO_ANSWER_HISTORY_PREFIX}{str(answer or '').strip()}"
 
-    def _parse_ask_more_info_answer_history_content(self, content: str) -> Optional[str]:
+    def _parse_request_user_input_answer_history_content(self, content: str) -> Optional[str]:
         text = str(content or "")
         if not text.startswith(ASK_MORE_INFO_ANSWER_HISTORY_PREFIX):
             return None
         return text[len(ASK_MORE_INFO_ANSWER_HISTORY_PREFIX):].strip()
 
-    def _record_ask_more_info_answer_history(self, answer: str) -> None:
-        """Record the user's ``ask_more_info`` selection as a left-side bubble.
+    def _record_request_user_input_answer_history(self, answer: str) -> None:
+        """Record the user's ``request_user_input`` selection as a left-side bubble.
 
         The reply itself is already handed to the model as continuation
         context, so this entry is excluded from the model context — it exists
@@ -3358,7 +3358,7 @@ class Agent:
         if not text:
             return
         try:
-            content = self._build_ask_more_info_answer_history_content(text)
+            content = self._build_request_user_input_answer_history_content(text)
             msg = {
                 "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 "exclude_from_model_context": True,

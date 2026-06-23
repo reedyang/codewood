@@ -114,7 +114,7 @@ class AiOutputDisplayTests(unittest.TestCase):
 
     def test_strip_multiple_chained_tool_call_blocks(self):
         # Reproduces the live bug: the model emitted an ``update_plan``
-        # tool call followed by an ``ask_more_info`` envelope inside a
+        # tool call followed by an ``request_user_input`` envelope inside a
         # single assistant turn (the runtime only stashed the final
         # block's text into ``pseudo_tool_call_text``, leaving the
         # earlier ``update_plan`` JSON visible in ``content``). The
@@ -134,7 +134,7 @@ class AiOutputDisplayTests(unittest.TestCase):
             "  }\n"
             "},\n"
             "{\n"
-            '  "tool": "ask_more_info",\n'
+            '  "tool": "request_user_input",\n'
             '  "args": {\n'
             '    "question": "pick one",\n'
             '    "options": ["a", "b"]\n'
@@ -144,7 +144,7 @@ class AiOutputDisplayTests(unittest.TestCase):
         out = aoh.strip_tool_json_blocks_for_display(text)
         self.assertIn("Hi! I searched the gmail-related skills, please pick one:", out)
         self.assertNotIn('"tool": "update_plan"', out)
-        self.assertNotIn('"tool": "ask_more_info"', out)
+        self.assertNotIn('"tool": "request_user_input"', out)
 
     def test_strip_pseudo_tool_calls_block_keeps_text(self):
         text = (

@@ -67,7 +67,7 @@ export class ApiClient {
     });
   }
 
-  /** Answer a pending ``ask_more_info`` prompt (clicked option or freeform). */
+  /** Answer a pending ``request_user_input`` prompt (clicked option or freeform). */
   async answerAskMoreInfo(id: string, answer: string): Promise<void> {
     await fetch(`${this.base}/answer-ask-more-info`, {
       method: "POST",

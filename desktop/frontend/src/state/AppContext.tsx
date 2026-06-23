@@ -69,7 +69,7 @@ interface AppContextValue {
   connected: boolean;
   now: number;
   confirmRequest: ConfirmRequest | null;
-  /** Pending ``ask_more_info`` clarification surfaced for the active chat. */
+  /** Pending ``request_user_input`` clarification surfaced for the active chat. */
   askMoreInfo: AskMoreInfoRequest | null;
   theme: Theme;
   lang: Lang;
@@ -94,7 +94,7 @@ interface AppContextValue {
   runCommand: (command: string) => Promise<void>;
   interrupt: () => Promise<void>;
   answerConfirm: (answer: string) => Promise<void>;
-  /** Resolve the active ``ask_more_info`` prompt with the user's answer. */
+  /** Resolve the active ``request_user_input`` prompt with the user's answer. */
   answerAskMoreInfo: (answer: string) => Promise<void>;
   clearTurns: (chatId?: string) => void;
   switchToChat: (chatId: string, workspaceId?: string) => Promise<void>;
@@ -894,7 +894,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
           setConfirmRequest(event.data as ConfirmRequest);
           break;
         }
-        case "ask_more_info": {
+        case "request_user_input": {
           // Bucket per workspace-qualified chat so switching chats (or
           // workspaces) while one is pending doesn't drop the panel; the value
           // selector below picks the entry for the focused workspace+chat.
@@ -1143,7 +1143,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   // Hydrate the per-chat ``askMoreInfo`` bucket from the snapshot the
   // backend serializes in ``state.askMoreInfo``. This lets the GUI
   // render the selection panel on chat load (or on refresh) even when
-  // the original ``ask_more_info`` SSE event was missed — most
+  // the original ``request_user_input`` SSE event was missed — most
   // importantly when a *different* backend process (e.g. the TUI)
   // triggered the prompt and this GUI's backend was never asked.
   useEffect(() => {
@@ -1317,8 +1317,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
     async (index: number) => {
       clearTurns();
       // Editing the last user message deletes that turn (and any pending
-      // ask_more_info clarification it spawned). Drop the chat's pending
-      // ask_more_info bucket up front so the selection panel doesn't flash
+      // request_user_input clarification it spawned). Drop the chat's pending
+      // request_user_input bucket up front so the selection panel doesn't flash
       // back in while the backend processes the edit and clears its own
       // pending state.
       if (activeChatId) {
@@ -1335,7 +1335,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
           delete next[activeBucket];
           return next;
         });
-        // The turn that surfaced the ask_more_info prompt is still blocked on
+        // The turn that surfaced the request_user_input prompt is still blocked on
         // the backend reply queue. Clearing the panel alone leaves that turn
         // hung with ``busy`` set — so the composer button would revert to the
         // interrupt/stop affordance even though the user is now just editing.

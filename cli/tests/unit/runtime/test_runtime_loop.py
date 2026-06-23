@@ -13,9 +13,9 @@ from cli.runtime.runtime_loop import (
     _format_startup_directory,
     _model_tool_result_was_aborted,
     _parse_multi_select_line,
-    _solicit_ask_more_info_answer,
-    build_ask_more_info_prompt_block,
-    build_ask_more_info_header_block,
+    _solicit_request_user_input_answer,
+    build_request_user_input_prompt_block,
+    build_request_user_input_header_block,
     _render_aborted_direct_shell_feedback,
     _refresh_context_usage_after_task_boundary,
     _resolve_worked_summary_terminal_width,
@@ -368,7 +368,7 @@ class RuntimeLoopTests(unittest.TestCase):
         _refresh_context_usage_after_task_boundary(
             _Agent(),
             user_input_hint="u",
-            context_hint="ask_more_info paused",
+            context_hint="request_user_input paused",
         )
 
     def test_project_context_priority_detection_targets_software_development_tasks(self):
@@ -1421,9 +1421,9 @@ class ActivePlanReminderTests(unittest.TestCase):
         self.assertIn("`update_plan`", text)
         self.assertIn("completed", text)
 
-    def test_format_active_plan_reminder_allows_ask_more_info_escape_when_pending(self):
+    def test_format_active_plan_reminder_allows_request_user_input_escape_when_pending(self):
         """The pending-plan reminder must explicitly allow the model to call
-        ``ask_more_info`` instead of finalizing the plan. Otherwise the
+        ``request_user_input`` instead of finalizing the plan. Otherwise the
         finalization pressure can starve out a legitimate clarifying
         question and force the model to mark pending steps ``completed``
         prematurely just to end the turn."""
@@ -1436,7 +1436,7 @@ class ActivePlanReminderTests(unittest.TestCase):
             "in_progress_step": "Investigate ambiguity",
         }
         text = _format_active_plan_reminder(summary)
-        self.assertIn("`ask_more_info`", text)
+        self.assertIn("`request_user_input`", text)
         self.assertIn(
             "do not mark pending steps as `completed` just to end the turn",
             text,
@@ -1598,7 +1598,7 @@ class PlanFinalizeNudgeGuardTests(unittest.TestCase):
             agent,
             task_uses_standard_openai_tools=True,
             plan_finalize_nudged=False,
-            turn_used_ask_more_info=False,
+            turn_used_request_user_input=False,
         )
         self.assertIsNotNone(result)
         assert result is not None  # for type-checker
@@ -1614,7 +1614,7 @@ class PlanFinalizeNudgeGuardTests(unittest.TestCase):
                 agent,
                 task_uses_standard_openai_tools=False,
                 plan_finalize_nudged=False,
-                turn_used_ask_more_info=False,
+                turn_used_request_user_input=False,
             )
         )
 
@@ -1627,12 +1627,12 @@ class PlanFinalizeNudgeGuardTests(unittest.TestCase):
                 agent,
                 task_uses_standard_openai_tools=True,
                 plan_finalize_nudged=True,
-                turn_used_ask_more_info=False,
+                turn_used_request_user_input=False,
             )
         )
 
-    def test_skips_when_turn_used_ask_more_info(self):
-        # ask_more_info is an explicit handoff to the user; the
+    def test_skips_when_turn_used_request_user_input(self):
+        # request_user_input is an explicit handoff to the user; the
         # plan can legitimately stay open until the user replies.
         agent = _StubAgentForPlanNudge(self.PENDING_PLAN)
         self.assertIsNone(
@@ -1640,7 +1640,7 @@ class PlanFinalizeNudgeGuardTests(unittest.TestCase):
                 agent,
                 task_uses_standard_openai_tools=True,
                 plan_finalize_nudged=False,
-                turn_used_ask_more_info=True,
+                turn_used_request_user_input=True,
             )
         )
 
@@ -1651,7 +1651,7 @@ class PlanFinalizeNudgeGuardTests(unittest.TestCase):
                 agent,
                 task_uses_standard_openai_tools=True,
                 plan_finalize_nudged=False,
-                turn_used_ask_more_info=False,
+                turn_used_request_user_input=False,
             )
         )
 
@@ -1662,7 +1662,7 @@ class PlanFinalizeNudgeGuardTests(unittest.TestCase):
                 agent,
                 task_uses_standard_openai_tools=True,
                 plan_finalize_nudged=False,
-                turn_used_ask_more_info=False,
+                turn_used_request_user_input=False,
             )
         )
 
@@ -1716,7 +1716,7 @@ class WarnLoopEndedWithPendingPlanTests(unittest.TestCase):
             _warn_loop_ended_with_pending_plan,
             agent,
             plan_finalize_nudged=True,
-            turn_used_ask_more_info=False,
+            turn_used_request_user_input=False,
         )
         self.assertTrue(out.strip(), "warning should have been printed")
         # 2 unfinished steps (in_progress + pending) → message must
@@ -1732,7 +1732,7 @@ class WarnLoopEndedWithPendingPlanTests(unittest.TestCase):
             _warn_loop_ended_with_pending_plan,
             agent,
             plan_finalize_nudged=False,
-            turn_used_ask_more_info=False,
+            turn_used_request_user_input=False,
         )
         self.assertTrue(out.strip())
 
@@ -1742,7 +1742,7 @@ class WarnLoopEndedWithPendingPlanTests(unittest.TestCase):
             _warn_loop_ended_with_pending_plan,
             agent,
             plan_finalize_nudged=False,
-            turn_used_ask_more_info=False,
+            turn_used_request_user_input=False,
         )
         self.assertEqual(out, "")
 
@@ -1752,11 +1752,11 @@ class WarnLoopEndedWithPendingPlanTests(unittest.TestCase):
             _warn_loop_ended_with_pending_plan,
             agent,
             plan_finalize_nudged=False,
-            turn_used_ask_more_info=False,
+            turn_used_request_user_input=False,
         )
         self.assertEqual(out, "")
 
-    def test_silent_when_turn_used_ask_more_info(self):
+    def test_silent_when_turn_used_request_user_input(self):
         # Pausing the plan to wait on the user is legitimate; a
         # warning here would just create noise on every clarifying
         # question.
@@ -1765,13 +1765,13 @@ class WarnLoopEndedWithPendingPlanTests(unittest.TestCase):
             _warn_loop_ended_with_pending_plan,
             agent,
             plan_finalize_nudged=False,
-            turn_used_ask_more_info=True,
+            turn_used_request_user_input=True,
         )
         self.assertEqual(out, "")
 
 
 class _StubAgentForAskMoreInfo:
-    """Minimal agent used to drive ``_solicit_ask_more_info_answer``.
+    """Minimal agent used to drive ``_solicit_request_user_input_answer``.
 
     Captures persisted/cleared markers so we can assert the helper
     writes to the chat record before the prompt and clears it again on
@@ -1783,13 +1783,13 @@ class _StubAgentForAskMoreInfo:
         self.persisted = []
         self.cleared = 0
         self._queued_user_input = ""
-        self._pending_ask_more_info_render = ""
+        self._pending_request_user_input_render = ""
         self.display_language = "en"
 
-    def _set_pending_ask_more_info(self, payload):
+    def _set_pending_request_user_input(self, payload):
         self.persisted.append(dict(payload))
 
-    def _clear_pending_ask_more_info(self):
+    def _clear_pending_request_user_input(self):
         self.cleared += 1
 
     def _get_user_input_with_history(self):
@@ -1807,7 +1807,7 @@ class BuildAskMoreInfoPromptBlockTests(unittest.TestCase):
         return _StubAgentForAskMoreInfo([])
 
     def test_numbers_options_and_appends_other(self):
-        block = build_ask_more_info_prompt_block(
+        block = build_request_user_input_prompt_block(
             self._agent(), "Pick env?", ["Prod", "Stg"], multi_select=False
         )
         self.assertIn("Pick env?", block)
@@ -1817,16 +1817,16 @@ class BuildAskMoreInfoPromptBlockTests(unittest.TestCase):
         self.assertIn("3.", block)
 
     def test_multi_select_hint_differs_from_single(self):
-        single = build_ask_more_info_prompt_block(
+        single = build_request_user_input_prompt_block(
             self._agent(), "Q", ["A", "B"], multi_select=False
         )
-        multi = build_ask_more_info_prompt_block(
+        multi = build_request_user_input_prompt_block(
             self._agent(), "Q", ["A", "B"], multi_select=True
         )
         self.assertNotEqual(single, multi)
 
     def test_handles_empty_options(self):
-        block = build_ask_more_info_prompt_block(
+        block = build_request_user_input_prompt_block(
             self._agent(), "Anything?", [], multi_select=False
         )
         self.assertIn("Anything?", block)
@@ -1837,7 +1837,7 @@ class BuildAskMoreInfoPromptBlockTests(unittest.TestCase):
         # The interactive selector renders the options itself, so the echoed
         # header must NOT list them again (otherwise the options show twice:
         # a stale non-selectable copy above the live selector).
-        header = build_ask_more_info_header_block(self._agent(), "Pick env?")
+        header = build_request_user_input_header_block(self._agent(), "Pick env?")
         self.assertIn("Pick env?", header)
         self.assertNotIn("1. Prod", header)
         self.assertNotIn("2.", header)
@@ -1846,7 +1846,7 @@ class BuildAskMoreInfoPromptBlockTests(unittest.TestCase):
 class SolicitAskMoreInfoAnswerTests(unittest.TestCase):
     def test_tui_single_select_persists_then_clears(self):
         agent = _StubAgentForAskMoreInfo(["2"])
-        text, handoff = _solicit_ask_more_info_answer(
+        text, handoff = _solicit_request_user_input_answer(
             agent, "Pick env?", ["Prod", "Stg"], multi_select=False
         )
         self.assertEqual(text, "Stg")
@@ -1855,11 +1855,11 @@ class SolicitAskMoreInfoAnswerTests(unittest.TestCase):
         self.assertEqual(agent.persisted[0]["options"], ["Prod", "Stg"])
         self.assertFalse(agent.persisted[0]["multi_select"])
         self.assertEqual(agent.cleared, 1)
-        self.assertEqual(agent._pending_ask_more_info_render, "")
+        self.assertEqual(agent._pending_request_user_input_render, "")
 
     def test_tui_multi_select_joins_with_semicolon(self):
         agent = _StubAgentForAskMoreInfo(["1,3"])
-        text, handoff = _solicit_ask_more_info_answer(
+        text, handoff = _solicit_request_user_input_answer(
             agent, "Pick targets", ["A", "B", "C"], multi_select=True
         )
         self.assertEqual(text, "A; C")
@@ -1868,18 +1868,18 @@ class SolicitAskMoreInfoAnswerTests(unittest.TestCase):
 
     def test_tui_cancellation_clears_marker(self):
         agent = _StubAgentForAskMoreInfo([""])
-        text, handoff = _solicit_ask_more_info_answer(
+        text, handoff = _solicit_request_user_input_answer(
             agent, "Pick", ["A", "B"], multi_select=False
         )
         self.assertEqual(text, "")
         self.assertFalse(handoff)
-        # The marker must come down so a stale ask_more_info doesn't
+        # The marker must come down so a stale request_user_input doesn't
         # ghost in another process viewing the same chat.
         self.assertEqual(agent.cleared, 1)
 
     def test_slash_command_handoff_clears_marker(self):
         agent = _StubAgentForAskMoreInfo(["/help"])
-        text, handoff = _solicit_ask_more_info_answer(
+        text, handoff = _solicit_request_user_input_answer(
             agent, "Pick", ["A", "B"], multi_select=False
         )
         self.assertEqual(text, "/help")
@@ -1898,8 +1898,8 @@ class SolicitAskMoreInfoAnswerTests(unittest.TestCase):
             seen["multi_select"] = multi_select
             return "Stg"
 
-        agent._ask_more_info_provider = provider
-        text, handoff = _solicit_ask_more_info_answer(
+        agent._request_user_input_provider = provider
+        text, handoff = _solicit_request_user_input_answer(
             agent, "Pick env?", ["Prod", "Stg"], multi_select=False
         )
         self.assertEqual(text, "Stg")
@@ -1913,8 +1913,8 @@ class SolicitAskMoreInfoAnswerTests(unittest.TestCase):
 
 
 class InteractiveAskMoreInfoSelectorTests(unittest.TestCase):
-    """The TUI ``ask_more_info`` prompt prefers an interactive arrow-key
-    selector (``input_handler.prompt_ask_more_info_selection``) when running
+    """The TUI ``request_user_input`` prompt prefers an interactive arrow-key
+    selector (``input_handler.prompt_request_user_input_selection``) when running
     on a real TTY, falling back to the numbered-prompt flow otherwise."""
 
     def _agent_with_selector(self, picked, tty=True):
@@ -1924,7 +1924,7 @@ class InteractiveAskMoreInfoSelectorTests(unittest.TestCase):
             def __init__(self):
                 self.calls = []
 
-            def prompt_ask_more_info_selection(self, question, options, multi_select):
+            def prompt_request_user_input_selection(self, question, options, multi_select):
                 self.calls.append((question, list(options), bool(multi_select)))
                 return picked
 
@@ -1939,7 +1939,7 @@ class InteractiveAskMoreInfoSelectorTests(unittest.TestCase):
         ):
             stdin.isatty.return_value = True
             stdout.isatty.return_value = True
-            text, handoff = _solicit_ask_more_info_answer(
+            text, handoff = _solicit_request_user_input_answer(
                 agent, "Pick env?", ["Prod", "Stg"], multi_select=False
             )
         self.assertEqual(text, "Stg")
@@ -1955,7 +1955,7 @@ class InteractiveAskMoreInfoSelectorTests(unittest.TestCase):
         ):
             stdin.isatty.return_value = True
             stdout.isatty.return_value = True
-            text, handoff = _solicit_ask_more_info_answer(
+            text, handoff = _solicit_request_user_input_answer(
                 agent, "Pick", ["A", "B"], multi_select=False
             )
         self.assertEqual(text, "")
@@ -1972,7 +1972,7 @@ class InteractiveAskMoreInfoSelectorTests(unittest.TestCase):
         ):
             stdin.isatty.return_value = False
             stdout.isatty.return_value = False
-            text, handoff = _solicit_ask_more_info_answer(
+            text, handoff = _solicit_request_user_input_answer(
                 agent, "Pick", ["A", "B"], multi_select=False
             )
         # The interactive selector must NOT have been consulted off-TTY.
@@ -1982,7 +1982,7 @@ class InteractiveAskMoreInfoSelectorTests(unittest.TestCase):
 
 
 class ParseMultiSelectLineTests(unittest.TestCase):
-    """Parser used by the TUI ``ask_more_info`` multi-select prompt.
+    """Parser used by the TUI ``request_user_input`` multi-select prompt.
 
     Contract:
       * Leading digit/comma/space tokens are pick indices in original

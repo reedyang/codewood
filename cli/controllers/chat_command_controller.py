@@ -337,12 +337,12 @@ def handle_chat_edit_command(agent: Any, raw_index: str) -> None:
             agent._last_llm_summary_pair_count = 0
         except Exception:
             pass
-        # Editing erases the turn that may have surfaced an ``ask_more_info``
+        # Editing erases the turn that may have surfaced an ``request_user_input``
         # clarification, so any pending prompt is now orphaned. Clear it (and
         # its persisted snapshot) so the GUI/TUI don't redisplay a stale
         # selection panel for a message that no longer exists.
         try:
-            clearer = getattr(agent, "_clear_pending_ask_more_info", None)
+            clearer = getattr(agent, "_clear_pending_request_user_input", None)
             if callable(clearer):
                 clearer()
         except Exception:

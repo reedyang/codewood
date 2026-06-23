@@ -119,7 +119,7 @@ export interface AppState {
     version: number;
   };
   plan?: PlanState;
-  /** Pending ``ask_more_info`` request persisted on the active chat record
+  /** Pending ``request_user_input`` request persisted on the active chat record
    *  (may be set by a different backend process — e.g. the TUI — and
    *  surfaced here so the GUI re-renders the panel on chat load/refresh). */
   askMoreInfo?: AskMoreInfoRequest | null;
@@ -143,7 +143,7 @@ export interface ConfirmRequest {
   prompt: string;
 }
 
-/** Pending ``ask_more_info`` prompt surfaced by the backend.
+/** Pending ``request_user_input`` prompt surfaced by the backend.
  *  ``options`` is the model-supplied option list; the GUI always appends
  *  an additional "Other" choice that lets the user type a freeform answer.
  *  ``multiSelect`` switches between single-pick (one option, click to
@@ -164,7 +164,7 @@ export type ServerEvent =
   | { event: "output"; data: { text: string } }
   | { event: "assistant"; data: { text: string } }
   | { event: "confirm"; data: ConfirmRequest }
-  | { event: "ask_more_info"; data: AskMoreInfoRequest }
+  | { event: "request_user_input"; data: AskMoreInfoRequest }
   | { event: string; data: Record<string, unknown> };
 
 /** A streamed segment within a round: model text ("answer") or tool output ("step"). */
@@ -199,7 +199,7 @@ export interface HistoryRound {
   waitSeconds: number;
   text: string;
   tools: string;
-  /** A recorded ask_more_info selection, rendered as a left-side bubble
+  /** A recorded request_user_input selection, rendered as a left-side bubble
    *  (a reply to the agent's question, not a user-initiated turn). */
   selection?: string;
 }

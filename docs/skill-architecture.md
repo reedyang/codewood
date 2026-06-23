@@ -62,13 +62,13 @@ Individual skills **cannot see** the host’s full tool surface or other skill b
 
 | Stay in the host (system / tool prompts, agent code) | Stay inside the skill (`SKILL.md` + bundle assets) |
 |------------------------------------------------------|---------------------------------------------------|
-| Task lifecycle: e.g. when to emit **ask_more_info** | When **this** script’s run is complete for the current query (e.g. required markers in stdout), and “do not re-run the same command for the same query” |
+| Task lifecycle: e.g. when to emit **request_user_input** | When **this** script’s run is complete for the current query (e.g. required markers in stdout), and “do not re-run the same command for the same query” |
 | Naming or ordering **other skills**, MCP tools, or “load skill” injection | Neutral wording: e.g. “further steps the host may schedule are out of scope here” |
 | Multi-skill pipelines, stdin pipes **between** bundles, cross-skill ids | CLI for **this** bundle only; how the host merges `model_context_file_env` into the subprocess result |
 
 **Rules of thumb**
 
-- Do **not** mention host control tools by name (`done`, `ask_more_info`, etc.).
+- Do **not** mention host control tools by name (`done`, `request_user_input`, etc.).
 - Do **not** reference other **`skill_id`** values or tell the model to call another skill next.
 - Do **not** reference **MCP** or other plugin namespaces as part of this skill’s contract unless the repo defines a **neutral, portable** pattern that applies to all skills equally.
 - Prefer **subprocess result** / **merged `output`** over **tool `output`** when you mean shell stdout or merged file content, so “tool” is not confused with the host’s JSON tool API.

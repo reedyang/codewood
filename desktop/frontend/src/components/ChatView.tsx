@@ -613,7 +613,7 @@ export function ChatView() {
     if (!canSend) {
       return;
     }
-    // While an ask_more_info prompt is pending, the turn is paused waiting on
+    // While an request_user_input prompt is pending, the turn is paused waiting on
     // the user's answer — it is NOT accepting a fresh prompt (that would just
     // queue behind the blocked turn and never run). So a composer send here
     // is the user's custom freeform answer: route the typed text straight to
@@ -714,7 +714,7 @@ export function ChatView() {
     }
   }
 
-  // While an ``ask_more_info`` prompt is pending the agent is paused waiting
+  // While an ``request_user_input`` prompt is pending the agent is paused waiting
   // on the user's selection — it isn't actively working — so the action
   // button must revert to "send" (not the interrupt/stop affordance) even
   // though the backend busy flag is still set for the turn.
@@ -904,7 +904,7 @@ export function ChatView() {
           if (turns.length === 0 && historyTurns.length === 0) {
             return null;
           }
-          // A pending ask_more_info prompt always wins: the agent is
+          // A pending request_user_input prompt always wins: the agent is
           // waiting on the user's selection, so showing Execute-now
           // would misrepresent the state and let the user advance the
           // plan instead of answering the question.

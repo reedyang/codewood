@@ -41,7 +41,7 @@ from .memory_delete import MemoryDeleteTool
 from .user_preferences_read import UserPreferencesReadTool
 from .user_preferences_patch import UserPreferencesPatchTool
 from .request_skill_prompt import RequestSkillPromptTool
-from .ask_more_info import AskMoreInfoTool
+from .request_user_input import RequestUserInputTool
 from .plan import UpdatePlanTool
 from .run_subagent import RunSubagentTool
 
@@ -77,7 +77,7 @@ ALL_TOOLS: List[Type[BaseTool]] = [
     UserPreferencesReadTool,
     UserPreferencesPatchTool,
     RequestSkillPromptTool,
-    AskMoreInfoTool,
+    RequestUserInputTool,
     UpdatePlanTool,
     RunSubagentTool,
 ]

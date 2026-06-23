@@ -300,13 +300,13 @@ class ChatStateManager:
             "plan_mode": bool(raw.get("plan_mode", False)),
         }
         # Preserve cross-process clarifying-prompt state. Another codewood
-        # process (typically the TUI) writes ``pending_ask_more_info`` onto
+        # process (typically the TUI) writes ``pending_request_user_input`` onto
         # the chat record while it waits for the user's selection; this
         # process needs to surface the same panel when it focuses the chat,
         # so keep the field as-is rather than dropping it during validation.
-        pending = raw.get("pending_ask_more_info")
+        pending = raw.get("pending_request_user_input")
         if isinstance(pending, dict):
-            entry["pending_ask_more_info"] = dict(pending)
+            entry["pending_request_user_input"] = dict(pending)
         return entry
 
     def default_chat_state(self) -> Dict[str, Any]:
@@ -727,7 +727,7 @@ class ChatStateManager:
         Codewood can run as several independent processes against the same
         workspace (e.g. a TUI session and a GUI window). Each process loads
         ``_chat_state`` once at startup; when another process amends a chat
-        on disk (most importantly, persists ``pending_ask_more_info`` while
+        on disk (most importantly, persists ``pending_request_user_input`` while
         waiting on the user's selection) this process won't notice unless
         it explicitly re-reads the record. Call this just before surfacing
         a chat the local process does not own a live runtime for, so the
