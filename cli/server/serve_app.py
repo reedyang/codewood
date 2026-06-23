@@ -2944,14 +2944,33 @@ class ServeApp:
         if changed:
             self.save_models_config(providers)
 
-    def new_chat(self) -> Optional[str]:
+    def new_chat(self, workspace_id: str = "") -> Optional[str]:
         """Silently create and activate a new chat; return its id.
 
         Not refused while other chats are running: the new chat gets its own
         loop thread on first input and is independent of any in-flight turn.
+
+        ``workspace_id`` optionally switches the focused workspace FIRST, so the
+        new chat is created in the target workspace as a single atomic op. The
+        GUI uses this to materialize a draft chat for a specific workspace
+        without a separate ``select_chat`` round-trip — doing both separately
+        previously left an extra empty chat behind when the target workspace
+        switch incidentally activated/created a chat before the new one.
         """
+        import contextlib
+
         agent = self.agent
         try:
+            wsid = str(workspace_id or "").strip()
+            if wsid and wsid != str(getattr(agent, "workspace_id", "") or ""):
+                from ..controllers.workspace_command_controller import (
+                    workspace_switch_command,
+                )
+
+                with agent._chat_state_lock:
+                    with contextlib.redirect_stdout(io.StringIO()):
+                        workspace_switch_command(agent, wsid)
+
             from ..core.localization import get_display_language, translate
 
             name = translate("chat.new.default_name", get_display_language(agent))
@@ -3522,7 +3541,8 @@ def _make_handler(app: ServeApp):
                 self._send_json(200 if ok else 409, {"ok": ok})
                 return
             if path == "/new-chat":
-                cid = app.new_chat()
+                ws_id = str(body.get("workspaceId") or "")[:256]
+                cid = app.new_chat(ws_id)
                 self._send_json(
                     200 if cid else 409, {"ok": bool(cid), "id": cid or ""}
                 )
