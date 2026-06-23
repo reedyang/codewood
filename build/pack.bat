@@ -93,6 +93,9 @@ rem    functionality. Output: dist\codewood\codewood.exe (+ _internal\).
   --collect-all pythonnet ^
   --collect-all clr_loader ^
   --hidden-import clr ^
+  --collect-all tiktoken ^
+  --hidden-import tiktoken_ext ^
+  --hidden-import tiktoken_ext.openai_public ^
   --specpath "build\\codewood" ^
   "%ENTRY_SCRIPT%"
 if errorlevel 1 (
