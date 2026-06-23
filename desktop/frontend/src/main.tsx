@@ -1,3 +1,8 @@
+// Must run before anything that may touch Web Storage: on WebKitGTK (Linux
+// pywebview) ``localStorage`` is undefined for file:// pages, which otherwise
+// crashes the app on first access. Installs an in-memory fallback if needed.
+import "./utils/ensureStorage";
+
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { App } from "./App";
