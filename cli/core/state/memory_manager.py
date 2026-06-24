@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple, Callable
 
 import yaml
-from ...config.app_info import get_app_logger_root, get_app_name
+from ...config.app_info import get_app_logger_root, get_app_prompt_name
 
 _mem_log = logging.getLogger(f"{get_app_logger_root()}.memory")
 
@@ -30,7 +30,7 @@ MEMORY_AVAILABLE = True
 MANIFEST_VERSION = 1
 INDEX_HEADER = (
     "# Experiential Memory Index\n\n"
-    f"This file is generated automatically by {get_app_name()} from `manifest.json`. It is readable, but do not edit the structure lines by hand.\n\n"
+    f"This file is generated automatically by {get_app_prompt_name()} from `manifest.json`. It is readable, but do not edit the structure lines by hand.\n\n"
 )
 
 

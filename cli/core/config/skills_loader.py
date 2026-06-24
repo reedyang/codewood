@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 import yaml
-from ...config.app_info import get_app_config_dirname, get_app_name
+from ...config.app_info import get_app_config_dirname, get_app_prompt_name
 from ..localization import DEFAULT_DISPLAY_LANGUAGE, normalize_display_language, translate
 
 
@@ -304,7 +304,7 @@ def build_skills_routing_prefix(skills: List[SkillRecord]) -> str:
             "",
             "---",
             "",
-            f"(The following is the general {get_app_name()} capability guidance; full skill bodies appear later in **Agent Skills (Detailed Content)**.)",
+            f"(The following is the general {get_app_prompt_name()} capability guidance; full skill bodies appear later in **Agent Skills (Detailed Content)**.)",
             "",
         ]
     )
