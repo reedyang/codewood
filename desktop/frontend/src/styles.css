@@ -2687,6 +2687,54 @@ html[data-has-bg] .select {
   font-style: italic;
 }
 
+/* ---- collapsible transcript diff block (DiffStep) ---- */
+.diff-step {
+  margin: 6px 0;
+}
+
+.diff-step-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 4px 8px;
+  background: var(--output-bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text, #ddd);
+  font-family: "Cascadia Code", "Consolas", monospace;
+  font-size: 12px;
+  cursor: pointer;
+  text-align: left;
+}
+
+.diff-step-chevron {
+  flex: 0 0 auto;
+  transition: transform 0.12s ease;
+  color: var(--text-muted, #888);
+}
+
+.diff-step-chevron.open {
+  transform: rotate(90deg);
+}
+
+.diff-step-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.diff-step-stats {
+  flex: 0 0 auto;
+  color: var(--text-muted, #888);
+}
+
+.diff-step .diff-preview {
+  margin-top: 4px;
+}
+
 .confirm-freeform {
   display: flex;
   gap: 8px;

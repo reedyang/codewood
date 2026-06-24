@@ -70,6 +70,8 @@ from .core.console_utils import (
     GUI_CMD_OUTPUT_END,
     GUI_CMD_PROMPT_BEGIN,
     GUI_CMD_PROMPT_END,
+    GUI_DIFF_BEGIN,
+    GUI_DIFF_END,
     _WorkingStatusTicker,
     _ansi_blue,
     _ansi_gray,
@@ -2079,6 +2081,12 @@ class Agent:
                     self._print_direct_shell_history_output(
                         out_text, err_text, apply_gray=False
                     )
+            elif model_tool == "apply_patch" and not failed:
+                # GUI reload: re-emit the collapsible diff block from the stored
+                # structured preview rows so the change preview reappears after a
+                # restart (the live stream printed it once; on reload the result
+                # message is the source of truth).
+                self._replay_apply_patch_gui_diff_block(model_tool_result)
             return
         display_response = format_assistant_display_response(content)
         if display_response:
@@ -6565,6 +6573,29 @@ class Agent:
             terminal_width=terminal_width,
             language=self._ui_language(),
         )
+
+    def _replay_apply_patch_gui_diff_block(self, tool_result: Dict[str, Any]) -> None:
+        """Re-emit the GUI collapsible diff block from a stored apply_patch
+        result during transcript replay (reload). No-op outside GUI mode or when
+        the result lacks structured preview rows."""
+        if not callable(getattr(self, "_confirm_choice_provider", None)):
+            return
+        rows = tool_result.get("change_preview_rows")
+        if not isinstance(rows, list) or not rows:
+            return
+        try:
+            import json as _json
+
+            payload = _json.dumps(
+                {
+                    "file": str(tool_result.get("file") or ""),
+                    "diffRows": rows,
+                },
+                ensure_ascii=False,
+            )
+            print(f"{GUI_DIFF_BEGIN}{payload}{GUI_DIFF_END}")
+        except Exception:
+            pass
 
     def execute_tool_call(self, tool_name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
         dispatcher = getattr(self, "tool_dispatcher", None)

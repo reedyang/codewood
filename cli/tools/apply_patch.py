@@ -28,6 +28,36 @@ _BOM_SIGNATURES: List[Tuple[bytes, str]] = [
 _TEXT_DECODE_CANDIDATES: List[str] = ["utf-8", "gbk", "gb2312", "utf-16", "latin1"]
 
 
+def _gui_mode_active(agent: Any) -> bool:
+    """True when running under the desktop GUI (structured confirm provider)."""
+    return callable(getattr(agent, "_confirm_choice_provider", None))
+
+
+def _emit_gui_diff_block(file_path: str, preview_segments: List[Dict[str, Any]]) -> None:
+    """Print a sentinel-wrapped structured diff payload for the GUI transcript.
+
+    The desktop frontend splits step text on the GUI_DIFF_* sentinels and renders
+    a collapsible, syntax-highlighted diff block. The payload travels inside the
+    normal step output so it is persisted with the chat and re-rendered on reload.
+    """
+    try:
+        import json as _json
+
+        from ..core.change_preview_formatter import ChangePreviewFormatter
+        from ..core.console_utils import GUI_DIFF_BEGIN, GUI_DIFF_END
+
+        rows = ChangePreviewFormatter.format_segments_structured(preview_segments)
+        if not rows:
+            return
+        payload = _json.dumps(
+            {"file": file_path, "diffRows": rows}, ensure_ascii=False
+        )
+        print(f"{GUI_DIFF_BEGIN}{payload}{GUI_DIFF_END}")
+    except Exception:
+        # Never let preview rendering break the patch application.
+        pass
+
+
 def _interactive_selector_available(agent: Any) -> bool:
     """Return True when an interactive UI will render the confirm prompt (and
     thus the change preview) itself, so apply_patch should hand over the
@@ -355,9 +385,18 @@ def action_apply_unified_patch(agent: Any, file_path: str, patch: str, confirmed
         # When the interactive TUI selector will render the change preview
         # itself (so it can re-layout live on terminal resize), skip the static
         # text print here and hand the structured segments to the confirm call.
+        # Under the GUI we always skip the static ANSI print: the diff is shown
+        # either in the confirm panel (confirmation mode) or as a collapsible
+        # transcript diff block emitted below (non-confirmation mode).
+        gui_mode = _gui_mode_active(agent)
         interactive_preview = bool(need_confirm) and _interactive_selector_available(agent)
         confirm_preview_segments = preview_segments if interactive_preview else None
-        if preview_lines and not skip_preview_and_confirm and not interactive_preview:
+        if (
+            preview_lines
+            and not skip_preview_and_confirm
+            and not interactive_preview
+            and not gui_mode
+        ):
             try:
                 lang = agent._ui_language()
             except AttributeError:
@@ -392,11 +431,27 @@ def action_apply_unified_patch(agent: Any, file_path: str, patch: str, confirmed
         resolved = abs_path.resolve()
         agent._ai_created_path_keys.add(agent._ephemeral_path_key(resolved))
         agent._reload_skills_if_workspace_skill_changed([resolved])
+        # GUI: render the change preview as a collapsible, highlighted diff block
+        # in the transcript (works in both confirmation and non-confirmation
+        # modes; the confirm-panel diff above is dismissed once answered).
+        if gui_mode and preview_segments and not skip_preview_and_confirm:
+            _emit_gui_diff_block(str(resolved), preview_segments)
+        change_preview_rows: List[Dict[str, Any]] = []
+        if preview_segments:
+            try:
+                from ..core.change_preview_formatter import ChangePreviewFormatter
+
+                change_preview_rows = ChangePreviewFormatter.format_segments_structured(
+                    preview_segments
+                )
+            except Exception:
+                change_preview_rows = []
         return {
             "success": True,
             "file": str(resolved),
             "hunk_count": len(hunks),
             "change_preview": preview_lines,
+            "change_preview_rows": change_preview_rows,
             "warnings": patch_warnings,
             "message": f"Successfully applied patch to '{resolved.name}'",
         }
