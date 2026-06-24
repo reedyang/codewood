@@ -1,4 +1,5 @@
 import { createElement, type ReactNode } from "react";
+import katex from "katex";
 import { stripLeakedToolMarkup } from "../utils/tokens";
 
 // Compact, dependency-free Markdown renderer. It mirrors the structure the
@@ -87,6 +88,52 @@ function safeHref(url: string): string | null {
   return /^(https?:|mailto:)/i.test(u) ? u : null;
 }
 
+// Render a LaTeX math span to KaTeX HTML. KaTeX escapes the math source while
+// building its own markup, so the returned string is safe to inject. On a parse
+// error we fall back to the raw source (with throwOnError:false KaTeX renders a
+// styled error node instead of crashing the whole reply).
+function renderKatex(body: string, display: boolean): string {
+  try {
+    return katex.renderToString(body, {
+      displayMode: display,
+      throwOnError: false,
+      output: "html",
+    });
+  } catch {
+    return "";
+  }
+}
+
+let mathKeySeq = 0;
+
+function katexNode(body: string, display: boolean): ReactNode {
+  const html = renderKatex(body, display);
+  const key = `katex-${mathKeySeq++}`;
+  if (!html) {
+    // KaTeX could not render: show the original source verbatim so the user at
+    // least sees the formula text rather than nothing.
+    return display ? (
+      <div key={key} className="md-math-block">
+        {display ? `$$${body}$$` : `$${body}$`}
+      </div>
+    ) : (
+      <span key={key}>{`$${body}$`}</span>
+    );
+  }
+  const Tag = display ? "div" : "span";
+  return createElement(Tag, {
+    key,
+    className: display ? "md-math-block" : "md-math-inline",
+    dangerouslySetInnerHTML: { __html: html },
+  });
+}
+
+// Inline math: `$...$` (single dollars, not `$$`) and `\(...\)`. A span must
+// not start/end with whitespace and must not span blank lines so plain `$`
+// usage (prices, shell vars) is left alone.
+const INLINE_MATH_KATEX_RE =
+  /(?<!\\)\$(?!\$)(?!\s)((?:\\.|[^$\\\n])+?)(?<!\s)\$(?!\$)|\\\(([\s\S]+?)\\\)/g;
+
 type TableAlign = "left" | "center" | "right" | null;
 
 // Split a GitHub-style table row into trimmed cells, honoring escaped pipes
@@ -153,6 +200,46 @@ function alignClass(align: TableAlign): string | undefined {
   return align ? `md-table-${align}` : undefined;
 }
 
+// Render a plain-text run (already free of inline markdown tokens like code or
+// emphasis) into nodes, turning inline `$...$` / `\(...\)` math into KaTeX and
+// leaving the rest as text. Plain `$` not forming a math span is preserved.
+function renderTextRunWithMath(run: string, keyBase: string): ReactNode[] {
+  if (!run) {
+    return [];
+  }
+  if (!run.includes("$") && !run.includes("\\(")) {
+    return [run];
+  }
+  const out: ReactNode[] = [];
+  const re = new RegExp(INLINE_MATH_KATEX_RE.source, "g");
+  let last = 0;
+  let mm: RegExpExecArray | null;
+  let n = 0;
+  while ((mm = re.exec(run)) !== null) {
+    if (mm.index > last) {
+      out.push(run.slice(last, mm.index));
+    }
+    const body = (mm[1] ?? mm[2] ?? "").trim();
+    if (body) {
+      out.push(katexNode(body, false));
+    } else {
+      out.push(mm[0]);
+    }
+    last = re.lastIndex;
+    if (mm.index === re.lastIndex) {
+      re.lastIndex++;
+    }
+    n++;
+  }
+  if (last < run.length) {
+    out.push(run.slice(last));
+  }
+  // Keep a stable-ish key namespace for the consumed run.
+  void keyBase;
+  void n;
+  return out;
+}
+
 function renderInline(text: string, keyBase: string): ReactNode[] {
   const nodes: ReactNode[] = [];
   const re = new RegExp(INLINE_RE);
@@ -161,9 +248,9 @@ function renderInline(text: string, keyBase: string): ReactNode[] {
   let m: RegExpExecArray | null;
   while ((m = re.exec(text)) !== null) {
     if (m.index > last) {
-      // Convert LaTeX math only on plain-text runs between inline tokens, so
-      // inline code (a matched token) is never touched.
-      nodes.push(convertInlineLatexMath(text.slice(last, m.index)));
+      // Convert inline math (KaTeX) only on plain-text runs between inline
+      // tokens, so inline code (a matched token) is never touched.
+      nodes.push(...renderTextRunWithMath(text.slice(last, m.index), `${keyBase}-tx${i}`));
     }
     const tok = m[0];
     const k = `${keyBase}-${i++}`;
@@ -195,7 +282,7 @@ function renderInline(text: string, keyBase: string): ReactNode[] {
     last = re.lastIndex;
   }
   if (last < text.length) {
-    nodes.push(convertInlineLatexMath(text.slice(last)));
+    nodes.push(...renderTextRunWithMath(text.slice(last), `${keyBase}-txend`));
   }
   return nodes;
 }
@@ -287,6 +374,62 @@ function MarkdownBody({ text }: { text: string }): ReactNode {
 
   while (i < lines.length) {
     const line = lines[i];
+
+    // Block math: a `$$` fence on its own line opens a display-math block that
+    // runs until the closing `$$`. Also support a single-line `$$ ... $$`.
+    const trimmed = line.trim();
+    if (trimmed.startsWith("$$")) {
+      const singleLine = /^\$\$(.+?)\$\$$/.exec(trimmed);
+      if (singleLine) {
+        blocks.push(
+          <div key={key++} className="md-math-wrap">
+            {katexNode(singleLine[1].trim(), true)}
+          </div>,
+        );
+        i++;
+        continue;
+      }
+      // Opening fence (possibly with content after `$$` on the same line).
+      const buf: string[] = [];
+      const afterOpen = trimmed.slice(2);
+      if (afterOpen.trim() !== "") {
+        buf.push(afterOpen);
+      }
+      i++;
+      let closed = false;
+      while (i < lines.length) {
+        const cur = lines[i];
+        const closeIdx = cur.indexOf("$$");
+        if (closeIdx >= 0) {
+          const before = cur.slice(0, closeIdx);
+          if (before.trim() !== "") {
+            buf.push(before);
+          }
+          i++;
+          closed = true;
+          break;
+        }
+        buf.push(cur);
+        i++;
+      }
+      const body = buf.join("\n").trim();
+      if (closed) {
+        blocks.push(
+          <div key={key++} className="md-math-wrap">
+            {katexNode(body, true)}
+          </div>,
+        );
+      } else if (body) {
+        // No closing fence (e.g. still streaming): render as plain text so the
+        // partial source is visible instead of swallowed.
+        blocks.push(
+          <p key={key++} className="md-p">
+            {`$$${body}`}
+          </p>,
+        );
+      }
+      continue;
+    }
 
     if (/^```/.test(line.trim())) {
       const buf: string[] = [];
@@ -411,6 +554,7 @@ function MarkdownBody({ text }: { text: string }): ReactNode {
       i < lines.length &&
       lines[i].trim() !== "" &&
       !/^```/.test(lines[i].trim()) &&
+      !lines[i].trim().startsWith("$$") &&
       !/^(#{1,6})\s+/.test(lines[i]) &&
       !/^\s*([-*+]|\d+\.)\s+/.test(lines[i]) &&
       !/^\s*>\s?/.test(lines[i]) &&
