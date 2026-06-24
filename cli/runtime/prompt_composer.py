@@ -62,10 +62,13 @@ def build_browser_system_append(agent: Any) -> str:
         "`browser_preview_file` with its path to show the rendered result — do "
         "not just tell the user to open the file themselves.\n\n"
         "Reading page content (`browser_read_dom`, `browser_read_console`, "
-        "`browser_eval`) only works for pages this app generates (e.g. previews "
-        "opened via `browser_preview_file`); for arbitrary external websites "
-        "these return an error, because the browser security model forbids "
-        "inspecting cross-origin pages."
+        "`browser_eval`) works for any page — including external websites — when "
+        "the GUI runs the native overlay browser (the default on Windows). In "
+        "the fallback sandboxed-iframe mode (some Linux/WSL setups) these reads "
+        "only work for pages this app generates (e.g. previews opened via "
+        "`browser_preview_file`) and return an error for external cross-origin "
+        "sites. If a read returns a cross-origin error, fall back to "
+        "`browser_preview_file` for local HTML you control."
     )
 
 

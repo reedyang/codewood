@@ -1184,6 +1184,38 @@ body.resizing-x .browser-frame {
   color: var(--text);
 }
 
+.right-panel-tab-wrap {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 6px;
+}
+
+.right-panel-tab-wrap.active {
+  background: var(--user-bg);
+}
+
+.right-panel-tab-wrap .right-panel-tab {
+  background: transparent;
+}
+
+.right-panel-tab-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 4px;
+  margin-right: 2px;
+  border-radius: 5px;
+}
+
+.right-panel-tab-close:hover {
+  background: var(--border);
+  color: var(--text);
+}
+
 .right-panel-tab-add {
   display: inline-flex;
   align-items: center;
@@ -1296,6 +1328,14 @@ body.resizing-x .browser-frame {
   height: 100%;
   border: none;
   display: block;
+}
+
+/* In overlay mode the real browser is a separate OS window positioned over
+   this placeholder; it just reserves the layout box and reports its rect. */
+.browser-overlay-placeholder {
+  width: 100%;
+  height: 100%;
+  background: var(--bg);
 }
 
 .browser-empty {

@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useApp } from "../state/AppContext";
 import { Icon } from "./Icon";
+import { hostApi } from "../utils/hostApi";
 
 /** A backend-issued browser command delivered over SSE. */
 interface BrowserCommand {
@@ -22,34 +23,344 @@ function normalizeUrl(raw: string): string {
   return `https://${s}`;
 }
 
-/** The global embedded browser. A single sandboxed iframe with a toolbar.
- *  Navigation is fully controllable (here and by the model via SSE commands);
- *  content reads (DOM/console/eval) work only for our own preview pages, which
- *  embed a postMessage bridge — external cross-origin sites are not readable
- *  and such commands return an explicit error. */
+/** The global embedded browser.
+ *
+ * Two rendering modes:
+ *  - Overlay mode (desktop host, when ``browser_overlay_supported`` is true):
+ *    the real content is a separate, tracked pywebview window positioned over
+ *    the placeholder below. This loads external sites (no X-Frame-Options
+ *    block) and lets the model read DOM/console/eval on ANY page through the
+ *    host bridge. We only render the toolbar + a placeholder and report its
+ *    on-screen rect to the host.
+ *  - Iframe fallback (plain browser / unsupported platform): a single
+ *    sandboxed iframe. External sites that forbid framing won't load and
+ *    content reads only work for our own preview pages via a postMessage
+ *    bridge.
+ */
 export function BrowserPanel() {
+  // Overlay capability is detected asynchronously once on mount. ``null`` =
+  // unknown (render nothing content-wise yet), true = overlay, false = iframe.
+  const [overlayMode, setOverlayMode] = useState<boolean | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    const api = hostApi();
+    if (!api?.browser_overlay_supported) {
+      setOverlayMode(false);
+      return;
+    }
+    void Promise.resolve(api.browser_overlay_supported())
+      .then((ok) => {
+        if (!cancelled) setOverlayMode(Boolean(ok));
+      })
+      .catch(() => {
+        if (!cancelled) setOverlayMode(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  if (overlayMode === true) {
+    return <OverlayBrowser />;
+  }
+  // While detecting, fall through to the iframe renderer's chrome (toolbar +
+  // empty viewport) so there's no flicker; once known false it stays iframe.
+  return <IframeBrowser />;
+}
+
+/** Toolbar shared by both modes. */
+function BrowserToolbar({
+  address,
+  setAddress,
+  onSubmit,
+  onBack,
+  onForward,
+  onRefresh,
+}: {
+  address: string;
+  setAddress: (v: string) => void;
+  onSubmit: (e: React.FormEvent) => void;
+  onBack: () => void;
+  onForward: () => void;
+  onRefresh: () => void;
+}) {
+  const { t } = useApp();
+  return (
+    <form className="browser-toolbar" onSubmit={onSubmit}>
+      <button
+        type="button"
+        className="browser-btn"
+        title={t("browser.back")}
+        aria-label={t("browser.back")}
+        onClick={onBack}
+      >
+        <Icon name="arrow-left" size={14} />
+      </button>
+      <button
+        type="button"
+        className="browser-btn"
+        title={t("browser.forward")}
+        aria-label={t("browser.forward")}
+        onClick={onForward}
+      >
+        <Icon name="arrow-right" size={14} />
+      </button>
+      <button
+        type="button"
+        className="browser-btn"
+        title={t("browser.refresh")}
+        aria-label={t("browser.refresh")}
+        onClick={onRefresh}
+      >
+        <Icon name="spinner" size={14} />
+      </button>
+      <input
+        className="browser-address"
+        value={address}
+        placeholder={t("browser.address")}
+        onChange={(e) => setAddress(e.target.value)}
+        spellCheck={false}
+      />
+      <button type="submit" className="browser-btn browser-go">
+        {t("browser.go")}
+      </button>
+    </form>
+  );
+}
+
+/** Overlay mode: real content lives in a tracked host window; we report the
+ *  placeholder rect and route commands through the host bridge. */
+function OverlayBrowser() {
+  const { t, subscribeBrowserCommand, sendBrowserResult, resolveBackendUrl } =
+    useApp();
+  const placeholderRef = useRef<HTMLDivElement | null>(null);
+  const [address, setAddress] = useState("");
+  const [currentUrl, setCurrentUrl] = useState("");
+  // rAF token so a burst of resize/scroll events collapses to one bounds push.
+  const rafRef = useRef<number | null>(null);
+
+  const pushBounds = useCallback(() => {
+    const api = hostApi();
+    const el = placeholderRef.current;
+    if (!api?.browser_overlay_set_bounds || !el) return;
+    if (rafRef.current != null) return;
+    rafRef.current = window.requestAnimationFrame(() => {
+      rafRef.current = null;
+      const el2 = placeholderRef.current;
+      if (!el2) return;
+      const r = el2.getBoundingClientRect();
+      // Hide the overlay if the placeholder is collapsed/offscreen (e.g. the
+      // panel is animating closed) rather than positioning a stray window.
+      if (r.width < 2 || r.height < 2) {
+        void api.browser_overlay_hide?.();
+        return;
+      }
+      // Leave a 2px sliver of the main window visible along the right and
+      // bottom edges so the frameless window's resize grips remain hittable
+      // (a separate overlay window covering the corner would otherwise trap
+      // the user, unable to resize the main window). The overlay window is
+      // rectangular and cannot follow the main window's rounded corners, so
+      // this inset also keeps it clear of the rounded bottom-right corner.
+      const EDGE_GAP = 2;
+      const winRight = window.innerWidth - EDGE_GAP;
+      const winBottom = window.innerHeight - EDGE_GAP;
+      const left = r.left;
+      const top = r.top;
+      const width = Math.max(1, Math.min(r.right, winRight) - left);
+      const height = Math.max(1, Math.min(r.bottom, winBottom) - top);
+      void api.browser_overlay_set_bounds?.(left, top, width, height);
+    });
+  }, []);
+
+  // Track placeholder geometry only while a page is loaded: the overlay window
+  // is shown over the placeholder, and the placeholder only occupies layout
+  // space when there's content (so the "empty" hint isn't squeezed into a
+  // sliver). Show when a page loads, hide on unmount or when cleared.
+  const hasPage = Boolean(currentUrl);
+  useLayoutEffect(() => {
+    const api = hostApi();
+    if (!hasPage) {
+      // No page: keep the overlay hidden and reserve no space.
+      void api?.browser_overlay_hide?.();
+      return;
+    }
+    const el = placeholderRef.current;
+    if (!el) return;
+    void api?.browser_overlay_show?.();
+    pushBounds();
+    const ro = new ResizeObserver(() => pushBounds());
+    ro.observe(el);
+    const onWin = () => pushBounds();
+    window.addEventListener("resize", onWin);
+    window.addEventListener("scroll", onWin, true);
+    return () => {
+      ro.disconnect();
+      window.removeEventListener("resize", onWin);
+      window.removeEventListener("scroll", onWin, true);
+      if (rafRef.current != null) {
+        window.cancelAnimationFrame(rafRef.current);
+        rafRef.current = null;
+      }
+      void hostApi()?.browser_overlay_hide?.();
+    };
+  }, [pushBounds, hasPage]);
+
+  // Follow the panel live while a vertical divider is being dragged (the
+  // ``body.resizing-x`` state). Unlike an iframe, a real overlay window has no
+  // pointer-capture problem, so instead of hiding it (which the user perceives
+  // as the browser vanishing) we keep re-reporting the placeholder rect on
+  // each animation frame for the duration of the drag. We observe the body
+  // class via a MutationObserver since the drag toggles it imperatively.
+  useEffect(() => {
+    const api = hostApi();
+    if (!api) return;
+    let followRaf: number | null = null;
+    const follow = () => {
+      if (!document.body.classList.contains("resizing-x")) {
+        followRaf = null;
+        // Final settle once the drag ends.
+        pushBounds();
+        return;
+      }
+      pushBounds();
+      followRaf = window.requestAnimationFrame(follow);
+    };
+    const apply = () => {
+      const dragging = document.body.classList.contains("resizing-x");
+      if (dragging && followRaf == null) {
+        followRaf = window.requestAnimationFrame(follow);
+      }
+    };
+    const mo = new MutationObserver(apply);
+    mo.observe(document.body, {
+      attributes: true,
+      attributeFilter: ["class"],
+    });
+    return () => {
+      mo.disconnect();
+      if (followRaf != null) window.cancelAnimationFrame(followRaf);
+    };
+  }, [pushBounds]);
+
+  // Run a backend-issued command against the overlay window via the host
+  // bridge and return its result payload.
+  const runCommand = useCallback(
+    async (cmd: BrowserCommand): Promise<Record<string, unknown>> => {
+      const api = hostApi();
+      if (!api?.browser_overlay_command) {
+        return { success: false, error: "overlay unavailable" };
+      }
+      const action = String(cmd.action || "");
+      let url = "";
+      if (action === "open") {
+        url = normalizeUrl(String(cmd.url || ""));
+      } else if (action === "open_preview") {
+        url = resolveBackendUrl(String(cmd.url || ""));
+      }
+      const script = action === "eval" ? String(cmd.script || "") : "";
+      const result = (await Promise.resolve(
+        api.browser_overlay_command(action, url, script),
+      )) as Record<string, unknown>;
+      // Mirror the address bar for navigation results.
+      if (
+        (action === "open" || action === "open_preview") &&
+        result &&
+        result["success"]
+      ) {
+        const u = String(result["url"] || url || "");
+        setCurrentUrl(u);
+        setAddress(action === "open" ? u : String(cmd.url || ""));
+      }
+      if (action === "close") {
+        setCurrentUrl("");
+        setAddress("");
+      }
+      return result;
+    },
+    [resolveBackendUrl],
+  );
+
+  useEffect(() => {
+    const unsub = subscribeBrowserCommand((cmd) => {
+      const requestId = String((cmd as BrowserCommand).requestId || "");
+      void runCommand(cmd as BrowserCommand).then((result) => {
+        if (requestId) {
+          void sendBrowserResult(requestId, result);
+        }
+      });
+    });
+    return unsub;
+  }, [subscribeBrowserCommand, sendBrowserResult, runCommand]);
+
+  const navigateTo = useCallback(
+    (raw: string) => {
+      const url = normalizeUrl(raw);
+      if (!url) return;
+      const api = hostApi();
+      void api?.browser_overlay_command?.("open", url);
+      setCurrentUrl(url);
+      setAddress(url);
+    },
+    [],
+  );
+
+  const onSubmitAddress = (e: React.FormEvent) => {
+    e.preventDefault();
+    navigateTo(address);
+  };
+
+  return (
+    <div className="browser-panel">
+      <BrowserToolbar
+        address={address}
+        setAddress={setAddress}
+        onSubmit={onSubmitAddress}
+        onBack={() =>
+          void hostApi()?.browser_overlay_command?.(
+            "eval",
+            "",
+            "history.back()",
+          )
+        }
+        onForward={() =>
+          void hostApi()?.browser_overlay_command?.(
+            "eval",
+            "",
+            "history.forward()",
+          )
+        }
+        onRefresh={() => void hostApi()?.browser_overlay_command?.("refresh")}
+      />
+      <div className="browser-viewport">
+        {currentUrl ? (
+          // The overlay OS window is positioned over this placeholder; it only
+          // occupies layout space while a page is loaded.
+          <div ref={placeholderRef} className="browser-overlay-placeholder" />
+        ) : (
+          <div className="browser-empty">{t("browser.empty")}</div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/** Iframe fallback (unchanged behavior): a single sandboxed iframe. Navigation
+ *  is fully controllable; content reads (DOM/console/eval) work only for our
+ *  own preview pages, which embed a postMessage bridge — external cross-origin
+ *  sites are not readable and such commands return an explicit error. */
+function IframeBrowser() {
   const { t, subscribeBrowserCommand, sendBrowserResult, resolveBackendUrl } =
     useApp();
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
   const [address, setAddress] = useState("");
   const [currentUrl, setCurrentUrl] = useState("");
-  // Whether the currently loaded page is one of our own preview pages (only
-  // those carry the bridge script and are therefore readable).
   const isPreviewRef = useRef(false);
-  // Pending bridge round-trips keyed by a local nonce.
   const bridgePendingRef = useRef<
     Map<string, (payload: Record<string, unknown>) => void>
   >(new Map());
 
-  // ``frameSrc`` is the controlled iframe source. We drive it through state so
-  // navigation works even on the very first open (when the iframe element may
-  // not be in the DOM yet) and survives re-renders. ``reloadKey`` lets refresh
-  // force a reload even when the URL is unchanged.
   const [frameSrc, setFrameSrc] = useState("about:blank");
-  // For our own preview pages we load the HTML via ``srcdoc`` instead of a
-  // cross-origin http URL: WebView2 blocks a file:// document from framing a
-  // http://127.0.0.1 page (mixed-content), and srcdoc content is same-origin
-  // with the parent so the preview bridge (and even direct DOM access) works.
   const [frameDoc, setFrameDoc] = useState<string | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
 
@@ -70,7 +381,6 @@ export function BrowserPanel() {
     [],
   );
 
-  // Bridge replies from preview pages.
   useEffect(() => {
     const onMessage = (e: MessageEvent) => {
       const data = e.data as Record<string, unknown> | null;
@@ -87,8 +397,6 @@ export function BrowserPanel() {
     return () => window.removeEventListener("message", onMessage);
   }, []);
 
-  // Ask the current preview page's bridge for something; reject for non-preview
-  // (cross-origin) pages where the bridge is absent.
   const askBridge = useCallback(
     (action: string, script?: string): Promise<Record<string, unknown>> => {
       return new Promise((resolve) => {
@@ -126,7 +434,6 @@ export function BrowserPanel() {
     [],
   );
 
-  // Execute a backend-issued command and return its result payload.
   const runCommand = useCallback(
     async (cmd: BrowserCommand): Promise<Record<string, unknown>> => {
       const action = String(cmd.action || "");
@@ -138,9 +445,6 @@ export function BrowserPanel() {
           return { success: true, url };
         }
         case "open_preview": {
-          // A preview page served by our backend (carries the bridge script).
-          // Fetch its HTML and load it via srcdoc (same-origin with the parent),
-          // sidestepping the file://->http mixed-content block in WebView2.
           const url = resolveBackendUrl(String(cmd.url || ""));
           if (!url) return { success: false, error: "missing url" };
           try {
@@ -193,7 +497,6 @@ export function BrowserPanel() {
     [askBridge, currentUrl, navigate, resolveBackendUrl],
   );
 
-  // Wire backend commands to execution + result post-back.
   useEffect(() => {
     const unsub = subscribeBrowserCommand((cmd) => {
       const requestId = String((cmd as BrowserCommand).requestId || "");
@@ -216,61 +519,30 @@ export function BrowserPanel() {
 
   return (
     <div className="browser-panel">
-      <form className="browser-toolbar" onSubmit={onSubmitAddress}>
-        <button
-          type="button"
-          className="browser-btn"
-          title={t("browser.back")}
-          aria-label={t("browser.back")}
-          onClick={() => {
-            try {
-              iframeRef.current?.contentWindow?.history.back();
-            } catch {
-              // Cross-origin history navigation may be blocked; ignore.
-            }
-          }}
-        >
-          <Icon name="arrow-left" size={14} />
-        </button>
-        <button
-          type="button"
-          className="browser-btn"
-          title={t("browser.forward")}
-          aria-label={t("browser.forward")}
-          onClick={() => {
-            try {
-              iframeRef.current?.contentWindow?.history.forward();
-            } catch {
-              // Ignore.
-            }
-          }}
-        >
-          <Icon name="arrow-right" size={14} />
-        </button>
-        <button
-          type="button"
-          className="browser-btn"
-          title={t("browser.refresh")}
-          aria-label={t("browser.refresh")}
-          onClick={() => {
-            if (currentUrl) {
-              setReloadKey((k) => k + 1);
-            }
-          }}
-        >
-          <Icon name="spinner" size={14} />
-        </button>
-        <input
-          className="browser-address"
-          value={address}
-          placeholder={t("browser.address")}
-          onChange={(e) => setAddress(e.target.value)}
-          spellCheck={false}
-        />
-        <button type="submit" className="browser-btn browser-go">
-          {t("browser.go")}
-        </button>
-      </form>
+      <BrowserToolbar
+        address={address}
+        setAddress={setAddress}
+        onSubmit={onSubmitAddress}
+        onBack={() => {
+          try {
+            iframeRef.current?.contentWindow?.history.back();
+          } catch {
+            // Cross-origin history navigation may be blocked; ignore.
+          }
+        }}
+        onForward={() => {
+          try {
+            iframeRef.current?.contentWindow?.history.forward();
+          } catch {
+            // Ignore.
+          }
+        }}
+        onRefresh={() => {
+          if (currentUrl) {
+            setReloadKey((k) => k + 1);
+          }
+        }}
+      />
       <div className="browser-viewport">
         <iframe
           key={reloadKey}

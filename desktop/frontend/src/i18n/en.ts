@@ -63,6 +63,7 @@ export const en: Dict = {
   "rightpanel.tabsMenu": "Choose panels",
   "rightpanel.tab.todos": "To-dos",
   "rightpanel.tab.browser": "Browser",
+  "rightpanel.tab.close": "Close tab",
   "browser.address": "Enter a URL",
   "browser.back": "Back",
   "browser.forward": "Forward",
@@ -73,7 +74,9 @@ export const en: Dict = {
   "browser.preview": "Preview in browser",
 
   "menu.file": "File",
+  "menu.view": "View",
   "menu.help": "Help",
+  "menu.view.browser": "Browser",
   "menu.file.newChat": "New Chat",
   "menu.file.openFolder": "Open Folder...",
   "menu.file.close": "Close",
