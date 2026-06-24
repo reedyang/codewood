@@ -737,7 +737,92 @@ def _maybe_offer_plan_execution_choice(
     # The plan-ready signal is a ``<proposed_plan>`` block emitted this turn.
     if not plan_ready:
         return None
+    return _present_plan_execution_chooser(agent)
 
+
+def _latest_history_proposed_plan(agent: Any) -> Optional[str]:
+    """Return the proposed-plan body when the LAST assistant message carries one.
+
+    Only the final message qualifies (per spec): a plan buried mid-history was
+    already acted on. Returns ``None`` when the tail isn't an assistant message
+    holding a complete ``<proposed_plan>`` block.
+    """
+    history = list(getattr(agent, "conversation_history", None) or [])
+    for item in reversed(history):
+        if not isinstance(item, dict):
+            continue
+        role = str(item.get("role") or "").strip().lower()
+        content = str(item.get("content") or "")
+        # Skip our internal bookkeeping records (slash/shell/interrupt markers
+        # etc.) that ride along as assistant/user entries — they are never the
+        # model's prose answer and must not hide a real trailing plan.
+        if not content.strip():
+            continue
+        if role != "assistant":
+            return None
+        from ..core.proposed_plan import has_proposed_plan, latest_proposed_plan
+
+        if has_proposed_plan(content):
+            return latest_proposed_plan(content)
+        return None
+    return None
+
+
+def _maybe_offer_plan_execution_choice_on_prompt(agent: Any) -> Optional[str]:
+    """Re-offer the plan execute/modify chooser when returning to the prompt.
+
+    The inline chooser only fires at the end of the drafting turn, so after the
+    user exits and reloads a chat the affordance vanishes. This reload-time
+    variant restores it: whenever the LAST assistant message carries a proposed
+    plan the user hasn't dismissed, present the same chooser before the input
+    prompt — in BOTH Plan and Agent mode (per spec). Returns the queued
+    follow-up string, or ``None`` to fall through to the normal prompt.
+    """
+    if getattr(agent, "_queued_user_input", None) is not None:
+        return None
+    # A pending request_user_input prompt owns the interaction: don't let the
+    # plan chooser pre-empt the question the agent is waiting on.
+    if str(getattr(agent, "_pending_request_user_input_render", "") or "").strip():
+        return None
+    plan_text = _latest_history_proposed_plan(agent)
+    if not plan_text:
+        return None
+    # Honor a prior "No"/modify dismissal for this exact plan so we don't nag.
+    if str(getattr(agent, "_dismissed_proposed_plan_text", "") or "") == plan_text:
+        return None
+    # On the very first prompt after startup (reloading a chat that ended on a
+    # proposed plan), anchor the transcript to the last user message and reprint
+    # it before showing the chooser, so the user sees the conversation that led
+    # to the plan rather than just the bare execute options.
+    #
+    # NOTE: ``_startup_prompt_pending`` is never set in __init__; the prompt
+    # path reads it with a default of True (see agent._get_user_input_with_history).
+    # We must mirror that default here, otherwise the chooser would render
+    # before the startup transcript is ever printed.
+    if bool(getattr(agent, "_startup_prompt_pending", True)):
+        try:
+            agent._remember_active_chat_history_tail_anchor()
+            agent._reload_chat_history_from_anchor_on_resize()
+            # The reload reprinted the transcript; this consumes the startup
+            # one-shot so the prompt below doesn't suppress its separator based
+            # on a now-stale "first prompt" assumption.
+            agent._startup_prompt_pending = False
+        except Exception:
+            pass
+    return _present_plan_execution_chooser(agent, dismiss_text=plan_text)
+
+
+def _present_plan_execution_chooser(
+    agent: Any, dismiss_text: Optional[str] = None
+) -> Optional[str]:
+    """Show the interactive execute/modify chooser and queue the chosen path.
+
+    Shared by the end-of-turn offer and the reload-time re-offer. ``execute``
+    switches off Plan mode (a no-op in Agent mode) and queues a proceed
+    message; the free-text ``modify`` row keeps Plan mode and queues the typed
+    notes. ``dismiss_text`` (when provided) is remembered on cancel/modify so
+    the reload-time variant stops re-prompting for the same plan.
+    """
     input_handler = getattr(agent, "input_handler", None)
     interactive = getattr(input_handler, "prompt_request_user_input_selection", None)
     if not (callable(interactive) and _request_user_input_interactive_supported(agent)):
@@ -767,15 +852,21 @@ def _maybe_offer_plan_execution_choice(
         return None
 
     if picked is None:
-        # Cancelled (Esc/Ctrl-C): stay in Plan mode and drop to the prompt.
+        # Cancelled (Esc/Ctrl-C): stay put and drop to the prompt. Remember the
+        # dismissal so the reload-time re-offer doesn't immediately fire again.
+        if dismiss_text:
+            agent._dismissed_proposed_plan_text = dismiss_text
         return None
     answer = str(picked).strip()
     if not answer:
+        if dismiss_text:
+            agent._dismissed_proposed_plan_text = dismiss_text
         return None
 
     if answer == execute_label:
-        # Leave Plan mode and proceed: switch to Agent mode and queue a short
-        # proceed message so the next iteration executes the drafted plan.
+        # Leave Plan mode and proceed: switch to Agent mode (no-op if already
+        # Agent) and queue a short proceed message so the next iteration
+        # executes the drafted plan.
         try:
             agent._plan_mode_sticky = False
         except Exception:
@@ -787,14 +878,37 @@ def _maybe_offer_plan_execution_choice(
                 persist(False)
         except Exception:
             pass
+        # This plan is being executed; clear any stale dismissal marker.
+        try:
+            agent._dismissed_proposed_plan_text = ""
+        except Exception:
+            pass
         try:
             print(t("runtime.plan_choice.executing"))
         except Exception:
             pass
         return t("runtime.plan_choice.execute_prompt")
 
-    # Anything else is the user's free-text modification feedback. Keep Plan
-    # mode on so the agent refines the plan rather than executing it.
+    # Anything else is the user's free-text modification feedback. Switch back
+    # to Plan mode (a no-op when already in Plan mode, but required when the
+    # chooser was re-offered in Agent mode) so the agent refines the plan
+    # rather than executing it — mirrors the GUI's "No, and tell ..." path.
+    # The new turn will emit a fresh plan, so forget the old dismissal.
+    try:
+        agent._plan_mode_sticky = True
+    except Exception:
+        pass
+    try:
+        manager = getattr(agent, "_chat_state_manager", None)
+        persist = getattr(manager, "persist_active_chat_plan_mode", None)
+        if callable(persist):
+            persist(True)
+    except Exception:
+        pass
+    try:
+        agent._dismissed_proposed_plan_text = ""
+    except Exception:
+        pass
     return answer
 
 
@@ -2622,6 +2736,19 @@ def run_agent_loop(agent: Any):
                     auto_exit_after_turn = True
                     self._startup_exec_turn_pending = False
             else:
+                # Before prompting, re-offer the plan execute/modify chooser
+                # when the last assistant message still carries an undismissed
+                # proposed plan (e.g. after exiting and reloading the chat).
+                # This restores the affordance the inline end-of-turn offer
+                # can't show on reload, in both Plan and Agent mode.
+                plan_followup = None
+                try:
+                    plan_followup = _maybe_offer_plan_execution_choice_on_prompt(self)
+                except Exception:
+                    plan_followup = None
+                if plan_followup:
+                    self._queued_user_input = plan_followup
+                    continue
                 user_input = self._get_user_input_with_history()
             # GUI composer input is sentinel-prefixed so it is always handled as
             # a model prompt; "/foo" and "!bar" text must not run directly.
