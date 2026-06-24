@@ -15,51 +15,70 @@ APP_INFO: Dict[str, str] = {
 }
 
 
-def get_app_name() -> str:
-    name = str(APP_INFO.get("name") or "").strip()
-    return name
+def get_app_real_name() -> str:
+    """The product's true name from :data:`APP_INFO`, never overridden.
 
-
-def get_app_prompt_name_env_var() -> str:
-    """Name of the env var that overrides the app name shown to the model.
-
-    Derived from the compact app slug so the ``CODEWOOD`` keyword is never
-    hard-coded, e.g. ``CODEWOOD_PROMPT_APP_NAME``.
+    Used to derive things that must stay stable regardless of the
+    ``*_PROMPT_APP_NAME`` override — chiefly the env-var names themselves
+    (otherwise the variable a user must set would change with the override).
     """
-    return f"{get_app_slug_compact().upper()}_PROMPT_APP_NAME"
+    return str(APP_INFO.get("name") or "").strip()
 
 
-def get_app_prompt_name() -> str:
-    """App name to expose in the model context / system prompt.
+def _real_slug_parts() -> list[str]:
+    parts = [p for p in re.split(r"[^a-zA-Z0-9]+", get_app_real_name().lower()) if p]
+    return parts or ["app"]
 
-    When ``<PREFIX>_PROMPT_APP_NAME`` (e.g. ``CODEWOOD_PROMPT_APP_NAME``) is
-    set to a non-empty value, that name is used in the prompts the model sees,
-    so the model is not told it is being driven by the real product. Falls
-    back to :func:`get_app_name` when unset.
+
+def get_app_real_slug_compact() -> str:
+    """Compact slug of the real product name (e.g. ``codewood``)."""
+    return "".join(_real_slug_parts())
+
+
+def get_app_name() -> str:
+    """Effective app name.
+
+    Equal to the real product name unless ``<PREFIX>_PROMPT_APP_NAME`` is set,
+    in which case the override is used everywhere the name/slug surfaces —
+    including on-disk directory names — so the real product is not exposed to
+    the model through prompts, paths, caches, or logger names.
     """
     override = os.environ.get(get_app_prompt_name_env_var())
     if override is not None:
         override = override.strip()
         if override:
             return override
+    return get_app_real_name()
+
+
+def get_app_prompt_name_env_var() -> str:
+    """Name of the env var that overrides the app name shown to the model.
+
+    Derived from the *real* compact app slug so the ``CODEWOOD`` keyword is
+    never hard-coded yet stays stable, e.g. ``CODEWOOD_PROMPT_APP_NAME``.
+    """
+    return f"{get_app_real_slug_compact().upper()}_PROMPT_APP_NAME"
+
+
+# Backwards-compatible aliases: the effective name/slug already honor the
+# override, so the prompt-specific helpers simply delegate.
+def get_app_prompt_name() -> str:
     return get_app_name()
 
 
 def get_app_prompt_slug_kebab() -> str:
-    """Kebab slug matching :func:`get_app_prompt_name`.
-
-    Uses the prompt-name override (if any) so slug-based references in the
-    system prompt also reflect the custom name instead of leaking the real
-    product slug.
-    """
-    name = get_app_prompt_name()
-    parts = [p for p in re.split(r"[^a-zA-Z0-9]+", name.lower()) if p]
-    return "-".join(parts) if parts else get_app_slug_kebab()
+    return get_app_slug_kebab()
 
 
 def get_app_description() -> str:
-    description = str(APP_INFO.get("description") or "").strip()
-    return description or f"{get_app_name()} AI Agent"
+    # When the prompt-name override is active, never surface the real
+    # product's hard-coded description; derive one from the effective name.
+    override_active = get_app_name() != get_app_real_name()
+    if not override_active:
+        description = str(APP_INFO.get("description") or "").strip()
+        if description:
+            return description
+    return f"{get_app_name()} AI Agent"
 
 
 def get_app_version() -> str:
@@ -105,11 +124,11 @@ def get_app_config_dirname() -> str:
 def get_app_home_env_var() -> str:
     """Name of the env var that overrides the global config directory.
 
-    Built from the compact app slug so the ``CODEWOOD`` keyword is never
-    hard-coded, e.g. ``CODEWOOD_HOME``. Rename the app and the variable name
-    follows automatically.
+    Built from the *real* compact app slug so the ``CODEWOOD`` keyword is
+    never hard-coded yet stays stable even when the prompt-name override is
+    active, e.g. ``CODEWOOD_HOME``.
     """
-    return f"{get_app_slug_compact().upper()}_HOME"
+    return f"{get_app_real_slug_compact().upper()}_HOME"
 
 
 def get_app_global_config_dir() -> Path:
@@ -140,7 +159,9 @@ def get_app_log_filename() -> str:
 
 
 def get_app_env_prefix() -> str:
-    return get_app_slug_snake().upper()
+    # Env-var names must stay stable regardless of the prompt-name override,
+    # otherwise the variable a user has to set would change underneath them.
+    return "_".join(_real_slug_parts()).upper()
 
 
 def get_app_env_var(suffix: str) -> str:
