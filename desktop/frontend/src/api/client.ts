@@ -295,6 +295,119 @@ export class ApiClient {
     return s;
   }
 
+  // --- Embedded console ---------------------------------------------------
+
+  /** Open a new console session of the given shell kind. Returns its info. */
+  async openConsole(
+    kind: string,
+  ): Promise<{ id: string; title: string; kind: string } | null> {
+    try {
+      const res = await fetch(`${this.base}/console-open`, {
+        method: "POST",
+        headers: this.headers(),
+        body: JSON.stringify({ kind }),
+      });
+      if (!res.ok) return null;
+      const data = (await res.json()) as {
+        success?: boolean;
+        id?: string;
+        title?: string;
+        kind?: string;
+      };
+      if (!data.success || !data.id) return null;
+      return { id: data.id, title: data.title ?? "", kind: data.kind ?? kind };
+    } catch {
+      return null;
+    }
+  }
+
+  async closeConsole(id: string): Promise<boolean> {
+    try {
+      const res = await fetch(`${this.base}/console-close`, {
+        method: "POST",
+        headers: this.headers(),
+        body: JSON.stringify({ id }),
+      });
+      return res.ok;
+    } catch {
+      return false;
+    }
+  }
+
+  async activateConsole(id: string): Promise<boolean> {
+    try {
+      const res = await fetch(`${this.base}/console-activate`, {
+        method: "POST",
+        headers: this.headers(),
+        body: JSON.stringify({ id }),
+      });
+      return res.ok;
+    } catch {
+      return false;
+    }
+  }
+
+  async setConsoleOptions(options: {
+    fontFamily: string;
+    bufferLines: number;
+  }): Promise<boolean> {
+    try {
+      const res = await fetch(`${this.base}/set-console-options`, {
+        method: "POST",
+        headers: this.headers(),
+        body: JSON.stringify({ options }),
+      });
+      return res.ok;
+    } catch {
+      return false;
+    }
+  }
+
+  /** Fetch the retained raw output (base64) so a (re)mounted terminal can
+   *  repaint existing scrollback. Live output then arrives via SSE. */
+  async attachConsole(id: string): Promise<string> {
+    try {
+      const res = await fetch(`${this.base}/console-attach`, {
+        method: "POST",
+        headers: this.headers(),
+        body: JSON.stringify({ id }),
+      });
+      if (!res.ok) {
+        return "";
+      }
+      const data = (await res.json()) as { ok?: boolean; b64?: string };
+      return data.ok ? String(data.b64 ?? "") : "";
+    } catch {
+      return "";
+    }
+  }
+
+  /** Send keystrokes/text to a console session over plain HTTP (WebView2's
+   *  file:// origin forbids ws:// connections, so console I/O uses POST + SSE). */
+  async consoleInput(id: string, data: string): Promise<void> {
+    try {
+      await fetch(`${this.base}/console-input`, {
+        method: "POST",
+        headers: this.headers(),
+        body: JSON.stringify({ id, data }),
+      });
+    } catch {
+      // best-effort; the next keystroke will retry
+    }
+  }
+
+  async consoleResize(id: string, cols: number, rows: number): Promise<void> {
+    try {
+      await fetch(`${this.base}/console-resize`, {
+        method: "POST",
+        headers: this.headers(),
+        body: JSON.stringify({ id, cols, rows }),
+      });
+    } catch {
+      // best-effort
+    }
+  }
+
   /** Read the raw (unresolved) model_providers list for editing. */
   async getModelsConfig(): Promise<unknown[]> {
     const res = await fetch(`${this.base}/models-config`, {

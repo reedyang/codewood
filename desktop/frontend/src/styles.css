@@ -454,6 +454,11 @@ body.resizing-x {
   user-select: none;
 }
 
+body.resizing-y {
+  cursor: row-resize;
+  user-select: none;
+}
+
 /* While dragging a vertical divider, the embedded browser iframe would
    otherwise capture the pointer (the mousemove/mouseup never reach the window
    listeners, so the drag can't end when the cursor is over the browser).
@@ -4515,4 +4520,144 @@ h6.md-h {
   width: 8px;
   height: 8px;
   cursor: nesw-resize;
+}
+
+/* Embedded console dock (below the transcript, above the composer) */
+.console-dock {
+  display: flex;
+  flex-direction: column;
+  flex: 0 0 auto;
+  border-top: 1px solid var(--border);
+  background: #1e1e1e;
+  overflow: hidden;
+  position: relative;
+}
+
+.console-resizer {
+  flex: 0 0 6px;
+  cursor: row-resize;
+  position: relative;
+  background: transparent;
+}
+
+.console-resizer::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 2px;
+  height: 2px;
+  background: transparent;
+  transition: background 0.12s ease;
+}
+
+.console-resizer:hover::after,
+.console-resizer.resizing::after {
+  background: var(--divider-strong, #9aa0a6);
+}
+
+.console-panel {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.console-tabbar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 6px;
+  background: var(--bg-elevated, #252526);
+  border-bottom: 1px solid var(--border);
+}
+
+.console-tabs {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex: 1;
+  overflow-x: auto;
+  min-width: 0;
+}
+
+.console-tab {
+  display: flex;
+  align-items: center;
+  border-radius: 6px 6px 0 0;
+  padding: 0 2px 0 6px;
+  color: var(--text-muted, #aaa);
+  white-space: nowrap;
+}
+
+.console-tab.active {
+  background: #1e1e1e;
+  color: var(--text, #eee);
+}
+
+.console-tab-btn {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  background: none;
+  border: none;
+  color: inherit;
+  cursor: pointer;
+  padding: 6px 4px;
+  font-size: 12px;
+}
+
+.console-tab-label {
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.console-tab-close,
+.console-tab-add,
+.console-close {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: none;
+  color: var(--text-muted, #aaa);
+  cursor: pointer;
+  border-radius: 4px;
+  padding: 4px;
+}
+
+.console-tab-close:hover,
+.console-tab-add:hover,
+.console-close:hover {
+  background: var(--hover, rgba(255, 255, 255, 0.1));
+  color: var(--text, #eee);
+}
+
+.console-close {
+  margin-left: 6px;
+}
+
+.console-body {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+  background: #1e1e1e;
+}
+
+.console-term {
+  position: absolute;
+  inset: 0;
+  padding: 4px 6px;
+}
+
+.console-empty {
+  padding: 16px;
+  color: var(--text-muted, #aaa);
+  font-size: 13px;
+}
+
+/* Keep terminal interaction from eating the divider drag. */
+body.resizing-y .console-term {
+  pointer-events: none;
 }

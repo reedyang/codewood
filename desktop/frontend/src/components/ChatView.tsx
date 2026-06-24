@@ -4,9 +4,11 @@ import {
   useRef,
   useState,
   type ClipboardEvent as ReactClipboardEvent,
+  type MouseEvent as ReactMouseEvent,
   type ReactNode,
 } from "react";
 import { useApp } from "../state/AppContext";
+import { ConsolePanel } from "./ConsolePanel";
 import type { HistoryRound, HistoryTurn, Turn, TurnRound } from "../api/types";
 import { Icon, type IconName } from "./Icon";
 import { MarkdownText } from "./Markdown";
@@ -494,6 +496,7 @@ export function ChatView() {
     setDraftWorkspace,
     askMoreInfo,
     answerAskMoreInfo,
+    consoleOpen,
     t,
   } = useApp();
   // Drafts (in-progress composer segments) are kept per chat so switching
@@ -1120,6 +1123,66 @@ export function ChatView() {
         })()}
       </div>
       <div className="composer-dock">{composer}</div>
+      {consoleOpen && <ConsoleDock />}
+    </div>
+  );
+}
+
+const CONSOLE_HEIGHT_KEY = "codewood.consoleHeight";
+const CONSOLE_MIN_HEIGHT = 120;
+const CONSOLE_MAX_HEIGHT = 720;
+
+function loadConsoleHeight(): number {
+  const raw = Number(window.localStorage.getItem(CONSOLE_HEIGHT_KEY));
+  if (Number.isFinite(raw) && raw >= CONSOLE_MIN_HEIGHT && raw <= CONSOLE_MAX_HEIGHT) {
+    return raw;
+  }
+  return 240;
+}
+
+/** The console dock below the transcript: a draggable top divider resizes it
+ *  (dragging up grows it) and the persisted height survives reloads. */
+function ConsoleDock() {
+  const [height, setHeight] = useState(loadConsoleHeight);
+  const [resizing, setResizing] = useState(false);
+
+  useEffect(() => {
+    window.localStorage.setItem(CONSOLE_HEIGHT_KEY, String(height));
+  }, [height]);
+
+  const startResize = (e: ReactMouseEvent) => {
+    e.preventDefault();
+    const startY = e.clientY;
+    const startHeight = height;
+    setResizing(true);
+    document.body.classList.add("resizing-y");
+    const onMove = (ev: MouseEvent) => {
+      // Dragging up (negative delta) grows the console.
+      const next = Math.min(
+        CONSOLE_MAX_HEIGHT,
+        Math.max(CONSOLE_MIN_HEIGHT, startHeight - (ev.clientY - startY)),
+      );
+      setHeight(next);
+    };
+    const onUp = () => {
+      setResizing(false);
+      document.body.classList.remove("resizing-y");
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  };
+
+  return (
+    <div className="console-dock" style={{ height: `${height}px` }}>
+      <div
+        className={`console-resizer ${resizing ? "resizing" : ""}`}
+        role="separator"
+        aria-orientation="horizontal"
+        onMouseDown={startResize}
+      />
+      <ConsolePanel />
     </div>
   );
 }

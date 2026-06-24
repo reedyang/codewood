@@ -72,6 +72,33 @@ def build_browser_system_append(agent: Any) -> str:
     )
 
 
+def build_console_system_append(agent: Any) -> str:
+    """Note the embedded console to the model — only when running under the GUI.
+
+    Presence of ``agent._console_dispatch`` (set by the serve app) is the GUI
+    signal that also gates the ``console_*`` tools into the spec."""
+    if not callable(getattr(agent, "_console_dispatch", None)):
+        return ""
+    return (
+        "## Embedded console (GUI)\n\n"
+        "The desktop GUI has a tabbed, interactive terminal. When the user has "
+        "an active console tab open you can drive it with the `console_*` "
+        "tools, which all act on the ACTIVE tab (you share the user's live "
+        "shell session — its working directory, environment and history):\n\n"
+        "- `console_exec` runs a command in the active console (it types the "
+        "command into the running shell and returns immediately).\n"
+        "- `console_read` reads output lines in an absolute range `[start, "
+        "start + count)` and reports `totalLines`; page through the scrollback "
+        "by advancing `start`.\n"
+        "- `console_info` returns the active shell kind, current working "
+        "directory and terminal size.\n\n"
+        "After running a command with `console_exec`, give it a moment then "
+        "call `console_read` (e.g. from the previous `totalLines`) to see its "
+        "output. If no console tab is open the tools return an error — ask the "
+        "user to open one, or use the `shell` tool for one-off commands."
+    )
+
+
 def build_mcp_system_append(agent: Any) -> str:
     """Build MCP section appended to system prompt (with redacted env values)."""
     servers = (agent.mcp_config or {}).get("mcpServers", {})
