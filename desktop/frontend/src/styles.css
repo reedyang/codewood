@@ -454,6 +454,15 @@ body.resizing-x {
   user-select: none;
 }
 
+/* While dragging a vertical divider, the embedded browser iframe would
+   otherwise capture the pointer (the mousemove/mouseup never reach the window
+   listeners, so the drag can't end when the cursor is over the browser).
+   Disabling pointer events on the iframe during the drag lets those events
+   bubble to the document and the drag completes normally. */
+body.resizing-x .browser-frame {
+  pointer-events: none;
+}
+
 /* Full-screen settings (replaces sidebar + chat in the main area). */
 .settings-view {
   display: flex;
@@ -1193,6 +1202,7 @@ body.resizing-x {
 }
 
 .right-panel-close {
+  flex: 0 0 auto;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -1207,6 +1217,11 @@ body.resizing-x {
 .right-panel-close:hover {
   background: var(--user-bg);
   color: var(--text);
+}
+
+.right-panel-close.active {
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  color: var(--accent);
 }
 
 .right-panel-body {
@@ -1293,7 +1308,7 @@ body.resizing-x {
 .md-pre-preview {
   position: absolute;
   top: 6px;
-  left: 8px;
+  right: 8px;
   display: inline-flex;
   align-items: center;
   gap: 5px;
