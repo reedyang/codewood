@@ -899,27 +899,19 @@ export function ChatView() {
         <ConfirmDialog />
         {(() => {
           // The Execute-now button represents "carry out the plan we just
-          // drafted" and is a PLAN-MODE-only affordance: in Plan mode the
-          // agent deliberately pauses after drafting a plan and waits for
-          // the user to confirm. In Agent (non-Plan) mode the agent never
-          // pauses — it executes the plan inline during the same turn — so
-          // an unfinished plan left behind by an idle Agent-mode turn is
-          // just an artifact and must NOT surface an Execute-now button.
-          // Gating on ``chatMode`` keeps the two flows distinct:
-          //   * Agent mode: plans run directly, button never shows.
-          //   * Plan mode: button shows once the plan turn has closed and
-          //     there is still an unfinished step to advance.
-          // We also wait until the streaming turn has fully closed so the
-          // button doesn't appear before the rendered plan content lands.
+          // drafted". It surfaces in BOTH Plan and Agent mode, but only when
+          // the LAST assistant message still carries an unfinished
+          // ``<proposed_plan>`` block (computed as ``latestPlanText`` below).
+          // That "last message only" rule is what keeps an Agent-mode plan
+          // artifact buried mid-conversation from spuriously showing the
+          // button: once the agent replies again, the plan is no longer the
+          // tail and the button disappears on its own.
           //
+          // We still wait until any streaming turn has fully closed so the
+          // button doesn't appear before the rendered plan content lands.
           // After an app restart there are no live ``turns`` (the plan turn
           // lives in ``historyTurns`` instead), so we must NOT require a live
-          // turn — the presence of an unfinished plan in ``state`` plus an
-          // idle agent and at least one rendered turn is enough. We only
-          // suppress the button while a LIVE turn is mid-stream.
-          if (chatMode !== "plan") {
-            return null;
-          }
+          // turn — a rendered tail plan plus an idle agent is enough.
           if (busy) {
             return null;
           }
@@ -961,11 +953,12 @@ export function ChatView() {
             }
             return "";
           })();
-          const latestPlanText = hasProposedPlan(lastLiveText)
-            ? lastLiveText
-            : hasProposedPlan(lastHistText)
-              ? lastHistText
-              : "";
+          // "Last message only": the button is tied strictly to the tail
+          // assistant message. When a live turn has produced any answer it is
+          // the tail, so a stale plan further back in history must NOT count;
+          // only fall back to history text when there is no live answer at all.
+          const tailText = lastLiveText.trim().length > 0 ? lastLiveText : lastHistText;
+          const latestPlanText = hasProposedPlan(tailText) ? tailText : "";
           if (!latestPlanText) {
             return null;
           }

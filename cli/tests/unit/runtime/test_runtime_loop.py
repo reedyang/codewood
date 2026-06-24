@@ -2218,5 +2218,193 @@ class ParseMultiSelectLineTests(unittest.TestCase):
         self.assertEqual((picked, other, err), ([], "hello", ""))
 
 
+class ReloadTimePlanChooserTests(unittest.TestCase):
+    """The plan execute/modify chooser must re-appear on reload when the last
+    assistant message still carries an undismissed ``<proposed_plan>`` — in both
+    Plan and Agent mode (the inline end-of-turn offer can't fire on reload)."""
+
+    _PLAN = "<proposed_plan>\nStep 1\nStep 2\n</proposed_plan>"
+
+    def _agent(self, *, plan_mode: bool, history):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(
+            _plan_mode_sticky=plan_mode,
+            conversation_history=list(history),
+            _queued_user_input=None,
+            _pending_request_user_input_render="",
+            _dismissed_proposed_plan_text="",
+            _startup_prompt_pending=False,
+            display_language="en",
+            input_handler=SimpleNamespace(),
+            _chat_state_manager=None,
+        )
+
+    def test_latest_history_proposed_plan_detects_trailing_plan(self):
+        from cli.runtime.runtime_loop import _latest_history_proposed_plan
+
+        agent = self._agent(
+            plan_mode=True,
+            history=[
+                {"role": "user", "content": "do it"},
+                {"role": "assistant", "content": "Here is the plan.\n" + self._PLAN},
+            ],
+        )
+        self.assertIsNotNone(_latest_history_proposed_plan(agent))
+
+    def test_latest_history_proposed_plan_ignores_non_tail_plan(self):
+        from cli.runtime.runtime_loop import _latest_history_proposed_plan
+
+        agent = self._agent(
+            plan_mode=True,
+            history=[
+                {"role": "assistant", "content": self._PLAN},
+                {"role": "user", "content": "actually change it"},
+                {"role": "assistant", "content": "Sure, no plan now."},
+            ],
+        )
+        self.assertIsNone(_latest_history_proposed_plan(agent))
+
+    def _run_chooser(self, agent, picked):
+        from cli.runtime import runtime_loop as rl
+
+        recorded = {}
+
+        def fake_interactive(header, options, multi, other_label, header2):
+            recorded["options"] = list(options)
+            return picked
+
+        agent.input_handler.prompt_request_user_input_selection = fake_interactive
+        with (
+            patch.object(rl, "_request_user_input_interactive_supported", return_value=True),
+            patch("builtins.print"),
+        ):
+            return rl._maybe_offer_plan_execution_choice_on_prompt(agent), recorded
+
+    def test_reload_offer_executes_in_agent_mode_without_requiring_plan_mode(self):
+        agent = self._agent(
+            plan_mode=False,  # Agent mode
+            history=[{"role": "assistant", "content": self._PLAN}],
+        )
+        from cli.core.localization import translate
+
+        execute_label = translate("runtime.plan_choice.execute", "en")
+        followup, _ = self._run_chooser(agent, execute_label)
+        self.assertTrue(followup)  # a proceed message was queued
+        self.assertFalse(agent._plan_mode_sticky)
+
+    def test_reload_offer_executes_in_plan_mode_and_switches_to_agent(self):
+        agent = self._agent(
+            plan_mode=True,
+            history=[{"role": "assistant", "content": self._PLAN}],
+        )
+        from cli.core.localization import translate
+
+        execute_label = translate("runtime.plan_choice.execute", "en")
+        followup, _ = self._run_chooser(agent, execute_label)
+        self.assertTrue(followup)
+        self.assertFalse(agent._plan_mode_sticky)
+
+    def test_reload_offer_modify_keeps_plan_mode_and_queues_text(self):
+        agent = self._agent(
+            plan_mode=True,
+            history=[{"role": "assistant", "content": self._PLAN}],
+        )
+        followup, _ = self._run_chooser(agent, "please add tests")
+        self.assertEqual(followup, "please add tests")
+        self.assertTrue(agent._plan_mode_sticky)
+
+    def test_reload_offer_modify_in_agent_mode_switches_back_to_plan(self):
+        # "No, and tell ..." chosen while in Agent mode must flip the session
+        # back into Plan mode so the next message refines the plan.
+        agent = self._agent(
+            plan_mode=False,  # Agent mode
+            history=[{"role": "assistant", "content": self._PLAN}],
+        )
+        followup, _ = self._run_chooser(agent, "tweak step 2")
+        self.assertEqual(followup, "tweak step 2")
+        self.assertTrue(agent._plan_mode_sticky)
+
+    def test_reload_offer_cancel_remembers_dismissal(self):
+        agent = self._agent(
+            plan_mode=True,
+            history=[{"role": "assistant", "content": self._PLAN}],
+        )
+        followup, _ = self._run_chooser(agent, None)
+        self.assertIsNone(followup)
+        # A later prompt for the same plan must not re-offer.
+        followup2, _ = self._run_chooser(agent, None)
+        self.assertIsNone(followup2)
+        self.assertEqual(
+            agent._dismissed_proposed_plan_text,
+            "Step 1\nStep 2",
+        )
+
+    def test_startup_offer_anchors_and_reloads_history_before_chooser(self):
+        # On the first prompt after startup the transcript is anchored to the
+        # last user message and reprinted before the chooser is shown.
+        from cli.runtime import runtime_loop as rl
+        from cli.core.localization import translate
+
+        agent = self._agent(
+            plan_mode=True,
+            history=[
+                {"role": "user", "content": "design X"},
+                {"role": "assistant", "content": self._PLAN},
+            ],
+        )
+        agent._startup_prompt_pending = True
+        calls = []
+        agent._remember_active_chat_history_tail_anchor = lambda: calls.append("anchor")
+        agent._reload_chat_history_from_anchor_on_resize = lambda: calls.append("reload")
+
+        def fake_interactive(header, options, multi, other_label, header2):
+            return translate("runtime.plan_choice.execute", "en")
+
+        agent.input_handler.prompt_request_user_input_selection = fake_interactive
+        with (
+            patch.object(rl, "_request_user_input_interactive_supported", return_value=True),
+            patch("builtins.print"),
+        ):
+            followup = rl._maybe_offer_plan_execution_choice_on_prompt(agent)
+        self.assertTrue(followup)
+        self.assertEqual(calls, ["anchor", "reload"])
+        self.assertFalse(agent._startup_prompt_pending)
+
+    def test_non_startup_offer_does_not_reload_history(self):
+        from cli.runtime import runtime_loop as rl
+        from cli.core.localization import translate
+
+        agent = self._agent(
+            plan_mode=True,
+            history=[{"role": "assistant", "content": self._PLAN}],
+        )
+        agent._startup_prompt_pending = False
+        calls = []
+        agent._remember_active_chat_history_tail_anchor = lambda: calls.append("anchor")
+        agent._reload_chat_history_from_anchor_on_resize = lambda: calls.append("reload")
+
+        def fake_interactive(header, options, multi, other_label, header2):
+            return translate("runtime.plan_choice.execute", "en")
+
+        agent.input_handler.prompt_request_user_input_selection = fake_interactive
+        with (
+            patch.object(rl, "_request_user_input_interactive_supported", return_value=True),
+            patch("builtins.print"),
+        ):
+            rl._maybe_offer_plan_execution_choice_on_prompt(agent)
+        self.assertEqual(calls, [])
+
+    def test_reload_offer_skipped_when_input_queued(self):
+        from cli.runtime.runtime_loop import _maybe_offer_plan_execution_choice_on_prompt
+
+        agent = self._agent(
+            plan_mode=True,
+            history=[{"role": "assistant", "content": self._PLAN}],
+        )
+        agent._queued_user_input = "already queued"
+        self.assertIsNone(_maybe_offer_plan_execution_choice_on_prompt(agent))
+
+
 if __name__ == "__main__":
     unittest.main()
