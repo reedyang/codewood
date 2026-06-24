@@ -1138,6 +1138,9 @@ _MD_FENCE_RE = re.compile(r"^\s*(?:```|~~~)")
 _MD_HR_RE = re.compile(r"^\s*([-*_])(?:\s*\1){2,}\s*$")
 _MD_QUOTE_RE = re.compile(r"^\s*>\s?\S")
 _MD_LIST_RE = re.compile(r"^\s*(?:[-*+]|\d+\.)\s+\S")
+# Display-math fence: ``$$`` or ``\[`` opening a block the append stream cannot
+# render incrementally (it converts to centered multi-line Unicode).
+_MD_MATH_BLOCK_RE = re.compile(r"^\s*(?:\$\$|\\\[)")
 _MD_INLINE_RES = (
     re.compile(r"\*\*[^*\n]+\*\*"),
     re.compile(r"(?<![A-Za-z0-9_])__[^_\n]+__(?![A-Za-z0-9_])"),
@@ -1169,6 +1172,7 @@ def _text_has_renderable_markdown(text: str) -> bool:
             or _MD_HR_RE.match(line)
             or _MD_QUOTE_RE.match(line)
             or _MD_LIST_RE.match(line)
+            or _MD_MATH_BLOCK_RE.match(line)
         ):
             return True
         if (

@@ -134,6 +134,37 @@ function katexNode(body: string, display: boolean): ReactNode {
 const INLINE_MATH_KATEX_RE =
   /(?<!\\)\$(?!\$)(?!\s)((?:\\.|[^$\\\n])+?)(?<!\s)\$(?!\$)|\\\(([\s\S]+?)\\\)/g;
 
+// A `$...$` body that is only digits/separators/spaces (e.g. `100 到 `, `5.00`)
+// is currency, never math — guards against `$100 到 $200` pairing the wrong
+// dollars. Mirrors `_CURRENCY_BODY_RE` in cli/core/text_output_renderer.py.
+const CURRENCY_BODY_RE = /^[\d.,\s]+$/;
+
+// Treat a `$...$` body as math only when it carries a math signal (a LaTeX
+// command, a `^`/`_` script, a relation, or a variable next to an operator).
+// Mirrors `_looks_like_inline_math` in the Python display layer so the GUI and
+// TUI agree on which spans are math vs. plain `$` usage. `\(...\)` is always
+// math (explicit delimiters) so it bypasses this check.
+function looksLikeInlineMath(body: string): boolean {
+  if (!body) {
+    return false;
+  }
+  if (CURRENCY_BODY_RE.test(body)) {
+    return false;
+  }
+  if (body.includes("\\") || body.includes("^") || body.includes("_")) {
+    return true;
+  }
+  if (/[=<>]|\\(?:le|ge|leq|geq|neq|ne|approx|equiv)\b/.test(body)) {
+    return true;
+  }
+  if (/[A-Za-z]\s*[-+*/=]\s*[A-Za-z0-9]/.test(body)) {
+    return true;
+  }
+  // A bare 1-2 letter variable, e.g. `$x$` / `$y$`. A paired `$<letters>$` is
+  // far likelier a math variable than stray `$` text.
+  return /^[A-Za-z\u0370-\u03ff]{1,2}$/.test(body.trim());
+}
+
 type TableAlign = "left" | "center" | "right" | null;
 
 // Split a GitHub-style table row into trimmed cells, honoring escaped pipes
@@ -216,15 +247,25 @@ function renderTextRunWithMath(run: string, keyBase: string): ReactNode[] {
   let mm: RegExpExecArray | null;
   let n = 0;
   while ((mm = re.exec(run)) !== null) {
+    const dollarBody = mm[1];
+    const parenBody = mm[2];
+    const body = (dollarBody ?? parenBody ?? "").trim();
+    // `\(...\)` is explicit math; `$...$` must pass the math heuristic so plain
+    // `$` usage (prices, shell vars) is not eaten as a formula.
+    const isMath =
+      body !== "" && (parenBody != null || looksLikeInlineMath(body));
+    if (!isMath) {
+      // Not math: keep the original text (including the `$` delimiters) verbatim
+      // and continue scanning right after this `$` so a later real span matches.
+      out.push(run.slice(last, mm.index + 1));
+      last = mm.index + 1;
+      re.lastIndex = mm.index + 1;
+      continue;
+    }
     if (mm.index > last) {
       out.push(run.slice(last, mm.index));
     }
-    const body = (mm[1] ?? mm[2] ?? "").trim();
-    if (body) {
-      out.push(katexNode(body, false));
-    } else {
-      out.push(mm[0]);
-    }
+    out.push(katexNode(body, false));
     last = re.lastIndex;
     if (mm.index === re.lastIndex) {
       re.lastIndex++;
