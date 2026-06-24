@@ -64,6 +64,18 @@ def _c_plain(text: str) -> str:
     return text
 
 
+def _c_tag(text: str) -> str:
+    return _ansi_rgb(text, 224, 108, 117)  # red — HTML/XML tag names
+
+
+def _c_attr(text: str) -> str:
+    return _ansi_rgb(text, 209, 154, 102)  # orange — attribute names
+
+
+def _c_punct(text: str) -> str:
+    return _ansi_rgb(text, 92, 99, 112)  # gray — angle brackets / entities
+
+
 @dataclass(frozen=True)
 class LanguageDefinition:
     """Per-language lexing configuration used by :class:`SyntaxHighlighter`.
@@ -402,6 +414,36 @@ _register(
 )
 _register(
     LanguageDefinition(
+        "html",
+        keywords=frozenset(),
+        line_comments=(),
+        block_comments=(("<!--", "-->"),),
+        string_quotes=('"', "'"),
+    ),
+    "htm",
+    "xhtml",
+    "xml",
+    "svg",
+    "vue",
+)
+_CSS_KW = frozenset(
+    "important inherit initial unset none auto block inline flex grid absolute "
+    "relative fixed static sticky hidden visible solid dashed dotted bold normal "
+    "italic center left right justify".split()
+)
+_register(
+    LanguageDefinition(
+        "css",
+        keywords=_CSS_KW,
+        line_comments=(),
+        block_comments=(("/*", "*/"),),
+        string_quotes=('"', "'"),
+    ),
+    "scss",
+    "less",
+)
+_register(
+    LanguageDefinition(
         "dockerfile",
         keywords=frozenset(
             "FROM RUN CMD LABEL MAINTAINER EXPOSE ENV ADD COPY ENTRYPOINT VOLUME "
@@ -479,10 +521,16 @@ class SyntaxHighlighter:
         out_lines: List[str] = []
         in_block_comment = False
         block_close = ""
+        is_html = definition.name == "html"
         for line in code.split("\n"):
-            rendered, in_block_comment, block_close = self._highlight_line(
-                line, definition, in_block_comment, block_close
-            )
+            if is_html:
+                rendered, in_block_comment, block_close = self._highlight_html_line(
+                    line, in_block_comment, block_close
+                )
+            else:
+                rendered, in_block_comment, block_close = self._highlight_line(
+                    line, definition, in_block_comment, block_close
+                )
             out_lines.append(rendered)
         return "\n".join(out_lines)
 
@@ -504,7 +552,184 @@ class SyntaxHighlighter:
         if not _stdout_color_enabled():
             return line, in_block_comment, block_close
         definition = self.resolve_language(lang) or _GENERIC
+        if definition.name == "html":
+            return self._highlight_html_line(line, in_block_comment, block_close)
         return self._highlight_line(line, definition, in_block_comment, block_close)
+
+    # -- HTML (with embedded JS/CSS) -----------------------------------------
+
+    # Mode markers carried in ``block_close`` for the HTML renderer. ``""`` is
+    # ordinary markup; the others mean "consume until this closing token,
+    # highlighting the inner content with the embedded language".
+    _HTML_COMMENT_CLOSE = "-->"
+    _HTML_SCRIPT_CLOSE = "</script>"
+    _HTML_STYLE_CLOSE = "</style>"
+    _TAG_NAME_RE = re.compile(r"[A-Za-z][A-Za-z0-9:-]*")
+    _ATTR_NAME_RE = re.compile(r"[A-Za-z_:][A-Za-z0-9_.:-]*")
+    _ENTITY_RE = re.compile(r"&[#A-Za-z0-9]+;")
+
+    def _highlight_html_line(
+        self,
+        line: str,
+        in_special: bool,
+        mode_close: str,
+    ) -> Tuple[str, bool, str]:
+        """Highlight one line of HTML, delegating <script>/<style> bodies.
+
+        State across lines is carried in ``(in_special, mode_close)`` where
+        ``mode_close`` is one of ``""``/``-->``/``</script>``/``</style>``.
+        ``<script>`` bodies are colored as JavaScript and ``<style>`` bodies as
+        CSS so embedded code reads correctly.
+        """
+        if line == "":
+            return "", in_special, mode_close
+
+        # Continuation of a multi-line region opened on a previous line.
+        if in_special and mode_close:
+            close_at = self._find_ci(line, mode_close)
+            if close_at < 0:
+                # Whole line is still inside the region.
+                if mode_close == self._HTML_COMMENT_CLOSE:
+                    return _c_comment(line), True, mode_close
+                inner_lang = "javascript" if mode_close == self._HTML_SCRIPT_CLOSE else "css"
+                rendered = self.highlight(line, inner_lang)
+                return rendered, True, mode_close
+            inner = line[:close_at]
+            closer = line[close_at : close_at + len(mode_close)]
+            rest = line[close_at + len(mode_close) :]
+            if mode_close == self._HTML_COMMENT_CLOSE:
+                head = _c_comment(inner + closer)
+            else:
+                inner_lang = "javascript" if mode_close == self._HTML_SCRIPT_CLOSE else "css"
+                head = (self.highlight(inner, inner_lang) if inner else "") + _c_tag(closer)
+            tail, ns, mc = self._highlight_html_segment(rest)
+            return head + tail, ns, mc
+
+        rendered, ns, mc = self._highlight_html_segment(line)
+        return rendered, ns, mc
+
+    def _highlight_html_segment(self, text: str) -> Tuple[str, bool, str]:
+        """Highlight an ordinary-markup segment until a special region opens.
+
+        Returns ``(rendered, in_special, mode_close)``. When a ``<script>`` /
+        ``<style>`` / ``<!-- ... -->`` region opens and does not close on this
+        line, the appropriate mode marker is returned so the next line keeps
+        coloring with the embedded language.
+        """
+        out: List[str] = []
+        i = 0
+        n = len(text)
+        while i < n:
+            ch = text[i]
+            if ch == "<":
+                # HTML comment.
+                if text.startswith("<!--", i):
+                    close_at = text.find(self._HTML_COMMENT_CLOSE, i + 4)
+                    if close_at < 0:
+                        out.append(_c_comment(text[i:]))
+                        return "".join(out), True, self._HTML_COMMENT_CLOSE
+                    end = close_at + 3
+                    out.append(_c_comment(text[i:end]))
+                    i = end
+                    continue
+                # A tag: opening, closing, or self-closing.
+                tag_render, new_i, opened_mode = self._render_html_tag(text, i)
+                out.append(tag_render)
+                i = new_i
+                if opened_mode:
+                    # <script>/<style> opened. Highlight the remainder of the
+                    # line (if any) as the embedded language until the closer.
+                    close_tok = (
+                        self._HTML_SCRIPT_CLOSE
+                        if opened_mode == "script"
+                        else self._HTML_STYLE_CLOSE
+                    )
+                    inner_lang = "javascript" if opened_mode == "script" else "css"
+                    close_at = self._find_ci(text, close_tok, i)
+                    if close_at < 0:
+                        if i < n:
+                            out.append(self.highlight(text[i:], inner_lang))
+                        return "".join(out), True, close_tok
+                    inner = text[i:close_at]
+                    if inner:
+                        out.append(self.highlight(inner, inner_lang))
+                    out.append(_c_tag(text[close_at : close_at + len(close_tok)]))
+                    i = close_at + len(close_tok)
+                continue
+            if ch == "&":
+                m = self._ENTITY_RE.match(text, i)
+                if m:
+                    out.append(_c_punct(m.group(0)))
+                    i = m.end()
+                    continue
+            # Plain text node.
+            out.append(ch)
+            i += 1
+        return "".join(out), False, ""
+
+    def _render_html_tag(self, text: str, start: int) -> Tuple[str, int, str]:
+        """Render a single ``<...>`` tag starting at ``start``.
+
+        Returns ``(rendered, end_index, opened_mode)`` where ``opened_mode`` is
+        ``"script"``/``"style"`` when this tag opens an embedded region, else
+        ``""``. If the tag is unterminated on this line, everything to EOL is
+        colored as a tag and ``end_index == len(text)``.
+        """
+        n = len(text)
+        gt = text.find(">", start)
+        end = gt + 1 if gt >= 0 else n
+        segment = text[start:end]
+        out: List[str] = []
+        j = start
+        out.append(_c_punct("<"))
+        j += 1
+        is_close = j < n and text[j] == "/"
+        if is_close:
+            out.append(_c_punct("/"))
+            j += 1
+        m = self._TAG_NAME_RE.match(text, j)
+        tag_name = ""
+        if m:
+            tag_name = m.group(0).lower()
+            out.append(_c_tag(text[j : m.end()]))
+            j = m.end()
+        # Attributes / values until the closing '>' (or EOL).
+        while j < end:
+            ch = text[j]
+            if ch == ">":
+                out.append(_c_punct(">"))
+                j += 1
+                break
+            if ch == "/" and j + 1 < end and text[j + 1] == ">":
+                out.append(_c_punct("/>"))
+                j += 2
+                break
+            if ch in ('"', "'"):
+                close_q = text.find(ch, j + 1)
+                if close_q < 0 or close_q >= end:
+                    out.append(_c_string(text[j:end]))
+                    j = end
+                    break
+                out.append(_c_string(text[j : close_q + 1]))
+                j = close_q + 1
+                continue
+            am = self._ATTR_NAME_RE.match(text, j)
+            if am:
+                out.append(_c_attr(text[j : am.end()]))
+                j = am.end()
+                continue
+            out.append(ch)
+            j += 1
+        rendered = "".join(out)
+        opened_mode = ""
+        if not is_close and tag_name in ("script", "style"):
+            opened_mode = tag_name
+        return rendered, end, opened_mode
+
+    @staticmethod
+    def _find_ci(haystack: str, needle: str, start: int = 0) -> int:
+        """Case-insensitive ``str.find`` (HTML tags are case-insensitive)."""
+        return haystack.lower().find(needle.lower(), start)
 
     # -- internals -----------------------------------------------------------
 
