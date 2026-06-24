@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { AnsiText } from "./Ansi";
 import { DiffPreview, langFromPath } from "./DiffPreview";
+import { Icon } from "./Icon";
 import type { DiffRow } from "../api/types";
 
 // Private-use sentinels wrapping raw command output, emitted by the backend in
@@ -97,29 +98,51 @@ export function StepsView({ text }: { text: string }) {
       lastContentIdx = i;
     }
   });
+  // A "diff" segment that directly follows a "prompt" segment (the
+  // "• Ran apply_patch ..." line) is rendered as a toggle appended to that
+  // line, so the expand/collapse control sits at the end of the tool-call
+  // description instead of in its own header.
+  const consumed = new Set<number>();
   return (
     <div className="activity-steps">
       {segments.map((seg, index) => {
+        if (consumed.has(index)) {
+          return null;
+        }
         const value = trimBlankEdges(seg.text);
         if (!value) {
           return null;
         }
+        if (seg.kind === "prompt") {
+          const { bullet, body } = splitPromptBullet(value);
+          // Find the next non-blank segment; if it is a diff, fuse it.
+          let diffIdx = -1;
+          for (let j = index + 1; j < segments.length; j += 1) {
+            if (!trimBlankEdges(segments[j].text)) {
+              continue;
+            }
+            if (segments[j].kind === "diff") {
+              diffIdx = j;
+            }
+            break;
+          }
+          const diffPayload = diffIdx >= 0 ? trimBlankEdges(segments[diffIdx].text) : "";
+          if (diffPayload) {
+            consumed.add(diffIdx);
+          }
+          return (
+            <PromptWithDiff
+              key={index}
+              bullet={bullet}
+              body={body}
+              diffPayload={diffPayload}
+              defaultExpanded={diffIdx === lastContentIdx}
+            />
+          );
+        }
         if (seg.kind === "diff") {
           return (
             <DiffStep key={index} payload={value} defaultExpanded={index === lastContentIdx} />
-          );
-        }
-        if (seg.kind === "prompt") {
-          const { bullet, body } = splitPromptBullet(value);
-          return (
-            <div className="cmd-prompt" key={index}>
-              <span className="cmd-prompt-bullet">
-                <AnsiText text={bullet} />
-              </span>
-              <span className="cmd-prompt-body">
-                <AnsiText text={body} />
-              </span>
-            </div>
           );
         }
         return (
@@ -129,6 +152,74 @@ export function StepsView({ text }: { text: string }) {
         );
       })}
     </div>
+  );
+}
+
+/** A "• Ran ..." prompt line. When it carries an apply_patch diff, the
+ *  expand/collapse chevron is appended to the end of the line (matching the
+ *  "Worked for" activity toggle icon) and the diff renders below when open. */
+function PromptWithDiff({
+  bullet,
+  body,
+  diffPayload,
+  defaultExpanded,
+}: {
+  bullet: string;
+  body: string;
+  diffPayload: string;
+  defaultExpanded: boolean;
+}) {
+  const [expanded, setExpanded] = useState(defaultExpanded);
+  let parsed: DiffPayload | null = null;
+  if (diffPayload) {
+    try {
+      parsed = JSON.parse(diffPayload) as DiffPayload;
+    } catch {
+      parsed = null;
+    }
+  }
+  const rows = parsed?.diffRows ?? [];
+  const hasDiff = rows.length > 0;
+  if (!hasDiff) {
+    return (
+      <div className="cmd-prompt">
+        <span className="cmd-prompt-bullet">
+          <AnsiText text={bullet} />
+        </span>
+        <span className="cmd-prompt-body">
+          <AnsiText text={body} />
+        </span>
+      </div>
+    );
+  }
+  return (
+    <>
+      <div
+        className="cmd-prompt has-diff"
+        role="button"
+        tabIndex={0}
+        title={expanded ? "Collapse diff" : "Expand diff"}
+        onClick={() => setExpanded((v) => !v)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            setExpanded((v) => !v);
+          }
+        }}
+        {...{ "aria-expanded": expanded }}
+      >
+        <span className="cmd-prompt-bullet">
+          <AnsiText text={bullet} />
+        </span>
+        <span className="cmd-prompt-body">
+          <AnsiText text={body} />
+          <span className="cmd-prompt-diff-toggle">
+            <Icon name="chevron" size={14} className={`chevron ${expanded ? "open" : ""}`} />
+          </span>
+        </span>
+      </div>
+      {expanded && <DiffPreview rows={rows} lang={langFromPath(parsed?.file)} />}
+    </>
   );
 }
 

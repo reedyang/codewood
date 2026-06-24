@@ -351,6 +351,15 @@ def handle_chat_edit_command(agent: Any, raw_index: str) -> None:
             agent._sync_active_chat_messages()
         except Exception:
             pass
+        # Drop apply_patch diff previews whose tool result was just truncated
+        # away, so reload doesn't resurrect a diff for a turn that no longer
+        # exists.
+        try:
+            pruner = getattr(agent, "_prune_apply_patch_preview_sidecar", None)
+            if callable(pruner):
+                pruner()
+        except Exception:
+            pass
 
     current_chat_id = str(getattr(agent, "active_chat_id", "") or "").strip()
     if current_chat_id:
