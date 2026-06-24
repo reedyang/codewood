@@ -46,7 +46,7 @@ class _DummyAgent:
         self.preview_segments_calls.append(segments)
         return ChangePreviewFormatter.format_side_by_side_segments(segments)
 
-    def _prompt_confirm_yes_no_maybe_always(self, _message: str, offer_always: bool = False, kind: str = "") -> bool:
+    def _prompt_confirm_yes_no_maybe_always(self, _message: str, offer_always: bool = False, kind: str = "", **_kwargs: object) -> bool:
         self.prompt_calls += 1
         return True
 
@@ -270,6 +270,44 @@ class ApplyPatchPreviewTests(unittest.TestCase):
 
             self.assertTrue(result.get("success"), result.get("error"))
             self.assertEqual(target.read_bytes(), b"a1\r\na2_changed\r\na3\r\n")
+
+
+class ResponsiveChangePreviewTests(unittest.TestCase):
+    _SEGMENTS = [
+        {
+            "old_lines": ["alpha", "beta", "gamma"],
+            "new_lines": ["alpha", "BETA", "gamma"],
+            "old_start_line": 1,
+            "new_start_line": 1,
+        }
+    ]
+
+    def test_wide_terminal_uses_side_by_side(self):
+        rows = ChangePreviewFormatter.format_segments_responsive(
+            self._SEGMENTS, terminal_width=160
+        )
+        # Side-by-side rows contain the " ││ " column separator.
+        self.assertTrue(any("││" in _strip_ansi(r) for r in rows))
+
+    def test_narrow_terminal_uses_inline(self):
+        rows = ChangePreviewFormatter.format_segments_responsive(
+            self._SEGMENTS, terminal_width=50
+        )
+        plain = [_strip_ansi(r) for r in rows]
+        # Inline rows never contain the side-by-side column separator.
+        self.assertFalse(any("││" in r for r in plain))
+        # The deleted and inserted lines appear on separate rows.
+        self.assertTrue(any(r.lstrip().startswith("- ") for r in plain))
+        self.assertTrue(any(r.lstrip().startswith("+ ") for r in plain))
+        joined = "\n".join(plain)
+        self.assertIn("beta", joined)
+        self.assertIn("BETA", joined)
+
+    def test_unknown_width_defaults_to_side_by_side(self):
+        rows = ChangePreviewFormatter.format_segments_responsive(
+            self._SEGMENTS, terminal_width=0
+        )
+        self.assertTrue(any("││" in _strip_ansi(r) for r in rows))
 
 
 if __name__ == "__main__":

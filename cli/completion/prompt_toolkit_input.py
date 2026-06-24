@@ -2696,6 +2696,7 @@ class PromptToolkitInputHandler:
         required_label: Optional[str] = None,
         allow_other: bool = True,
         command: Optional[str] = None,
+        preview_segments: Optional[List[Dict[str, Any]]] = None,
     ) -> Optional[str]:
         """Interactive arrow-key selector for an ``request_user_input`` prompt.
 
@@ -2794,6 +2795,24 @@ class PromptToolkitInputHandler:
                 # the surrounding confirmation prompt text; indent two spaces so
                 # it reads as a nested code line under the question.
                 fragments.append(("class:amisel.command", f"  {cmd}\n"))
+            if preview_segments:
+                # Render the change preview fresh on every repaint, sized to the
+                # CURRENT terminal width, so resizing the window re-lays-out the
+                # diff between side-by-side (wide) and inline (narrow) live while
+                # the confirmation prompt is still on screen.
+                try:
+                    from ..core.change_preview_formatter import ChangePreviewFormatter
+
+                    width = int(self.get_terminal_columns(default=80) or 80)
+                    diff_frags = ChangePreviewFormatter.format_segments_responsive_fragments(
+                        preview_segments,
+                        terminal_width=width,
+                    )
+                    fragments.extend(diff_frags)
+                    if diff_frags and not diff_frags[-1][1].endswith("\n"):
+                        fragments.append(("", "\n"))
+                except Exception:
+                    pass
             for i, label in enumerate(opts):
                 focused = state["cursor"] == i
                 pointer = "❯ " if focused else "  "
@@ -2955,6 +2974,13 @@ class PromptToolkitInputHandler:
                     "amisel.hint": "#888888",
                     "amisel.prompt": "#888888",
                     "amisel.command": "#00afaf bold",
+                    # Change-preview diff styles (mirror the ANSI palette):
+                    # deleted = red background, added = green background.
+                    "diff.gray": "#888888",
+                    "diff.del": "bg:#5a1f1f #ffffff",
+                    "diff.add": "bg:#1f5a1f #ffffff",
+                    "diff.omitted": "#888888 italic",
+                    "diff.sep": "#888888",
                 }
             )
         except Exception:

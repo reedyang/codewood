@@ -4,7 +4,7 @@ import os
 import re
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from ..core.security import command_security
 
@@ -201,6 +201,7 @@ def _confirm_choice_via_selection(
     *,
     offer_always: bool,
     display_command: Optional[str] = None,
+    preview_segments: Optional[List[Dict[str, Any]]] = None,
 ) -> Optional[str]:
     """Render the confirmation as a fixed-option single-choice question.
 
@@ -270,12 +271,24 @@ def _confirm_choice_via_selection(
             False,  # single-select
             allow_other=False,
             command=display_command,
+            preview_segments=preview_segments,
         )
     except TypeError:
-        # Older selector signature without ``allow_other``/``command``; cannot
-        # guarantee the "no freeform" requirement, so fall back to the text
-        # prompt.
-        return None
+        # Older selector signature without ``preview_segments``; retry without
+        # it so a stale selector still renders the choice (just no live diff).
+        try:
+            picked = interactive(
+                prompt_core,
+                list(options),
+                False,
+                allow_other=False,
+                command=display_command,
+            )
+        except TypeError:
+            # Even older selector without ``allow_other``/``command``; cannot
+            # guarantee the "no freeform" requirement, so fall back to the text
+            # prompt.
+            return None
     except KeyboardInterrupt:
         return "n"
     except Exception:
@@ -296,6 +309,7 @@ def prompt_confirm_yes_no_maybe_always(
     shell_command: Optional[str] = None,
     script_basename: Optional[str] = None,
     display_command: Optional[str] = None,
+    preview_segments: Optional[List[Dict[str, Any]]] = None,
 ) -> bool:
     """
     kind: 'shell' | 'script' | 'text_file'. Returns True if user proceeds.
@@ -316,7 +330,11 @@ def prompt_confirm_yes_no_maybe_always(
     # is mapped to y/n/a locally and never forwarded to the model. Falls back
     # to the plain text prompt below when no selection UI is available.
     selection = _confirm_choice_via_selection(
-        agent, prompt_core, offer_always=offer_always, display_command=display_command
+        agent,
+        prompt_core,
+        offer_always=offer_always,
+        display_command=display_command,
+        preview_segments=preview_segments,
     )
     if selection is not None:
         raw = selection
