@@ -15,6 +15,29 @@ from .console_utils import (
     _ansi_rgb,
     _ansi_yellow,
 )
+from .syntax_highlighter import SyntaxHighlighter
+
+# Shared, stateless syntax highlighter for fenced code blocks in TUI output.
+_CODE_HIGHLIGHTER = SyntaxHighlighter()
+
+
+def _highlight_code_line(
+    line: str,
+    lang: str,
+    in_block_comment: bool,
+    block_close: str,
+) -> Tuple[str, bool, str]:
+    """Syntax-highlight one line of a fenced code block (block-comment aware).
+
+    Falls back to the previous dim-green styling if highlighting raises for any
+    reason, so a malformed line never breaks the surrounding output pipeline.
+    """
+    try:
+        return _CODE_HIGHLIGHTER.highlight_line_stateful(
+            line, lang, in_block_comment, block_close
+        )
+    except Exception:
+        return _ansi_green(line), in_block_comment, block_close
 
 
 def _payload_looks_like_tool_call(payload: Any) -> bool:
@@ -705,6 +728,11 @@ def highlight_assistant_display_text(text: str) -> str:
     out: List[str] = []
     in_fence = False
     fence_marker = ""
+    fence_lang = ""
+    # Multi-line block-comment state carried across lines of the current fence
+    # so the syntax highlighter colors comments spanning several lines.
+    code_block_comment_open = False
+    code_block_comment_close = ""
     i = 0
     n = len(lines)
     while i < n:
@@ -715,22 +743,38 @@ def highlight_assistant_display_text(text: str) -> str:
             if not in_fence:
                 in_fence = True
                 fence_marker = marker[0]
+                fence_lang = fence_match.group(3) or ""
+                code_block_comment_open = False
+                code_block_comment_close = ""
                 indent = fence_match.group(1)
-                lang = fence_match.group(3)
+                lang = fence_lang
                 label = f"{indent}┌─ {lang}" if lang else f"{indent}┌─"
                 out.append(_ansi_gray(label))
             elif marker[0] == fence_marker:
                 in_fence = False
                 fence_marker = ""
+                fence_lang = ""
+                code_block_comment_open = False
+                code_block_comment_close = ""
                 out.append(_ansi_gray(f"{fence_match.group(1)}└─"))
             else:
                 out.append(_ansi_green(line))
             i += 1
             continue
         if in_fence:
-            # Inside a code block: keep the source verbatim, just dim-color it
-            # so it reads as code without the inline token painter mangling it.
-            out.append(_ansi_green(line))
+            # Inside a code block: apply language-aware syntax highlighting via
+            # the standalone highlighter. It returns the line verbatim when the
+            # language is unknown-without-color or color is disabled, so the
+            # inline token painter never mangles code.
+            rendered, code_block_comment_open, code_block_comment_close = (
+                _highlight_code_line(
+                    line,
+                    fence_lang,
+                    code_block_comment_open,
+                    code_block_comment_close,
+                )
+            )
+            out.append(rendered)
             i += 1
             continue
         # Display math block: ``$$ ... $$`` or ``\[ ... \]`` (single line or

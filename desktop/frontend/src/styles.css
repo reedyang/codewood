@@ -3299,6 +3299,31 @@ h6.md-h {
   border: none;
   padding: 0;
 }
+/* highlight.js code blocks: the atom-one-dark theme paints .hljs token colors
+   itself, so neutralize the .md-pre wrapper's surface and let the theme show
+   through. */
+.md-pre {
+  position: relative;
+}
+.md-pre code.hljs {
+  display: block;
+  background: none;
+  padding: 0;
+  color: inherit;
+}
+/* Small language tag in the top-right corner of a highlighted block. */
+.md-pre-lang {
+  position: absolute;
+  top: 4px;
+  right: 8px;
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted, #888);
+  opacity: 0.7;
+  user-select: none;
+  pointer-events: none;
+}
 .md-quote {
   margin: 8px 0;
   padding: 2px 12px;

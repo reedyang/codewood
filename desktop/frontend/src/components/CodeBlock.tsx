@@ -1,0 +1,106 @@
+import { useMemo } from "react";
+import hljs from "highlight.js/lib/common";
+import "highlight.js/styles/atom-one-dark.css";
+
+/**
+ * Syntax-highlighted fenced code block for the GUI Markdown renderer.
+ *
+ * Encapsulates all highlight.js usage so the rest of the Markdown renderer
+ * stays library-agnostic (mirrors the standalone Python `SyntaxHighlighter`).
+ * Highlighting only runs once the fenced block is fully closed
+ * (`highlight={true}`); while the model is still streaming an open fence the
+ * code is shown as plain escaped text. This is important: re-highlighting a
+ * growing buffer on every streamed chunk is wasteful, and (combined with a
+ * past parser bug) used to freeze the renderer.
+ *
+ * Security: highlight.js escapes the source it tokenizes, so the returned HTML
+ * contains only its own `<span class="hljs-...">` markup around escaped text —
+ * no untrusted HTML reaches `dangerouslySetInnerHTML`. The plain-text fallback
+ * is escaped explicitly.
+ */
+export function CodeBlock({
+  code,
+  lang,
+  highlight = true,
+}: {
+  code: string;
+  lang?: string;
+  highlight?: boolean;
+}) {
+  const { html, resolvedLang } = useMemo(() => {
+    const normalized = normalizeLang(lang);
+    // While streaming, render plain escaped text — don't highlight a partial,
+    // growing buffer on every chunk.
+    if (!highlight) {
+      return { html: escapeHtml(code), resolvedLang: normalized || "" };
+    }
+    try {
+      if (normalized && hljs.getLanguage(normalized)) {
+        const res = hljs.highlight(code, {
+          language: normalized,
+          ignoreIllegals: true,
+        });
+        return { html: res.value, resolvedLang: res.language ?? normalized };
+      }
+      // Unknown/blank language on a closed block: auto-detect. This is bounded
+      // (runs once per closed block, never per streamed chunk).
+      const res = hljs.highlightAuto(code);
+      return { html: res.value, resolvedLang: res.language ?? "" };
+    } catch {
+      // Defensive: never let a highlighter error break rendering.
+      return { html: escapeHtml(code), resolvedLang: "" };
+    }
+  }, [code, lang, highlight]);
+
+  return (
+    <pre className="md-pre">
+      {resolvedLang ? (
+        <span className="md-pre-lang" aria-hidden>
+          {resolvedLang}
+        </span>
+      ) : null}
+      <code className="hljs" dangerouslySetInnerHTML={{ __html: html }} />
+    </pre>
+  );
+}
+
+// Map common fence tags / aliases to highlight.js language ids. highlight.js
+// understands most aliases already; we only normalize case and a few tags the
+// model emits that aren't built-in aliases.
+function normalizeLang(lang?: string): string {
+  const l = (lang || "").trim().toLowerCase();
+  if (!l) return "";
+  const aliases: Record<string, string> = {
+    sh: "bash",
+    shell: "bash",
+    zsh: "bash",
+    console: "bash",
+    "c++": "cpp",
+    "c#": "csharp",
+    cs: "csharp",
+    py: "python",
+    py3: "python",
+    python3: "python",
+    js: "javascript",
+    jsx: "javascript",
+    node: "javascript",
+    ts: "typescript",
+    tsx: "typescript",
+    rs: "rust",
+    rb: "ruby",
+    yml: "yaml",
+    ps: "powershell",
+    ps1: "powershell",
+    pwsh: "powershell",
+    golang: "go",
+    docker: "dockerfile",
+  };
+  return aliases[l] || l;
+}
+
+function escapeHtml(text: string): string {
+  return text
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
