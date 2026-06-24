@@ -190,6 +190,63 @@ class ChatStateManager:
             raise ValueError("chat record_file must be under chats directory") from exc
         return path
 
+    # Suffix for the per-chat apply_patch change-preview sidecar. Stored next to
+    # the chat record (``<record-stem>.previews.json``) so each chat owns one
+    # preview file, it is trivially associated with its chat, and it can be
+    # deleted/cleaned up alongside the chat record.
+    _CHAT_PREVIEWS_SUFFIX = ".previews.json"
+
+    def _previews_path_for_record_file(self, record_file: str) -> Optional[Path]:
+        try:
+            record_path = self._resolve_chat_record_path(record_file)
+        except Exception:
+            return None
+        # ``foo.json`` -> ``foo.previews.json``
+        stem = record_path.name[:-len(".json")] if record_path.name.endswith(".json") else record_path.name
+        return record_path.with_name(f"{stem}{self._CHAT_PREVIEWS_SUFFIX}")
+
+    def chat_previews_path(self, chat_id: str) -> Optional[Path]:
+        """Resolve the apply_patch preview sidecar path for ``chat_id`` (one
+        file per chat, alongside its record). Returns None when the chat is
+        unknown."""
+        cid = str(chat_id or "").strip()
+        if not cid:
+            return None
+        chat = self.find_chat_by_id(cid)
+        if not isinstance(chat, dict):
+            return None
+        record_file = self._chat_record_filename_for_chat(chat)
+        return self._previews_path_for_record_file(record_file)
+
+    def delete_chat_previews(self, record_file: str) -> None:
+        """Remove the preview sidecar for a chat record being deleted."""
+        path = self._previews_path_for_record_file(record_file)
+        if path is None:
+            return
+        try:
+            if path.exists():
+                path.unlink()
+        except Exception:
+            pass
+
+    def cleanup_orphan_chat_previews(self) -> None:
+        """Delete any ``*.previews.json`` whose sibling chat record ``*.json`` no
+        longer exists. Called at startup so previews never outlive their chat."""
+        try:
+            records_dir = self.chat_records_dir()
+            if not records_dir.exists():
+                return
+            for preview in records_dir.glob(f"*{self._CHAT_PREVIEWS_SUFFIX}"):
+                try:
+                    stem = preview.name[:-len(self._CHAT_PREVIEWS_SUFFIX)]
+                    record = preview.with_name(f"{stem}.json")
+                    if not record.exists():
+                        preview.unlink()
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
     def _last_used_chat_model(self) -> Tuple[str, str]:
         """Return ("provider", "model_name") of the workspace's latest chat.
 
@@ -525,6 +582,8 @@ class ChatStateManager:
                         # Unknown to this process: assume a peer owns it.
                         continue
                     stale.unlink()
+                    # Delete the chat's preview sidecar alongside its record.
+                    self.delete_chat_previews(stale.name)
                 except Exception:
                     pass
 
@@ -663,6 +722,10 @@ class ChatStateManager:
             if not active or not any(str(c.get("id") or "") == active for c in chats):
                 raise ValueError("active chat invalid")
             self._agent._chat_state = {"version": CHAT_STATE_VERSION, "active": active, "chats": chats}
+            # Drop any orphan apply_patch preview sidecars whose chat record is
+            # gone (e.g. a chat deleted by a peer process) so previews never
+            # outlive their chat.
+            self.cleanup_orphan_chat_previews()
             self.activate_chat(
                 active,
                 announce=False,

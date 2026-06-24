@@ -327,6 +327,231 @@ class ResponsiveChangePreviewTests(unittest.TestCase):
             )
 
 
+class _FakePreviewChatStateManager:
+    """Minimal chat-state manager exposing the per-chat previews path used by
+    the apply_patch preview sidecar (one file per chat under ``chats/``)."""
+
+    def __init__(self, cfg_dir: Path) -> None:
+        self._cfg = Path(cfg_dir)
+
+    def chat_previews_path(self, chat_id: str):
+        cid = str(chat_id or "").strip()
+        if not cid:
+            return None
+        # Deterministic per-chat record stem for the test.
+        return self._cfg / "chats" / f"record-{cid}.previews.json"
+
+
+class ApplyPatchPreviewSidecarTests(unittest.TestCase):
+    """The change-preview rows must persist OUTSIDE the model context (a per-chat
+    sidecar under ``chats/``) and be recoverable on transcript reload, keyed by
+    the tool-result ``created_at`` (unique within a chat)."""
+
+    def _agent(self, cfg_dir: Path, gui: bool):
+        from cli.agent import Agent
+
+        class _Stub:
+            pass
+
+        stub = _Stub()
+        stub.workspace_config_dir = cfg_dir
+        stub.active_chat_id = "chat-1"
+        stub._chat_state_manager = _FakePreviewChatStateManager(cfg_dir)
+        if gui:
+            stub._confirm_choice_provider = lambda *a, **k: "y"
+        for name in (
+            "_apply_patch_preview_path",
+            "_load_apply_patch_preview_store",
+            "_persist_apply_patch_preview_sidecar",
+            "_prune_apply_patch_preview_sidecar",
+            "_replay_apply_patch_gui_diff_block",
+        ):
+            setattr(stub, name, getattr(Agent, name).__get__(stub, _Stub))
+        return stub
+
+    def test_rows_persist_to_sidecar_and_replay_on_reload(self):
+        import io
+        import contextlib
+
+        rows = [
+            {"type": "change", "oldNo": 2, "newNo": 2, "oldText": "beta", "newText": "BETA"}
+        ]
+        with tempfile.TemporaryDirectory() as d:
+            cfg = Path(d)
+            agent = self._agent(cfg, gui=True)
+            created_at = "2026-06-24 10:00:00"
+            agent._persist_apply_patch_preview_sidecar(
+                {"file_path": "src/x.py"},
+                {"file": "/abs/src/x.py", "change_preview_rows": rows},
+                created_at,
+            )
+            # Per-chat sidecar written under chats/, rows kept out of context.
+            sidecar = cfg / "chats" / "record-chat-1.previews.json"
+            self.assertTrue(sidecar.exists())
+
+            # Reload replay finds the rows by created_at key.
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                agent._replay_apply_patch_gui_diff_block(
+                    {
+                        "tool": "apply_patch",
+                        "args": {"file_path": "src/x.py"},
+                        "created_at": created_at,
+                    }
+                )
+            out = buf.getvalue()
+            self.assertIn("\ue006", out)
+            self.assertIn("\ue007", out)
+            self.assertIn("BETA", out)
+
+    def test_apply_patch_result_carries_structured_preview_rows(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            target = root / "f.py"
+            target.write_text("a\nb\nc\n", encoding="utf-8")
+            agent = _DummyAgent(root)
+            patch = "@@ -2,1 +2,1 @@\n-b\n+B\n"
+            result = action_apply_unified_patch(agent, str(target), patch, confirmed=False)
+            self.assertTrue(result.get("success"), result.get("error"))
+            rows = result.get("change_preview_rows")
+            self.assertIsInstance(rows, list)
+            self.assertTrue(rows)
+            self.assertTrue(any(r.get("type") == "change" for r in rows))
+
+    def test_replay_noop_without_gui_provider(self):
+        import io
+        import contextlib
+
+        with tempfile.TemporaryDirectory() as d:
+            cfg = Path(d)
+            agent = self._agent(cfg, gui=False)
+            agent._persist_apply_patch_preview_sidecar(
+                {"file_path": "src/x.py"},
+                {
+                    "file": "/abs/src/x.py",
+                    "change_preview_rows": [
+                        {"type": "add", "oldNo": None, "newNo": 1, "oldText": "", "newText": "z"}
+                    ],
+                },
+                "2026-06-24 10:00:00",
+            )
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                agent._replay_apply_patch_gui_diff_block(
+                    {
+                        "tool": "apply_patch",
+                        "args": {"file_path": "src/x.py"},
+                        "created_at": "2026-06-24 10:00:00",
+                    }
+                )
+            self.assertEqual(buf.getvalue(), "")
+
+    def test_prune_drops_entries_absent_from_chat(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg = Path(d)
+            agent = self._agent(cfg, gui=True)
+            for ca in ("2026-06-24 10:00:00", "2026-06-24 10:00:05"):
+                agent._persist_apply_patch_preview_sidecar(
+                    {"file_path": "a.py"},
+                    {"file": "/abs/a.py", "change_preview_rows": [
+                        {"type": "add", "oldNo": None, "newNo": 1, "oldText": "", "newText": "x"}
+                    ]},
+                    ca,
+                )
+            # Active chat only retains the first apply_patch result.
+            agent._find_chat_by_id = lambda _cid: {
+                "messages": [
+                    {
+                        "role": "assistant",
+                        "content": '[MODEL_TOOL_RESULT]{"tool": "apply_patch", "created_at": "2026-06-24 10:00:00"}',
+                    }
+                ]
+            }
+            agent._prune_apply_patch_preview_sidecar()
+            store = agent._load_apply_patch_preview_store()
+            self.assertEqual(set(store.keys()), {"2026-06-24 10:00:00"})
+
+    def test_prune_removes_file_when_nothing_remains(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg = Path(d)
+            agent = self._agent(cfg, gui=True)
+            agent._persist_apply_patch_preview_sidecar(
+                {"file_path": "a.py"},
+                {"file": "/abs/a.py", "change_preview_rows": [
+                    {"type": "add", "oldNo": None, "newNo": 1, "oldText": "", "newText": "x"}
+                ]},
+                "2026-06-24 10:00:00",
+            )
+            agent._find_chat_by_id = lambda _cid: {"messages": []}
+            agent._prune_apply_patch_preview_sidecar()
+            self.assertFalse((cfg / "chats" / "record-chat-1.previews.json").exists())
+
+    def test_multiple_patches_same_chat_keep_distinct_entries(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg = Path(d)
+            agent = self._agent(cfg, gui=True)
+            agent._persist_apply_patch_preview_sidecar(
+                {"file_path": "a.py"},
+                {"file": "/abs/a.py", "change_preview_rows": [
+                    {"type": "add", "oldNo": None, "newNo": 1, "oldText": "", "newText": "one"}
+                ]},
+                "2026-06-24 10:00:00",
+            )
+            agent._persist_apply_patch_preview_sidecar(
+                {"file_path": "a.py"},
+                {"file": "/abs/a.py", "change_preview_rows": [
+                    {"type": "add", "oldNo": None, "newNo": 2, "oldText": "", "newText": "two"}
+                ]},
+                "2026-06-24 10:00:05",
+            )
+            store = agent._load_apply_patch_preview_store()
+            self.assertEqual(set(store.keys()), {"2026-06-24 10:00:00", "2026-06-24 10:00:05"})
+
+
+class ChatPreviewSidecarLifecycleTests(unittest.TestCase):
+    """Per-chat preview files live under chats/, are deleted with their chat,
+    and orphans are cleaned up at startup."""
+
+    def _manager(self, cfg_dir: Path):
+        from cli.managers.chat_state_manager import ChatStateManager
+
+        class _Stub:
+            pass
+
+        agent = _Stub()
+        agent.workspace_config_dir = Path(cfg_dir)
+        mgr = ChatStateManager(agent, "chats.json")
+        return mgr
+
+    def test_delete_chat_previews_removes_file(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg = Path(d)
+            mgr = self._manager(cfg)
+            records = cfg / "chats"
+            records.mkdir(parents=True, exist_ok=True)
+            preview = records / "abc.previews.json"
+            preview.write_text("{}", encoding="utf-8")
+            mgr.delete_chat_previews("abc.json")
+            self.assertFalse(preview.exists())
+
+    def test_cleanup_orphan_previews(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg = Path(d)
+            mgr = self._manager(cfg)
+            records = cfg / "chats"
+            records.mkdir(parents=True, exist_ok=True)
+            # Orphan: no sibling record.
+            orphan = records / "gone.previews.json"
+            orphan.write_text("{}", encoding="utf-8")
+            # Live: has sibling record.
+            (records / "live.json").write_text("{}", encoding="utf-8")
+            live_preview = records / "live.previews.json"
+            live_preview.write_text("{}", encoding="utf-8")
+            mgr.cleanup_orphan_chat_previews()
+            self.assertFalse(orphan.exists())
+            self.assertTrue(live_preview.exists())
+
+
 if __name__ == "__main__":
     unittest.main()
 

@@ -3084,6 +3084,7 @@ class Agent:
         tool_name: str,
         args: Dict[str, Any],
         result: Dict[str, Any],
+        created_at: Optional[str] = None,
     ) -> str:
         t = str(tool_name or "").strip()
         a = args if isinstance(args, dict) else {}
@@ -3109,7 +3110,7 @@ class Agent:
             "output": output_text,
             "error": error_text,
             "message": message_text,
-            "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "created_at": created_at or datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         }
         return f"{MODEL_TOOL_RESULT_HISTORY_PREFIX}{json.dumps(payload, ensure_ascii=False)}"
 
@@ -3211,10 +3212,23 @@ class Agent:
         t = str(tool_name or "").strip().lower()
         if t in self._MODEL_TOOL_RESULT_HISTORY_SKIP_TOOLS:
             return
+        created_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        # Persist the apply_patch change preview rows to an out-of-context
+        # sidecar BEFORE building the history content. The rows must never enter
+        # the model context (conversation history), so they are keyed by the
+        # tool-result's stable fields (chat id + file + created_at) and looked up
+        # on reload instead of being embedded in the message payload.
+        if t == "apply_patch":
+            self._persist_apply_patch_preview_sidecar(
+                args if isinstance(args, dict) else {},
+                result if isinstance(result, dict) else {},
+                created_at,
+            )
         content = self._build_model_tool_result_history_content(
             tool_name=str(tool_name or "").strip(),
             args=args if isinstance(args, dict) else {},
             result=result if isinstance(result, dict) else {},
+            created_at=created_at,
         )
         self._append_chat_message("assistant", content)
 
@@ -6574,23 +6588,129 @@ class Agent:
             language=self._ui_language(),
         )
 
+    def _apply_patch_preview_path(self) -> Optional[Path]:
+        """Per-chat apply_patch preview sidecar path (``<record>.previews.json``
+        next to the active chat's record). One file per chat so it is trivially
+        associated with — and cleaned up alongside — its chat record."""
+        try:
+            mgr = getattr(self, "_chat_state_manager", None)
+            if mgr is None:
+                return None
+            chat_id = str(getattr(self, "active_chat_id", "") or "")
+            return mgr.chat_previews_path(chat_id)
+        except Exception:
+            return None
+
+    def _load_apply_patch_preview_store(self) -> Dict[str, Any]:
+        path = self._apply_patch_preview_path()
+        if not path or not path.exists():
+            return {}
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                data = json.load(fh)
+            return data if isinstance(data, dict) else {}
+        except Exception:
+            return {}
+
+    def _prune_apply_patch_preview_sidecar(self) -> None:
+        """Drop preview entries whose ``created_at`` no longer appears in the
+        active chat's apply_patch tool results. Called after editing a message
+        truncates the conversation so orphaned diff previews don't linger."""
+        path = self._apply_patch_preview_path()
+        if not path or not path.exists():
+            return
+        try:
+            chat = self._find_chat_by_id(str(getattr(self, "active_chat_id", "") or ""))
+            messages = (chat or {}).get("messages") if isinstance(chat, dict) else None
+            if not isinstance(messages, list):
+                return
+            live_keys = set()
+            for msg in messages:
+                if not isinstance(msg, dict):
+                    continue
+                content = str(msg.get("content") or "")
+                if "[MODEL_TOOL_RESULT]" not in content or "apply_patch" not in content:
+                    continue
+                try:
+                    payload = json.loads(content.split("[MODEL_TOOL_RESULT]", 1)[1])
+                except Exception:
+                    continue
+                if not isinstance(payload, dict):
+                    continue
+                if payload.get("tool") != "apply_patch":
+                    continue
+                ca = str(payload.get("created_at") or "")
+                if ca:
+                    live_keys.add(ca)
+            store = self._load_apply_patch_preview_store()
+            if not isinstance(store, dict) or not store:
+                return
+            pruned = {k: v for k, v in store.items() if k in live_keys}
+            if len(pruned) == len(store):
+                return
+            if not pruned:
+                try:
+                    path.unlink()
+                except Exception:
+                    pass
+                return
+            tmp = path.with_suffix(path.suffix + ".tmp")
+            with open(tmp, "w", encoding="utf-8") as fh:
+                json.dump(pruned, fh, ensure_ascii=False)
+            tmp.replace(path)
+        except Exception:
+            pass
+
+    def _persist_apply_patch_preview_sidecar(
+        self, args: Dict[str, Any], result: Dict[str, Any], created_at: str
+    ) -> None:
+        """Store apply_patch diff rows in the active chat's per-chat preview
+        sidecar (OUTSIDE the model context), keyed by the tool-result
+        ``created_at`` (unique within a chat) so transcript reload can look them
+        up. No-op when there are no structured rows."""
+        rows = result.get("change_preview_rows")
+        if not isinstance(rows, list) or not rows:
+            return
+        path = self._apply_patch_preview_path()
+        if not path:
+            return
+        display_file = str(result.get("file") or args.get("file_path") or "")
+        key = str(created_at or "")
+        if not key:
+            return
+        try:
+            store = self._load_apply_patch_preview_store()
+            store[key] = {"file": display_file, "diffRows": rows}
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_suffix(path.suffix + ".tmp")
+            with open(tmp, "w", encoding="utf-8") as fh:
+                json.dump(store, fh, ensure_ascii=False)
+            tmp.replace(path)
+        except Exception:
+            # Preview persistence is best-effort; never break patch recording.
+            pass
+
     def _replay_apply_patch_gui_diff_block(self, tool_result: Dict[str, Any]) -> None:
-        """Re-emit the GUI collapsible diff block from a stored apply_patch
-        result during transcript replay (reload). No-op outside GUI mode or when
-        the result lacks structured preview rows."""
+        """Re-emit the GUI collapsible diff block during transcript replay
+        (reload) by looking up the per-chat preview sidecar. No-op outside GUI
+        mode or when no stored rows match this result."""
         if not callable(getattr(self, "_confirm_choice_provider", None)):
             return
-        rows = tool_result.get("change_preview_rows")
+        key = str(tool_result.get("created_at") or "")
+        if not key:
+            return
+        store = self._load_apply_patch_preview_store()
+        entry = store.get(key)
+        if not isinstance(entry, dict):
+            return
+        rows = entry.get("diffRows")
         if not isinstance(rows, list) or not rows:
             return
         try:
             import json as _json
 
             payload = _json.dumps(
-                {
-                    "file": str(tool_result.get("file") or ""),
-                    "diffRows": rows,
-                },
+                {"file": entry.get("file") or "", "diffRows": rows},
                 ensure_ascii=False,
             )
             print(f"{GUI_DIFF_BEGIN}{payload}{GUI_DIFF_END}")

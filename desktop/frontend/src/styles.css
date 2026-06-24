@@ -3335,6 +3335,30 @@ html[data-has-bg] .select {
   word-break: break-word;
 }
 
+/* A "Ran apply_patch" line that carries a diff: the whole row toggles the
+   preview, and the chevron sits inline right after the description text (using
+   the same chevron icon as the "Worked for" activity header). */
+.activity-steps .cmd-prompt.has-diff {
+  cursor: pointer;
+}
+
+.activity-steps .cmd-prompt.has-diff:hover .cmd-prompt-diff-toggle {
+  opacity: 1;
+}
+
+.activity-steps .cmd-prompt-diff-toggle {
+  display: inline-flex;
+  align-items: center;
+  margin-left: 0.5ch;
+  vertical-align: middle;
+  color: var(--muted, #8a8a8a);
+  opacity: 0.7;
+}
+
+.activity-steps > .diff-preview {
+  margin-top: 4px;
+}
+
 .answer {
   font-family: inherit;
   font-size: 14px;
