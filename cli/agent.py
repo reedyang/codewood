@@ -1510,7 +1510,14 @@ class Agent:
                 display_indent_width=4,
                 language=self._ui_language(),
             )
-            return (self._strip_console_color_controls(out_text), "")
+            out_text = self._strip_console_color_controls(out_text)
+            # Guarantee a trailing newline so the replayed "└ ..." tail leaves
+            # the cursor at line start; otherwise the next prompt "›" is drawn
+            # on the same line (legacy records that stored a newline-less error,
+            # e.g. "Operation cancelled by user", regress without this).
+            if out_text and not out_text.endswith("\n"):
+                out_text += "\n"
+            return (out_text, "")
         if has_output_field and bool(payload.get("success", True)):
             return ("(no output)\n", "")
         return ("", "")
@@ -3080,6 +3087,9 @@ class Agent:
         # Some non-shell tools (e.g. apply_patch) report failures through
         # `error`/`message` only. Mirror that into `output` for history so
         # replay/log viewers never end up with a blank failed tool result.
+        # (The trailing-newline normalization needed for prompt placement on
+        # reload is applied at render time in _extract_model_shell_replay_output
+        # so legacy records are fixed too.)
         if (not output_text) and (not success):
             output_text = error_text or message_text
         payload = {
