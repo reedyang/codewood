@@ -1,6 +1,7 @@
 import { createElement, type ReactNode } from "react";
 import katex from "katex";
 import { stripLeakedToolMarkup } from "../utils/tokens";
+import { CodeBlock } from "./CodeBlock";
 
 // Compact, dependency-free Markdown renderer. It mirrors the structure the
 // terminal highlights (headings, emphasis, inline/fenced code, lists, quotes,
@@ -472,18 +473,42 @@ function MarkdownBody({ text }: { text: string }): ReactNode {
       continue;
     }
 
-    if (/^```/.test(line.trim())) {
+    // Fence open: any line that begins with 3+ backticks/tildes. We
+    // deliberately match the same broad shape the paragraph loop below uses to
+    // stop (``/^```/``); using a stricter regex here once caused an infinite
+    // loop for info-string fences like ```js title="x" that this branch
+    // skipped but the paragraph loop refused to consume.
+    const fenceOpen = /^\s*(`{3,}|~{3,})(.*)$/.exec(line);
+    if (fenceOpen) {
+      const fenceChar = fenceOpen[1][0];
+      // First whitespace-delimited token after the fence is the language tag;
+      // ignore any trailing info-string attributes.
+      const lang = (fenceOpen[2] || "").trim().split(/\s+/)[0] || "";
+      const closeRe =
+        fenceChar === "`" ? /^\s*`{3,}\s*$/ : /^\s*~{3,}\s*$/;
       const buf: string[] = [];
       i++;
-      while (i < lines.length && !/^```/.test(lines[i].trim())) {
+      let closed = false;
+      while (i < lines.length) {
+        if (closeRe.test(lines[i])) {
+          closed = true;
+          i++; // skip closing fence
+          break;
+        }
         buf.push(lines[i]);
         i++;
       }
-      i++; // skip closing fence
+      // Only run syntax highlighting once the block is fully closed. While the
+      // model is still streaming an open fence, highlighting the growing buffer
+      // on every chunk is expensive (and pointless), so render it as plain
+      // preformatted text until the closing fence arrives.
       blocks.push(
-        <pre key={key++} className="md-pre">
-          <code>{buf.join("\n")}</code>
-        </pre>,
+        <CodeBlock
+          key={key++}
+          code={buf.join("\n")}
+          lang={lang}
+          highlight={closed}
+        />,
       );
       continue;
     }
