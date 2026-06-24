@@ -450,8 +450,16 @@ class ChangePreviewFormatter:
                     )
                 )
             else:
+                # Context cell: pad the COLORED text too so the column keeps a
+                # uniform width and the "││" separator / right column stay
+                # aligned. Passing an unpadded colored chunk collapses the cell
+                # and pushes the right side off-screen.
                 frags.extend(
-                    ChangePreviewFormatter._chunk_fragments(lc + pad_spaces, lcc, "")
+                    ChangePreviewFormatter._chunk_fragments(
+                        lc + pad_spaces,
+                        (lcc + pad_spaces) if lcc else "",
+                        "",
+                    )
                 )
             frags.append((ChangePreviewFormatter.PT_STYLE_SEP, " ││ "))
             frags.append((ChangePreviewFormatter.PT_STYLE_GRAY, rp))
