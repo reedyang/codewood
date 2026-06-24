@@ -2600,6 +2600,93 @@ html[data-has-bg] .select {
   margin-top: 14px;
 }
 
+/* ---- apply_patch change preview (DiffPreview) ---- */
+.diff-preview {
+  margin: 6px 0 2px 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--output-bg);
+  font-family: "Cascadia Code", "Consolas", monospace;
+  font-size: 12px;
+  line-height: 1.45;
+  max-height: 360px;
+  overflow: auto;
+}
+
+.diff-side-by-side,
+.diff-inline {
+  display: flex;
+  flex-direction: column;
+}
+
+.diff-row {
+  display: flex;
+  flex-direction: row;
+}
+
+.diff-cell {
+  flex: 1 1 50%;
+  min-width: 0;
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 0 8px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.diff-cell-old {
+  border-right: 1px solid var(--border);
+}
+
+.diff-iline {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 0 8px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.diff-lineno {
+  flex: 0 0 auto;
+  min-width: 2.5em;
+  text-align: right;
+  color: var(--text-muted, #888);
+  user-select: none;
+}
+
+.diff-sign {
+  flex: 0 0 auto;
+  width: 1ch;
+  color: var(--text-muted, #888);
+  user-select: none;
+}
+
+.diff-code {
+  flex: 1 1 auto;
+  min-width: 0;
+  background: none;
+  border: none;
+  padding: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.diff-del {
+  background: rgba(220, 60, 60, 0.18);
+}
+
+.diff-add {
+  background: rgba(60, 180, 90, 0.18);
+}
+
+.diff-row-omitted {
+  padding: 2px 8px;
+  color: var(--text-muted, #888);
+  font-style: italic;
+}
+
 .confirm-freeform {
   display: flex;
   gap: 8px;

@@ -29,9 +29,17 @@ _TEXT_DECODE_CANDIDATES: List[str] = ["utf-8", "gbk", "gb2312", "utf-16", "latin
 
 
 def _interactive_selector_available(agent: Any) -> bool:
-    """Return True when the interactive TUI selector can render the confirm
-    prompt (and thus the change preview) on an attached terminal."""
+    """Return True when an interactive UI will render the confirm prompt (and
+    thus the change preview) itself, so apply_patch should hand over the
+    structured diff segments and skip the static ANSI text print.
+
+    Covers both the GUI structured confirm provider and the TUI arrow-key
+    selector on an attached terminal.
+    """
     try:
+        # GUI: a structured confirm provider renders the preview in the frontend.
+        if callable(getattr(agent, "_confirm_choice_provider", None)):
+            return True
         input_handler = getattr(agent, "input_handler", None)
         interactive = getattr(input_handler, "prompt_request_user_input_selection", None)
         if not callable(interactive):

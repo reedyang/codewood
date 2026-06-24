@@ -309,6 +309,23 @@ class ResponsiveChangePreviewTests(unittest.TestCase):
         )
         self.assertTrue(any("││" in _strip_ansi(r) for r in rows))
 
+    def test_format_segments_structured_emits_typed_rows(self):
+        rows = ChangePreviewFormatter.format_segments_structured(self._SEGMENTS)
+        self.assertTrue(rows)
+        types = {r["type"] for r in rows}
+        # The replace hunk yields a "change" row (old "beta" -> new "BETA").
+        self.assertIn("change", types)
+        change = next(r for r in rows if r["type"] == "change")
+        self.assertEqual(change["oldText"], "beta")
+        self.assertEqual(change["newText"], "BETA")
+        self.assertIsInstance(change["oldNo"], int)
+        self.assertIsInstance(change["newNo"], int)
+        # Every row exposes the JSON-serializable shape the GUI relies on.
+        for r in rows:
+            self.assertEqual(
+                set(r.keys()), {"type", "oldNo", "newNo", "oldText", "newText"}
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

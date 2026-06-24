@@ -146,6 +146,59 @@ class ChangePreviewFormatter:
         return raw_rows
 
     @staticmethod
+    def format_segments_structured(
+        segments: List[Dict[str, object]],
+        language: Any = None,
+    ) -> List[Dict[str, object]]:
+        """Convert multi-hunk segments into JSON-serializable diff rows.
+
+        Each row is ``{"type", "oldNo", "newNo", "oldText", "newText"}`` where
+        ``type`` is one of ``"context" | "del" | "add" | "omitted"``. The GUI
+        consumes this to render the change preview natively (responsive
+        side-by-side / inline) with syntax highlighting, instead of the
+        pre-rendered ANSI text. No truncation/wrapping is applied here; layout
+        is the frontend's responsibility.
+        """
+        raw_rows = ChangePreviewFormatter._segments_to_raw_rows(segments, language=language)
+        rows: List[Dict[str, object]] = []
+        for left_mark, old_no, old_text, right_mark, new_no, new_text in raw_rows:
+            is_omitted = (
+                old_no is None
+                and new_no is None
+                and old_text == new_text
+                and str(old_text).startswith("... omitted ")
+            )
+            if is_omitted:
+                rows.append(
+                    {
+                        "type": "omitted",
+                        "oldNo": None,
+                        "newNo": None,
+                        "oldText": ChangePreviewFormatter._norm(old_text),
+                        "newText": ChangePreviewFormatter._norm(new_text),
+                    }
+                )
+                continue
+            if left_mark == "-" and right_mark == "+":
+                row_type = "change"
+            elif left_mark == "-":
+                row_type = "del"
+            elif right_mark == "+":
+                row_type = "add"
+            else:
+                row_type = "context"
+            rows.append(
+                {
+                    "type": row_type,
+                    "oldNo": old_no,
+                    "newNo": new_no,
+                    "oldText": ChangePreviewFormatter._norm(old_text),
+                    "newText": ChangePreviewFormatter._norm(new_text),
+                }
+            )
+        return rows
+
+    @staticmethod
     def format_segments_responsive_fragments(
         segments: List[Dict[str, object]],
         terminal_width: Optional[int] = None,
