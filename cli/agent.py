@@ -6104,6 +6104,7 @@ class Agent:
         shell_command: Optional[str] = None,
         script_basename: Optional[str] = None,
         display_command: Optional[str] = None,
+        preview_segments: Optional[List[Dict[str, Any]]] = None,
     ) -> bool:
         return execution_policy_service.prompt_confirm_yes_no_maybe_always(
             self,
@@ -6113,6 +6114,7 @@ class Agent:
             shell_command=shell_command,
             script_basename=script_basename,
             display_command=display_command,
+            preview_segments=preview_segments,
         )
 
     def _freedom_auto_confirm(self, command: Dict[str, Any]) -> bool:
@@ -6548,9 +6550,19 @@ class Agent:
         self,
         segments: List[Dict[str, Any]],
     ) -> List[str]:
-        """Build side-by-side preview for multiple hunks with omitted-line markers."""
-        return ChangePreviewFormatter.format_side_by_side_segments(
+        """Build a change preview for multiple hunks with omitted-line markers.
+
+        Responsive: a two-column side-by-side diff on wide terminals, falling
+        back to an inline (unified) diff when the terminal is too narrow for two
+        readable columns.
+        """
+        try:
+            terminal_width = int(self._terminal_columns_for_prompt_separator(default=0) or 0)
+        except Exception:
+            terminal_width = 0
+        return ChangePreviewFormatter.format_segments_responsive(
             segments=segments,
+            terminal_width=terminal_width,
             language=self._ui_language(),
         )
 

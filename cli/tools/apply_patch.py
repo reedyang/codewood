@@ -28,6 +28,23 @@ _BOM_SIGNATURES: List[Tuple[bytes, str]] = [
 _TEXT_DECODE_CANDIDATES: List[str] = ["utf-8", "gbk", "gb2312", "utf-16", "latin1"]
 
 
+def _interactive_selector_available(agent: Any) -> bool:
+    """Return True when the interactive TUI selector can render the confirm
+    prompt (and thus the change preview) on an attached terminal."""
+    try:
+        input_handler = getattr(agent, "input_handler", None)
+        interactive = getattr(input_handler, "prompt_request_user_input_selection", None)
+        if not callable(interactive):
+            return False
+        import sys
+
+        return bool(
+            sys.stdin and sys.stdin.isatty() and sys.stdout and sys.stdout.isatty()
+        )
+    except Exception:
+        return False
+
+
 def _read_text_preserving_encoding(abs_path: Path) -> Tuple[str, str, bytes]:
     """Read a text file as ``(content_without_bom, base_codec, bom_bytes)``.
 
@@ -327,7 +344,12 @@ def action_apply_unified_patch(agent: Any, file_path: str, patch: str, confirmed
         new_text = newline.join(result_lines)
         if had_trailing_newline and len(result_lines) > 0:
             new_text += newline
-        if preview_lines and not skip_preview_and_confirm:
+        # When the interactive TUI selector will render the change preview
+        # itself (so it can re-layout live on terminal resize), skip the static
+        # text print here and hand the structured segments to the confirm call.
+        interactive_preview = bool(need_confirm) and _interactive_selector_available(agent)
+        confirm_preview_segments = preview_segments if interactive_preview else None
+        if preview_lines and not skip_preview_and_confirm and not interactive_preview:
             try:
                 lang = agent._ui_language()
             except AttributeError:
@@ -346,6 +368,7 @@ def action_apply_unified_patch(agent: Any, file_path: str, patch: str, confirmed
                 f"⚠️ Confirm applying patch to text file: {abs_path} ?",
                 offer_always=False,
                 kind="text_file",
+                preview_segments=confirm_preview_segments,
             )
             if not ok:
                 return {"success": False, "error": "Operation cancelled by user"}
