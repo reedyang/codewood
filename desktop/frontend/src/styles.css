@@ -209,7 +209,8 @@ html[data-has-bg] .context-menu,
 html[data-has-bg] .dropdown-menu,
 html[data-has-bg] .menubar-menu,
 html[data-has-bg] .model-flyout,
-html[data-has-bg] .rich-composer-popup {
+html[data-has-bg] .rich-composer-popup,
+html[data-has-bg] .ws-selector-menu {
   background: color-mix(in srgb, var(--bg-elevated-solid) 96%, transparent);
 }
 

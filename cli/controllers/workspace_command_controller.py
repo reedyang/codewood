@@ -194,13 +194,13 @@ def workspace_create_command(agent: Any, arg_text: str) -> str:
     while workspace_id in workspaces:
         workspace_id = f"{base_id}_{counter}"
         counter += 1
+    # ``storage`` and ``current_dir`` are derived by rule at use time, so only
+    # the stable identity (id/name/kind/root) is persisted here.
     workspaces[workspace_id] = {
         "id": workspace_id,
         "name": name,
         "kind": "custom",
         "root": str(root),
-        "storage": str(storage),
-        "current_dir": str(root),
     }
     agent._save_workspace_state()
     agent._refresh_input_handler_skill_completions()
@@ -299,18 +299,12 @@ def workspace_update_command(agent: Any, arg_text: str) -> str:
                     messages.append(_t(agent, "workspace.update.message.storage_kept_existing_new_location"))
         except Exception as e:
             return _t(agent, "workspace.update.failed_path", error=e)
-        current_dir = agent._workspace_current_dir_path(entry)
-        try:
-            rel = current_dir.relative_to(old_root) if current_dir is not None else None
-        except Exception:
-            rel = None
-        if rel is not None:
-            candidate = new_root / rel
-            entry["current_dir"] = str(candidate if candidate.exists() else new_root)
-        else:
-            entry["current_dir"] = str(new_root)
+        # Only ``root`` is persisted; storage is moved on disk above and then
+        # re-derived from the new root, and the working directory follows the
+        # by-rule fallback when the workspace is applied.
+        entry.pop("current_dir", None)
+        entry.pop("storage", None)
         entry["root"] = str(new_root)
-        entry["storage"] = str(new_storage)
         messages.append(_t(agent, "workspace.update.message.path", path=new_root))
 
     agent._save_workspace_state()
