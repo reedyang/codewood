@@ -45,6 +45,30 @@ _AGENTS_FILENAME = "AGENTS.md"
 _AGENTS_APPEND_MAX_BYTES = 32 * 1024
 
 
+def build_browser_system_append(agent: Any) -> str:
+    """Note the embedded browser to the model — only when running under the GUI.
+
+    Presence of ``agent._browser_dispatch`` (set by the serve app) is the GUI
+    signal that also gates the ``browser_*`` tools into the spec."""
+    if not callable(getattr(agent, "_browser_dispatch", None)):
+        return ""
+    return (
+        "## Embedded browser (GUI)\n\n"
+        "The desktop GUI has an embedded browser tab. You can drive it with the "
+        "`browser_*` tools: `browser_open` (open a URL), `browser_preview_file` "
+        "(render a local .html/.htm file you created/edited so the user can see "
+        "it), `browser_refresh`, `browser_close`, and `browser_get_url`.\n\n"
+        "When you generate or edit an HTML page on disk, proactively call "
+        "`browser_preview_file` with its path to show the rendered result — do "
+        "not just tell the user to open the file themselves.\n\n"
+        "Reading page content (`browser_read_dom`, `browser_read_console`, "
+        "`browser_eval`) only works for pages this app generates (e.g. previews "
+        "opened via `browser_preview_file`); for arbitrary external websites "
+        "these return an error, because the browser security model forbids "
+        "inspecting cross-origin pages."
+    )
+
+
 def build_mcp_system_append(agent: Any) -> str:
     """Build MCP section appended to system prompt (with redacted env values)."""
     servers = (agent.mcp_config or {}).get("mcpServers", {})

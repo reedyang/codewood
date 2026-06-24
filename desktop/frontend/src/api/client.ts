@@ -240,6 +240,61 @@ export class ApiClient {
     return `${this.base}/chat-image?${params.toString()}`;
   }
 
+  /** Post the outcome of a backend-issued browser command back to the waiting
+   *  tool call, keyed by its requestId. */
+  async browserResult(
+    requestId: string,
+    result: Record<string, unknown>,
+  ): Promise<void> {
+    try {
+      await fetch(`${this.base}/browser-result`, {
+        method: "POST",
+        headers: this.headers(),
+        body: JSON.stringify({ requestId, result }),
+      });
+    } catch {
+      // The tool call will time out on the backend if this never arrives.
+    }
+  }
+
+  /** Persist an HTML snippet for in-browser preview; returns a loadable URL. */
+  async previewHtml(
+    chatId: string,
+    html: string,
+  ): Promise<{ url: string } | null> {
+    try {
+      const res = await fetch(`${this.base}/browser-preview-html`, {
+        method: "POST",
+        headers: this.headers(),
+        body: JSON.stringify({ chatId, html }),
+      });
+      if (!res.ok) return null;
+      const data = (await res.json()) as { ok?: boolean; path?: string };
+      if (!data.ok || !data.path) return null;
+      return { url: this.chatFileUrl(data.path) };
+    } catch {
+      return null;
+    }
+  }
+
+  /** Absolute URL serving a saved chat-data file (html preview, etc.) by its
+   *  on-disk path (token-gated; backend validates containment under
+   *  chats/data and serves an appropriate content-type). */
+  chatFileUrl(path: string): string {
+    const params = new URLSearchParams({ token: this.token, path });
+    return `${this.base}/chat-file?${params.toString()}`;
+  }
+
+  /** Resolve a possibly backend-relative URL ("/chat-file?...") to an absolute
+   *  one against this client's base. Absolute URLs are returned unchanged. */
+  absoluteUrl(url: string): string {
+    const s = String(url || "");
+    if (s.startsWith("/")) {
+      return `${this.base}${s}`;
+    }
+    return s;
+  }
+
   /** Read the raw (unresolved) model_providers list for editing. */
   async getModelsConfig(): Promise<unknown[]> {
     const res = await fetch(`${this.base}/models-config`, {

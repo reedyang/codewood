@@ -44,6 +44,16 @@ from .request_skill_prompt import RequestSkillPromptTool
 from .request_user_input import RequestUserInputTool
 from .plan import UpdatePlanTool
 from .run_subagent import RunSubagentTool
+from .browser import (
+    BrowserOpenTool,
+    BrowserPreviewFileTool,
+    BrowserCloseTool,
+    BrowserRefreshTool,
+    BrowserGetUrlTool,
+    BrowserReadDomTool,
+    BrowserReadConsoleTool,
+    BrowserEvalTool,
+)
 
 
 ALL_TOOLS: List[Type[BaseTool]] = [
@@ -80,6 +90,14 @@ ALL_TOOLS: List[Type[BaseTool]] = [
     RequestUserInputTool,
     UpdatePlanTool,
     RunSubagentTool,
+    BrowserOpenTool,
+    BrowserPreviewFileTool,
+    BrowserCloseTool,
+    BrowserRefreshTool,
+    BrowserGetUrlTool,
+    BrowserReadDomTool,
+    BrowserReadConsoleTool,
+    BrowserEvalTool,
 ]
 
 _BY_NAME: Dict[str, Type[BaseTool]] = {t.name: t for t in ALL_TOOLS}
@@ -124,11 +142,13 @@ def _gating_flags(agent: Any) -> Dict[str, bool]:
         except Exception:
             multimodal_enabled = True
     plan_mode = bool(getattr(agent, "_plan_mode_sticky", False))
+    gui_enabled = callable(getattr(agent, "_browser_dispatch", None))
     return {
         "mcp_enabled": mcp_enabled,
         "multimodal_enabled": multimodal_enabled,
         "has_subagents": has_subagents,
         "plan_mode": plan_mode,
+        "gui_enabled": gui_enabled,
     }
 
 

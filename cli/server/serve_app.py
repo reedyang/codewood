@@ -693,6 +693,70 @@ def _safe_reasoning_levels(agent: Any) -> List[str]:
         return []
 
 
+# A tiny same-origin bridge injected into preview pages so the BrowserPanel can
+# read the DOM / captured console / run an expression on OUR OWN preview pages
+# (external cross-origin sites carry no such bridge and stay unreadable). The
+# bridge buffers console output and answers postMessage requests from the parent
+# frame. It never reaches the model directly; the parent relays results to the
+# browser tools.
+_PREVIEW_BRIDGE_SCRIPT = """
+<script>
+(function(){
+  var __logs = [];
+  function cap(kind){
+    var orig = console[kind] ? console[kind].bind(console) : function(){};
+    console[kind] = function(){
+      try {
+        var parts = [];
+        for (var i=0;i<arguments.length;i++){
+          var a = arguments[i];
+          parts.push(typeof a === 'object' ? JSON.stringify(a) : String(a));
+        }
+        __logs.push(kind + ': ' + parts.join(' '));
+        if (__logs.length > 500) __logs.shift();
+      } catch(e){}
+      return orig.apply(console, arguments);
+    };
+  }
+  ['log','info','warn','error','debug'].forEach(cap);
+  window.addEventListener('error', function(ev){
+    try { __logs.push('error: ' + ev.message); } catch(e){}
+  });
+  window.addEventListener('message', function(ev){
+    var d = ev.data;
+    if (!d || d.__codewoodBridge !== true) return;
+    var out = { __codewoodBridge: true, nonce: d.nonce, ok: true };
+    try {
+      if (d.action === 'read_dom') {
+        out.dom = document.documentElement ? document.documentElement.outerHTML : '';
+      } else if (d.action === 'read_console') {
+        out.console = __logs.slice();
+      } else if (d.action === 'eval') {
+        // Controlled-only: runs solely inside our own sandboxed preview frame.
+        out.result = String(eval(String(d.script || '')));
+      } else {
+        out.ok = false; out.error = 'unknown action';
+      }
+    } catch(e){ out.ok = false; out.error = String(e); }
+    try { (ev.source || window.parent).postMessage(out, '*'); } catch(e){}
+  });
+})();
+</script>
+"""
+
+
+def _wrap_preview_html(html: str) -> str:
+    """Inject the preview bridge script into an HTML document so the embedded
+    browser can read it. The script is appended before ``</body>`` when present,
+    otherwise at the end of the document."""
+    body = str(html or "")
+    needle = "</body>"
+    idx = body.lower().rfind(needle)
+    if idx != -1:
+        return body[:idx] + _PREVIEW_BRIDGE_SCRIPT + body[idx:]
+    return body + _PREVIEW_BRIDGE_SCRIPT
+
+
 def _build_state(agent: Any) -> Dict[str, Any]:
     """Serialize a read-only snapshot of agent state for the GUI.
 
@@ -1005,6 +1069,11 @@ class ServeApp:
         # option (or freeform answer) to ``/answer-ask-more-info``.
         self._request_user_input: Dict[str, "queue.Queue[str]"] = {}
         self._request_user_input_lock = threading.Lock()
+        # Pending browser commands: requestId -> reply queue. A browser tool
+        # blocks on its queue until the frontend BrowserPanel POSTs the outcome
+        # to ``/browser-result``.
+        self._browser_cmds: Dict[str, "queue.Queue[Dict[str, Any]]"] = {}
+        self._browser_cmds_lock = threading.Lock()
         self._shutdown_event = threading.Event()
         self._token = secrets.token_urlsafe(32)
         self._httpd: Optional[ThreadingHTTPServer] = None
@@ -2042,6 +2111,159 @@ class ServeApp:
                 "webp": "image/webp",
                 "gif": "image/gif",
                 "bmp": "image/bmp",
+            }
+            ct = content_types.get(ext)
+            if ct is None:
+                return None
+            return target.read_bytes(), ct
+        except Exception:
+            return None
+
+    # Embedded browser command channel
+    # ----------------------------------------------------------------------
+    # Browser tools run on the backend but the browser lives in the frontend
+    # WebView. A tool publishes a ``browser_command`` SSE event and blocks on a
+    # per-request queue until the BrowserPanel posts the outcome to
+    # ``/browser-result``.
+    _BROWSER_CMD_TIMEOUT_S = 15.0
+
+    def dispatch_browser_command(
+        self, action: str, payload: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        """Send a browser command to the frontend and wait for its result.
+
+        Returns the frontend's result dict, or an error dict on timeout / when
+        no GUI client is connected to handle it."""
+        request_id = secrets.token_hex(8)
+        reply: "queue.Queue[Dict[str, Any]]" = queue.Queue()
+        with self._browser_cmds_lock:
+            self._browser_cmds[request_id] = reply
+        event_data: Dict[str, Any] = {"action": str(action), "requestId": request_id}
+        if payload:
+            for key in ("url", "script"):
+                if key in payload and payload[key] is not None:
+                    event_data[key] = payload[key]
+        self.broadcaster.publish("browser_command", event_data)
+        try:
+            result = reply.get(timeout=self._BROWSER_CMD_TIMEOUT_S)
+        except queue.Empty:
+            return {
+                "success": False,
+                "error": "browser did not respond (is the GUI open?)",
+            }
+        finally:
+            with self._browser_cmds_lock:
+                self._browser_cmds.pop(request_id, None)
+        return result if isinstance(result, dict) else {"success": False, "error": "bad result"}
+
+    def answer_browser_result(self, request_id: str, result: Dict[str, Any]) -> bool:
+        """Deliver a browser command result from the frontend to the waiting
+        tool. Returns True when a matching pending request was found."""
+        rid = str(request_id or "").strip()
+        if not rid:
+            return False
+        with self._browser_cmds_lock:
+            reply = self._browser_cmds.get(rid)
+        if reply is None:
+            return False
+        reply.put(result if isinstance(result, dict) else {})
+        return True
+
+    # Browser HTML preview
+    # ----------------------------------------------------------------------
+    # The user can preview an HTML code block in the embedded browser. The HTML
+    # is wrapped with a small same-origin bridge script (so DOM/console reads
+    # work on the preview page) and saved under the chat's data dir, then served
+    # by ``/chat-file``.
+    _PREVIEW_HTML_MAX_BYTES = 2 * 1024 * 1024
+
+    def save_preview_html(self, chat_id: str, html: str) -> Dict[str, Any]:
+        """Persist an HTML snippet (wrapped with the preview bridge) under the
+        chat data dir. Returns ``{ok, path}`` or ``{ok: False, error}``."""
+        cid = str(chat_id or "").strip()
+        if not cid:
+            return {"ok": False, "error": "missing chatId"}
+        raw = str(html or "")
+        if not raw.strip():
+            return {"ok": False, "error": "empty html"}
+        if len(raw.encode("utf-8", "ignore")) > self._PREVIEW_HTML_MAX_BYTES:
+            return {"ok": False, "error": "html too large"}
+        try:
+            mgr = getattr(self.agent, "_chat_state_manager", None)
+            if mgr is None:
+                return {"ok": False, "error": "no chat"}
+            data_dir = mgr.chat_data_dir_for_chat(cid)
+            if data_dir is None:
+                return {"ok": False, "error": "unknown chat"}
+            data_dir.mkdir(parents=True, exist_ok=True)
+            name = f"preview_{secrets.token_hex(8)}.html"
+            target = data_dir / name
+            target.write_text(_wrap_preview_html(raw), encoding="utf-8")
+            return {"ok": True, "path": str(target.resolve())}
+        except Exception:
+            return {"ok": False, "error": "save failed"}
+
+    def preview_local_html_file(self, path: str) -> Dict[str, Any]:
+        """Read a local HTML file produced by the model, persist a bridged copy
+        under the chat data dir, and open it in the embedded browser.
+
+        ``path`` is resolved with the agent's canonical user-path resolver and
+        validated to be an existing ``.html``/``.htm`` file before reading."""
+        raw = str(path or "").strip().strip('"').strip("'")
+        if not raw:
+            return {"success": False, "error": "missing path"}
+        try:
+            resolver = getattr(self.agent, "_resolve_user_path", None)
+            resolved = Path(resolver(raw)) if callable(resolver) else Path(raw)
+            resolved = resolved.expanduser().resolve()
+        except Exception:
+            return {"success": False, "error": "invalid path"}
+        if resolved.suffix.lower() not in (".html", ".htm"):
+            return {"success": False, "error": "not an html file"}
+        try:
+            if not resolved.is_file():
+                return {"success": False, "error": "file not found"}
+            html = resolved.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return {"success": False, "error": "read failed"}
+        saved = self.save_preview_html(self._active_chat_id(), html)
+        if not saved.get("ok"):
+            return {"success": False, "error": str(saved.get("error") or "save failed")}
+        # ``/chat-file`` serves the bridged copy; build the same token-gated URL
+        # the frontend uses and ask the browser to open it as a preview page.
+        token = self._token
+        from urllib.parse import urlencode
+
+        url = "/chat-file?" + urlencode({"token": token, "path": saved["path"]})
+        # The browser command channel expects an absolute URL the iframe can
+        # load; the frontend prefixes its own origin, so pass a server-relative
+        # path and let the BrowserPanel resolve it against the backend base.
+        result = self.dispatch_browser_command("open_preview", {"url": url})
+        return result if isinstance(result, dict) else {"success": False, "error": "no browser"}
+
+    def read_chat_file(self, path: str) -> Optional[tuple]:
+        """Return ``(bytes, content_type)`` for a saved chat-data file (html
+        preview), ONLY when ``path`` is contained under chats/data. ``None``
+        otherwise."""
+        try:
+            mgr = getattr(self.agent, "_chat_state_manager", None)
+            if mgr is None:
+                return None
+            data_root = (mgr.chat_records_dir() / "data").resolve()
+            target = Path(str(path or "")).resolve()
+            try:
+                target.relative_to(data_root)
+            except ValueError:
+                return None
+            if not target.exists() or not target.is_file():
+                return None
+            ext = target.suffix.lower().lstrip(".")
+            content_types = {
+                "html": "text/html; charset=utf-8",
+                "htm": "text/html; charset=utf-8",
+                "css": "text/css; charset=utf-8",
+                "js": "text/javascript; charset=utf-8",
+                "txt": "text/plain; charset=utf-8",
             }
             ct = content_types.get(ext)
             if ct is None:
@@ -3370,6 +3592,13 @@ class ServeApp:
         self.agent._gui_round_end = lambda: self.broadcaster.publish(  # type: ignore[attr-defined]
             "round_end", self._route()
         )
+        # Bridge for the GUI-only browser tools: lets a tool send a command to
+        # the embedded browser and block for its result. Its presence also gates
+        # the browser_* tools into the model-visible spec (registry: gui_enabled).
+        self.agent._browser_dispatch = self.dispatch_browser_command  # type: ignore[attr-defined]
+        # Hook for the browser_preview_file tool: read a local HTML file the
+        # model just wrote, persist a bridged copy, and open it in the browser.
+        self.agent._browser_preview_file = self.preview_local_html_file  # type: ignore[attr-defined]
         # When the model updates its plan mid-turn, push a fresh state snapshot
         # so the GUI's plan panel reflects it immediately. We use the dedicated
         # ``state`` event (not ``idle``) because the loop is still actively
@@ -3672,6 +3901,16 @@ def _make_handler(app: ServeApp):
                     data, content_type = result
                     self._send_bytes(200, data, content_type)
                 return
+            if path == "/chat-file":
+                vals = query.get("path") or []
+                file_path = str(vals[0]) if vals else ""
+                result = app.read_chat_file(file_path)
+                if result is None:
+                    self._send_json(404, {"error": "not found"})
+                else:
+                    data, content_type = result
+                    self._send_bytes(200, data, content_type)
+                return
             if path == "/events":
                 self._stream_events()
                 return
@@ -3685,11 +3924,12 @@ def _make_handler(app: ServeApp):
                 return
             # Pasted bitmaps arrive as base64 data URLs and can exceed the
             # default 1 MiB JSON cap; allow a larger body only for that route.
-            max_body = (
-                ServeApp._PASTE_IMAGE_MAX_BYTES * 2 + 65536
-                if path == "/paste-image"
-                else _MAX_BODY_BYTES
-            )
+            if path == "/paste-image":
+                max_body = ServeApp._PASTE_IMAGE_MAX_BYTES * 2 + 65536
+            elif path == "/browser-preview-html":
+                max_body = ServeApp._PREVIEW_HTML_MAX_BYTES * 2 + 65536
+            else:
+                max_body = _MAX_BODY_BYTES
             body = self._read_json_body(max_body)
             if body is None:
                 self._send_json(400, {"error": "invalid body"})
@@ -3714,6 +3954,20 @@ def _make_handler(app: ServeApp):
                     self._send_json(413, {"error": "image too large"})
                     return
                 result = app.save_pasted_image(chat_id, data_url)
+                self._send_json(200 if result.get("ok") else 400, result)
+                return
+            if path == "/browser-result":
+                request_id = str(body.get("requestId") or "")[:64]
+                result = body.get("result")
+                ok = app.answer_browser_result(
+                    request_id, result if isinstance(result, dict) else {}
+                )
+                self._send_json(200 if ok else 404, {"ok": ok})
+                return
+            if path == "/browser-preview-html":
+                chat_id = str(body.get("chatId") or "")[:256]
+                html = str(body.get("html") or "")
+                result = app.save_preview_html(chat_id, html)
                 self._send_json(200 if result.get("ok") else 400, result)
                 return
             if path == "/confirm":

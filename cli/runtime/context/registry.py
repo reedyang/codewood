@@ -16,6 +16,7 @@ from .collaboration_mode import CollaborationModePart
 from .agents_md import AgentsMdPart
 from .user_preferences import UserPreferencesPart
 from .tools import ToolsPart
+from .browser import BrowserPart
 from .subagents import SubagentsPart
 from .mcp import McpPart
 from .runtime_cache import RuntimeCachePart
@@ -29,6 +30,7 @@ def ordered_context_parts() -> List[ModelContextPart]:
         AgentsMdPart(),
         UserPreferencesPart(),
         ToolsPart(),
+        BrowserPart(),
         SubagentsPart(),
         McpPart(),
         RuntimeCachePart(),

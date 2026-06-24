@@ -2,7 +2,7 @@ import { useEffect, useState, type CSSProperties, type MouseEvent as ReactMouseE
 import { AppProvider, useApp } from "./state/AppContext";
 import { Sidebar } from "./components/Sidebar";
 import { ChatView } from "./components/ChatView";
-import { PlanPanel } from "./components/PlanPanel";
+import { RightPanel } from "./components/RightPanel";
 import { SettingsView } from "./components/SettingsView";
 import { AboutDialog } from "./components/AboutDialog";
 import { TitleBar } from "./components/TitleBar";
@@ -12,12 +12,24 @@ const SIDEBAR_MIN = 180;
 const SIDEBAR_MAX = 480;
 const SIDEBAR_WIDTH_KEY = "codewood.sidebarWidth";
 
+const RIGHT_PANEL_MIN = 240;
+const RIGHT_PANEL_MAX = 720;
+const RIGHT_PANEL_WIDTH_KEY = "codewood.rightPanelWidth";
+
 function loadSidebarWidth(): number {
   const raw = Number(window.localStorage.getItem(SIDEBAR_WIDTH_KEY));
   if (Number.isFinite(raw) && raw >= SIDEBAR_MIN && raw <= SIDEBAR_MAX) {
     return raw;
   }
   return 200;
+}
+
+function loadRightPanelWidth(): number {
+  const raw = Number(window.localStorage.getItem(RIGHT_PANEL_WIDTH_KEY));
+  if (Number.isFinite(raw) && raw >= RIGHT_PANEL_MIN && raw <= RIGHT_PANEL_MAX) {
+    return raw;
+  }
+  return 300;
 }
 
 function NoModelGuide() {
@@ -45,6 +57,7 @@ function Shell() {
     aboutOpen,
     closeAbout,
     newChat,
+    planOpen,
   } = useApp();
   // The backend serves a state even when no usable model is configured (e.g.
   // first launch where only the placeholder template config exists). The
@@ -55,10 +68,16 @@ function Shell() {
   const [collapsed, setCollapsed] = useState(false);
   const [sidebarWidth, setSidebarWidth] = useState(loadSidebarWidth);
   const [resizing, setResizing] = useState(false);
+  const [rightPanelWidth, setRightPanelWidth] = useState(loadRightPanelWidth);
+  const [resizingRight, setResizingRight] = useState(false);
 
   useEffect(() => {
     window.localStorage.setItem(SIDEBAR_WIDTH_KEY, String(sidebarWidth));
   }, [sidebarWidth]);
+
+  useEffect(() => {
+    window.localStorage.setItem(RIGHT_PANEL_WIDTH_KEY, String(rightPanelWidth));
+  }, [rightPanelWidth]);
 
   const startResize = (e: ReactMouseEvent) => {
     e.preventDefault();
@@ -75,6 +94,30 @@ function Shell() {
     };
     const onUp = () => {
       setResizing(false);
+      document.body.classList.remove("resizing-x");
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  };
+
+  const startResizeRight = (e: ReactMouseEvent) => {
+    e.preventDefault();
+    const startX = e.clientX;
+    const startWidth = rightPanelWidth;
+    setResizingRight(true);
+    document.body.classList.add("resizing-x");
+    const onMove = (ev: MouseEvent) => {
+      // Dragging left widens the right panel, so subtract the delta.
+      const next = Math.min(
+        RIGHT_PANEL_MAX,
+        Math.max(RIGHT_PANEL_MIN, startWidth - (ev.clientX - startX)),
+      );
+      setRightPanelWidth(next);
+    };
+    const onUp = () => {
+      setResizingRight(false);
       document.body.classList.remove("resizing-x");
       window.removeEventListener("mousemove", onMove);
       window.removeEventListener("mouseup", onUp);
@@ -126,9 +169,20 @@ function Shell() {
               onMouseDown={startResize}
             />
           )}
-          <main className="main">
+          <main
+            className="main"
+            style={{ "--right-panel-width": `${rightPanelWidth}px` } as CSSProperties}
+          >
             <ChatView />
-            <PlanPanel />
+            {planOpen && (
+              <div
+                className={`right-panel-resizer ${resizingRight ? "resizing" : ""}`}
+                role="separator"
+                aria-orientation="vertical"
+                onMouseDown={startResizeRight}
+              />
+            )}
+            <RightPanel />
           </main>
         </div>
       )}
