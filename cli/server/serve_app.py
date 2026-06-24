@@ -1098,6 +1098,28 @@ class ServeApp:
             self.agent._active_runtime_chat_ids = self._owned_runtime_chat_ids
         except Exception:
             pass
+        # Serve mode is the GUI backend: adopt the saved GUI language as a
+        # session-only override so backend-produced text matches the GUI from
+        # the first tick, without persisting it as the TUI's display_language.
+        self._apply_saved_gui_language_override()
+
+    def _apply_saved_gui_language_override(self) -> None:
+        try:
+            from ..core.config.gui_config import (
+                load_gui_config,
+                normalize_gui_language,
+            )
+            from ..core.localization import normalize_display_language
+
+            gui_cfg = load_gui_config(self.agent.config_dir)
+            value = normalize_gui_language(gui_cfg.get("language"))
+            if value:
+                self.agent._gui_language_override = (
+                    normalize_display_language(value) or value
+                )
+        except Exception:
+            # Best-effort: fall back to the agent's own display_language.
+            pass
 
     def _runtime_key(self, chat_id: str, workspace_id: Optional[str] = None) -> str:
         """Workspace-qualified key for the ``_runtimes`` map.
@@ -1850,6 +1872,16 @@ class ServeApp:
             data = load_gui_config(agent.config_dir)
             data["language"] = value
             save_gui_config(agent.config_dir, data)
+            # Apply as a runtime override so backend-produced text (tool-call
+            # labels, confirm prompts, system prompt) immediately follows the
+            # GUI locale. This is session-only and never persisted as the TUI's
+            # display_language.
+            try:
+                from ..core.localization import normalize_display_language
+
+                agent._gui_language_override = normalize_display_language(value) or value
+            except Exception:
+                agent._gui_language_override = value
         except Exception:
             return False
         # Push a fresh state snapshot so the webview immediately re-renders

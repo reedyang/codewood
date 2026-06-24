@@ -12,11 +12,18 @@ SUPPORTED_DISPLAY_LANGUAGES = ("en", "zh-CN")
 
 _LANGUAGE_ALIASES = {
     "en": "en",
+    "en-us": "en",
+    "en_us": "en",
     "english": "en",
     "zh": "zh-CN",
     "zh-cn": "zh-CN",
     "zh_cn": "zh-CN",
+    # The GUI stores Simplified Chinese as "zh-Hans"; map it to the backend's
+    # canonical "zh-CN" so a GUI language override resolves correctly.
+    "zh-hans": "zh-CN",
+    "zh_hans": "zh-CN",
     "simplified chinese": "zh-CN",
+    "chinese": "zh-CN",
     "简体中文": "zh-CN",
 }
 
@@ -100,6 +107,14 @@ def read_display_language(config_dir: Path) -> str:
 
 
 def get_display_language(agent: Any) -> str:
+    # A GUI session can override the backend's display language at runtime
+    # (so server-produced text — tool labels, confirm prompts, system text —
+    # matches the GUI locale) WITHOUT persisting it as the TUI's language.
+    # This override takes precedence over everything else and is never written
+    # to disk; it is cleared when the GUI session ends.
+    override = normalize_display_language(getattr(agent, "_gui_language_override", None))
+    if override:
+        return override
     raw = normalize_display_language(getattr(agent, "display_language", None))
     if raw:
         return raw
