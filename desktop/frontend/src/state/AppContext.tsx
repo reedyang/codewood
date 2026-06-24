@@ -536,7 +536,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
         // localStorage may be unavailable; the panel just won't switch tabs.
       }
       setPlanOpen(true);
-      emitBrowserCommandLocal({ action: "open_preview", url: saved.url });
+      // Defer the fan-out so a just-mounted BrowserPanel (the Browser tab may
+      // have been hidden/closed until now) has registered its subscriber
+      // before the command is delivered — otherwise the very first Preview
+      // click only opens the tab and the page never loads.
+      window.setTimeout(() => {
+        emitBrowserCommandLocal({ action: "open_preview", url: saved.url });
+      }, 120);
       return true;
     },
     [client, emitBrowserCommandLocal],

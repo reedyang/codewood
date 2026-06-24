@@ -102,15 +102,17 @@ export function ChatTitleBar() {
       >
         <Icon name="dots" size={16} />
       </button>
-      <button
-        className={`chat-titlebar-plan ${planOpen ? "active" : ""}`}
-        aria-label={t("plan.toggle")}
-        aria-pressed={planOpen}
-        title={t("plan.toggle")}
-        onClick={togglePlan}
-      >
-        <Icon name="panel-right" size={18} />
-      </button>
+      {!planOpen && (
+        <button
+          className="chat-titlebar-plan"
+          aria-label={t("plan.toggle")}
+          aria-pressed={false}
+          title={t("plan.toggle")}
+          onClick={togglePlan}
+        >
+          <Icon name="panel-right" size={18} />
+        </button>
+      )}
       {menu && (
         <ContextMenu
           x={menu.x}

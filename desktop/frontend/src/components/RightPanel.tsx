@@ -83,22 +83,24 @@ export function RightPanel() {
               </button>
             );
           })}
-          <button
-            type="button"
-            className="right-panel-tab-add"
-            aria-label={t("rightpanel.tabsMenu")}
-            title={t("rightpanel.tabsMenu")}
-            onClick={(e) => setMenuPos({ x: e.clientX, y: e.clientY })}
-          >
-            <Icon name="plus" size={13} />
-          </button>
         </div>
         <button
-          className="right-panel-close"
+          type="button"
+          className="right-panel-tab-add"
+          aria-label={t("rightpanel.tabsMenu")}
+          title={t("rightpanel.tabsMenu")}
+          onClick={(e) => setMenuPos({ x: e.clientX, y: e.clientY })}
+        >
+          <Icon name="dots" size={16} />
+        </button>
+        <button
+          className="right-panel-close active"
           aria-label={t("rightpanel.close")}
+          aria-pressed
+          title={t("plan.toggle")}
           onClick={togglePlan}
         >
-          <Icon name="win-close" size={14} />
+          <Icon name="panel-right" size={18} />
         </button>
       </div>
 

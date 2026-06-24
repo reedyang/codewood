@@ -61,7 +61,7 @@ export function CodeBlock({
 
   return (
     <pre className="md-pre">
-      {resolvedLang ? (
+      {resolvedLang && !isHtml ? (
         <span className="md-pre-lang" aria-hidden>
           {resolvedLang}
         </span>
