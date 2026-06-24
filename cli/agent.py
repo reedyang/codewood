@@ -6127,6 +6127,7 @@ class Agent:
         script_basename: Optional[str] = None,
         display_command: Optional[str] = None,
         preview_segments: Optional[List[Dict[str, Any]]] = None,
+        code_language: Optional[str] = None,
     ) -> bool:
         return execution_policy_service.prompt_confirm_yes_no_maybe_always(
             self,
@@ -6137,6 +6138,7 @@ class Agent:
             script_basename=script_basename,
             display_command=display_command,
             preview_segments=preview_segments,
+            code_language=code_language,
         )
 
     def _freedom_auto_confirm(self, command: Dict[str, Any]) -> bool:
@@ -6571,21 +6573,25 @@ class Agent:
     def _format_side_by_side_change_preview_segments(
         self,
         segments: List[Dict[str, Any]],
+        file_path: Any = None,
     ) -> List[str]:
         """Build a change preview for multiple hunks with omitted-line markers.
 
         Responsive: a two-column side-by-side diff on wide terminals, falling
         back to an inline (unified) diff when the terminal is too narrow for two
-        readable columns.
+        readable columns. ``file_path`` (when given) drives syntax highlighting
+        of the diff code text.
         """
         try:
             terminal_width = int(self._terminal_columns_for_prompt_separator(default=0) or 0)
         except Exception:
             terminal_width = 0
+        code_language = ChangePreviewFormatter.language_from_path(file_path)
         return ChangePreviewFormatter.format_segments_responsive(
             segments=segments,
             terminal_width=terminal_width,
             language=self._ui_language(),
+            code_language=code_language,
         )
 
     def _apply_patch_preview_path(self) -> Optional[Path]:

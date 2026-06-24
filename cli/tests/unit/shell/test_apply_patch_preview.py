@@ -42,9 +42,13 @@ class _DummyAgent:
     def _format_side_by_side_change_preview_segments(
         self,
         segments: List[Dict[str, Any]],
+        file_path: Any = None,
     ) -> List[str]:
         self.preview_segments_calls.append(segments)
-        return ChangePreviewFormatter.format_side_by_side_segments(segments)
+        code_language = ChangePreviewFormatter.language_from_path(file_path)
+        return ChangePreviewFormatter.format_side_by_side_segments(
+            segments, code_language=code_language
+        )
 
     def _prompt_confirm_yes_no_maybe_always(self, _message: str, offer_always: bool = False, kind: str = "", **_kwargs: object) -> bool:
         self.prompt_calls += 1
@@ -550,6 +554,114 @@ class ChatPreviewSidecarLifecycleTests(unittest.TestCase):
             mgr.cleanup_orphan_chat_previews()
             self.assertFalse(orphan.exists())
             self.assertTrue(live_preview.exists())
+
+
+class ChangePreviewHighlightTests(unittest.TestCase):
+    """The diff preview applies syntax highlighting to code text, and changed
+    lines keep a subtle background tint that re-arms across syntax-color resets
+    so foreground colors stay readable."""
+
+    def setUp(self):
+        import cli.core.console_utils as cu
+        import cli.core.syntax_highlighter as sh
+
+        self._cu_orig = cu._stdout_color_enabled
+        self._sh_orig = sh._stdout_color_enabled
+        cu._stdout_color_enabled = lambda: True
+        sh._stdout_color_enabled = lambda: True
+
+    def tearDown(self):
+        import cli.core.console_utils as cu
+        import cli.core.syntax_highlighter as sh
+
+        cu._stdout_color_enabled = self._cu_orig
+        sh._stdout_color_enabled = self._sh_orig
+
+    def test_language_from_path(self):
+        from cli.core.change_preview_formatter import ChangePreviewFormatter as F
+
+        self.assertEqual(F.language_from_path("a/b/foo.py"), "python")
+        self.assertEqual(F.language_from_path("foo.TSX"), "typescript")
+        self.assertEqual(F.language_from_path("Dockerfile"), "dockerfile")
+        self.assertIsNone(F.language_from_path("foo.unknownext"))
+        self.assertIsNone(F.language_from_path(""))
+
+    def test_side_by_side_highlights_and_rearms_bg(self):
+        from cli.core.change_preview_formatter import ChangePreviewFormatter as F
+
+        segs = [{
+            "old_lines": ["def main():"],
+            "new_lines": ["def maine():"],
+            "old_start_line": 1,
+            "new_start_line": 1,
+        }]
+        out = "\n".join(F.format_segments_responsive(segs, terminal_width=120, code_language="python"))
+        # Keyword color applied (purple 198;120;221) and del/add bg tints present.
+        self.assertIn("38;2;198;120;221", out)
+        self.assertIn(F.ANSI_BG_DEL, out)
+        self.assertIn(F.ANSI_BG_ADD, out)
+        # The bg is re-armed right after a reset so it spans the cell.
+        self.assertIn(F.ANSI_RESET + F.ANSI_BG_DEL, out)
+
+    def test_no_code_language_leaves_text_unhighlighted(self):
+        from cli.core.change_preview_formatter import ChangePreviewFormatter as F
+
+        segs = [{
+            "old_lines": ["def main():"],
+            "new_lines": ["def maine():"],
+            "old_start_line": 1,
+            "new_start_line": 1,
+        }]
+        out = "\n".join(F.format_segments_responsive(segs, terminal_width=120))
+        self.assertNotIn("38;2;198;120;221", out)
+
+    def test_highlight_continues_across_wrap_boundary(self):
+        from cli.core.change_preview_formatter import ChangePreviewFormatter as F
+
+        long_str = '    print("' + ("alpha beta gamma " * 8) + '")'
+        segs = [{
+            "old_lines": [long_str],
+            "new_lines": [long_str.replace("alpha", "ALPHA")],
+            "old_start_line": 1,
+            "new_start_line": 1,
+        }]
+        lines = F.format_segments_responsive(segs, terminal_width=50, code_language="python")
+        # The string spans several wrapped continuation rows; each continuation
+        # row (no line-number, just the "│" gutter) must re-arm the green string
+        # color rather than dropping back to default.
+        green = "38;2;152;195;121"
+        cont_rows = [ln for ln in lines if ln.lstrip().startswith("\x1b[90m") and "│" in ln]
+        # At least one continuation row beyond the first should carry the color.
+        colored_cont = [ln for ln in lines if green in ln]
+        self.assertGreaterEqual(len(colored_cont), 3)
+
+    def test_ansi_slicer_preserves_color(self):
+        from cli.core.change_preview_formatter import ChangePreviewFormatter as F
+
+        # "<green>aaaa...<reset>" wider than the width must split into chunks
+        # that each re-arm the green and end with a reset.
+        green = "\x1b[38;2;1;2;3m"
+        reset = F.ANSI_RESET
+        ansi = f"{green}{'a' * 20}{reset}"
+        chunks = F._slice_ansi_by_display_width(ansi, 8)
+        self.assertGreater(len(chunks), 1)
+        for ch in chunks:
+            self.assertIn(green, ch)
+            self.assertTrue(ch.endswith(reset))
+
+    def test_fragments_compose_bg_with_syntax_style(self):
+        from cli.core.change_preview_formatter import ChangePreviewFormatter as F
+
+        segs = [{
+            "old_lines": ["x = 1"],
+            "new_lines": ["x = 2"],
+            "old_start_line": 1,
+            "new_start_line": 1,
+        }]
+        frags = F.format_segments_responsive_fragments(segs, terminal_width=120, code_language="python")
+        # A changed-line fragment carries the del/add bg composed with a fg style.
+        self.assertTrue(any(F.PT_BG_DEL in style for style, _ in frags))
+        self.assertTrue(any(F.PT_BG_ADD in style for style, _ in frags))
 
 
 if __name__ == "__main__":

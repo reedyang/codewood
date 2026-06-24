@@ -377,7 +377,9 @@ def action_apply_unified_patch(agent: Any, file_path: str, patch: str, confirmed
                     }
                 )
         if preview_segments:
-            preview_lines = agent._format_side_by_side_change_preview_segments(preview_segments)
+            preview_lines = agent._format_side_by_side_change_preview_segments(
+                preview_segments, file_path=abs_path
+            )
         result_lines.extend(old_lines[src_idx:])
         new_text = newline.join(result_lines)
         if had_trailing_newline and len(result_lines) > 0:
@@ -411,11 +413,14 @@ def action_apply_unified_patch(agent: Any, file_path: str, patch: str, confirmed
             except Exception:
                 pass
         if need_confirm:
+            from ..core.change_preview_formatter import ChangePreviewFormatter
+
             ok = agent._prompt_confirm_yes_no_maybe_always(
                 f"⚠️ Confirm applying patch to text file: {abs_path} ?",
                 offer_always=False,
                 kind="text_file",
                 preview_segments=confirm_preview_segments,
+                code_language=ChangePreviewFormatter.language_from_path(abs_path),
             )
             if not ok:
                 return {"success": False, "error": "Operation cancelled by user"}
