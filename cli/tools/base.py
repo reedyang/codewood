@@ -44,6 +44,10 @@ class BaseTool:
     #: Hide this tool while Plan mode is active (e.g. mutating/checklist tools).
     excluded_in_plan_mode: bool = False
 
+    #: Only expose this tool when running under the desktop GUI (a frontend
+    #: WebView is available to service the request, e.g. the embedded browser).
+    requires_gui: bool = False
+
     @classmethod
     def schema(cls) -> Dict[str, Any]:
         """Return the OpenAI-style function spec for this tool."""
@@ -64,6 +68,7 @@ class BaseTool:
         multimodal_enabled: bool,
         has_subagents: bool,
         plan_mode: bool = False,
+        gui_enabled: bool = False,
     ) -> bool:
         """Whether this tool should appear in the model-visible spec."""
         if cls.requires_mcp and not mcp_enabled:
@@ -75,6 +80,8 @@ class BaseTool:
         if cls.requires_plan_mode and not plan_mode:
             return False
         if cls.excluded_in_plan_mode and plan_mode:
+            return False
+        if cls.requires_gui and not gui_enabled:
             return False
         return True
 

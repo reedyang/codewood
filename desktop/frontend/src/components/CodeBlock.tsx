@@ -1,6 +1,8 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import hljs from "highlight.js/lib/common";
 import "highlight.js/styles/atom-one-dark.css";
+import { useApp } from "../state/AppContext";
+import { Icon } from "./Icon";
 
 /**
  * Syntax-highlighted fenced code block for the GUI Markdown renderer.
@@ -52,6 +54,11 @@ export function CodeBlock({
     }
   }, [code, lang, highlight]);
 
+  // Offer an in-browser preview for closed HTML blocks only (an open, still-
+  // streaming fence isn't a complete document yet).
+  const isHtml =
+    highlight && (resolvedLang === "xml" || normalizeLang(lang) === "html");
+
   return (
     <pre className="md-pre">
       {resolvedLang ? (
@@ -59,8 +66,32 @@ export function CodeBlock({
           {resolvedLang}
         </span>
       ) : null}
+      {isHtml ? <PreviewButton code={code} /> : null}
       <code className="hljs" dangerouslySetInnerHTML={{ __html: html }} />
     </pre>
+  );
+}
+
+/** Floating "Preview" button shown on HTML code blocks; opens the rendered
+ *  snippet in the embedded browser tab. */
+function PreviewButton({ code }: { code: string }) {
+  const { previewHtmlInBrowser, t } = useApp();
+  const [busy, setBusy] = useState(false);
+  return (
+    <button
+      type="button"
+      className="md-pre-preview"
+      title={t("browser.preview")}
+      aria-label={t("browser.preview")}
+      disabled={busy}
+      onClick={() => {
+        setBusy(true);
+        void previewHtmlInBrowser(code).finally(() => setBusy(false));
+      }}
+    >
+      <Icon name="eye" size={13} />
+      <span>{t("browser.preview")}</span>
+    </button>
   );
 }
 

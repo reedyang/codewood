@@ -33,6 +33,11 @@ import {
   toggleId,
   type UiPrefs,
 } from "./uiPrefs";
+import {
+  RIGHT_PANEL_TABS,
+  loadRightPanelPrefs,
+  saveRightPanelPrefs,
+} from "./rightPanelTabs";
 
 export type Theme = "light" | "dark" | "system";
 
@@ -94,6 +99,16 @@ interface AppContextValue {
     dataUrl: string,
   ) => Promise<{ path: string; name: string } | null>;
   chatImageUrl: (path: string) => string;
+  subscribeBrowserCommand: (
+    handler: (cmd: Record<string, unknown>) => void,
+  ) => () => void;
+  sendBrowserResult: (
+    requestId: string,
+    result: Record<string, unknown>,
+  ) => Promise<void>;
+  previewHtml: (html: string) => Promise<{ url: string } | null>;
+  previewHtmlInBrowser: (html: string) => Promise<boolean>;
+  resolveBackendUrl: (url: string) => string;
   sendInput: (text: string) => Promise<void>;
   runCommand: (command: string) => Promise<void>;
   interrupt: () => Promise<void>;
@@ -261,6 +276,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [settingsInitialPage, setSettingsInitialPage] = useState<string | null>(null);
   const [aboutOpen, setAboutOpen] = useState(false);
   const [planOpen, setPlanOpen] = useState(false);
+  // Subscribers for backend-originated browser commands (the BrowserPanel
+  // registers one while mounted). A Set so mount/unmount add/remove cleanly.
+  const browserCommandHandlersRef = useRef<
+    Set<(cmd: Record<string, unknown>) => void>
+  >(new Set());
   // Draft (compose) mode: "New Chat" shows the empty composer without creating
   // a chat yet; the chat is materialized only when the first message is sent.
   // ``draftWorkspaceId`` is the workspace the new chat will be created in.
@@ -453,6 +473,73 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const chatImageUrl = useCallback(
     (path: string) => client.chatImageUrl(path),
     [client],
+  );
+
+  const resolveBackendUrl = useCallback(
+    (url: string) => client.absoluteUrl(url),
+    [client],
+  );
+
+  const subscribeBrowserCommand = useCallback(
+    (handler: (cmd: Record<string, unknown>) => void) => {
+      browserCommandHandlersRef.current.add(handler);
+      return () => {
+        browserCommandHandlersRef.current.delete(handler);
+      };
+    },
+    [],
+  );
+
+  const sendBrowserResult = useCallback(
+    (requestId: string, result: Record<string, unknown>) =>
+      client.browserResult(requestId, result),
+    [client],
+  );
+
+  const previewHtml = useCallback(
+    (html: string) => client.previewHtml(activeChatIdRef.current, html),
+    [client],
+  );
+
+  // Locally fan a command out to the mounted BrowserPanel (no backend / no
+  // requestId): used by the in-message "Preview" button to drive the browser.
+  const emitBrowserCommandLocal = useCallback(
+    (cmd: Record<string, unknown>) => {
+      for (const handler of browserCommandHandlersRef.current) {
+        try {
+          handler(cmd);
+        } catch {
+          // ignore a misbehaving handler
+        }
+      }
+    },
+    [],
+  );
+
+  // Render an HTML snippet in the embedded browser: persist it, ensure the
+  // Browser tab is visible+active and the right panel is open, then navigate.
+  const previewHtmlInBrowser = useCallback(
+    async (html: string) => {
+      const saved = await client.previewHtml(activeChatIdRef.current, html);
+      if (!saved) {
+        return false;
+      }
+      try {
+        const prefs = loadRightPanelPrefs();
+        const visible = prefs.visible.includes("browser")
+          ? prefs.visible
+          : [...prefs.visible, "browser"];
+        const ordered = RIGHT_PANEL_TABS.filter((id) => visible.includes(id));
+        saveRightPanelPrefs({ visible: ordered, active: "browser" });
+        window.dispatchEvent(new Event("codewood.rightPanelTabs"));
+      } catch {
+        // localStorage may be unavailable; the panel just won't switch tabs.
+      }
+      setPlanOpen(true);
+      emitBrowserCommandLocal({ action: "open_preview", url: saved.url });
+      return true;
+    },
+    [client, emitBrowserCommandLocal],
   );
 
   const setBackgroundOpacity = useCallback(
@@ -974,6 +1061,49 @@ export function AppProvider({ children }: { children: ReactNode }) {
         }
         case "confirm": {
           setConfirmRequest(event.data as ConfirmRequest);
+          break;
+        }
+        case "browser_command": {
+          // Backend tool wants the embedded browser to do something (navigate,
+          // refresh, read a preview page, ...). For commands that show a page,
+          // make sure the Browser tab is visible+active and the right panel is
+          // open so the BrowserPanel is mounted to receive the command.
+          const action = String(
+            (event.data as Record<string, unknown>).action || "",
+          );
+          const cmdData = event.data as Record<string, unknown>;
+          const fanOut = () => {
+            for (const handler of browserCommandHandlersRef.current) {
+              try {
+                handler(cmdData);
+              } catch {
+                // A misbehaving handler must not break event dispatch.
+              }
+            }
+          };
+          if (action === "open" || action === "open_preview") {
+            try {
+              const prefs = loadRightPanelPrefs();
+              const visible = prefs.visible.includes("browser")
+                ? prefs.visible
+                : [...prefs.visible, "browser"];
+              const ordered = RIGHT_PANEL_TABS.filter((id) =>
+                visible.includes(id),
+              );
+              saveRightPanelPrefs({ visible: ordered, active: "browser" });
+              window.dispatchEvent(new Event("codewood.rightPanelTabs"));
+            } catch {
+              // localStorage may be unavailable; panel just won't switch tabs.
+            }
+            setPlanOpen(true);
+            // Defer the fan-out so a just-mounted BrowserPanel has registered
+            // its subscriber before the command is delivered (otherwise the
+            // requestId-bearing command would be dropped and the tool times
+            // out). A short delay is enough for React to flush the mount.
+            window.setTimeout(fanOut, 120);
+          } else {
+            fanOut();
+          }
           break;
         }
         case "request_user_input": {
@@ -1672,6 +1802,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
     backgroundImageUrl,
     pasteImage,
     chatImageUrl,
+    subscribeBrowserCommand,
+    sendBrowserResult,
+    previewHtml,
+    previewHtmlInBrowser,
+    resolveBackendUrl,
     sendInput,
     runCommand,
     interrupt,

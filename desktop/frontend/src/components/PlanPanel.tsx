@@ -12,55 +12,49 @@ function statusIcon(status: string): { name: IconName; className: string } {
   return { name: "circle", className: "plan-step-icon pending" };
 }
 
-export function PlanPanel() {
-  const { state, planOpen, togglePlan, t } = useApp();
-  if (!planOpen) {
-    return null;
-  }
+/** Number of completed/total steps for the active plan (used by the tab title). */
+export function usePlanCounts(): { completed: number; total: number } {
+  const { state } = useApp();
+  const steps: PlanStep[] = state?.plan?.plan ?? [];
+  return {
+    completed: steps.filter((s) => s.status === "completed").length,
+    total: steps.length,
+  };
+}
 
+/** The To-dos panel body (no surrounding chrome). Rendered inside the tabbed
+ *  RightPanel's content area. */
+export function PlanContent() {
+  const { state, t } = useApp();
   const steps: PlanStep[] = state?.plan?.plan ?? [];
   const completed = steps.filter((s) => s.status === "completed").length;
   const total = steps.length;
   const pct = total > 0 ? Math.round((completed / total) * 100) : 0;
 
+  if (total === 0) {
+    return <div className="plan-empty">{t("plan.empty")}</div>;
+  }
   return (
-    <aside className="plan-panel" aria-label={t("plan.title")}>
-      <div className="plan-panel-head">
-        <span className="plan-panel-title">{`${t("plan.title")} (${total})`}</span>
-        <button
-          className="plan-panel-close"
-          aria-label={t("plan.close")}
-          onClick={togglePlan}
-        >
-          <Icon name="win-close" size={14} />
-        </button>
+    <>
+      <div className="plan-progress">
+        <div className="plan-progress-bar">
+          <div className="plan-progress-fill" style={{ width: `${pct}%` }} />
+        </div>
+        <span className="plan-progress-label">
+          {completed}/{total}
+        </span>
       </div>
-
-      {total === 0 ? (
-        <div className="plan-empty">{t("plan.empty")}</div>
-      ) : (
-        <>
-          <div className="plan-progress">
-            <div className="plan-progress-bar">
-              <div className="plan-progress-fill" style={{ width: `${pct}%` }} />
-            </div>
-            <span className="plan-progress-label">
-              {completed}/{total}
-            </span>
-          </div>
-          <ol className="plan-steps">
-            {steps.map((step, idx) => {
-              const { name, className } = statusIcon(step.status);
-              return (
-                <li key={idx} className={`plan-step ${step.status}`}>
-                  <Icon name={name} size={16} className={className} />
-                  <span className="plan-step-text">{step.step}</span>
-                </li>
-              );
-            })}
-          </ol>
-        </>
-      )}
-    </aside>
+      <ol className="plan-steps">
+        {steps.map((step, idx) => {
+          const { name, className } = statusIcon(step.status);
+          return (
+            <li key={idx} className={`plan-step ${step.status}`}>
+              <Icon name={name} size={16} className={className} />
+              <span className="plan-step-text">{step.step}</span>
+            </li>
+          );
+        })}
+      </ol>
+    </>
   );
 }
