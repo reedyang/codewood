@@ -2697,6 +2697,7 @@ class PromptToolkitInputHandler:
         allow_other: bool = True,
         command: Optional[str] = None,
         preview_segments: Optional[List[Dict[str, Any]]] = None,
+        code_language: Optional[str] = None,
     ) -> Optional[str]:
         """Interactive arrow-key selector for an ``request_user_input`` prompt.
 
@@ -2807,6 +2808,7 @@ class PromptToolkitInputHandler:
                     diff_frags = ChangePreviewFormatter.format_segments_responsive_fragments(
                         preview_segments,
                         terminal_width=width,
+                        code_language=code_language,
                     )
                     fragments.extend(diff_frags)
                     if diff_frags and not diff_frags[-1][1].endswith("\n"):
