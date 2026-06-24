@@ -38,6 +38,10 @@ export interface RichComposerProps {
   onSubmit: () => void;
   placeholder?: string;
   rows?: number;
+  /** Called with pasted clipboard bitmaps (as data URLs). When provided and
+   *  the paste carries image items, those items are consumed here instead of
+   *  being inserted as text. */
+  onPasteImages?: (dataUrls: string[]) => void;
 }
 
 interface SlashItem {
@@ -581,6 +585,7 @@ export function RichComposer({
   onSubmit,
   placeholder,
   rows = 3,
+  onPasteImages,
 }: RichComposerProps) {
   const { getCompletionCatalog, searchWorkspaceFiles, t } = useApp();
   const rootRef = useRef<HTMLDivElement | null>(null);
@@ -1354,6 +1359,39 @@ export function RichComposer({
     (e: ReactClipboardEvent<HTMLDivElement>) => {
       const root = rootRef.current;
       if (!root) return;
+      // Clipboard bitmaps (e.g. a screenshot or a copied image) arrive as
+      // ``items`` of kind "file" with an ``image/*`` type. When the host opted
+      // in, consume them as attachments rather than inserting anything as text.
+      if (onPasteImages) {
+        const items = Array.from(e.clipboardData.items || []);
+        const imageFiles = items
+          .filter(
+            (it) => it.kind === "file" && it.type.startsWith("image/"),
+          )
+          .map((it) => it.getAsFile())
+          .filter((f): f is File => f != null);
+        if (imageFiles.length > 0) {
+          e.preventDefault();
+          Promise.all(
+            imageFiles.map(
+              (file) =>
+                new Promise<string>((resolve) => {
+                  const reader = new FileReader();
+                  reader.onload = () =>
+                    resolve(String(reader.result || ""));
+                  reader.onerror = () => resolve("");
+                  reader.readAsDataURL(file);
+                }),
+            ),
+          ).then((urls) => {
+            const valid = urls.filter((u) => u.startsWith("data:image/"));
+            if (valid.length > 0) {
+              onPasteImages(valid);
+            }
+          });
+          return;
+        }
+      }
       const envelope = e.clipboardData.getData(
         "application/x-codewood-segments",
       );
@@ -1372,7 +1410,7 @@ export function RichComposer({
       }
       replaceSelectionWithSegments(decodeSegments(plain));
     },
-    [replaceSelectionWithSegments],
+    [replaceSelectionWithSegments, onPasteImages],
   );
 
   const handleKeyDown = useCallback(

@@ -1,6 +1,7 @@
 ﻿import json
 import os
 import secrets
+import shutil
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -190,25 +191,33 @@ class ChatStateManager:
             raise ValueError("chat record_file must be under chats directory") from exc
         return path
 
-    # Suffix for the per-chat apply_patch change-preview sidecar. Stored next to
-    # the chat record (``<record-stem>.previews.json``) so each chat owns one
-    # preview file, it is trivially associated with its chat, and it can be
-    # deleted/cleaned up alongside the chat record.
-    _CHAT_PREVIEWS_SUFFIX = ".previews.json"
+    # Per-chat side data (pasted images, apply_patch change-preview sidecar) is
+    # kept in a dedicated directory ``chats/data/<record-stem>/`` so each chat
+    # owns one folder, it is trivially associated with its chat record, and it
+    # can be deleted/cleaned up wholesale alongside the chat record.
+    _CHAT_DATA_DIRNAME = "data"
+    _CHAT_PREVIEWS_FILENAME = "previews.json"
 
-    def _previews_path_for_record_file(self, record_file: str) -> Optional[Path]:
+    def _chat_data_dir_for_record_file(self, record_file: str) -> Optional[Path]:
+        """Resolve ``chats/data/<record-stem>/`` for a chat record file name."""
         try:
             record_path = self._resolve_chat_record_path(record_file)
         except Exception:
             return None
-        # ``foo.json`` -> ``foo.previews.json``
-        stem = record_path.name[:-len(".json")] if record_path.name.endswith(".json") else record_path.name
-        return record_path.with_name(f"{stem}{self._CHAT_PREVIEWS_SUFFIX}")
+        stem = (
+            record_path.name[: -len(".json")]
+            if record_path.name.endswith(".json")
+            else record_path.name
+        )
+        return self.chat_records_dir() / self._CHAT_DATA_DIRNAME / stem
 
-    def chat_previews_path(self, chat_id: str) -> Optional[Path]:
-        """Resolve the apply_patch preview sidecar path for ``chat_id`` (one
-        file per chat, alongside its record). Returns None when the chat is
-        unknown."""
+    def chat_data_dir(self, record_file: str) -> Optional[Path]:
+        """Public accessor for a chat record's side-data directory."""
+        return self._chat_data_dir_for_record_file(record_file)
+
+    def chat_data_dir_for_chat(self, chat_id: str) -> Optional[Path]:
+        """Resolve the side-data directory for ``chat_id`` (creating the chat's
+        record file name if needed). Returns None when the chat is unknown."""
         cid = str(chat_id or "").strip()
         if not cid:
             return None
@@ -216,32 +225,51 @@ class ChatStateManager:
         if not isinstance(chat, dict):
             return None
         record_file = self._chat_record_filename_for_chat(chat)
-        return self._previews_path_for_record_file(record_file)
+        return self._chat_data_dir_for_record_file(record_file)
 
-    def delete_chat_previews(self, record_file: str) -> None:
-        """Remove the preview sidecar for a chat record being deleted."""
-        path = self._previews_path_for_record_file(record_file)
-        if path is None:
+    def _previews_path_for_record_file(self, record_file: str) -> Optional[Path]:
+        data_dir = self._chat_data_dir_for_record_file(record_file)
+        if data_dir is None:
+            return None
+        return data_dir / self._CHAT_PREVIEWS_FILENAME
+
+    def chat_previews_path(self, chat_id: str) -> Optional[Path]:
+        """Resolve the apply_patch preview sidecar path for ``chat_id`` (stored
+        under the chat's side-data directory). Returns None when the chat is
+        unknown."""
+        data_dir = self.chat_data_dir_for_chat(chat_id)
+        if data_dir is None:
+            return None
+        return data_dir / self._CHAT_PREVIEWS_FILENAME
+
+    def delete_chat_data(self, record_file: str) -> None:
+        """Remove the entire side-data directory for a chat record being
+        deleted (covers pasted images and the preview sidecar)."""
+        data_dir = self._chat_data_dir_for_record_file(record_file)
+        if data_dir is None:
             return
         try:
-            if path.exists():
-                path.unlink()
+            if data_dir.exists():
+                shutil.rmtree(data_dir, ignore_errors=True)
         except Exception:
             pass
 
-    def cleanup_orphan_chat_previews(self) -> None:
-        """Delete any ``*.previews.json`` whose sibling chat record ``*.json`` no
-        longer exists. Called at startup so previews never outlive their chat."""
+    def cleanup_orphan_chat_data(self) -> None:
+        """Delete any ``chats/data/<stem>/`` whose sibling chat record
+        ``<stem>.json`` no longer exists. Called at startup so side data never
+        outlives its chat."""
         try:
             records_dir = self.chat_records_dir()
-            if not records_dir.exists():
+            data_root = records_dir / self._CHAT_DATA_DIRNAME
+            if not data_root.exists():
                 return
-            for preview in records_dir.glob(f"*{self._CHAT_PREVIEWS_SUFFIX}"):
+            for child in data_root.iterdir():
                 try:
-                    stem = preview.name[:-len(self._CHAT_PREVIEWS_SUFFIX)]
-                    record = preview.with_name(f"{stem}.json")
+                    if not child.is_dir():
+                        continue
+                    record = records_dir / f"{child.name}.json"
                     if not record.exists():
-                        preview.unlink()
+                        shutil.rmtree(child, ignore_errors=True)
                 except Exception:
                     pass
         except Exception:
@@ -582,8 +610,8 @@ class ChatStateManager:
                         # Unknown to this process: assume a peer owns it.
                         continue
                     stale.unlink()
-                    # Delete the chat's preview sidecar alongside its record.
-                    self.delete_chat_previews(stale.name)
+                    # Delete the chat's side-data directory alongside its record.
+                    self.delete_chat_data(stale.name)
                 except Exception:
                     pass
 
@@ -722,10 +750,10 @@ class ChatStateManager:
             if not active or not any(str(c.get("id") or "") == active for c in chats):
                 raise ValueError("active chat invalid")
             self._agent._chat_state = {"version": CHAT_STATE_VERSION, "active": active, "chats": chats}
-            # Drop any orphan apply_patch preview sidecars whose chat record is
-            # gone (e.g. a chat deleted by a peer process) so previews never
-            # outlive their chat.
-            self.cleanup_orphan_chat_previews()
+            # Drop any orphan chat side-data directories whose chat record is
+            # gone (e.g. a chat deleted by a peer process) so pasted images and
+            # preview sidecars never outlive their chat.
+            self.cleanup_orphan_chat_data()
             self.activate_chat(
                 active,
                 announce=False,

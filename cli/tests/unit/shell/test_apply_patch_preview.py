@@ -333,7 +333,8 @@ class ResponsiveChangePreviewTests(unittest.TestCase):
 
 class _FakePreviewChatStateManager:
     """Minimal chat-state manager exposing the per-chat previews path used by
-    the apply_patch preview sidecar (one file per chat under ``chats/``)."""
+    the apply_patch preview sidecar (one file per chat under
+    ``chats/data/<record-stem>/previews.json``)."""
 
     def __init__(self, cfg_dir: Path) -> None:
         self._cfg = Path(cfg_dir)
@@ -343,7 +344,9 @@ class _FakePreviewChatStateManager:
         if not cid:
             return None
         # Deterministic per-chat record stem for the test.
-        return self._cfg / "chats" / f"record-{cid}.previews.json"
+        return (
+            self._cfg / "chats" / "data" / f"record-{cid}" / "previews.json"
+        )
 
 
 class ApplyPatchPreviewSidecarTests(unittest.TestCase):
@@ -389,8 +392,9 @@ class ApplyPatchPreviewSidecarTests(unittest.TestCase):
                 {"file": "/abs/src/x.py", "change_preview_rows": rows},
                 created_at,
             )
-            # Per-chat sidecar written under chats/, rows kept out of context.
-            sidecar = cfg / "chats" / "record-chat-1.previews.json"
+            # Per-chat sidecar written under chats/data/<stem>/, rows kept out
+            # of context.
+            sidecar = cfg / "chats" / "data" / "record-chat-1" / "previews.json"
             self.assertTrue(sidecar.exists())
 
             # Reload replay finds the rows by created_at key.
@@ -488,7 +492,9 @@ class ApplyPatchPreviewSidecarTests(unittest.TestCase):
             )
             agent._find_chat_by_id = lambda _cid: {"messages": []}
             agent._prune_apply_patch_preview_sidecar()
-            self.assertFalse((cfg / "chats" / "record-chat-1.previews.json").exists())
+            self.assertFalse(
+                (cfg / "chats" / "data" / "record-chat-1" / "previews.json").exists()
+            )
 
     def test_multiple_patches_same_chat_keep_distinct_entries(self):
         with tempfile.TemporaryDirectory() as d:
@@ -513,8 +519,8 @@ class ApplyPatchPreviewSidecarTests(unittest.TestCase):
 
 
 class ChatPreviewSidecarLifecycleTests(unittest.TestCase):
-    """Per-chat preview files live under chats/, are deleted with their chat,
-    and orphans are cleaned up at startup."""
+    """Per-chat side data lives under ``chats/data/<record-stem>/``, is deleted
+    wholesale with its chat, and orphans are cleaned up at startup."""
 
     def _manager(self, cfg_dir: Path):
         from cli.managers.chat_state_manager import ChatStateManager
@@ -527,33 +533,36 @@ class ChatPreviewSidecarLifecycleTests(unittest.TestCase):
         mgr = ChatStateManager(agent, "chats.json")
         return mgr
 
-    def test_delete_chat_previews_removes_file(self):
+    def test_delete_chat_data_removes_dir(self):
         with tempfile.TemporaryDirectory() as d:
             cfg = Path(d)
             mgr = self._manager(cfg)
-            records = cfg / "chats"
-            records.mkdir(parents=True, exist_ok=True)
-            preview = records / "abc.previews.json"
-            preview.write_text("{}", encoding="utf-8")
-            mgr.delete_chat_previews("abc.json")
-            self.assertFalse(preview.exists())
+            data_dir = cfg / "chats" / "data" / "abc"
+            data_dir.mkdir(parents=True, exist_ok=True)
+            (data_dir / "previews.json").write_text("{}", encoding="utf-8")
+            (data_dir / "img_x.png").write_bytes(b"\x89PNG")
+            mgr.delete_chat_data("abc.json")
+            self.assertFalse(data_dir.exists())
 
-    def test_cleanup_orphan_previews(self):
+    def test_cleanup_orphan_data(self):
         with tempfile.TemporaryDirectory() as d:
             cfg = Path(d)
             mgr = self._manager(cfg)
             records = cfg / "chats"
-            records.mkdir(parents=True, exist_ok=True)
+            data_root = records / "data"
+            data_root.mkdir(parents=True, exist_ok=True)
             # Orphan: no sibling record.
-            orphan = records / "gone.previews.json"
-            orphan.write_text("{}", encoding="utf-8")
+            orphan = data_root / "gone"
+            orphan.mkdir()
+            (orphan / "previews.json").write_text("{}", encoding="utf-8")
             # Live: has sibling record.
             (records / "live.json").write_text("{}", encoding="utf-8")
-            live_preview = records / "live.previews.json"
-            live_preview.write_text("{}", encoding="utf-8")
-            mgr.cleanup_orphan_chat_previews()
+            live_dir = data_root / "live"
+            live_dir.mkdir()
+            (live_dir / "previews.json").write_text("{}", encoding="utf-8")
+            mgr.cleanup_orphan_chat_data()
             self.assertFalse(orphan.exists())
-            self.assertTrue(live_preview.exists())
+            self.assertTrue(live_dir.exists())
 
 
 class ChangePreviewHighlightTests(unittest.TestCase):

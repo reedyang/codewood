@@ -6595,9 +6595,9 @@ class Agent:
         )
 
     def _apply_patch_preview_path(self) -> Optional[Path]:
-        """Per-chat apply_patch preview sidecar path (``<record>.previews.json``
-        next to the active chat's record). One file per chat so it is trivially
-        associated with — and cleaned up alongside — its chat record."""
+        """Per-chat apply_patch preview sidecar path
+        (``chats/data/<record-stem>/previews.json``). One file per chat so it is
+        trivially associated with — and cleaned up alongside — its chat record."""
         try:
             mgr = getattr(self, "_chat_state_manager", None)
             if mgr is None:
