@@ -41,9 +41,11 @@ import webview  # noqa: E402 - must follow the GDK_BACKEND setup above
 try:
     from backend import BackendError, BackendProcess
     from bridge import resolve_frontend_url
+    from browser_overlay import BrowserOverlay
 except ImportError:  # pragma: no cover - allow running as a module too
     from .backend import BackendError, BackendProcess  # type: ignore
     from .bridge import resolve_frontend_url  # type: ignore
+    from .browser_overlay import BrowserOverlay  # type: ignore
 
 WINDOW_TITLE = "Code Wood"
 
@@ -56,6 +58,28 @@ def _preferred_gui() -> str | None:
     if sys.platform == "win32":
         return "edgechromium"
     return None
+
+
+def _overlay_browser_enabled() -> bool:
+    """Whether the in-window overlay browser should be used.
+
+    The overlay is a second top-level window tracked over the right panel. It
+    relies heavily on ``window.move`` to follow the main window, which is
+    reliable on Windows/EdgeChromium but documented as flaky on WSLg/X11 (the
+    same bugs the main window already works around). So default it ON only on
+    Windows; elsewhere the frontend falls back to the sandboxed-iframe browser
+    unless the user explicitly opts in.
+
+    Overrides (both platforms):
+    - ``CODEWOOD_BROWSER_OVERLAY=0`` force OFF
+    - ``CODEWOOD_BROWSER_OVERLAY=1`` force ON
+    """
+    raw = str(os.environ.get("CODEWOOD_BROWSER_OVERLAY", "")).strip().lower()
+    if raw in ("0", "false", "no", "off"):
+        return False
+    if raw in ("1", "true", "yes", "on"):
+        return True
+    return sys.platform == "win32"
 
 
 def _folder_dialog():
@@ -161,6 +185,59 @@ class HostApi:
 
     def __init__(self) -> None:
         self._maximized = False
+        # Set by ``main()`` once the overlay browser window exists. ``None``
+        # until then (and stays a disabled instance when overlay mode is off),
+        # so every overlay method is safe to call regardless.
+        self._overlay: BrowserOverlay | None = None
+
+    def attach_overlay(self, overlay: "BrowserOverlay") -> None:
+        self._overlay = overlay
+
+    # -- embedded browser overlay (renderer-callable) ---------------------
+    #
+    # The frontend reports the on-screen rectangle of the right-panel browser
+    # viewport (logical px, relative to the main window's client area) and
+    # toggles visibility; the host positions/sizes the overlay window to match.
+    # ``browser_overlay_supported`` lets the renderer decide between overlay
+    # mode and the iframe fallback.
+
+    def browser_overlay_supported(self) -> bool:
+        return bool(self._overlay is not None and self._overlay.enabled)
+
+    def browser_overlay_set_bounds(
+        self, x: float, y: float, width: float, height: float
+    ) -> bool:
+        if self._overlay is None:
+            return False
+        return self._overlay.set_bounds(x, y, width, height)
+
+    def browser_overlay_show(self) -> bool:
+        if self._overlay is None:
+            return False
+        return self._overlay.show()
+
+    def browser_overlay_hide(self) -> bool:
+        if self._overlay is None:
+            return False
+        return self._overlay.hide()
+
+    def browser_overlay_command(
+        self, action: str, url: str = "", script: str = ""
+    ) -> dict:
+        """Execute a model-issued browser command against the overlay window.
+
+        Returns the structured result the frontend posts back to the waiting
+        tool via ``/browser-result``. Errors are returned (not raised) so a
+        misbehaving page can't break the js_api bridge.
+        """
+        if self._overlay is None:
+            return {"success": False, "error": "overlay unavailable"}
+        try:
+            return self._overlay.run_command(
+                str(action or ""), str(url or ""), str(script or "")
+            )
+        except Exception as exc:  # pragma: no cover - defensive
+            return {"success": False, "error": f"overlay command failed: {exc}"}
 
     def host_platform(self) -> str:
         """Report the host OS family so the frontend can pick drag strategies.
@@ -459,6 +536,13 @@ class HostApi:
             window.move(nx, ny)
         except Exception:
             pass
+        # The overlay browser is positioned relative to the main window's
+        # origin, so re-sync it after the main window moves/resizes itself.
+        if self._overlay is not None:
+            try:
+                self._overlay.resync()
+            except Exception:
+                pass
 
 
 def main() -> int:
@@ -486,6 +570,7 @@ def main() -> int:
         return 1
 
     url = resolve_frontend_url(port, token)
+    host_api = HostApi()
     window = webview.create_window(
         WINDOW_TITLE,
         url=url,
@@ -494,13 +579,61 @@ def main() -> int:
         min_size=(960, 640),
         frameless=True,
         easy_drag=False,
-        js_api=HostApi(),
+        js_api=host_api,
     )
 
+    # In-window embedded browser: a tracked, frameless, always-on-top overlay
+    # window positioned over the right panel's browser viewport. Created up
+    # front (hidden) when overlay mode is enabled; the renderer drives its
+    # bounds/visibility and navigation through ``host_api``.
+    overlay = BrowserOverlay(webview, window, enabled=_overlay_browser_enabled())
+    host_api.attach_overlay(overlay)
+
+    def _on_closing() -> None:
+        # Tear the overlay down *before* the main window destroys its own
+        # WebView2 host. The overlay is owned by the main window, so letting
+        # Windows auto-destroy it during the main window's teardown races with
+        # WebView2 cleanup and pops a brief, textless native error dialog.
+        # Destroying it first (and idempotently) avoids that.
+        try:
+            overlay.destroy()
+        except Exception:
+            pass
+
     def _on_closed() -> None:
+        try:
+            overlay.destroy()
+        except Exception:
+            pass
         backend.stop()
 
+    window.events.closing += _on_closing
     window.events.closed += _on_closed
+
+    # Keep the overlay glued to the main window as it moves/resizes, and hide
+    # it while minimized so it doesn't float over other apps. ``resync`` reads
+    # the latest reported rect and re-applies geometry/visibility.
+    if overlay.enabled:
+        def _resync(*_args: object) -> None:
+            try:
+                overlay.resync()
+            except Exception:
+                pass
+
+        def _on_minimized(*_args: object) -> None:
+            try:
+                overlay.suspend_for_main_minimized()
+            except Exception:
+                pass
+
+        try:
+            window.events.moved += _resync
+            window.events.resized += _resync
+            window.events.maximized += _resync
+            window.events.restored += _resync
+            window.events.minimized += _on_minimized
+        except Exception:
+            pass
 
     # Opt-in debugging: ``CODEWOOD_GUI_DEBUG=1`` enables pywebview's web
     # inspector (right-click → Inspect Element) so frontend errors behind a

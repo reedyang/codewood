@@ -91,5 +91,8 @@ export function toggleTabVisibility(
   const nextVisible = currentlyVisible
     ? prefs.visible.filter((t) => t !== id)
     : [...prefs.visible, id];
-  return sanitize({ visible: nextVisible, active: prefs.active });
+  // Enabling a tab should also switch to it (the user opened it to use it);
+  // disabling falls back to sanitize's active-tab repair.
+  const nextActive = currentlyVisible ? prefs.active : id;
+  return sanitize({ visible: nextVisible, active: nextActive });
 }

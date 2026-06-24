@@ -12,6 +12,11 @@ describe("rightPanelTabs", () => {
     expect(next.visible).toEqual(["todos", "browser"]);
   });
 
+  it("activates a newly shown tab", () => {
+    const next = toggleTabVisibility(base, "browser");
+    expect(next.active).toBe("browser");
+  });
+
   it("removes a visible non-mandatory tab", () => {
     const withBrowser: RightPanelPrefs = {
       visible: ["todos", "browser"],

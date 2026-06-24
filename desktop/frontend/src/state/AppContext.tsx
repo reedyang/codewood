@@ -37,6 +37,7 @@ import {
   RIGHT_PANEL_TABS,
   loadRightPanelPrefs,
   saveRightPanelPrefs,
+  type RightPanelTabId,
 } from "./rightPanelTabs";
 
 export type Theme = "light" | "dark" | "system";
@@ -108,6 +109,10 @@ interface AppContextValue {
   ) => Promise<void>;
   previewHtml: (html: string) => Promise<{ url: string } | null>;
   previewHtmlInBrowser: (html: string) => Promise<boolean>;
+  /** Show the embedded Browser tab (visible + active, panel open). */
+  showBrowserTab: () => void;
+  /** Hide the embedded Browser tab (its "x" close button). */
+  hideBrowserTab: () => void;
   resolveBackendUrl: (url: string) => string;
   sendInput: (text: string) => Promise<void>;
   runCommand: (command: string) => Promise<void>;
@@ -515,6 +520,43 @@ export function AppProvider({ children }: { children: ReactNode }) {
     },
     [],
   );
+
+  // Make the Browser tab visible + active and open the right panel (invoked
+  // from the View menu). Idempotent.
+  const showBrowserTab = useCallback(() => {
+    try {
+      const prefs = loadRightPanelPrefs();
+      const visible = prefs.visible.includes("browser")
+        ? prefs.visible
+        : [...prefs.visible, "browser"];
+      const ordered = RIGHT_PANEL_TABS.filter((id) => visible.includes(id));
+      saveRightPanelPrefs({ visible: ordered, active: "browser" });
+      window.dispatchEvent(new Event("codewood.rightPanelTabs"));
+    } catch {
+      // localStorage may be unavailable; the panel just won't switch tabs.
+    }
+    setPlanOpen(true);
+  }, []);
+
+  // Remove the Browser tab from the visible set (its "x" close button). Falls
+  // back to the To-dos tab.
+  const hideBrowserTab = useCallback(() => {
+    try {
+      const prefs = loadRightPanelPrefs();
+      const visible: RightPanelTabId[] = prefs.visible.filter(
+        (id): id is RightPanelTabId => id !== "browser",
+      );
+      const ordered: RightPanelTabId[] = RIGHT_PANEL_TABS.filter((id) =>
+        visible.includes(id),
+      );
+      const active: RightPanelTabId =
+        ordered.indexOf(prefs.active) >= 0 ? prefs.active : (ordered[0] ?? "todos");
+      saveRightPanelPrefs({ visible: ordered, active });
+      window.dispatchEvent(new Event("codewood.rightPanelTabs"));
+    } catch {
+      // localStorage may be unavailable.
+    }
+  }, []);
 
   // Render an HTML snippet in the embedded browser: persist it, ensure the
   // Browser tab is visible+active and the right panel is open, then navigate.
@@ -1812,6 +1854,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
     sendBrowserResult,
     previewHtml,
     previewHtmlInBrowser,
+    showBrowserTab,
+    hideBrowserTab,
     resolveBackendUrl,
     sendInput,
     runCommand,

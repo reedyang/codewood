@@ -32,7 +32,7 @@ type MenuEntry =
   | { label: string; shortcut?: string; onSelect: () => void };
 
 export function TitleBar({ onTogglePanel }: { onTogglePanel: () => void }) {
-  const { t, clearTurns, runCommand, newChat, openSettings, openAbout, pickFolder } = useApp();
+  const { t, clearTurns, runCommand, newChat, openSettings, openAbout, pickFolder, showBrowserTab } = useApp();
   const [openMenu, setOpenMenu] = useState<string | null>(null);
   const [native, setNative] = useState<boolean>(() => Boolean(hostApi()));
   const [maximized, setMaximized] = useState(false);
@@ -118,6 +118,13 @@ export function TitleBar({ onTogglePanel }: { onTogglePanel: () => void }) {
         { label: t("menu.file.settings"), shortcut: "Ctrl+,", onSelect: openSettings },
         "separator",
         { label: t("menu.file.exit"), onSelect: closeWindow },
+      ],
+    },
+    {
+      id: "view",
+      label: t("menu.view"),
+      entries: [
+        { label: t("menu.view.browser"), onSelect: () => showBrowserTab() },
       ],
     },
     {

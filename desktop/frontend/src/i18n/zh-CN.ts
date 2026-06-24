@@ -63,6 +63,7 @@ export const zhCN: Dict = {
   "rightpanel.tabsMenu": "选择面板",
   "rightpanel.tab.todos": "待办事项",
   "rightpanel.tab.browser": "浏览器",
+  "rightpanel.tab.close": "关闭标签页",
   "browser.address": "输入网址",
   "browser.back": "后退",
   "browser.forward": "前进",
@@ -73,7 +74,9 @@ export const zhCN: Dict = {
   "browser.preview": "在浏览器中预览",
 
   "menu.file": "文件",
+  "menu.view": "视图",
   "menu.help": "帮助",
+  "menu.view.browser": "浏览器",
   "menu.file.newChat": "新建对话",
   "menu.file.openFolder": "打开文件夹…",
   "menu.file.close": "关闭",
