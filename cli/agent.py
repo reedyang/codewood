@@ -2580,12 +2580,106 @@ class Agent:
         args: Dict[str, Any],
         failed: bool = False,
     ) -> str:
-        summary = self._tool_call_summary(tool_name, args)
         bullet = _ansi_rgb("•", 197, 15, 31) if bool(failed) else _ansi_rgb("•", 19, 161, 14)
+        name = str(tool_name or "").strip().lower()
+        if name == "shell":
+            # Shell keeps the literal "Ran <command>" phrasing so the executed
+            # command line reads exactly as typed.
+            summary = self._tool_call_summary(tool_name, args)
+            return self._format_wrapped_command_feedback_line(
+                f"{bullet} {translate('status.ran', self._ui_language())} ",
+                summary,
+            )
+        # Every other tool gets a natural-language action label (no "Ran"
+        # prefix), e.g. "Apply patch (path=...)", and the special "Create file"
+        # phrasing when apply_patch is used to add a brand-new file.
+        label, detail = self._natural_tool_action(tool_name, args)
         return self._format_wrapped_command_feedback_line(
-            f"{bullet} {translate('status.ran', self._ui_language())} ",
-            summary,
+            f"{bullet} {label} ",
+            detail,
         )
+
+    def _natural_tool_action(
+        self, tool_name: str, args: Dict[str, Any]
+    ) -> tuple:
+        """Return ``(label, detail)`` for a non-shell tool call.
+
+        ``label`` is a human-friendly action phrase ("Apply patch", "Run
+        subagent", ...) derived from the tool name, and ``detail`` is the
+        existing one-line argument summary (e.g. ``(path=foo.py)``). Both feed
+        the wrapped feedback line so the TUI and GUI render the same phrasing.
+        """
+        a = args if isinstance(args, dict) else {}
+        name = str(tool_name or "").strip().lower()
+        # apply_patch reads as "Apply patch", or "Create file" when the patch is
+        # an Add-File operation (a new file rather than an edit).
+        if name == "apply_patch":
+            patch_v = a.get("patch")
+            is_add_file = isinstance(patch_v, str) and "*** Add File:" in patch_v
+            label = (
+                translate("status.create_file", self._ui_language())
+                if is_add_file
+                else translate("status.apply_patch", self._ui_language())
+            )
+            p = str(a.get("path") or "").strip()
+            detail = f"({p})" if p else ""
+            return (label, detail)
+        # Look up a localized action label by tool name, falling back to the
+        # humanized English name for unknown/MCP tools (which have no key).
+        name_key = name.replace(".", "_")
+        label = translate(
+            f"tool.label.{name_key}",
+            self._ui_language(),
+            fallback=self._humanize_tool_name(tool_name),
+        )
+        return (label, self._tool_action_detail(tool_name, a))
+
+    @staticmethod
+    def _humanize_tool_name(tool_name: str) -> str:
+        """Turn a snake_case tool name into a "Sentence case" action phrase.
+
+        ``apply_patch`` -> ``Apply patch``; ``run_subagent`` -> ``Run
+        subagent``; ``browser_open`` -> ``Browser open``. Only the first word is
+        capitalized so it reads as a natural verb phrase.
+        """
+        raw = str(tool_name or "").strip()
+        if not raw:
+            return raw
+        words = raw.replace("_", " ").split()
+        if not words:
+            return raw
+        words[0] = words[0][:1].upper() + words[0][1:]
+        return " ".join(words)
+
+    def _tool_action_detail(self, tool_name: str, a: Dict[str, Any]) -> str:
+        """One-line argument detail for a non-shell tool, in ``(...)`` form."""
+        if str(tool_name).strip().lower() == "run_subagent":
+            name = str(a.get("subagent") or "").strip() or "-"
+            return f"(subagent={name})"
+        for k in (
+            "skill_id",
+            "mcp",
+            "resource_id",
+            "server",
+            "tool",
+            "url",
+            "path",
+            "filename",
+            "file",
+            "source",
+            "target",
+            "query",
+        ):
+            v = a.get(k)
+            if isinstance(v, str) and v.strip():
+                vv = v.strip().replace("\n", " ")
+                if len(vv) > 120:
+                    vv = vv[:120] + "..."
+                return f"({k}={vv})"
+        if a:
+            keys = ",".join(sorted([str(k) for k in a.keys()])[:5])
+            return f"(args: {keys})"
+        return ""
 
     @staticmethod
     def _feedback_char_display_width(ch: str) -> int:

@@ -249,6 +249,39 @@ class ApplyPatchPreviewTests(unittest.TestCase):
             self.assertEqual(agent.prompt_calls, 0)
             self.assertEqual(target.read_text(encoding="utf-8"), "hello_mod\n")
 
+    def test_moderate_mode_gui_still_emits_live_diff_block(self):
+        # Regression: under moderate policy the confirm prompt is skipped, but
+        # the GUI must still emit the collapsible diff block live (it was
+        # previously gated together with the confirm and only appeared on
+        # reload).
+        import contextlib
+        import io
+
+        from cli.core.console_utils import GUI_DIFF_BEGIN, GUI_DIFF_END
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            target = root / "demo.txt"
+            target.write_text("hello\n", encoding="utf-8")
+            agent = _DummyAgent(root)
+            agent.execution_policy = "moderate"
+            # Mark GUI mode: apply_patch detects it via a callable confirm
+            # choice provider.
+            agent._confirm_choice_provider = lambda *a, **k: True
+
+            patch = "@@ -1,1 +1,1 @@\n-hello\n+hello_mod\n"
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                result = action_apply_unified_patch(
+                    agent, str(target), patch, confirmed=False
+                )
+            out = buf.getvalue()
+
+            self.assertTrue(result.get("success"), result.get("error"))
+            self.assertEqual(agent.prompt_calls, 0)
+            self.assertIn(GUI_DIFF_BEGIN, out)
+            self.assertIn(GUI_DIFF_END, out)
+
     def test_apply_patch_falls_back_to_context_when_hunk_line_number_is_wrong(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
