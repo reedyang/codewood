@@ -1,4 +1,7 @@
+import { useState } from "react";
 import { AnsiText } from "./Ansi";
+import { DiffPreview, langFromPath } from "./DiffPreview";
+import type { DiffRow } from "../api/types";
 
 // Private-use sentinels wrapping raw command output, emitted by the backend in
 // GUI mode (kept in sync with src/core/console_utils.py). They let us render
@@ -10,8 +13,13 @@ const CMD_OUTPUT_END = "\uE001";
 // the command text gets a hanging indent so soft-wrapped lines stay aligned.
 const CMD_PROMPT_BEGIN = "\uE004";
 const CMD_PROMPT_END = "\uE005";
+// Sentinels wrapping a structured apply_patch change-preview JSON payload
+// (kept in sync with cli/core/console_utils.py). Rendered as a collapsible,
+// syntax-highlighted diff block instead of raw JSON.
+const DIFF_BEGIN = "\uE006";
+const DIFF_END = "\uE007";
 
-type SegKind = "text" | "cmd" | "prompt";
+type SegKind = "text" | "cmd" | "prompt" | "diff";
 type Segment = { kind: SegKind; text: string };
 
 function splitSteps(text: string): Segment[] {
@@ -45,6 +53,16 @@ function splitSteps(text: string): Segment[] {
       mode = "text";
       continue;
     }
+    if (mode === "text" && ch === DIFF_BEGIN) {
+      flush();
+      mode = "diff";
+      continue;
+    }
+    if (mode === "diff" && ch === DIFF_END) {
+      flush();
+      mode = "text";
+      continue;
+    }
     buf += ch;
   }
   flush();
@@ -69,12 +87,27 @@ function trimBlankEdges(text: string): string {
 /** Render collapsible execution steps, isolating command output blocks. */
 export function StepsView({ text }: { text: string }) {
   const segments = splitSteps(text);
+  // Index of the last segment that carries visible content, so a diff block
+  // auto-collapses once another tool/output block follows it (the "collapse the
+  // previously-expanded diff when the next tool runs" behavior) while the most
+  // recent diff stays expanded.
+  let lastContentIdx = -1;
+  segments.forEach((seg, i) => {
+    if (trimBlankEdges(seg.text)) {
+      lastContentIdx = i;
+    }
+  });
   return (
     <div className="activity-steps">
       {segments.map((seg, index) => {
         const value = trimBlankEdges(seg.text);
         if (!value) {
           return null;
+        }
+        if (seg.kind === "diff") {
+          return (
+            <DiffStep key={index} payload={value} defaultExpanded={index === lastContentIdx} />
+          );
         }
         if (seg.kind === "prompt") {
           const { bullet, body } = splitPromptBullet(value);
@@ -97,4 +130,55 @@ export function StepsView({ text }: { text: string }) {
       })}
     </div>
   );
+}
+
+interface DiffPayload {
+  file?: string;
+  diffRows?: DiffRow[];
+}
+
+/** A collapsible apply_patch change-preview block in the transcript. Defaults
+ *  to expanded for the most recent diff; collapses automatically once a later
+ *  tool/output block follows it. The user can always toggle it manually. */
+function DiffStep({
+  payload,
+  defaultExpanded,
+}: {
+  payload: string;
+  defaultExpanded: boolean;
+}) {
+  const [expanded, setExpanded] = useState(defaultExpanded);
+  let parsed: DiffPayload | null = null;
+  try {
+    parsed = JSON.parse(payload) as DiffPayload;
+  } catch {
+    parsed = null;
+  }
+  const rows = parsed?.diffRows ?? [];
+  if (rows.length === 0) {
+    return null;
+  }
+  const fileName = (parsed?.file || "").split(/[\\/]/).pop() || parsed?.file || "";
+  return (
+    <div className="diff-step">
+      <button
+        type="button"
+        className="diff-step-header"
+        onClick={() => setExpanded((v) => !v)}
+      >
+        <span className={`diff-step-chevron ${expanded ? "open" : ""}`}>▸</span>
+        <span className="diff-step-title">{fileName}</span>
+        <span className="diff-step-stats">
+          {countByType(rows, ["add", "change"])} + / {countByType(rows, ["del", "change"])} -
+        </span>
+      </button>
+      {expanded ? (
+        <DiffPreview rows={rows} lang={langFromPath(parsed?.file)} />
+      ) : null}
+    </div>
+  );
+}
+
+function countByType(rows: DiffRow[], types: string[]): number {
+  return rows.filter((r) => types.includes(r.type)).length;
 }

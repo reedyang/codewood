@@ -24,6 +24,15 @@ GUI_CMD_OUTPUT_END = "\ue001"
 GUI_CMD_PROMPT_BEGIN = "\ue004"
 GUI_CMD_PROMPT_END = "\ue005"
 
+# Private-use sentinels wrapping a structured apply_patch change-preview payload
+# (a JSON blob ``{"file": ..., "diffRows": [...]}``) in GUI mode. The desktop GUI
+# splits step text on these markers and renders a collapsible, syntax-highlighted
+# diff block in place of the raw JSON. Because the payload travels inside the
+# normal step text it is persisted with the chat and re-rendered on reload.
+# Keep in sync with the frontend (desktop/frontend/src/components/Steps.tsx).
+GUI_DIFF_BEGIN = "\ue006"
+GUI_DIFF_END = "\ue007"
+
 # Private-use sentinel prepended to composer input by the desktop GUI to force
 # the runtime loop to treat the line as a model prompt, never as a built-in
 # slash command or "!" direct-shell execution. The GUI does not allow users to
