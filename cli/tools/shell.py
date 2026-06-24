@@ -619,24 +619,28 @@ def action_shell_command(
         or ((not confirmed) and (not in_allowlist))
     )
     if should_prompt_confirm:
-        prompt_text = _t(
-            agent,
-            "execution_policy.prompt.confirm_shell",
-            fallback="⚠️ Confirm executing system command: {command} ?",
-            command=command,
-        )
+        # The selection/inline confirmation UI renders the command on its own
+        # styled line, so use a command-less question and pass the command
+        # separately via ``display_command``. The plain-text fallback inside
+        # ``_prompt_confirm_yes_no_maybe_always`` re-appends the command.
         if force_manual_confirm_by_policy:
             prompt_text = _t(
                 agent,
-                "execution_policy.prompt.manual_confirmation_required",
-                fallback="⚠️ AI requires manual confirmation. Please confirm before continuing: {command} ?",
-                command=command,
+                "execution_policy.prompt.manual_confirmation_required_no_command",
+                fallback="⚠️ AI requires manual confirmation. Please confirm this command before continuing.",
+            )
+        else:
+            prompt_text = _t(
+                agent,
+                "execution_policy.prompt.confirm_shell_no_command",
+                fallback="⚠️ Confirm executing this system command?",
             )
         ok = agent._prompt_confirm_yes_no_maybe_always(
             prompt_text,
             offer_always=agent._shell_confirm_should_offer_always(command),
             kind="shell",
             shell_command=command,
+            display_command=command,
         )
         if not ok:
             return {"success": False, "error": "Operation cancelled by user"}

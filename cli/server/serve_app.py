@@ -1291,6 +1291,68 @@ class ServeApp:
                 self._confirms.pop(cid, None)
         return str(answer or "")
 
+    def _confirm_choice_provider(
+        self,
+        prompt: str,
+        options: List[str],
+        offer_always: bool = False,
+        command: Optional[str] = None,
+    ) -> str:
+        """Structured confirmation prompt for the execution-policy gate.
+
+        Broadcasts a ``confirm`` SSE event carrying the prompt plus a fixed
+        list of option labels (Yes / No / optionally Always) and blocks until
+        the frontend POSTs the chosen answer to ``/confirm``. The frontend
+        renders an inline single-choice panel (same style as the
+        ``request_user_input`` panel) below the message area; the user's pick is
+        posted back as the option **index** and mapped here to ``"y" | "n" |
+        "a"`` locally — the choice is never sent to the model.
+
+        Returns ``"n"`` (cancel) when the prompt is dismissed without a pick.
+        """
+        cid = secrets.token_hex(8)
+        reply: "queue.Queue[str]" = queue.Queue()
+        with self._confirms_lock:
+            self._confirms[cid] = reply
+        safe_options: List[str] = []
+        for raw in options or []:
+            label = strip_ansi(str(raw or ""))[:120]
+            if label:
+                safe_options.append(label)
+        self.broadcaster.publish(
+            "confirm",
+            {
+                "id": cid,
+                "prompt": strip_ansi(str(prompt or "")),
+                "command": strip_ansi(str(command or "")),
+                "options": safe_options,
+                "offerAlways": bool(offer_always),
+                "chatId": self._active_chat_id(),
+            },
+        )
+        try:
+            answer = reply.get()
+        finally:
+            with self._confirms_lock:
+                self._confirms.pop(cid, None)
+        # The frontend posts either the option index (preferred) or a direct
+        # y/n/a token. Map both to the canonical y/n/a the policy gate expects.
+        ans = str(answer or "").strip().lower()
+        if ans.isdigit():
+            idx = int(ans)
+            if 0 <= idx < len(safe_options):
+                if idx == 0:
+                    return "y"
+                if offer_always and idx == len(safe_options) - 1 and len(safe_options) >= 3:
+                    return "a"
+                return "n"
+            return "n"
+        if ans in ("y", "yes"):
+            return "y"
+        if ans in ("a", "always") and offer_always:
+            return "a"
+        return "n"
+
     def _request_user_input_provider(
         self,
         question: str,
@@ -3167,6 +3229,11 @@ class ServeApp:
         # Install agent loop hooks before swapping stdout so output is captured.
         self.agent._get_user_input_with_history = self._input_provider  # type: ignore[assignment]
         self.agent._suspended_input = self._confirm_provider  # type: ignore[assignment]
+        # The execution-policy confirmation prompt calls this so the GUI can
+        # render a fixed-option single-choice panel (instead of a modal y/n/a
+        # dialog). The picked option is mapped to y/n/a locally and never sent
+        # to the model.
+        self.agent._confirm_choice_provider = self._confirm_choice_provider  # type: ignore[assignment]
         # The runtime loop calls this for ``request_user_input`` so the GUI can
         # render clickable option chips instead of a raw text prompt.
         self.agent._request_user_input_provider = self._request_user_input_provider  # type: ignore[assignment]

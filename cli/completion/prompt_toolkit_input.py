@@ -2694,8 +2694,20 @@ class PromptToolkitInputHandler:
         multi_select: bool = False,
         other_label: Optional[str] = None,
         required_label: Optional[str] = None,
+        allow_other: bool = True,
+        command: Optional[str] = None,
     ) -> Optional[str]:
         """Interactive arrow-key selector for an ``request_user_input`` prompt.
+
+        When ``allow_other`` is ``False`` the trailing "Other" free-text row is
+        omitted entirely, so only the fixed options can be chosen (used by the
+        execution-policy confirmation prompt, which must not accept freeform
+        input).
+
+        When ``command`` is provided it is rendered on its own emphasized
+        (cyan) line between the question and the options — used by the
+        confirmation prompt to make the command-to-run stand out from the
+        surrounding prompt text.
 
         Navigation:
           - ↑/↓ move the highlight between options (and the trailing "Other"
@@ -2739,9 +2751,11 @@ class PromptToolkitInputHandler:
             else translate("runtime.request_user_input.option_other", lang)
         )
         # Row model: indices 0..len-1 are concrete options; the last row is
-        # the "Other" free-text row.
-        other_row = len(opts)
-        total_rows = len(opts) + 1
+        # the "Other" free-text row (suppressed entirely when allow_other is
+        # False, e.g. the fixed-option confirmation prompt).
+        allow_other = bool(allow_other)
+        other_row = len(opts) if allow_other else -1
+        total_rows = len(opts) + (1 if allow_other else 0)
 
         state = {
             "cursor": 0,
@@ -2774,6 +2788,12 @@ class PromptToolkitInputHandler:
                 fragments.append(
                     ("", translate("runtime.request_user_input.question", lang, question=q) + "\n")
                 )
+            cmd = str(command or "").strip()
+            if cmd:
+                # Emphasize the command on its own line so it stands out from
+                # the surrounding confirmation prompt text; indent two spaces so
+                # it reads as a nested code line under the question.
+                fragments.append(("class:amisel.command", f"  {cmd}\n"))
             for i, label in enumerate(opts):
                 focused = state["cursor"] == i
                 pointer = "❯ " if focused else "  "
@@ -2783,6 +2803,13 @@ class PromptToolkitInputHandler:
                     box = ""
                 style = "class:amisel.focused" if focused else ""
                 fragments.append((style, f"{pointer}{box}{label}\n"))
+            if not allow_other:
+                # No "Other" free-text row: strip the trailing newline from the
+                # last option so the rendered block has no dangling blank line.
+                if fragments and fragments[-1][1].endswith("\n"):
+                    last_style, last_text = fragments[-1]
+                    fragments[-1] = (last_style, last_text[:-1])
+                return fragments
             # Other row
             focused = state["cursor"] == other_row
             pointer = "❯ " if focused else "  "
@@ -2927,6 +2954,7 @@ class PromptToolkitInputHandler:
                     "amisel.focused": "reverse",
                     "amisel.hint": "#888888",
                     "amisel.prompt": "#888888",
+                    "amisel.command": "#00afaf bold",
                 }
             )
         except Exception:
