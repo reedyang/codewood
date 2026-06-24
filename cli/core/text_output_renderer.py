@@ -220,6 +220,55 @@ _LATEX_CMD_RE = re.compile(r"\\([A-Za-z]+)")
 # Inline math spans: ``$...$`` (not ``$$``) and ``\(...\)``.
 _INLINE_MATH_RE = re.compile(r"(?<!\$)\$(?!\$)([^$\n]+?)\$(?!\$)|\\\(([^\n]+?)\\\)")
 
+# Unicode super/subscript maps. ``pylatexenc`` leaves ``x^2`` / ``x_i`` as-is,
+# so after it converts the rest we lift simple scripts into Unicode (only when
+# every character is mappable; otherwise the ``^``/``_`` form is kept verbatim
+# so we never produce a half-converted mess).
+_SUPERSCRIPT_MAP: Dict[str, str] = {
+    "0": "\u2070", "1": "\u00b9", "2": "\u00b2", "3": "\u00b3", "4": "\u2074",
+    "5": "\u2075", "6": "\u2076", "7": "\u2077", "8": "\u2078", "9": "\u2079",
+    "+": "\u207a", "-": "\u207b", "=": "\u207c", "(": "\u207d", ")": "\u207e",
+    "n": "\u207f", "i": "\u2071", "a": "\u1d43", "b": "\u1d47", "c": "\u1d9c",
+    "x": "\u02e3", "y": "\u02b8",
+}
+_SUBSCRIPT_MAP: Dict[str, str] = {
+    "0": "\u2080", "1": "\u2081", "2": "\u2082", "3": "\u2083", "4": "\u2084",
+    "5": "\u2085", "6": "\u2086", "7": "\u2087", "8": "\u2088", "9": "\u2089",
+    "+": "\u208a", "-": "\u208b", "=": "\u208c", "(": "\u208d", ")": "\u208e",
+    "a": "\u2090", "e": "\u2091", "i": "\u1d62", "j": "\u2c7c", "o": "\u2092",
+    "x": "\u2093", "n": "\u2099",
+}
+
+# ``^{...}``/``_{...}`` (braced) or a single bare char after ``^``/``_``.
+_SCRIPT_RE = re.compile(r"([\^_])(?:\{([^{}]*)\}|(\S))")
+
+
+def _to_unicode_script(body: str, sup: bool) -> str | None:
+    table = _SUPERSCRIPT_MAP if sup else _SUBSCRIPT_MAP
+    out = []
+    for ch in body:
+        mapped = table.get(ch)
+        if mapped is None:
+            return None
+        out.append(mapped)
+    return "".join(out)
+
+
+def _apply_unicode_scripts(text: str) -> str:
+    """Lift ``x^2`` / ``a_{ij}`` into Unicode super/subscripts where possible."""
+    if "^" not in text and "_" not in text:
+        return text
+
+    def _repl(m: "re.Match[str]") -> str:
+        kind = m.group(1)
+        body = m.group(2) if m.group(2) is not None else (m.group(3) or "")
+        converted = _to_unicode_script(body, kind == "^")
+        if converted is None:
+            return m.group(0)
+        return converted
+
+    return _SCRIPT_RE.sub(_repl, text)
+
 
 def _convert_latex_command(match: "re.Match[str]") -> str:
     name = match.group(1)
@@ -227,19 +276,85 @@ def _convert_latex_command(match: "re.Match[str]") -> str:
     return repl if repl is not None else match.group(0)
 
 
+def _render_math_with_pylatexenc(body: str) -> str | None:
+    """Render a LaTeX math body to plain Unicode text via pylatexenc.
+
+    Returns the converted text, or None if pylatexenc is unavailable or the
+    conversion left an unresolved backslash command (so callers can fall back
+    to the curated-symbol path rather than emit half-converted TeX).
+    """
+    try:
+        from pylatexenc.latex2text import LatexNodes2Text
+    except Exception:
+        return None
+    try:
+        rendered = LatexNodes2Text().latex_to_text(body)
+    except Exception:
+        return None
+    rendered = _apply_unicode_scripts(rendered.strip())
+    # Collapse the newlines pylatexenc may introduce for display math so an
+    # inline span stays on one line.
+    rendered = re.sub(r"\s*\n\s*", " ", rendered).strip()
+    if "\\" in rendered:
+        return None
+    return rendered
+
+
 def _render_inline_math_span(body: str) -> str:
     """Render the inside of an inline-math span to Unicode-ish plain text.
 
-    Replaces known LaTeX commands with Unicode, drops a few formatting-only
-    wrappers, and collapses spacing macros — enough to make simple symbolic
-    expressions (especially arrows) readable without a TeX engine.
+    Prefers pylatexenc (covers roots, fractions, Greek, scripts, ...). Falls
+    back to the curated-symbol map (arrows/operators) when pylatexenc is not
+    installed, so the feature degrades gracefully instead of failing.
     """
+    via_lib = _render_math_with_pylatexenc(body)
+    if via_lib is not None:
+        return via_lib
     s = body
     # Spacing macros and braces carry no meaning in plain text.
     s = s.replace("\\,", "\u202f").replace("\\;", " ").replace("\\!", "")
     s = _LATEX_CMD_RE.sub(_convert_latex_command, s)
+    s = _apply_unicode_scripts(s)
     s = s.replace("{", "").replace("}", "")
     return s.strip()
+
+
+# A relation/comparison operator inside a span is a strong "this is math" hint
+# that currency ($5) and shell vars ($PATH) never carry.
+_MATH_RELATION_RE = re.compile(r"[=<>]|\\(?:le|ge|leq|geq|neq|ne|approx|equiv)\b")
+# A single-letter variable adjacent to a math operator, e.g. ``y - 1`` or
+# ``a + b`` — distinguishes ``$x = y - 1$`` from a bare ``$100`` amount.
+_MATH_VAR_OP_RE = re.compile(r"[A-Za-z]\s*[-+*/=]\s*[A-Za-z0-9]")
+# A currency-ish body: only digits, separators and spaces (e.g. ``100 到 ``,
+# ``5``, ``5.00``). Such a span is never treated as math even if it pairs.
+_CURRENCY_BODY_RE = re.compile(r"^[\d.,\s]+$")
+# A bare single-variable body, e.g. ``$x$`` / ``$y$`` / ``$\alpha$`` after the
+# command check. A paired ``$<letter(s)>$`` is far likelier a math variable
+# than stray ``$`` text, so 1-2 letter alpha bodies count as math.
+_MATH_VAR_BODY_RE = re.compile(r"^[A-Za-z\u0370-\u03ff]{1,2}$")
+
+
+def _looks_like_inline_math(body: str) -> bool:
+    """Heuristic: does a ``$...$`` body read as math rather than currency?
+
+    Math signals: a LaTeX command (``\\``), a script (``^``/``_``), a relation
+    (``=``/``<``/``>``/``\\leq``...), or a variable adjacent to an operator.
+    Pure numeric/separator bodies (prices like ``$5``, ``$100 到``) are rejected
+    so genuine currency and shell vars stay verbatim.
+    """
+    if not body:
+        return False
+    if _CURRENCY_BODY_RE.match(body):
+        return False
+    if "\\" in body or "^" in body or "_" in body:
+        return True
+    if _MATH_RELATION_RE.search(body):
+        return True
+    if _MATH_VAR_OP_RE.search(body):
+        return True
+    if _MATH_VAR_BODY_RE.match(body.strip()):
+        return True
+    return False
 
 
 def convert_inline_latex_math(text: str) -> str:
@@ -257,19 +372,47 @@ def convert_inline_latex_math(text: str) -> str:
         body = m.group(1) if m.group(1) is not None else m.group(2)
         if body is None:
             return m.group(0)
-        # Require an actual LaTeX command in the span before treating it as
-        # math. This keeps plain ``$`` usage (prices like ``$5``, shell vars)
-        # untouched — we only rewrite spans the model clearly meant as TeX.
-        if "\\" not in body:
+        # Require a clear math signal before treating the span as math. This
+        # keeps plain ``$`` usage (prices like ``$5``, shell vars like
+        # ``$PATH``) untouched while catching operator/relation spans such as
+        # ``$y = 3$`` and ``$x = y - 1$`` that carry no backslash command.
+        if not _looks_like_inline_math(body):
             return m.group(0)
         converted = _render_inline_math_span(body)
         # Bail out if conversion left unhandled TeX (a backslash command):
         # rendering a half-converted span is worse than leaving it as-is.
-        if "\\" in converted:
+        if not converted or "\\" in converted:
             return m.group(0)
         return converted
 
     return _INLINE_MATH_RE.sub(_repl, text)
+
+
+def render_math_block_body(body: str) -> str:
+    """Render a display-math body (the text between ``$$``/``\\[`` fences).
+
+    Uses the same pylatexenc-backed pipeline as inline math but preserves the
+    multi-line structure pylatexenc may produce (e.g. ``aligned`` environments).
+    Returns the rendered text, or the original body verbatim when nothing could
+    be converted so the source stays visible.
+    """
+    src = (body or "").strip()
+    if not src:
+        return ""
+    try:
+        from pylatexenc.latex2text import LatexNodes2Text
+    except Exception:
+        # No engine: fall back to the inline path line by line.
+        rendered = _render_inline_math_span(src)
+        return rendered or src
+    try:
+        rendered = LatexNodes2Text().latex_to_text(src)
+    except Exception:
+        return src
+    rendered = _apply_unicode_scripts(rendered).strip()
+    if not rendered:
+        return src
+    return rendered
 
 
 def normalize_display_text(text: str) -> str:
@@ -488,6 +631,64 @@ _HEADING_RE = re.compile(r"^(\s*)(#{1,6})\s+(.*?)\s*#*\s*$")
 _HR_RE = re.compile(r"^\s*([-*_])(?:\s*\1){2,}\s*$")
 
 
+# Opening/closing fences for display math blocks. ``$$`` is symmetric; ``\[``
+# pairs with ``\]``.
+_MATH_BLOCK_OPEN_RE = re.compile(r"^\s*(\$\$|\\\[)\s*(.*)$")
+
+# Environments that should be drawn with a tall left brace (systems of
+# equations). pylatexenc renders the rows but drops the big ``{``, so we add it
+# back from Unicode bracket-piece glyphs.
+_CASES_ENV_RE = re.compile(r"\\begin\s*\{\s*cases\s*\}")
+
+
+def _left_brace_pieces(n: int) -> List[str]:
+    """Return ``n`` Unicode glyphs forming a tall left curly brace.
+
+    1 row → ``{``; 2 rows → ``⎰``/``⎱``; 3+ rows → ``⎧`` top, ``⎨`` at the
+    vertical center, ``⎩`` bottom, ``⎪`` for the remaining extender rows.
+    """
+    if n <= 0:
+        return []
+    if n == 1:
+        return ["{"]
+    if n == 2:
+        return ["\u23b0", "\u23b1"]  # ⎰ ⎱
+    mid = (n - 1) // 2
+    pieces: List[str] = []
+    for r in range(n):
+        if r == 0:
+            pieces.append("\u23a7")  # ⎧
+        elif r == n - 1:
+            pieces.append("\u23a9")  # ⎩
+        elif r == mid:
+            pieces.append("\u23a8")  # ⎨
+        else:
+            pieces.append("\u23aa")  # ⎪
+    return pieces
+
+
+def _render_display_math_lines(body: str) -> List[str]:
+    """Render a display-math block to centered, dim-colored terminal lines."""
+    rendered = render_math_block_body(body)
+    lines = [ln for ln in rendered.split("\n") if ln.strip() != ""]
+    if not lines:
+        return []
+    indent = "  "
+    # Systems of equations: prepend a tall left brace spanning the rows so the
+    # block reads as a grouped system rather than loose lines. Strip per-row
+    # whitespace first so every equation left-aligns under the brace — pylatexenc
+    # leaves a leading space on each row, and the block-level ``.strip()`` only
+    # trims the first/last row, which would otherwise indent the inner rows.
+    if _CASES_ENV_RE.search(body or ""):
+        rows = [ln.strip() for ln in lines]
+        braces = _left_brace_pieces(len(rows))
+        return [
+            f"{indent}{_ansi_cyan(f'{br} {ln}')}"
+            for br, ln in zip(braces, rows)
+        ]
+    return [f"{indent}{_ansi_cyan(ln.rstrip())}" for ln in lines]
+
+
 def highlight_assistant_display_text(text: str) -> str:
     """Colorize important tokens in assistant narrative output.
 
@@ -531,6 +732,47 @@ def highlight_assistant_display_text(text: str) -> str:
             # so it reads as code without the inline token painter mangling it.
             out.append(_ansi_green(line))
             i += 1
+            continue
+        # Display math block: ``$$ ... $$`` or ``\[ ... \]`` (single line or
+        # spanning multiple lines). Rendered to centered Unicode text rather
+        # than leaking the raw TeX fences into the terminal.
+        block_open = _MATH_BLOCK_OPEN_RE.match(line)
+        if block_open:
+            opener = block_open.group(1)
+            closer = "$$" if opener == "$$" else "\\]"
+            rest = block_open.group(2)
+            # Single-line form: ``$$ E = mc^2 $$``.
+            close_in_rest = rest.find(closer)
+            if close_in_rest >= 0:
+                body = rest[:close_in_rest]
+                out.extend(_render_display_math_lines(body))
+                i += 1
+                continue
+            buf: List[str] = []
+            if rest.strip() != "":
+                buf.append(rest)
+            i += 1
+            closed = False
+            while i < n:
+                cur = lines[i]
+                ci = cur.find(closer)
+                if ci >= 0:
+                    before = cur[:ci]
+                    if before.strip() != "":
+                        buf.append(before)
+                    i += 1
+                    closed = True
+                    break
+                buf.append(cur)
+                i += 1
+            if closed:
+                out.extend(_render_display_math_lines("\n".join(buf)))
+            else:
+                # Unterminated (e.g. still streaming): emit the raw lines so the
+                # partial source stays visible instead of being swallowed.
+                out.append(highlight_assistant_display_line(line))
+                for b in buf:
+                    out.append(highlight_assistant_display_line(b))
             continue
         # GitHub-style table: a header row followed by a delimiter row, then
         # zero or more body rows. Rendered as an aligned box-drawing table so

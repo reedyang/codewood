@@ -1142,6 +1142,100 @@ class MarkdownRenderingTests(unittest.TestCase):
         self.assertIn("\x1b[36m", out)
         self.assertIn("\x1b[0m\x1b[1m", out)
 
+    def test_inline_math_superscript_converts_to_unicode(self):
+        out = aoh.convert_inline_latex_math("The result $E = mc^2$ holds.")
+        self.assertIn("E = mc\u00b2", out)
+        self.assertNotIn("$", out)
+
+    def test_inline_math_sqrt_converts(self):
+        out = aoh.convert_inline_latex_math(r"We have $\sqrt{a^2 + b^2} = c$ here.")
+        self.assertIn("\u221a", out)  # √
+        self.assertIn("a\u00b2", out)  # a²
+        self.assertNotIn("\\sqrt", out)
+
+    def test_inline_math_leaves_prices_and_shell_vars_untouched(self):
+        out = aoh.convert_inline_latex_math("It costs $5 and $PATH is set")
+        self.assertEqual(out, "It costs $5 and $PATH is set")
+
+    def test_inline_math_relation_spans_in_prose_convert(self):
+        # Spans with a relation but no backslash/script (e.g. ``$y = 3$``) must
+        # still be recognized as math when embedded in ordinary prose.
+        out = aoh.convert_inline_latex_math("\u5c06 $y = 3$ \u4ee3\u5165 $x = y - 1$")
+        self.assertEqual(out, "\u5c06 y = 3 \u4ee3\u5165 x = y - 1")
+
+    def test_inline_math_currency_pairs_not_eaten(self):
+        # ``$100 到 $200`` must not pair its dollars into a bogus math span.
+        out = aoh.convert_inline_latex_math("\u7ea6 $100 \u5230 $200 \u4e4b\u95f4")
+        self.assertEqual(out, "\u7ea6 $100 \u5230 $200 \u4e4b\u95f4")
+
+    def test_inline_math_decimal_price_untouched(self):
+        out = aoh.convert_inline_latex_math("price is $5.00 only")
+        self.assertEqual(out, "price is $5.00 only")
+
+    def test_inline_math_single_variable_spans_convert(self):
+        # Bare single-variable spans (``$x$`` / ``$y$``) in prose are math.
+        out = aoh.convert_inline_latex_math(
+            "\u4e24\u4e2a\u672a\u77e5\u6570 $x$ \u548c $y$ \u7684\u65b9\u7a0b\u7ec4"
+        )
+        self.assertEqual(
+            out, "\u4e24\u4e2a\u672a\u77e5\u6570 x \u548c y \u7684\u65b9\u7a0b\u7ec4"
+        )
+
+    def test_display_math_block_single_line_renders_centered(self):
+        out = self._render("Here:\n$$ E = mc^2 $$\nDone.")
+        self.assertIn("E = mc\u00b2", out)
+        self.assertNotIn("$$", out)
+
+    def test_display_math_block_multiline_renders(self):
+        out = self._render("$$\n\\frac{-b \\pm \\sqrt{b^2-4ac}}{2a}\n$$")
+        self.assertIn("\u221a", out)  # √
+        self.assertNotIn("$$", out)
+        self.assertNotIn("\\frac", out)
+
+    def test_display_math_bracket_delimiters_render(self):
+        out = self._render("\\[ a^2 + b^2 = c^2 \\]")
+        self.assertIn("a\u00b2", out)
+        self.assertNotIn("\\[", out)
+
+    def test_unterminated_math_block_keeps_source_visible(self):
+        # Still-streaming block (no closing fence): the raw source must remain so
+        # nothing is swallowed.
+        out = self._render("$$\nE = mc^2")
+        self.assertIn("$$", out)
+
+    def test_cases_environment_renders_tall_left_brace(self):
+        out = self._render(
+            "$$\n\\begin{cases}\nx + y = 1 \\\\\n2x - y = 3\n\\end{cases}\n$$"
+        )
+        # Two rows -> the two-piece tall brace (⎰ / ⎱).
+        self.assertIn("\u23b0", out)
+        self.assertIn("\u23b1", out)
+        self.assertIn("x + y = 1", out)
+        self.assertNotIn("\\begin", out)
+
+    def test_single_line_cases_rows_are_left_aligned(self):
+        # Regression: a single-line ``$$ \begin{cases} x=2 \\ y=3 \end{cases} $$``
+        # left an extra leading space on the inner row(s) because the block-level
+        # strip only trimmed the first/last row. Every equation must left-align
+        # under the brace.
+        out = self._render("$$ \\begin{cases} x = 2 \\\\ y = 3 \\end{cases} $$")
+        plain = out.replace("<C>", "").replace("</C>", "")
+        rows = [ln for ln in plain.split("\n") if ln.strip()]
+        self.assertEqual(len(rows), 2)
+        # Strip the leading indent + brace glyph; the remaining text must start
+        # at the same column for both rows (no extra leading space).
+        bodies = [r.lstrip()[1:].lstrip(" ") for r in rows]  # drop indent+brace
+        self.assertEqual(bodies[0], "x = 2")
+        self.assertEqual(bodies[1], "y = 3")
+
+    def test_cases_environment_three_rows_uses_three_piece_brace(self):
+        out = self._render(
+            "$$\n\\begin{cases}\na = 1 \\\\\nb = 2 \\\\\nc = 3\n\\end{cases}\n$$"
+        )
+        self.assertIn("\u23a7", out)  # ⎧ top
+        self.assertIn("\u23a8", out)  # ⎨ middle
+        self.assertIn("\u23a9", out)  # ⎩ bottom
+
 
 if __name__ == "__main__":
     unittest.main()
