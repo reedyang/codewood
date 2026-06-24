@@ -1124,6 +1124,20 @@ class PromptSeparatorBehaviorTests(unittest.TestCase):
         self.assertNotIn("display_output", payload)
         self.assertNotIn("stderr", payload)
 
+    def test_extract_model_shell_replay_output_appends_trailing_newline(self):
+        """A cancelled command stores its message under ``output`` without a
+        trailing newline (e.g. "Operation cancelled by user"). On reload this
+        is replayed as a "└ ..." tail; without a trailing newline the cursor
+        stays mid-line and the next prompt "›" is drawn right after it. The
+        replay extractor must normalize the trailing newline."""
+        agent = self._build_agent()
+        out, err = agent._extract_model_shell_replay_output(
+            {"success": False, "output": "Operation cancelled by user"}
+        )
+        self.assertTrue(out.endswith("\n"))
+        self.assertIn("Operation cancelled by user", out)
+        self.assertEqual(err, "")
+
     def test_chat_history_model_shell_result_synthesizes_no_output_on_replay(self):
         agent = self._build_agent()
         agent.conversation_history = [
