@@ -195,6 +195,98 @@ def reset_always_confirm_skip(agent: Any) -> Dict[str, Any]:
     return command_security.reset_always_confirm_skip(agent)
 
 
+def _confirm_choice_via_selection(
+    agent: Any,
+    prompt_core: str,
+    *,
+    offer_always: bool,
+    display_command: Optional[str] = None,
+) -> Optional[str]:
+    """Render the confirmation as a fixed-option single-choice question.
+
+    Reuses the same selection UX as the ``request_user_input`` tool (a GUI
+    inline panel via ``_confirm_choice_provider``, or the TUI arrow-key
+    selector). The user's pick is mapped **locally** back to one of
+    ``"y" | "n" | "a"`` — it is never sent to the model. Returns ``None`` when
+    no selection UI is available so the caller can fall back to the plain
+    y/n/a text prompt.
+    """
+    label_yes = _t(agent, "execution_policy.prompt.choice_yes", fallback="Yes, execute")
+    label_no = _t(agent, "execution_policy.prompt.choice_no", fallback="No, cancel")
+    label_always = _t(
+        agent,
+        "execution_policy.prompt.choice_always",
+        fallback="Always (add to skip-confirm list)",
+    )
+    # Index-aligned option labels and their local y/n/a mapping. The user
+    # only ever sees fixed options; no freeform answer is accepted.
+    options = [label_yes, label_no]
+    mapping = {label_yes: "y", label_no: "n"}
+    if offer_always:
+        options.append(label_always)
+        mapping[label_always] = "a"
+
+    # GUI: a structured confirm provider renders the inline choice panel and
+    # blocks until the user picks. It returns the mapped y/n/a directly.
+    gui_provider = getattr(agent, "_confirm_choice_provider", None)
+    if callable(gui_provider):
+        try:
+            try:
+                raw = gui_provider(
+                    prompt_core,
+                    list(options),
+                    bool(offer_always),
+                    display_command,
+                )
+            except TypeError:
+                # Older provider signature without ``command``.
+                raw = gui_provider(prompt_core, list(options), bool(offer_always))
+        except Exception:
+            return None
+        ans = str(raw or "").strip().lower()
+        if ans in ("y", "yes"):
+            return "y"
+        if ans in ("a", "always") and offer_always:
+            return "a"
+        # Empty / dismissed / anything else => treat as cancel (no execute).
+        return "n"
+
+    # TUI: arrow-key selector with fixed options and NO "Other" free-text row.
+    input_handler = getattr(agent, "input_handler", None)
+    interactive = getattr(input_handler, "prompt_request_user_input_selection", None)
+    if not callable(interactive):
+        return None
+    try:
+        import sys
+
+        if not (sys.stdin and sys.stdin.isatty() and sys.stdout and sys.stdout.isatty()):
+            return None
+    except Exception:
+        return None
+    try:
+        picked = interactive(
+            prompt_core,
+            list(options),
+            False,  # single-select
+            allow_other=False,
+            command=display_command,
+        )
+    except TypeError:
+        # Older selector signature without ``allow_other``/``command``; cannot
+        # guarantee the "no freeform" requirement, so fall back to the text
+        # prompt.
+        return None
+    except KeyboardInterrupt:
+        return "n"
+    except Exception:
+        return None
+    if picked is None:
+        # Esc / cancel => do not execute.
+        return "n"
+    label = str(picked).strip()
+    return mapping.get(label, "n")
+
+
 def prompt_confirm_yes_no_maybe_always(
     agent: Any,
     prompt_core: str,
@@ -203,30 +295,52 @@ def prompt_confirm_yes_no_maybe_always(
     kind: str,
     shell_command: Optional[str] = None,
     script_basename: Optional[str] = None,
+    display_command: Optional[str] = None,
 ) -> bool:
     """
     kind: 'shell' | 'script' | 'text_file'. Returns True if user proceeds.
     The **a / always** option is only used for **shell**.
+
+    ``display_command`` is the command/script text to surface to the user. The
+    selection-based UIs render it on its own styled line (syntax-highlighted in
+    the GUI, color-emphasized in the TUI); the plain-text fallback appends it
+    to the prompt.
     """
     if kind == "shell" and shell_command is not None and shell_command_in_allowlist(
         agent, shell_command
     ):
         return True
-    yes_no_always_suffix = _t(
-        agent,
-        "execution_policy.prompt.yes_no_always_suffix",
-        fallback=" (y/n/a, a=add this entry to skip-confirm list): ",
+
+    # Preferred path: a fixed-option single-choice question (same style as the
+    # request_user_input tool) instead of a y/n/a text prompt. The user's pick
+    # is mapped to y/n/a locally and never forwarded to the model. Falls back
+    # to the plain text prompt below when no selection UI is available.
+    selection = _confirm_choice_via_selection(
+        agent, prompt_core, offer_always=offer_always, display_command=display_command
     )
-    yes_no_suffix = _t(agent, "execution_policy.prompt.yes_no_suffix", fallback=" (y/n): ")
-    if offer_always:
-        line = f"{prompt_core}{yes_no_always_suffix}"
+    if selection is not None:
+        raw = selection
     else:
-        line = f"{prompt_core}{yes_no_suffix}"
-    suspend_monitor = getattr(agent, "_suspended_input", None)
-    if callable(suspend_monitor):
-        raw = suspend_monitor(line).strip().lower()
-    else:
-        raw = input(line).strip().lower()
+        yes_no_always_suffix = _t(
+            agent,
+            "execution_policy.prompt.yes_no_always_suffix",
+            fallback=" (y/n/a, a=add this entry to skip-confirm list): ",
+        )
+        yes_no_suffix = _t(agent, "execution_policy.prompt.yes_no_suffix", fallback=" (y/n): ")
+        # The selection UIs show the command on its own line; for the plain-text
+        # fallback we inline it after the question so the user still sees it.
+        prompt_with_command = prompt_core
+        if display_command:
+            prompt_with_command = f"{prompt_core}\n{display_command}"
+        if offer_always:
+            line = f"{prompt_with_command}{yes_no_always_suffix}"
+        else:
+            line = f"{prompt_with_command}{yes_no_suffix}"
+        suspend_monitor = getattr(agent, "_suspended_input", None)
+        if callable(suspend_monitor):
+            raw = suspend_monitor(line).strip().lower()
+        else:
+            raw = input(line).strip().lower()
     if offer_always and raw in ("a", "always"):
         if kind == "shell" and shell_command is not None:
             add_shell_command_allowlist(agent, shell_command)

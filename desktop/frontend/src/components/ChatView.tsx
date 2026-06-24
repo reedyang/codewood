@@ -13,6 +13,7 @@ import { MarkdownText } from "./Markdown";
 import { StepsView } from "./Steps";
 import { ChatTitleBar } from "./ChatTitleBar";
 import { AskMoreInfoPanel } from "./AskMoreInfoPanel";
+import { ConfirmDialog } from "./ConfirmDialog";
 import { decodeAttachments } from "../utils/attachments";
 import {
   composeMessageText,
@@ -895,6 +896,7 @@ export function ChatView() {
           />
         ))}
         <AskMoreInfoPanel />
+        <ConfirmDialog />
         {(() => {
           // The Execute-now button represents "carry out the plan we just
           // drafted" and is a PLAN-MODE-only affordance: in Plan mode the

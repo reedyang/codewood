@@ -2570,6 +2570,30 @@ html[data-has-bg] .select {
   font-size: 13px;
 }
 
+/* The command-to-run inside the inline confirmation panel: rendered on its
+   own emphasized monospace line so it stands out from the prompt text. */
+.confirm-command-code {
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: "Cascadia Code", "Consolas", monospace;
+  font-size: 12.5px;
+  background: var(--output-bg);
+  color: var(--accent, #6aa3ff);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent, #6aa3ff);
+  border-radius: 8px;
+  padding: 8px 10px;
+  margin: 6px 0 2px 0;
+  max-height: 200px;
+  overflow-y: auto;
+}
+.confirm-command-code code {
+  font-family: inherit;
+  background: none;
+  border: none;
+  padding: 0;
+}
+
 .confirm-actions {
   display: flex;
   gap: 8px;

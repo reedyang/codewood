@@ -138,9 +138,20 @@ export interface PlanState {
   explanation: string;
 }
 
+/** Pending execution-policy confirmation surfaced by the backend.
+ *  ``options`` is the fixed list of choices (Yes / No / optionally Always);
+ *  the user picks exactly one and the index is posted back. The pick is
+ *  mapped to y/n/a on the backend locally and never sent to the model.
+ *  Older backends omit ``options``; the panel then falls back to the
+ *  built-in Yes/No(/Always) buttons. */
 export interface ConfirmRequest {
   id: string;
   prompt: string;
+  /** The command/script to run, surfaced on its own syntax-highlighted line
+   *  so it stands out from the surrounding confirmation prompt text. */
+  command?: string;
+  options?: string[];
+  offerAlways?: boolean;
 }
 
 /** Pending ``request_user_input`` prompt surfaced by the backend.

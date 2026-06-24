@@ -357,6 +357,7 @@ def handle_chat_edit_command(agent: Any, raw_index: str) -> None:
         _reload_chat_from_top(agent, current_chat_id)
     _prefill_next_input(agent, message_text)
     print(_t(agent, "chat.edit.done"))
+    print("")
 
 
 def handle_chat_builtin_command(agent: Any, builtin_line: str) -> bool:

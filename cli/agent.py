@@ -6093,6 +6093,7 @@ class Agent:
         kind: str,
         shell_command: Optional[str] = None,
         script_basename: Optional[str] = None,
+        display_command: Optional[str] = None,
     ) -> bool:
         return execution_policy_service.prompt_confirm_yes_no_maybe_always(
             self,
@@ -6101,6 +6102,7 @@ class Agent:
             kind=kind,
             shell_command=shell_command,
             script_basename=script_basename,
+            display_command=display_command,
         )
 
     def _freedom_auto_confirm(self, command: Dict[str, Any]) -> bool:

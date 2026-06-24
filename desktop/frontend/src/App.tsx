@@ -5,7 +5,6 @@ import { ChatView } from "./components/ChatView";
 import { PlanPanel } from "./components/PlanPanel";
 import { SettingsView } from "./components/SettingsView";
 import { AboutDialog } from "./components/AboutDialog";
-import { ConfirmDialog } from "./components/ConfirmDialog";
 import { TitleBar } from "./components/TitleBar";
 import { ResizeGrips } from "./components/ResizeGrips";
 
@@ -136,7 +135,6 @@ function Shell() {
 
       {aboutOpen && <AboutDialog onClose={closeAbout} />}
       {!settingsOpen && noModelConfigured && <NoModelGuide />}
-      <ConfirmDialog />
       <ResizeGrips />
     </div>
   );
