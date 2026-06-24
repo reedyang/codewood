@@ -90,6 +90,10 @@ interface AppContextValue {
   setBackgroundOpacity: (opacity: number) => Promise<void>;
   /** Absolute URL of the current background image (token + cache-busting). */
   backgroundImageUrl: (version: number) => string;
+  pasteImage: (
+    dataUrl: string,
+  ) => Promise<{ path: string; name: string } | null>;
+  chatImageUrl: (path: string) => string;
   sendInput: (text: string) => Promise<void>;
   runCommand: (command: string) => Promise<void>;
   interrupt: () => Promise<void>;
@@ -438,6 +442,16 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const backgroundImageUrl = useCallback(
     (version: number) => client.backgroundImageUrl(version),
+    [client],
+  );
+
+  const pasteImage = useCallback(
+    (dataUrl: string) => client.pasteImage(activeChatIdRef.current, dataUrl),
+    [client],
+  );
+
+  const chatImageUrl = useCallback(
+    (path: string) => client.chatImageUrl(path),
     [client],
   );
 
@@ -1656,6 +1670,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
     clearBackgroundImage,
     setBackgroundOpacity,
     backgroundImageUrl,
+    pasteImage,
+    chatImageUrl,
     sendInput,
     runCommand,
     interrupt,

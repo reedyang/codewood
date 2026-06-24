@@ -1341,6 +1341,124 @@ body.resizing-x {
   color: var(--text-muted);
 }
 
+/* Pasted-image attachments: thumbnail strip above the composer and inline
+   thumbnails in sent message bubbles. */
+.composer-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.message-images {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.attachment-thumb-wrap {
+  position: relative;
+  display: inline-flex;
+}
+
+.attachment-thumb {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 48px;
+  height: 48px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--bg);
+  cursor: pointer;
+  transition: border-color 0.15s ease, transform 0.1s ease;
+}
+
+.attachment-thumb-remove {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  background: var(--bg-elevated-solid);
+  color: var(--text-muted);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.12s ease, color 0.12s ease;
+}
+
+.attachment-thumb-wrap:hover .attachment-thumb-remove {
+  opacity: 1;
+}
+
+.attachment-thumb-remove:hover {
+  color: var(--danger);
+  border-color: var(--danger);
+}
+
+.attachment-thumb:hover {
+  border-color: var(--accent);
+}
+
+.attachment-thumb:active {
+  transform: scale(0.97);
+}
+
+.attachment-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.image-lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 600;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.72);
+  padding: 32px;
+}
+
+.image-lightbox-img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  border-radius: 6px;
+  box-shadow: var(--shadow);
+}
+
+.image-lightbox-close {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border: none;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.4);
+  color: #ffffff;
+  cursor: pointer;
+}
+
+.image-lightbox-close:hover {
+  background: rgba(0, 0, 0, 0.6);
+}
+
 .attachment-remove {
   display: inline-flex;
   align-items: center;

@@ -16,6 +16,15 @@ import { AskMoreInfoPanel } from "./AskMoreInfoPanel";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { decodeAttachments } from "../utils/attachments";
 import {
+  appendImageRefs,
+  parseImageRefs,
+} from "../utils/imageRefs";
+import {
+  AttachmentStrip,
+  SentImageThumb,
+  type PastedImage,
+} from "./ImageAttachments";
+import {
   composeMessageText,
   decodeSegments,
   encodeHiddenInstruction,
@@ -131,6 +140,35 @@ function handleMessageBodyCopy(e: ReactClipboardEvent<HTMLDivElement>): void {
   } catch {
     // Fall back to the native copy if the clipboard rejects our payload.
   }
+}
+
+/** Render a sent message body that may contain inline image references,
+ *  splitting on the image sentinels and rendering each as a thumbnail while the
+ *  surrounding prose flows through the normal ``MessageBody`` pill renderer. */
+function MessageBodyWithImages({ text }: { text: string }) {
+  const parts = parseImageRefs(text);
+  const hasImage = parts.some((p) => p.kind === "image");
+  if (!hasImage) {
+    return <MessageBody text={text} />;
+  }
+  const images = parts.filter(
+    (p): p is { kind: "image"; path: string } => p.kind === "image",
+  );
+  const prose = parts
+    .filter((p): p is { kind: "text"; text: string } => p.kind === "text")
+    .map((p) => p.text)
+    .join("")
+    .trim();
+  return (
+    <>
+      <div className="message-images">
+        {images.map((img, i) => (
+          <SentImageThumb key={`${img.path}-${i}`} path={img.path} />
+        ))}
+      </div>
+      {prose && <MessageBody text={prose} />}
+    </>
+  );
 }
 
 function MessageBody({ text }: { text: string }) {
@@ -298,7 +336,7 @@ function UserEntry({
             ))}
           </div>
         )}
-        {visibleBody && <MessageBody text={visibleBody} />}
+        {visibleBody && <MessageBodyWithImages text={visibleBody} />}
       </div>
       <div className="entry-actions">
         <span className="entry-time">{time}</span>
@@ -441,6 +479,8 @@ export function ChatView() {
     busy,
     now,
     sendInput,
+    pasteImage,
+    chatImageUrl,
     interrupt,
     setExecutionPolicy,
     setModel,
@@ -464,6 +504,14 @@ export function ChatView() {
   const draftKey = draftMode ? DRAFT_KEY : state?.activeChatId || "";
   const [segmentsByChat, setSegmentsByChat] = useState<Record<string, Segment[]>>({});
   const segments = segmentsByChat[draftKey] ?? [];
+  // Pending pasted-image attachments for the active draft, keyed by chat so
+  // switching chats never bleeds one chat's attachments into another. Each
+  // entry holds the saved on-disk path (sent to the model as an inline
+  // reference) plus the data URL used to render the thumbnail before send.
+  const [imageAttachmentsByChat, setImageAttachmentsByChat] = useState<
+    Record<string, PastedImage[]>
+  >({});
+  const imageAttachments = imageAttachmentsByChat[draftKey] ?? [];
   // Per-chat compose mode (Agent or Plan). The backend records a sticky
   // Plan-mode flag on each chat record root (``planMode`` in the chat
   // summary), so the mode survives an app restart: we seed each chat's
@@ -560,9 +608,31 @@ export function ChatView() {
       void navigator.clipboard?.writeText(text);
     },
     onEdit: (index, text) => {
-      // Restore the original segment list so the composer re-renders the
-      // same attachment chips and prose that the user originally sent.
-      setSegments(parseMessageToSegments(text));
+      // Pull inline pasted-image references out first so they return to the
+      // composer's thumbnail strip (the way they were shown before sending),
+      // rather than re-appearing as raw sentinel text. Directly-attached image
+      // FILES travel in the ATTACH envelope and are intentionally left in the
+      // segment list so they keep rendering as file pills.
+      const parts = parseImageRefs(text);
+      const imgPaths = parts
+        .filter((p): p is { kind: "image"; path: string } => p.kind === "image")
+        .map((p) => p.path);
+      const rest = parts
+        .filter((p): p is { kind: "text"; text: string } => p.kind === "text")
+        .map((p) => p.text)
+        .join("");
+      // Restore the original segment list (sans image refs) so the composer
+      // re-renders the same attachment chips and prose that the user sent.
+      setSegments(parseMessageToSegments(rest));
+      const key = draftKey;
+      setImageAttachmentsByChat((prev) => ({
+        ...prev,
+        [key]: imgPaths.map((path) => ({
+          path,
+          name: path.split(/[\\/]/).pop() || "image",
+          dataUrl: chatImageUrl(path),
+        })),
+      }));
       void editChat(index);
     },
     onFork: (index) => {
@@ -620,7 +690,51 @@ export function ChatView() {
     }
   };
 
-  const canSend = draftText.trim().length > 0 || attachmentPaths.length > 0;
+  // Upload each pasted bitmap and add it to the active draft's attachment
+  // strip. Failures are dropped silently (the backend rejects bad mime / size).
+  const onPasteImages = (dataUrls: string[]) => {
+    const key = draftKey;
+    void Promise.all(
+      dataUrls.map(async (dataUrl) => {
+        const saved = await pasteImage(dataUrl);
+        if (!saved) {
+          return null;
+        }
+        return { path: saved.path, name: saved.name, dataUrl } as PastedImage;
+      }),
+    ).then((results) => {
+      const additions = results.filter((r): r is PastedImage => r != null);
+      if (additions.length === 0) {
+        return;
+      }
+      setImageAttachmentsByChat((prev) => {
+        const existing = prev[key] ?? [];
+        const seen = new Set(existing.map((a) => a.path));
+        const merged = [...existing];
+        for (const a of additions) {
+          if (!seen.has(a.path)) {
+            seen.add(a.path);
+            merged.push(a);
+          }
+        }
+        return { ...prev, [key]: merged };
+      });
+    });
+  };
+
+  const removeImageAttachment = (path: string) => {
+    const key = draftKey;
+    setImageAttachmentsByChat((prev) => {
+      const existing = prev[key] ?? [];
+      const next = existing.filter((a) => a.path !== path);
+      return { ...prev, [key]: next };
+    });
+  };
+
+  const canSend =
+    draftText.trim().length > 0 ||
+    attachmentPaths.length > 0 ||
+    imageAttachments.length > 0;
 
   const submit = async () => {
     if (!canSend) {
@@ -652,8 +766,16 @@ export function ChatView() {
     // the agent side. That keeps the user's bubble showing only what they
     // actually typed.
     await setPlanMode(chatMode === "plan");
-    const message = composeMessageText(segments);
+    const baseMessage = composeMessageText(segments);
+    // Append each pasted image as an inline path reference the model can
+    // resolve with ``read_image``; the GUI re-renders these as thumbnails.
+    const message = appendImageRefs(
+      baseMessage,
+      imageAttachments.map((a) => a.path),
+    );
+    const key = draftKey;
     setSegments([]);
+    setImageAttachmentsByChat((prev) => ({ ...prev, [key]: [] }));
     await sendInput(message);
   };
 
@@ -747,12 +869,17 @@ export function ChatView() {
 
   const composer = (
     <div className="composer">
+      <AttachmentStrip
+        images={imageAttachments}
+        onRemove={removeImageAttachment}
+      />
       <RichComposer
         segments={segments}
         onChange={setSegments}
         onSubmit={() => void submit()}
         placeholder={t("chat.inputPlaceholder")}
         rows={3}
+        onPasteImages={onPasteImages}
       />
       <div className="composer-toolbar">
         <div className="composer-left">

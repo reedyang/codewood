@@ -208,6 +208,38 @@ export class ApiClient {
     return `${this.base}/background-image?${params.toString()}`;
   }
 
+  /** Upload a pasted clipboard bitmap (base64 data URL). Returns the saved
+   *  absolute path + file name, or null on failure. */
+  async pasteImage(
+    chatId: string,
+    dataUrl: string,
+  ): Promise<{ path: string; name: string } | null> {
+    try {
+      const res = await fetch(`${this.base}/paste-image`, {
+        method: "POST",
+        headers: this.headers(),
+        body: JSON.stringify({ chatId, dataUrl }),
+      });
+      if (!res.ok) return null;
+      const data = (await res.json()) as {
+        ok?: boolean;
+        path?: string;
+        name?: string;
+      };
+      if (!data.ok || !data.path) return null;
+      return { path: data.path, name: data.name ?? "" };
+    } catch {
+      return null;
+    }
+  }
+
+  /** Absolute URL serving a pasted image by its on-disk path (token-gated;
+   *  backend validates the path lives under the chats/data dir). */
+  chatImageUrl(path: string): string {
+    const params = new URLSearchParams({ token: this.token, path });
+    return `${this.base}/chat-image?${params.toString()}`;
+  }
+
   /** Read the raw (unresolved) model_providers list for editing. */
   async getModelsConfig(): Promise<unknown[]> {
     const res = await fetch(`${this.base}/models-config`, {

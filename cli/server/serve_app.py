@@ -1956,6 +1956,100 @@ class ServeApp:
         except Exception:
             return None
 
+    # Pasted clipboard bitmaps
+    # ----------------------------------------------------------------------
+    # Allowed image mime types and their on-disk extension. Deny-by-default:
+    # anything not in this map is rejected.
+    _PASTE_IMAGE_EXT = {
+        "image/png": "png",
+        "image/jpeg": "jpg",
+        "image/webp": "webp",
+        "image/gif": "gif",
+        "image/bmp": "bmp",
+    }
+    # Hard cap on a decoded pasted image (10 MB).
+    _PASTE_IMAGE_MAX_BYTES = 10 * 1024 * 1024
+
+    def save_pasted_image(self, chat_id: str, data_url: str) -> Dict[str, Any]:
+        """Validate and persist a clipboard bitmap (``data:image/...;base64,``)
+        under the active chat's side-data dir. Returns ``{ok, path, name}`` or
+        ``{ok: False, error}``. Deny-by-default on bad mime / oversize."""
+        import base64
+        import re
+
+        cid = str(chat_id or "").strip()
+        if not cid:
+            return {"ok": False, "error": "missing chatId"}
+        m = re.match(
+            r"^data:(image/[a-zA-Z0-9.+-]+);base64,(.+)$",
+            str(data_url or ""),
+            re.DOTALL,
+        )
+        if not m:
+            return {"ok": False, "error": "invalid data url"}
+        mime = m.group(1).lower()
+        ext = self._PASTE_IMAGE_EXT.get(mime)
+        if not ext:
+            return {"ok": False, "error": "unsupported image type"}
+        try:
+            raw = base64.b64decode(m.group(2), validate=True)
+        except Exception:
+            return {"ok": False, "error": "invalid base64"}
+        if not raw:
+            return {"ok": False, "error": "empty image"}
+        if len(raw) > self._PASTE_IMAGE_MAX_BYTES:
+            return {"ok": False, "error": "image too large"}
+        try:
+            mgr = getattr(self.agent, "_chat_state_manager", None)
+            if mgr is None:
+                return {"ok": False, "error": "no chat"}
+            data_dir = mgr.chat_data_dir_for_chat(cid)
+            if data_dir is None:
+                return {"ok": False, "error": "unknown chat"}
+            import secrets
+
+            data_dir.mkdir(parents=True, exist_ok=True)
+            name = f"img_{secrets.token_hex(8)}.{ext}"
+            target = data_dir / name
+            target.write_bytes(raw)
+            return {"ok": True, "path": str(target.resolve()), "name": name}
+        except Exception:
+            return {"ok": False, "error": "save failed"}
+
+    def read_chat_image(self, path: str) -> Optional[tuple]:
+        """Return ``(bytes, content_type)`` for a pasted image, but ONLY when
+        ``path`` resolves to a file inside the chats/data directory. Returns
+        ``None`` otherwise (path traversal / not found)."""
+        try:
+            mgr = getattr(self.agent, "_chat_state_manager", None)
+            if mgr is None:
+                return None
+            records_dir = mgr.chat_records_dir()
+            data_root = (records_dir / "data").resolve()
+            target = Path(str(path or "")).resolve()
+            # Containment check: target must live under chats/data.
+            try:
+                target.relative_to(data_root)
+            except ValueError:
+                return None
+            if not target.exists() or not target.is_file():
+                return None
+            ext = target.suffix.lower().lstrip(".")
+            content_types = {
+                "png": "image/png",
+                "jpg": "image/jpeg",
+                "jpeg": "image/jpeg",
+                "webp": "image/webp",
+                "gif": "image/gif",
+                "bmp": "image/bmp",
+            }
+            ct = content_types.get(ext)
+            if ct is None:
+                return None
+            return target.read_bytes(), ct
+        except Exception:
+            return None
+
     def _publish_state(self) -> None:
         try:
             self.broadcaster.publish(
@@ -3451,14 +3545,16 @@ def _make_handler(app: ServeApp):
                 return True
             return False
 
-        def _read_json_body(self) -> Optional[Dict[str, Any]]:
+        def _read_json_body(
+            self, max_bytes: int = _MAX_BODY_BYTES
+        ) -> Optional[Dict[str, Any]]:
             try:
                 length = int(self.headers.get("Content-Length", "0") or "0")
             except ValueError:
                 return None
             if length <= 0:
                 return {}
-            if length > _MAX_BODY_BYTES:
+            if length > max_bytes:
                 return None
             raw = self.rfile.read(length)
             try:
@@ -3566,6 +3662,16 @@ def _make_handler(app: ServeApp):
                     data, content_type = result
                     self._send_bytes(200, data, content_type)
                 return
+            if path == "/chat-image":
+                vals = query.get("path") or []
+                img_path = str(vals[0]) if vals else ""
+                result = app.read_chat_image(img_path)
+                if result is None:
+                    self._send_json(404, {"error": "not found"})
+                else:
+                    data, content_type = result
+                    self._send_bytes(200, data, content_type)
+                return
             if path == "/events":
                 self._stream_events()
                 return
@@ -3577,7 +3683,14 @@ def _make_handler(app: ServeApp):
             query = parse_qs(parsed.query)
             if not self._guard(query):
                 return
-            body = self._read_json_body()
+            # Pasted bitmaps arrive as base64 data URLs and can exceed the
+            # default 1 MiB JSON cap; allow a larger body only for that route.
+            max_body = (
+                ServeApp._PASTE_IMAGE_MAX_BYTES * 2 + 65536
+                if path == "/paste-image"
+                else _MAX_BODY_BYTES
+            )
+            body = self._read_json_body(max_body)
             if body is None:
                 self._send_json(400, {"error": "invalid body"})
                 return
@@ -3591,6 +3704,17 @@ def _make_handler(app: ServeApp):
                     text, chat_id=chat_id, as_prompt=bool(body.get("asPrompt"))
                 )
                 self._send_json(200, {"ok": True})
+                return
+            if path == "/paste-image":
+                chat_id = str(body.get("chatId") or "")[:256]
+                data_url = str(body.get("dataUrl") or "")
+                # ``data:`` URLs can be large; bound to the decoded cap * ~1.4
+                # to account for base64 inflation plus a small header margin.
+                if len(data_url) > (ServeApp._PASTE_IMAGE_MAX_BYTES * 2):
+                    self._send_json(413, {"error": "image too large"})
+                    return
+                result = app.save_pasted_image(chat_id, data_url)
+                self._send_json(200 if result.get("ok") else 400, result)
                 return
             if path == "/confirm":
                 cid = str(body.get("id") or "")
