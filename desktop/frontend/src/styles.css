@@ -3286,6 +3286,23 @@ h6.md-h {
   border-top: 1px solid var(--border);
   margin: 12px 0;
 }
+.md-math-wrap {
+  margin: 10px 0;
+  overflow-x: auto;
+}
+.md-math-block {
+  display: block;
+}
+.md-math-block .katex-display {
+  margin: 0;
+}
+.md-math-inline {
+  display: inline;
+}
+.md-math-inline .katex,
+.md-math-block .katex {
+  font-size: 1.05em;
+}
 .md-table {
   border-collapse: collapse;
   margin: 10px 0;
