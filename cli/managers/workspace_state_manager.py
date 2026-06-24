@@ -31,7 +31,6 @@ class WorkspaceStateManager:
             "name": self._default_workspace_name,
             "kind": "default",
             "root": str(root),
-            "storage": str(root),
         }
 
     def workspace_root_path(self, entry: Dict[str, Any]) -> Path:
@@ -40,12 +39,8 @@ class WorkspaceStateManager:
             or str(entry.get("kind") or "").lower() == "default"
         ):
             return self._agent._resolve_path_lenient(self._agent.config_dir / "workspace")
-        raw = entry.get("root") or entry.get("path") or entry.get("storage") or ""
-        root = self._agent._resolve_path_lenient(Path(str(raw)).expanduser())
-        config_dirname = get_app_config_dirname()
-        if root.name.casefold() == config_dirname.casefold():
-            return root.parent
-        return root
+        raw = entry.get("root") or entry.get("path") or ""
+        return self._agent._resolve_path_lenient(Path(str(raw)).expanduser())
 
     def workspace_storage_path(self, entry: Dict[str, Any]) -> Path:
         if (
@@ -53,9 +48,8 @@ class WorkspaceStateManager:
             or str(entry.get("kind") or "").lower() == "default"
         ):
             return self._agent._resolve_path_lenient(self._agent.config_dir / "workspace")
-        storage = entry.get("storage")
-        if storage:
-            return self._agent._resolve_path_lenient(Path(str(storage)).expanduser())
+        # Storage is always derived from the workspace root; it is never read
+        # from a persisted ``storage`` key (no legacy-data compatibility).
         return self.workspace_root_path(entry) / get_app_config_dirname()
 
     def workspace_current_dir_path(self, entry: Dict[str, Any]) -> Optional[Path]:
@@ -86,44 +80,29 @@ class WorkspaceStateManager:
             raw_workspaces = {}
 
         default_entry = self.default_workspace_entry()
-        old_default = raw_workspaces.get(self._default_workspace_id)
-        if isinstance(old_default, dict) and old_default.get("current_dir"):
-            default_entry["current_dir"] = str(
-                self._agent._resolve_path_lenient(Path(str(old_default.get("current_dir"))))
-            )
-
         workspaces: Dict[str, Dict[str, Any]] = {self._default_workspace_id: default_entry}
         for key, raw_entry in raw_workspaces.items():
             if key == self._default_workspace_id or not isinstance(raw_entry, dict):
                 continue
             root_raw = raw_entry.get("root") or raw_entry.get("path")
-            if not root_raw and raw_entry.get("storage"):
-                storage_path = self._agent._resolve_path_lenient(Path(str(raw_entry.get("storage"))))
-                root_path = (
-                    storage_path.parent
-                    if storage_path.name.casefold() == get_app_config_dirname().casefold()
-                    else storage_path
-                )
-            elif root_raw:
-                root_path = self._agent._resolve_path_lenient(Path(str(root_raw)))
-            else:
+            if not root_raw:
                 continue
+            root_path = self._agent._resolve_path_lenient(Path(str(root_raw)))
 
             workspace_id = str(raw_entry.get("id") or key or self.workspace_id_for_path(root_path)).strip()
             if not workspace_id or workspace_id == self._default_workspace_id:
                 workspace_id = self.workspace_id_for_path(root_path)
             name = str(raw_entry.get("name") or root_path.name or str(root_path)).strip()
+            # ``storage`` and ``current_dir`` are intentionally NOT persisted:
+            # storage is always derived as ``root / <config dirname>`` and the
+            # working directory follows the by-rule fallback in
+            # ``apply_workspace_entry``. Legacy keys, if present, are ignored.
             entry: Dict[str, Any] = {
                 "id": workspace_id,
                 "name": name,
                 "kind": "custom",
                 "root": str(root_path),
-                "storage": str(root_path / get_app_config_dirname()),
             }
-            if raw_entry.get("current_dir"):
-                entry["current_dir"] = str(
-                    self._agent._resolve_path_lenient(Path(str(raw_entry.get("current_dir"))))
-                )
             workspaces[workspace_id] = entry
 
         active = str(raw_state.get("active") or self._default_workspace_id)
@@ -192,10 +171,10 @@ class WorkspaceStateManager:
         self._agent.workspace_config_dir = storage
         self.ensure_workspace_dirs()
 
-        current_dir = self.workspace_current_dir_path(entry)
-        if current_dir is not None and current_dir.exists() and current_dir.is_dir():
-            self._agent.work_directory = current_dir
-        elif self._agent.workspace_kind != "default" and root.exists() and root.is_dir():
+        # Working directory is derived by rule (never restored from a persisted
+        # ``current_dir``): a custom workspace opens at its root; otherwise the
+        # caller-provided fallback is used.
+        if self._agent.workspace_kind != "default" and root.exists() and root.is_dir():
             self._agent.work_directory = root
         else:
             self._agent.work_directory = self._agent._resolve_path_lenient(fallback_dir)
@@ -208,12 +187,6 @@ class WorkspaceStateManager:
                 "name": self._agent.workspace_name,
                 "kind": self._agent.workspace_kind,
                 "root": str(self._agent.workspace_root),
-                "storage": str(self._agent.workspace_config_dir),
-                **(
-                    {"current_dir": str(self._agent.work_directory)}
-                    if entry.get("current_dir")
-                    else {}
-                ),
             }
 
     def save_current_workspace_position(self, sync_messages: bool = True) -> None:
@@ -245,16 +218,13 @@ class WorkspaceStateManager:
                     "name": getattr(self._agent, "workspace_name", str(workspace_id)),
                     "kind": getattr(self._agent, "workspace_kind", "custom"),
                     "root": str(getattr(self._agent, "workspace_root", self._agent.work_directory)),
-                    "storage": str(
-                        getattr(
-                            self._agent,
-                            "workspace_config_dir",
-                            self._agent.work_directory / get_app_config_dirname(),
-                        )
-                    ),
                 }
             workspaces[workspace_id] = entry
-        entry["current_dir"] = str(self._agent._resolve_path_lenient(self._agent.work_directory))
+        # Neither ``storage`` nor ``current_dir`` is persisted anymore; both are
+        # derived by rule when the workspace is applied. Drop any legacy copies
+        # that may still be present so the registry stays clean.
+        entry.pop("storage", None)
+        entry.pop("current_dir", None)
         self._agent._workspaces_state["active"] = getattr(
             self._agent, "workspace_id", self._default_workspace_id
         )
