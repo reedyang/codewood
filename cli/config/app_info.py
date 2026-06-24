@@ -20,6 +20,43 @@ def get_app_name() -> str:
     return name
 
 
+def get_app_prompt_name_env_var() -> str:
+    """Name of the env var that overrides the app name shown to the model.
+
+    Derived from the compact app slug so the ``CODEWOOD`` keyword is never
+    hard-coded, e.g. ``CODEWOOD_PROMPT_APP_NAME``.
+    """
+    return f"{get_app_slug_compact().upper()}_PROMPT_APP_NAME"
+
+
+def get_app_prompt_name() -> str:
+    """App name to expose in the model context / system prompt.
+
+    When ``<PREFIX>_PROMPT_APP_NAME`` (e.g. ``CODEWOOD_PROMPT_APP_NAME``) is
+    set to a non-empty value, that name is used in the prompts the model sees,
+    so the model is not told it is being driven by the real product. Falls
+    back to :func:`get_app_name` when unset.
+    """
+    override = os.environ.get(get_app_prompt_name_env_var())
+    if override is not None:
+        override = override.strip()
+        if override:
+            return override
+    return get_app_name()
+
+
+def get_app_prompt_slug_kebab() -> str:
+    """Kebab slug matching :func:`get_app_prompt_name`.
+
+    Uses the prompt-name override (if any) so slug-based references in the
+    system prompt also reflect the custom name instead of leaking the real
+    product slug.
+    """
+    name = get_app_prompt_name()
+    parts = [p for p in re.split(r"[^a-zA-Z0-9]+", name.lower()) if p]
+    return "-".join(parts) if parts else get_app_slug_kebab()
+
+
 def get_app_description() -> str:
     description = str(APP_INFO.get("description") or "").strip()
     return description or f"{get_app_name()} AI Agent"

@@ -11,7 +11,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from ...config.app_info import get_app_name, get_app_slug_kebab
+from ...config.app_info import get_app_prompt_name, get_app_prompt_slug_kebab
 from .base import ModelContextPart
 
 
@@ -21,8 +21,8 @@ def build_base_system_prompt() -> str:
     with open(prompt_path, "r", encoding="utf-8") as f:
         return (
             f.read()
-            .replace("{{APP_NAME}}", get_app_name())
-            .replace("{{APP_SLUG_KEBAB}}", get_app_slug_kebab())
+            .replace("{{APP_NAME}}", get_app_prompt_name())
+            .replace("{{APP_SLUG_KEBAB}}", get_app_prompt_slug_kebab())
         )
 
 

@@ -17,7 +17,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Dict
 
-from ..config.app_info import get_app_name
+from ..config.app_info import get_app_prompt_name
 
 MODE_AGENT = "agent"
 MODE_PLAN = "plan"
@@ -59,7 +59,7 @@ def _runtime_variables() -> Dict[str, str]:
     """
     return {
         "{{KNOWN_MODE_NAMES}}": known_mode_names(),
-        "{{APP_NAME}}": get_app_name(),
+        "{{APP_NAME}}": get_app_prompt_name(),
     }
 
 

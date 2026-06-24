@@ -2,7 +2,7 @@
 from typing import Any, Dict, Iterable, Optional
 import tempfile
 
-from ..config.app_info import get_app_config_dirname, get_app_name, get_app_slug_kebab
+from ..config.app_info import get_app_config_dirname, get_app_prompt_name, get_app_prompt_slug_kebab
 
 
 AI_WORKSPACE_TOP_LEVEL_DIR_NAMES = frozenset({"temp", "skills"})
@@ -73,7 +73,7 @@ class PathPolicy:
         )
 
     def reject_ai_workspace_root_level_write(self, path: Path) -> Optional[str]:
-        app_name = get_app_name()
+        app_name = get_app_prompt_name()
         msg = (
             f"Do not create this path directly in the {app_name} workspace root."
             f"Use a subdirectory instead, such as workspace/temp/… (temporary) or workspace/{get_app_config_dirname()}/skills/… (skills),"
@@ -166,7 +166,7 @@ class PathPolicy:
             if not (is_dependency_install or is_ai_workspace_script):
                 return self._deny(
                     (
-                        f"Blocked shell command: when running inside the {get_app_slug_kebab()} directory, only dependency-install commands"
+                        f"Blocked shell command: when running inside the {get_app_prompt_slug_kebab()} directory, only dependency-install commands"
                         " or AI temporary scripts under workspace_config_dir are allowed."
                     )
                 )
@@ -198,7 +198,7 @@ class PathPolicy:
 
     @staticmethod
     def blocked_by_self_protection(action: str) -> Dict[str, Any]:
-        app_slug_kebab = get_app_slug_kebab()
+        app_slug_kebab = get_app_prompt_slug_kebab()
         config_dirname = get_app_config_dirname()
         return {
             "success": False,
