@@ -144,6 +144,16 @@ export interface PlanState {
  *  mapped to y/n/a on the backend locally and never sent to the model.
  *  Older backends omit ``options``; the panel then falls back to the
  *  built-in Yes/No(/Always) buttons. */
+/** One row of a structured change preview (apply_patch diff). Mirrors the
+ *  backend ``ChangePreviewFormatter.format_segments_structured`` output. */
+export interface DiffRow {
+  type: "context" | "del" | "add" | "change" | "omitted";
+  oldNo: number | null;
+  newNo: number | null;
+  oldText: string;
+  newText: string;
+}
+
 export interface ConfirmRequest {
   id: string;
   prompt: string;
@@ -152,6 +162,9 @@ export interface ConfirmRequest {
   command?: string;
   options?: string[];
   offerAlways?: boolean;
+  /** Structured diff rows for an apply_patch change preview. When present the
+   *  panel renders a responsive (side-by-side / inline) highlighted diff. */
+  diffRows?: DiffRow[];
 }
 
 /** Pending ``request_user_input`` prompt surfaced by the backend.

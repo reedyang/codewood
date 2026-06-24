@@ -1,4 +1,5 @@
 import { useApp } from "../state/AppContext";
+import { DiffPreview, langFromPath } from "./DiffPreview";
 
 /**
  * Inline execution-policy confirmation panel rendered at the bottom of the
@@ -12,6 +13,13 @@ import { useApp } from "../state/AppContext";
  * The chosen option's index is sent back via ``answerConfirm``; the backend
  * maps it to y/n/a locally. The user's pick is never forwarded to the model.
  */
+/** Pull the patched file path out of the apply_patch confirm prompt so the
+ *  diff preview can infer a syntax-highlighting language from its extension. */
+function extractPatchPath(prompt: string): string {
+  const m = /:\s*(.+?)\s*\??$/.exec(prompt || "");
+  return m ? m[1] : "";
+}
+
 export function ConfirmDialog() {
   const { confirmRequest, answerConfirm, t } = useApp();
 
@@ -59,6 +67,12 @@ export function ConfirmDialog() {
             <pre className="confirm-command-code">
               <code>{confirmRequest.command}</code>
             </pre>
+          ) : null}
+          {confirmRequest.diffRows && confirmRequest.diffRows.length > 0 ? (
+            <DiffPreview
+              rows={confirmRequest.diffRows}
+              lang={langFromPath(extractPatchPath(confirmRequest.prompt))}
+            />
           ) : null}
           <span className="ask-more-info-mode-hint">
             {t("askMoreInfo.singleHint")}

@@ -1297,6 +1297,7 @@ class ServeApp:
         options: List[str],
         offer_always: bool = False,
         command: Optional[str] = None,
+        preview_segments: Optional[List[Dict[str, Any]]] = None,
     ) -> str:
         """Structured confirmation prompt for the execution-policy gate.
 
@@ -1319,6 +1320,20 @@ class ServeApp:
             label = strip_ansi(str(raw or ""))[:120]
             if label:
                 safe_options.append(label)
+        # Convert the structured change-preview segments into JSON-serializable
+        # diff rows so the frontend can render the preview natively (responsive
+        # side-by-side / inline) with syntax highlighting, instead of relying on
+        # pre-rendered ANSI text.
+        diff_rows: List[Dict[str, Any]] = []
+        if preview_segments:
+            try:
+                from ..core.change_preview_formatter import ChangePreviewFormatter
+
+                diff_rows = ChangePreviewFormatter.format_segments_structured(
+                    preview_segments
+                )
+            except Exception:
+                diff_rows = []
         self.broadcaster.publish(
             "confirm",
             {
@@ -1327,6 +1342,7 @@ class ServeApp:
                 "command": strip_ansi(str(command or "")),
                 "options": safe_options,
                 "offerAlways": bool(offer_always),
+                "diffRows": diff_rows,
                 "chatId": self._active_chat_id(),
             },
         )

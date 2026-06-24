@@ -238,10 +238,20 @@ def _confirm_choice_via_selection(
                     list(options),
                     bool(offer_always),
                     display_command,
+                    preview_segments,
                 )
             except TypeError:
-                # Older provider signature without ``command``.
-                raw = gui_provider(prompt_core, list(options), bool(offer_always))
+                try:
+                    # Provider with ``command`` but no ``preview_segments``.
+                    raw = gui_provider(
+                        prompt_core,
+                        list(options),
+                        bool(offer_always),
+                        display_command,
+                    )
+                except TypeError:
+                    # Older provider signature without ``command``.
+                    raw = gui_provider(prompt_core, list(options), bool(offer_always))
         except Exception:
             return None
         ans = str(raw or "").strip().lower()
