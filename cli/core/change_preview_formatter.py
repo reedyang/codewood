@@ -437,7 +437,10 @@ class ChangePreviewFormatter:
             frags.append((ChangePreviewFormatter.PT_STYLE_GRAY, lp))
             if is_omitted:
                 frags.append((ChangePreviewFormatter.PT_STYLE_OMITTED, lc + pad_spaces))
-            elif "-" in mark_pair and lc.strip():
+            elif "-" in mark_pair:
+                # Fill the whole padded cell with the del tint, even on wrapped
+                # continuation rows where this side is empty, so the background
+                # block and the vertical separators stay continuous.
                 frags.extend(
                     ChangePreviewFormatter._chunk_fragments(
                         lc + pad_spaces,
@@ -454,7 +457,7 @@ class ChangePreviewFormatter:
             frags.append((ChangePreviewFormatter.PT_STYLE_GRAY, rp))
             if is_omitted:
                 frags.append((ChangePreviewFormatter.PT_STYLE_OMITTED, rc))
-            elif "+" in mark_pair and rc.strip():
+            elif "+" in mark_pair:
                 frags.extend(
                     ChangePreviewFormatter._chunk_fragments(
                         rc,
@@ -830,11 +833,12 @@ class ChangePreviewFormatter:
             is_omitted_row,
         ) in wrapped_rows:
             left_prefix_plain = left_prefix_part
-            # Pad the plain prefix+chunk to the column width; apply the pad as
-            # trailing spaces appended to the COLORED chunk so alignment holds.
+            # Pad BOTH columns to the same content width so every changed-line
+            # background fills a solid, uniform rectangle. Ragged-width fills
+            # are what make the vertical separators look "broken".
             left_plain_full = f"{left_prefix_part}{left_chunk}"
-            pad = max(0, left_col_width - ChangePreviewFormatter._display_width(left_plain_full))
-            left_chunk_c_padded = left_chunk_c + (" " * pad)
+            left_pad = max(0, left_col_width - ChangePreviewFormatter._display_width(left_plain_full))
+            left_chunk_c_padded = left_chunk_c + (" " * left_pad)
 
             left_prefix_colored = f"{ChangePreviewFormatter.ANSI_GRAY}{left_prefix_plain}{ChangePreviewFormatter.ANSI_RESET}"
             right_prefix_colored = f"{ChangePreviewFormatter.ANSI_GRAY}{right_prefix_part}{ChangePreviewFormatter.ANSI_RESET}"
@@ -844,11 +848,15 @@ class ChangePreviewFormatter:
             else:
                 left_chunk_colored = left_chunk_c_padded
                 right_chunk_colored = right_chunk_c
-                if "-" in mark_pair and left_chunk:
+                # Paint the changed-line background across the whole content
+                # cell (code + trailing pad), even on wrapped continuation rows
+                # where this side's chunk is empty, so the tint stays a solid
+                # block and the gutter/separator columns read as continuous.
+                if "-" in mark_pair:
                     left_chunk_colored = ChangePreviewFormatter._apply_bg(
                         left_chunk_colored, ChangePreviewFormatter.ANSI_BG_DEL
                     )
-                if "+" in mark_pair and right_chunk:
+                if "+" in mark_pair:
                     right_chunk_colored = ChangePreviewFormatter._apply_bg(
                         right_chunk_colored, ChangePreviewFormatter.ANSI_BG_ADD
                     )
