@@ -65,14 +65,32 @@ def get_app_config_dirname() -> str:
     return f".{get_app_slug_compact()}"
 
 
+def get_app_home_env_var() -> str:
+    """Name of the env var that overrides the global config directory.
+
+    Built from the compact app slug so the ``CODEWOOD`` keyword is never
+    hard-coded, e.g. ``CODEWOOD_HOME``. Rename the app and the variable name
+    follows automatically.
+    """
+    return f"{get_app_slug_compact().upper()}_HOME"
+
+
 def get_app_global_config_dir() -> Path:
     """Absolute path to the user-level (global) config directory.
 
-    Resolves to ``~/.config/<appslug>`` (XDG-style), e.g.
+    When the ``<PREFIX>_HOME`` env var (e.g. ``CODEWOOD_HOME``) is set to a
+    non-empty value, that path is used verbatim as the global config
+    directory. ``~`` and environment variables in the value are expanded.
+    Otherwise it resolves to ``~/.config/<appslug>`` (XDG-style), e.g.
     ``~/.config/codewood``. This is where ``config.jsonc``, the global
-    ``skills/``, caches, etc. live. There is intentionally no fallback to a
-    ``.codewood`` directory in the user's home or in the code root.
+    ``skills/``, caches, etc. live.
     """
+    override = os.environ.get(get_app_home_env_var())
+    if override is not None:
+        override = override.strip()
+        if override:
+            expanded = os.path.expanduser(os.path.expandvars(override))
+            return Path(expanded).resolve()
     return (Path.home() / ".config" / get_app_slug_compact()).resolve()
 
 
