@@ -334,30 +334,83 @@ class AiOutputDisplayTests(unittest.TestCase):
         s = self.agent._tool_call_summary("shell", {"command": cmd, "force": True, "input": "x"})
         self.assertEqual(s, "Get-ChildItem -Force")
 
-    def test_format_tool_call_feedback_line_uses_ran_and_default_bullet_color(self):
+    def test_format_tool_call_feedback_line_uses_natural_label_and_default_bullet_color(self):
+        # Non-shell tools now read as a natural action phrase (no "Ran"): the
+        # snake_case tool name is humanized and the args follow in parentheses.
         with patch("cli.agent._ansi_rgb", side_effect=lambda text, r, g, b: f"<RGB:{r},{g},{b}>{text}</RGB>"), patch(
             "cli.agent.highlight_assistant_display_line", side_effect=lambda s: f"<H>{s}</H>"
         ):
             line = self.agent._format_tool_call_feedback_line("read", {"path": "a.txt"}, failed=False)
-        self.assertTrue(line.startswith("<RGB:19,161,14>•</RGB> Ran "))
-        self.assertIn("<H>read (path=a.txt)</H>", line)
+        self.assertTrue(line.startswith("<RGB:19,161,14>•</RGB> Read "))
+        self.assertIn("<H>(path=a.txt)</H>", line)
 
-    def test_format_tool_call_feedback_line_uses_language_specific_prefix(self):
+    def test_format_tool_call_feedback_line_shell_uses_language_specific_prefix(self):
+        # Shell keeps the localized "Ran <command>" phrasing.
         self.agent.display_language = "zh-CN"
         with patch("cli.agent._ansi_rgb", side_effect=lambda text, r, g, b: f"<RGB:{r},{g},{b}>{text}</RGB>"), patch(
             "cli.agent.highlight_assistant_display_line", side_effect=lambda s: f"<H>{s}</H>"
         ):
-            line = self.agent._format_tool_call_feedback_line("read", {"path": "a.txt"}, failed=False)
+            line = self.agent._format_tool_call_feedback_line("shell", {"command": "git status"}, failed=False)
         self.assertTrue(line.startswith("<RGB:19,161,14>•</RGB> 执行 "))
-        self.assertIn("<H>read (path=a.txt)</H>", line)
+        self.assertIn("<H>git status</H>", line)
+
+    def test_format_tool_call_feedback_line_localizes_non_shell_label(self):
+        # Non-shell tool labels are localized in zh-CN via tool.label.* keys.
+        self.agent.display_language = "zh-CN"
+        with patch("cli.agent._ansi_rgb", side_effect=lambda text, r, g, b: f"<RGB:{r},{g},{b}>{text}</RGB>"), patch(
+            "cli.agent.highlight_assistant_display_line", side_effect=lambda s: f"<H>{s}</H>"
+        ):
+            line = self.agent._format_tool_call_feedback_line(
+                "run_subagent", {"subagent": "coder"}, failed=False
+            )
+        self.assertTrue(line.startswith("<RGB:19,161,14>•</RGB> 运行子代理 "))
+        self.assertIn("<H>(subagent=coder)</H>", line)
+
+    def test_format_tool_call_feedback_line_apply_patch_localized(self):
+        self.agent.display_language = "zh-CN"
+        with patch("cli.agent._ansi_rgb", side_effect=lambda text, r, g, b: f"<RGB:{r},{g},{b}>{text}</RGB>"), patch(
+            "cli.agent.highlight_assistant_display_line", side_effect=lambda s: f"<H>{s}</H>"
+        ):
+            line = self.agent._format_tool_call_feedback_line(
+                "apply_patch",
+                {"path": "new.py", "patch": "*** Add File: new.py\n+x\n"},
+                failed=False,
+            )
+        self.assertTrue(line.startswith("<RGB:19,161,14>•</RGB> 创建文件 "))
+
+    def test_format_tool_call_feedback_line_apply_patch_create_file(self):
+        # apply_patch that adds a new file reads as "Create file".
+        with patch("cli.agent._ansi_rgb", side_effect=lambda text, r, g, b: f"<RGB:{r},{g},{b}>{text}</RGB>"), patch(
+            "cli.agent.highlight_assistant_display_line", side_effect=lambda s: f"<H>{s}</H>"
+        ):
+            line = self.agent._format_tool_call_feedback_line(
+                "apply_patch",
+                {"path": "new.py", "patch": "*** Add File: new.py\n+hello\n"},
+                failed=False,
+            )
+        self.assertTrue(line.startswith("<RGB:19,161,14>•</RGB> Create file "))
+        self.assertIn("<H>(new.py)</H>", line)
+
+    def test_format_tool_call_feedback_line_apply_patch_edit(self):
+        # apply_patch editing an existing file reads as "Apply patch".
+        with patch("cli.agent._ansi_rgb", side_effect=lambda text, r, g, b: f"<RGB:{r},{g},{b}>{text}</RGB>"), patch(
+            "cli.agent.highlight_assistant_display_line", side_effect=lambda s: f"<H>{s}</H>"
+        ):
+            line = self.agent._format_tool_call_feedback_line(
+                "apply_patch",
+                {"path": "edit.py", "patch": "@@\n-old\n+new\n"},
+                failed=False,
+            )
+        self.assertTrue(line.startswith("<RGB:19,161,14>•</RGB> Apply patch "))
+        self.assertIn("<H>(edit.py)</H>", line)
 
     def test_format_tool_call_feedback_line_switches_bullet_color_when_failed(self):
         with patch("cli.agent._ansi_rgb", side_effect=lambda text, r, g, b: f"<RGB:{r},{g},{b}>{text}</RGB>"), patch(
             "cli.agent.highlight_assistant_display_line", side_effect=lambda s: f"<H>{s}</H>"
         ):
             line = self.agent._format_tool_call_feedback_line("read", {"path": "a.txt"}, failed=True)
-        self.assertTrue(line.startswith("<RGB:197,15,31>•</RGB> Ran "))
-        self.assertIn("<H>read (path=a.txt)</H>", line)
+        self.assertTrue(line.startswith("<RGB:197,15,31>•</RGB> Read "))
+        self.assertIn("<H>(path=a.txt)</H>", line)
 
     def test_format_direct_shell_command_feedback_line_uses_shared_highlighter(self):
         with patch("cli.agent._ansi_rgb", side_effect=lambda text, r, g, b: f"<RGB:{r},{g},{b}>{text}</RGB>"), patch(
@@ -384,7 +437,7 @@ class AiOutputDisplayTests(unittest.TestCase):
             patch("cli.agent._ansi_gray", side_effect=lambda s: f"<G>{s}</G>"),
             patch("cli.agent.highlight_assistant_display_line", side_effect=lambda s: s),
         ):
-            line = self.agent._format_tool_call_feedback_line("read", {"path": "a.txt"}, failed=False)
+            line = self.agent._format_tool_call_feedback_line("shell", {"command": "x"}, failed=False)
         rows = line.splitlines()
         self.assertGreaterEqual(len(rows), 2)
         self.assertTrue(rows[1].startswith("<G>  │ </G>"))

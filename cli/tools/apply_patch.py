@@ -415,8 +415,17 @@ def action_apply_unified_patch(agent: Any, file_path: str, patch: str, confirmed
         if need_confirm:
             from ..core.change_preview_formatter import ChangePreviewFormatter
 
+            try:
+                _lang = agent._ui_language()
+            except AttributeError:
+                _lang = getattr(agent, "display_language", None) or "en"
             ok = agent._prompt_confirm_yes_no_maybe_always(
-                f"⚠️ Confirm applying patch to text file: {abs_path} ?",
+                translate(
+                    "confirm.apply_patch_text_file",
+                    _lang,
+                    fallback="⚠️ Confirm applying patch to text file: {path} ?",
+                    path=str(abs_path),
+                ),
                 offer_always=False,
                 kind="text_file",
                 preview_segments=confirm_preview_segments,
@@ -436,10 +445,12 @@ def action_apply_unified_patch(agent: Any, file_path: str, patch: str, confirmed
         resolved = abs_path.resolve()
         agent._ai_created_path_keys.add(agent._ephemeral_path_key(resolved))
         agent._reload_skills_if_workspace_skill_changed([resolved])
-        # GUI: render the change preview as a collapsible, highlighted diff block
-        # in the transcript (works in both confirmation and non-confirmation
-        # modes; the confirm-panel diff above is dismissed once answered).
-        if gui_mode and preview_segments and not skip_preview_and_confirm:
+        # GUI: render the change preview as a collapsible, highlighted diff
+        # block in the transcript. This is display-only (persisted with the
+        # chat and replayed on reload), so emit it in every execution policy —
+        # including moderate/unlimited where the confirm prompt is skipped but
+        # the user still wants to see what changed live (matching reload).
+        if gui_mode and preview_segments:
             _emit_gui_diff_block(str(resolved), preview_segments)
         change_preview_rows: List[Dict[str, Any]] = []
         if preview_segments:
