@@ -113,6 +113,36 @@ interface AppContextValue {
   showBrowserTab: () => void;
   /** Hide the embedded Browser tab (its "x" close button). */
   hideBrowserTab: () => void;
+  /** Whether the embedded console dock is open below the message area. */
+  consoleOpen: boolean;
+  /** Open the embedded console dock (View menu / Console options). */
+  showConsole: () => void;
+  /** Hide the embedded console dock. */
+  hideConsole: () => void;
+  /** Effective console options (font + buffer) from server state. */
+  consoleOptions: { fontFamily: string; bufferLines: number };
+  /** Subscribe to live SSE output for a console session. Returns an
+   *  unsubscribe function. The callback receives base64-encoded PTY bytes. */
+  subscribeConsoleOutput: (
+    id: string,
+    handler: (b64: string, end: boolean) => void,
+  ) => () => void;
+  /** Fetch a console session's retained output (base64) for repaint. */
+  attachConsole: (id: string) => Promise<string>;
+  /** Send input to a console session (HTTP POST; output arrives via SSE). */
+  consoleInput: (id: string, data: string) => Promise<void>;
+  /** Notify the backend PTY of a terminal resize. */
+  consoleResize: (id: string, cols: number, rows: number) => Promise<void>;
+  /** Console session lifecycle (REST; the WS only carries byte I/O). */
+  openConsole: (
+    kind: string,
+  ) => Promise<{ id: string; title: string; kind: string } | null>;
+  closeConsole: (id: string) => Promise<boolean>;
+  activateConsole: (id: string) => Promise<boolean>;
+  setConsoleOptions: (options: {
+    fontFamily: string;
+    bufferLines: number;
+  }) => Promise<boolean>;
   resolveBackendUrl: (url: string) => string;
   sendInput: (text: string) => Promise<void>;
   runCommand: (command: string) => Promise<void>;
@@ -212,6 +242,7 @@ interface HostApiBridge {
 const AppContext = createContext<AppContextValue | null>(null);
 
 const THEME_STORAGE_KEY = "codewood.theme";
+const CONSOLE_OPEN_KEY = "codewood.consoleOpen";
 // Stable empty reference so the exposed `turns` doesn't change identity when a
 // chat has no live turns (avoids needless re-renders / effect churn).
 const EMPTY_TURNS: Turn[] = [];
@@ -281,11 +312,24 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [settingsInitialPage, setSettingsInitialPage] = useState<string | null>(null);
   const [aboutOpen, setAboutOpen] = useState(false);
   const [planOpen, setPlanOpen] = useState(false);
+  const [consoleOpen, setConsoleOpen] = useState<boolean>(() => {
+    try {
+      return window.localStorage.getItem(CONSOLE_OPEN_KEY) === "1";
+    } catch {
+      return false;
+    }
+  });
   // Subscribers for backend-originated browser commands (the BrowserPanel
   // registers one while mounted). A Set so mount/unmount add/remove cleanly.
   const browserCommandHandlersRef = useRef<
     Set<(cmd: Record<string, unknown>) => void>
   >(new Set());
+  // Subscribers for backend console output, keyed by session id. Each mounted
+  // ConsoleTerminal registers one so live PTY output (delivered over SSE since
+  // WebView2's file:// origin forbids ws://) reaches the right terminal.
+  const consoleOutputHandlersRef = useRef<
+    Map<string, Set<(b64: string, end: boolean) => void>>
+  >(new Map());
   // Draft (compose) mode: "New Chat" shows the empty composer without creating
   // a chat yet; the chat is materialized only when the first message is sent.
   // ``draftWorkspaceId`` is the workspace the new chat will be created in.
@@ -501,6 +545,28 @@ export function AppProvider({ children }: { children: ReactNode }) {
     [client],
   );
 
+  const subscribeConsoleOutput = useCallback(
+    (id: string, handler: (b64: string, end: boolean) => void) => {
+      const map = consoleOutputHandlersRef.current;
+      let set = map.get(id);
+      if (!set) {
+        set = new Set();
+        map.set(id, set);
+      }
+      set.add(handler);
+      return () => {
+        const s = consoleOutputHandlersRef.current.get(id);
+        if (s) {
+          s.delete(handler);
+          if (s.size === 0) {
+            consoleOutputHandlersRef.current.delete(id);
+          }
+        }
+      };
+    },
+    [],
+  );
+
   const previewHtml = useCallback(
     (html: string) => client.previewHtml(activeChatIdRef.current, html),
     [client],
@@ -557,6 +623,53 @@ export function AppProvider({ children }: { children: ReactNode }) {
       // localStorage may be unavailable.
     }
   }, []);
+
+  const consoleOptions = useMemo(
+    () => ({
+      fontFamily: state?.consoleOptions?.fontFamily ?? "",
+      bufferLines: state?.consoleOptions?.bufferLines ?? 1000,
+    }),
+    [state?.consoleOptions?.fontFamily, state?.consoleOptions?.bufferLines],
+  );
+
+  const showConsole = useCallback(() => {
+    setConsoleOpen(true);
+    try {
+      window.localStorage.setItem(CONSOLE_OPEN_KEY, "1");
+    } catch {
+      // localStorage may be unavailable; the dock just won't persist.
+    }
+  }, []);
+
+  const hideConsole = useCallback(() => {
+    setConsoleOpen(false);
+    try {
+      window.localStorage.setItem(CONSOLE_OPEN_KEY, "0");
+    } catch {
+      // localStorage may be unavailable.
+    }
+  }, []);
+
+  const attachConsole = useCallback((id: string) => client.attachConsole(id), []);
+  const consoleInput = useCallback(
+    (id: string, data: string) => client.consoleInput(id, data),
+    [],
+  );
+  const consoleResize = useCallback(
+    (id: string, cols: number, rows: number) => client.consoleResize(id, cols, rows),
+    [],
+  );
+  const openConsole = useCallback((kind: string) => client.openConsole(kind), []);
+  const closeConsole = useCallback((id: string) => client.closeConsole(id), []);
+  const activateConsole = useCallback(
+    (id: string) => client.activateConsole(id),
+    [],
+  );
+  const setConsoleOptions = useCallback(
+    (options: { fontFamily: string; bufferLines: number }) =>
+      client.setConsoleOptions(options),
+    [],
+  );
 
   // Render an HTML snippet in the embedded browser: persist it, ensure the
   // Browser tab is visible+active and the right panel is open, then navigate.
@@ -1109,6 +1222,23 @@ export function AppProvider({ children }: { children: ReactNode }) {
         }
         case "confirm": {
           setConfirmRequest(event.data as ConfirmRequest);
+          break;
+        }
+        case "console_output": {
+          const d = event.data as Record<string, unknown>;
+          const id = String(d.id || "");
+          const b64 = String(d.b64 || "");
+          const end = Boolean(d.end);
+          const handlers = consoleOutputHandlersRef.current.get(id);
+          if (handlers) {
+            for (const handler of handlers) {
+              try {
+                handler(b64, end);
+              } catch {
+                // A misbehaving handler must not break event dispatch.
+              }
+            }
+          }
           break;
         }
         case "browser_command": {
@@ -1856,6 +1986,18 @@ export function AppProvider({ children }: { children: ReactNode }) {
     previewHtmlInBrowser,
     showBrowserTab,
     hideBrowserTab,
+    consoleOpen,
+    showConsole,
+    hideConsole,
+    consoleOptions,
+    subscribeConsoleOutput,
+    attachConsole,
+    consoleInput,
+    consoleResize,
+    openConsole,
+    closeConsole,
+    activateConsole,
+    setConsoleOptions,
     resolveBackendUrl,
     sendInput,
     runCommand,

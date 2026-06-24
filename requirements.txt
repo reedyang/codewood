@@ -5,3 +5,4 @@ tiktoken>=0.7.0
 pywebview>=5.0
 pyinstaller>=6.0
 pylatexenc>=2.10
+pywinpty>=2.0.0; sys_platform == "win32"

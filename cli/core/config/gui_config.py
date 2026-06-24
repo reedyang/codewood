@@ -35,6 +35,14 @@ BACKGROUND_IMAGE_STEM = "bg"
 _ALLOWED_BACKGROUND_EXTS = ("png", "jpg", "jpeg", "webp", "gif", "bmp")
 _DEFAULT_BACKGROUND_OPACITY = 60
 
+# Embedded console options (GUI-only). Font name is free text bounded for
+# safety; buffer lines (xterm scrollback) is clamped to a sane range.
+_DEFAULT_CONSOLE_FONT = ""
+_DEFAULT_CONSOLE_BUFFER_LINES = 1000
+_CONSOLE_BUFFER_MIN = 100
+_CONSOLE_BUFFER_MAX = 100000
+_MAX_CONSOLE_FONT_LEN = 128
+
 
 def gui_config_path(config_dir: Path) -> Path:
     return Path(config_dir) / GUI_CONFIG_FILENAME
@@ -118,6 +126,27 @@ def normalize_ui_prefs(prefs: Any) -> Dict[str, Any]:
         "pinnedChatIds": _normalize_ids(src.get("pinnedChatIds")),
         "archivedChatIds": _normalize_ids(src.get("archivedChatIds")),
     }
+
+
+def normalize_console_options(value: Any) -> Dict[str, Any]:
+    """Return a normalized embedded-console options object for storage.
+
+    Shape: ``{"fontFamily": <str>, "bufferLines": <int>}``. The font family is
+    free text (a CSS/xterm font name) bounded in length; an empty value means
+    "use the default monospace stack". Buffer lines is clamped to a safe range.
+    """
+    src = value if isinstance(value, dict) else {}
+    font = str(src.get("fontFamily") or "").strip()[:_MAX_CONSOLE_FONT_LEN]
+    try:
+        buffer_lines = int(round(float(src.get("bufferLines"))))
+    except (TypeError, ValueError):
+        buffer_lines = _DEFAULT_CONSOLE_BUFFER_LINES
+    buffer_lines = max(_CONSOLE_BUFFER_MIN, min(_CONSOLE_BUFFER_MAX, buffer_lines))
+    return {"fontFamily": font, "bufferLines": buffer_lines}
+
+
+def default_console_options() -> Dict[str, Any]:
+    return {"fontFamily": _DEFAULT_CONSOLE_FONT, "bufferLines": _DEFAULT_CONSOLE_BUFFER_LINES}
 
 
 def normalize_background_ext(value: Any) -> str:

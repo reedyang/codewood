@@ -17,6 +17,7 @@ from .agents_md import AgentsMdPart
 from .user_preferences import UserPreferencesPart
 from .tools import ToolsPart
 from .browser import BrowserPart
+from .console import ConsolePart
 from .subagents import SubagentsPart
 from .mcp import McpPart
 from .runtime_cache import RuntimeCachePart
@@ -31,6 +32,7 @@ def ordered_context_parts() -> List[ModelContextPart]:
         UserPreferencesPart(),
         ToolsPart(),
         BrowserPart(),
+        ConsolePart(),
         SubagentsPart(),
         McpPart(),
         RuntimeCachePart(),

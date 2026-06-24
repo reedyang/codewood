@@ -18,6 +18,7 @@ launching host can read it; it is never written to logs.
 
 from __future__ import annotations
 
+import base64
 import io
 import json
 import os
@@ -933,6 +934,7 @@ def _build_state_inner(agent: Any) -> Dict[str, Any]:
     theme = ""
     ui_prefs: Dict[str, Any] = {}
     gui_language = ""
+    console_options: Dict[str, Any] = {"fontFamily": "", "bufferLines": 1000}
     background: Dict[str, Any] = {"hasImage": False, "fileName": "", "opacity": 60, "version": 0}
     try:
         from ..core.config.gui_config import (
@@ -940,6 +942,7 @@ def _build_state_inner(agent: Any) -> Dict[str, Any]:
             background_image_path,
             load_gui_config,
             normalize_background,
+            normalize_console_options,
             normalize_gui_language,
             normalize_ui_prefs,
         )
@@ -947,6 +950,7 @@ def _build_state_inner(agent: Any) -> Dict[str, Any]:
         gui_cfg = load_gui_config(agent.config_dir)
         theme = str(gui_cfg.get("theme") or "")
         ui_prefs = normalize_ui_prefs(gui_cfg.get("uiPrefs"))
+        console_options = normalize_console_options(gui_cfg.get("console"))
         gui_language = normalize_gui_language(gui_cfg.get("language"))
         bg = normalize_background(gui_cfg.get("background"))
         bg_ext = background_ext_from_filename(bg["fileName"])
@@ -972,6 +976,7 @@ def _build_state_inner(agent: Any) -> Dict[str, Any]:
         theme = ""
         ui_prefs = {}
         gui_language = ""
+        console_options = {"fontFamily": "", "bufferLines": 1000}
         background = {"hasImage": False, "fileName": "", "opacity": 60, "version": 0}
 
     # The GUI's display language is intentionally decoupled from the agent's
@@ -1006,6 +1011,7 @@ def _build_state_inner(agent: Any) -> Dict[str, Any]:
         "language": language,
         "theme": theme,
         "uiPrefs": ui_prefs,
+        "consoleOptions": console_options,
         "background": background,
         "plan": _safe_active_plan(agent),
         "askMoreInfo": _safe_pending_request_user_input(agent),
@@ -1074,6 +1080,16 @@ class ServeApp:
         # to ``/browser-result``.
         self._browser_cmds: Dict[str, "queue.Queue[Dict[str, Any]]"] = {}
         self._browser_cmds_lock = threading.Lock()
+        # Embedded console (GUI): PTY sessions live here. xterm tabs receive
+        # output over the SSE stream and send input via HTTP POST (WebView2's
+        # file:// origin forbids ws://); the model drives the active session via
+        # the ``console_*`` tools.
+        from .console_manager import ConsoleManager
+
+        self._console = ConsoleManager(
+            cwd_getter=lambda: str(getattr(self.agent, "work_directory", "") or "")
+        )
+        self._apply_saved_console_options()
         self._shutdown_event = threading.Event()
         self._token = secrets.token_urlsafe(32)
         self._httpd: Optional[ThreadingHTTPServer] = None
@@ -2152,6 +2168,154 @@ class ServeApp:
             return None
 
     # Embedded browser command channel
+    # ----------------------------------------------------------------------
+    # Embedded console: PTY sessions managed by ``self._console``. Tabs stream
+    # output via SSE and send input via HTTP POST; the model drives the active
+    # session through the ``console_*`` tools.
+    def _apply_saved_console_options(self) -> None:
+        try:
+            from ..core.config.gui_config import (
+                load_gui_config,
+                normalize_console_options,
+            )
+
+            cfg = load_gui_config(self.agent.config_dir)
+            opts = normalize_console_options(cfg.get("console"))
+            self._console.set_buffer_lines(opts.get("bufferLines") or 1000)
+        except Exception:
+            pass
+
+    def open_console(self, kind: str) -> Dict[str, Any]:
+        result = self._console.open(str(kind or ""))
+        if result.get("success"):
+            self._attach_console_stream(str(result.get("id") or ""))
+            self._broadcast_console_list()
+        return result
+
+    def _attach_console_stream(self, session_id: str) -> None:
+        """Forward a session's live PTY output to SSE subscribers.
+
+        WebView2 loads the GUI from a ``file://`` origin, which Chromium treats
+        as opaque and therefore forbids ``ws://`` connections from. So console
+        output rides the existing SSE event stream (as base64) and input/resize
+        travel over plain HTTP POSTs instead of a dedicated WebSocket.
+        """
+        session = self._console.get(session_id)
+        if session is None:
+            return
+        broadcaster = self.broadcaster
+
+        def _on_chunk(chunk: bytes) -> None:
+            try:
+                payload = base64.b64encode(chunk or b"").decode("ascii")
+                broadcaster.publish(
+                    "console_output",
+                    {"id": session_id, "b64": payload, "end": not chunk},
+                )
+            except Exception:
+                pass
+
+        # add_subscriber replays the retained buffer to this callback, but that
+        # would broadcast a session's scrollback to *every* SSE client. The
+        # per-terminal replay is delivered on demand via /console-attach, so we
+        # skip the implicit replay here by attaching without it.
+        session.add_live_subscriber(_on_chunk)
+
+    def attach_console(self, session_id: str) -> Dict[str, Any]:
+        """Return the retained raw output so a (re)mounted terminal can repaint."""
+        session = self._console.get(str(session_id or ""))
+        if session is None:
+            return {"ok": False, "error": "no such console"}
+        raw = session.snapshot_raw()
+        return {"ok": True, "b64": base64.b64encode(raw).decode("ascii")}
+
+    def console_input(self, session_id: str, data: str) -> bool:
+        session = self._console.get(str(session_id or ""))
+        if session is None:
+            return False
+        session.write(str(data or ""))
+        return True
+
+    def console_resize(self, session_id: str, cols: Any, rows: Any) -> bool:
+        session = self._console.get(str(session_id or ""))
+        if session is None:
+            return False
+        session.resize(cols, rows)
+        return True
+
+    def close_console(self, session_id: str) -> bool:
+        ok = self._console.close(str(session_id or ""))
+        if ok:
+            self._broadcast_console_list()
+        return ok
+
+    def set_active_console(self, session_id: str) -> bool:
+        return self._console.set_active(str(session_id or ""))
+
+    def list_consoles(self) -> List[Dict[str, Any]]:
+        return self._console.list()
+
+    def _broadcast_console_list(self) -> None:
+        try:
+            self.broadcaster.publish("console_list", {"consoles": self._console.list()})
+        except Exception:
+            pass
+
+    def set_console_options(self, options: Dict[str, Any]) -> bool:
+        """Persist GUI-only console options (font + buffer lines)."""
+        if not isinstance(options, dict):
+            return False
+        agent = self.agent
+        try:
+            from ..core.config.gui_config import (
+                load_gui_config,
+                normalize_console_options,
+                save_gui_config,
+            )
+
+            opts = normalize_console_options(options)
+            data = load_gui_config(agent.config_dir)
+            data["console"] = opts
+            save_gui_config(agent.config_dir, data)
+            self._console.set_buffer_lines(opts.get("bufferLines") or 1000)
+        except Exception:
+            return False
+        try:
+            self.broadcaster.publish("idle", self._route(state=_build_state(agent)))
+        except Exception:
+            pass
+        return True
+
+    def dispatch_console_command(
+        self, action: str, payload: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        """Drive the ACTIVE console session on behalf of the model."""
+        act = str(action or "")
+        data = payload or {}
+        session = self._console.active()
+        if session is None:
+            return {"success": False, "error": "no active console (open one in the GUI)"}
+        if act == "exec":
+            command = str(data.get("command") or "")
+            if not command.strip():
+                return {"success": False, "error": "missing command"}
+            # Send into the live interactive shell, terminated with a newline.
+            session.write(command.rstrip("\n") + "\r")
+            return {"success": True, "id": session.id}
+        if act == "read":
+            try:
+                start = int(data.get("start") or 0)
+            except (TypeError, ValueError):
+                start = 0
+            try:
+                count = int(data.get("count") or 200)
+            except (TypeError, ValueError):
+                count = 200
+            return {"success": True, **session.read_lines(start, count)}
+        if act == "info":
+            return {"success": True, **session.info()}
+        return {"success": False, "error": f"unknown console action: {action}"}
+
     # ----------------------------------------------------------------------
     # Browser tools run on the backend but the browser lives in the frontend
     # WebView. A tool publishes a ``browser_command`` SSE event and blocks on a
@@ -3538,6 +3702,11 @@ class ServeApp:
 
     def request_shutdown(self) -> None:
         self._shutdown_event.set()
+        # Tear down all PTY sessions so no orphan shells survive the server.
+        try:
+            self._console.close_all()
+        except Exception:
+            pass
         # Send the exit sentinel to every chat loop so they all drain.
         with self._runtimes_lock:
             runtimes = list(self._runtimes.values())
@@ -3631,6 +3800,10 @@ class ServeApp:
         # Hook for the browser_preview_file tool: read a local HTML file the
         # model just wrote, persist a bridged copy, and open it in the browser.
         self.agent._browser_preview_file = self.preview_local_html_file  # type: ignore[attr-defined]
+        # Bridge for the GUI-only console tools: lets a tool drive the active
+        # PTY session (exec/read/info). Its presence gates the console_* tools
+        # into the spec (registry: gui_enabled).
+        self.agent._console_dispatch = self.dispatch_console_command  # type: ignore[attr-defined]
         # When the model updates its plan mid-turn, push a fresh state snapshot
         # so the GUI's plan panel reflects it immediately. We use the dedicated
         # ``state`` event (not ``idle``) because the loop is still actively
@@ -3943,6 +4116,9 @@ def _make_handler(app: ServeApp):
                     data, content_type = result
                     self._send_bytes(200, data, content_type)
                 return
+            if path == "/consoles":
+                self._send_json(200, {"ok": True, "consoles": app.list_consoles()})
+                return
             if path == "/events":
                 self._stream_events()
                 return
@@ -4059,6 +4235,42 @@ def _make_handler(app: ServeApp):
             if path == "/set-ui-prefs":
                 prefs = body.get("prefs")
                 ok = app.set_ui_prefs(prefs if isinstance(prefs, dict) else {})
+                self._send_json(200 if ok else 400, {"ok": ok})
+                return
+            if path == "/console-open":
+                kind = str(body.get("kind") or "")[:32]
+                result = app.open_console(kind)
+                self._send_json(200 if result.get("success") else 400, result)
+                return
+            if path == "/console-close":
+                sid = str(body.get("id") or "")[:64]
+                ok = app.close_console(sid)
+                self._send_json(200 if ok else 404, {"ok": ok})
+                return
+            if path == "/console-activate":
+                sid = str(body.get("id") or "")[:64]
+                ok = app.set_active_console(sid)
+                self._send_json(200 if ok else 404, {"ok": ok})
+                return
+            if path == "/console-attach":
+                sid = str(body.get("id") or "")[:64]
+                result = app.attach_console(sid)
+                self._send_json(200 if result.get("ok") else 404, result)
+                return
+            if path == "/console-input":
+                sid = str(body.get("id") or "")[:64]
+                data = body.get("data")
+                ok = app.console_input(sid, data if isinstance(data, str) else "")
+                self._send_json(200 if ok else 404, {"ok": ok})
+                return
+            if path == "/console-resize":
+                sid = str(body.get("id") or "")[:64]
+                ok = app.console_resize(sid, body.get("cols"), body.get("rows"))
+                self._send_json(200 if ok else 404, {"ok": ok})
+                return
+            if path == "/set-console-options":
+                options = body.get("options")
+                ok = app.set_console_options(options if isinstance(options, dict) else {})
                 self._send_json(200 if ok else 400, {"ok": ok})
                 return
             if path == "/set-background-image":

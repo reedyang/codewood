@@ -108,6 +108,11 @@ export interface AppState {
     pinnedChatIds?: string[];
     archivedChatIds?: string[];
   };
+  /** GUI-only embedded-console options (font + scrollback buffer). */
+  consoleOptions?: {
+    fontFamily: string;
+    bufferLines: number;
+  };
   /** GUI-only background image presentation settings. */
   background?: {
     hasImage: boolean;
@@ -124,6 +129,19 @@ export interface AppState {
    *  surfaced here so the GUI re-renders the panel on chat load/refresh). */
   askMoreInfo?: AskMoreInfoRequest | null;
   executionPolicy: string;
+}
+
+/** One embedded-console tab as reported by the backend. */
+export interface ConsoleSessionInfo {
+  id: string;
+  kind: string;
+  title: string;
+  cwd: string;
+  cols: number;
+  rows: number;
+  totalLines: number;
+  alive: boolean;
+  active?: boolean;
 }
 
 export type PlanStepStatus = "pending" | "in_progress" | "completed";

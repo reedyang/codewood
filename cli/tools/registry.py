@@ -54,6 +54,11 @@ from .browser import (
     BrowserReadConsoleTool,
     BrowserEvalTool,
 )
+from .console import (
+    ConsoleExecTool,
+    ConsoleReadTool,
+    ConsoleInfoTool,
+)
 
 
 ALL_TOOLS: List[Type[BaseTool]] = [
@@ -98,6 +103,9 @@ ALL_TOOLS: List[Type[BaseTool]] = [
     BrowserReadDomTool,
     BrowserReadConsoleTool,
     BrowserEvalTool,
+    ConsoleExecTool,
+    ConsoleReadTool,
+    ConsoleInfoTool,
 ]
 
 _BY_NAME: Dict[str, Type[BaseTool]] = {t.name: t for t in ALL_TOOLS}
