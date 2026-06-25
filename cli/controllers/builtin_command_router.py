@@ -59,7 +59,6 @@ def dispatch_builtin_command(
         return True, False
 
     if bl in ("exit", "quit"):
-        agent._save_current_workspace_position()
         if wait_for_supplement:
             print(_t(agent, "builtin.exiting_app", app_name=get_app_name()))
         return True, True
