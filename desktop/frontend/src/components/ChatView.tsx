@@ -1683,6 +1683,7 @@ function WorkspaceSelector({
   const selectedId = draft
     ? draftWorkspaceId
     : workspaces.find((w) => w.active)?.id || "";
+  const selectedWs = workspaces.find((w) => w.id === selectedId);
   // The Default workspace is not a real project; surface it only through the
   // dedicated "Don't work in a workspace" entry, never in the workspace list.
   const filtered = workspaces.filter(
@@ -1730,7 +1731,7 @@ function WorkspaceSelector({
     <div className="ws-selector" ref={ref}>
       <button className="ws-selector-trigger" onClick={() => setOpen((v) => !v)}>
         <Icon name="folder" size={14} className="muted-icon" />
-        <span className="ws-selector-label">{t("workspace.selectorLabel")}</span>
+        <span className="ws-selector-label">{selectedWs && !selectedWs.isDefault ? selectedWs.name : t("workspace.selectorLabel")}</span>
         <Icon name="chevron" size={13} className={`chevron ${open ? "open" : ""}`} />
       </button>
       {open && (

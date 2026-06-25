@@ -62,11 +62,11 @@ export function Sidebar({ onOpenSettings }: { onOpenSettings: () => void }) {
     unreadChatIds,
     t,
     runCommand,
-    clearTurns,
     switchToChat,
     newChat,
     deleteChat,
     openWorkspaceInExplorer,
+    deleteWorkspace,
     toggleWorkspacePin,
     toggleChatPin,
     toggleChatArchive,
@@ -123,11 +123,6 @@ export function Sidebar({ onOpenSettings }: { onOpenSettings: () => void }) {
   const chatsForWorkspace = (ws: WorkspaceSummary): ChatRow[] => {
     const list = chatsByWorkspace[ws.id] ?? [];
     return list.filter((c) => !isArchivedChat(ws.id, c.id) && !isPinnedChat(ws.id, c.id));
-  };
-
-  const reloadingRun = async (command: string) => {
-    clearTurns();
-    await runCommand(command);
   };
 
   const switchChat = async (wsId: string, chatId: string) => {
@@ -204,7 +199,7 @@ export function Sidebar({ onOpenSettings }: { onOpenSettings: () => void }) {
         id: "remove",
         label: t("menu.remove"),
         danger: true,
-        onSelect: () => void reloadingRun(`/workspace delete ${ws.id}`),
+        onSelect: () => { void deleteWorkspace(ws.id); },
       },
     ];
     setMenu({ x: e.clientX, y: e.clientY, items });

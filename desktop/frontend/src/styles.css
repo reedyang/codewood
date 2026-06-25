@@ -370,6 +370,12 @@ html[data-has-bg] .ws-selector-menu {
   background: color-mix(in srgb, var(--accent) 14%, transparent);
 }
 
+.menubar-item-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .menubar-shortcut {
   color: var(--text-muted);
   font-size: 12px;
