@@ -2624,6 +2624,14 @@ class Agent:
             p = str(a.get("path") or "").strip()
             detail = f"({p})" if p else ""
             return (label, detail)
+        if name == "project_context_search":
+            q = str(a.get("query") or "").strip()
+            label = translate("tool.label.project_context_search", self._ui_language())
+            if q:
+                detail = f': "{q}"'
+            else:
+                detail = ""
+            return (label, detail)
         # Look up a localized action label by tool name, falling back to the
         # humanized English name for unknown/MCP tools (which have no key).
         name_key = name.replace(".", "_")
