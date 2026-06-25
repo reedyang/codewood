@@ -471,19 +471,20 @@ def handle_chat_builtin_command(agent: Any, builtin_line: str) -> bool:
                 print(_t(agent, "chat.not_found_error", selector=selector))
                 return True
             chats = agent._chat_entries()
-            if len(chats) <= 1:
-                print(_t(agent, "chat.delete_last_error"))
-                return True
             tid = str(target.get("id") or "")
             chats[:] = [c for c in chats if str(c.get("id") or "") != tid]
             next_id = agent.active_chat_id
             if tid == agent.active_chat_id:
-                next_id = str(chats[0].get("id") or "")
+                next_id = str(chats[0].get("id") or "") if chats else ""
             agent._chat_state["chats"] = chats
+            agent._chat_state["active"] = next_id
             agent._save_chat_state()
         print(_t(agent, "chat.deleted", name=target.get("name"), id=target.get("id")))
         if tid == agent.active_chat_id and next_id:
             agent._activate_chat(next_id, announce=False, clear_screen=False, print_history=True)
+        elif tid == agent.active_chat_id and not next_id:
+            agent.active_chat_id = ""
+            agent.active_chat_name = "New Chat"
         return True
     print(_t(agent, "chat.subcommand_invalid_with_usage", subcommand=sub, usage=chat_usage(agent)))
     return True
