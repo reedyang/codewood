@@ -1,4 +1,4 @@
-import { useMemo, useState, type MouseEvent } from "react";
+import { useEffect, useMemo, useState, type MouseEvent } from "react";
 import { useApp } from "../state/AppContext";
 import type { WorkspaceSummary } from "../api/types";
 import { ContextMenu, type MenuItem } from "./ContextMenu";
@@ -72,6 +72,7 @@ export function Sidebar({ onOpenSettings }: { onOpenSettings: () => void }) {
     toggleChatArchive,
     archiveChats,
     toggleWorkspaceExpanded,
+    refreshWorkspaceChats,
   } = useApp();
 
   const [menu, setMenu] = useState<MenuState | null>(null);
@@ -108,8 +109,8 @@ export function Sidebar({ onOpenSettings }: { onOpenSettings: () => void }) {
     return map;
   }, [activeChats, workspaceChats, activeWsId]);
 
-  const pinnedWorkspaces = workspaces.filter((w) => pinnedWs.has(w.id));
-  const unpinnedWorkspaces = workspaces.filter((w) => !pinnedWs.has(w.id));
+  const pinnedWorkspaces = workspaces.filter((w) => pinnedWs.has(w.id) && !w.isDefault);
+  const unpinnedWorkspaces = workspaces.filter((w) => !pinnedWs.has(w.id) && !w.isDefault);
   const pinnedChatEntries: { chat: ChatRow; wsId: string }[] = [];
   for (const [wsId, list] of Object.entries(chatsByWorkspace)) {
     for (const chat of list) {
@@ -119,6 +120,20 @@ export function Sidebar({ onOpenSettings }: { onOpenSettings: () => void }) {
     }
   }
   const hasPinned = pinnedWorkspaces.length > 0 || pinnedChatEntries.length > 0;
+
+  const defaultWs = workspaces.find((w) => w.isDefault);
+  const defaultChats: ChatRow[] = defaultWs ? (chatsByWorkspace[defaultWs.id] ?? []) : [];
+  const regularDefaultChats = defaultChats.filter(
+    (c) => !isArchivedChat(defaultWs?.id ?? "", c.id) && !isPinnedChat(defaultWs?.id ?? "", c.id),
+  );
+  const hasNonDefaultWorkspaces = workspaces.some((w) => !w.isDefault);
+  const [chatsExpanded, setChatsExpanded] = useState(true);
+
+  useEffect(() => {
+    if (defaultWs) {
+      void refreshWorkspaceChats(defaultWs.id);
+    }
+  }, [defaultWs?.id, refreshWorkspaceChats]);
 
   const chatsForWorkspace = (ws: WorkspaceSummary): ChatRow[] => {
     const list = chatsByWorkspace[ws.id] ?? [];
@@ -415,9 +430,44 @@ export function Sidebar({ onOpenSettings }: { onOpenSettings: () => void }) {
           <div className="tree-section-title">{t("sidebar.workspaces")}</div>
           <ul className="tree-list">
             {unpinnedWorkspaces.map((ws) => renderWorkspaceGroup(ws))}
-            {workspaces.length === 0 && <li className="tree-empty">{t("sidebar.noWorkspaces")}</li>}
+            {!hasNonDefaultWorkspaces && <li className="tree-empty">{t("sidebar.noWorkspaces")}</li>}
           </ul>
         </section>
+
+        {defaultWs && (
+          <section className="tree-section">
+            <div
+              className="tree-row ws-row"
+              onClick={() => setChatsExpanded((v) => !v)}
+            >
+              <span className="tree-label ws-label">
+                <span className="tree-section-title-chats">{t("sidebar.chats")}</span>
+                <Icon name="chevron" size={14} className={`chevron tree-inline-chevron ${chatsExpanded ? "open" : ""}`} />
+              </span>
+              <span className="tree-flex" />
+              <button
+                className="tree-more"
+                aria-label={t("sidebar.newChat")}
+                title={t("sidebar.newChat")}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  void newChatInWorkspace(defaultWs.id);
+                }}
+              >
+                <Icon name="new-chat" size={14} />
+              </button>
+            </div>
+            {chatsExpanded && (
+              <ul className="tree-list tree-children">
+                {regularDefaultChats.length === 0 ? (
+                  <li className="tree-empty">{t("sidebar.noChats")}</li>
+                ) : (
+                  regularDefaultChats.map((chat) => renderChatRow(chat, defaultWs.id))
+                )}
+              </ul>
+            )}
+          </section>
+        )}
       </div>
 
       <div className="sidebar-footer">
