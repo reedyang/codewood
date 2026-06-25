@@ -124,7 +124,6 @@ def normalize_ui_prefs(prefs: Any) -> Dict[str, Any]:
     return {
         "pinnedWorkspaceIds": _normalize_ids(src.get("pinnedWorkspaceIds")),
         "pinnedChatIds": _normalize_ids(src.get("pinnedChatIds")),
-        "archivedChatIds": _normalize_ids(src.get("archivedChatIds")),
     }
 
 

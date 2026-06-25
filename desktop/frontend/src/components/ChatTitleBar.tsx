@@ -40,7 +40,7 @@ export function ChatTitleBar() {
 
   const key = chatKey(wsId, activeChat.id);
   const isPinned = uiPrefs.pinnedChatIds.includes(key);
-  const isArchived = uiPrefs.archivedChatIds.includes(key);
+  const isArchived = Boolean(activeChat.archived);
 
   const commitRename = async () => {
     const value = renameValue.trim();

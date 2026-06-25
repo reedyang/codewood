@@ -145,6 +145,16 @@ export class ApiClient {
     }
   }
 
+  /** Toggle a chat's archived flag (GUI-only, persistent). */
+  async toggleChatArchive(id: string, workspaceId = ""): Promise<boolean> {
+    const res = await fetch(`${this.base}/toggle-chat-archive`, {
+      method: "POST",
+      headers: this.headers(),
+      body: JSON.stringify({ id, workspaceId }),
+    });
+    return res.ok;
+  }
+
   /** Delete a workspace (GUI-only), handling fallback when the active one is removed. */
   async deleteWorkspace(id: string): Promise<boolean> {
     const res = await fetch(`${this.base}/delete-workspace`, {

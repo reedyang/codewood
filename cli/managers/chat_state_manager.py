@@ -337,6 +337,7 @@ class ChatStateManager:
             "context_input_tokens": usage_tokens,
             "context_window": usage_window,
             "mode": mode,
+            "archived": False,
         }
 
     def _normalize_message(
@@ -410,6 +411,7 @@ class ChatStateManager:
             # root so reloading the chat (TUI or GUI) restores the sticky mode
             # the user last left it in. Missing/unknown values default to Agent.
             "mode": _read_chat_mode(raw),
+            "archived": bool(raw.get("archived", False)),
         }
         # Preserve cross-process clarifying-prompt state. Another codewood
         # process (typically the TUI) writes ``pending_request_user_input`` onto
@@ -558,6 +560,7 @@ class ChatStateManager:
                                     "model_provider": str(chat.get("model_provider") or ""),
                                     "model_name": str(chat.get("model_name") or ""),
                                     "record_file": record_file,
+                                    "archived": bool(chat.get("archived", False)),
                                 }
                             )
                             continue
@@ -577,6 +580,7 @@ class ChatStateManager:
                         "model_provider": str(chat.get("model_provider") or ""),
                         "model_name": str(chat.get("model_name") or ""),
                         "record_file": record_file,
+                        "archived": bool(chat.get("archived", False)),
                     }
                 )
 

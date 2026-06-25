@@ -56,6 +56,14 @@ function chatKey(workspaceId: string, chatId: string): string {
   return ws ? `${ws}\u0000${cid}` : cid;
 }
 
+function parseChatKey(key: string): { wsId: string; chatId: string } {
+  const idx = key.indexOf("\0");
+  if (idx > 0) {
+    return { wsId: key.slice(0, idx), chatId: key.slice(idx + 1) };
+  }
+  return { wsId: "", chatId: key };
+}
+
 interface AppContextValue {
   state: AppState | null;
   turns: Turn[];
@@ -168,8 +176,8 @@ interface AppContextValue {
   deleteWorkspace: (id: string) => Promise<boolean>;
   toggleWorkspacePin: (id: string) => void;
   toggleChatPin: (id: string) => void;
-  toggleChatArchive: (id: string) => void;
-  archiveChats: (ids: string[]) => void;
+  toggleChatArchive: (key: string) => void;
+  archiveChats: (keys: string[]) => void;
   setModel: (selector: string) => Promise<void>;
   setReasoning: (level: string) => Promise<void>;
   getModelsConfig: () => Promise<unknown[]>;
@@ -840,12 +848,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
     const server: UiPrefs = {
       pinnedWorkspaceIds: ids(sp.pinnedWorkspaceIds),
       pinnedChatIds: ids(sp.pinnedChatIds),
-      archivedChatIds: ids(sp.archivedChatIds),
     };
     const hasServer =
       server.pinnedWorkspaceIds.length > 0 ||
-      server.pinnedChatIds.length > 0 ||
-      server.archivedChatIds.length > 0;
+      server.pinnedChatIds.length > 0;
     if (hasServer) {
       setUiPrefs(server);
       saveUiPrefs(server);
@@ -854,8 +860,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     const local = loadUiPrefs();
     if (
       local.pinnedWorkspaceIds.length > 0 ||
-      local.pinnedChatIds.length > 0 ||
-      local.archivedChatIds.length > 0
+      local.pinnedChatIds.length > 0
     ) {
       void client.setUiPrefs(local);
     }
@@ -1840,25 +1845,21 @@ export function AppProvider({ children }: { children: ReactNode }) {
   );
 
   const toggleChatArchive = useCallback(
-    (id: string) =>
-      updatePrefs({
-        ...uiPrefs,
-        archivedChatIds: toggleId(uiPrefs.archivedChatIds, id),
-      }),
-    [uiPrefs, updatePrefs],
+    (key: string) => {
+      const { wsId, chatId } = parseChatKey(key);
+      void client.toggleChatArchive(chatId, wsId);
+    },
+    [client],
   );
 
   const archiveChats = useCallback(
-    (ids: string[]) => {
-      const merged = new Set(uiPrefs.archivedChatIds);
-      for (const id of ids) {
-        if (id) {
-          merged.add(id);
-        }
+    (keys: string[]) => {
+      for (const key of keys) {
+        const { wsId, chatId } = parseChatKey(key);
+        void client.toggleChatArchive(chatId, wsId);
       }
-      updatePrefs({ ...uiPrefs, archivedChatIds: Array.from(merged) });
     },
-    [uiPrefs, updatePrefs],
+    [client],
   );
 
   const setModel = useCallback(

@@ -46,6 +46,7 @@ interface ChatRow {
   name: string;
   updatedAt?: string;
   active?: boolean;
+  archived?: boolean;
   /** True while this chat's agent loop is mid-turn (from the state snapshot).
    *  Used as a durable busy signal that survives focus changes/reloads, in
    *  addition to the transient SSE-driven ``busyByChat`` flags. */
@@ -84,13 +85,9 @@ export function Sidebar({ onOpenSettings }: { onOpenSettings: () => void }) {
 
   const pinnedWs = new Set(uiPrefs.pinnedWorkspaceIds);
   const pinnedChat = new Set(uiPrefs.pinnedChatIds);
-  const archivedChat = new Set(uiPrefs.archivedChatIds);
   const expanded = new Set(expandedWorkspaceIds);
 
-  // Chat ids are only unique within a workspace, so pin/archive state must be
-  // keyed by workspace + chat to avoid hiding same-id chats in other workspaces.
   const isPinnedChat = (wsId: string, chatId: string) => pinnedChat.has(chatKey(wsId, chatId));
-  const isArchivedChat = (wsId: string, chatId: string) => archivedChat.has(chatKey(wsId, chatId));
 
   const workspaceNameById = useMemo(() => {
     const map: Record<string, string> = {};
@@ -114,7 +111,7 @@ export function Sidebar({ onOpenSettings }: { onOpenSettings: () => void }) {
   const pinnedChatEntries: { chat: ChatRow; wsId: string }[] = [];
   for (const [wsId, list] of Object.entries(chatsByWorkspace)) {
     for (const chat of list) {
-      if (isPinnedChat(wsId, chat.id) && !isArchivedChat(wsId, chat.id)) {
+      if (isPinnedChat(wsId, chat.id) && !chat.archived) {
         pinnedChatEntries.push({ chat, wsId });
       }
     }
@@ -124,7 +121,7 @@ export function Sidebar({ onOpenSettings }: { onOpenSettings: () => void }) {
   const defaultWs = workspaces.find((w) => w.isDefault);
   const defaultChats: ChatRow[] = defaultWs ? (chatsByWorkspace[defaultWs.id] ?? []) : [];
   const regularDefaultChats = defaultChats.filter(
-    (c) => !isArchivedChat(defaultWs?.id ?? "", c.id) && !isPinnedChat(defaultWs?.id ?? "", c.id),
+    (c) => !c.archived && !isPinnedChat(defaultWs?.id ?? "", c.id),
   );
   const hasNonDefaultWorkspaces = workspaces.some((w) => !w.isDefault);
   const [chatsExpanded, setChatsExpanded] = useState(true);
@@ -137,7 +134,7 @@ export function Sidebar({ onOpenSettings }: { onOpenSettings: () => void }) {
 
   const chatsForWorkspace = (ws: WorkspaceSummary): ChatRow[] => {
     const list = chatsByWorkspace[ws.id] ?? [];
-    return list.filter((c) => !isArchivedChat(ws.id, c.id) && !isPinnedChat(ws.id, c.id));
+    return list.filter((c) => !c.archived && !isPinnedChat(ws.id, c.id));
   };
 
   const switchChat = async (wsId: string, chatId: string) => {
@@ -182,7 +179,9 @@ export function Sidebar({ onOpenSettings }: { onOpenSettings: () => void }) {
 
   const openWorkspaceMenu = (e: MouseEvent, ws: WorkspaceSummary) => {
     e.preventDefault();
-    const archivableIds = ws.id === activeWsId ? activeChats.map((c) => chatKey(ws.id, c.id)) : [];
+    const archivableIds = ((ws.id === activeWsId ? activeChats : (chatsByWorkspace[ws.id] ?? [])) || [])
+      .filter((c) => !c.archived)
+      .map((c) => chatKey(ws.id, c.id));
     const items: MenuItem[] = [
       {
         id: "pin",
@@ -225,7 +224,7 @@ export function Sidebar({ onOpenSettings }: { onOpenSettings: () => void }) {
     const items = buildChatMenuItems({
       t,
       isPinned: isPinnedChat(wsId, chat.id),
-      isArchived: isArchivedChat(wsId, chat.id),
+      isArchived: Boolean(chat.archived),
       onTogglePin: () => toggleChatPin(chatKey(wsId, chat.id)),
       onToggleArchive: () => toggleChatArchive(chatKey(wsId, chat.id)),
       onRename: () => startRename("chat", chat.id, wsId, chat.name),
