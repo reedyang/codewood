@@ -3219,6 +3219,13 @@ html[data-has-bg] .select {
   padding: 4px 8px;
 }
 
+.tree-section-title-chats {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-on-dark-muted);
+}
+
 .tree-list {
   list-style: none;
   margin: 0;
@@ -3444,7 +3451,6 @@ html[data-has-bg] .select {
 .tree-children {
   margin: 2px 0 4px 14px;
   padding-left: 6px;
-  border-left: 1px solid var(--sidebar-border);
 }
 
 .tree-subtitle {
