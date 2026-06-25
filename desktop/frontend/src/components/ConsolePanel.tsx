@@ -5,6 +5,7 @@ import "@xterm/xterm/css/xterm.css";
 import { useApp } from "../state/AppContext";
 import { Icon } from "./Icon";
 import { ContextMenu, type MenuItem } from "./ContextMenu";
+import { hostApi } from "../utils/hostApi";
 import {
   addTab as addTabState,
   removeTab as removeTabState,
@@ -13,10 +14,15 @@ import {
   type ConsoleTabState,
 } from "../state/consoleTabs";
 
-const SHELL_KINDS: { kind: string; labelKey: string }[] = [
+// Windows offers three concrete shells; Linux/macOS offer a single generic
+// terminal (the user's $SHELL). The platform is resolved once at runtime.
+const WINDOWS_SHELL_KINDS: { kind: string; labelKey: string }[] = [
   { kind: "powershell", labelKey: "console.new.powershell" },
   { kind: "cmd", labelKey: "console.new.cmd" },
   { kind: "gitbash", labelKey: "console.new.gitbash" },
+];
+const POSIX_SHELL_KINDS: { kind: string; labelKey: string }[] = [
+  { kind: "shell", labelKey: "console.new.terminal" },
 ];
 
 /** A single xterm.js instance wired to a backend console session over a
@@ -212,6 +218,30 @@ export function ConsolePanel() {
   const addBtnRef = useRef<HTMLButtonElement | null>(null);
   // Open one console automatically the first time the dock is shown.
   const bootstrappedRef = useRef(false);
+  // Windows exposes three shells; other platforms a single generic terminal.
+  const [isWindows, setIsWindows] = useState<boolean | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    const api = hostApi();
+    if (!api?.host_platform) {
+      // No host bridge (e.g. plain browser dev): assume Windows shells.
+      setIsWindows(true);
+      return;
+    }
+    void Promise.resolve(api.host_platform())
+      .then((p) => {
+        if (!cancelled) setIsWindows(String(p) === "win32");
+      })
+      .catch(() => {
+        if (!cancelled) setIsWindows(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  const shellKinds = isWindows ? WINDOWS_SHELL_KINDS : POSIX_SHELL_KINDS;
+  const defaultKind = isWindows ? "powershell" : "shell";
 
   const addTab = useCallback(
     async (kind: string) => {
@@ -226,12 +256,14 @@ export function ConsolePanel() {
   );
 
   useEffect(() => {
-    if (bootstrappedRef.current) {
+    // Wait until the platform is known so the first auto-opened tab uses the
+    // right shell kind (PowerShell on Windows, the default shell elsewhere).
+    if (bootstrappedRef.current || isWindows === null) {
       return;
     }
     bootstrappedRef.current = true;
-    void addTab("powershell");
-  }, [addTab]);
+    void addTab(defaultKind);
+  }, [addTab, isWindows, defaultKind]);
 
   const selectTab = useCallback(
     (id: string) => {
@@ -256,14 +288,14 @@ export function ConsolePanel() {
   );
 
   const menuItems: MenuItem[] = [
-    ...SHELL_KINDS.map((s) => ({
+    ...shellKinds.map((s) => ({
       id: s.kind,
       label: t(s.labelKey),
       onSelect: () => void addTab(s.kind),
     })),
     {
       id: "options",
-      label: t("console.options"),
+      label: t("console.settings"),
       onSelect: () => openSettings("console"),
     },
   ];
@@ -318,7 +350,7 @@ export function ConsolePanel() {
           title={t("console.hide")}
           onClick={hideConsole}
         >
-          <Icon name="chevron" size={16} />
+          <Icon name="win-close" size={11} />
         </button>
       </div>
       <div className="console-body">

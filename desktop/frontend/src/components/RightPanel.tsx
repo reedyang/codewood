@@ -97,7 +97,20 @@ export function RightPanel() {
 
       <div className="right-panel-body">
         {prefs.active === "todos" && <PlanContent />}
-        {prefs.active === "browser" && <BrowserPanel />}
+        {/* Keep the Browser tab mounted (just hidden) whenever it is open so
+            switching to To-dos and back does not tear down the overlay browser
+            and reload a blank page — the page keeps running in the background
+            and reappears on tab switch. */}
+        {prefs.visible.includes("browser") && (
+          <div
+            className="right-panel-tab-content"
+            style={{
+              display: prefs.active === "browser" ? "flex" : "none",
+            }}
+          >
+            <BrowserPanel active={prefs.active === "browser"} />
+          </div>
+        )}
       </div>
     </aside>
   );

@@ -1269,6 +1269,14 @@ body.resizing-x .browser-frame {
   overflow: auto;
 }
 
+/* Wrapper that keeps a right-panel tab (e.g. the browser) mounted while
+   inactive so its embedded overlay window is not torn down on tab switch. */
+.right-panel-tab-content {
+  flex: 1;
+  min-height: 0;
+  flex-direction: column;
+}
+
 /* Embedded browser */
 .browser-panel {
   flex: 1;
@@ -4563,48 +4571,55 @@ h6.md-h {
   min-height: 0;
 }
 
+/* Console tab bar mirrors the right-panel tab bar (pill tabs on a flat bar). */
 .console-tabbar {
+  flex: 0 0 auto;
   display: flex;
   align-items: center;
-  gap: 4px;
-  padding: 0 6px;
-  background: var(--bg-elevated, #252526);
+  height: 44px;
+  padding: 0 6px 0 8px;
   border-bottom: 1px solid var(--border);
+  gap: 4px;
 }
 
 .console-tabs {
+  flex: 1;
   display: flex;
   align-items: center;
   gap: 2px;
-  flex: 1;
-  overflow-x: auto;
   min-width: 0;
+  overflow-x: auto;
 }
 
 .console-tab {
-  display: flex;
+  display: inline-flex;
   align-items: center;
-  border-radius: 6px 6px 0 0;
-  padding: 0 2px 0 6px;
-  color: var(--text-muted, #aaa);
+  border-radius: 6px;
+  color: var(--text-muted);
   white-space: nowrap;
 }
 
 .console-tab.active {
-  background: #1e1e1e;
-  color: var(--text, #eee);
+  background: var(--user-bg);
+  color: var(--text);
 }
 
 .console-tab-btn {
   display: flex;
   align-items: center;
   gap: 5px;
-  background: none;
+  background: transparent;
   border: none;
   color: inherit;
   cursor: pointer;
-  padding: 6px 4px;
-  font-size: 12px;
+  padding: 6px 10px;
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.console-tab:hover {
+  background: var(--user-bg);
+  color: var(--text);
 }
 
 .console-tab-label {
@@ -4613,29 +4628,42 @@ h6.md-h {
   text-overflow: ellipsis;
 }
 
-.console-tab-close,
-.console-tab-add,
-.console-close {
-  display: flex;
+.console-tab-close {
+  display: inline-flex;
   align-items: center;
   justify-content: center;
-  background: none;
+  background: transparent;
   border: none;
-  color: var(--text-muted, #aaa);
+  color: var(--text-muted);
   cursor: pointer;
-  border-radius: 4px;
   padding: 4px;
+  margin-right: 2px;
+  border-radius: 5px;
 }
 
-.console-tab-close:hover,
+.console-tab-close:hover {
+  background: var(--border);
+  color: var(--text);
+}
+
+.console-tab-add,
+.console-close {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 5px;
+  border-radius: 6px;
+}
+
 .console-tab-add:hover,
 .console-close:hover {
-  background: var(--hover, rgba(255, 255, 255, 0.1));
-  color: var(--text, #eee);
-}
-
-.console-close {
-  margin-left: 6px;
+  background: var(--user-bg);
+  color: var(--text);
 }
 
 .console-body {

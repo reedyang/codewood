@@ -37,7 +37,7 @@ function normalizeUrl(raw: string): string {
  *    content reads only work for our own preview pages via a postMessage
  *    bridge.
  */
-export function BrowserPanel() {
+export function BrowserPanel({ active = true }: { active?: boolean }) {
   // Overlay capability is detected asynchronously once on mount. ``null`` =
   // unknown (render nothing content-wise yet), true = overlay, false = iframe.
   const [overlayMode, setOverlayMode] = useState<boolean | null>(null);
@@ -62,7 +62,7 @@ export function BrowserPanel() {
   }, []);
 
   if (overlayMode === true) {
-    return <OverlayBrowser />;
+    return <OverlayBrowser active={active} />;
   }
   // While detecting, fall through to the iframe renderer's chrome (toolbar +
   // empty viewport) so there's no flicker; once known false it stays iframe.
@@ -131,7 +131,7 @@ function BrowserToolbar({
 
 /** Overlay mode: real content lives in a tracked host window; we report the
  *  placeholder rect and route commands through the host bridge. */
-function OverlayBrowser() {
+function OverlayBrowser({ active }: { active: boolean }) {
   const { t, subscribeBrowserCommand, sendBrowserResult, resolveBackendUrl } =
     useApp();
   const placeholderRef = useRef<HTMLDivElement | null>(null);
@@ -173,28 +173,41 @@ function OverlayBrowser() {
     });
   }, []);
 
-  // Track placeholder geometry only while a page is loaded: the overlay window
-  // is shown over the placeholder, and the placeholder only occupies layout
-  // space when there's content (so the "empty" hint isn't squeezed into a
-  // sliver). Show when a page loads, hide on unmount or when cleared.
+  // Track placeholder geometry only while the Browser tab is active AND a page
+  // is loaded: the overlay window is shown over the placeholder, which only
+  // occupies layout space when there's content. The overlay is a real OS
+  // window kept alive in the background; we just show/position it when this
+  // tab is active and hide it (without unloading the page) otherwise — so
+  // switching to To-dos and back keeps the page running and re-reveals it.
   const hasPage = Boolean(currentUrl);
+  const visible = active && hasPage;
   useLayoutEffect(() => {
     const api = hostApi();
-    if (!hasPage) {
-      // No page: keep the overlay hidden and reserve no space.
+    if (!visible) {
+      // Tab inactive or no page: hide the overlay but keep its page loaded.
       void api?.browser_overlay_hide?.();
       return;
     }
     const el = placeholderRef.current;
     if (!el) return;
     void api?.browser_overlay_show?.();
+    // Push bounds now and again after layout/paint settles. On the very first
+    // reveal the placeholder's final rect isn't known until after the browser
+    // lays the panel out, so a single synchronous push can land the overlay at
+    // a stale (offset) position; the deferred pushes correct it.
     pushBounds();
+    const raf1 = window.requestAnimationFrame(() => pushBounds());
+    const t1 = window.setTimeout(() => pushBounds(), 60);
+    const t2 = window.setTimeout(() => pushBounds(), 200);
     const ro = new ResizeObserver(() => pushBounds());
     ro.observe(el);
     const onWin = () => pushBounds();
     window.addEventListener("resize", onWin);
     window.addEventListener("scroll", onWin, true);
     return () => {
+      window.cancelAnimationFrame(raf1);
+      window.clearTimeout(t1);
+      window.clearTimeout(t2);
       ro.disconnect();
       window.removeEventListener("resize", onWin);
       window.removeEventListener("scroll", onWin, true);
@@ -204,7 +217,7 @@ function OverlayBrowser() {
       }
       void hostApi()?.browser_overlay_hide?.();
     };
-  }, [pushBounds, hasPage]);
+  }, [pushBounds, visible]);
 
   // Follow the panel live while a vertical divider is being dragged (the
   // ``body.resizing-x`` state). Unlike an iframe, a real overlay window has no

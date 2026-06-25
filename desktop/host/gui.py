@@ -63,15 +63,17 @@ def _preferred_gui() -> str | None:
 def _overlay_browser_enabled() -> bool:
     """Whether the in-window overlay browser should be used.
 
-    The overlay is a second top-level window tracked over the right panel. It
-    relies heavily on ``window.move`` to follow the main window, which is
-    reliable on Windows/EdgeChromium but documented as flaky on WSLg/X11 (the
-    same bugs the main window already works around). So default it ON only on
-    Windows; elsewhere the frontend falls back to the sandboxed-iframe browser
-    unless the user explicitly opts in.
+    The overlay is a second window tracked over the right panel. It is a real
+    webview, so it can load sites that forbid framing (X-Frame-Options / CSP
+    frame-ancestors) — unlike the sandboxed-iframe fallback, which silently
+    fails on such sites (e.g. baidu.com). Geometry tracking via ``window.move``
+    is rock-solid on Windows/EdgeChromium and merely a little less precise on
+    WSLg/X11, but an imperfectly-positioned working browser beats an iframe
+    that cannot open the page at all. So default the overlay ON wherever a
+    desktop webview is available (Windows and Linux/WSLg).
 
-    Overrides (both platforms):
-    - ``CODEWOOD_BROWSER_OVERLAY=0`` force OFF
+    Overrides (all platforms):
+    - ``CODEWOOD_BROWSER_OVERLAY=0`` force OFF (use the iframe fallback)
     - ``CODEWOOD_BROWSER_OVERLAY=1`` force ON
     """
     raw = str(os.environ.get("CODEWOOD_BROWSER_OVERLAY", "")).strip().lower()
@@ -79,7 +81,9 @@ def _overlay_browser_enabled() -> bool:
         return False
     if raw in ("1", "true", "yes", "on"):
         return True
-    return sys.platform == "win32"
+    # macOS (Cocoa/WKWebView) child-window tracking is not validated here, so
+    # keep it on the iframe fallback by default; opt in via the env override.
+    return sys.platform in ("win32", "linux")
 
 
 def _folder_dialog():
