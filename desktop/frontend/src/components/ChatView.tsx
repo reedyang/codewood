@@ -969,10 +969,10 @@ export function ChatView() {
   const showEmpty =
     draftMode ||
     (turns.length === 0 && historyTurns.length === 0 && !historyLoading);
-  if (showEmpty) {
-    // In draft mode the greeting reflects the chosen draft workspace; otherwise
-    // it reflects the active workspace. The Default workspace is not a real
-    // project, so omit its name from the greeting.
+  // In draft mode the greeting reflects the chosen draft workspace; otherwise
+  // it reflects the active workspace. The Default workspace is not a real
+  // project, so omit its name from the greeting.
+  const emptyContent = (() => {
     const workspaces = state?.workspaces ?? [];
     const targetWs = draftMode
       ? workspaces.find((w) => w.id === draftWorkspaceId)
@@ -983,146 +983,148 @@ export function ChatView() {
       ? t("empty.promptNoWorkspace")
       : t("empty.prompt").replace("{workspace}", workspaceName);
     return (
-      <div className="chat-view">
-        <div className="empty-state">
-          <h1 className="empty-title">{emptyTitle}</h1>
-          <div className="empty-composer">
-            {composer}
-            <WorkspaceSelector
-              draft={draftMode}
-              draftWorkspaceId={draftWorkspaceId}
-              onPickDraft={setDraftWorkspace}
-            />
-          </div>
+      <div className="empty-state">
+        <h1 className="empty-title">{emptyTitle}</h1>
+        <div className="empty-composer">
+          {composer}
+          <WorkspaceSelector
+            draft={draftMode}
+            draftWorkspaceId={draftWorkspaceId}
+            onPickDraft={setDraftWorkspace}
+          />
         </div>
       </div>
     );
-  }
+  })();
 
   return (
     <div className="chat-view">
-      <ChatTitleBar />
-      <div className="transcript" ref={scrollRef} onScroll={onScroll}>
-        {historyStart > 0 && (
-          <div className="history-more">
-            {historyLoading ? t("history.loading") : t("history.more")}
+      {showEmpty ? emptyContent : (
+        <>
+          <ChatTitleBar />
+          <div className="transcript" ref={scrollRef} onScroll={onScroll}>
+            {historyStart > 0 && (
+              <div className="history-more">
+                {historyLoading ? t("history.loading") : t("history.more")}
+              </div>
+            )}
+            {historyTurns.map((turn, index) => (
+              <HistoryTurnView
+                key={`h-${index}`}
+                turn={turn}
+                negIndex={histNeg[index]}
+                handlers={messageHandlers}
+              />
+            ))}
+            {turns.map((turn, index) => (
+              <TurnView
+                key={turn.id}
+                turn={turn}
+                now={now}
+                negIndex={liveNeg[index]}
+                handlers={messageHandlers}
+              />
+            ))}
+            <AskMoreInfoPanel />
+            <ConfirmDialog />
+            {(() => {
+              // The Execute-now button represents "carry out the plan we just
+              // drafted". It surfaces in BOTH Plan and Agent mode, but only when
+              // the LAST assistant message still carries an unfinished
+              // ``<proposed_plan>`` block (computed as ``latestPlanText`` below).
+              // That "last message only" rule is what keeps an Agent-mode plan
+              // artifact buried mid-conversation from spuriously showing the
+              // button: once the agent replies again, the plan is no longer the
+              // tail and the button disappears on its own.
+              //
+              // We still wait until any streaming turn has fully closed so the
+              // button doesn't appear before the rendered plan content lands.
+              // After an app restart there are no live ``turns`` (the plan turn
+              // lives in ``historyTurns`` instead), so we must NOT require a live
+              // turn — a rendered tail plan plus an idle agent is enough.
+              if (busy) {
+                return null;
+              }
+              const lastLive = turns.length > 0 ? turns[turns.length - 1] : null;
+              if (lastLive && lastLive.endedAt === null) {
+                return null;
+              }
+              if (turns.length === 0 && historyTurns.length === 0) {
+                return null;
+              }
+              // A pending request_user_input prompt always wins: the agent is
+              // waiting on the user's selection, so showing Execute-now
+              // would misrepresent the state and let the user advance the
+              // plan instead of answering the question.
+              if (askMoreInfo) {
+                return null;
+              }
+              // Plan-ready signal: the latest assistant text carries a finished
+              // ``<proposed_plan>`` block (Plan mode no longer uses update_plan).
+              const lastLiveText = (() => {
+                for (let ti = turns.length - 1; ti >= 0; ti--) {
+                  const rounds = turns[ti].rounds;
+                  for (let ri = rounds.length - 1; ri >= 0; ri--) {
+                    const ans = rounds[ri].segments
+                      .filter((s) => s.kind === "answer")
+                      .map((s) => s.text)
+                      .join("");
+                    if (ans.trim().length > 0) return ans;
+                  }
+                }
+                return "";
+              })();
+              const lastHistText = (() => {
+                for (let ti = historyTurns.length - 1; ti >= 0; ti--) {
+                  const rounds = historyTurns[ti].rounds;
+                  for (let ri = rounds.length - 1; ri >= 0; ri--) {
+                    if (rounds[ri].text.trim().length > 0) return rounds[ri].text;
+                  }
+                }
+                return "";
+              })();
+              // "Last message only": the button is tied strictly to the tail
+              // assistant message. When a live turn has produced any answer it is
+              // the tail, so a stale plan further back in history must NOT count;
+              // only fall back to history text when there is no live answer at all.
+              const tailText = lastLiveText.trim().length > 0 ? lastLiveText : lastHistText;
+              const latestPlanText = hasProposedPlan(tailText) ? tailText : "";
+              if (!latestPlanText) {
+                return null;
+              }
+              // Hide the chooser once the user dismissed this exact plan via "No".
+              if (dismissedPlanMap[draftKey] === latestPlanText) {
+                return null;
+              }
+              return (
+                <div className="plan-execute-row">
+                  <button
+                    type="button"
+                    className="btn btn-primary plan-execute-btn"
+                    onClick={() => void continueFromPlan()}
+                  >
+                    <Icon name="send" size={13} />
+                    <span>{t("composer.implementPlan")}</span>
+                  </button>
+                  <button
+                    type="button"
+                    className="btn plan-revise-btn"
+                    onClick={() => void keepRefiningPlan(latestPlanText)}
+                  >
+                    <span>
+                      {t("composer.revisePlan").replace(
+                        "{app}",
+                        state?.app.name || "the assistant",
+                      )}
+                    </span>
+                  </button>
+                </div>
+              );
+            })()}
           </div>
-        )}
-        {historyTurns.map((turn, index) => (
-          <HistoryTurnView
-            key={`h-${index}`}
-            turn={turn}
-            negIndex={histNeg[index]}
-            handlers={messageHandlers}
-          />
-        ))}
-        {turns.map((turn, index) => (
-          <TurnView
-            key={turn.id}
-            turn={turn}
-            now={now}
-            negIndex={liveNeg[index]}
-            handlers={messageHandlers}
-          />
-        ))}
-        <AskMoreInfoPanel />
-        <ConfirmDialog />
-        {(() => {
-          // The Execute-now button represents "carry out the plan we just
-          // drafted". It surfaces in BOTH Plan and Agent mode, but only when
-          // the LAST assistant message still carries an unfinished
-          // ``<proposed_plan>`` block (computed as ``latestPlanText`` below).
-          // That "last message only" rule is what keeps an Agent-mode plan
-          // artifact buried mid-conversation from spuriously showing the
-          // button: once the agent replies again, the plan is no longer the
-          // tail and the button disappears on its own.
-          //
-          // We still wait until any streaming turn has fully closed so the
-          // button doesn't appear before the rendered plan content lands.
-          // After an app restart there are no live ``turns`` (the plan turn
-          // lives in ``historyTurns`` instead), so we must NOT require a live
-          // turn — a rendered tail plan plus an idle agent is enough.
-          if (busy) {
-            return null;
-          }
-          const lastLive = turns.length > 0 ? turns[turns.length - 1] : null;
-          if (lastLive && lastLive.endedAt === null) {
-            return null;
-          }
-          if (turns.length === 0 && historyTurns.length === 0) {
-            return null;
-          }
-          // A pending request_user_input prompt always wins: the agent is
-          // waiting on the user's selection, so showing Execute-now
-          // would misrepresent the state and let the user advance the
-          // plan instead of answering the question.
-          if (askMoreInfo) {
-            return null;
-          }
-          // Plan-ready signal: the latest assistant text carries a finished
-          // ``<proposed_plan>`` block (Plan mode no longer uses update_plan).
-          const lastLiveText = (() => {
-            for (let ti = turns.length - 1; ti >= 0; ti--) {
-              const rounds = turns[ti].rounds;
-              for (let ri = rounds.length - 1; ri >= 0; ri--) {
-                const ans = rounds[ri].segments
-                  .filter((s) => s.kind === "answer")
-                  .map((s) => s.text)
-                  .join("");
-                if (ans.trim().length > 0) return ans;
-              }
-            }
-            return "";
-          })();
-          const lastHistText = (() => {
-            for (let ti = historyTurns.length - 1; ti >= 0; ti--) {
-              const rounds = historyTurns[ti].rounds;
-              for (let ri = rounds.length - 1; ri >= 0; ri--) {
-                if (rounds[ri].text.trim().length > 0) return rounds[ri].text;
-              }
-            }
-            return "";
-          })();
-          // "Last message only": the button is tied strictly to the tail
-          // assistant message. When a live turn has produced any answer it is
-          // the tail, so a stale plan further back in history must NOT count;
-          // only fall back to history text when there is no live answer at all.
-          const tailText = lastLiveText.trim().length > 0 ? lastLiveText : lastHistText;
-          const latestPlanText = hasProposedPlan(tailText) ? tailText : "";
-          if (!latestPlanText) {
-            return null;
-          }
-          // Hide the chooser once the user dismissed this exact plan via "No".
-          if (dismissedPlanMap[draftKey] === latestPlanText) {
-            return null;
-          }
-          return (
-            <div className="plan-execute-row">
-              <button
-                type="button"
-                className="btn btn-primary plan-execute-btn"
-                onClick={() => void continueFromPlan()}
-              >
-                <Icon name="send" size={13} />
-                <span>{t("composer.implementPlan")}</span>
-              </button>
-              <button
-                type="button"
-                className="btn plan-revise-btn"
-                onClick={() => void keepRefiningPlan(latestPlanText)}
-              >
-                <span>
-                  {t("composer.revisePlan").replace(
-                    "{app}",
-                    state?.app.name || "the assistant",
-                  )}
-                </span>
-              </button>
-            </div>
-          );
-        })()}
-      </div>
-      <div className="composer-dock">{composer}</div>
+          <div className="composer-dock">{composer}</div>
+        </>
+      )}
       {consoleOpen && <ConsoleDock />}
     </div>
   );
