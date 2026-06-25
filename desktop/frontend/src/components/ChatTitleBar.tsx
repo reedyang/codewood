@@ -105,9 +105,9 @@ export function ChatTitleBar() {
       {!planOpen && (
         <button
           className="chat-titlebar-plan"
-          aria-label={t("plan.toggle")}
+          aria-label={t("rightpanel.toggle")}
           aria-pressed={false}
-          title={t("plan.toggle")}
+          title={t("rightpanel.toggle")}
           onClick={togglePlan}
         >
           <Icon name="panel-right" size={18} />
