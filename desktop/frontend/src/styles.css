@@ -2279,6 +2279,10 @@ html[data-has-bg] .select {
   text-align: right;
 }
 
+.setting-control .select {
+  flex: 0 0 auto;
+}
+
 .setting-error {
   color: #c54545;
   font-size: 13px;

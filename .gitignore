@@ -1,8 +1,7 @@
 *.pyc
-.codewood
+.code*
 .venv*
 .cursor
-.codegraph
 AGENTS.override.md
 dist
 build/codewood
