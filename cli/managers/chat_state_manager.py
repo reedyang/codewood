@@ -544,7 +544,9 @@ class ChatStateManager:
                         mem_ts = self._parse_record_timestamp(chat.get("updated_at"))
                         if disk_ts > mem_ts:
                             try:
+                                preserved_archived = bool(chat.get("archived", False))
                                 refreshed = self._validate_chat_entry(disk_raw)
+                                refreshed["archived"] = preserved_archived
                                 refreshed["_record_file"] = record_file
                                 chat.clear()
                                 chat.update(refreshed)
@@ -566,7 +568,7 @@ class ChatStateManager:
                             continue
 
                 record_payload = {
-                    k: v for k, v in chat.items() if not str(k).startswith("_")
+                    k: v for k, v in chat.items() if not str(k).startswith("_") and k != "archived"
                 }
                 with open(record_path, "w", encoding="utf-8") as f:
                     json.dump(record_payload, f, ensure_ascii=False, indent=2)
@@ -736,6 +738,12 @@ class ChatStateManager:
                     raise ValueError("chat record id mismatch")
                 chat = self._validate_chat_entry(chat_raw)
                 chat["_record_file"] = record_file
+                # archived is stored only in the index (chats.json), not in the
+                # record file; merge it into the in-memory entry so toggles are
+                # preserved across reloads.
+                archived = index_entry.get("archived")
+                if isinstance(archived, bool):
+                    chat["archived"] = archived
                 chats.append(chat)
             if not chats:
                 # Empty chat list is valid (new workspace with no chats).
@@ -838,6 +846,9 @@ class ChatStateManager:
                     continue
                 chat = self._validate_chat_entry(chat_raw)
                 chat["_record_file"] = record_file
+                archived = index_entry.get("archived")
+                if isinstance(archived, bool):
+                    chat["archived"] = archived
                 chats.append(chat)
             active = str(loaded.get("active") or "").strip()
             if chats and (
@@ -905,6 +916,8 @@ class ChatStateManager:
                 return False
             for idx, entry in enumerate(chats):
                 if isinstance(entry, dict) and str(entry.get("id") or "") == cid:
+                    # Preserve archived from the old entry (stored only in index)
+                    refreshed["archived"] = bool(entry.get("archived", False))
                     chats[idx] = refreshed
                     return True
         return False
