@@ -702,6 +702,7 @@ class ChatStateManager:
                     )
                 else:
                     self._agent._chat_state = {"version": CHAT_STATE_VERSION, "active": "", "chats": []}
+                    self._agent.active_chat_name = "New Chat"
                 return
             with open(p, "r", encoding="utf-8") as f:
                 loaded = json.load(f)
@@ -737,6 +738,7 @@ class ChatStateManager:
                 # No ``activate_chat`` needed; the frontend will enter
                 # draft mode when there is no active chat.
                 self._agent._chat_state = {"version": CHAT_STATE_VERSION, "active": "", "chats": []}
+                self._agent.active_chat_name = "New Chat"
                 return
             # Seed the set of record files this process is aware of, so the
             # save-time stale sweep only ever deletes records that were

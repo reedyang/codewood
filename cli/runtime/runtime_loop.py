@@ -2377,6 +2377,23 @@ def _gui_round_mark(agent: Any, begin: bool) -> None:
             pass
 
 
+def _ensure_tui_active_chat(agent: Any) -> None:
+    """Create a new chat on first user message when the workspace has none (TUI only).
+
+    If the agent already has an active chat this is a no-op.  Named and (once
+    created) activated identically to the GUI ``new_chat`` path, picking up the
+    localised default name.
+    """
+    if getattr(agent, "active_chat_id", ""):
+        return
+    from ..core.localization import get_display_language, translate
+    name = translate("chat.new.default_name", get_display_language(agent))
+    with agent._chat_state_lock:
+        cid = agent._next_chat_id()
+        agent._chat_entries().append(agent._new_chat_entry(cid, name=name))
+        agent._save_chat_state()
+    agent._activate_chat(cid, announce=False, clear_screen=False, print_history=False)
+
 def _sanitize_prompt_pollution(text: str, work_directory: Any) -> str:
     s = str(text or "")
     if not s:
@@ -3314,6 +3331,8 @@ def run_agent_loop(agent: Any):
             task_started_at = time.monotonic()
             worked_summary_emitted = False
             turn_send_started_at = time.perf_counter()
+            # Auto-create a chat on first message when the workspace has none.
+            _ensure_tui_active_chat(self)
             # Drop any prior ephemeral on-screen notices (e.g., multi-attempt
             # model-call errors). They are intentionally tied to the moment
             # they surfaced and should not bleed into the next user turn.
