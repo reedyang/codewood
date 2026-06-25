@@ -23,7 +23,7 @@ from ..core.localization import get_display_language, translate
 DEFAULT_SUBAGENT_TOOLS = (
     "shell",
     "apply_patch",
-    "read_image",
+    "read",
     "project_context_search",
     "update_plan",
     "request_skill_prompt",

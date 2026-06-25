@@ -120,7 +120,7 @@ from .completion.slash_dynamic_completions import (
     build_workspace_action_commands,
 )
 from .tools import apply_patch as tools_apply_patch
-from .tools import read_image as tools_read_image
+from .tools import read as tools_read
 from .tools import shell as tools_shell
 from .config.app_info import (
     get_app_config_dirname,
@@ -838,7 +838,7 @@ class Agent:
 
         Defaults to True so models that omit the ``multimodal`` config flag keep
         full tool access; only an explicit ``"multimodal": false`` hides the
-        image tools (read_image).
+        image-input capability of the ``read`` tool.
         """
         params = getattr(self, "params", {}) or {}
         raw = params.get("multimodal", True) if isinstance(params, dict) else True
@@ -6539,9 +6539,9 @@ class Agent:
             self, file_path=file_path, patch=patch, confirmed=confirmed
         )
 
-    def action_read_image(self, file_path: str, prompt: str = "") -> dict:
-        """Read image contents and support multiple image formats."""
-        return tools_read_image.action_read_image(self, file_path=file_path, prompt=prompt)
+    def action_read(self, file_path: str, prompt: str = "", offset: int = 0, limit: int = 2000) -> dict:
+        """Read file contents and support multiple file/image/directory formats."""
+        return tools_read.action_read(self, path=file_path, offset=offset, limit=limit, prompt=prompt)
 
     def action_project_context_search(self, params: Dict[str, Any]) -> dict:
         """

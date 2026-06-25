@@ -8,7 +8,17 @@ For multi-step work requiring tools, the same assistant message may include visi
 
 After each tool result, you may briefly update step status in visible content. If more work remains, the same assistant message must call the next tool through standard API `tool_calls`. If the current plan lists Step 1..N and later steps mention a loaded skill or other tool/MCP, do not stop after early successful steps; execute all planned steps or explicitly revise the plan and explain why.
 
-For large software-understanding or modification work, especially cross-module tasks or those involving call chains and multiple candidate directories, prefer `project_context_search` first when it is available and the workspace is not Default. Use it to find candidate files and symbols before deciding the next `shell` action.
+For large software-understanding or modification work, especially cross-module tasks or those involving call chains and multiple candidate directories, prefer `project_context_search` first when it is available and the workspace is not Default. Use it to find candidate files and symbols before using `read` to inspect the content.
+
+## `read` Tool
+
+`read` is the primary tool for inspecting file contents:
+
+- **Text files**: Returns content with line numbers (`<line>: <content>`). Use `offset` (1-indexed, default 0) and `limit` (default 2000) to page through large files.
+- **Image files**: Returns an AI-generated description of the image content.
+- **Directories**: Returns a listing of entries (directories suffixed with `/`).
+
+When exploring a codebase, use `project_context_search` (or `rg` via `shell`) to find relevant files, then use `read` to inspect their contents. Never use `shell` commands like `cat`, `Get-Content`, `type`, `head`, or `tail` to read file contents — use `read`.
 
 When no further tool action is required and the result satisfies the user request, finish by replying in natural language with no tool_calls. The host returns to the command prompt automatically. If you planned Step 1..N, only finish after all listed steps are complete, or after a clearly explained plan revision. Do not treat an intermediate search/script output as final unless the user only asked for that intermediate output.
 

@@ -6,7 +6,7 @@ description: Use to review a diff, file, or change for bugs, security issues, an
 model: openai:gpt-4o
 # Optional tool allowlist. Defaults to the core coding set when omitted.
 # run_subagent is always excluded (sub-agents cannot nest).
-tools: [shell, project_context_search, read_image]
+tools: [shell, project_context_search, read]
 # Optional max tool-use rounds before the sub-agent must return (default 20).
 max_rounds: 15
 ---

@@ -258,23 +258,24 @@ For casual greetings, acknowledgements, or other one-off conversational messages
 ## Execution Strategy
 
 - Prefer built-in tools when possible, then shell, and only then temporary scripts.
-- Text file operations that can be performed by the operating system command line (read, search, create, edit, replace) must use `shell`.
+- **Reading any file** (text, image, or directory listing) MUST use the `read` tool. Never use `shell` commands like `cat`, `Get-Content`, `type`, `head`, `tail`, `more`, or `less` to read file contents — use `read` instead.
+- File **search** (grep) must use `rg` or `grep` via `shell`. File **creation, editing, and patching** must use `apply_patch`. Other file operations (move, copy, delete, mkdir) may use `shell`.
+- When you need to locate a keyword in text files and read nearby content, use `rg` (via `shell`) to find the matches, then use `read` with the matching file paths and appropriate `offset`/`limit` to read the surrounding context.
+- Keep each `read` under 2000 lines. For larger files, use `offset`/`limit` to read in chunks. Long reads will be truncated.
 - Command routing priority: script execution rules override text-file operation rules. If the command target is a script execution, such as python/py/node/bash/pwsh running a script file, follow the script execution rule.
-- On Windows, only commands whose target is text-file operation must start with `powershell -ExecutionPolicy Bypass -Command "<command>"`. Do not use `type`, `findstr`, `sed`, `copy`, `move`, `del`, or `cmd /c` for those text-file operations. Running a script is not a text-file operation.
-- On non-Windows systems, use POSIX shell syntax for text-file operations.
-- When you need to locate a keyword in text files and read nearby content, you MUST use `rg` or `rg --files` respectively if it is available because `rg` is much faster than alternatives like `grep`. (If the `rg` command is not found, then use alternatives.)
-- Keep each text-file read under 100 lines. Split larger reads into multiple ranges.
+- On Windows, only shell commands whose target is a non-read text-file operation (search, move, copy, delete) must start with `powershell -ExecutionPolicy Bypass -Command "<command>"`. Do not use `type`, `findstr`, or `cmd /c` for text-file operations. Running a script is not a text-file operation.
+- On non-Windows systems, use POSIX shell syntax for non-read text-file operations.
 - Preserve the original encoding of text files by default. Only convert encoding when the user explicitly asks.
 - Do not wrap script execution in unnecessary PowerShell. Use interpreters directly, for example `python tools/a.py --x 1` or `py scripts/job.py`; do not use `powershell -ExecutionPolicy Bypass -Command "python tools/a.py --x 1"` for script execution.
-- Before outputting a command, self-check: python/py plus script file means call python/py directly; text-file operations use the PowerShell prefix on Windows.
-- After running commands or scripts, do not assume the user saw the full terminal output. User-visible facts must be included in your response. Do not just say “see terminal output”.
+- Before outputting a command, self-check: python/py plus script file means call python/py directly; non-read file ops use the PowerShell prefix on Windows.
+- After running commands or scripts, do not assume the user saw the full terminal output. User-visible facts must be included in your response. Do not just say "see terminal output".
 
 ## Shell commands
 
 When using the shell, you must adhere to the following guidelines:
 
 - When searching for text or files, you MUST use `rg` or `rg --files` respectively if it is available because `rg` is much faster than alternatives like `grep`. (If the `rg` command is not found, then use alternatives.)
-- Do not use python scripts to attempt to output larger chunks of a file.
+- Do not use python scripts to attempt to output larger chunks of a file — use the `read` tool.
 
 ## `update_plan`
 
