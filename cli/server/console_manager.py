@@ -22,13 +22,16 @@ from collections import deque
 from typing import Any, Callable, Deque, Dict, List, Optional, Tuple
 
 # Shell kinds the GUI may request. Mapped to a concrete launcher per-platform.
-SHELL_KINDS = ("powershell", "cmd", "gitbash")
+# ``shell`` is the generic default shell used on Linux/macOS (the user's
+# ``$SHELL``); the Windows-specific kinds are offered only on Windows.
+SHELL_KINDS = ("powershell", "cmd", "gitbash", "shell")
 
 # Human label prefix used to auto-name tabs (frontend may localize separately).
 _KIND_LABELS = {
     "powershell": "PowerShell",
     "cmd": "Command Prompt",
     "gitbash": "Git Bash",
+    "shell": "Terminal",
 }
 
 
@@ -61,9 +64,13 @@ def _resolve_windows_launcher(kind: str) -> Optional[List[str]]:
 
 
 def _resolve_posix_launcher(kind: str) -> Optional[List[str]]:
-    """POSIX fallback launcher (tests / non-Windows hosts)."""
+    """POSIX launcher (Linux/macOS and tests)."""
     if kind in ("gitbash",):
         exe = shutil.which("bash")
+        return [exe, "-i"] if exe else None
+    if kind == "shell":
+        # The user's login shell, falling back to bash/sh.
+        exe = os.environ.get("SHELL") or shutil.which("bash") or shutil.which("sh")
         return [exe, "-i"] if exe else None
     # powershell / cmd have no real POSIX equivalent; map to the user's shell.
     exe = shutil.which("pwsh") if kind == "powershell" else None
