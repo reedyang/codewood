@@ -401,7 +401,7 @@ class AiOutputDisplayTests(unittest.TestCase):
                 {"path": "edit.py", "patch": "@@\n-old\n+new\n"},
                 failed=False,
             )
-        self.assertTrue(line.startswith("<RGB:19,161,14>•</RGB> Apply patch "))
+        self.assertTrue(line.startswith("<RGB:19,161,14>•</RGB> Edit "))
         self.assertIn("<H>(edit.py)</H>", line)
 
     def test_format_tool_call_feedback_line_switches_bullet_color_when_failed(self):
