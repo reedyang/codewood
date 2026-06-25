@@ -19,6 +19,7 @@ launching host can read it; it is never written to logs.
 from __future__ import annotations
 
 import base64
+import datetime
 import io
 import json
 import os
@@ -140,6 +141,7 @@ def _read_workspace_chat_index(storage_dir: Any) -> List[Dict[str, Any]]:
                 "id": cid,
                 "name": str(c.get("name") or ""),
                 "updatedAt": str(c.get("updated_at") or ""),
+                "archived": bool(c.get("archived", False)),
             }
         )
     return out
@@ -882,6 +884,7 @@ def _build_state_inner(agent: Any) -> Dict[str, Any]:
                     # restore the per-chat compose mode after a restart instead
                     # of defaulting every chat to Agent.
                     "planMode": _chat_mode_is_plan(c),
+                    "archived": bool(c.get("archived", False)),
                 }
             )
     except Exception:
@@ -3777,6 +3780,43 @@ class ServeApp:
         )
         return True
 
+    def toggle_chat_archive(self, chat_id: str, ws_id: str = "") -> bool:
+        """Toggle the ``archived`` flag on a chat record (GUI-only, persistent)."""
+        agent = self.agent
+        wsid = str(ws_id or "").strip()
+        cid = str(chat_id or "").strip()
+        if not cid:
+            return False
+        try:
+            from ..controllers.workspace_command_controller import (
+                workspace_switch_command,
+            )
+
+            if wsid and wsid != str(getattr(agent, "workspace_id", "") or ""):
+                with agent._chat_state_lock:
+                    with contextlib.redirect_stdout(io.StringIO()):
+                        workspace_switch_command(agent, wsid)
+            with agent._chat_state_lock:
+                target = agent._resolve_chat_selector(cid)
+                rid = str(target.get("id") or "") if target else ""
+                if not rid:
+                    return False
+                chats = agent._chat_entries()
+                for c in chats:
+                    if str(c.get("id") or "") == rid:
+                        c["archived"] = not bool(c.get("archived", False))
+                        c["updated_at"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        agent._save_chat_state()
+                        break
+                else:
+                    return False
+        except Exception:
+            return False
+        self.broadcaster.publish(
+            "idle", self._route(state=_build_state(agent))
+        )
+        return True
+
     def list_workspace_chats(self, ws_id: str) -> Optional[List[Dict[str, Any]]]:
         """List chats for a workspace by id without switching to it.
 
@@ -3799,6 +3839,7 @@ class ServeApp:
                             "id": str(c.get("id") or ""),
                             "name": str(c.get("name") or ""),
                             "updatedAt": str(c.get("updated_at") or ""),
+                            "archived": bool(c.get("archived", False)),
                         }
                     )
             except Exception:
@@ -4354,6 +4395,12 @@ def _make_handler(app: ServeApp):
                     self._send_json(400, {"ok": False})
                 else:
                     self._send_json(200, {"ok": True, **result})
+                return
+            if path == "/toggle-chat-archive":
+                cid = str(body.get("id") or "")[:256]
+                ws_id = str(body.get("workspaceId") or "")[:256]
+                ok = app.toggle_chat_archive(cid, ws_id)
+                self._send_json(200 if ok else 400, {"ok": ok})
                 return
             if path == "/delete-chat":
                 chat_id = str(body.get("id") or "")[:256]

@@ -22,6 +22,8 @@ export interface ChatSummary {
    *  restore the per-chat compose mode after a restart instead of defaulting
    *  every chat to Agent mode. */
   planMode?: boolean;
+  /** Whether the chat has been archived (hidden from the sidebar). */
+  archived?: boolean;
 }
 
 /** Chat summary as returned by GET /workspace-chats for any workspace. */
@@ -29,6 +31,7 @@ export interface WorkspaceChatSummary {
   id: string;
   name: string;
   updatedAt?: string;
+  archived?: boolean;
 }
 
 /** General-runtime settings exposed by the GUI's General settings page. */
@@ -106,7 +109,6 @@ export interface AppState {
   uiPrefs?: {
     pinnedWorkspaceIds?: string[];
     pinnedChatIds?: string[];
-    archivedChatIds?: string[];
   };
   /** GUI-only embedded-console options (font + scrollback buffer). */
   consoleOptions?: {

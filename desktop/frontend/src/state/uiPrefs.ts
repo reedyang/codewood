@@ -10,13 +10,11 @@ const STORAGE_KEY = "codewood.uiPrefs";
 export interface UiPrefs {
   pinnedWorkspaceIds: string[];
   pinnedChatIds: string[];
-  archivedChatIds: string[];
 }
 
 const EMPTY: UiPrefs = {
   pinnedWorkspaceIds: [],
   pinnedChatIds: [],
-  archivedChatIds: [],
 };
 
 function sanitizeIds(value: unknown): string[] {
@@ -42,7 +40,6 @@ export function loadUiPrefs(): UiPrefs {
     return {
       pinnedWorkspaceIds: sanitizeIds(parsed.pinnedWorkspaceIds),
       pinnedChatIds: sanitizeIds(parsed.pinnedChatIds),
-      archivedChatIds: sanitizeIds(parsed.archivedChatIds),
     };
   } catch {
     return { ...EMPTY };
