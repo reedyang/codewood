@@ -13,7 +13,7 @@ from .base import BaseTool
 
 from .shell import ShellTool
 from .apply_patch import ApplyPatchTool
-from .read_image import ReadImageTool
+from .read import ReadTool
 from .project_context_search import ProjectContextSearchTool
 from .mcp_server_info import McpServerInfoTool
 from .mcp_reload_config import McpReloadConfigTool
@@ -64,7 +64,7 @@ from .console import (
 ALL_TOOLS: List[Type[BaseTool]] = [
     ShellTool,
     ApplyPatchTool,
-    ReadImageTool,
+    ReadTool,
     ProjectContextSearchTool,
     McpServerInfoTool,
     McpReloadConfigTool,

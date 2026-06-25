@@ -21,7 +21,7 @@
             "name": "<YOUR MODEL NAME>",
             "context_window": 131072,
             "streaming": true,               // optional, default is true
-            "multimodal": true,              // optional, default is true; set false to hide image tools (read_image)
+            "multimodal": true,              // optional, default is true; set false to hide image-input via ``read``
             // optional: enable reasoning-effort selection for this model.
             // List the effort levels the model supports (any labels accepted by
             // the provider, e.g. OpenAI uses low/medium/high). When set, the
@@ -50,7 +50,7 @@
             "name": "<YOUR OLLAMA MODEL NAME>",
             "context_window": 128000,
             "streaming": true,               // optional, default is true
-            "multimodal": false              // optional, default is true; set false to hide image tools (read_image)
+            "multimodal": false              // optional, default is true; set false to hide image-input via ``read``
           }
         ]
       }

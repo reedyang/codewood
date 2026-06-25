@@ -154,7 +154,8 @@ def parse_configured_models(
                     streaming_raw, default_value=True
                 ),
                 # Whether the model can accept image input. Defaults to True;
-                # set ``"multimodal": false`` to hide image tools (read_image).
+                # set ``"multimodal": false`` to hide image-input capability
+                # of the ``read`` tool.
                 "multimodal": parse_bool_flag(
                     multimodal_raw, default_value=True
                 ),

@@ -771,7 +771,7 @@ export function ChatView() {
     await setPlanMode(chatMode === "plan");
     const baseMessage = composeMessageText(segments);
     // Append each pasted image as an inline path reference the model can
-    // resolve with ``read_image``; the GUI re-renders these as thumbnails.
+    // resolve with ``read``; the GUI re-renders these as thumbnails.
     const message = appendImageRefs(
       baseMessage,
       imageAttachments.map((a) => a.path),

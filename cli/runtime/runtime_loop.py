@@ -3901,6 +3901,11 @@ def run_agent_loop(agent: Any):
                             self._terminal_cursor_at_line_start = True
 
                 if fallback_plans:
+                    # Open a tool-execution round so the GUI shows
+                    # "Working…" during long-running tools like
+                    # run_subagent, instead of going dark after the
+                    # model round ends.
+                    _gui_round_mark(self, True)
                     for tool_name, args in fallback_plans:
                         self._print_tool_call_feedback(tool_name, args, failed=False)
                 else:
@@ -4261,6 +4266,10 @@ def run_agent_loop(agent: Any):
                         )
                         break_after_batch = True
                         break
+
+                # Close the tool-execution round; the next model-call
+                # iteration opens its own round.
+                _gui_round_mark(self, False)
 
                 if break_after_batch:
                     _warn_loop_ended_with_pending_plan(

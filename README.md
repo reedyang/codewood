@@ -209,7 +209,7 @@ Frontmatter keys (the Markdown body is the sub-agent's independent system instru
 - `name` (required) — sub-agent id
 - `description` (required) — when-to-use text that drives the main model's auto-selection
 - `model` (optional) — a `provider:name` selector referencing `model_providers`; defaults to the main model
-- `tools` (optional) — allowlist of tool names; defaults to a core coding set (`shell`, `apply_patch`, `read_image`, `project_context_search`, `update_plan`, `request_skill_prompt`). An explicit empty list (`tools: []`) grants no tools. `run_subagent` is always excluded, so sub-agents cannot nest.
+- `tools` (optional) — allowlist of tool names; defaults to a core coding set (`shell`, `apply_patch`, `read`, `project_context_search`, `update_plan`, `request_skill_prompt`). An explicit empty list (`tools: []`) grants no tools. `run_subagent` is always excluded, so sub-agents cannot nest.
 - `max_rounds` (optional) — maximum tool-use rounds before the sub-agent must return (default 20)
 
 The `run_subagent` tool also accepts an optional `image` argument (a file path). The image is attached to and analyzed by the **sub-agent's own model**, not the main model — so a non-multimodal main model can delegate image understanding to a multimodal sub-agent. See `additional-subagents/image-analyzer.md` for a ready-made example that turns a UI mockup, screenshot, diagram, or chart into a structured description a coding model can act on.
@@ -221,7 +221,7 @@ Example `~/.codewood/subagents/code-reviewer.md`:
 name: code-reviewer
 description: Use to review a diff, file, or change for bugs, security issues, and style problems. Returns a concise findings list.
 model: openai:gpt-4o
-tools: [shell, project_context_search, read_image]
+tools: [shell, project_context_search, read]
 max_rounds: 15
 ---
 You are a meticulous senior code reviewer. Inspect the requested code using the
@@ -322,7 +322,7 @@ Create `.codewood/config.jsonc` in your user directory:
 - `context_window`: accepts a positive integer or a string matching `^\d+[kKmM]?$`; invalid values fall back to `128000`
 - When `context_window < 64000`, Code Wood skips system prompts, tool prompts, skill prompts, memory, and operational context, and only sends conversation history plus the current user input
 - `streaming`: per-model streaming toggle, default `true`
-- `multimodal`: per-model image-input capability, default `true`. When set to `false`, Code Wood hides image tools (`read_image`) from the system prompt and tool schemas so a non-multimodal model is never asked to read images directly. To still analyze images, delegate to a multimodal sub-agent via `run_subagent`'s `image` argument (see `additional-subagents/image-analyzer.md`)
+- `multimodal`: per-model image-input capability, default `true`. When set to `false`, Code Wood hides image-input capability from the `read` tool. To still analyze images, delegate to a multimodal sub-agent via `run_subagent`'s `image` argument (see `additional-subagents/image-analyzer.md`)
 - `extra_headers`: per-model custom request headers, available only for OpenAI-compatible `api_mode` values (`auto`/`chat`/`responses`)
 - `reasoning_effort`: optional per-model list of reasoning-effort levels the model supports (e.g. `["low","medium","high"]`). When set, a level can be selected per chat — in the TUI via `/model reasoning <level>` and in the GUI model menu — and the choice is sent to the provider as `reasoning_effort` (chat API) or `reasoning.effort` (responses API). The selected level is saved per chat and restored on reload. Omit or leave empty to disable reasoning-effort selection for the model. Object-form example: `{"name":"gpt-oss-120b","context_window":"128K","reasoning_effort":["low","medium","high"]}`
 - `auto_compact_trigger_percent`: automatic summarization threshold, default `60`

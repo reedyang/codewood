@@ -8,7 +8,7 @@
 //
 // To the model the sentinel content is just an absolute file path, so the
 // reference reads like a normal "look at this file" mention it can resolve with
-// `read_image`; no special backend parsing is required (the sentinels live in
+// `read`; no special backend parsing is required (the sentinels live in
 // the private-use plane U+E008/U+E009 and never appear in real paths or LLM
 // tokens). The GUI parses these tokens out of the message text and renders a
 // thumbnail in their place, leaving the surrounding prose untouched.
