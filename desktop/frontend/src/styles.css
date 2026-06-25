@@ -1152,7 +1152,7 @@ body.resizing-x .browser-frame {
   flex: 0 0 auto;
   display: flex;
   align-items: center;
-  height: 44px;
+  height: 36px;
   padding: 0 6px 0 8px;
   border-bottom: 1px solid var(--border);
   gap: 4px;
@@ -4536,7 +4536,7 @@ h6.md-h {
   flex-direction: column;
   flex: 0 0 auto;
   border-top: 1px solid var(--border);
-  background: #1e1e1e;
+  background: var(--bg);
   overflow: hidden;
   position: relative;
 }
@@ -4576,7 +4576,7 @@ h6.md-h {
   flex: 0 0 auto;
   display: flex;
   align-items: center;
-  height: 44px;
+  height: 36px;
   padding: 0 6px 0 8px;
   border-bottom: 1px solid var(--border);
   gap: 4px;
@@ -4615,10 +4615,17 @@ h6.md-h {
   padding: 6px 10px;
   font-weight: 600;
   font-size: 13px;
+  border-radius: 6px;
+  white-space: nowrap;
 }
 
-.console-tab:hover {
+.console-tab-btn:hover {
   background: var(--user-bg);
+  color: var(--text);
+}
+
+.console-tab.active .console-tab-btn {
+  background: transparent;
   color: var(--text);
 }
 
@@ -4646,9 +4653,7 @@ h6.md-h {
   color: var(--text);
 }
 
-.console-tab-add,
-.console-close {
-  flex: 0 0 auto;
+.console-tab-add {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -4660,10 +4665,32 @@ h6.md-h {
   border-radius: 6px;
 }
 
-.console-tab-add:hover,
+.console-tab-add:hover {
+  background: var(--user-bg);
+  color: var(--text);
+}
+
+.console-close {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 6px;
+  border-radius: 6px;
+}
+
 .console-close:hover {
   background: var(--user-bg);
   color: var(--text);
+}
+
+.console-close.active {
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  color: var(--accent);
 }
 
 .console-body {

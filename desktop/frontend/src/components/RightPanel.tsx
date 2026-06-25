@@ -85,10 +85,9 @@ export function RightPanel() {
           })}
         </div>
         <button
-          className="right-panel-close active"
+          className="right-panel-close"
           aria-label={t("rightpanel.close")}
-          aria-pressed
-          title={t("plan.toggle")}
+          title={t("rightpanel.toggle")}
           onClick={togglePlan}
         >
           <Icon name="panel-right" size={18} />
