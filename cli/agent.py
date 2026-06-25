@@ -1134,8 +1134,8 @@ class Agent:
     def _next_chat_id(self) -> str:
         return self._chat_state_manager.next_chat_id()
 
-    def _load_chat_state(self) -> None:
-        self._chat_state_manager.load_chat_state()
+    def _load_chat_state(self, create_default_chat: bool = True) -> None:
+        self._chat_state_manager.load_chat_state(create_default_chat=create_default_chat)
 
     def _refresh_chat_record_from_disk(self, chat_id: str) -> bool:
         """Re-read one chat record so cross-process amendments are picked up.
@@ -5577,11 +5577,11 @@ class Agent:
             except Exception:
                 pass
 
-    def _refresh_workspace_runtime(self) -> None:
+    def _refresh_workspace_runtime(self, create_default_chat: bool = True) -> None:
         self._shutdown_workspace_services(wait=True)
         self._ensure_workspace_dirs()
         self.history_manager = HistoryManager(str(self.workspace_config_dir), language=getattr(self, "display_language", "en") or "en")
-        self._load_chat_state()
+        self._load_chat_state(create_default_chat=create_default_chat)
         if self.input_handler is not None:
             try:
                 if hasattr(self.input_handler, "update_workspace_directory"):

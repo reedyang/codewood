@@ -3534,6 +3534,129 @@ class ServeApp:
         if changed:
             self.save_models_config(providers)
 
+    def open_folder(self, folder_path: str) -> Optional[Dict[str, str]]:
+        """Open a folder as a workspace, switching to it without creating any chat.
+
+        Called from the GUI's File > Open Folder / Ctrl+O / native menu.
+        Unlike ``/workspace create`` which goes through the chat runtime loop,
+        this executes on the HTTP thread directly, avoiding session-binding
+        bleed from the old runtime. Returns the created/existing workspace id
+        and name, then broadcasts the new state via SSE.
+        """
+        from ..config.app_info import get_app_config_dirname as _cfg_dirname
+        from ..controllers.workspace_command_controller import _default_workspace_id
+
+        agent = self.agent
+        p = str(folder_path or "").strip().strip('"').strip("'")
+        if not p:
+            return None
+        try:
+            raw_path = agent._workspace_path_from_arg(p)
+        except Exception:
+            return None
+        root = agent._resolve_path_lenient(raw_path)
+        name = root.name or str(root)
+
+        try:
+            # If this folder is already a registered workspace, just switch.
+            existing = agent._workspace_entry_by_root(root)
+            if existing:
+                wsid = str(existing.get("id") or "")
+                agent._save_current_workspace_position()
+                agent._apply_workspace_entry(existing, agent.work_directory)
+                agent._refresh_workspace_runtime(create_default_chat=False)
+                agent._save_current_workspace_position(sync_messages=False)
+                self.broadcaster.publish(
+                    "idle", self._route(state=_build_state(agent))
+                )
+                return {"id": wsid, "name": str(existing.get("name") or ""), "existing": True}
+
+            # New workspace: register it.
+            root.mkdir(parents=True, exist_ok=True)
+            storage = root / _cfg_dirname()
+            storage.mkdir(parents=True, exist_ok=True)
+
+            workspace_id = agent._workspace_id_for_path(root)
+            base_id = workspace_id
+            counter = 2
+            workspaces = agent._workspaces_state.setdefault("workspaces", {})
+            while workspace_id in workspaces:
+                workspace_id = f"{base_id}_{counter}"
+                counter += 1
+
+            workspaces[workspace_id] = {
+                "id": workspace_id,
+                "name": name,
+                "kind": "custom",
+                "root": str(root),
+            }
+            agent._save_workspace_state()
+
+            agent._save_current_workspace_position()
+            agent._apply_workspace_entry(
+                workspaces[workspace_id], agent.work_directory
+            )
+            # Don't auto-create a default chat — the GUI enters draft mode.
+            agent._refresh_workspace_runtime(create_default_chat=False)
+            agent._save_current_workspace_position(sync_messages=False)
+        except Exception:
+            return None
+
+        self.broadcaster.publish(
+            "idle", self._route(state=_build_state(agent))
+        )
+        return {"id": workspace_id, "name": name, "existing": False}
+
+    def delete_workspace(self, workspace_id: str) -> Optional[Dict]:
+        """Delete a workspace from the registry, falling back to another
+        workspace if the deleted one was active.  Executes on the HTTP
+        thread — bypassing the chat runtime — so the SSE broadcast carries
+        a clean state with no session-bleed from the old chat.
+        """
+        from ..controllers.workspace_command_controller import _default_workspace_id
+
+        agent = self.agent
+        wsid = str(workspace_id or "").strip()
+        if not wsid:
+            return None
+
+        entry = agent._workspace_entry_by_selector(wsid)  # type: ignore[attr-defined]
+        if not entry:
+            return None
+        if wsid == _default_workspace_id():
+            return None  # default workspace can't be deleted
+
+        active_deleted = wsid == str(getattr(agent, "workspace_id", "") or "")
+        if active_deleted:
+            agent._save_current_workspace_position()
+
+        workspaces = agent._workspaces_state.get("workspaces", {})
+        if isinstance(workspaces, dict):
+            workspaces.pop(wsid, None)
+
+        if active_deleted:
+            default_ws_id = _default_workspace_id()
+            default_entry = (
+                workspaces.get(default_ws_id)
+                if isinstance(workspaces.get(default_ws_id), dict)
+                else agent._default_workspace_entry()  # type: ignore[attr-defined]
+            )
+            if isinstance(workspaces, dict):
+                workspaces[default_ws_id] = default_entry
+            agent._apply_workspace_entry(default_entry, agent.work_directory)
+            # Don't auto-create a default chat; the frontend will enter
+            # draft mode when the fallback workspace has no chats.
+            agent._save_current_workspace_position(sync_messages=False)
+            agent._refresh_workspace_runtime(create_default_chat=False)
+        else:
+            agent._save_workspace_state()
+
+        agent._refresh_input_handler_skill_completions()  # type: ignore[attr-defined]
+        self.broadcaster.publish(
+            "idle", self._route(state=_build_state(agent))
+        )
+        return {"id": wsid, "wasActive": active_deleted}
+
     def new_chat(self, workspace_id: str = "") -> Optional[str]:
         """Silently create and activate a new chat; return its id.
 
@@ -4215,6 +4338,22 @@ def _make_handler(app: ServeApp):
                 self._send_json(
                     200 if cid else 409, {"ok": bool(cid), "id": cid or ""}
                 )
+                return
+            if path == "/open-folder":
+                folder = str(body.get("folder") or "")[:4096]
+                result = app.open_folder(folder)
+                if result is None:
+                    self._send_json(400, {"ok": False})
+                else:
+                    self._send_json(200, {"ok": True, **result})
+                return
+            if path == "/delete-workspace":
+                ws_id = str(body.get("id") or "")[:256]
+                result = app.delete_workspace(ws_id)
+                if result is None:
+                    self._send_json(400, {"ok": False})
+                else:
+                    self._send_json(200, {"ok": True, **result})
                 return
             if path == "/delete-chat":
                 chat_id = str(body.get("id") or "")[:256]

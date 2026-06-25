@@ -206,9 +206,12 @@ def workspace_create_command(agent: Any, arg_text: str) -> str:
     agent._refresh_input_handler_skill_completions()
 
     # Switch immediately to the newly created workspace.
+    # Don't auto-create a default chat — the GUI will enter draft mode
+    # (empty composer) when there are no chats, while the TUI will create
+    # one via the runtime loop on first input.
     agent._save_current_workspace_position()
     agent._apply_workspace_entry(workspaces[workspace_id], agent.work_directory)
-    agent._refresh_workspace_runtime()
+    agent._refresh_workspace_runtime(create_default_chat=False)
     # Post-apply: globals point at the new workspace but the session still
     # carries the previous chat. Save position metadata only (see
     # ``workspace_switch_command``).

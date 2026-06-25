@@ -131,6 +131,30 @@ export class ApiClient {
     return res.ok;
   }
 
+  /** Open a folder as a workspace (File > Open Folder), returning its id. */
+  async openFolder(folder: string): Promise<{ ok: boolean; id?: string; name?: string }> {
+    const res = await fetch(`${this.base}/open-folder`, {
+      method: "POST",
+      headers: this.headers(),
+      body: JSON.stringify({ folder }),
+    });
+    try {
+      return (await res.json()) as { ok: boolean; id?: string; name?: string };
+    } catch {
+      return { ok: false };
+    }
+  }
+
+  /** Delete a workspace (GUI-only), handling fallback when the active one is removed. */
+  async deleteWorkspace(id: string): Promise<boolean> {
+    const res = await fetch(`${this.base}/delete-workspace`, {
+      method: "POST",
+      headers: this.headers(),
+      body: JSON.stringify({ id }),
+    });
+    return res.ok;
+  }
+
   /** Delete a chat, allowing the workspace to become chat-less (GUI-only). */
   async deleteChat(id: string, workspaceId = ""): Promise<boolean> {
     const res = await fetch(`${this.base}/delete-chat`, {

@@ -56,10 +56,6 @@ function chatKey(workspaceId: string, chatId: string): string {
   return ws ? `${ws}\u0000${cid}` : cid;
 }
 
-function quoteArg(value: string): string {
-  return `"${value.replace(/"/g, "")}"`;
-}
-
 interface AppContextValue {
   state: AppState | null;
   turns: Turn[];
@@ -115,6 +111,8 @@ interface AppContextValue {
   hideBrowserTab: () => void;
   /** Whether the embedded console dock is open below the message area. */
   consoleOpen: boolean;
+  /** Whether the embedded Browser tab is visible in the right panel. */
+  browserOpen: boolean;
   /** Open the embedded console dock (View menu / Console options). */
   showConsole: () => void;
   /** Hide the embedded console dock. */
@@ -167,6 +165,7 @@ interface AppContextValue {
   editChat: (index: number) => Promise<void>;
   loadOlderHistory: () => Promise<void>;
   openWorkspaceInExplorer: (id: string) => Promise<boolean>;
+  deleteWorkspace: (id: string) => Promise<boolean>;
   toggleWorkspacePin: (id: string) => void;
   toggleChatPin: (id: string) => void;
   toggleChatArchive: (id: string) => void;
@@ -230,6 +229,7 @@ interface AppContextValue {
   openAbout: () => void;
   closeAbout: () => void;
   pickFolder: () => Promise<string>;
+  pickAndOpenFolder: () => Promise<void>;
   pickFiles: () => Promise<string[]>;
 }
 
@@ -319,6 +319,24 @@ export function AppProvider({ children }: { children: ReactNode }) {
       return false;
     }
   });
+  const [browserOpen, setBrowserOpen] = useState<boolean>(() => {
+    try {
+      return loadRightPanelPrefs().visible.includes("browser");
+    } catch {
+      return false;
+    }
+  });
+  useEffect(() => {
+    const onChange = () => {
+      try {
+        setBrowserOpen(loadRightPanelPrefs().visible.includes("browser"));
+      } catch {
+        setBrowserOpen(false);
+      }
+    };
+    window.addEventListener("codewood.rightPanelTabs", onChange);
+    return () => window.removeEventListener("codewood.rightPanelTabs", onChange);
+  }, []);
   // Subscribers for backend-originated browser commands (the BrowserPanel
   // registers one while mounted). A Set so mount/unmount add/remove cleanly.
   const browserCommandHandlersRef = useRef<
@@ -1186,6 +1204,25 @@ export function AppProvider({ children }: { children: ReactNode }) {
             pendingHistoryReloadRef.current = false;
             reloadHistoryRef.current();
           }
+          // When the focused workspace changes to one with no active chat,
+          // enter draft mode (show empty composer). This covers:
+          //   - File > Open Folder (workspace create)
+          //   - Auto-opening a workspace with no chats (startup / delete+fallback)
+          //   - Any other path that lands on a chatless workspace
+          const prevWsId = stateRef.current?.workspace?.id;
+          if (
+            prevWsId &&
+            next?.workspace?.id &&
+            prevWsId !== next.workspace.id &&
+            !next.activeChatId
+          ) {
+            setDraftMode(true);
+            setDraftWorkspaceId(next.workspace.id);
+            historyChatRef.current = "\u0000";
+            setHistoryTurns([]);
+            setHistoryStart(0);
+            setHistoryTotal(0);
+          }
           break;
         }
         case "state": {
@@ -1778,6 +1815,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
     [client],
   );
 
+  /** Delete a workspace (GUI-only), using the dedicated /delete-workspace
+   *  endpoint that bypasses the chat runtime to avoid session-bleed. */
+  const deleteWorkspaceViaApi = useCallback(
+    async (id: string) => {
+      return await client.deleteWorkspace(id);
+    },
+    [client],
+  );
+
   const toggleWorkspacePin = useCallback(
     (id: string) =>
       updatePrefs({
@@ -1894,6 +1940,16 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
+  /** Pick a folder via the native dialog and open it as a workspace.
+   *  Uses the dedicated /open-folder endpoint that bypasses the chat
+   *  runtime, preventing session-bleed from the old chat. */
+  const pickAndOpenFolder = useCallback(async () => {
+    const path = await pickFolder();
+    if (path) {
+      void client.openFolder(path);
+    }
+  }, [pickFolder, client]);
+
   const pickFiles = useCallback(async (): Promise<string[]> => {
     const api = (window as unknown as { pywebview?: { api?: HostApiBridge } })
       .pywebview?.api;
@@ -1924,8 +1980,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         case "open-folder": {
           const path = String(payload ?? "").trim();
           if (path) {
-            clearTurns();
-            void runCommand(`/workspace create ${quoteArg(path)}`);
+            void client.openFolder(path);
           }
           break;
         }
@@ -1987,6 +2042,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     showBrowserTab,
     hideBrowserTab,
     consoleOpen,
+    browserOpen,
     showConsole,
     hideConsole,
     consoleOptions,
@@ -2016,6 +2072,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     editChat,
     loadOlderHistory,
     openWorkspaceInExplorer,
+    deleteWorkspace: deleteWorkspaceViaApi,
     toggleWorkspacePin,
     toggleChatPin,
     toggleChatArchive,
@@ -2067,6 +2124,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     openAbout,
     closeAbout,
     pickFolder,
+    pickAndOpenFolder,
     pickFiles,
   };
 

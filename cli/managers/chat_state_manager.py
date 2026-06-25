@@ -686,19 +686,22 @@ class ChatStateManager:
                 return cid
             i += 1
 
-    def load_chat_state(self) -> None:
+    def load_chat_state(self, create_default_chat: bool = True) -> None:
         p = self.chat_state_path()
         self._agent._startup_chat_state_warning = ""
         try:
             if not p.exists():
-                self._agent._chat_state = self.default_chat_state()
-                self.activate_chat(
-                    self._agent._chat_state["active"],
-                    announce=False,
-                    clear_screen=False,
-                    print_history=False,
-                    persist=True,
-                )
+                if create_default_chat:
+                    self._agent._chat_state = self.default_chat_state()
+                    self.activate_chat(
+                        self._agent._chat_state["active"],
+                        announce=False,
+                        clear_screen=False,
+                        print_history=False,
+                        persist=True,
+                    )
+                else:
+                    self._agent._chat_state = {"version": CHAT_STATE_VERSION, "active": "", "chats": []}
                 return
             with open(p, "r", encoding="utf-8") as f:
                 loaded = json.load(f)
@@ -730,7 +733,11 @@ class ChatStateManager:
                 chat["_record_file"] = record_file
                 chats.append(chat)
             if not chats:
-                raise ValueError("chats empty")
+                # Empty chat list is valid (new workspace with no chats).
+                # No ``activate_chat`` needed; the frontend will enter
+                # draft mode when there is no active chat.
+                self._agent._chat_state = {"version": CHAT_STATE_VERSION, "active": "", "chats": []}
+                return
             # Seed the set of record files this process is aware of, so the
             # save-time stale sweep only ever deletes records that were
             # loaded here (and later removed locally) — never a record a

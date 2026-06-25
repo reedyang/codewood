@@ -29,10 +29,11 @@ function hostApi(): HostWindowApi | undefined {
 
 type MenuEntry =
   | "separator"
-  | { label: string; shortcut?: string; onSelect: () => void };
+  | { label: string; shortcut?: string; checked?: boolean; onSelect: () => void };
 
 export function TitleBar({ onTogglePanel }: { onTogglePanel: () => void }) {
-  const { t, clearTurns, runCommand, newChat, openSettings, openAbout, pickFolder, showBrowserTab, showConsole } = useApp();
+  const { t, pickAndOpenFolder, newChat, openSettings, openAbout, showBrowserTab, hideBrowserTab, showConsole, hideConsole, consoleOpen, browserOpen } = useApp();
+
   const [openMenu, setOpenMenu] = useState<string | null>(null);
   const [native, setNative] = useState<boolean>(() => Boolean(hostApi()));
   const [maximized, setMaximized] = useState(false);
@@ -94,14 +95,7 @@ export function TitleBar({ onTogglePanel }: { onTogglePanel: () => void }) {
 
   const closeWindow = () => hostApi()?.close_window?.();
 
-  const openFolder = async () => {
-    const path = await pickFolder();
-    if (path) {
-      clearTurns();
-      await runCommand(`/workspace create "${path.replace(/"/g, "")}"`);
-    }
-  };
-
+  const openFolder = () => void pickAndOpenFolder();
   const menus: { id: string; label: string; entries: MenuEntry[] }[] = [
     {
       id: "file",
@@ -113,7 +107,6 @@ export function TitleBar({ onTogglePanel }: { onTogglePanel: () => void }) {
           onSelect: () => void newChat(),
         },
         { label: t("menu.file.openFolder"), shortcut: "Ctrl+O", onSelect: () => void openFolder() },
-        { label: t("menu.file.close"), shortcut: "Ctrl+W", onSelect: closeWindow },
         "separator",
         { label: t("menu.file.settings"), shortcut: "Ctrl+,", onSelect: openSettings },
         "separator",
@@ -124,8 +117,8 @@ export function TitleBar({ onTogglePanel }: { onTogglePanel: () => void }) {
       id: "view",
       label: t("menu.view"),
       entries: [
-        { label: t("menu.view.browser"), onSelect: () => showBrowserTab() },
-        { label: t("menu.view.console"), onSelect: () => showConsole() },
+        { label: t("menu.view.browser"), checked: browserOpen, onSelect: () => browserOpen ? hideBrowserTab() : showBrowserTab() },
+        { label: t("menu.view.console"), checked: consoleOpen, onSelect: () => consoleOpen ? hideConsole() : showConsole() },
       ],
     },
     {
@@ -165,24 +158,36 @@ export function TitleBar({ onTogglePanel }: { onTogglePanel: () => void }) {
             </button>
             {openMenu === menu.id && (
               <div className="menubar-menu" role="menu">
-                {menu.entries.map((entry, idx) =>
-                  entry === "separator" ? (
-                    <div className="menubar-separator" key={`sep-${idx}`} />
-                  ) : (
-                    <button
-                      key={entry.label}
-                      className="menubar-menu-item"
-                      role="menuitem"
-                      onClick={() => {
-                        setOpenMenu(null);
-                        entry.onSelect();
-                      }}
-                    >
-                      <span>{entry.label}</span>
-                      {entry.shortcut && <span className="menubar-shortcut">{entry.shortcut}</span>}
-                    </button>
-                  ),
-                )}
+                {(() => {
+                  const hasCheckColumn = (menu.entries as MenuEntry[]).some(
+                    (e): e is Exclude<MenuEntry, "separator"> => e !== "separator" && "checked" in e,
+                  );
+                  return menu.entries.map((entry, idx) =>
+                    entry === "separator" ? (
+                      <div className="menubar-separator" key={`sep-${idx}`} />
+                    ) : (
+                      <button
+                        key={entry.label}
+                        className="menubar-menu-item"
+                        role="menuitem"
+                        onClick={() => {
+                          setOpenMenu(null);
+                          entry.onSelect();
+                        }}
+                      >
+                        <span className="menubar-item-label">
+                          {hasCheckColumn && (
+                            <span className="dropdown-check">
+                              {entry.checked && <Icon name="check" size={13} />}
+                            </span>
+                          )}
+                          <span>{entry.label}</span>
+                        </span>
+                        {entry.shortcut && <span className="menubar-shortcut">{entry.shortcut}</span>}
+                      </button>
+                    ),
+                  );
+                })()}
               </div>
             )}
           </div>

@@ -58,6 +58,7 @@ function Shell() {
     closeAbout,
     newChat,
     planOpen,
+    pickAndOpenFolder,
   } = useApp();
   // The backend serves a state even when no usable model is configured (e.g.
   // first launch where only the placeholder template config exists). The
@@ -136,6 +137,9 @@ function Shell() {
       if (key === "n") {
         e.preventDefault();
         void newChat();
+      } else if (key === "o") {
+        e.preventDefault();
+        void pickAndOpenFolder();
       } else if (key === ",") {
         e.preventDefault();
         openSettings();
@@ -146,7 +150,7 @@ function Shell() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [newChat, openSettings]);
+  }, [newChat, openSettings, pickAndOpenFolder]);
 
   return (
     <div className="window-root">
