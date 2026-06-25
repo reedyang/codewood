@@ -2847,7 +2847,6 @@ def run_agent_loop(agent: Any):
                             print(f"❌ {mcp_err}")
                             continue
                         if bl in ('exit', 'quit'):
-                            self._save_current_workspace_position()
                             break
                         # clear screen
                         if bl == 'clear screen':
@@ -4359,7 +4358,6 @@ def run_agent_loop(agent: Any):
                     self._queued_user_input = plan_followup
                     continue
             if auto_exit_after_turn:
-                self._save_current_workspace_position()
                 break
 
         except KeyboardInterrupt:
@@ -4434,7 +4432,6 @@ def run_agent_loop(agent: Any):
                 should_exit = False
 
             if should_exit:
-                self._save_current_workspace_position()
                 print(t("runtime.exit_goodbye", app_name=get_app_name()))
                 break
             continue
