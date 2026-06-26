@@ -17,9 +17,10 @@ from __future__ import annotations
 
 import os
 import shutil
+import subprocess
 import threading
 from collections import deque
-from typing import Any, Callable, Deque, Dict, List, Optional, Tuple
+from typing import Any, Callable, Deque, Dict, List, Optional
 
 # Shell kinds the GUI may request. Mapped to a concrete launcher per-platform.
 # ``shell`` is the generic default shell used on Linux/macOS (the user's
@@ -39,6 +40,80 @@ def _is_windows() -> bool:
     return os.name == "nt"
 
 
+_SYS32 = os.path.join(
+    os.environ.get("SystemRoot", r"C:\Windows"), "System32"
+).lower()
+
+
+def _find_git_bash() -> Optional[str]:
+    """Return the absolute path to Git-for-Windows bash.exe, or None."""
+    if os.name != "nt":
+        return None
+
+    # 1. Well-known install locations -------------------------------------------
+    candidates = [
+        r"C:\Program Files\Git\bin\bash.exe",
+        r"C:\Program Files (x86)\Git\bin\bash.exe",
+    ]
+    # ProgramW6432 bypasses WOW64 redirection on 32-bit Python.
+    pw6432 = os.environ.get("ProgramW6432", "")
+    if pw6432:
+        candidates.append(os.path.join(pw6432, "Git", "bin", "bash.exe"))
+        candidates.append(os.path.join(pw6432, "Git", "usr", "bin", "bash.exe"))
+    # Per-user install (via the Git for Windows standalone installer).
+    localappdata = os.environ.get("LOCALAPPDATA", "")
+    if localappdata:
+        candidates.append(
+            os.path.join(localappdata, "Programs", "Git", "bin", "bash.exe")
+        )
+    for cand in candidates:
+        if os.path.isfile(cand):
+            return cand
+
+    # 2. ``where.exe bash`` – full PATH search, exclude WSL ---------------------
+    try:
+        out = subprocess.check_output(
+            ["where", "bash"], text=True, timeout=5
+        )
+        for line in out.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                real = os.path.realpath(line)
+            except (TypeError, OSError):
+                real = line
+            if _SYS32 not in real.lower():
+                return line
+    except Exception:
+        pass
+
+    # 3. Derive from ``git.exe`` on PATH ----------------------------------------
+    git = shutil.which("git")
+    if git:
+        try:
+            git_real = os.path.realpath(git)
+        except (TypeError, OSError):
+            git_real = git
+        git_dir = os.path.dirname(git_real)
+        root = os.path.dirname(git_dir)
+        candidate = os.path.join(root, "usr", "bin", "bash.exe")
+        if os.path.isfile(candidate):
+            return candidate
+
+    # 4. ``shutil.which("bash")`` – accept any that isn't WSL -------------------
+    exe = shutil.which("bash")
+    if exe:
+        try:
+            real = os.path.realpath(exe)
+        except (TypeError, OSError):
+            real = exe
+        if _SYS32 not in real.lower():
+            return exe
+
+    return None
+
+
 def _resolve_windows_launcher(kind: str) -> Optional[List[str]]:
     """Return the argv for a Windows shell kind, or None when not found."""
     if kind == "powershell":
@@ -48,17 +123,7 @@ def _resolve_windows_launcher(kind: str) -> Optional[List[str]]:
         exe = shutil.which("cmd") or os.environ.get("ComSpec")
         return [exe] if exe else None
     if kind == "gitbash":
-        # Prefer PATH, then well-known Git for Windows install locations.
-        exe = shutil.which("bash")
-        if not exe:
-            candidates = [
-                r"C:\Program Files\Git\bin\bash.exe",
-                r"C:\Program Files (x86)\Git\bin\bash.exe",
-            ]
-            for cand in candidates:
-                if os.path.isfile(cand):
-                    exe = cand
-                    break
+        exe = _find_git_bash()
         return [exe, "--login", "-i"] if exe else None
     return None
 
@@ -145,9 +210,11 @@ class ConsoleSession:
         except Exception:
             return False
         try:
-            cmdline = " ".join(_quote_win(a) for a in launcher)
+            # Pass the arg list directly — PtyProcess.spawn accepts both str
+            # and List[str].  Passing a list avoids the internal shlex.split()
+            # which can mishandle quoted paths containing spaces.
             self._proc = PtyProcess.spawn(
-                cmdline, cwd=self.cwd, dimensions=(self.rows, self.cols)
+                launcher, cwd=self.cwd, dimensions=(self.rows, self.cols)
             )
             self._backend = "winpty"
         except Exception:
@@ -414,12 +481,6 @@ class ConsoleSession:
             "alive": self.is_alive(),
             "backend": self._backend,
         }
-
-
-def _quote_win(arg: str) -> str:
-    if not arg or any(c in arg for c in ' "\t'):
-        return '"' + arg.replace('"', '\\"') + '"'
-    return arg
 
 
 class ConsoleManager:
