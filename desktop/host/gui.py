@@ -643,7 +643,11 @@ def main() -> int:
     # inspector (right-click → Inspect Element) so frontend errors behind a
     # blank window can be diagnosed. Off by default to keep production builds
     # locked down.
+    # NOTE: We set ``OPEN_DEVTOOLS_IN_DEBUG`` to False so DevTools don't
+    # auto-open on startup; they remain accessible via F12 or right-click.
     debug = str(os.environ.get("CODEWOOD_GUI_DEBUG", "")).strip() not in ("", "0", "false", "False")
+    if debug:
+        webview.settings['OPEN_DEVTOOLS_IN_DEBUG'] = False
 
     try:
         webview.start(gui=_preferred_gui(), debug=debug)
