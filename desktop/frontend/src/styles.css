@@ -2289,6 +2289,18 @@ html[data-has-bg] .select {
   flex: 0 0 auto;
 }
 
+.console-font-preview {
+  margin-top: 10px;
+  padding: 12px 16px;
+  background: #1e1e1e;
+  color: #d4d4d4;
+  border-radius: 6px;
+  font-size: 15px;
+  line-height: 1.5;
+  white-space: pre;
+  overflow: hidden;
+}
+
 .setting-error {
   color: #c54545;
   font-size: 13px;
