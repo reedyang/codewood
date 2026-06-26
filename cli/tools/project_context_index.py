@@ -506,7 +506,7 @@ class ProjectContextIndex:
             except Exception:
                 pass
 
-    def _iter_code_files(self, deadline_ts: Optional[float] = None) -> Tuple[List[Path], bool]:
+    def _iter_code_files(self, deadline_ts: Optional[float] = None, progress_cb: Any = None) -> Tuple[List[Path], bool]:
         out: List[Path] = []
         root = self.workspace_root
         if not root.is_dir():
@@ -537,6 +537,8 @@ class ProjectContextIndex:
                 if _is_gitignored(rel, git_spec):
                     continue
                 out.append(p)
+                if callable(progress_cb) and len(out) % 200 == 0:
+                    progress_cb(len(out))
             if timed_out:
                 break
         return out, timed_out
@@ -660,31 +662,29 @@ class ProjectContextIndex:
                     budget_s = v / 1000.0
         except Exception:
             budget_s = None
-        deadline = (_now_ts() + budget_s) if budget_s is not None else None
 
         root = self.workspace_root
         if not root.is_dir():
             return {"success": False, "error": f"workspace does not exist: {root}"}
 
-        # Phase 1 (no lock): walk filesystem, collect files to parse
+        # Phase 1 (no lock): walk filesystem
         self._refresh_progress_phase = "scanning"
         self._refresh_progress_total = 0
         self._refresh_progress_done = 0
-        scanned, discovery_timed_out = self._iter_code_files(deadline_ts=deadline)
+        def _scan_progress(count: int) -> None:
+            self._refresh_progress_done = count
+        scanned, _discovery_timed_out = self._iter_code_files(deadline_ts=None, progress_cb=_scan_progress)
+        self._refresh_progress_phase = ""
 
         with self._lock:
             base_files = dict(self.files)
 
-        # Phase 2 (no lock): parse files in parallel
+        # Phase 2 (no lock): stat + compare
         to_parse: List[Tuple[Path, str, int, int, bool]] = []
         seen_rel: Set[str] = set()
         processed = 0
         unchanged = 0
-        timed_out = bool(discovery_timed_out)
         for p in scanned:
-            if deadline is not None and _now_ts() >= deadline:
-                timed_out = True
-                break
             try:
                 rel = str(p.relative_to(root)).replace("\\", "/")
                 st = p.stat()
@@ -706,23 +706,31 @@ class ProjectContextIndex:
             is_new = old is None
             to_parse.append((p, rel, mtime_ns, size, is_new))
 
+        # Phase 3 (no lock): parse changed files
         parsed_entries: Dict[str, _FileEntry] = {}
         parsed_added = 0
         parsed_updated = 0
+        timed_out = False
+        parse_deadline = (_now_ts() + budget_s) if budget_s is not None else None
         is_full_rebuild = force or len(base_files) == 0
-        if to_parse and not timed_out:
+        if to_parse:
             self._refresh_progress_phase = "indexing"
             self._refresh_progress_total = len(to_parse)
             self._refresh_progress_done = 0
-            if is_full_rebuild:
-                _last_yield = _now_ts()
-                _file_count = 0
+            workers = max(1, (os.cpu_count() or 4) // 4) if is_full_rebuild else max(2, (os.cpu_count() or 4) // 2)
+            batch_count = 0
+            with ThreadPoolExecutor(max_workers=workers) as executor:
+                future_to_info: Dict[Any, Tuple[str, bool]] = {}
                 for p, rel, mtime_ns, size, is_new in to_parse:
-                    if deadline is not None and _now_ts() >= deadline:
+                    fut = executor.submit(self._parse_file, p, rel, mtime_ns, size)
+                    future_to_info[fut] = (rel, is_new)
+                    if parse_deadline is not None and _now_ts() >= parse_deadline:
                         timed_out = True
                         break
+                for fut in as_completed(future_to_info):
+                    rel, is_new = future_to_info[fut]
                     try:
-                        entry = self._parse_file(p, rel, mtime_ns, size)
+                        entry = fut.result()
                     except Exception:
                         self._refresh_progress_done += 1
                         continue
@@ -732,38 +740,11 @@ class ProjectContextIndex:
                         parsed_added += 1
                     else:
                         parsed_updated += 1
-                    _file_count += 1
-                    if _file_count % 30 == 0:
-                        time.sleep(0.1)
-            else:
-                workers = min(len(to_parse), max(2, (os.cpu_count() or 4) // 2))
-                batch_count = 0
-                with ThreadPoolExecutor(max_workers=workers) as executor:
-                    future_to_info: Dict[Any, Tuple[str, bool]] = {}
-                    for p, rel, mtime_ns, size, is_new in to_parse:
-                        if deadline is not None and _now_ts() >= deadline:
-                            timed_out = True
-                            break
-                        fut = executor.submit(self._parse_file, p, rel, mtime_ns, size)
-                        future_to_info[fut] = (rel, is_new)
-                    for fut in as_completed(future_to_info.keys()):
-                        rel, is_new = future_to_info[fut]
-                        try:
-                            entry = fut.result()
-                        except Exception:
-                            self._refresh_progress_done += 1
-                            continue
-                        parsed_entries[rel] = entry
-                        self._refresh_progress_done += 1
-                        if is_new:
-                            parsed_added += 1
-                        else:
-                            parsed_updated += 1
-                        batch_count += 1
-                        if batch_count % 20 == 0:
-                            time.sleep(0)
+                    batch_count += 1
+                    if batch_count % 100 == 0:
+                        time.sleep(0)
 
-        # Phase 3 (lock): commit results
+        # Phase 4 (lock): commit results
         self._refresh_progress_phase = "saving"
         with self._lock:
             index_existed_before_refresh = self.index_path.is_file()
@@ -901,13 +882,20 @@ class ProjectContextIndex:
 
     def status(self) -> Dict[str, Any]:
         with self._lock:
+            phase = self._refresh_progress_phase
+            if phase == "scanning":
+                files_display = self._refresh_progress_done
+            elif phase == "indexing":
+                files_display = self._refresh_progress_done
+            else:
+                files_display = len(self.files)
             return {
                 "success": True,
                 "workspace_root": str(self.workspace_root),
                 "index_path": str(self.index_path),
-                "files_total": len(self.files),
+                "files_total": files_display,
                 "last_index_at": self.last_index_at,
-                "refresh_phase": self._refresh_progress_phase,
+                "refresh_phase": phase,
                 "refresh_progress_total": self._refresh_progress_total,
                 "refresh_progress_done": self._refresh_progress_done,
             }
@@ -1331,24 +1319,56 @@ def _is_venv_dir(dir_path: str) -> bool:
         return False
 
 
+_GITIGNORE_CACHE: Dict[str, Tuple[float, Any]] = {}
+_GITIGNORE_CACHE_TTL: float = 30.0
+
+
 def _load_gitignore(root: str) -> Any:
+    root_key = str(Path(root).resolve())
+    now = _now_ts()
+    cached = _GITIGNORE_CACHE.get(root_key)
+    if cached and (now - cached[0]) < _GITIGNORE_CACHE_TTL:
+        return cached[1]
+
     try:
         import pathspec  # type: ignore[import-untyped]
     except ImportError:
         return None
     patterns: List[str] = []
+    root_path = Path(root).resolve()
     for dirpath, dirnames, filenames in os.walk(root, topdown=True, followlinks=False):
         dirnames[:] = [d for d in dirnames if not d.startswith(".")]
-        if ".gitignore" in filenames:
-            try:
-                with open(os.path.join(dirpath, ".gitignore"), "r", encoding="utf-8", errors="replace") as f:
-                    patterns.append(f"# .gitignore from {os.path.relpath(dirpath, root)}")
-                    patterns.extend(f.read().splitlines())
-            except Exception:
-                pass
+        if ".gitignore" not in filenames:
+            continue
+        try:
+            dir_prefix = Path(dirpath).resolve().relative_to(root_path).as_posix()
+        except Exception:
+            dir_prefix = ""
+        if dir_prefix == ".":
+            dir_prefix = ""
+        try:
+            with open(os.path.join(dirpath, ".gitignore"), "r", encoding="utf-8", errors="replace") as f:
+                for line in f.read().splitlines():
+                    stripped = line.strip()
+                    if not stripped or stripped.startswith("#"):
+                        continue
+                    negated = stripped.startswith("!")
+                    raw = stripped[1:] if negated else stripped
+                    anchored = raw.startswith("/")
+                    body = raw[1:] if anchored else raw
+                    if dir_prefix:
+                        scoped = f"{'!' if negated else ''}{dir_prefix}/{body}"
+                    else:
+                        scoped = stripped
+                    patterns.append(scoped)
+        except Exception:
+            pass
     if not patterns:
+        _GITIGNORE_CACHE[root_key] = (now, None)
         return None
-    return pathspec.PathSpec.from_lines("gitwildmatch", patterns)
+    spec = pathspec.PathSpec.from_lines("gitwildmatch", patterns)
+    _GITIGNORE_CACHE[root_key] = (now, spec)
+    return spec
 
 
 def _is_gitignored(rel_path: str, spec: Any) -> bool:

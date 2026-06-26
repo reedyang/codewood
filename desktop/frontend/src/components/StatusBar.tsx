@@ -31,7 +31,8 @@ export function StatusBar() {
   const phase = status?.refresh_phase ?? "";
   const total = status?.refresh_progress_total ?? 0;
   const done = status?.refresh_progress_done ?? 0;
-  const isIndexing = phase === "indexing" || phase === "scanning";
+  const isScanning = phase === "scanning";
+  const isIndexing = phase === "indexing";
   const isSaving = phase === "saving";
   const pct = total > 0 ? Math.min(100, Math.round((done / total) * 100)) : 0;
 
@@ -43,12 +44,16 @@ export function StatusBar() {
       <div className="status-bar-left">
         {isDefault ? null : isSaving ? (
           <span className="status-label">Saving...</span>
+        ) : isScanning ? (
+          <span className="status-label">
+            Found {done > 0 ? done.toLocaleString() : "..."} file{done !== 1 ? "s" : ""}
+          </span>
         ) : isIndexing ? (
           <>
             <span className="status-label">Indexing</span>
             {done > 0 && total > 0 && (
               <span className="status-progress-text">
-                {done} / {total} {"\u00b7"} {pct}%
+                {done.toLocaleString()} / {total.toLocaleString()} {"\u00b7"} {pct}%
               </span>
             )}
             <span className="status-progress-bar">

@@ -583,20 +583,28 @@ class Agent:
             pass
 
         if reason_text == "startup":
-            # Defer full refresh to first query (first-round evidence block
-            # triggers it automatically). Avoids disk I/O / GIL pressure during
-            # early session when startup + chat-switching overlapped.
-            with gate:
-                self._project_context_refresh_inflight = False
-            return True
+            if not self._project_context_tool_allowed():
+                with gate:
+                    self._project_context_refresh_inflight = False
+                return True
+            # For non-default workspaces, don't defer — run the refresh now.
 
         def _run() -> None:
             refresh_result: Dict[str, Any] = {}
             try:
                 index.bind_workspace(target_root, storage_dir=target_storage)
+                is_empty = len(index.files) == 0
+                if force or is_empty:
+                    budget_ms = None
+                else:
+                    budget_ms = 10000
+                pc_logger.info(
+                    "Project context refresh: is_empty=%s force=%s budget_ms=%s files_in_index=%s",
+                    is_empty, bool(force), budget_ms, len(index.files),
+                )
                 refresh_result = index.refresh_index(
                     force=bool(force),
-                    timeout_ms=(None if force else 2000),
+                    timeout_ms=budget_ms,
                 )
                 if refresh_result.get("success") and int(refresh_result.get("files_total", 0) or 0) > 0:
                     index._ensure_embedding_provider()
