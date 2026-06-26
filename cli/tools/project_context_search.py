@@ -9,13 +9,13 @@ from .base import BaseTool
 
 class ProjectContextSearchTool(BaseTool):
     name = "project_context_search"
-    description = "Lightweight code-context retrieval for large projects (SQLite-backed index): returns candidate files, related symbols, and match reasons by query. Also supports call-graph queries (callers/callees of a symbol) for change-impact and dependency analysis. Supports incremental index refresh, forced rebuild, and status checks."
+    description = "Fast code-context retrieval for any size project (SQLite + BM25 + semantic embeddings): returns ranked candidate files with matched symbols, imports, and match reasons. Supports call-graph queries (callers/callees of a symbol) for change-impact and dependency tracing. Much faster than shell-based grep/ripgrep — use this as the FIRST retrieval step before falling back to shell search or file reads."
     parameters: Dict[str, Any] = {
         "type": "object",
         "properties": {
             "query": {
                 "type": "string",
-                "description": "Retrieval intent, for example 'where auth token validated' or 'RoomSettingsPanel timer crash'. Required unless 'call_graph' is provided.",
+                "description": "Natural-language retrieval intent. Describe what you're looking for as if asking a teammate, e.g. 'where is auth token validated', 'find the RoomSettingsPanel timer code', 'database connection pool implementation'. Required unless 'call_graph' is provided.",
             },
             "call_graph": {
                 "type": "string",
