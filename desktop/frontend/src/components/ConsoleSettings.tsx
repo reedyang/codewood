@@ -75,6 +75,15 @@ export function ConsoleSettings() {
             ))}
           </select>
           <p className="setting-hint">{t("settings.console.fontHint")}</p>
+          <pre
+            className="console-font-preview"
+            style={{
+              fontFamily:
+                fontFamily || 'Consolas, "Cascadia Mono", "DejaVu Sans Mono", monospace',
+            }}
+          >
+            {`AaBbCc 1234567890 你好世界`}
+          </pre>
         </div>
       </div>
 
