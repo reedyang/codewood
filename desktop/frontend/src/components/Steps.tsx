@@ -89,6 +89,20 @@ function trimBlankEdges(text: string): string {
 /** Render collapsible execution steps, isolating command output blocks. */
 export function StepsView({ text }: { text: string }) {
   const segments = splitSteps(text);
+
+  const onPathPreview = useCallback(async (path: string) => {
+    const api = hostApi();
+    if (!api?.browser_overlay_preview_path) return;
+    const result = await Promise.resolve(api.browser_overlay_preview_path(path));
+    if (result && result.ok && result.url) {
+      window.dispatchEvent(
+        new CustomEvent("codewood:browser-open-preview", {
+          detail: { url: result.url },
+        }),
+      );
+    }
+  }, []);
+
   // Index of the last segment that carries visible content, so a diff block
   // auto-collapses once another tool/output block follows it (the "collapse the
   // previously-expanded diff when the next tool runs" behavior) while the most
@@ -131,6 +145,7 @@ export function StepsView({ text }: { text: string }) {
           if (diffPayload) {
             consumed.add(diffIdx);
           }
+          const isBrowserPreview = /browser_preview/i.test(body);
           return (
             <PromptWithDiff
               key={index}
@@ -138,6 +153,7 @@ export function StepsView({ text }: { text: string }) {
               body={body}
               diffPayload={diffPayload}
               defaultExpanded={diffIdx === lastContentIdx}
+              onPathPreview={isBrowserPreview ? onPathPreview : undefined}
             />
           );
         }
@@ -164,25 +180,15 @@ function PromptWithDiff({
   body,
   diffPayload,
   defaultExpanded,
+  onPathPreview,
 }: {
   bullet: string;
   body: string;
   diffPayload: string;
   defaultExpanded: boolean;
+  onPathPreview?: (path: string) => void;
 }) {
   const [expanded, setExpanded] = useState(defaultExpanded);
-  const onPathPreview = useCallback(async (path: string) => {
-    const api = hostApi();
-    if (!api?.browser_overlay_preview_path) return;
-    const result = await Promise.resolve(api.browser_overlay_preview_path(path));
-    if (result && result.ok && result.url) {
-      window.dispatchEvent(
-        new CustomEvent("codewood:browser-open-preview", {
-          detail: { url: result.url },
-        }),
-      );
-    }
-  }, []);
   let parsed: DiffPayload | null = null;
   if (diffPayload) {
     try {

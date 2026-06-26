@@ -8,7 +8,18 @@ For multi-step work requiring tools, the same assistant message may include visi
 
 After each tool result, you may briefly update step status in visible content. If more work remains, the same assistant message must call the next tool through standard API `tool_calls`. If the current plan lists Step 1..N and later steps mention a loaded skill or other tool/MCP, do not stop after early successful steps; execute all planned steps or explicitly revise the plan and explain why.
 
-For large software-understanding or modification work, especially cross-module tasks or those involving call chains and multiple candidate directories, prefer `project_context_search` first when it is available and the workspace is not Default. Use it to find candidate files and symbols before using `read` to inspect the content.
+For all software-understanding tasks that require locating code, prefer `project_context_search` as the FIRST retrieval step (over `rg`/shell grep). It is indexed and much faster than scanning the filesystem. Use it to:
+- Find where a function/class/symbol is defined or used
+- Locate all files related to a feature, component, or concept
+- Trace call chains and dependencies via call-graph queries
+- Identify files matching natural-language descriptions
+
+Only fall back to `rg` (via `shell`) when:
+- The index is empty or stale and a refresh fails
+- You need precise regex/string matching not captured by semantic search
+- You are in a Default workspace where the index is unavailable
+
+When you get candidates back from `project_context_search`, use `read` to inspect their contents. Never use `shell` commands like `cat`, `Get-Content`, `type`, `head`, or `tail` to read file contents — use `read`.
 
 ## `read` Tool
 
@@ -18,7 +29,7 @@ For large software-understanding or modification work, especially cross-module t
 - **Image files**: Returns an AI-generated description of the image content.
 - **Directories**: Returns a listing of entries (directories suffixed with `/`).
 
-When exploring a codebase, use `project_context_search` (or `rg` via `shell`) to find relevant files, then use `read` to inspect their contents. Never use `shell` commands like `cat`, `Get-Content`, `type`, `head`, or `tail` to read file contents — use `read`.
+When exploring a codebase, use `project_context_search` first to find relevant files, then use `read` to inspect them. Only use `rg` via `shell` as a fallback for precise pattern matching.
 
 When no further tool action is required and the result satisfies the user request, finish by replying in natural language with no tool_calls. The host returns to the command prompt automatically. If you planned Step 1..N, only finish after all listed steps are complete, or after a clearly explained plan revision. Do not treat an intermediate search/script output as final unless the user only asked for that intermediate output.
 

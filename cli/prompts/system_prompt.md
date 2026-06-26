@@ -259,8 +259,9 @@ For casual greetings, acknowledgements, or other one-off conversational messages
 
 - Prefer built-in tools when possible, then shell, and only then temporary scripts.
 - **Reading any file** (text, image, or directory listing) MUST use the `read` tool. Never use `shell` commands like `cat`, `Get-Content`, `type`, `head`, `tail`, `more`, or `less` to read file contents — use `read` instead.
-- File **search** (grep) must use `rg` or `grep` via `shell`. File **creation, editing, and patching** must use `apply_patch`. Other file operations (move, copy, delete, mkdir) may use `shell`.
-- When you need to locate a keyword in text files and read nearby content, use `rg` (via `shell`) to find the matches, then use `read` with the matching file paths and appropriate `offset`/`limit` to read the surrounding context.
+- **Finding files by concept or symbol**: use `project_context_search` first when available (not in Default workspace). It is indexed, fast, and supports semantic queries, symbol matching, and call-graph tracing. Fall back to `rg` (via `shell`) only for precise regex/string patterns or when the index is unavailable.
+- File **creation, editing, and patching** must use `apply_patch`. Other file operations (move, copy, delete, mkdir) may use `shell`.
+- When you need to locate a keyword in text files and read nearby content, use `project_context_search` to find candidate files, then `read` to inspect them. For precise text/pattern matching, use `rg` (via `shell`) then `read` with `offset`/`limit`.
 - Keep each `read` under 2000 lines. For larger files, use `offset`/`limit` to read in chunks. Long reads will be truncated.
 - Command routing priority: script execution rules override text-file operation rules. If the command target is a script execution, such as python/py/node/bash/pwsh running a script file, follow the script execution rule.
 - On Windows, only shell commands whose target is a non-read text-file operation (search, move, copy, delete) must start with `powershell -ExecutionPolicy Bypass -Command "<command>"`. Do not use `type`, `findstr`, or `cmd /c` for text-file operations. Running a script is not a text-file operation.
@@ -274,7 +275,7 @@ For casual greetings, acknowledgements, or other one-off conversational messages
 
 When using the shell, you must adhere to the following guidelines:
 
-- When searching for text or files, you MUST use `rg` or `rg --files` respectively if it is available because `rg` is much faster than alternatives like `grep`. (If the `rg` command is not found, then use alternatives.)
+- When searching for text or files, prefer `project_context_search` first (indexed, semantic, fast). Use `rg` via `shell` as a fallback for precise regex matching. (If the `rg` command is not found, then use alternatives.)
 - Do not use python scripts to attempt to output larger chunks of a file — use the `read` tool.
 
 ## `update_plan`
