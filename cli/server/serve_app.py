@@ -3781,41 +3781,72 @@ class ServeApp:
         return True
 
     def toggle_chat_archive(self, chat_id: str, ws_id: str = "") -> bool:
-        """Toggle the ``archived`` flag on a chat record (GUI-only, persistent)."""
+        """Toggle the ``archived`` flag on a chat record (GUI-only, persistent).
+
+        Operates directly on the workspace's chat index without switching the
+        active workspace, so the UI is never disrupted.
+        """
         agent = self.agent
         wsid = str(ws_id or "").strip()
         cid = str(chat_id or "").strip()
         if not cid:
             return False
+        is_active = not wsid or wsid == str(getattr(agent, "workspace_id", "") or "")
         try:
-            from ..controllers.workspace_command_controller import (
-                workspace_switch_command,
-            )
-
-            if wsid and wsid != str(getattr(agent, "workspace_id", "") or ""):
+            if is_active:
+                # Active workspace: toggle in-memory, save, broadcast.
                 with agent._chat_state_lock:
-                    with contextlib.redirect_stdout(io.StringIO()):
-                        workspace_switch_command(agent, wsid)
-            with agent._chat_state_lock:
-                target = agent._resolve_chat_selector(cid)
-                rid = str(target.get("id") or "") if target else ""
-                if not rid:
-                    return False
-                chats = agent._chat_entries()
-                for c in chats:
-                    if str(c.get("id") or "") == rid:
-                        c["archived"] = not bool(c.get("archived", False))
-                        c["updated_at"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                        agent._save_chat_state()
-                        break
-                else:
-                    return False
+                    target = agent._resolve_chat_selector(cid)
+                    rid = str(target.get("id") or "") if target else ""
+                    if not rid:
+                        return False
+                    chats = agent._chat_entries()
+                    for c in chats:
+                        if str(c.get("id") or "") == rid:
+                            c["archived"] = not bool(c.get("archived", False))
+                            c["updated_at"] = datetime.datetime.now().strftime(
+                                "%Y-%m-%d %H:%M:%S"
+                            )
+                            agent._save_chat_state()
+                            break
+                    else:
+                        return False
+                self.broadcaster.publish(
+                    "idle", self._route(state=_build_state(agent))
+                )
+                return True
+
+            # Non-active workspace: update its chat index directly on disk
+            # without switching the active workspace.
+            from ..agent import CHAT_STATE_FILE
+
+            entry = agent._workspace_entry_by_selector(wsid)
+            if not entry:
+                return False
+            storage = agent._workspace_storage_path(entry)
+            index_path = storage / "chats" / CHAT_STATE_FILE
+            if not index_path.exists():
+                return False
+            with open(index_path, "r", encoding="utf-8") as f:
+                index = json.load(f)
+            if not isinstance(index, dict):
+                return False
+            chats = index.get("chats")
+            if not isinstance(chats, list):
+                return False
+            now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            for c in chats:
+                if not isinstance(c, dict):
+                    continue
+                if str(c.get("id") or "") == cid:
+                    c["archived"] = not bool(c.get("archived", False))
+                    c["updated_at"] = now
+                    with open(index_path, "w", encoding="utf-8") as f:
+                        json.dump(index, f, ensure_ascii=False, indent=2)
+                    return True
+            return False
         except Exception:
             return False
-        self.broadcaster.publish(
-            "idle", self._route(state=_build_state(agent))
-        )
-        return True
 
     def list_workspace_chats(self, ws_id: str) -> Optional[List[Dict[str, Any]]]:
         """List chats for a workspace by id without switching to it.

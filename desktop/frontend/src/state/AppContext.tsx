@@ -176,8 +176,8 @@ interface AppContextValue {
   deleteWorkspace: (id: string) => Promise<boolean>;
   toggleWorkspacePin: (id: string) => void;
   toggleChatPin: (id: string) => void;
-  toggleChatArchive: (key: string) => void;
-  archiveChats: (keys: string[]) => void;
+  toggleChatArchive: (key: string) => Promise<void>;
+  archiveChats: (keys: string[]) => Promise<void>;
   setModel: (selector: string) => Promise<void>;
   setReasoning: (level: string) => Promise<void>;
   getModelsConfig: () => Promise<unknown[]>;
@@ -1844,30 +1844,38 @@ export function AppProvider({ children }: { children: ReactNode }) {
     [uiPrefs, updatePrefs],
   );
 
-  const toggleChatArchive = useCallback(
-    (key: string) => {
-      const { wsId, chatId } = parseChatKey(key);
-      void client.toggleChatArchive(chatId, wsId);
+  const refreshWorkspaceChats = useCallback(
+    async (id: string) => {
+      const chats = await client.listWorkspaceChats(id);
+      setWorkspaceChats((prev) => ({ ...prev, [id]: chats }));
     },
     [client],
   );
 
-  const archiveChats = useCallback(
-    (keys: string[]) => {
-      for (const key of keys) {
-        const { wsId, chatId } = parseChatKey(key);
-        void client.toggleChatArchive(chatId, wsId);
+  const toggleChatArchive = useCallback(
+    async (key: string) => {
+      const { wsId, chatId } = parseChatKey(key);
+      const ok = await client.toggleChatArchive(chatId, wsId);
+      if (ok && wsId && wsId !== stateRef.current?.workspace?.id) {
+        await refreshWorkspaceChats(wsId);
       }
     },
-    [client],
+    [client, refreshWorkspaceChats],
+  );
+
+  const archiveChats = useCallback(
+    async (keys: string[]) => {
+      for (const key of keys) {
+        await toggleChatArchive(key);
+      }
+    },
+    [toggleChatArchive],
   );
 
   const setModel = useCallback(
     async (selector: string) => {
       const value = selector.trim();
       if (value) {
-        // Route the model switch to the focused chat so it only changes that
-        // chat's model (and persists onto its history), never another chat's.
         await client.sendInput(`/model ${value}`, false, activeChatIdRef.current);
       }
     },
@@ -1876,7 +1884,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const setReasoning = useCallback(
     async (level: string) => {
-      // Route to the focused chat, same as model switches.
       await client.sendInput(
         `/model reasoning ${level.trim()}`,
         false,
@@ -1892,14 +1899,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
       if (value) {
         await client.sendInput(`/execution-policy ${value}`);
       }
-    },
-    [client],
-  );
-
-  const refreshWorkspaceChats = useCallback(
-    async (id: string) => {
-      const chats = await client.listWorkspaceChats(id);
-      setWorkspaceChats((prev) => ({ ...prev, [id]: chats }));
     },
     [client],
   );

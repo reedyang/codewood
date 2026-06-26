@@ -1,0 +1,117 @@
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { useApp } from "../state/AppContext";
+import type { WorkspaceChatSummary } from "../api/types";
+import { chatKey } from "./chatMenu";
+
+interface ArchivedChat extends WorkspaceChatSummary {
+  wsId: string;
+  wsName: string;
+}
+
+export function ArchivedChatsSettings() {
+  const { state, workspaceChats, refreshWorkspaceChats, toggleChatArchive, deleteChat, t } = useApp();
+  const [loading, setLoading] = useState(true);
+
+  const loadAll = useCallback(async () => {
+    setLoading(true);
+    const workspaces = state?.workspaces ?? [];
+    await Promise.allSettled(workspaces.map((ws) => refreshWorkspaceChats(ws.id)));
+    setLoading(false);
+  }, [state, refreshWorkspaceChats]);
+
+  useEffect(() => {
+    void loadAll();
+  }, [loadAll]);
+
+  const wsNames = useMemo(() => {
+    const map: Record<string, string> = {};
+    for (const ws of state?.workspaces ?? []) {
+      map[ws.id] = ws.name;
+    }
+    return map;
+  }, [state?.workspaces]);
+
+  const archivedChats: ArchivedChat[] = useMemo(() => {
+    const result: ArchivedChat[] = [];
+    for (const [wsId, chats] of Object.entries(workspaceChats)) {
+      for (const c of chats) {
+        if (c.archived) {
+          result.push({ ...c, wsId, wsName: wsNames[wsId] ?? wsId });
+        }
+      }
+    }
+    // Also check the active workspace's in-memory chats
+    if (state?.chats) {
+      const activeWsId = state.workspace.id;
+      const seenIds = new Set(result.map((r) => r.id));
+      for (const c of state.chats) {
+        if (c.archived && !seenIds.has(c.id)) {
+          result.push({
+            id: c.id,
+            name: c.name,
+            updatedAt: c.updatedAt,
+            archived: c.archived,
+            wsId: activeWsId,
+            wsName: wsNames[activeWsId] ?? activeWsId,
+          });
+        }
+      }
+    }
+    result.sort((a, b) => {
+      const aTime = a.updatedAt ?? "";
+      const bTime = b.updatedAt ?? "";
+      return bTime.localeCompare(aTime);
+    });
+    return result;
+  }, [workspaceChats, state, wsNames]);
+
+  const handleUnarchive = useCallback(
+    (chat: ArchivedChat) => {
+      void toggleChatArchive(chatKey(chat.wsId, chat.id));
+    },
+    [toggleChatArchive],
+  );
+
+  const handleDelete = useCallback(
+    (chat: ArchivedChat) => {
+      void deleteChat(chat.id, chat.wsId);
+    },
+    [deleteChat],
+  );
+
+  return (
+    <div className="settings-page">
+      <h2 className="settings-page-title">{t("settings.page.archivedChats")}</h2>
+      {loading ? (
+        <p className="muted">{t("models.loading")}</p>
+      ) : archivedChats.length === 0 ? (
+        <p className="muted">{t("archivedChats.empty")}</p>
+      ) : (
+        <div className="archived-chats-list">
+          {archivedChats.map((chat) => (
+            <div key={chatKey(chat.wsId, chat.id)} className="archived-chat-row">
+              <div className="archived-chat-info">
+                <span className="archived-chat-name">{chat.name}</span>
+                <span className="archived-chat-workspace">{chat.wsName}</span>
+              </div>
+              <button
+                className="archived-chat-unarchive"
+                onClick={() => handleUnarchive(chat)}
+                title={t("archivedChats.unarchive")}
+              >
+                {t("archivedChats.unarchive")}
+              </button>
+              <button
+                className="archived-chat-remove"
+                onClick={() => handleDelete(chat)}
+                title={t("common.remove")}
+              >
+                {t("common.remove")}
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
