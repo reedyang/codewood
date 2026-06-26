@@ -2402,42 +2402,48 @@ class ServeApp:
         except Exception:
             return {"ok": False, "error": "save failed"}
 
+    def _save_preview_for_path(self, path: str) -> Optional[Dict[str, Any]]:
+        """Read a local HTML file and persist a bridged preview copy.
+
+        Shared helper between ``preview_local_html_file`` (tool) and
+        ``/preview-local-file`` HTTP endpoint (GUI re-preview). Returns
+        ``{url, path}`` on success, ``None`` on failure."""
+        raw = str(path or "").strip().strip('"').strip("'")
+        if not raw:
+            return None
+        try:
+            resolver = getattr(self.agent, "_resolve_user_path", None)
+            resolved = Path(resolver(raw)) if callable(resolver) else Path(raw)
+            resolved = resolved.expanduser().resolve()
+        except Exception:
+            return None
+        if resolved.suffix.lower() not in (".html", ".htm"):
+            return None
+        try:
+            if not resolved.is_file():
+                return None
+            html = resolved.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return None
+        saved = self.save_preview_html(self._active_chat_id(), html)
+        if not saved.get("ok"):
+            return None
+        token = self._token
+        from urllib.parse import urlencode
+
+        url = "/chat-file?" + urlencode({"token": token, "path": saved["path"]})
+        return {"url": url, "path": saved["path"]}
+
     def preview_local_html_file(self, path: str) -> Dict[str, Any]:
         """Read a local HTML file produced by the model, persist a bridged copy
         under the chat data dir, and open it in the embedded browser.
 
         ``path`` is resolved with the agent's canonical user-path resolver and
         validated to be an existing ``.html``/``.htm`` file before reading."""
-        raw = str(path or "").strip().strip('"').strip("'")
-        if not raw:
-            return {"success": False, "error": "missing path"}
-        try:
-            resolver = getattr(self.agent, "_resolve_user_path", None)
-            resolved = Path(resolver(raw)) if callable(resolver) else Path(raw)
-            resolved = resolved.expanduser().resolve()
-        except Exception:
-            return {"success": False, "error": "invalid path"}
-        if resolved.suffix.lower() not in (".html", ".htm"):
-            return {"success": False, "error": "not an html file"}
-        try:
-            if not resolved.is_file():
-                return {"success": False, "error": "file not found"}
-            html = resolved.read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            return {"success": False, "error": "read failed"}
-        saved = self.save_preview_html(self._active_chat_id(), html)
-        if not saved.get("ok"):
-            return {"success": False, "error": str(saved.get("error") or "save failed")}
-        # ``/chat-file`` serves the bridged copy; build the same token-gated URL
-        # the frontend uses and ask the browser to open it as a preview page.
-        token = self._token
-        from urllib.parse import urlencode
-
-        url = "/chat-file?" + urlencode({"token": token, "path": saved["path"]})
-        # The browser command channel expects an absolute URL the iframe can
-        # load; the frontend prefixes its own origin, so pass a server-relative
-        # path and let the BrowserPanel resolve it against the backend base.
-        result = self.dispatch_browser_command("open_preview", {"url": url})
+        saved = self._save_preview_for_path(path)
+        if saved is None:
+            return {"success": False, "error": "preview failed"}
+        result = self.dispatch_browser_command("open_preview", {"url": saved["url"]})
         return result if isinstance(result, dict) else {"success": False, "error": "no browser"}
 
     def read_chat_file(self, path: str) -> Optional[tuple]:
@@ -4372,6 +4378,14 @@ def _make_handler(app: ServeApp):
                 html = str(body.get("html") or "")
                 result = app.save_preview_html(chat_id, html)
                 self._send_json(200 if result.get("ok") else 400, result)
+                return
+            if path == "/preview-local-file":
+                file_path = str(body.get("path") or "").strip()
+                result = app._save_preview_for_path(file_path)
+                if result:
+                    self._send_json(200, result)
+                else:
+                    self._send_json(400, {"error": "preview failed"})
                 return
             if path == "/confirm":
                 cid = str(body.get("id") or "")

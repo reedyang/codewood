@@ -80,7 +80,13 @@ function applyCodes(style: Style, codes: number[]): Style {
   return next;
 }
 
-export function AnsiText({ text }: { text: string }): ReactNode {
+export function AnsiText({
+  text,
+  onPathPreview,
+}: {
+  text: string;
+  onPathPreview?: (path: string) => void;
+}): ReactNode {
   const nodes: ReactNode[] = [];
   let style: Style = {};
   let last = 0;
@@ -91,6 +97,46 @@ export function AnsiText({ text }: { text: string }): ReactNode {
   const push = (chunk: string, s: Style) => {
     if (!chunk) {
       return;
+    }
+    // Preview-path link: if a handler is registered and the chunk wraps
+    // ``(path=...)`` (the detail suffix from _tool_action_detail), render
+    // the path value as a clickable anchor inside the styled span.
+    if (onPathPreview) {
+      const pm = chunk.match(/^([\s\S]*?)\(path=([^)]+)\)([\s\S]*)$/);
+      if (pm) {
+        const linkStyle: CSSProperties = {
+          ...(s as CSSProperties),
+          textDecoration: "underline",
+          cursor: "pointer",
+          color: "#3584e4",
+        };
+        const pushSimple = (txt: string, st: Style) => {
+          if (!txt) {
+            return;
+          }
+          nodes.push(
+            <span key={key++} style={st as CSSProperties}>
+              {txt}
+            </span>,
+          );
+        };
+        pushSimple(pm[1] + "(path=", s);
+        nodes.push(
+          <a
+            key={key++}
+            href="#"
+            style={linkStyle}
+            onClick={(e) => {
+              e.preventDefault();
+              onPathPreview(pm[2]);
+            }}
+          >
+            {pm[2]}
+          </a>,
+        );
+        pushSimple(")" + pm[3], s);
+        return;
+      }
     }
     const hasStyle = Object.values(s).some((v) => v !== undefined);
     nodes.push(

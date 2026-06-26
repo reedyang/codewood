@@ -630,6 +630,28 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setPlanOpen(true);
   }, []);
 
+  // Listen for preview-path link clicks from Steps.tsx and open the returned
+  // URL through the normal BrowserPanel command flow (show tab + open_preview).
+  // Mirror the 120 ms deferral used by the SSE browser_command fan-out so
+  // the just-mounted BrowserPanel has time to subscribe before the command
+  // fires (otherwise the first click after a cold open is lost).
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const detail = (e as CustomEvent).detail as
+        | { url: string }
+        | undefined;
+      if (detail?.url) {
+        showBrowserTab();
+        window.setTimeout(() => {
+          emitBrowserCommandLocal({ action: "open_preview", url: detail.url });
+        }, 120);
+      }
+    };
+    window.addEventListener("codewood:browser-open-preview", handler);
+    return () =>
+      window.removeEventListener("codewood:browser-open-preview", handler);
+  }, [showBrowserTab, emitBrowserCommandLocal]);
+
   // Remove the Browser tab from the visible set (its "x" close button). Falls
   // back to the To-dos tab.
   const hideBrowserTab = useCallback(() => {

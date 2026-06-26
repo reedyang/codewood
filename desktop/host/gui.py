@@ -193,9 +193,15 @@ class HostApi:
         # until then (and stays a disabled instance when overlay mode is off),
         # so every overlay method is safe to call regardless.
         self._overlay: BrowserOverlay | None = None
+        self._backend_url: str = ""
+        self._backend_token: str = ""
 
     def attach_overlay(self, overlay: "BrowserOverlay") -> None:
         self._overlay = overlay
+
+    def set_backend(self, port: int, token: str) -> None:
+        self._backend_url = f"http://127.0.0.1:{port}"
+        self._backend_token = token
 
     # -- embedded browser overlay (renderer-callable) ---------------------
     #
@@ -242,6 +248,42 @@ class HostApi:
             )
         except Exception as exc:  # pragma: no cover - defensive
             return {"success": False, "error": f"overlay command failed: {exc}"}
+
+    def browser_overlay_preview_path(self, path: str) -> dict:
+        """Re-preview a local HTML file in the overlay browser.
+
+        Called from the frontend when the user clicks a preview-path link
+        in the tool feedback.  POSTs to the backend's ``/preview-local-file``
+        to re-read the file and save a fresh bridged copy, then returns the
+        resolved URL to the frontend so the BrowserPanel can drive the overlay
+        through its normal command flow.
+        """
+        if not self._backend_url:
+            return {"ok": False}
+        try:
+            import json
+            from urllib.request import Request, urlopen
+            from urllib.parse import urlencode
+
+            query = urlencode({"token": self._backend_token})
+            body = json.dumps({"path": path}).encode("utf-8")
+            req = Request(
+                f"{self._backend_url}/preview-local-file?{query}",
+                data=body,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            resp = urlopen(req, timeout=10)
+            if resp.status == 200:
+                data = json.loads(resp.read().decode("utf-8"))
+                url = data.get("url", "")
+                if url:
+                    if url.startswith("/"):
+                        url = f"{self._backend_url}{url}"
+                    return {"ok": True, "url": url}
+        except Exception:
+            pass
+        return {"ok": False}
 
     def host_platform(self) -> str:
         """Report the host OS family so the frontend can pick drag strategies.
@@ -575,6 +617,7 @@ def main() -> int:
 
     url = resolve_frontend_url(port, token)
     host_api = HostApi()
+    host_api.set_backend(port, token)
     window = webview.create_window(
         WINDOW_TITLE,
         url=url,
