@@ -36,3 +36,4 @@ tree-sitter-hcl>=1.2
 numpy>=1.24
 sentence-transformers>=3.0
 pathspec>=1.1
+watchdog>=4.0
