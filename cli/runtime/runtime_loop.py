@@ -3527,24 +3527,7 @@ def run_agent_loop(agent: Any):
                             )
                             if project_context_files_total <= 0:
                                 project_context_skip_reason = "index_empty"
-                                try:
-                                    refresh_result = idx.refresh_index(force=False, timeout_ms=2000)
-                                    project_context_refreshed_now = bool(refresh_result.get("success", False))
-                                except Exception as e:
-                                    refresh_result = {"success": False, "error": f"{type(e).__name__}: {e}"}
-                                files_map = getattr(idx, "files", None)
-                                project_context_files_total = (
-                                    len(files_map) if isinstance(files_map, dict) else 0
-                                )
-                                if project_context_files_total <= 0:
-                                    project_context_skip_reason = (
-                                        "refresh_failed"
-                                        if not bool(refresh_result.get("success", False))
-                                        else "index_empty_after_refresh"
-                                    )
-                                else:
-                                    project_context_ready = True
-                                    project_context_skip_reason = "ready_after_refresh"
+                                project_context_refreshed_now = False
                             else:
                                 project_context_ready = True
                                 project_context_skip_reason = "ready"

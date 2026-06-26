@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import math
 import os
 import re
 import sqlite3
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
@@ -535,6 +537,7 @@ class ProjectContextIndex:
             timed_out = bool(discovery_timed_out)
             processed = 0
 
+            to_parse: List[Tuple[Path, str, int, int, bool]] = []
             for p in scanned:
                 if deadline is not None and _now_ts() >= deadline:
                     timed_out = True
@@ -557,12 +560,30 @@ class ProjectContextIndex:
                 ):
                     unchanged += 1
                     continue
-                entry = self._parse_file(p, rel, mtime_ns, size)
-                next_files[rel] = entry
-                if old is None:
-                    added += 1
-                else:
-                    updated += 1
+                is_new = old is None
+                to_parse.append((p, rel, mtime_ns, size, is_new))
+
+            if to_parse and not timed_out:
+                workers = min(len(to_parse), (os.cpu_count() or 4))
+                with ThreadPoolExecutor(max_workers=workers) as executor:
+                    future_to_info: Dict[Any, Tuple[str, bool]] = {}
+                    for p, rel, mtime_ns, size, is_new in to_parse:
+                        if deadline is not None and _now_ts() >= deadline:
+                            timed_out = True
+                            break
+                        fut = executor.submit(self._parse_file, p, rel, mtime_ns, size)
+                        future_to_info[fut] = (rel, is_new)
+                    for fut in as_completed(future_to_info.keys()):
+                        rel, is_new = future_to_info[fut]
+                        try:
+                            entry = fut.result()
+                        except Exception:
+                            continue
+                        next_files[rel] = entry
+                        if is_new:
+                            added += 1
+                        else:
+                            updated += 1
 
             deleted = 0
             if not timed_out:
@@ -626,7 +647,6 @@ class ProjectContextIndex:
             return {"success": False, "error": "query must not be empty"}
         refresh_result: Optional[Dict[str, Any]] = None
         if auto_refresh:
-            # incremental refresh (non-force) keeps cost acceptable for M1.
             refresh_result = self.refresh_index(force=False, timeout_ms=refresh_timeout_ms)
 
         with self._lock:
@@ -635,44 +655,86 @@ class ProjectContextIndex:
 
         q_tokens = _split_words(q)
         q_l = q.lower()
-        scored: List[Tuple[float, Dict[str, Any]]] = []
+        if not q_tokens:
+            q_tokens = [q_l]
+
+        doc_count = len(files_items)
+        if doc_count == 0:
+            return {
+                "success": True,
+                "query": q,
+                "query_tokens": q_tokens,
+                "total_matches": 0,
+                "candidates": [],
+                "index_status": status_snapshot,
+                "stale": bool(refresh_result.get("timed_out")) if isinstance(refresh_result, dict) else False,
+            }
+
+        doc_token_lists: List[Tuple[str, List[str]]] = []
+        doc_lengths: List[int] = []
         for rel, e in files_items:
-            path_l = rel.lower()
-            score = 0.0
-            reasons: List[str] = []
-            if q_l in path_l:
-                score += 8.0
-                reasons.append("path_contains_query")
-            token_hits = 0
+            doc_token_lists.append((rel, e.tokens))
+            doc_lengths.append(len(e.tokens))
+        avgdl = sum(doc_lengths) / max(1, len(doc_lengths))
+
+        doc_freq: Dict[str, int] = {}
+        for _, tokens in doc_token_lists:
+            seen: Set[str] = set()
+            for t in tokens:
+                if t not in seen:
+                    doc_freq[t] = doc_freq.get(t, 0) + 1
+                    seen.add(t)
+
+        k1 = 1.5
+        b = 0.75
+        scored: List[Tuple[float, Dict[str, Any]]] = []
+        for (rel, e), (_, doc_tokens), doc_len in zip(files_items, doc_token_lists, doc_lengths):
+            bm25 = 0.0
             for t in q_tokens:
-                if t in path_l:
-                    score += 3.0
-                    token_hits += 1
-                if t in e.tokens:
-                    score += 2.0
-                    token_hits += 1
+                df = doc_freq.get(t, 0)
+                if df == 0:
+                    continue
+                idf = math.log((doc_count - df + 0.5) / (df + 0.5) + 1.0)
+                tf = sum(1 for dt in doc_tokens if dt == t)
+                if tf == 0:
+                    continue
+                numerator = tf * (k1 + 1.0)
+                denominator = tf + k1 * (1.0 - b + b * doc_len / max(1, avgdl))
+                bm25 += idf * numerator / denominator
+
+            reasons: List[str] = []
+            path_l = rel.lower()
+            # Path bonus: exact query in path is a strong signal
+            if q_l in path_l:
+                bm25 += 8.0
+                reasons.append("path_contains_query")
+            # Symbol/import boost on top of BM25
+            sym_boost = 0.0
+            for t in q_tokens:
                 if any(t in s.lower() for s in e.symbols[:80]):
-                    score += 4.0
-                    token_hits += 1
+                    sym_boost += 4.0
                 if any(t in imp.lower() for imp in e.imports[:80]):
-                    score += 1.5
-                    token_hits += 1
-            if token_hits > 0:
-                reasons.append(f"token_hits={token_hits}")
-            if score <= 0:
+                    sym_boost += 1.5
+            bm25 += sym_boost
+            total_score = bm25
+
+            if total_score <= 0:
                 continue
+            if sym_boost > 0:
+                reasons.append(f"symbol_boost={round(sym_boost, 1)}")
             scored.append(
                 (
-                    score,
+                    total_score,
                     {
                         "path": rel,
-                        "score": round(score, 2),
+                        "score": round(total_score, 2),
                         "reasons": reasons,
                         "symbols": e.symbols[:12],
                         "imports": e.imports[:8],
                     },
                 )
             )
+
         scored.sort(key=lambda x: x[0], reverse=True)
         top = [x[1] for x in scored[: max(1, int(max_files or 12))]]
         out = {
