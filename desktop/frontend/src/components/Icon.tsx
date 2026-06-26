@@ -42,6 +42,7 @@ import messageSquare from "../assets/icons/message-square.svg";
 import paperclip from "../assets/icons/paperclip.svg";
 import robot from "../assets/icons/robot.svg";
 import terminal from "../assets/icons/terminal.svg";
+import archive from "../assets/icons/archive.svg";
 
 const SOURCES = {
   panel,
@@ -87,6 +88,7 @@ const SOURCES = {
   paperclip,
   robot,
   terminal,
+  archive,
 } as const;
 
 export type IconName = keyof typeof SOURCES;

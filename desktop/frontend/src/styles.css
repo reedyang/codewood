@@ -2301,6 +2301,99 @@ html[data-has-bg] .select {
   margin-top: 24px;
 }
 
+/* Archived Chats settings page. */
+.archived-chats-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.archived-chat-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+}
+
+.archived-chat-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.archived-chat-name {
+  font-weight: 600;
+  font-size: 14px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.archived-chat-workspace {
+  font-size: 11px;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.archived-chat-unarchive {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+
+.archived-chat-row:hover .archived-chat-unarchive {
+  opacity: 1;
+}
+
+.archived-chat-unarchive:hover {
+  background: var(--accent);
+  color: var(--text-on-accent);
+  border-color: var(--accent);
+}
+
+.archived-chat-remove {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+
+.archived-chat-row:hover .archived-chat-remove {
+  opacity: 1;
+}
+
+.archived-chat-remove:hover {
+  background: #c54545;
+  color: #fff;
+  border-color: #c54545;
+}
+
 /* Circular context-window usage badge on the composer toolbar. The ring uses
    the same accent color as buttons, escalating to warn/danger as the window
    fills up so it draws the eye before the model gets pushed into auto-compact. */

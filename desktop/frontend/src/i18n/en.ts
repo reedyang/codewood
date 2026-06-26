@@ -135,6 +135,9 @@ export const en: Dict = {
   "settings.page.mcp": "MCP",
   "settings.page.subagents": "Sub Agents",
   "settings.page.console": "Terminal",
+  "settings.page.archivedChats": "Archived Chats",
+  "archivedChats.empty": "No archived chats.",
+  "archivedChats.unarchive": "Unarchive",
   "settings.console.font": "Font",
   "settings.console.fontDefault": "Default",
   "settings.console.fontHint":
@@ -213,6 +216,7 @@ export const en: Dict = {
   "mcp.errDelete": "Failed to delete server.",
   "common.save": "Save",
   "common.delete": "Delete",
+  "common.remove": "Remove",
   "general.autoCompactTrigger": "Auto-compact trigger",
   "general.autoCompactHint": "Automatically summarize older history once the context window crosses this threshold (0 disables).",
   "general.maxToolRounds": "Max tool rounds",
