@@ -12,8 +12,6 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from ..config.app_info import get_app_config_dirname
-from .embedding import EmbeddingProvider, FileEmbeddingIndex
-from .tree_sitter_parser import parse_file_tree_sitter
 
 # Storage schema version for the SQLite index. Bump when the table layout
 # changes; an on-disk database with a different version is discarded and
@@ -83,6 +81,21 @@ _CALL_KEYWORDS: Set[str] = {
     "yield", "del", "assert", "raise", "lambda", "print", "super",
     "typeof", "sizeof", "new", "delete", "throw", "case", "do", "else",
 }
+
+
+def _derive_tokens(rel: str, e: _FileEntry) -> List[str]:
+    if e.tokens:
+        return e.tokens
+    token_set: Set[str] = set()
+    for t in _split_words(rel):
+        token_set.add(t)
+    for s in e.symbols:
+        for t in _split_words(s):
+            token_set.add(t)
+    for imp in e.imports:
+        for t in _split_words(imp):
+            token_set.add(t)
+    return sorted(token_set)[:300]
 
 
 def _split_words(s: str) -> List[str]:
@@ -166,8 +179,9 @@ class ProjectContextIndex:
         self.last_index_at: float = 0.0
         self.version: int = _SCHEMA_VERSION
         self._lock = threading.RLock()
-        self._embedding_index = FileEmbeddingIndex(self.storage_dir)
+        self._embedding_index = None
         self._embedding_provider: Optional[EmbeddingProvider] = None
+        self._agent_params: Dict[str, Any] = {}
         self._load()
 
     def bind_workspace(self, workspace_root: Path, storage_dir: Optional[Path] = None) -> None:
@@ -302,18 +316,10 @@ class ProjectContextIndex:
                 e = entries.get(str(file_rel))
                 if e is not None:
                     e.imports.append(str(value))
-            for file_rel, token in conn.execute(
-                "SELECT file_rel, token FROM tokens"
-            ):
-                e = entries.get(str(file_rel))
-                if e is not None:
-                    e.tokens.append(str(token))
-            for file_rel, caller, callee in conn.execute(
-                "SELECT file_rel, caller, callee FROM calls ORDER BY file_rel, ord"
-            ):
-                e = entries.get(str(file_rel))
-                if e is not None:
-                    e.calls.append(_CallEdge(caller=str(caller), callee=str(callee)))
+            # Tokens are derived from symbols + imports in search().
+            # Not loaded at startup to keep _load() fast for large projects.
+            # Calls are stored in SQLite only, queried on demand by call_graph().
+            # Loading millions of rows into memory blocks startup for large projects.
             self.files = entries
         except Exception:
             self.files = {}
@@ -409,6 +415,7 @@ class ProjectContextIndex:
         return out, timed_out
 
     def _parse_file(self, p: Path, rel: str, st_mtime_ns: int, st_size: int) -> _FileEntry:
+        from .tree_sitter_parser import parse_file_tree_sitter
         ts_symbols, ts_imports, ts_calls, ts_tokens = parse_file_tree_sitter(p)
         if ts_symbols or ts_imports or ts_tokens:
             calls = [_CallEdge(caller=c, callee=cal) for c, cal in ts_calls]
@@ -633,13 +640,46 @@ class ProjectContextIndex:
                 "index_path": str(self.index_path),
             }
 
+    def _get_embedding_index(self) -> Any:
+        if self._embedding_index is None:
+            from .embedding import FileEmbeddingIndex
+            self._embedding_index = FileEmbeddingIndex(self.storage_dir)
+        return self._embedding_index
+
+    def _ensure_embedding_provider(self) -> None:
+        if self._embedding_provider is not None and self._embedding_provider.available:
+            return
+        if getattr(self, "_embedding_provider_loading", False):
+            return
+        params = self._agent_params
+        base_url = str(params.get("base_url") or "")
+        api_key = str(params.get("api_key") or "")
+        model = str(params.get("model") or "")
+
+        def _init() -> None:
+            try:
+                provider = self._get_embedding_index().initialize_provider(
+                    base_url=base_url, api_key=api_key, model=model,
+                )
+                with self._lock:
+                    self._embedding_provider = provider
+                if provider.available and len(self.files) > 0:
+                    self.build_embeddings()
+            except Exception:
+                pass
+            finally:
+                self._embedding_provider_loading = False
+
+        self._embedding_provider_loading = True
+        threading.Thread(target=_init, daemon=True, name="embedding-init").start()
+
     def initialize_embedding_provider(
         self, base_url: str = "", api_key: str = "", model: str = ""
     ) -> Optional[EmbeddingProvider]:
         with self._lock:
             if self._embedding_provider is not None:
                 return self._embedding_provider
-            self._embedding_provider = self._embedding_index.initialize_provider(
+            self._embedding_provider = self._get_embedding_index().initialize_provider(
                 base_url=base_url, api_key=api_key, model=model,
             )
             return self._embedding_provider
@@ -656,7 +696,7 @@ class ProjectContextIndex:
                 parts.extend(e.symbols[:20])
                 texts[rel] = " ".join(parts)
 
-            result = self._embedding_index.index_files(texts, provider=ep)
+            result = self._get_embedding_index().index_files(texts, provider=ep)
             return result
 
     def embedding_status(self) -> Dict[str, Any]:
@@ -666,7 +706,7 @@ class ProjectContextIndex:
                 "success": True,
                 "provider_name": ep.provider_name if ep else "none",
                 "available": ep.available if ep else False,
-                "has_embeddings": self._embedding_index.has_embeddings(),
+                "has_embeddings": self._get_embedding_index().has_embeddings(),
                 "files_indexed": len(self.files),
             }
 
@@ -718,8 +758,8 @@ class ProjectContextIndex:
         doc_token_lists: List[Tuple[str, List[str]]] = []
         doc_lengths: List[int] = []
         for rel, e in files_items:
-            doc_token_lists.append((rel, e.tokens))
-            doc_lengths.append(len(e.tokens))
+            doc_token_lists.append((rel, _derive_tokens(rel, e)))
+            doc_lengths.append(len(_derive_tokens(rel, e)))
         avgdl = sum(doc_lengths) / max(1, len(doc_lengths))
 
         doc_freq: Dict[str, int] = {}
@@ -784,10 +824,12 @@ class ProjectContextIndex:
         top = [x[1] for x in scored[: max(1, int(max_files or 12))]]
 
         ep = self._embedding_provider
-        has_emb = ep is not None and ep.available and self._embedding_index.has_embeddings()
+        if ep is None:
+            self._ensure_embedding_provider()
+        has_emb = ep is not None and ep.available and self._get_embedding_index().has_embeddings()
         if has_emb and len(scored) > 1:
             candidate_rels = [x[1]["path"] for x in scored[:50]]
-            stored_embs = self._embedding_index.get_embeddings_batch(candidate_rels)
+            stored_embs = self._get_embedding_index().get_embeddings_batch(candidate_rels)
             if stored_embs:
                 query_vecs = ep.embed([q[:4096]])
                 if query_vecs and len(query_vecs) > 0:
@@ -834,17 +876,6 @@ class ProjectContextIndex:
         auto_refresh: bool = True,
         refresh_timeout_ms: Optional[int] = None,
     ) -> Dict[str, Any]:
-        """Return call-graph relationships for ``symbol``.
-
-        ``direction``:
-          - ``"callees"``: functions that ``symbol`` calls.
-          - ``"callers"``: functions/files that call ``symbol``.
-          - ``"both"`` (default): both of the above.
-
-        Each edge entry carries the file it was observed in and the caller /
-        callee names, enabling change-impact ("what calls X") and
-        dependency ("what does X call") analysis.
-        """
         name = str(symbol or "").strip()
         if not name:
             return {"success": False, "error": "symbol must not be empty"}
@@ -858,17 +889,38 @@ class ProjectContextIndex:
             refresh_result = self.refresh_index(force=False, timeout_ms=refresh_timeout_ms)
 
         with self._lock:
-            files_items = list(self.files.items())
             status_snapshot = self.status()
 
         callees: List[Dict[str, Any]] = []
         callers: List[Dict[str, Any]] = []
-        for rel, e in files_items:
-            for c in e.calls:
-                if dir_l in ("callees", "both") and c.caller == name and c.callee:
-                    callees.append({"file": rel, "caller": c.caller, "callee": c.callee})
-                if dir_l in ("callers", "both") and c.callee == name:
-                    callers.append({"file": rel, "caller": c.caller, "callee": c.callee})
+
+        conn = self._connect()
+        try:
+            if dir_l in ("callees", "both"):
+                rows = conn.execute(
+                    "SELECT file_rel, caller, callee FROM calls WHERE caller = ? ORDER BY ord LIMIT ?",
+                    (name, cap),
+                ).fetchall()
+                callees = [
+                    {"file": str(r[0]), "caller": str(r[1]), "callee": str(r[2])}
+                    for r in rows
+                ]
+            if dir_l in ("callers", "both"):
+                rows = conn.execute(
+                    "SELECT file_rel, caller, callee FROM calls WHERE callee = ? ORDER BY ord LIMIT ?",
+                    (name, cap),
+                ).fetchall()
+                callers = [
+                    {"file": str(r[0]), "caller": str(r[1]), "callee": str(r[2])}
+                    for r in rows
+                ]
+        except Exception:
+            pass
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
         out: Dict[str, Any] = {
             "success": True,

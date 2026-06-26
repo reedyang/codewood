@@ -450,11 +450,7 @@ def setup_runtime_services(agent: Any) -> None:
     )
     try:
         params = getattr(agent, "params", None) or {}
-        agent._project_context_index.initialize_embedding_provider(
-            base_url=str(params.get("base_url") or ""),
-            api_key=str(params.get("api_key") or ""),
-            model=str(params.get("model") or ""),
-        )
+        agent._project_context_index._agent_params = params
     except Exception:
         pass
     try:

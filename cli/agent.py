@@ -235,18 +235,6 @@ INPUT_PROMPT = "› "
 
 class Agent:
     def __init__(self, model_name: str = "gemma3:4b", work_directory: Optional[str] = None, provider: str = "ollama", openai_conf: Optional[dict] = None, params: Optional[dict] = None, model_config: Optional[dict] = None, config_dir: Optional[str] = None, builtin_skills_dir: Optional[str] = None):
-        """
-        Initialize the application Agent.
-        Args:
-            model_name: Model name (legacy-compatible format).
-            work_directory: Working directory.
-            provider: Model service provider.
-            openai_conf: OpenAI parameters.
-            params: General parameters.
-            model_config: Model configuration (provider + params).
-            config_dir: Optional config directory; persistent state lives in workspace/ under that directory.
-            builtin_skills_dir: Root directory for built-in Agent Skills; if omitted, uses skills/ at the project root.
-        """
         startup_work_directory = Path(work_directory) if work_directory else Path.cwd()
 
         # Route the per-chat execution attributes (conversation_history, etc.)
@@ -275,6 +263,7 @@ class Agent:
             workspace_state_file=WORKSPACE_STATE_FILE,
             default_workspace_id=DEFAULT_WORKSPACE_ID,
         )
+
         bootstrap.setup_runtime_preferences(self)
         bootstrap.setup_policy_caches(self)
 
@@ -292,6 +281,7 @@ class Agent:
         bootstrap.setup_subagents(self)
         bootstrap.setup_prompt_and_mcp(self)
         bootstrap.setup_skills(self, builtin_skills_dir=builtin_skills_dir)
+
         bootstrap.setup_input_handler(
             self,
             tab_completion_available=TAB_COMPLETION_AVAILABLE,
@@ -299,6 +289,7 @@ class Agent:
             create_prompt_toolkit_input_handler=globals().get("create_prompt_toolkit_input_handler"),
         )
         bootstrap.setup_runtime_services(self)
+
         self._last_terminal_block_kind = ""
         self._terminal_cursor_at_line_start = True
 
@@ -600,7 +591,7 @@ class Agent:
                     timeout_ms=(None if force else 2000),
                 )
                 if refresh_result.get("success") and int(refresh_result.get("files_total", 0) or 0) > 0:
-                    index.build_embeddings()
+                    index._ensure_embedding_provider()
             except Exception:
                 pass
             finally:
