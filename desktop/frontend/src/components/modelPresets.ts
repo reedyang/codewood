@@ -127,6 +127,8 @@ export interface EditorModel {
   enabled: boolean;
   context_window?: string | number;
   multimodal?: boolean;
+  /** Whether the model supports thinking/reasoning tokens. */
+  thinking?: boolean;
   /** Reasoning-effort levels this model supports (subset of low/medium/high). */
   reasoning_effort: string[];
   /** Per-model custom request headers (OpenAI-compatible only). */
@@ -174,6 +176,7 @@ export function toEditorProvider(raw: unknown): EditorProvider {
       enabled: true,
       context_window: mm.context_window as string | number | undefined,
       multimodal: mm.multimodal as boolean | undefined,
+      thinking: mm.thinking as boolean | undefined,
       reasoning_effort: re,
       extra_headers: headers,
     };
@@ -213,9 +216,12 @@ export function toConfigProviders(editors: EditorProvider[]): unknown[] {
         if (m.multimodal !== undefined) {
           model.multimodal = m.multimodal;
         }
-        // Ollama doesn't support reasoning effort or custom headers; only
+        // Ollama doesn't support reasoning effort, thinking, or custom headers; only
         // serialize them for OpenAI-compatible providers.
         if ((e.api_mode || "").toLowerCase() !== "ollama") {
+          if (m.thinking !== undefined) {
+            model.thinking = m.thinking;
+          }
           const re = (m.reasoning_effort || [])
             .map((x) => String(x).trim().toLowerCase())
             .filter(Boolean);

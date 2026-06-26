@@ -272,6 +272,8 @@ export const en: Dict = {
   "models.contextWindow": "Context window",
   "models.contextWindowPlaceholder": "e.g. 128000 or 128k",
   "models.multimodal": "Multimodal (accepts images)",
+  "models.thinking": "Enable thinking/reasoning tokens",
+  "models.thinkingHint": "Allows the model to output its internal reasoning steps.",
   "models.extraHeaders": "Extra headers",
   "models.headerName": "Header",
   "models.headerValue": "Value",

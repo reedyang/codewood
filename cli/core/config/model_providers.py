@@ -131,6 +131,7 @@ def parse_configured_models(
         extra_headers_raw: Any = {}
         multimodal_raw: Any = True
         reasoning_effort_raw: Any = None
+        thinking_raw: Any = True
         if isinstance(item, str):
             model_name = item.strip()
         elif isinstance(item, dict):
@@ -140,6 +141,7 @@ def parse_configured_models(
             extra_headers_raw = item.get("extra_headers", {})
             multimodal_raw = item.get("multimodal", True)
             reasoning_effort_raw = item.get("reasoning_effort")
+            thinking_raw = item.get("thinking", True)
         else:
             model_name = str(item or "").strip()
         if not model_name:
@@ -164,6 +166,7 @@ def parse_configured_models(
                 # ["low", "medium", "high"]). Empty when the model has no
                 # selectable reasoning effort.
                 "reasoning_effort": parse_reasoning_effort(reasoning_effort_raw),
+                "thinking": parse_bool_flag(thinking_raw, default_value=True),
             }
         )
     return parsed

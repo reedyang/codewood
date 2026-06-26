@@ -482,6 +482,21 @@ export function ModelsSettings({ onDirtyChange, saveSignal }: ModelsSettingsProp
                               {!isOllama && (
                               <>
                               <div className="models-field">
+                                <label className="models-effort">
+                                  <input
+                                    type="checkbox"
+                                    checked={m.thinking !== false}
+                                    onChange={(e) =>
+                                      patchModel(idx, m.name, {
+                                        thinking: e.target.checked,
+                                      })
+                                    }
+                                  />
+                                  {t("models.thinking")}
+                                </label>
+                                <div className="models-hint">{t("models.thinkingHint")}</div>
+                              </div>
+                              <div className="models-field">
                                 <label>{t("reasoning.label")}</label>
                                 <div className="models-effort-row">
                                   {FIXED_EFFORTS.map((level) => (
