@@ -6,3 +6,8 @@ pywebview>=5.0
 pyinstaller>=6.0
 pylatexenc>=2.10
 pywinpty>=2.0.0; sys_platform == "win32"
+tree-sitter>=0.25
+tree-sitter-python>=0.25
+tree-sitter-javascript>=0.25
+numpy>=1.24
+sentence-transformers>=3.0

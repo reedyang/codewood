@@ -599,6 +599,8 @@ class Agent:
                     force=bool(force),
                     timeout_ms=(None if force else 2000),
                 )
+                if refresh_result.get("success") and int(refresh_result.get("files_total", 0) or 0) > 0:
+                    index.build_embeddings()
             except Exception:
                 pass
             finally:
