@@ -3,6 +3,7 @@ import type {
   ChatHistoryPage,
   CompletionCatalog,
   GeneralConfig,
+  IndexStatus,
   McpServerConfigEntry,
   McpServerDetails,
   McpServerSummary,
@@ -49,6 +50,14 @@ export class ApiClient {
       throw new Error(`Failed to load state (${res.status})`);
     }
     return (await res.json()) as AppState;
+  }
+
+  async fetchIndexStatus(): Promise<IndexStatus> {
+    const res = await fetch(`${this.base}/index-status`, { headers: this.headers() });
+    if (!res.ok) {
+      return { hidden: true, files_total: 0, workspace_name: "", is_default_workspace: true, refresh_phase: "", refresh_progress_total: 0, refresh_progress_done: 0 };
+    }
+    return (await res.json()) as IndexStatus;
   }
 
   async sendInput(text: string, asPrompt = false, chatId = ""): Promise<void> {

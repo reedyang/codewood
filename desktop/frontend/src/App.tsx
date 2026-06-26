@@ -7,6 +7,7 @@ import { SettingsView } from "./components/SettingsView";
 import { AboutDialog } from "./components/AboutDialog";
 import { TitleBar } from "./components/TitleBar";
 import { ResizeGrips } from "./components/ResizeGrips";
+import { StatusBar } from "./components/StatusBar";
 
 const SIDEBAR_MIN = 180;
 const SIDEBAR_MAX = 480;
@@ -190,6 +191,8 @@ function Shell() {
           </main>
         </div>
       )}
+
+      <StatusBar />
 
       {aboutOpen && <AboutDialog onClose={closeAbout} />}
       {!settingsOpen && noModelConfigured && <NoModelGuide />}

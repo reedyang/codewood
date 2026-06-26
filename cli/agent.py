@@ -582,6 +582,14 @@ class Agent:
         except Exception:
             pass
 
+        if reason_text == "startup":
+            # Defer full refresh to first query (first-round evidence block
+            # triggers it automatically). Avoids disk I/O / GIL pressure during
+            # early session when startup + chat-switching overlapped.
+            with gate:
+                self._project_context_refresh_inflight = False
+            return True
+
         def _run() -> None:
             refresh_result: Dict[str, Any] = {}
             try:
