@@ -570,8 +570,11 @@ class ChatStateManager:
                 record_payload = {
                     k: v for k, v in chat.items() if not str(k).startswith("_") and k != "archived"
                 }
-                with open(record_path, "w", encoding="utf-8") as f:
+                tmp_path = record_path.with_name(record_path.name + ".tmp")
+                with open(tmp_path, "w", encoding="utf-8") as f:
                     json.dump(record_payload, f, ensure_ascii=False, indent=2)
+                    f.write("\n")
+                os.replace(tmp_path, record_path)
                 index_chats.append(
                     {
                         "id": cid,
@@ -591,8 +594,11 @@ class ChatStateManager:
                 "active": active,
                 "chats": index_chats,
             }
-            with open(index_path, "w", encoding="utf-8") as f:
+            tmp_index = index_path.with_name(index_path.name + ".tmp")
+            with open(tmp_index, "w", encoding="utf-8") as f:
                 json.dump(index_payload, f, ensure_ascii=False, indent=2)
+                f.write("\n")
+            os.replace(tmp_index, index_path)
 
             # Only sweep record files we know used to belong to this index
             # and are now gone from memory. A record on disk that this
