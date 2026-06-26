@@ -447,6 +447,28 @@ export function Sidebar({ onOpenSettings }: { onOpenSettings: () => void }) {
               <span className="tree-flex" />
               <button
                 className="tree-more"
+                aria-label={t("menu.more")}
+                title={t("menu.more")}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  const archivableIds = (chatsByWorkspace[defaultWs.id] ?? [])
+                    .filter((c) => !c.archived)
+                    .map((c) => chatKey(defaultWs.id, c.id));
+                  const items: MenuItem[] = [
+                    {
+                      id: "archive",
+                      label: t("menu.archiveChats"),
+                      disabled: archivableIds.length === 0,
+                      onSelect: () => archiveChats(archivableIds),
+                    },
+                  ];
+                  setMenu({ x: e.clientX, y: e.clientY, items });
+                }}
+              >
+                <Icon name="dots" size={14} />
+              </button>
+              <button
+                className="tree-more"
                 aria-label={t("sidebar.newChat")}
                 title={t("sidebar.newChat")}
                 onClick={(e) => {
