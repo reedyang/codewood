@@ -11,7 +11,7 @@ import unicodedata
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from ..config.app_info import get_app_runtime_attr_name
+from ..config.app_info import get_app_config_dirname, get_app_runtime_attr_name
 
 _WIN_DRIVE_BANG = re.compile(r"^([A-Za-z]:)(/.*)?$")
 _ANSI_SGR_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
@@ -169,7 +169,7 @@ def _overlay_debug_path() -> Optional[Path]:
     if _OVERLAY_DEBUG_LOG_PATH is None:
         try:
             home = Path(os.path.expanduser("~"))
-            log_dir = home / ".codewood" / "logs"
+            log_dir = home / get_app_config_dirname() / "logs"
             log_dir.mkdir(parents=True, exist_ok=True)
             _OVERLAY_DEBUG_LOG_PATH = log_dir / "prompt_overlay.log"
         except Exception:

@@ -14,6 +14,12 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 from ..config.app_info import get_app_config_dirname
 from .embedding import _cosine_similarity
 from .tree_sitter_parser import parse_file_tree_sitter
+try:
+    from watchdog.events import FileSystemEventHandler
+    from watchdog.observers import Observer
+    _WATCHDOG_AVAILABLE = True
+except ImportError:
+    _WATCHDOG_AVAILABLE = False
 
 # Storage schema version for the SQLite index. Bump when the table layout
 # changes; an on-disk database with a different version is discarded and
@@ -95,6 +101,64 @@ def _now_ts() -> float:
 
 def _normalize_token(s: str) -> str:
     return re.sub(r"[^a-z0-9_]+", "", (s or "").strip().lower())
+
+
+def _guess_symbol_kind(rel: str, sym: str) -> str:
+    lower = (sym or "").lower()
+    if lower.startswith("_") and lower.endswith("_"):
+        return "dunder"
+    if lower.startswith("_"):
+        return "private"
+    ext = Path(rel).suffix.lower() if rel else ""
+    if ext in (".py",):
+        if re.match(r"^[A-Z][A-Za-z0-9_]*$", sym or ""):
+            return "class"
+        return "function"
+    if ext in (".go",):
+        if re.match(r"^[A-Z][a-z0-9]", sym or ""):
+            return "exported_func"
+        if re.match(r"^[A-Z][A-Za-z0-9_]*$", sym or ""):
+            return "type"
+        return "function"
+    if ext in (".rs",):
+        if re.match(r"^[A-Z][A-Za-z0-9_]*$", sym or ""):
+            return "type"
+        if (sym or "").endswith("!"):
+            return "macro"
+        return "function"
+    if ext in (".java", ".kt", ".kts", ".scala"):
+        if re.match(r"^[A-Z][A-Za-z0-9_]*$", sym or ""):
+            return "class"
+        return "method"
+    if ext in (".ts", ".tsx", ".js", ".jsx"):
+        if re.match(r"^[A-Z][A-Za-z0-9_]*$", sym or ""):
+            return "class_or_component"
+        return "function"
+    if ext in (".cs",):
+        if re.match(r"^[A-Z][A-Za-z0-9_]*$", sym or ""):
+            return "class"
+        if re.match(r"^I[A-Z][A-Za-z0-9_]*$", sym or ""):
+            return "interface"
+        return "method"
+    if ext in (".c", ".h"):
+        return "function"
+    if ext in (".cpp", ".cxx", ".hpp", ".cc"):
+        if re.match(r"^[A-Z][A-Za-z0-9_]*$", sym or ""):
+            return "class"
+        return "function"
+    if ext in (".swift",):
+        if re.match(r"^[A-Z][A-Za-z0-9_]*$", sym or ""):
+            return "class"
+        return "func"
+    if ext in (".rb",):
+        if re.match(r"^[A-Z][A-Za-z0-9_]*$", sym or ""):
+            return "class"
+        return "method"
+    if ext in (".php",):
+        if re.match(r"^[A-Z][A-Za-z0-9_]*$", sym or ""):
+            return "class"
+        return "function"
+    return "symbol"
 
 
 # A call site is an identifier immediately followed by ``(``. The leading
@@ -214,7 +278,26 @@ class ProjectContextIndex:
         self._refresh_progress_total: int = 0
         self._refresh_progress_done: int = 0
         self._refresh_progress_phase: str = ""
+        self._file_watcher: Optional[Any] = None
         self._load()
+        self._start_watcher()
+
+    def _start_watcher(self) -> None:
+        with self._lock:
+            if self._file_watcher is not None:
+                return
+            obs = _start_file_watcher(self)
+            if obs is not None:
+                self._file_watcher = obs
+
+    def _stop_watcher(self) -> None:
+        with self._lock:
+            obs = self._file_watcher
+            self._file_watcher = None
+        _stop_file_watcher(obs)
+
+    def shutdown(self) -> None:
+        self._stop_watcher()
 
     def bind_workspace(self, workspace_root: Path, storage_dir: Optional[Path] = None) -> None:
         root = Path(workspace_root).resolve()
@@ -227,6 +310,7 @@ class ProjectContextIndex:
                 and str(target_storage) == str(self.storage_dir)
             ):
                 return
+            self._stop_watcher()
             self.workspace_root = root
             if str(target_storage) != str(self.storage_dir):
                 self.storage_dir = target_storage
@@ -235,6 +319,7 @@ class ProjectContextIndex:
             self.files = {}
             self.last_index_at = 0.0
             self._load()
+            self._start_watcher()
 
     def _connect(self) -> sqlite3.Connection:
         # Caller controls synchronization. A fresh connection per operation
@@ -742,37 +827,34 @@ class ProjectContextIndex:
             return
         if getattr(self, "_embedding_provider_loading", False):
             return
-        params = self._agent_params
-        base_url = str(params.get("base_url") or "")
-        api_key = str(params.get("api_key") or "")
-        model = str(params.get("model") or "")
 
         def _init() -> None:
             try:
-                provider = self._get_embedding_index().initialize_provider(
-                    base_url=base_url, api_key=api_key, model=model,
-                )
+                provider = self._get_embedding_index().initialize_provider()
                 with self._lock:
                     self._embedding_provider = provider
                 if provider.available and len(self.files) > 0:
                     self.build_embeddings()
-            except Exception:
-                pass
+            except Exception as e:
+                try:
+                    import logging
+                    from ..config.app_info import get_app_logger_root
+                    logging.getLogger(f"{get_app_logger_root()}.embedding").warning(
+                        "Embedding provider initialization failed: %s", e
+                    )
+                except Exception:
+                    pass
             finally:
                 self._embedding_provider_loading = False
 
         self._embedding_provider_loading = True
         threading.Thread(target=_init, daemon=True, name="embedding-init").start()
 
-    def initialize_embedding_provider(
-        self, base_url: str = "", api_key: str = "", model: str = ""
-    ) -> Optional[EmbeddingProvider]:
+    def initialize_embedding_provider(self) -> Optional[EmbeddingProvider]:
         with self._lock:
             if self._embedding_provider is not None:
                 return self._embedding_provider
-            self._embedding_provider = self._get_embedding_index().initialize_provider(
-                base_url=base_url, api_key=api_key, model=model,
-            )
+            self._embedding_provider = self._get_embedding_index().initialize_provider()
             return self._embedding_provider
 
     def build_embeddings(self) -> Dict[str, Any]:
@@ -788,6 +870,22 @@ class ProjectContextIndex:
                 texts[rel] = " ".join(parts)
 
             result = self._get_embedding_index().index_files(texts, provider=ep)
+
+            chunks: List[Dict[str, str]] = []
+            for rel, e in self.files.items():
+                for sym in e.symbols[:60]:
+                    kind = _guess_symbol_kind(rel, sym)
+                    chunk_text = f"{rel}:{kind} {sym}"
+                    chunks.append({
+                        "file_rel": rel,
+                        "chunk_name": sym,
+                        "chunk_kind": kind,
+                        "chunk_text": chunk_text,
+                    })
+            if chunks:
+                chunk_result = self._get_embedding_index().index_chunks(chunks, provider=ep)
+                result["chunks_indexed"] = chunk_result.get("indexed", 0)
+
             return result
 
     def embedding_status(self) -> Dict[str, Any]:
@@ -948,6 +1046,36 @@ class ProjectContextIndex:
                         rescored.sort(key=lambda x: x[0], reverse=True)
                         top = [x[1] for x in rescored[: max(1, int(max_files or 12))]]
 
+        has_chunks = ep is not None and ep.available and self._get_embedding_index().has_chunk_embeddings()
+        if has_chunks and q_tokens:
+            chunk_results = self._get_embedding_index().chunk_search(
+                query=q,
+                candidate_files=[info["path"] for info in top],
+                provider=ep,
+                top_k=max(1, int(max_files or 12)),
+            )
+            if chunk_results:
+                chunk_boost: Dict[str, Dict[str, Any]] = {}
+                for cr in chunk_results:
+                    path = cr["path"]
+                    if path not in chunk_boost:
+                        chunk_boost[path] = cr
+                    else:
+                        chunk_boost[path]["score"] = max(
+                            chunk_boost[path]["score"], cr["score"]
+                        )
+                        existing_chunks = chunk_boost[path].get("chunks", [])
+                        existing_chunks.extend(cr.get("chunks", []))
+                        chunk_boost[path]["chunks"] = sorted(
+                            existing_chunks, key=lambda x: -x["score"]
+                        )[:5]
+                for info in top:
+                    if info["path"] in chunk_boost:
+                        info["chunk_score"] = chunk_boost[info["path"]]["score"]
+                        info["matched_chunks"] = chunk_boost[info["path"]]["chunks"]
+                        info["score"] = round(float(info.get("score", 0.0)) + chunk_boost[info["path"]]["score"] * 0.5, 2)
+                top.sort(key=lambda x: float(x.get("score", 0.0)), reverse=True)
+
         out = {
             "success": True,
             "query": q,
@@ -1039,6 +1167,154 @@ class ProjectContextIndex:
 # workspace files (not just code files), independent of the symbol index
 # above. To keep typing responsive we cache the relative-path listing per
 # workspace root for a short TTL and re-walk only when it expires.
+
+if _WATCHDOG_AVAILABLE:
+
+    class _ProjectFileWatcher(FileSystemEventHandler):
+        def __init__(self, index: "ProjectContextIndex") -> None:
+            super().__init__()
+            self._index = index
+            self._batch_lock = threading.Lock()
+            self._batch: Dict[str, Optional[str]] = {}
+            self._timer: Optional[threading.Timer] = None
+            self._flush_delay = 0.3
+
+        def _schedule_flush(self) -> None:
+            with self._batch_lock:
+                if self._timer is not None:
+                    return
+                self._timer = threading.Timer(self._flush_delay, self._flush_batch)
+                self._timer.daemon = True
+                self._timer.start()
+
+        def _flush_batch(self) -> None:
+            batch: Dict[str, Optional[str]] = {}
+            with self._batch_lock:
+                batch = self._batch
+                self._batch = {}
+                self._timer = None
+            if not batch:
+                return
+            index = self._index
+            root = index.workspace_root
+            if not root.is_dir():
+                return
+            with index._lock:
+                files = dict(index.files)
+            to_parse: List[Tuple[Path, str, int, int]] = []
+            to_delete: List[str] = []
+            for rel, kind in batch.items():
+                try:
+                    p = root / rel
+                except Exception:
+                    continue
+                if kind is None:
+                    to_delete.append(rel)
+                elif p.is_file() and p.suffix.lower() in _DEFAULT_CODE_EXTS:
+                    try:
+                        st = p.stat()
+                        mtime_ns = int(getattr(st, "st_mtime_ns", int(st.st_mtime * 1e9)))
+                        size = int(st.st_size)
+                    except Exception:
+                        continue
+                    old = files.get(rel)
+                    if old is None or old.mtime_ns != mtime_ns or old.size != size:
+                        to_parse.append((p, rel, mtime_ns, size))
+            if to_parse or to_delete:
+                with index._lock:
+                    nf = dict(index.files)
+                    for rel in to_delete:
+                        nf.pop(rel, None)
+                    batch_len = len(to_parse)
+                    for i, (p, rel, mtime_ns, size_val) in enumerate(to_parse):
+                        if batch_len > 10 and i % 5 == 0:
+                            time.sleep(0.01)
+                        try:
+                            entry = index._parse_file(p, rel, mtime_ns, size_val)
+                        except Exception:
+                            continue
+                        nf[rel] = entry
+                    index.files = nf
+                    index.last_index_at = _now_ts()
+                    index._refresh_progress_phase = ""
+                    index._refresh_progress_total = 0
+                    index._refresh_progress_done = 0
+                    index._save()
+
+        def _on_event(self, rel: str, kind: Optional[str]) -> None:
+            if not rel:
+                return
+            try:
+                root_s = str(self._index.workspace_root).replace("\\", "/")
+            except Exception:
+                return
+            rel = rel.replace("\\", "/")
+            if not rel or rel.startswith(".") or "/." in rel:
+                return
+            parts = rel.split("/")
+            for part in parts[:-1]:
+                if part.lower() in _DEFAULT_EXCLUDE_DIRS or _is_venv_dir(os.path.join(root_s, *parts[:parts.index(part) + 1]).replace("/", os.sep)):
+                    return
+            if not any(rel.endswith(ext) for ext in _DEFAULT_CODE_EXTS):
+                return
+            with self._batch_lock:
+                existing = self._batch.get(rel)
+                if kind is None:
+                    self._batch[rel] = None
+                elif existing is not None:
+                    pass
+                else:
+                    self._batch[rel] = kind
+            self._schedule_flush()
+
+        def on_created(self, event: Any) -> None:
+            if not event.is_directory:
+                self._on_event(event.src_path, "created")
+
+        def on_modified(self, event: Any) -> None:
+            if not event.is_directory:
+                self._on_event(event.src_path, "modified")
+
+        def on_deleted(self, event: Any) -> None:
+            if not event.is_directory:
+                self._on_event(event.src_path, None)
+
+        def on_moved(self, event: Any) -> None:
+            if not event.is_directory:
+                if hasattr(event, "dest_path"):
+                    self._on_event(event.dest_path, "created")
+                if hasattr(event, "src_path"):
+                    self._on_event(event.src_path, None)
+
+else:
+    _ProjectFileWatcher = None
+
+
+def _start_file_watcher(index: "ProjectContextIndex") -> Optional[Any]:
+    if not _WATCHDOG_AVAILABLE:
+        return None
+    root = index.workspace_root
+    if not root.is_dir():
+        return None
+    try:
+        handler = _ProjectFileWatcher(index)
+        observer = Observer()
+        observer.schedule(handler, str(root), recursive=True)
+        observer.start()
+        return observer
+    except Exception:
+        return None
+
+
+def _stop_file_watcher(observer: Optional[Any]) -> None:
+    if observer is None:
+        return
+    try:
+        observer.stop()
+        observer.join(timeout=1)
+    except Exception:
+        pass
+
 
 _FILE_LISTING_TTL_SECONDS: float = 5.0
 _file_listing_cache: Dict[str, Tuple[float, List[str]]] = {}
