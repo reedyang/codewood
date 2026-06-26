@@ -1,13 +1,24 @@
 from __future__ import annotations
 
+import io
+import logging
 import math
+import os
 import sqlite3
+import sys
 import threading
 import time
+import warnings
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 import numpy as np
+
+logger = logging.getLogger("codewood.embedding")
+
+os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
+os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
+os.environ.setdefault("HF_HUB_DISABLE_IMPLICIT_TOKEN", "1")
 
 _EMBEDDING_DIM = 384
 _SCHEMA_VERSION = 1
@@ -54,6 +65,7 @@ class EmbeddingProvider:
             if provider is not None:
                 self._provider = provider
                 self._provider_name = f"api:{self._api_model}"
+                logger.info("Embedding provider initialized: API (model=%s)", self._api_model)
                 return
 
         provider = self._try_init_local_provider()
@@ -63,6 +75,7 @@ class EmbeddingProvider:
             return
 
         self._provider_name = "none"
+        logger.warning("No embedding provider available")
 
     @property
     def available(self) -> bool:
@@ -154,11 +167,30 @@ class EmbeddingProvider:
         except ImportError:
             return None
 
-        model = sentence_transformers.SentenceTransformer(
-            "all-MiniLM-L6-v2",
-            device="cpu",
-        )
+        for name in ("sentence_transformers", "transformers", "huggingface_hub", "filelock", "urllib3"):
+            lg = logging.getLogger(name)
+            lg.setLevel(logging.ERROR)
+            lg.propagate = False
+
+        old_stdout = sys.stdout
+        old_stderr = sys.stderr
+        try:
+            sys.stdout = io.StringIO()
+            sys.stderr = io.StringIO()
+            logging.disable(logging.WARNING)
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                model = sentence_transformers.SentenceTransformer(
+                    "all-MiniLM-L6-v2",
+                    device="cpu",
+                )
+        finally:
+            sys.stdout = old_stdout
+            sys.stderr = old_stderr
+            logging.disable(logging.NOTSET)
+
         self._local_model = model
+        logger.info("Local embedding model loaded: all-MiniLM-L6-v2 (dim=%d)", _EMBEDDING_DIM)
 
         def _local_embed(texts: List[str]) -> List[np.ndarray]:
             if not texts:
