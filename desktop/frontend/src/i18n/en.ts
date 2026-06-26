@@ -138,6 +138,9 @@ export const en: Dict = {
   "settings.page.archivedChats": "Archived Chats",
   "archivedChats.empty": "No archived chats.",
   "archivedChats.unarchive": "Unarchive",
+  "archivedChats.removeAll": "Remove All",
+  "archivedChats.removeAllConfirm": "Permanently remove all archived chats?",
+  "archivedChats.removeConfirm": "Remove this archived chat?",
   "settings.console.font": "Font",
   "settings.console.fontDefault": "Default",
   "settings.console.fontHint":
@@ -217,6 +220,7 @@ export const en: Dict = {
   "common.save": "Save",
   "common.delete": "Delete",
   "common.remove": "Remove",
+  "chat.removeConfirm": "Remove this chat?",
   "general.autoCompactTrigger": "Auto-compact trigger",
   "general.autoCompactHint": "Automatically summarize older history once the context window crosses this threshold (0 disables).",
   "general.maxToolRounds": "Max tool rounds",

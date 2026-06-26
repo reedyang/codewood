@@ -78,6 +78,7 @@ export function Sidebar({ onOpenSettings }: { onOpenSettings: () => void }) {
 
   const [menu, setMenu] = useState<MenuState | null>(null);
   const [rename, setRename] = useState<RenameTarget | null>(null);
+  const [chatToDelete, setChatToDelete] = useState<{ id: string; wsId: string } | null>(null);
 
   const workspaces = state?.workspaces ?? [];
   const activeChats: ChatRow[] = state?.chats ?? [];
@@ -229,7 +230,7 @@ export function Sidebar({ onOpenSettings }: { onOpenSettings: () => void }) {
       onToggleArchive: () => toggleChatArchive(chatKey(wsId, chat.id)),
       onRename: () => startRename("chat", chat.id, wsId, chat.name),
       onRemove: () => {
-        void deleteChat(chat.id, wsId);
+        setChatToDelete({ id: chat.id, wsId });
       },
     });
     setMenu({ x: e.clientX, y: e.clientY, items });
@@ -477,6 +478,28 @@ export function Sidebar({ onOpenSettings }: { onOpenSettings: () => void }) {
       </div>
 
       {menu && <ContextMenu x={menu.x} y={menu.y} items={menu.items} onClose={() => setMenu(null)} />}
+
+      {chatToDelete && (
+        <div className="modal-backdrop" role="dialog" aria-modal="true">
+          <div className="modal">
+            <h3 className="modal-title">{t("chat.removeConfirm")}</h3>
+            <div className="modal-actions">
+              <button className="btn" onClick={() => setChatToDelete(null)}>
+                {t("common.cancel")}
+              </button>
+              <button
+                className="btn btn-danger"
+                onClick={() => {
+                  void deleteChat(chatToDelete.id, chatToDelete.wsId);
+                  setChatToDelete(null);
+                }}
+              >
+                {t("common.remove")}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </aside>
   );
 }

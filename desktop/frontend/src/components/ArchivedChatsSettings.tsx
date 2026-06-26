@@ -11,6 +11,8 @@ interface ArchivedChat extends WorkspaceChatSummary {
 export function ArchivedChatsSettings() {
   const { state, workspaceChats, refreshWorkspaceChats, toggleChatArchive, deleteChat, t } = useApp();
   const [loading, setLoading] = useState(true);
+  const [chatToDelete, setChatToDelete] = useState<ArchivedChat | null>(null);
+  const [confirmRemoveAll, setConfirmRemoveAll] = useState(false);
 
   const loadAll = useCallback(async () => {
     setLoading(true);
@@ -40,7 +42,6 @@ export function ArchivedChatsSettings() {
         }
       }
     }
-    // Also check the active workspace's in-memory chats
     if (state?.chats) {
       const activeWsId = state.workspace.id;
       const seenIds = new Set(result.map((r) => r.id));
@@ -72,16 +73,35 @@ export function ArchivedChatsSettings() {
     [toggleChatArchive],
   );
 
-  const handleDelete = useCallback(
+  const handleDeleteConfirm = useCallback(
     (chat: ArchivedChat) => {
       void deleteChat(chat.id, chat.wsId);
+      setChatToDelete(null);
     },
     [deleteChat],
   );
 
+  const handleRemoveAll = useCallback(async () => {
+    for (const chat of archivedChats) {
+      await deleteChat(chat.id, chat.wsId);
+    }
+    setConfirmRemoveAll(false);
+    void loadAll();
+  }, [archivedChats, deleteChat, loadAll]);
+
   return (
     <div className="settings-page">
-      <h2 className="settings-page-title">{t("settings.page.archivedChats")}</h2>
+      <div className="archived-chats-header">
+        <h2 className="settings-page-title">{t("settings.page.archivedChats")}</h2>
+        {!loading && archivedChats.length > 0 && (
+          <button
+            className="archived-chats-remove-all"
+            onClick={() => setConfirmRemoveAll(true)}
+          >
+            {t("archivedChats.removeAll")}
+          </button>
+        )}
+      </div>
       {loading ? (
         <p className="muted">{t("models.loading")}</p>
       ) : archivedChats.length === 0 ? (
@@ -103,13 +123,53 @@ export function ArchivedChatsSettings() {
               </button>
               <button
                 className="archived-chat-remove"
-                onClick={() => handleDelete(chat)}
+                onClick={() => setChatToDelete(chat)}
                 title={t("common.remove")}
               >
                 {t("common.remove")}
               </button>
             </div>
           ))}
+        </div>
+      )}
+
+      {chatToDelete && (
+        <div className="modal-backdrop" role="dialog" aria-modal="true">
+          <div className="modal">
+            <h3 className="modal-title">{t("archivedChats.removeConfirm")}</h3>
+            <p className="modal-body">{chatToDelete.name}</p>
+            <div className="modal-actions">
+              <button className="btn" onClick={() => setChatToDelete(null)}>
+                {t("common.cancel")}
+              </button>
+              <button
+                className="btn btn-danger"
+                onClick={() => handleDeleteConfirm(chatToDelete)}
+              >
+                {t("common.delete")}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {confirmRemoveAll && (
+        <div className="modal-backdrop" role="dialog" aria-modal="true">
+          <div className="modal">
+            <h3 className="modal-title">{t("archivedChats.removeAllConfirm")}</h3>
+            <p className="modal-body">{t("archivedChats.removeAllConfirm")}</p>
+            <div className="modal-actions">
+              <button className="btn" onClick={() => setConfirmRemoveAll(false)}>
+                {t("common.cancel")}
+              </button>
+              <button
+                className="btn btn-danger"
+                onClick={() => void handleRemoveAll()}
+              >
+                {t("common.remove")}
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>

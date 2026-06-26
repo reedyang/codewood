@@ -2302,6 +2302,35 @@ html[data-has-bg] .select {
 }
 
 /* Archived Chats settings page. */
+.archived-chats-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 16px;
+}
+
+.archived-chats-header .settings-page-title {
+  margin-bottom: 0;
+}
+
+.archived-chats-remove-all {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: #c54545;
+  font: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+
+.archived-chats-remove-all:hover {
+  background: color-mix(in srgb, #c54545 12%, transparent);
+}
+
 .archived-chats-list {
   display: flex;
   flex-direction: column;
