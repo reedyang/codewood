@@ -90,8 +90,10 @@ class ProjectContextIndexTests(unittest.TestCase):
             entry = reloaded.files["mod.py"]
             self.assertIn("helper", entry.symbols)
             self.assertIn("main", entry.symbols)
-            edges = {(c.caller, c.callee) for c in entry.calls}
-            self.assertIn(("main", "helper"), edges)
+
+            cg = reloaded.call_graph("main", direction="callees", auto_refresh=False)
+            callee_names = {c["callee"] for c in cg.get("callees", [])}
+            self.assertIn("helper", callee_names)
 
     def test_call_graph_callers_and_callees(self):
         with tempfile.TemporaryDirectory() as td_workspace, tempfile.TemporaryDirectory() as td_storage:

@@ -2735,6 +2735,7 @@ def run_agent_loop(agent: Any):
     ]
     system_cmd_re = re.compile('|'.join(system_cmd_patterns), re.IGNORECASE)
 
+
     while True:
         auto_exit_after_turn = False
         in_task_execution = False
