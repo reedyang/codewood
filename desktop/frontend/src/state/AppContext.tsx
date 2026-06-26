@@ -1856,11 +1856,24 @@ export function AppProvider({ children }: { children: ReactNode }) {
     async (key: string) => {
       const { wsId, chatId } = parseChatKey(key);
       const ok = await client.toggleChatArchive(chatId, wsId);
-      if (ok && wsId && wsId !== stateRef.current?.workspace?.id) {
+      if (!ok) return;
+      const wasActive =
+        chatId === activeChatIdRef.current &&
+        (!wsId || wsId === activeWorkspaceIdRef.current);
+      if (wasActive) {
+        clearLiveTurns(key);
+        setDraftWorkspaceId(wsId);
+        setDraftMode(true);
+        historyChatRef.current = "\u0000";
+        setHistoryTurns([]);
+        setHistoryStart(0);
+        setHistoryTotal(0);
+      }
+      if (wsId && wsId !== stateRef.current?.workspace?.id) {
         await refreshWorkspaceChats(wsId);
       }
     },
-    [client, refreshWorkspaceChats],
+    [client, refreshWorkspaceChats, clearLiveTurns],
   );
 
   const archiveChats = useCallback(
