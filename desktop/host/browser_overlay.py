@@ -147,12 +147,13 @@ def _style_overlay_window_win32(overlay_hwnd: int, parent_hwnd: Optional[int]) -
         WS_POPUP = 0x80000000
         WS_EX_TOOLWINDOW = 0x00000080
         WS_EX_APPWINDOW = 0x00040000
+        WS_EX_TOPMOST = 0x00000008
 
         get_long = getattr(user32, "GetWindowLongPtrW", user32.GetWindowLongW)
         set_long = getattr(user32, "SetWindowLongPtrW", user32.SetWindowLongW)
 
         ex = get_long(wintypes.HWND(overlay_hwnd), GWL_EXSTYLE)
-        ex = (ex | WS_EX_TOOLWINDOW) & ~WS_EX_APPWINDOW
+        ex = (ex | WS_EX_TOOLWINDOW) & ~(WS_EX_APPWINDOW | WS_EX_TOPMOST)
         set_long(wintypes.HWND(overlay_hwnd), GWL_EXSTYLE, ex)
 
         if parent_hwnd:
@@ -313,18 +314,28 @@ class BrowserOverlay:
                     self._overlay.events.loaded += self._on_overlay_loaded
                 except Exception:
                     pass
-                # Apply native owner/taskbar/corner styling once the native
-                # handle exists (``before_show`` is the earliest such point).
-                try:
-                    self._overlay.events.before_show += self._on_overlay_before_show
-                except Exception:
-                    pass
             except Exception:
                 self._overlay = None
+            # Apply native styling (WS_CHILD reparent + clear WS_EX_TOPMOST)
+            # AFTER create_window returns so that pywebview's internal Show/Hide
+            # cycle (opacity=0 → Show → Hide → opacity=1 for hidden=True) has
+            # completed.  Applying SetParent + WS_CHILD *before* that cycle —
+            # inside a ``before_show`` handler — is unsafe because WinForms
+            # ``Form.Show()`` on a reparented WS_CHILD window can silently reset
+            # the window styles, undoing the reparent and leaving the overlay as
+            # a top-level WS_POPUP with TopMost still active.  Call styling here
+            # instead, after all WinForms initialization settles.
+            self._apply_native_styling()
+            # Explicitly clear the pywebview/.NET ``TopMost`` flag so that the
+            # form never re-asserts WS_EX_TOPMOST behind our back (the extended
+            # style bit is cleared inside ``_style_overlay_window_win32``, but
+            # the .NET ``Form.TopMost`` property getter returns the cached value
+            # and some WinForms operations may re-apply it on Show/Activate).
+            try:
+                self._overlay.on_top = False
+            except Exception:
+                pass
             return self._overlay
-
-    def _on_overlay_before_show(self) -> None:
-        self._apply_native_styling()
 
     def _apply_native_styling(self) -> None:
         if sys.platform != "win32":
@@ -360,6 +371,8 @@ class BrowserOverlay:
             ov = self._overlay
             self._overlay = None
             self._shown = False
+            self._styled = False
+            self._is_child = False
         if ov is not None:
             try:
                 ov.destroy()
@@ -466,12 +479,24 @@ class BrowserOverlay:
                 pass
             with self._lock:
                 self._shown = True
-            # Re-assert native styling (owner / no-taskbar / square corners)
-            # after the window becomes visible: some of these attributes
-            # (notably the Win11 corner preference) can be reset by the time
-            # the window is first shown, so applying them again on show makes
-            # the square-corner treatment stick.
+            # Re-assert native styling after the window becomes visible so
+            # that any attributes reset by the WinForms ``Show()`` call
+            # (notably the Win11 DwmSetWindowAttribute corner preference and
+            # the WS_EX_TOPMOST extended style) are re-applied immediately.
             self._apply_native_styling()
+            # Re-move using parent-relative coordinates.  If the styling was
+            # applied for the first time here (i.e. ``ensure_window()`` could
+            # not obtain the parent HWND earlier) the coordinate system just
+            # switched from screen-relative to parent-client-relative; the
+            # ``ov.move()`` above used screen coordinates and is now wrong.
+            # This re-move corrects it.  On steady-state show cycles (styling
+            # already active) the coordinates haven't changed, so this is a
+            # harmless no-op.
+            if self._is_child:
+                try:
+                    ov.move(rect["x"], rect["y"])
+                except Exception:
+                    pass
 
     def _apply_corner_region(self, logical_w: int, logical_h: int) -> None:
         """Round only the overlay's bottom-right corner, in device pixels.
