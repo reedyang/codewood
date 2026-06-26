@@ -449,6 +449,15 @@ def setup_runtime_services(agent: Any) -> None:
         storage_dir=(agent.workspace_config_dir / "indexes"),
     )
     try:
+        params = getattr(agent, "params", None) or {}
+        agent._project_context_index.initialize_embedding_provider(
+            base_url=str(params.get("base_url") or ""),
+            api_key=str(params.get("api_key") or ""),
+            model=str(params.get("model") or ""),
+        )
+    except Exception:
+        pass
+    try:
         agent._schedule_project_context_refresh_background(force=False, reason="startup")
     except Exception:
         pass

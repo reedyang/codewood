@@ -12,6 +12,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from ..config.app_info import get_app_config_dirname
+from .embedding import EmbeddingProvider, FileEmbeddingIndex
+from .tree_sitter_parser import parse_file_tree_sitter
 
 # Storage schema version for the SQLite index. Bump when the table layout
 # changes; an on-disk database with a different version is discarded and
@@ -164,6 +166,8 @@ class ProjectContextIndex:
         self.last_index_at: float = 0.0
         self.version: int = _SCHEMA_VERSION
         self._lock = threading.RLock()
+        self._embedding_index = FileEmbeddingIndex(self.storage_dir)
+        self._embedding_provider: Optional[EmbeddingProvider] = None
         self._load()
 
     def bind_workspace(self, workspace_root: Path, storage_dir: Optional[Path] = None) -> None:
@@ -405,6 +409,19 @@ class ProjectContextIndex:
         return out, timed_out
 
     def _parse_file(self, p: Path, rel: str, st_mtime_ns: int, st_size: int) -> _FileEntry:
+        ts_symbols, ts_imports, ts_calls, ts_tokens = parse_file_tree_sitter(p)
+        if ts_symbols or ts_imports or ts_tokens:
+            calls = [_CallEdge(caller=c, callee=cal) for c, cal in ts_calls]
+            return _FileEntry(
+                path=rel,
+                mtime_ns=st_mtime_ns,
+                size=st_size,
+                symbols=ts_symbols,
+                imports=ts_imports,
+                tokens=ts_tokens,
+                calls=calls,
+            )
+
         text = ""
         try:
             text = p.read_text(encoding="utf-8", errors="replace")
@@ -427,8 +444,6 @@ class ProjectContextIndex:
             r"^\s*using\s+([A-Za-z0-9_:.]+)\s*;",
             r"^\s*require\(\s*['\"]([^'\"]+)['\"]\s*\)",
         ]
-        # Patterns that introduce a new callable symbol (the enclosing
-        # "caller" for any call sites that follow it).
         def_patterns = [
             r"^\s*def\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(",
             r"^\s*function\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(",
@@ -454,9 +469,6 @@ class ProjectContextIndex:
                     if g:
                         imports.append(g)
                     break
-            # Track the enclosing callable so call edges can be attributed to a
-            # caller. Only definition-like symbols become callers (a class
-            # declaration is not a caller; methods/functions are).
             def_name = ""
             for pat in def_patterns:
                 m = re.search(pat, line)
@@ -465,8 +477,6 @@ class ProjectContextIndex:
                     break
             if def_name:
                 current_caller = def_name
-            # Extract call sites: ``callee(`` occurrences on the line, skipping
-            # language keywords and the definition itself.
             for cm in _CALL_SITE_RE.finditer(line):
                 callee = cm.group(1)
                 if not callee or callee in _CALL_KEYWORDS:
@@ -474,10 +484,8 @@ class ProjectContextIndex:
                 if matched_symbol and callee == def_name:
                     continue
                 call_edges.append(_CallEdge(caller=current_caller, callee=callee))
-        # de-dup while keeping order
         symbols = list(dict.fromkeys(symbols))[:120]
         imports = list(dict.fromkeys(imports))[:120]
-        # de-dup call edges (caller, callee) while keeping order, capped.
         seen_edges: Set[Tuple[str, str]] = set()
         calls: List[_CallEdge] = []
         for c in call_edges:
@@ -625,6 +633,43 @@ class ProjectContextIndex:
                 "index_path": str(self.index_path),
             }
 
+    def initialize_embedding_provider(
+        self, base_url: str = "", api_key: str = "", model: str = ""
+    ) -> Optional[EmbeddingProvider]:
+        with self._lock:
+            if self._embedding_provider is not None:
+                return self._embedding_provider
+            self._embedding_provider = self._embedding_index.initialize_provider(
+                base_url=base_url, api_key=api_key, model=model,
+            )
+            return self._embedding_provider
+
+    def build_embeddings(self) -> Dict[str, Any]:
+        with self._lock:
+            ep = self._embedding_provider
+            if ep is None or not ep.available:
+                return {"success": False, "error": "No embedding provider initialized"}
+
+            texts: Dict[str, str] = {}
+            for rel, e in self.files.items():
+                parts: List[str] = [rel]
+                parts.extend(e.symbols[:20])
+                texts[rel] = " ".join(parts)
+
+            result = self._embedding_index.index_files(texts, provider=ep)
+            return result
+
+    def embedding_status(self) -> Dict[str, Any]:
+        with self._lock:
+            ep = self._embedding_provider
+            return {
+                "success": True,
+                "provider_name": ep.provider_name if ep else "none",
+                "available": ep.available if ep else False,
+                "has_embeddings": self._embedding_index.has_embeddings(),
+                "files_indexed": len(self.files),
+            }
+
     def status(self) -> Dict[str, Any]:
         with self._lock:
             return {
@@ -737,6 +782,37 @@ class ProjectContextIndex:
 
         scored.sort(key=lambda x: x[0], reverse=True)
         top = [x[1] for x in scored[: max(1, int(max_files or 12))]]
+
+        ep = self._embedding_provider
+        has_emb = ep is not None and ep.available and self._embedding_index.has_embeddings()
+        if has_emb and len(scored) > 1:
+            candidate_rels = [x[1]["path"] for x in scored[:50]]
+            stored_embs = self._embedding_index.get_embeddings_batch(candidate_rels)
+            if stored_embs:
+                query_vecs = ep.embed([q[:4096]])
+                if query_vecs and len(query_vecs) > 0:
+                    qv = query_vecs[0]
+                    emb_weight = 0.3
+                    from .embedding import _cosine_similarity
+                    rescored: List[Tuple[float, Dict[str, Any]]] = []
+                    for _, info in scored[:50]:
+                        rel = info["path"]
+                        emb = stored_embs.get(rel)
+                        bm25_s = float(info.get("score", 0.0))
+                        bm25_norm = bm25_s / max(1.0, bm25_s + 20.0)
+                        if emb is not None:
+                            cos_sim = _cosine_similarity(qv, emb)
+                            info["embedding_score"] = round(cos_sim, 3)
+                        else:
+                            cos_sim = 0.0
+                        hybrid = (1.0 - emb_weight) * bm25_norm + emb_weight * cos_sim
+                        info["score"] = round(hybrid, 2)
+                        if hybrid > 0:
+                            rescored.append((hybrid, info))
+                    if rescored:
+                        rescored.sort(key=lambda x: x[0], reverse=True)
+                        top = [x[1] for x in rescored[: max(1, int(max_files or 12))]]
+
         out = {
             "success": True,
             "query": q,
