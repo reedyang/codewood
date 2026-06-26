@@ -9,6 +9,7 @@ from ..config.app_info import get_app_global_config_dir, get_app_logger_root
 from ..core.config.model_providers import (
     DEFAULT_CONTEXT_WINDOW,
     DEFAULT_OLLAMA_PORT,
+    parse_bool_flag,
     parse_context_window,
     parse_extra_headers,
     parse_port,
@@ -1149,10 +1150,9 @@ def _build_openai_request_url(base_url: str, api_kind: str, append_suffix: bool)
 
 def _should_disable_thinking_for_openai_compatible(
     *,
-    model_name: str,
-    base_url: str,
+    thinking_enabled: bool = True,
 ) -> bool:
-    return False
+    return not thinking_enabled
 
 
 def _build_openai_responses_input_messages(
@@ -1476,11 +1476,11 @@ def _call_openai_with_suffix_strategy(
     tool_schemas: Optional[List[Dict[str, Any]]],
     tool_choice: Any,
     reasoning_effort: str = "",
+    thinking: bool = True,
     append_history: Callable[..., None],
 ):
     force_disable_thinking = _should_disable_thinking_for_openai_compatible(
-        model_name=model_name,
-        base_url=base_url,
+        thinking_enabled=thinking,
     )
     prefer_no_suffix = _openai_get_prefer_no_suffix(
         base_url=base_url, model_name=model_name, api_kind=api_kind
@@ -1758,6 +1758,7 @@ def _call_with_openai_compatible(
         reasoning_effort = ""
     else:
         reasoning_effort = str(_reasoning_raw or "").strip()
+    thinking = parse_bool_flag(conf.get("thinking"), default_value=True)
     api_kinds = _openai_api_order_for_mode(api_mode, str(base_url or ""))
     _OPENAI_ROUTE_LOG.info(
         "openai-route dispatch model=%s api_mode=%s api_order=%s base_url=%s",
@@ -1812,6 +1813,7 @@ def _call_with_openai_compatible(
                 tool_schemas=tool_schemas,
                 tool_choice=tool_choice,
                 reasoning_effort=reasoning_effort,
+                thinking=thinking,
                 append_history=append_history,
             )
         except ModelCallError as e:

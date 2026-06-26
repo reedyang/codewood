@@ -270,6 +270,8 @@ export const zhCN: Dict = {
   "models.contextWindow": "上下文窗口",
   "models.contextWindowPlaceholder": "如 128000 或 128k",
   "models.multimodal": "多模态（支持图片输入）",
+  "models.thinking": "启用深度思考/推理",
+  "models.thinkingHint": "允许模型输出内部推理过程。",
   "models.extraHeaders": "Extra headers",
   "models.headerName": "Header",
   "models.headerValue": "Value",

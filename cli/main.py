@@ -231,6 +231,7 @@ def _starter_user_config() -> dict:
                             "context_window": "256k",
                             "streaming": True,
                             "multimodal": True,
+                            "thinking": True,
                             "reasoning_effort": ["low", "medium", "high"],
                         }
                     ],

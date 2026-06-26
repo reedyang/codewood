@@ -752,6 +752,7 @@ class Agent:
                 context_window = int(model_item.get("context_window") or 0)
                 streaming = bool(model_item.get("streaming", True))
                 multimodal = bool(model_item.get("multimodal", True))
+                thinking = bool(model_item.get("thinking", True))
                 selector = f"{provider}:{model_name}"
                 key = selector.lower()
                 if key in seen:
@@ -762,6 +763,7 @@ class Agent:
                 params["context_window"] = context_window
                 params["streaming"] = streaming
                 params["multimodal"] = multimodal
+                params["thinking"] = thinking
                 params["extra_headers"] = dict(model_item.get("extra_headers") or {})
                 params["reasoning_effort"] = list(
                     model_item.get("reasoning_effort") or []
