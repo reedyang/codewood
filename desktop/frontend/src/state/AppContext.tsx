@@ -66,6 +66,7 @@ function parseChatKey(key: string): { wsId: string; chatId: string } {
 
 interface AppContextValue {
   state: AppState | null;
+  client: ApiClient;
   turns: Turn[];
   historyTurns: HistoryTurn[];
   historyStart: number;
@@ -2038,6 +2039,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }, [clearTurns, runCommand]);
 
   const value: AppContextValue = {
+    client,
     state,
     turns,
     historyTurns,

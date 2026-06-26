@@ -6,6 +6,16 @@ export interface WorkspaceSummary {
   isDefault?: boolean;
 }
 
+export interface IndexStatus {
+  hidden: boolean;
+  files_total: number;
+  workspace_name: string;
+  is_default_workspace: boolean;
+  refresh_phase: string;
+  refresh_progress_total: number;
+  refresh_progress_done: number;
+}
+
 export interface ChatSummary {
   index: number;
   id: string;

@@ -12,6 +12,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from ..config.app_info import get_app_config_dirname
+from .embedding import _cosine_similarity
+from .tree_sitter_parser import parse_file_tree_sitter
 
 # Storage schema version for the SQLite index. Bump when the table layout
 # changes; an on-disk database with a different version is discarded and
@@ -49,14 +51,41 @@ _DEFAULT_EXCLUDE_DIRS: Set[str] = {
     ".hg",
     ".svn",
     "node_modules",
+    "bower_components",
     "dist",
     "build",
     "out",
+    "target",
     ".idea",
     ".vscode",
     get_app_config_dirname(),
     "__pycache__",
     ".pytest_cache",
+    ".mypy_cache",
+    ".ruff_cache",
+    ".tox",
+    ".nox",
+    "venv",
+    ".venv",
+    "env",
+    ".env",
+    "vendor",
+    "vendors",
+    ".cache",
+    ".turbo",
+    ".next",
+    ".nuxt",
+    ".output",
+    ".angular",
+    ".terraform",
+    ".serverless",
+    "coverage",
+    ".coverage",
+    "eggs",
+    ".eggs",
+    "wheelhouse",
+    "__pypackages__",
+    "site-packages",
 }
 
 
@@ -182,6 +211,9 @@ class ProjectContextIndex:
         self._embedding_index = None
         self._embedding_provider: Optional[EmbeddingProvider] = None
         self._agent_params: Dict[str, Any] = {}
+        self._refresh_progress_total: int = 0
+        self._refresh_progress_done: int = 0
+        self._refresh_progress_phase: str = ""
         self._load()
 
     def bind_workspace(self, workspace_root: Path, storage_dir: Optional[Path] = None) -> None:
@@ -396,12 +428,19 @@ class ProjectContextIndex:
             return out, False
         timed_out = False
         root_s = str(root)
+        git_spec = _load_gitignore(root_s)
         for dirpath, dirnames, filenames in os.walk(root_s, topdown=True, followlinks=False):
             if deadline_ts is not None and _now_ts() >= deadline_ts:
                 timed_out = True
                 break
-            # Prune excluded directories before descending to keep traversal cheap.
-            dirnames[:] = [d for d in dirnames if str(d or "").lower() not in _DEFAULT_EXCLUDE_DIRS]
+            dirnames[:] = [
+                d for d in dirnames
+                if str(d or "").lower() not in _DEFAULT_EXCLUDE_DIRS
+                and not _is_venv_dir(os.path.join(dirpath, str(d)))
+            ]
+            dirnames[:] = [d for d in dirnames if not _is_gitignored(
+                os.path.relpath(os.path.join(dirpath, d), root_s), git_spec
+            )]
             for fn in filenames:
                 if deadline_ts is not None and _now_ts() >= deadline_ts:
                     timed_out = True
@@ -409,13 +448,15 @@ class ProjectContextIndex:
                 p = Path(dirpath) / str(fn)
                 if p.suffix.lower() not in _DEFAULT_CODE_EXTS:
                     continue
+                rel = os.path.relpath(str(p), root_s)
+                if _is_gitignored(rel, git_spec):
+                    continue
                 out.append(p)
             if timed_out:
                 break
         return out, timed_out
 
     def _parse_file(self, p: Path, rel: str, st_mtime_ns: int, st_size: int) -> _FileEntry:
-        from .tree_sitter_parser import parse_file_tree_sitter
         ts_symbols, ts_imports, ts_calls, ts_tokens = parse_file_tree_sitter(p)
         if ts_symbols or ts_imports or ts_tokens:
             calls = [_CallEdge(caller=c, callee=cal) for c, cal in ts_calls]
@@ -536,50 +577,82 @@ class ProjectContextIndex:
             budget_s = None
         deadline = (_now_ts() + budget_s) if budget_s is not None else None
 
+        root = self.workspace_root
+        if not root.is_dir():
+            return {"success": False, "error": f"workspace does not exist: {root}"}
+
+        # Phase 1 (no lock): walk filesystem, collect files to parse
+        self._refresh_progress_phase = "scanning"
+        self._refresh_progress_total = 0
+        self._refresh_progress_done = 0
+        scanned, discovery_timed_out = self._iter_code_files(deadline_ts=deadline)
+
         with self._lock:
-            root = self.workspace_root
-            if not root.is_dir():
-                return {"success": False, "error": f"workspace does not exist: {root}"}
+            base_files = dict(self.files)
 
-            index_existed_before_refresh = self.index_path.is_file()
-            scanned, discovery_timed_out = self._iter_code_files(deadline_ts=deadline)
-            base_files = self.files
-            next_files: Dict[str, _FileEntry] = dict(base_files)
-            seen_rel: Set[str] = set()
-            added = 0
-            updated = 0
-            unchanged = 0
-            timed_out = bool(discovery_timed_out)
-            processed = 0
+        # Phase 2 (no lock): parse files in parallel
+        to_parse: List[Tuple[Path, str, int, int, bool]] = []
+        seen_rel: Set[str] = set()
+        processed = 0
+        unchanged = 0
+        timed_out = bool(discovery_timed_out)
+        for p in scanned:
+            if deadline is not None and _now_ts() >= deadline:
+                timed_out = True
+                break
+            try:
+                rel = str(p.relative_to(root)).replace("\\", "/")
+                st = p.stat()
+            except Exception:
+                continue
+            processed += 1
+            seen_rel.add(rel)
+            old = base_files.get(rel)
+            mtime_ns = int(getattr(st, "st_mtime_ns", int(st.st_mtime * 1e9)))
+            size = int(st.st_size)
+            if (
+                (not force)
+                and old is not None
+                and old.mtime_ns == mtime_ns
+                and old.size == size
+            ):
+                unchanged += 1
+                continue
+            is_new = old is None
+            to_parse.append((p, rel, mtime_ns, size, is_new))
 
-            to_parse: List[Tuple[Path, str, int, int, bool]] = []
-            for p in scanned:
-                if deadline is not None and _now_ts() >= deadline:
-                    timed_out = True
-                    break
-                try:
-                    rel = str(p.relative_to(root)).replace("\\", "/")
-                    st = p.stat()
-                except Exception:
-                    continue
-                processed += 1
-                seen_rel.add(rel)
-                old = base_files.get(rel)
-                mtime_ns = int(getattr(st, "st_mtime_ns", int(st.st_mtime * 1e9)))
-                size = int(st.st_size)
-                if (
-                    (not force)
-                    and old is not None
-                    and old.mtime_ns == mtime_ns
-                    and old.size == size
-                ):
-                    unchanged += 1
-                    continue
-                is_new = old is None
-                to_parse.append((p, rel, mtime_ns, size, is_new))
-
-            if to_parse and not timed_out:
-                workers = min(len(to_parse), (os.cpu_count() or 4))
+        parsed_entries: Dict[str, _FileEntry] = {}
+        parsed_added = 0
+        parsed_updated = 0
+        is_full_rebuild = force or len(base_files) == 0
+        if to_parse and not timed_out:
+            self._refresh_progress_phase = "indexing"
+            self._refresh_progress_total = len(to_parse)
+            self._refresh_progress_done = 0
+            if is_full_rebuild:
+                _last_yield = _now_ts()
+                _file_count = 0
+                for p, rel, mtime_ns, size, is_new in to_parse:
+                    if deadline is not None and _now_ts() >= deadline:
+                        timed_out = True
+                        break
+                    try:
+                        entry = self._parse_file(p, rel, mtime_ns, size)
+                    except Exception:
+                        self._refresh_progress_done += 1
+                        continue
+                    parsed_entries[rel] = entry
+                    self._refresh_progress_done += 1
+                    if is_new:
+                        parsed_added += 1
+                    else:
+                        parsed_updated += 1
+                    _file_count += 1
+                    if _file_count % 30 == 0:
+                        time.sleep(0.1)
+            else:
+                workers = min(len(to_parse), max(2, (os.cpu_count() or 4) // 2))
+                batch_count = 0
                 with ThreadPoolExecutor(max_workers=workers) as executor:
                     future_to_info: Dict[Any, Tuple[str, bool]] = {}
                     for p, rel, mtime_ns, size, is_new in to_parse:
@@ -593,12 +666,31 @@ class ProjectContextIndex:
                         try:
                             entry = fut.result()
                         except Exception:
+                            self._refresh_progress_done += 1
                             continue
-                        next_files[rel] = entry
+                        parsed_entries[rel] = entry
+                        self._refresh_progress_done += 1
                         if is_new:
-                            added += 1
+                            parsed_added += 1
                         else:
-                            updated += 1
+                            parsed_updated += 1
+                        batch_count += 1
+                        if batch_count % 20 == 0:
+                            time.sleep(0)
+
+        # Phase 3 (lock): commit results
+        self._refresh_progress_phase = "saving"
+        with self._lock:
+            index_existed_before_refresh = self.index_path.is_file()
+            next_files = dict(self.files)
+            added = 0
+            updated = 0
+            for rel, entry in parsed_entries.items():
+                if rel not in next_files:
+                    added += 1
+                else:
+                    updated += 1
+                next_files[rel] = entry
 
             deleted = 0
             if not timed_out:
@@ -606,19 +698,18 @@ class ProjectContextIndex:
                     if rel not in seen_rel:
                         deleted += 1
                         next_files.pop(rel, None)
-
                 changed = (
-                    added > 0
-                    or updated > 0
-                    or deleted > 0
-                    or force
-                    or len(next_files) != len(base_files)
+                    added > 0 or updated > 0 or deleted > 0
+                    or force or len(next_files) != len(self.files)
                 )
             else:
-                changed = added > 0 or updated > 0 or force or len(next_files) != len(base_files)
+                changed = added > 0 or updated > 0 or force or len(next_files) != len(self.files)
 
             self.files = next_files
             self.last_index_at = _now_ts()
+            self._refresh_progress_phase = ""
+            self._refresh_progress_total = 0
+            self._refresh_progress_done = 0
             should_save = changed or (not index_existed_before_refresh) or (timed_out and (added > 0 or updated > 0))
             if should_save:
                 self._save()
@@ -718,6 +809,9 @@ class ProjectContextIndex:
                 "index_path": str(self.index_path),
                 "files_total": len(self.files),
                 "last_index_at": self.last_index_at,
+                "refresh_phase": self._refresh_progress_phase,
+                "refresh_progress_total": self._refresh_progress_total,
+                "refresh_progress_done": self._refresh_progress_done,
             }
 
     def search(
@@ -835,7 +929,6 @@ class ProjectContextIndex:
                 if query_vecs and len(query_vecs) > 0:
                     qv = query_vecs[0]
                     emb_weight = 0.3
-                    from .embedding import _cosine_similarity
                     rescored: List[Tuple[float, Dict[str, Any]]] = []
                     for _, info in scored[:50]:
                         rel = info["path"]
@@ -955,6 +1048,42 @@ _file_listing_lock = threading.RLock()
 _FILE_LISTING_MAX_FILES: int = 50000
 
 
+def _is_venv_dir(dir_path: str) -> bool:
+    try:
+        return os.path.isfile(os.path.join(dir_path, "pyvenv.cfg"))
+    except Exception:
+        return False
+
+
+def _load_gitignore(root: str) -> Any:
+    try:
+        import pathspec  # type: ignore[import-untyped]
+    except ImportError:
+        return None
+    patterns: List[str] = []
+    for dirpath, dirnames, filenames in os.walk(root, topdown=True, followlinks=False):
+        dirnames[:] = [d for d in dirnames if not d.startswith(".")]
+        if ".gitignore" in filenames:
+            try:
+                with open(os.path.join(dirpath, ".gitignore"), "r", encoding="utf-8", errors="replace") as f:
+                    patterns.append(f"# .gitignore from {os.path.relpath(dirpath, root)}")
+                    patterns.extend(f.read().splitlines())
+            except Exception:
+                pass
+    if not patterns:
+        return None
+    return pathspec.PathSpec.from_lines("gitwildmatch", patterns)
+
+
+def _is_gitignored(rel_path: str, spec: Any) -> bool:
+    if spec is None:
+        return False
+    try:
+        return bool(spec.match_file(rel_path.replace(os.sep, "/")))
+    except Exception:
+        return False
+
+
 def _list_workspace_files(workspace_root: Path) -> List[str]:
     """Return workspace-relative POSIX paths for all non-excluded files.
 
@@ -972,20 +1101,26 @@ def _list_workspace_files(workspace_root: Path) -> List[str]:
     rels: List[str] = []
     if root.is_dir():
         root_s = str(root)
+        git_spec = _load_gitignore(root_s)
         truncated = False
         for dirpath, dirnames, filenames in os.walk(root_s, topdown=True, followlinks=False):
             dirnames[:] = [
-                d for d in dirnames if str(d or "").lower() not in _DEFAULT_EXCLUDE_DIRS
+                d for d in dirnames
+                if str(d or "").lower() not in _DEFAULT_EXCLUDE_DIRS
+                and not _is_venv_dir(os.path.join(dirpath, str(d)))
             ]
+            dirnames[:] = [d for d in dirnames if not _is_gitignored(
+                os.path.relpath(os.path.join(dirpath, d), root_s), git_spec
+            )]
             for fn in filenames:
                 if str(fn or "").startswith("."):
-                    # Skip dotfiles; they are rarely the target of an @ pick
-                    # and add noise to candidate lists.
                     continue
                 full = Path(dirpath) / str(fn)
                 try:
                     rel = full.resolve().relative_to(root).as_posix()
                 except Exception:
+                    continue
+                if _is_gitignored(rel, git_spec):
                     continue
                 rels.append(rel)
                 if len(rels) >= _FILE_LISTING_MAX_FILES:

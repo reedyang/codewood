@@ -1649,6 +1649,25 @@ class ServeApp:
     def state(self) -> Dict[str, Any]:
         return _build_state(self.agent)
 
+    def index_status(self) -> Dict[str, Any]:
+        agent = self.agent
+        try:
+            idx = getattr(agent, "_project_context_index", None)
+            if idx is None:
+                return {"hidden": True}
+            st = idx.status()
+            return {
+                "hidden": False,
+                "files_total": int(st.get("files_total", 0)),
+                "workspace_name": str(getattr(agent, "workspace_name", "") or ""),
+                "is_default_workspace": str(getattr(agent, "workspace_id", "")) == "default",
+                "refresh_phase": str(st.get("refresh_phase", "") or ""),
+                "refresh_progress_total": int(st.get("refresh_progress_total", 0)),
+                "refresh_progress_done": int(st.get("refresh_progress_done", 0)),
+            }
+        except Exception:
+            return {"hidden": True}
+
     def _resolve_workspace_root(self, ws_id: str) -> Optional[str]:
         """Map a workspace id to its on-disk root using agent state only.
 
@@ -4322,6 +4341,9 @@ def _make_handler(app: ServeApp):
                 return
             if path == "/events":
                 self._stream_events()
+                return
+            if path == "/index-status":
+                self._send_json(200, app.index_status())
                 return
             self._send_json(404, {"error": "not found"})
 

@@ -4866,3 +4866,60 @@ h6.md-h {
 body.resizing-y .console-term {
   pointer-events: none;
 }
+
+/* ---- status bar ---- */
+.status-bar {
+  display: flex;
+  align-items: center;
+  height: 24px;
+  padding: 0 12px;
+  background: var(--status-bar-bg, var(--bg-sidebar));
+  border-top: 1px solid var(--border);
+  position: relative;
+  isolation: isolate;
+  font-size: 12px;
+  color: var(--text-muted);
+  flex-shrink: 0;
+  user-select: none;
+}
+.status-bar::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: var(--bg-sidebar);
+  z-index: -1;
+}
+
+.status-bar-left {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.status-bar-center {
+  flex: 1 1 auto;
+  text-align: center;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.status-bar-right {
+  flex: 0 0 auto;
+}
+
+.status-label {
+  white-space: nowrap;
+}
+
+.status-progress-text {
+  white-space: nowrap;
+}
+
+.status-progress-bar {
+  font-family: monospace;
+  font-size: 10px;
+  letter-spacing: -1px;
+  white-space: pre;
+}
