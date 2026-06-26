@@ -1305,7 +1305,7 @@ def action_project_context_search(agent: Any, params: Dict[str, Any]) -> dict:
                 ((True if refresh is None else bool(refresh)) or force_rebuild)
                 and (not refresh_async)
             ),
-            refresh_timeout_ms=2000,
+            refresh_timeout_ms=(None if len(getattr(agent._project_context_index, "files", {})) == 0 else 10000),
         )
     if not query:
         return {"success": False, "error": "Missing required parameter: query for project_context_search"}
@@ -1323,7 +1323,7 @@ def action_project_context_search(agent: Any, params: Dict[str, Any]) -> dict:
         auto_refresh=(
             ((True if refresh is None else bool(refresh)) or force_rebuild) and (not refresh_async)
         ),
-        refresh_timeout_ms=2000,
+        refresh_timeout_ms=(None if len(getattr(agent._project_context_index, "files", {})) == 0 else 10000),
     )
     if refresh_async:
         result["refresh_scheduled"] = True
