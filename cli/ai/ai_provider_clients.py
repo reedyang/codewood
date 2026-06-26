@@ -1152,11 +1152,7 @@ def _should_disable_thinking_for_openai_compatible(
     model_name: str,
     base_url: str,
 ) -> bool:
-    model = str(model_name or "").strip().casefold()
-    base = str(base_url or "").strip().casefold()
-    if model.startswith("deepseek-"):
-        return True
-    return "deepseek" in base
+    return False
 
 
 def _build_openai_responses_input_messages(
