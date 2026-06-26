@@ -1,5 +1,6 @@
-import { useState } from "react";
+import { useState, useCallback } from "react";
 import { AnsiText } from "./Ansi";
+import { hostApi } from "../utils/hostApi";
 import { DiffPreview, langFromPath } from "./DiffPreview";
 import { Icon } from "./Icon";
 import type { DiffRow } from "../api/types";
@@ -170,6 +171,18 @@ function PromptWithDiff({
   defaultExpanded: boolean;
 }) {
   const [expanded, setExpanded] = useState(defaultExpanded);
+  const onPathPreview = useCallback(async (path: string) => {
+    const api = hostApi();
+    if (!api?.browser_overlay_preview_path) return;
+    const result = await Promise.resolve(api.browser_overlay_preview_path(path));
+    if (result && result.ok && result.url) {
+      window.dispatchEvent(
+        new CustomEvent("codewood:browser-open-preview", {
+          detail: { url: result.url },
+        }),
+      );
+    }
+  }, []);
   let parsed: DiffPayload | null = null;
   if (diffPayload) {
     try {
@@ -187,7 +200,7 @@ function PromptWithDiff({
           <AnsiText text={bullet} />
         </span>
         <span className="cmd-prompt-body">
-          <AnsiText text={body} />
+          <AnsiText text={body} onPathPreview={onPathPreview} />
         </span>
       </div>
     );
@@ -212,7 +225,7 @@ function PromptWithDiff({
           <AnsiText text={bullet} />
         </span>
         <span className="cmd-prompt-body">
-          <AnsiText text={body} />
+          <AnsiText text={body} onPathPreview={onPathPreview} />
           <span className="cmd-prompt-diff-toggle">
             <Icon name="chevron" size={14} className={`chevron ${expanded ? "open" : ""}`} />
           </span>

@@ -27,6 +27,11 @@ export interface HostBridgeApi {
     url?: string,
     script?: string,
   ) => Record<string, unknown> | Promise<Record<string, unknown>>;
+  /** Re-preview a local HTML file: POSTs to the backend and returns the
+   *  resolved absolute URL.  Returns ``{ok: true, url}`` on success. */
+  browser_overlay_preview_path?: (
+    path: string,
+  ) => { ok: boolean; url?: string } | Promise<{ ok: boolean; url?: string }>;
 }
 
 /** Return the host bridge if running inside the desktop host, else undefined. */
