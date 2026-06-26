@@ -31,6 +31,7 @@ export function ChatTitleBar() {
   const [menu, setMenu] = useState<MenuState | null>(null);
   const [renaming, setRenaming] = useState(false);
   const [renameValue, setRenameValue] = useState("");
+  const [confirmDelete, setConfirmDelete] = useState(false);
 
   const wsId = state?.workspace.id ?? "";
   const activeChat = state?.chats.find((c) => c.active);
@@ -63,7 +64,7 @@ export function ChatTitleBar() {
         setRenaming(true);
       },
       onRemove: () => {
-        void deleteChat(activeChat.id);
+        setConfirmDelete(true);
       },
     });
     setMenu({ x: e.clientX, y: e.clientY, items });
@@ -120,6 +121,28 @@ export function ChatTitleBar() {
           items={menu.items}
           onClose={() => setMenu(null)}
         />
+      )}
+
+      {confirmDelete && (
+        <div className="modal-backdrop" role="dialog" aria-modal="true">
+          <div className="modal">
+            <h3 className="modal-title">{t("chat.removeConfirm")}</h3>
+            <div className="modal-actions">
+              <button className="btn" onClick={() => setConfirmDelete(false)}>
+                {t("common.cancel")}
+              </button>
+              <button
+                className="btn btn-danger"
+                onClick={() => {
+                  void deleteChat(activeChat.id);
+                  setConfirmDelete(false);
+                }}
+              >
+                {t("common.remove")}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
