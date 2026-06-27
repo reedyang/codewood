@@ -1835,6 +1835,12 @@ class ServeApp:
                     )
                     if result:
                         return False
+                    try:
+                        save = getattr(agent, "_save_chat_state", None)
+                        if callable(save):
+                            save()
+                    except Exception:
+                        pass
         except Exception:
             return False
         threading.Thread(
