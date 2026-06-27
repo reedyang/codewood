@@ -2611,6 +2611,17 @@ class Agent:
             p = str(a.get("path") or "").strip()
             detail = f"({p})" if p else ""
             return (label, detail)
+        if name == "read":
+            p = str(a.get("path") or "").strip()
+            off = int(a.get("offset", 0) or 0)
+            lim = int(a.get("limit", 2000) or 2000)
+            try:
+                rel = Path(p).relative_to(self.workspace_root)
+            except Exception:
+                rel = p
+            label = translate("tool.label.read", self._ui_language())
+            detail = f"{rel} [offset={off}, limit={lim}]"
+            return (label, detail)
         if name == "project_context_search":
             q = str(a.get("query") or "").strip()
             label = translate("tool.label.project_context_search", self._ui_language())
