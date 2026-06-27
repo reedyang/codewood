@@ -14,6 +14,18 @@ from .base import BaseTool
 
 
 def action_read(agent: Any, path: str, offset: int = 0, limit: int = 2000, prompt: str = "") -> Dict[str, Any]:
+    _call_desc = ""
+    try:
+        _rp = Path(path)
+        if not _rp.is_absolute():
+            _rp = agent.work_directory / path
+        try:
+            _rel = _rp.relative_to(agent.workspace_root)
+        except Exception:
+            _rel = _rp
+        _call_desc = f"Read {_rel} [offset={offset}, limit={limit}]"
+    except Exception:
+        _call_desc = f"Read {path}"
     try:
         abs_path = Path(path)
         if not abs_path.is_absolute():
@@ -41,7 +53,7 @@ def action_read(agent: Any, path: str, offset: int = 0, limit: int = 2000, promp
                     entries.append(entry.name + suffix)
             except PermissionError:
                 return {"success": False, "error": f"Permission denied: {path}"}
-            return {"success": True, "content": "\n".join(entries), "file": str(abs_path)}
+            return {"success": True, "content": "\n".join(entries), "file": str(abs_path), "call": _call_desc}
 
         if not abs_path.is_file():
             return {"success": False, "error": f"'{path}' is not a file"}
@@ -57,7 +69,7 @@ def action_read(agent: Any, path: str, offset: int = 0, limit: int = 2000, promp
                 image_path=str(abs_path),
                 stream=False,
             )
-            return {"success": True, "content": str(analysis or ""), "file": str(abs_path)}
+            return {"success": True, "content": str(analysis or ""), "file": str(abs_path), "call": _call_desc}
 
         # ---------- text files ----------
         try:
@@ -74,7 +86,7 @@ def action_read(agent: Any, path: str, offset: int = 0, limit: int = 2000, promp
             sliced = lines[start:]
 
         result = "\n".join(f"{start + i + 1}: {line}" for i, line in enumerate(sliced))
-        return {"success": True, "content": result, "file": str(abs_path)}
+        return {"success": True, "content": result, "file": str(abs_path), "call": _call_desc}
     except Exception as e:
         return {"success": False, "error": f"Read failed: {str(e)}"}
 
