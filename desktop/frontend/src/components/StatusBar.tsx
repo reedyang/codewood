@@ -2,6 +2,15 @@ import { useState, useEffect, useRef } from "react";
 import { useApp } from "../state/AppContext";
 import type { IndexStatus } from "../api/types";
 
+function Dots() {
+  const [n, setN] = useState(0);
+  useEffect(() => {
+    const t = setInterval(() => setN((x) => (x + 1) % 4), 600);
+    return () => clearInterval(t);
+  }, []);
+  return <>{Array(n).fill(".").join("")}</>;
+}
+
 export function StatusBar() {
   const { state, client } = useApp();
   const [status, setStatus] = useState<IndexStatus | null>(null);
@@ -29,15 +38,9 @@ export function StatusBar() {
   if (status?.hidden) return null;
 
   const phase = status?.refresh_phase ?? "";
-  const total = status?.refresh_progress_total ?? 0;
-  const done = status?.refresh_progress_done ?? 0;
   const isScanning = phase === "scanning";
   const isIndexing = phase === "indexing";
   const isSaving = phase === "saving";
-  const pct = total > 0 ? Math.min(100, Math.round((done / total) * 100)) : 0;
-
-  const barWidth = 80;
-  const filledCount = Math.round((pct / 100) * (barWidth / 8));
 
   return (
     <footer className="status-bar">
@@ -46,20 +49,12 @@ export function StatusBar() {
           <span className="status-label">Saving...</span>
         ) : isScanning ? (
           <span className="status-label">
-            Found {done > 0 ? done.toLocaleString() : "..."} file{done !== 1 ? "s" : ""}
+            Found {(status?.files_total ?? 0).toLocaleString()} file{(status?.files_total ?? 0) !== 1 ? "s" : ""}
           </span>
         ) : isIndexing ? (
-          <>
-            <span className="status-label">Indexing</span>
-            {done > 0 && total > 0 && (
-              <span className="status-progress-text">
-                {done.toLocaleString()} / {total.toLocaleString()} {"\u00b7"} {pct}%
-              </span>
-            )}
-            <span className="status-progress-bar">
-              {"\u2588".repeat(filledCount)}{"\u2591".repeat(barWidth / 8 - filledCount)}
-            </span>
-          </>
+          <span className="status-label">
+            Indexing<Dots />
+          </span>
         ) : status ? (
           <span className="status-label">
             Index: {(status.files_total ?? 0).toLocaleString()} file{(status.files_total ?? 0) !== 1 ? "s" : ""}
