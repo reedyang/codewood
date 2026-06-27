@@ -4058,13 +4058,17 @@ h6.md-h {
 }
 .md-math-wrap {
   margin: 10px 0;
-  overflow-x: auto;
+  overflow: visible;
 }
 .md-math-block {
   display: block;
 }
 .md-math-block .katex-display {
   margin: 0;
+  overflow: visible !important;
+}
+.md-math-block .katex {
+  overflow: visible !important;
 }
 .md-math-inline {
   display: inline;
