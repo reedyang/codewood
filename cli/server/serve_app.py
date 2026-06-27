@@ -1715,6 +1715,12 @@ class ServeApp:
         # focused chat so the per-session conversation_history resolves to that
         # chat's live session.
         try:
+            try:
+                idx = getattr(self.agent, "_project_context_index", None)
+                if idx is not None and hasattr(idx, "request_yield"):
+                    idx.request_yield()
+            except Exception:
+                pass
             focus_chat = _primary_active_chat_id(self.agent)
             # When the active chat is not actively streaming a turn here
             # (no busy runtime), pull the latest record from disk before
@@ -1736,6 +1742,7 @@ class ServeApp:
                             announce=False,
                             clear_screen=False,
                             print_history=False,
+                            persist=False,
                         )
                 except Exception:
                     pass
@@ -1770,21 +1777,16 @@ class ServeApp:
         if not cid and not wsid:
             return False
         agent = self.agent
+        # Ask the project-context indexer to yield the GIL so this HTTP
+        # handler can acquire it promptly (cooperative yield).
+        try:
+            idx = getattr(agent, "_project_context_index", None)
+            if idx is not None and hasattr(idx, "request_yield"):
+                idx.request_yield()
+        except Exception:
+            pass
         try:
             if wsid and wsid != str(getattr(agent, "workspace_id", "") or ""):
-                # A workspace switch rebinds the agent's SHARED, workspace-level
-                # runtime: it reloads ``_chat_state`` with the target
-                # workspace's chat index, swaps ``workspace_root`` /
-                # ``work_directory``, and may tear down workspace services / MCP
-                # runtime.
-                #
-                # Switching is now ALLOWED even while a chat's loop is mid-turn
-                # (per product requirement: "allow switching to a chat in a
-                # different workspace while a task is running"). Before swapping
-                # the global state we flush every actively-running chat's
-                # in-memory messages to disk, so a background turn's reply is
-                # already persisted under its own workspace and is not lost when
-                # ``_chat_state`` is replaced.
                 try:
                     runner = getattr(agent, "_active_runtime_chat_ids", None)
                     running_ids = (
@@ -1806,18 +1808,9 @@ class ServeApp:
                     workspace_switch_command,
                 )
 
-                # The command returns a status string; redirect any incidental
-                # output so nothing leaks into the SSE stream.
                 with contextlib.redirect_stdout(io.StringIO()):
                     workspace_switch_command(agent, wsid)
 
-                # Focus changed: drop cached per-workspace persistence
-                # snapshots so any still-running background loop rebuilds a
-                # FRESH index snapshot from disk before its next save. This
-                # prevents a stale cached index (taken before the just-finished
-                # focused edits) from overwriting newer on-disk records. The
-                # newly-focused workspace now persists through the agent
-                # globals, so its cached ctx (if any) is no longer used.
                 with self._ws_persist_lock:
                     self._ws_persist_ctx.clear()
             if cid:
@@ -1827,21 +1820,10 @@ class ServeApp:
                 if not rid:
                     return False
                 if self._chat_is_busy(rid):
-                    # A turn is actively streaming here: the live loop owns this
-                    # chat's session, so just repoint the workspace's active
-                    # chat and persist it without touching conversation_history
-                    # (reloading would clobber the in-progress turn).
                     with agent._chat_state_lock:
                         agent._chat_state["active"] = rid
                         agent._save_chat_state()
                 else:
-                    # The chat is idle here (it may have no runtime, or a parked
-                    # one). Another codewood process (typically the TUI) may have
-                    # amended it on disk since we last loaded it, so pull its
-                    # latest record before binding the session. This is what
-                    # makes "switch chats and pick up the peer's new messages /
-                    # pending request_user_input / plan updates" work, even when this
-                    # process still holds an idle runtime for the chat.
                     try:
                         refresh = getattr(agent, "_refresh_chat_record_from_disk", None)
                         if callable(refresh):
@@ -1849,24 +1831,18 @@ class ServeApp:
                     except Exception:
                         pass
                     result = agent._activate_chat(
-                        rid, announce=False, clear_screen=False, print_history=False
+                        rid, announce=False, clear_screen=False, print_history=False, persist=False
                     )
                     if result:
                         return False
         except Exception:
             return False
-        # Use the non-terminating ``state`` event (not ``idle``) to push the
-        # refreshed snapshot. Switching focus must never flip the GUI's busy
-        # flag or freeze the live turn of the chat we land on: when the user
-        # switches back to a chat whose loop is still streaming, an ``idle``
-        # here would call ``endActiveTurn``/clear-busy for that chat even
-        # though it is genuinely still running — wiping its in-progress reply
-        # and the sidebar busy/blue dot, with no ``turn_start`` to restore
-        # them. ``state`` only re-syncs the snapshot (driving the active-chat
-        # history reload and plan panel) and leaves turn/busy state intact.
-        self.broadcaster.publish(
-            "state", self._route(state=_build_state(agent))
-        )
+        threading.Thread(
+            target=lambda: self.broadcaster.publish(
+                "state", self._route(state=_build_state(agent))
+            ),
+            daemon=True,
+        ).start()
         return True
 
     def set_theme(self, theme: str) -> bool:

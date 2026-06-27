@@ -570,37 +570,35 @@ class Agent:
         target_storage = Path(self.workspace_config_dir) / "indexes"
         reason_text = str(reason or "background")
         pc_logger = get_logger(f"{get_app_logger_root()}.project_context")
-        started_at = datetime.now()
-        try:
-            pc_logger.info(
-                        "Project context background refresh scheduled: reason=%s force=%s workspace=%s storage=%s",
-                reason_text,
-                bool(force),
-                str(target_root),
-                str(target_storage),
-            )
-        except Exception:
-            pass
+        is_startup = reason_text == "startup"
 
-        if reason_text == "startup":
+        if is_startup:
             if not self._project_context_tool_allowed():
                 with gate:
                     self._project_context_refresh_inflight = False
                 return True
-            # For non-default workspaces, don't defer — run the refresh now.
+
+        try:
+            pc_logger.info(
+                "Project context refresh scheduled: reason=%s workspace=%s storage=%s",
+                reason_text, str(target_root), str(target_storage),
+            )
+        except Exception:
+            pass
+
+        started_at = datetime.now()
 
         def _run() -> None:
             refresh_result: Dict[str, Any] = {}
             try:
                 index.bind_workspace(target_root, storage_dir=target_storage)
-                is_empty = len(index.files) == 0
-                if force or is_empty:
-                    budget_ms = None
-                else:
-                    budget_ms = 10000
+                # Startup and full rebuild: no deadline so ALL files are
+                # indexed in one pass, not just the first 200 within
+                # the 10-second budget.
+                budget_ms = None if (force or is_startup) else 10000
                 pc_logger.info(
-                    "Project context refresh: is_empty=%s force=%s budget_ms=%s files_in_index=%s",
-                    is_empty, bool(force), budget_ms, len(index.files),
+                    "Project context refresh: is_startup=%s force=%s budget_ms=%s files_in_index=%s",
+                    is_startup, bool(force), budget_ms, len(index.files),
                 )
                 refresh_result = index.refresh_index(
                     force=bool(force),
@@ -616,23 +614,15 @@ class Agent:
                 try:
                     elapsed_ms = int((datetime.now() - started_at).total_seconds() * 1000)
                     pc_logger.info(
-                        "Project context background refresh completed: reason=%s force=%s elapsed_ms=%s timed_out=%s files_total=%s scanned=%s processed=%s",
-                        reason_text,
-                        bool(force),
-                        elapsed_ms,
+                        "Project context refresh completed: reason=%s elapsed_ms=%s timed_out=%s files_total=%s",
+                        reason_text, elapsed_ms,
                         bool(refresh_result.get("timed_out", False)),
                         int(refresh_result.get("files_total", 0) or 0),
-                        int(refresh_result.get("scanned", 0) or 0),
-                        int(refresh_result.get("processed", 0) or 0),
                     )
                 except Exception:
                     pass
 
-        threading.Thread(
-            target=_run,
-            daemon=True,
-            name=f"{get_app_logger_root()}-project-context-refresh:{reason_text}",
-        ).start()
+        threading.Thread(target=_run, daemon=True).start()
         return True
 
     def _path_identity_key(self, path: Path) -> str:
@@ -1223,12 +1213,14 @@ class Agent:
         announce: bool = True,
         clear_screen: bool = False,
         print_history: bool = False,
+        persist: bool = True,
     ) -> str:
         return self._chat_state_manager.activate_chat(
             chat_id,
             announce=announce,
             clear_screen=clear_screen,
             print_history=print_history,
+            persist=persist,
         )
 
     def _active_chat_history_anchor_key(self) -> str:

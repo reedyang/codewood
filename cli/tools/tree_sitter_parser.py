@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import threading
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
@@ -13,6 +14,7 @@ except ImportError:  # pragma: no cover
 
 _LANGUAGE_LOADERS: Dict[str, Callable[[], Any]] = {}
 _PARSER_CACHE: Dict[str, Optional[Parser]] = {}
+_PARSER_TLS = threading.local()
 
 # Extension -> tree-sitter language name
 _SUFFIX_TO_LANG: Dict[str, str] = {
@@ -324,18 +326,29 @@ def _try_load_language(name: str) -> Optional[Language]:
         return None
 
 
+_PARSER_TLS = threading.local()
+
 def _get_parser(lang_name: str) -> Optional[Parser]:
     if not _TS_AVAILABLE:
         return None
-    cached = _PARSER_CACHE.get(lang_name)
+    # Thread-local cache so concurrent ThreadPool workers do not share a
+    # single Parser object -- tree-sitter's Parser.parse() is NOT
+    # thread-safe and will deadlock/hang when called concurrently on the
+    # same instance.
+    try:
+        tls_cache = _PARSER_TLS.cache
+    except AttributeError:
+        tls_cache = {}
+        _PARSER_TLS.cache = tls_cache
+    cached = tls_cache.get(lang_name)
     if cached is not None:
         return cached
     lang = _try_load_language(lang_name)
     if lang is None:
-        _PARSER_CACHE[lang_name] = None
+        tls_cache[lang_name] = None
         return None
     parser = Parser(lang)
-    _PARSER_CACHE[lang_name] = parser
+    tls_cache[lang_name] = parser
     return parser
 
 

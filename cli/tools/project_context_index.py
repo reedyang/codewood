@@ -6,7 +6,6 @@ import re
 import sqlite3
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
@@ -279,6 +278,7 @@ class ProjectContextIndex:
         self._refresh_progress_done: int = 0
         self._refresh_progress_phase: str = ""
         self._file_watcher: Optional[Any] = None
+        self._yield_event = threading.Event()
         self._load()
         self._start_watcher()
 
@@ -298,6 +298,14 @@ class ProjectContextIndex:
 
     def shutdown(self) -> None:
         self._stop_watcher()
+
+    def request_yield(self) -> None:
+        self._yield_event.set()
+
+    def _yield_if_requested(self) -> None:
+        if self._yield_event.is_set():
+            self._yield_event.clear()
+            time.sleep(0.5)
 
     def bind_workspace(self, workspace_root: Path, storage_dir: Optional[Path] = None) -> None:
         root = Path(workspace_root).resolve()
@@ -544,7 +552,14 @@ class ProjectContextIndex:
         return out, timed_out
 
     def _parse_file(self, p: Path, rel: str, st_mtime_ns: int, st_size: int) -> _FileEntry:
+        self._yield_if_requested()
         ts_symbols, ts_imports, ts_calls, ts_tokens = parse_file_tree_sitter(p)
+        # Yield again after tree-sitter parse returns — the C parse() call
+        # releases the GIL, giving HTTP handler threads a chance to set the
+        # yield event. Without a re-check here the BG thread would continue
+        # straight into CPU-bound extraction code, holding the GIL for
+        # another ~50-500 ms before the next file boundary.
+        self._yield_if_requested()
         if ts_symbols or ts_imports or ts_tokens:
             calls = [_CallEdge(caller=c, callee=cal) for c, cal in ts_calls]
             return _FileEntry(
@@ -556,6 +571,11 @@ class ProjectContextIndex:
                 tokens=ts_tokens,
                 calls=calls,
             )
+
+        # Fallback regex path: skip files larger than 512 KB to avoid holding
+        # the GIL for an extended time (which freezes the HTTP server).
+        if st_size > 512 * 1024:
+            return _FileEntry(path=rel, mtime_ns=st_mtime_ns, size=st_size, symbols=[], imports=[], tokens=[], calls=[])
 
         text = ""
         try:
@@ -706,51 +726,45 @@ class ProjectContextIndex:
             is_new = old is None
             to_parse.append((p, rel, mtime_ns, size, is_new))
 
-        # Phase 3 (no lock): parse changed files
+        # Phase 3 (no lock): parse changed files one at a time, yielding the
+        # GIL after each file so HTTP handler threads are not starved.
         parsed_entries: Dict[str, _FileEntry] = {}
         parsed_added = 0
         parsed_updated = 0
         timed_out = False
         parse_deadline = (_now_ts() + budget_s) if budget_s is not None else None
-        is_full_rebuild = force or len(base_files) == 0
         if to_parse:
             self._refresh_progress_phase = "indexing"
             self._refresh_progress_total = len(to_parse)
             self._refresh_progress_done = 0
-            workers = max(1, (os.cpu_count() or 4) // 4) if is_full_rebuild else max(2, (os.cpu_count() or 4) // 2)
-            batch_count = 0
-            with ThreadPoolExecutor(max_workers=workers) as executor:
-                future_to_info: Dict[Any, Tuple[str, bool]] = {}
-                for p, rel, mtime_ns, size, is_new in to_parse:
-                    fut = executor.submit(self._parse_file, p, rel, mtime_ns, size)
-                    future_to_info[fut] = (rel, is_new)
-                    if parse_deadline is not None and _now_ts() >= parse_deadline:
-                        timed_out = True
-                        break
-                for fut in as_completed(future_to_info):
-                    rel, is_new = future_to_info[fut]
-                    try:
-                        entry = fut.result()
-                    except Exception:
-                        self._refresh_progress_done += 1
-                        continue
-                    parsed_entries[rel] = entry
+            for p, rel, mtime_ns, size, is_new in to_parse:
+                if parse_deadline is not None and _now_ts() >= parse_deadline:
+                    timed_out = True
+                    break
+                try:
+                    entry = self._parse_file(p, rel, mtime_ns, size)
+                except Exception:
                     self._refresh_progress_done += 1
-                    if is_new:
-                        parsed_added += 1
-                    else:
-                        parsed_updated += 1
-                    batch_count += 1
-                    if batch_count % 100 == 0:
-                        time.sleep(0)
+                    continue
+                parsed_entries[rel] = entry
+                self._refresh_progress_done += 1
+                if is_new:
+                    parsed_added += 1
+                else:
+                    parsed_updated += 1
+                self._yield_if_requested()
 
         # Phase 4 (lock): commit results
         self._refresh_progress_phase = "saving"
+        index_existed_before_refresh = self.index_path.is_file()
+        next_files: Dict[str, _FileEntry] = {}
+        added = 0
+        updated = 0
+        deleted = 0
+        changed = False
+        should_save = False
         with self._lock:
-            index_existed_before_refresh = self.index_path.is_file()
             next_files = dict(self.files)
-            added = 0
-            updated = 0
             for rel, entry in parsed_entries.items():
                 if rel not in next_files:
                     added += 1
@@ -758,7 +772,6 @@ class ProjectContextIndex:
                     updated += 1
                 next_files[rel] = entry
 
-            deleted = 0
             if not timed_out:
                 for rel in list(next_files.keys()):
                     if rel not in seen_rel:
@@ -777,25 +790,29 @@ class ProjectContextIndex:
             self._refresh_progress_total = 0
             self._refresh_progress_done = 0
             should_save = changed or (not index_existed_before_refresh) or (timed_out and (added > 0 or updated > 0))
-            if should_save:
-                self._save()
 
-            return {
-                "success": True,
-                "force": bool(force),
-                "workspace_root": str(root),
-                "files_total": len(self.files),
-                "scanned": len(scanned),
-                "processed": processed,
-                "added": added,
-                "updated": updated,
-                "unchanged": unchanged,
-                "deleted": deleted,
-                "timed_out": timed_out,
-                "stale": timed_out,
-                "elapsed_ms": int((_now_ts() - t0) * 1000),
-                "index_path": str(self.index_path),
-            }
+        # Save outside the lock so HTTP handler threads (status(), search())
+        # are not blocked during SQLite writes. _save() opens its own
+        # connection (WAL mode allows concurrent readers).
+        if should_save:
+            self._save()
+
+        return {
+            "success": True,
+            "force": bool(force),
+            "workspace_root": str(root),
+            "files_total": len(self.files),
+            "scanned": len(scanned),
+            "processed": processed,
+            "added": added,
+            "updated": updated,
+            "unchanged": unchanged,
+            "deleted": deleted,
+            "timed_out": timed_out,
+            "stale": timed_out,
+            "elapsed_ms": int((_now_ts() - t0) * 1000),
+            "index_path": str(self.index_path),
+        }
 
     def _get_embedding_index(self) -> Any:
         if self._embedding_index is None:
@@ -870,35 +887,33 @@ class ProjectContextIndex:
             return result
 
     def embedding_status(self) -> Dict[str, Any]:
-        with self._lock:
-            ep = self._embedding_provider
-            return {
-                "success": True,
-                "provider_name": ep.provider_name if ep else "none",
-                "available": ep.available if ep else False,
-                "has_embeddings": self._get_embedding_index().has_embeddings(),
-                "files_indexed": len(self.files),
-            }
+        ep = self._embedding_provider
+        return {
+            "success": True,
+            "provider_name": ep.provider_name if ep else "none",
+            "available": ep.available if ep else False,
+            "has_embeddings": self._get_embedding_index().has_embeddings(),
+            "files_indexed": len(self.files),
+        }
 
     def status(self) -> Dict[str, Any]:
-        with self._lock:
-            phase = self._refresh_progress_phase
-            if phase == "scanning":
-                files_display = self._refresh_progress_done
-            elif phase == "indexing":
-                files_display = self._refresh_progress_done
-            else:
-                files_display = len(self.files)
-            return {
-                "success": True,
-                "workspace_root": str(self.workspace_root),
-                "index_path": str(self.index_path),
-                "files_total": files_display,
-                "last_index_at": self.last_index_at,
-                "refresh_phase": phase,
-                "refresh_progress_total": self._refresh_progress_total,
-                "refresh_progress_done": self._refresh_progress_done,
-            }
+        phase = self._refresh_progress_phase
+        if phase == "scanning":
+            files_display = self._refresh_progress_done
+        elif phase == "indexing":
+            files_display = self._refresh_progress_done
+        else:
+            files_display = len(self.files)
+        return {
+            "success": True,
+            "workspace_root": str(self.workspace_root) if self.workspace_root else "",
+            "index_path": str(self.index_path) if self.index_path else "",
+            "files_total": files_display,
+            "last_index_at": self.last_index_at,
+            "refresh_phase": phase,
+            "refresh_progress_total": self._refresh_progress_total,
+            "refresh_progress_done": self._refresh_progress_done,
+        }
 
     def search(
         self,
@@ -1227,7 +1242,8 @@ if _WATCHDOG_AVAILABLE:
                     index._refresh_progress_phase = ""
                     index._refresh_progress_total = 0
                     index._refresh_progress_done = 0
-                    index._save()
+                # Save outside the lock so HTTP handler threads are not blocked.
+                index._save()
 
         def _on_event(self, rel: str, kind: Optional[str]) -> None:
             if not rel:
