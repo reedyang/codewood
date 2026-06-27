@@ -115,7 +115,7 @@ def _native_hwnd(window: Any) -> Optional[int]:
 
 # Radius (device px) of the single rounded bottom-right corner applied via a
 # custom window region. Kept small to match the surrounding panel inset.
-_BR_CORNER_RADIUS = 6
+_BR_CORNER_RADIUS = 0
 
 
 def _style_overlay_window_win32(overlay_hwnd: int, parent_hwnd: Optional[int]) -> None:
@@ -209,6 +209,11 @@ def _round_bottom_right_corner_win32(overlay_hwnd: int, width: int, height: int)
 
         gdi32 = ctypes.windll.gdi32
         user32 = ctypes.windll.user32
+
+        if r <= 0:
+            user32.SetWindowRgn(wintypes.HWND(overlay_hwnd), None, True)
+            return
+
         RGN_OR = 2
 
         # Base rectangle excluding a square of side r at the bottom-right.
