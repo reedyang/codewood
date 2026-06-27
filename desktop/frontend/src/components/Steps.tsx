@@ -93,14 +93,7 @@ export function StepsView({ text }: { text: string }) {
   const onPathPreview = useCallback(async (path: string) => {
     const api = hostApi();
     if (!api?.browser_overlay_preview_path) return;
-    const result = await Promise.resolve(api.browser_overlay_preview_path(path));
-    if (result && result.ok && result.url) {
-      window.dispatchEvent(
-        new CustomEvent("codewood:browser-open-preview", {
-          detail: { url: result.url },
-        }),
-      );
-    }
+    void api.browser_overlay_preview_path(path);
   }, []);
 
   // Index of the last segment that carries visible content, so a diff block
