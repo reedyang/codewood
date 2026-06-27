@@ -249,17 +249,16 @@ class HostApi:
         except Exception as exc:  # pragma: no cover - defensive
             return {"success": False, "error": f"overlay command failed: {exc}"}
 
-    def browser_overlay_preview_path(self, path: str) -> dict:
+    def browser_overlay_preview_path(self, path: str) -> bool:
         """Re-preview a local HTML file in the overlay browser.
 
         Called from the frontend when the user clicks a preview-path link
         in the tool feedback.  POSTs to the backend's ``/preview-local-file``
-        to re-read the file and save a fresh bridged copy, then returns the
-        resolved URL to the frontend so the BrowserPanel can drive the overlay
-        through its normal command flow.
+        to re-read the file and save a fresh bridged copy, then opens the
+        returned URL in the overlay.
         """
-        if not self._backend_url:
-            return {"ok": False}
+        if self._overlay is None or not self._backend_url:
+            return False
         try:
             import json
             from urllib.request import Request, urlopen
@@ -276,14 +275,20 @@ class HostApi:
             resp = urlopen(req, timeout=10)
             if resp.status == 200:
                 data = json.loads(resp.read().decode("utf-8"))
-                url = data.get("url", "")
-                if url:
-                    if url.startswith("/"):
-                        url = f"{self._backend_url}{url}"
-                    return {"ok": True, "url": url}
+                rel_url = data.get("url", "")
+                if rel_url:
+                    # The overlay's WebView has no base URL context, so build
+                    # an absolute URL from the backend's origin.
+                    abs_url = rel_url
+                    if rel_url.startswith("/"):
+                        abs_url = f"{self._backend_url}{rel_url}"
+                    # First ensure the overlay is visible, then navigate.
+                    self.browser_overlay_show()
+                    self.browser_overlay_command("open_preview", abs_url)
+                    return True
         except Exception:
             pass
-        return {"ok": False}
+        return False
 
     def host_platform(self) -> str:
         """Report the host OS family so the frontend can pick drag strategies.
