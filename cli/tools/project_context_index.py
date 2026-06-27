@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import json
 import math
+import multiprocessing
 import os
 import re
 import sqlite3
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
@@ -254,6 +257,90 @@ class _FileEntry:
         )
 
 
+def _write_status_file(path: str, data: dict) -> None:
+    """Atomically write *data* to *path* as JSON (tmp + replace)."""
+    data["_ts"] = time.time()
+    tmp = path + ".tmp"
+    try:
+        with open(tmp, "w") as f:
+            json.dump(data, f)
+        os.replace(tmp, path)
+    except Exception:
+        pass
+
+
+def _index_refresh_worker(workspace_root: str, storage_dir: str, status_file: str) -> None:
+    """Run in a child process (``multiprocessing.spawn``) to build the
+    project context index.  Writes progress to *status_file* so the
+    main process can surface it via ``status()``.
+    """
+    _ts_ok = False
+    try:
+        from cli.tools.tree_sitter_parser import _TS_AVAILABLE
+        _ts_ok = bool(_TS_AVAILABLE)
+    except Exception:
+        pass
+    _write_status_file(status_file, {"phase": "starting", "progress_total": 0, "progress_done": 0, "expected_total": 0, "ts": _ts_ok})
+    try:
+        from cli.tools.project_context_index import ProjectContextIndex
+
+        idx = ProjectContextIndex(
+            workspace_root=Path(workspace_root),
+            storage_dir=Path(storage_dir),
+        )
+
+        # Background thread: poll index progress and write to status file
+        # every 2 seconds so the GUI can display live progress.
+        _stop_poll = threading.Event()
+        _phase1_peak = [0]
+        _stable_phase = [""]
+        _t0 = time.time()
+
+        def _poll_progress() -> None:
+            while not _stop_poll.is_set():
+                phase = idx._refresh_progress_phase or ""
+                total = idx._refresh_progress_total
+                done = idx._refresh_progress_done
+                if phase and phase != "saving":
+                    _stable_phase[0] = phase
+                if phase == "scanning" and done > _phase1_peak[0]:
+                    _phase1_peak[0] = done
+                if phase in ("indexing",):
+                    display = done
+                else:
+                    display = done or _phase1_peak[0]
+                _write_status_file(status_file, {
+                    "phase": _stable_phase[0] or "indexing",
+                    "progress_total": total or _phase1_peak[0],
+                    "progress_done": done,
+                    "expected_total": _phase1_peak[0],
+                    "elapsed_sec": int(time.time() - _t0),
+                    "ts": _ts_ok,
+                })
+                _stop_poll.wait(timeout=2.0)
+
+        pt = threading.Thread(target=_poll_progress, daemon=True)
+        pt.start()
+
+        result = idx.refresh_index(force=False, timeout_ms=None)
+        _stop_poll.set()
+        pt.join(timeout=3)
+
+        _write_status_file(status_file, {
+            "phase": "done",
+            "progress_total": result.get("files_total", 0),
+            "progress_done": result.get("files_total", 0),
+        })
+    except Exception as exc:
+        _write_status_file(status_file, {
+            "phase": "error",
+            "progress_total": 0,
+            "progress_done": 0,
+            "error": str(exc),
+        })
+        raise
+
+
 class ProjectContextIndex:
     """
     Lightweight project index for M1:
@@ -279,7 +366,21 @@ class ProjectContextIndex:
         self._refresh_progress_phase: str = ""
         self._file_watcher: Optional[Any] = None
         self._yield_event = threading.Event()
+        self._subprocess: Optional[multiprocessing.Process] = None
+        self._status_file: Optional[str] = None
+        self._index_expected_total: int = 0
         self._load()
+        # Read the stale status file (if any) for expected_total so
+        # the count doesn't drop when restarting mid-indexing.
+        try:
+            st = self._read_status_file_by_path(self.storage_dir / ".index_status.json")
+            if st is not None:
+                v = int(st.get("expected_total", 0) or 0)
+                if v == 0:
+                    v = int(st.get("progress_total", 0) or 0)
+                self._index_expected_total = v
+        except Exception:
+            pass
         self._start_watcher()
 
     def _start_watcher(self) -> None:
@@ -306,6 +407,61 @@ class ProjectContextIndex:
         if self._yield_event.is_set():
             self._yield_event.clear()
             time.sleep(0.5)
+
+    def start_subprocess_refresh(self, on_done: Optional[Any] = None) -> bool:
+        """Launch the index refresh in a child process (separate GIL).
+
+        Returns ``True`` if the process was started, ``False`` if one is
+        already running or the subprocess could not be created.
+        """
+        if self._subprocess is not None and self._subprocess.is_alive():
+            return False
+
+        try:
+            ctx = multiprocessing.get_context("spawn")
+            sf = str(self.storage_dir / ".index_status.json")
+            self._status_file = sf
+            proc = ctx.Process(
+                target=_index_refresh_worker,
+                args=(str(self.workspace_root), str(self.storage_dir), sf),
+                daemon=True,
+            )
+            proc.start()
+            self._subprocess = proc
+
+            def _monitor() -> None:
+                try:
+                    proc.join()
+                except Exception:
+                    pass
+                # Run the done callback BEFORE clearing the subprocess
+                # reference so ``_load()`` (inside on_done) completes
+                # before any ``status()`` call can read stale data.
+                if on_done is not None:
+                    try:
+                        on_done()
+                    except Exception:
+                        pass
+                self._subprocess = None
+
+            threading.Thread(target=_monitor, daemon=True).start()
+            return True
+        except Exception:
+            return False
+
+    @staticmethod
+    def _read_status_file_by_path(path: Path) -> Optional[Dict[str, Any]]:
+        try:
+            with open(str(path), "r") as f:
+                return json.load(f)
+        except Exception:
+            return None
+
+    def _read_status_file(self) -> Optional[Dict[str, Any]]:
+        sf = self._status_file
+        if sf is None:
+            return None
+        return self._read_status_file_by_path(Path(sf))
 
     def bind_workspace(self, workspace_root: Path, storage_dir: Optional[Path] = None) -> None:
         root = Path(workspace_root).resolve()
@@ -694,6 +850,7 @@ class ProjectContextIndex:
         def _scan_progress(count: int) -> None:
             self._refresh_progress_done = count
         scanned, _discovery_timed_out = self._iter_code_files(deadline_ts=None, progress_cb=_scan_progress)
+        self._refresh_progress_done = len(scanned)
         self._refresh_progress_phase = ""
 
         with self._lock:
@@ -726,33 +883,44 @@ class ProjectContextIndex:
             is_new = old is None
             to_parse.append((p, rel, mtime_ns, size, is_new))
 
-        # Phase 3 (no lock): parse changed files one at a time, yielding the
-        # GIL after each file so HTTP handler threads are not starved.
+        # Phase 3 (no lock): parse changed files with a thread pool.
+        # When running in a child process (subprocess mode) this gives
+        # true parallelism without GIL contention; when running in the
+        # main process the cooperative _yield_if_requested() after each
+        # file keeps HTTP handlers responsive.
         parsed_entries: Dict[str, _FileEntry] = {}
         parsed_added = 0
         parsed_updated = 0
         timed_out = False
         parse_deadline = (_now_ts() + budget_s) if budget_s is not None else None
+        is_full_rebuild = force or len(base_files) == 0
         if to_parse:
-            self._refresh_progress_phase = "indexing"
             self._refresh_progress_total = len(to_parse)
+            self._refresh_progress_phase = "indexing"
             self._refresh_progress_done = 0
-            for p, rel, mtime_ns, size, is_new in to_parse:
-                if parse_deadline is not None and _now_ts() >= parse_deadline:
-                    timed_out = True
-                    break
-                try:
-                    entry = self._parse_file(p, rel, mtime_ns, size)
-                except Exception:
+            workers = max(2, (os.cpu_count() or 4) // 2)
+            with ThreadPoolExecutor(max_workers=workers) as executor:
+                future_to_info: Dict[Any, Tuple[str, bool]] = {}
+                for p, rel, mtime_ns, size, is_new in to_parse:
+                    fut = executor.submit(self._parse_file, p, rel, mtime_ns, size)
+                    future_to_info[fut] = (rel, is_new)
+                    if parse_deadline is not None and _now_ts() >= parse_deadline:
+                        timed_out = True
+                        break
+                for fut in as_completed(future_to_info):
+                    rel, is_new = future_to_info[fut]
+                    try:
+                        entry = fut.result()
+                    except Exception:
+                        self._refresh_progress_done += 1
+                        continue
+                    parsed_entries[rel] = entry
                     self._refresh_progress_done += 1
-                    continue
-                parsed_entries[rel] = entry
-                self._refresh_progress_done += 1
-                if is_new:
-                    parsed_added += 1
-                else:
-                    parsed_updated += 1
-                self._yield_if_requested()
+                    if is_new:
+                        parsed_added += 1
+                    else:
+                        parsed_updated += 1
+                    self._yield_if_requested()
 
         # Phase 4 (lock): commit results
         self._refresh_progress_phase = "saving"
@@ -897,6 +1065,27 @@ class ProjectContextIndex:
         }
 
     def status(self) -> Dict[str, Any]:
+        # Read progress from the subprocess's status file whenever one
+        # exists (alive or just-exited), so the count never drops to 0
+        # during the brief window between proc.join() and _load().
+        if self._subprocess is not None:
+            st = self._read_status_file()
+            if st is not None:
+                phase = st.get("phase", "indexing") or "indexing"
+                total = int(st.get("progress_total", 0) or 0)
+                done = int(st.get("progress_done", 0) or 0)
+                display = max(self._index_expected_total, len(self.files) + done) if phase in ("indexing", "scanning", "starting", "") else (total if phase == "done" else done)
+                return {
+                    "success": True,
+                    "workspace_root": str(self.workspace_root) if self.workspace_root else "",
+                    "index_path": str(self.index_path) if self.index_path else "",
+                    "files_total": display,
+                    "last_index_at": self.last_index_at,
+                    "refresh_phase": phase,
+                    "refresh_progress_total": total,
+                    "refresh_progress_done": done,
+                }
+
         phase = self._refresh_progress_phase
         if phase == "scanning":
             files_display = self._refresh_progress_done
@@ -904,6 +1093,8 @@ class ProjectContextIndex:
             files_display = self._refresh_progress_done
         else:
             files_display = len(self.files)
+            if files_display < self._index_expected_total:
+                files_display = self._index_expected_total
         return {
             "success": True,
             "workspace_root": str(self.workspace_root) if self.workspace_root else "",

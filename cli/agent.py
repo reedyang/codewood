@@ -570,9 +570,8 @@ class Agent:
         target_storage = Path(self.workspace_config_dir) / "indexes"
         reason_text = str(reason or "background")
         pc_logger = get_logger(f"{get_app_logger_root()}.project_context")
-        is_startup = reason_text == "startup"
 
-        if is_startup:
+        if reason_text == "startup":
             if not self._project_context_tool_allowed():
                 with gate:
                     self._project_context_refresh_inflight = False
@@ -586,43 +585,28 @@ class Agent:
         except Exception:
             pass
 
-        started_at = datetime.now()
+        try:
+            index.bind_workspace(target_root, storage_dir=target_storage)
+        except Exception:
+            with gate:
+                self._project_context_refresh_inflight = False
+            return False
 
-        def _run() -> None:
-            refresh_result: Dict[str, Any] = {}
+        def _on_done() -> None:
+            with gate:
+                self._project_context_refresh_inflight = False
             try:
-                index.bind_workspace(target_root, storage_dir=target_storage)
-                # Startup and full rebuild: no deadline so ALL files are
-                # indexed in one pass, not just the first 200 within
-                # the 10-second budget.
-                budget_ms = None if (force or is_startup) else 10000
-                pc_logger.info(
-                    "Project context refresh: is_startup=%s force=%s budget_ms=%s files_in_index=%s",
-                    is_startup, bool(force), budget_ms, len(index.files),
-                )
-                refresh_result = index.refresh_index(
-                    force=bool(force),
-                    timeout_ms=budget_ms,
-                )
-                if refresh_result.get("success") and int(refresh_result.get("files_total", 0) or 0) > 0:
-                    index._ensure_embedding_provider()
+                with index._lock:
+                    index._load()
+                pc_logger.info("Project context subprocess refresh completed")
             except Exception:
                 pass
-            finally:
-                with gate:
-                    self._project_context_refresh_inflight = False
-                try:
-                    elapsed_ms = int((datetime.now() - started_at).total_seconds() * 1000)
-                    pc_logger.info(
-                        "Project context refresh completed: reason=%s elapsed_ms=%s timed_out=%s files_total=%s",
-                        reason_text, elapsed_ms,
-                        bool(refresh_result.get("timed_out", False)),
-                        int(refresh_result.get("files_total", 0) or 0),
-                    )
-                except Exception:
-                    pass
 
-        threading.Thread(target=_run, daemon=True).start()
+        ok = index.start_subprocess_refresh(on_done=_on_done)
+        if not ok:
+            with gate:
+                self._project_context_refresh_inflight = False
+            return False
         return True
 
     def _path_identity_key(self, path: Path) -> str:
