@@ -391,6 +391,14 @@ class ChatStateManager:
                 out["plan_updated_at"] = str(raw.get("plan_updated_at") or "").strip()
         if bool(raw.get("exclude_from_model_context", False)):
             out["exclude_from_model_context"] = True
+        if bool(raw.get("_internal", False)):
+            out["_internal"] = True
+        api_content = str(raw.get("_api_content") or "").strip()
+        if api_content:
+            out["_api_content"] = api_content
+        tool_calls = raw.get("tool_calls")
+        if isinstance(tool_calls, list) and tool_calls:
+            out["tool_calls"] = tool_calls
         pseudo_tool_call_text = str(raw.get("pseudo_tool_call_text") or "").strip()
         if pseudo_tool_call_text:
             out["pseudo_tool_call_text"] = pseudo_tool_call_text
@@ -994,6 +1002,14 @@ class ChatStateManager:
                         entry["plan_updated_at"] = str(m.get("plan_updated_at") or "").strip()
                 if bool(m.get("exclude_from_model_context", False)):
                     entry["exclude_from_model_context"] = True
+                if bool(m.get("_internal", False)):
+                    entry["_internal"] = True
+                api_content = str(m.get("_api_content") or "").strip()
+                if api_content:
+                    entry["_api_content"] = api_content
+                tool_calls = m.get("tool_calls")
+                if isinstance(tool_calls, list) and tool_calls:
+                    entry["tool_calls"] = tool_calls
                 pseudo_tool_call_text = str(m.get("pseudo_tool_call_text") or "").strip()
                 if pseudo_tool_call_text:
                     entry["pseudo_tool_call_text"] = pseudo_tool_call_text

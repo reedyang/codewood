@@ -74,7 +74,7 @@ class AgentAIContext:
     model_params: Optional[Dict[str, Any]]
     openai_conf: Optional[Dict[str, Any]]
     work_directory: str
-    history_writer: Callable[[str, str], None]
+    history_writer: Callable[..., None]
     regular_message_builder: Callable[[str, str], Tuple[List[Dict[str, Any]], bool]]
     ollama_importer: Callable[[], Any]
     display_language: str = "en"
@@ -144,24 +144,45 @@ class AIOrchestrator:
             ) -> None:
                 if not record_history:
                     return
-                if not call_ctx.history_skip_user:
-                    _u = (
+                # Record user messages (including tool-result intermediates) so
+                # replayed history prefixes match cache units.  Tool-result user
+                # messages are flagged ``_internal`` so the display can hide them.
+                #
+                # ``content``  = clean display text (e.g. the raw user question)
+                # ``_api_content`` = exact text sent in the API payload (for cache
+                #                    prefix matching during history replay).
+                _api_content = ""
+                for _m in reversed(messages):
+                    if isinstance(_m, dict) and str(_m.get("role", "")).strip().lower() == "user":
+                        _api_content = str(_m.get("content", ""))
+                        break
+                if call_ctx.history_skip_user:
+                    if _api_content:
+                        self.context.history_writer("user", _api_content, _internal=True, api_content=_api_content)
+                else:
+                    _clean = (
                         call_ctx.history_user_input
                         if call_ctx.history_user_input is not None
                         else call_ctx.user_input
                     )
-                    self.context.history_writer("user", _u)
+                    if _api_content and _api_content != _clean:
+                        self.context.history_writer("user", _clean, api_content=_api_content)
+                    else:
+                        self.context.history_writer("user", _clean)
                 assistant_text = str(ai_response or "")
+                tool_calls_data: Any = None
+                if isinstance(message, dict):
+                    tool_calls_data = message.get("tool_calls")
                 if not assistant_text.strip():
-                    # When the model returned only standard `tool_calls` (no visible
+                    # When the model returned only standard ``tool_calls`` (no visible
                     # text content), persist a synthetic JSON plan so the chat
-                    # history replay (`_parse_model_tool_plan_history_content`)
+                    # history replay (``_parse_model_tool_plan_history_content``)
                     # can still surface the tool call. This keeps tools like
-                    # `apply_patch` from disappearing from chat history when the
+                    # ``apply_patch`` from disappearing from chat history when the
                     # provider omits a textual content payload.
                     plan_payload = _build_tool_calls_plan_payload(message)
                     if plan_payload:
-                        self.context.history_writer("assistant", plan_payload)
+                        self.context.history_writer("assistant", plan_payload, tool_calls=tool_calls_data)
                         return
                     _AI_HISTORY_LOG.warning(
                         "llm-history empty-assistant skipped provider=%s model=%s stream=%s return_message=%s history_skip_user=%s",
@@ -172,7 +193,7 @@ class AIOrchestrator:
                         bool(call_ctx.history_skip_user),
                     )
                     return
-                self.context.history_writer("assistant", assistant_text)
+                self.context.history_writer("assistant", assistant_text, tool_calls=tool_calls_data)
 
             provider_ctx = ProviderCallContext(
                 provider=provider,
