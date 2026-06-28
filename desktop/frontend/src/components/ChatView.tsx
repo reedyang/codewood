@@ -1339,7 +1339,7 @@ function Dropdown({
   );
 }
 
-const FIXED_REASONING_EFFORTS = ["low", "medium", "high"] as const;
+const FIXED_REASONING_EFFORTS = ["low", "medium", "high", "max"] as const;
 
 /** Compact circular progress badge that mirrors the TUI status bar's context
  *  usage indicator. Sized to fit on the composer toolbar next to the model

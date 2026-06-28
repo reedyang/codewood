@@ -11,7 +11,7 @@ import {
   type EditorHeader,
 } from "./modelPresets";
 
-const FIXED_EFFORTS = ["low", "medium", "high"] as const;
+const FIXED_EFFORTS = ["low", "medium", "high", "max"] as const;
 
 interface ModelsSettingsProps {
   onDirtyChange?: (dirty: boolean) => void;
