@@ -3444,11 +3444,29 @@ class ServeApp:
                 agent._resolved_config_data = {}
             except Exception:
                 pass
+            # Refresh the live agent params so the current model's
+            # reasoning_effort / extra_headers reflect the just-saved
+            # config without requiring a model switch.
+            try:
+                catalog = agent._get_configured_model_catalog()
+                current = agent._current_model_selector().lower()
+                for entry in catalog:
+                    if (entry.get("selector") or "").lower() == current:
+                        entry_params = entry.get("params", {})
+                        if isinstance(entry_params, dict):
+                            current_params = getattr(agent, "params", {}) or {}
+                            if isinstance(current_params, dict):
+                                current_params["reasoning_effort"] = list(
+                                    entry_params.get("reasoning_effort") or []
+                                )
+                        break
+            except Exception:
+                pass
         except Exception:
             return False
         # Refresh GUI clients with the new available-model list.
         try:
-            self.broadcaster.publish({"event": "idle", "data": {"state": self.state()}})
+            self.broadcaster.publish("idle", {"state": self.state()})
         except Exception:
             pass
         return True
