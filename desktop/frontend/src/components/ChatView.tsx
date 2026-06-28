@@ -1506,16 +1506,13 @@ function ModelMenu({
         <div className="dropdown-menu align-right">
           <div className="model-group">
             <div className="model-group-header">{t("reasoning.label")}</div>
-            {FIXED_REASONING_EFFORTS.map((level) => {
-              const enabled = supported.has(level);
-              const active = enabled && level === selectedLower;
+            {FIXED_REASONING_EFFORTS.filter((level) => supported.has(level)).map((level) => {
+              const active = level === selectedLower;
               return (
                 <button
                   key={level}
                   className={`dropdown-item ${active ? "active" : ""}`}
-                  disabled={!enabled}
                   onClick={() => {
-                    if (!enabled) return;
                     close();
                     onSelectReasoning(level);
                   }}
@@ -1527,6 +1524,12 @@ function ModelMenu({
                 </button>
               );
             })}
+            {supported.size === 0 && (
+              <button className="dropdown-item" disabled>
+                <span className="dropdown-check" />
+                <span>{t("reasoning.unavailable")}</span>
+              </button>
+            )}
           </div>
           <div className="model-group">
             <div className="model-group-header">{t("model.label")}</div>

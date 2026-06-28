@@ -55,6 +55,7 @@ export const zhCN: Dict = {
   "reasoning.effort.medium": "中",
   "reasoning.effort.high": "高",
   "reasoning.effort.max": "最大",
+  "reasoning.unavailable": "不可用",
   "plan.title": "待办事项",
   "plan.empty": "暂无计划。",
 
