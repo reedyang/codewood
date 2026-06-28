@@ -54,6 +54,7 @@ export const en: Dict = {
   "reasoning.effort.low": "Low",
   "reasoning.effort.medium": "Medium",
   "reasoning.effort.high": "High",
+  "reasoning.effort.max": "Max",
   "plan.title": "To-dos",
   "plan.empty": "No plan yet.",
 
