@@ -101,17 +101,17 @@ class LLMContextManager:
             profile = "small"
             system_ratio, history_ratio, op_ratio, summary_ratio = 0.50, 0.26, 0.14, 0.10
             memory_share_ratio = 0.42
-            assistant_clip_tokens = 180
+            assistant_clip_tokens = 8000
         elif ctx_window <= MEDIUM_CTX_MAX:
             profile = "medium"
             system_ratio, history_ratio, op_ratio, summary_ratio = 0.45, 0.35, 0.12, 0.08
             memory_share_ratio = 0.45
-            assistant_clip_tokens = 260
+            assistant_clip_tokens = 16000
         else:
             profile = "large"
             system_ratio, history_ratio, op_ratio, summary_ratio = 0.38, 0.48, 0.10, 0.06
             memory_share_ratio = 0.55
-            assistant_clip_tokens = 400
+            assistant_clip_tokens = 32000
 
         output_reserve = int(ctx_window * CONTEXT_OUTPUT_RESERVE_RATIO)
         output_reserve = max(CONTEXT_OUTPUT_RESERVE_MIN, min(output_reserve, CONTEXT_OUTPUT_RESERVE_MAX))
@@ -237,6 +237,12 @@ class LLMContextManager:
             if role not in ("user", "assistant"):
                 continue
             raw_content = str(msg.get("content") or "")
+            # When the message carries ``_api_content`` (the exact text that was
+            # sent to the provider), use it for the model context so replayed
+            # history prefixes match upstream cache units.
+            api_content = msg.get("_api_content")
+            if isinstance(api_content, str) and api_content.strip():
+                raw_content = api_content
             if role == "user" and self._is_excluded_user_message_for_model_context(msg):
                 continue
             if role == "user" and self._is_builtin_slash_user_message(role, raw_content):
@@ -263,7 +269,8 @@ class LLMContextManager:
                 content = self._clip_text_to_token_budget(content, assistant_clip_tokens)
                 if content != before:
                     assistant_trimmed += 1
-            normalized.append({"role": role, "content": content})
+            entry: Dict[str, Any] = {"role": role, "content": content}
+            normalized.append(entry)
 
         if not normalized:
             return [], {"assistant_trimmed": assistant_trimmed, "summary_messages": 0, "dropped_messages": 0}

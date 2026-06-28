@@ -364,7 +364,7 @@ class SessionMemoryService:
         self._start_token_counter_warmup()
         return None
 
-    def append_chat_message(self, role: str, content: str) -> None:
+    def append_chat_message(self, role: str, content: str, tool_calls: Any = None, _internal: bool = False, api_content: Optional[str] = None) -> None:
         r = str(role or "").strip().lower()
         if r not in ("user", "assistant"):
             return
@@ -373,6 +373,10 @@ class SessionMemoryService:
             "content": str(content or ""),
             "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         }
+        if _internal:
+            message["_internal"] = True
+        if isinstance(api_content, str) and api_content:
+            message["_api_content"] = api_content
         if r == "assistant":
             manager = getattr(self.agent, "_chat_state_manager", None)
             attach = getattr(manager, "attach_pending_plan_to_message", None)
@@ -381,6 +385,8 @@ class SessionMemoryService:
                     attach(message)
                 except Exception:
                     pass
+        if isinstance(tool_calls, list) and tool_calls:
+            message["tool_calls"] = tool_calls
         self.agent.conversation_history.append(message)
         self.agent._sync_active_chat_messages()
         if r == "user":

@@ -137,8 +137,8 @@ def _genuine_user_positions_in_list(messages: Any) -> list:
     """Return indices of genuine user prompts within ``messages``.
 
     Internal bookkeeping entries that happen to use the ``user`` role (direct
-    shell commands, internal slash commands) are excluded so the index the user
-    types matches the messages they actually sent.
+    shell commands, internal slash commands, tool-result feed messages) are
+    excluded so the index the user types matches the messages they actually sent.
     """
     from ..agent import (
         DIRECT_SHELL_USER_HISTORY_PREFIX,
@@ -150,6 +150,8 @@ def _genuine_user_positions_in_list(messages: Any) -> list:
         if not isinstance(msg, dict):
             continue
         if str(msg.get("role") or "").strip().lower() != "user":
+            continue
+        if msg.get("_internal"):
             continue
         content = str(msg.get("content") or "")
         if content.startswith(DIRECT_SHELL_USER_HISTORY_PREFIX):
