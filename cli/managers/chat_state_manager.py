@@ -2,11 +2,40 @@
 import os
 import secrets
 import shutil
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from ..core.localization import translate
+
+
+def _safe_replace(src: Path, dst: Path) -> None:
+    """Replace *dst* with *src*, retrying on Windows transient locks."""
+    try:
+        os.replace(src, dst)
+        return
+    except OSError:
+        if os.name != "nt":
+            raise
+    for delay in (0.02, 0.05, 0.12, 0.25, 0.5):
+        try:
+            os.replace(src, dst)
+            return
+        except OSError:
+            time.sleep(delay)
+    try:
+        try:
+            dst.unlink()
+        except FileNotFoundError:
+            pass
+        os.replace(src, dst)
+    except OSError:
+        shutil.copy2(src, dst)
+        try:
+            src.unlink()
+        except OSError:
+            pass
 
 
 CHAT_STATE_VERSION = 1
@@ -574,7 +603,7 @@ class ChatStateManager:
                 with open(tmp_path, "w", encoding="utf-8") as f:
                     json.dump(record_payload, f, ensure_ascii=False, indent=2)
                     f.write("\n")
-                os.replace(tmp_path, record_path)
+                _safe_replace(tmp_path, record_path)
                 index_chats.append(
                     {
                         "id": cid,
@@ -598,7 +627,7 @@ class ChatStateManager:
             with open(tmp_index, "w", encoding="utf-8") as f:
                 json.dump(index_payload, f, ensure_ascii=False, indent=2)
                 f.write("\n")
-            os.replace(tmp_index, index_path)
+            _safe_replace(tmp_index, index_path)
 
             # Only sweep record files we know used to belong to this index
             # and are now gone from memory. A record on disk that this
