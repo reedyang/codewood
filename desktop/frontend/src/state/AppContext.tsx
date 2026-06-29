@@ -286,10 +286,28 @@ export function AppProvider({ children }: { children: ReactNode }) {
   // Live (in-session) turns are tracked per chat so a chat's in-progress work
   // is preserved when the user switches to another chat. The active chat's
   // list is exposed as `turns` below.
-  const [turnsByChat, setTurnsByChat] = useState<Record<string, Turn[]>>({});
+  const [_turnsByChat, _rawSetTurnsByChat] = useState<Record<string, Turn[]>>({});
   // Mirror of turnsByChat readable synchronously (e.g. while loading history we
-  // must know whether a chat still has an in-progress live turn).
+  // must know whether a chat still has an in-progress live turn).  Updated
+  // synchronously inside every state mutation so async callbacks always see
+  // the committed render's snapshot — never a stale pre-render snapshot.
   const turnsByChatRef = useRef<Record<string, Turn[]>>({});
+  const setTurnsByChat = useCallback(
+    (arg: React.SetStateAction<Record<string, Turn[]>>) => {
+      if (typeof arg === "function") {
+        _rawSetTurnsByChat((prev) => {
+          const next = arg(prev);
+          turnsByChatRef.current = next;
+          return next;
+        });
+      } else {
+        _rawSetTurnsByChat(arg);
+        turnsByChatRef.current = arg;
+      }
+    },
+    [],
+  );
+  const turnsByChat = _turnsByChat;
   const [historyTurns, setHistoryTurns] = useState<HistoryTurn[]>([]);
   const [historyStart, setHistoryStart] = useState(0);
   const [historyTotal, setHistoryTotal] = useState(0);
@@ -379,6 +397,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
   // Track the most recently requested focus workspace so idle/state events
   // from it can bypass the background-event guard during a focus switch.
   const pendingFocusWsIdRef = useRef<string>("");
+  // Track the composite key of the currently streaming chat so idle/state
+  // events during a streaming turn can be blocked (prevents React re-render
+  // side effects from disrupting in-progress content accumulation).
+  const streamingKeyRef = useRef<string>("");
   useEffect(() => {
     stateRef.current = state;
   }, [state]);
@@ -439,10 +461,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     activeWorkspaceIdRef.current = state?.workspace.id ?? "";
   }, [state?.workspace.id]);
-
-  useEffect(() => {
-    turnsByChatRef.current = turnsByChat;
-  }, [turnsByChat]);
 
   // Live turn / busy / ask maps are keyed by a WORKSPACE-QUALIFIED composite
   // (``workspaceId\x00chatId``), not the bare chat id: chat ids repeat across
@@ -1219,39 +1237,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
           const idleForFocused =
             !eventWsId || !activeWsId || eventWsId === activeWsId ||
             eventWsId === pendingFocusWsIdRef.current;
-          // Only overwrite React state when this idle belongs to the
-          // focused workspace (or is the first idle after an explicit
-          // focus switch to that workspace — stateRef still carries the
-          // old workspace ID at that point).  Background-workspace events still need
-          // side-effect handling below (end turn, unread marker, draft
-          // transition) but must NOT change the focused workspace's
-          // activeChatId / app state, which would cause the turns
-          // selector to pull from the wrong bucket and the ChatView to
-          // render stale/empty turns during streaming.
-          if (next && idleForFocused) {
-            setState(next);
-            if (eventWsId === pendingFocusWsIdRef.current) {
-              pendingFocusWsIdRef.current = "";
-            }
-          }
-          // An ``idle`` event can be emitted by paths other than a genuine
-          // turn completion — most importantly the focus-switch broadcast
-          // (``select_chat``) and any state refresh that reuses the ``idle``
-          // channel. The snapshot's per-chat ``running`` flag is the durable
-          // truth (it mirrors the backend runtime's busy state and survives
-          // focus changes). When the chat this ``idle`` is attributed to is
-          // STILL running on the backend, treating it as "finished" would
-          // wrongly call ``endActiveTurn``/clear-busy — wiping the chat's
-          // in-progress reply and the sidebar busy/blue dot with no
-          // ``turn_start`` to restore them when the user switches back. So we
-          // only terminate the turn when the backend agrees the chat is idle.
-          // The snapshot's per-chat ``running`` flag only describes the chats
-          // of the workspace that owns this ``idle`` event. Resolve it against
-          // that workspace: if the event isn't for the focused workspace the
-          // freshly-applied ``next`` snapshot is for a DIFFERENT workspace, so
-          // we can't trust its chat list for the event's chat. In that case
-          // fall back to whether a live turn is still open in the event's
-          // bucket (it stays open until a real terminal idle for that chat).
+          // Check whether this idle's chat is still running on the backend
+          // BEFORE we apply setState (which can trigger side effects). When
+          // the running chat is the same one that is currently streaming in
+          // the GUI, we must keep its live turns intact and avoid a React
+          // re-render that could disrupt content accumulation.
           const stillRunning = idleForFocused
             ? Boolean(
                 chatId &&
@@ -1260,6 +1250,21 @@ export function AppProvider({ children }: { children: ReactNode }) {
                   ),
               )
             : false;
+          const isStreamingChat = !!streamingKeyRef.current &&
+            eventKey === streamingKeyRef.current;
+          if (!isStreamingChat || !stillRunning) {
+            // Apply state update as normal (idle is terminal or from a
+            // different chat). Consume pending focus if applicable.
+            if (next && idleForFocused) {
+              setState(next);
+              if (eventWsId === pendingFocusWsIdRef.current) {
+                pendingFocusWsIdRef.current = "";
+              }
+            }
+            if (isStreamingChat && !stillRunning) {
+              streamingKeyRef.current = "";
+            }
+          }
           if (!stillRunning) {
             endActiveTurn(eventKey);
             setBusyForChat(eventKey, false);
@@ -1273,10 +1278,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
                 prev[eventKey] ? prev : { ...prev, [eventKey]: true },
               );
             }
-          }
-          if (pendingHistoryReloadRef.current) {
-            pendingHistoryReloadRef.current = false;
-            reloadHistoryRef.current();
+            // When the focused chat's turn finishes, reload its history from
+            // the server so the GUI always reflects the full persisted content
+            // — even when live-streaming events were partially lost.
+            if (eventKey === focusedKey) {
+              if (pendingHistoryReloadRef.current) {
+                pendingHistoryReloadRef.current = false;
+              }
+              reloadHistoryRef.current();
+            }
           }
           // When the focused workspace changes to one with no active chat,
           // enter draft mode (show empty composer). This covers:
@@ -1306,11 +1316,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
           // ``update_plan``). Update the snapshot so the plan panel can
           // re-render but DO NOT close the active turn or clear the busy
           // flag — the model is still streaming its reply.
-          // Guard: only apply state updates for the focused workspace;
-          // background-workspace ``state`` events must not overwrite the
-          // focused workspace's activeChatId / app state.
+          // Guard: only apply state updates when the event belongs to the
+          // focused workspace AND the streaming chat is not currently
+          // accumulating turn content (to avoid React re-render side
+          // effects that can disrupt segment accumulation).
           const next = data.state;
-          if (next && (!eventWsId || !activeWsId || eventWsId === activeWsId)) {
+          const isStreamingChat = !!streamingKeyRef.current &&
+            eventKey === streamingKeyRef.current;
+          if (next && !isStreamingChat &&
+              (!eventWsId || !activeWsId || eventWsId === activeWsId)) {
             setState(next);
           }
           break;
@@ -1318,6 +1332,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         case "turn_start": {
           startTurn(String(data.text ?? ""), eventKey);
           setBusyForChat(eventKey, true);
+          streamingKeyRef.current = eventKey;
           break;
         }
         case "round_start": {
@@ -1740,6 +1755,19 @@ export function AppProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     const cid = state?.activeChatId ?? "";
     if (!cid || cid === historyChatRef.current) {
+      return;
+    }
+    // If the previously active chat still has a turn that hasn't finished
+    // streaming, the supposedly new activeChatId is almost certainly an
+    // artifact of a state or idle event that briefly clobbered the app
+    // state (e.g. during a same-workspace update_plan mid-turn).
+    // Loading history at this point would call clearLiveTurns and destroy
+    // the in-progress streaming content.  Defer the reload until the
+    // streaming turn settles (the idle handler will retry via
+    // pendingHistoryReloadRef).
+    const prevKey = chatKey(activeWorkspaceIdRef.current, historyChatRef.current);
+    if (turnsByChatRef.current[prevKey]?.some((t) => t.endedAt === null)) {
+      pendingHistoryReloadRef.current = true;
       return;
     }
     historyChatRef.current = cid;
