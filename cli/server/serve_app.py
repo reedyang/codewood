@@ -170,6 +170,7 @@ def _build_structured_turns(agent: Any) -> List[Dict[str, Any]]:
     )
 
     hist = list(getattr(agent, "conversation_history", None) or [])
+    hist = [msg for msg in hist if not (msg.get("_internal") and str(msg.get("content", "") or "").startswith("[Key constraints]"))]
     genuine = set(_genuine_user_positions_in_list(hist))
     turns: List[Dict[str, Any]] = []
     current: Optional[Dict[str, Any]] = None

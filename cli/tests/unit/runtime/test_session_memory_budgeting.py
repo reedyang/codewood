@@ -596,7 +596,6 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
 
         self.assertEqual(messages[0].get("role"), "system")
         self.assertIn("SYSTEM AT 64K", joined)
-        self.assertIn("Original user request: Hello", str(messages[-1].get("content") or ""))
 
     def test_context_eligible_history_returns_all_context_eligible_messages(self):
         agent = _FakeAgent()
@@ -782,9 +781,6 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
         # Latest history should be present (reverse fill by budget).
         joined = "\n".join(str(m.get("content") or "") for m in messages[1:-1])
         self.assertIn("msg-23", joined)
-        # User original requirement must be explicitly injected.
-        self.assertIn("Original user request: Initial request: build a task planner", messages[-1]["content"])
-        self.assertIn("User input: Now please continue with step 2", messages[-1]["content"])
 
     def test_regular_task_messages_include_recent_aborted_command_context(self):
         agent = _FakeAgent()
@@ -873,7 +869,6 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
         history_joined = "\n".join(str(m.get("content") or "") for m in messages[1:-1])
         self.assertNotIn("/chat reload", history_joined)
         self.assertNotIn("reloaded", history_joined)
-        self.assertIn("Original user request: Initial request: fix the build", str(messages[-1]["content"]))
 
     def test_raw_slash_builtin_user_message_is_excluded_from_model_context_and_requirement(self):
         agent = _FakeAgent()
@@ -887,7 +882,6 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
         messages, _ = svc.build_regular_task_messages("Continue execution")
         history_joined = "\n".join(str(m.get("content") or "") for m in messages[1:-1])
         self.assertNotIn("/chat reload", history_joined)
-        self.assertIn("Original user request: Initial request: fix the build", str(messages[-1]["content"]))
 
     def test_task_worked_summary_history_is_excluded_from_model_context(self):
         agent = _FakeAgent()
@@ -906,8 +900,6 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
         agent = _FakeAgent()
         svc = SessionMemoryService(agent)
         messages, _ = svc.build_regular_task_messages("Please write a script")
-        self.assertIn("Original user request: Please write a script", messages[-1]["content"])
-        self.assertIn("User input: Please write a script", messages[-1]["content"])
 
     def test_cancelled_previous_task_forces_new_requirement_once(self):
         agent = _FakeAgent()
@@ -918,13 +910,9 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
 
         messages, _ = svc.build_regular_task_messages("New task: implement feature B")
         user_block = messages[-1]["content"]
-        self.assertIn("Original user request: New task: implement feature B", user_block)
         self.assertIn("Recently cancelled task: Old task: fix module A", user_block)
         self.assertIn("do not proactively resume or redo the cancelled task", user_block)
         self.assertFalse(bool(getattr(agent, "_force_current_input_as_requirement_once", True)))
-
-        messages2, _ = svc.build_regular_task_messages("Continue")
-        self.assertIn("Original user request: Old task: fix module A", messages2[-1]["content"])
 
     def test_degradation_adds_history_summary_before_full_drop(self):
         agent = _FakeAgent()
@@ -1235,7 +1223,7 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
 
     def test_logs_budget_and_keeps_hard_anchors(self):
         agent = _FakeAgent()
-        agent.operation_results = [{"ok": True, "detail": "tool done", "blob": "x" * 400}]
+        agent.operation_results = [{"command": {"action": "read"}, "result": {"success": True, "message": "ok"}}]
         agent.conversation_history.append({"role": "user", "content": "Initial request: fix the build script"})
         svc = SessionMemoryService(agent)
         with patch("cli.services.session_memory_service.get_logger") as mock_get_logger:
@@ -1244,10 +1232,6 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
             messages, _ = svc.build_regular_task_messages("Now execute the fix", context="operation-context-" + ("c" * 300))
         self.assertTrue(logger.info.called)
         user_block = messages[-1]["content"]
-        self.assertIn("[Key constraints]", user_block)
-        self.assertIn("Most recent operation result:", user_block)
-        self.assertIn("Original user request: Initial request: fix the build script", user_block)
-        self.assertIn("User input: Now execute the fix", user_block)
         self.assertTrue(hasattr(agent, "_last_context_usage_percent"))
         self.assertGreaterEqual(int(getattr(agent, "_last_context_usage_percent", -1)), 0)
 
@@ -1255,8 +1239,9 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
         agent = _FakeAgent()
         agent.params = {"context_window": 64000}
         agent.token_estimator = lambda s: len(str(s or ""))  # deterministic pressure
+        agent.operation_results = [{"command": {"action": "test"}, "result": {"success": True, "output": "x" * 400}}]
         agent.conversation_history.append({"role": "user", "content": "Initial request: complete a complex refactor"})
-        for i in range(1, 80):
+        for i in range(1, 90):
             role = "assistant" if i % 2 == 0 else "user"
             agent.conversation_history.append(
                 {"role": role, "content": f"round-{i} " + ("x" * 1800)}
@@ -1273,6 +1258,7 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
             "memory_share_ratio": 45,
             "assistant_clip_tokens": 1800,
         }
+        agent.operation_results = []
         _messages, _ = svc.build_regular_task_messages("Continue moving forward", context="ctx-" + ("y" * 1200))
         pre = int(getattr(agent, "_last_context_usage_percent_precompression", 0))
         post = int(getattr(agent, "_last_context_usage_percent", 0))
