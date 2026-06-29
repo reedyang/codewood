@@ -434,9 +434,6 @@ class ProjectContextIndex:
                     proc.join()
                 except Exception:
                     pass
-                # Run the done callback BEFORE clearing the subprocess
-                # reference so ``_load()`` (inside on_done) completes
-                # before any ``status()`` call can read stale data.
                 if on_done is not None:
                     try:
                         on_done()
