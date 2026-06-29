@@ -925,36 +925,6 @@ class LLMContextManager:
                 f"{block}"
             )
         memory_system_content = _build_memory_system_content(mem_block)
-        active_skill_prompt = str(getattr(self.agent, "_active_skill_full_prompt", "") or "").strip()
-        active_skill_id = str(getattr(self.agent, "_active_skill_id", "") or "").strip()
-        active_skill_source = str(getattr(self.agent, "_active_skill_source", "") or "").strip()
-        active_skill_chunked = bool(getattr(self.agent, "_active_skill_chunked", False))
-        active_skill_section = int(getattr(self.agent, "_active_skill_section", 0) or 0)
-        active_skill_total_sections = int(getattr(self.agent, "_active_skill_total_sections", 0) or 0)
-        skill_front_system_content = ""
-        skill_tail_system_content = ""
-        if active_skill_prompt:
-            skill_id_display = active_skill_id or "unknown"
-            source_suffix = f", source={active_skill_source}" if active_skill_source else ""
-            section_suffix = ""
-            if active_skill_chunked and active_skill_total_sections > 0:
-                section_suffix = f", section={max(1, active_skill_section)}/{active_skill_total_sections}"
-            content_scope = "the currently loaded section" if active_skill_chunked else "the full body"
-            skill_front_system_content = (
-                "[Dynamic skill body (front-loaded full injection)]\n"
-                f"active_skill_id={skill_id_display}{source_suffix}{section_suffix}\n"
-                "Execution priority: if this conflicts with ordinary history narration, follow this skill body first (except for safety hard constraints).\n"
-                f"The following is {content_scope} of the currently active skill, not a summary; "
-                "unless the body explicitly requires reading additional reference files or file state must be diagnosed, "
-                "do not read SKILL.md again through shell/type/cat to compensate for this section.\n"
-                "----- BEGIN ACTIVE SKILL PROMPT -----\n"
-                f"{active_skill_prompt}\n"
-                "----- END ACTIVE SKILL PROMPT -----"
-            )
-            skill_tail_system_content = (
-                "[Skill anchor]"
-                f"active_skill_id={skill_id_display}; for this turn, prioritize the front-loaded skill body."
-            )
         immutable_system_core = (
             f"{self.agent._skills_routing_prefix}{self.agent.system_prompt}\n"
             f"{self._software_development_prompt_append()}"
@@ -980,8 +950,6 @@ class LLMContextManager:
         tail_context = immutable_system_core + runtime_tail_raw
         sys_prefix = tail_context
         messages: List[Dict[str, Any]] = [{"role": "system", "content": sys_prefix}]
-        if skill_front_system_content:
-            messages.append({"role": "system", "content": skill_front_system_content})
         filtered_history = self.history_for_regular_context()
         history_messages, history_stats = self._build_history_messages_by_budget(
             int(budgets["history_budget"]),
@@ -1036,8 +1004,6 @@ class LLMContextManager:
         if interruption_line:
             current_input += f"Most recent interruption status: {interruption_line}\n"
         current_input += f"Local time reference: {date_time}"
-        if skill_tail_system_content:
-            messages.append({"role": "system", "content": skill_tail_system_content})
         current_user_msg = {"role": "user", "content": current_input}
         messages.append(current_user_msg)
 
@@ -1046,12 +1012,8 @@ class LLMContextManager:
         user_tokens = 0
         try:
             system_tokens = self._estimate_message_tokens("system", sys_prefix)
-            if skill_front_system_content:
-                system_tokens += self._estimate_message_tokens("system", skill_front_system_content)
             if memory_system_content:
                 system_tokens += self._estimate_message_tokens("system", memory_system_content)
-            if skill_tail_system_content:
-                system_tokens += self._estimate_message_tokens("system", skill_tail_system_content)
             history_tokens = sum(
                 self._estimate_message_tokens(str(m.get("role") or ""), str(m.get("content") or ""))
                 for m in history_messages
@@ -1108,12 +1070,8 @@ class LLMContextManager:
                 current_input2 = current_input2_head + current_input2_tail
 
                 system_tokens2 = self._estimate_message_tokens("system", sys_prefix2)
-                if skill_front_system_content:
-                    system_tokens2 += self._estimate_message_tokens("system", skill_front_system_content)
                 if memory_system_content2:
                     system_tokens2 += self._estimate_message_tokens("system", memory_system_content2)
-                if skill_tail_system_content:
-                    system_tokens2 += self._estimate_message_tokens("system", skill_tail_system_content)
                 history_tokens2 = sum(
                     self._estimate_message_tokens(str(m.get("role") or ""), str(m.get("content") or ""))
                     for m in history_messages2
@@ -1123,13 +1081,9 @@ class LLMContextManager:
 
                 if total_input_tokens2 < total_input_tokens:
                     messages = [{"role": "system", "content": sys_prefix2}]
-                    if skill_front_system_content:
-                        messages.append({"role": "system", "content": skill_front_system_content})
                     messages += list(history_messages2)
                     if memory_system_content2:
                         messages.append({"role": "system", "content": memory_system_content2})
-                    if skill_tail_system_content:
-                        messages.append({"role": "system", "content": skill_tail_system_content})
                     messages.append({"role": "user", "content": current_input2})
                     sys_prefix = sys_prefix2
                     history_messages = history_messages2

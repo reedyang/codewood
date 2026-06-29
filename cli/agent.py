@@ -2053,7 +2053,10 @@ class Agent:
             return
         # Tool-call plans are bookkeeping; the matching result message carries the
         # final status/output, so skip plans to keep the transcript clean.
-        if self._parse_model_tool_plan_history_content(content) is not None:
+        tool_plan = self._parse_model_tool_plan_history_content(content)
+        if tool_plan is not None:
+            if tool_plan.get("tool") == "request_skill_prompt":
+                self._print_tool_call_feedback("request_skill_prompt", tool_plan.get("args", {}))
             return
         model_tool_result = self._parse_model_tool_result_history_content(content)
         if model_tool_result is not None:
