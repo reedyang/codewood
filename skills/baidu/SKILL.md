@@ -1,6 +1,6 @@
 ---
 name: baidu
-description: "Use this skill for web search and fact-finding via **Baidu**. Trigger when the user asks to search with Baidu, wants web search as long as Baidu is acceptable, asks what the web says, or needs fresh public facts such as weather, news, stocks, definitions, or current events without specifying another engine. Do **not** trigger when the user explicitly wants Google, Bing, or DuckDuckGo only, or when the task is purely local files/code with no web need. This skill’s YAML frontmatter declares **`model_context_file_env`**; compatible hosts may point that environment variable to a temp file path so the script can write the full report without flooding the terminal, then merge it into the subprocess result shown to the model. For time-sensitive questions, run the bundled script once per query; do not repeat the same command more than 5 times in a row for this skill. After a successful run whose captured `output` contains both `【Answer】` and `【AI Review】`, treat the Baidu search as complete for the current query. Do not rerun the same `baidu_search.py` command unless the user refines the question."
+description: "Use this skill for web search and fact-finding via **Baidu**. Trigger when the user asks to search with Baidu, wants web search as long as Baidu is acceptable, asks what the web says, or needs fresh public facts such as weather, news, stocks, definitions, or current events without specifying another engine. Do **not** trigger when the user explicitly wants Google, Bing, or DuckDuckGo only, or when the task is purely local files/code with no web need. **This skill does NOT support fetching a specific URL.** If the user pastes a URL and asks about its content, use `webfetch` instead. This skill’s YAML frontmatter declares **`model_context_file_env`**; compatible hosts may point that environment variable to a temp file path so the script can write the full report without flooding the terminal, then merge it into the subprocess result shown to the model. For time-sensitive questions, run the bundled script once per query; do not repeat the same command more than 5 times in a row for this skill. After a successful run whose captured `output` contains both `【Answer】` and `【AI Review】`, treat the Baidu search as complete for the current query. Do not rerun the same `baidu_search.py` command unless the user refines the question."
 license: Proprietary
 model_context_file_env: BAIDU_SKILL_MERGE_OUTPUT
 ---
@@ -81,6 +81,7 @@ The merged `output` may be long, with full sections in the model context. For th
 
 ## Limitations
 
+- **Does NOT support direct URL fetching.** This skill searches Baidu and summarizes SERP results. If the user provides a specific URL and asks for its content, do NOT use this skill — use `webfetch` instead.
 - Baidu may return a captcha page; the script reports that in `【Search Summary】` or `【Answer】`.
 - Page HTML varies; SERP parsing is best effort. If results are empty, suggest rephrasing the query or using another engine if allowed.
 - Fetched pages must be `http`/`https`. Pay attention to robots/terms of use in your environment.

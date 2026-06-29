@@ -59,6 +59,7 @@ from .console import (
     ConsoleReadTool,
     ConsoleInfoTool,
 )
+from .webfetch import WebFetchTool
 
 
 ALL_TOOLS: List[Type[BaseTool]] = [
@@ -106,6 +107,7 @@ ALL_TOOLS: List[Type[BaseTool]] = [
     ConsoleExecTool,
     ConsoleReadTool,
     ConsoleInfoTool,
+    WebFetchTool,
 ]
 
 _BY_NAME: Dict[str, Type[BaseTool]] = {t.name: t for t in ALL_TOOLS}
