@@ -909,18 +909,41 @@ export function AppProvider({ children }: { children: ReactNode }) {
       }
       setTurnsByChat((prev) => {
         const existing = prev[chatId];
-        // Deltas only belong inside a turn opened by `turn_start`. Output that
-        // arrives with no active turn is startup noise (the banner / tips
-        // printed before the first user message) — drop it rather than
-        // synthesizing an empty "Worked for 0s" turn.
+        // When output arrives before `turn_start` (rare race under fast
+        // consecutive tool calls), synthesize a placeholder turn so the
+        // segment is not lost. The subsequent `turn_start` will append a
+        // proper turn alongside it, which is harmless — the placeholder
+        // already carries the tool output.
         if (!existing || existing.length === 0) {
-          return prev;
+          const placeholder = {
+            id: nextIdRef.current++,
+            userText: "",
+            rounds: [{
+              id: nextIdRef.current++,
+              waitStartedAt: Date.now(),
+              waitEndedAt: null,
+              segments: [{ id: nextIdRef.current++, kind, text }],
+            }],
+            startedAt: Date.now(),
+            endedAt: null,
+          };
+          return { ...prev, [chatId]: [placeholder] };
         }
         const next = [...existing];
         const turn = next[next.length - 1];
         const rounds = [...turn.rounds];
         let round = rounds[rounds.length - 1];
-        if (!round) {
+        // If the last round is closed (timer ended) and a new step arrives,
+        // open a fresh round rather than appending to the closed one.
+        if (round && round.waitEndedAt !== null && kind === "step") {
+          round = {
+            id: nextIdRef.current++,
+            waitStartedAt: Date.now(),
+            waitEndedAt: null,
+            segments: [],
+          };
+          rounds.push(round);
+        } else if (!round) {
           round = {
             id: nextIdRef.current++,
             waitStartedAt: Date.now(),
@@ -975,6 +998,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
       // a brand-new chat: adopt the backend's authoritative user text in place
       // instead of appending a SECOND turn (which would duplicate the message).
       const last = existing[existing.length - 1];
+      // Reconcile a placeholder turn created by ``appendSegment`` (tool output
+      // that arrived before the ``turn_start`` event). Fill in the user text.
+      if (last && !last.userText && last.rounds.length > 0 && last.rounds.some((r) => r.segments.length > 0)) {
+        const merged = [...existing];
+        merged[merged.length - 1] = { ...last, userText: userText || last.userText };
+        return { ...prev, [chatId]: merged };
+      }
       if (last && last.optimistic && last.rounds.length === 0) {
         const merged = [...existing];
         merged[merged.length - 1] = {
