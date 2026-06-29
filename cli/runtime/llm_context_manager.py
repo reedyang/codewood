@@ -228,11 +228,20 @@ class LLMContextManager:
         if not hist or history_budget <= 0:
             return [], {"assistant_trimmed": 0, "summary_messages": 0, "dropped_messages": 0}
 
+        # Only messages at or after the last cache-stats message contribute
+        # to the token count — earlier ones are covered by the cumulative
+        # input tokens from the cache-stats anchor.  Pre-scan to find that
+        # position so we only compute _token_count for messages that matter.
+        last_cache_src_idx = -1
+        for _i, _msg in enumerate(hist):
+            if isinstance(_msg, dict) and isinstance(_msg.get("_cache_stats"), dict):
+                last_cache_src_idx = _i
+
         normalized: List[Dict[str, Any]] = []
         assistant_trimmed = 0
         parse_slash_result = getattr(self.agent, "_parse_internal_slash_result_history_content", None)
         parse_worked_summary = getattr(self.agent, "_parse_task_worked_summary_history_content", None)
-        for msg in hist:
+        for idx, msg in enumerate(hist):
             role = str(msg.get("role") or "").strip().lower()
             if role not in ("user", "assistant"):
                 continue
@@ -280,13 +289,27 @@ class LLMContextManager:
                 if content != before:
                     assistant_trimmed += 1
             entry: Dict[str, Any] = {"role": role, "content": content}
+            if role == "assistant":
+                msg_model = str(msg.get("_model") or "").strip()
+                if msg_model:
+                    entry["_model"] = msg_model
+                cs = msg.get("_cache_stats")
+                if isinstance(cs, dict) and cs:
+                    entry["_cache_stats"] = cs
+            tc = msg.get("_token_count")
+            if isinstance(tc, (int, float)) and int(tc) > 0:
+                entry["_token_count"] = int(tc)
+            elif idx >= last_cache_src_idx:
+                local = self._estimate_message_tokens(role, raw_content)
+                msg["_token_count"] = local
+                entry["_token_count"] = local
             normalized.append(entry)
 
         if not normalized:
             return [], {"assistant_trimmed": assistant_trimmed, "summary_messages": 0, "dropped_messages": 0}
 
         def _total_cost(items: List[Dict[str, Any]]) -> int:
-            return sum(self._estimate_message_tokens(str(i.get("role") or ""), str(i.get("content") or "")) for i in items)
+            return sum(self._message_cost_for_tail_budget(i) for i in items)
 
         working = list(normalized)
         dropped_for_summary: List[Dict[str, Any]] = []
@@ -339,9 +362,51 @@ class LLMContextManager:
         return working, stats
 
     def _message_cost_for_tail_budget(self, msg: Dict[str, Any]) -> int:
+        tc = msg.get("_token_count")
+        if isinstance(tc, (int, float)) and tc > 0:
+            return int(tc)
         role = str(msg.get("role") or "").strip().lower()
         content = self._normalize_history_content_for_model(role, str(msg.get("content") or ""))
         return self._estimate_message_tokens(role, content)
+
+    def _history_tokens_cumulative(self, messages: List[Dict[str, Any]]) -> int:
+        """Compute total history tokens using the cumulative formula.
+
+        The last message with ``_cache_stats`` provides a cumulative anchor
+        (prompt_cache_hit_tokens + prompt_cache_miss_tokens).  Messages
+        before it are covered by that anchor.  Messages at or after it are
+        counted via their ``_token_count``.
+        """
+        last_cache_idx = -1
+        for i, m in enumerate(messages):
+            if isinstance(m.get("_cache_stats"), dict):
+                last_cache_idx = i
+        total = 0
+        for i, m in enumerate(messages):
+            if i < last_cache_idx:
+                continue
+            if i == last_cache_idx:
+                cs = m["_cache_stats"]
+                total += int(cs.get("prompt_cache_hit_tokens") or 0) + int(cs.get("prompt_cache_miss_tokens") or 0)
+            tc = m.get("_token_count")
+            if isinstance(tc, (int, float)) and int(tc) > 0:
+                total += int(tc)
+        return total
+
+    def _context_usage_from_chat_record(self) -> int:
+        """Compute cumulative history tokens from the active chat record.
+
+        Works on any thread (no session binding required) because it reads
+        from the persisted chat record, not conversation_history.
+        Falls back to conversation_history when the chat record is unavailable.
+        """
+        cid = str(getattr(self.agent, "active_chat_id", "") or "").strip()
+        chat = self.agent._find_chat_by_id(cid) if cid else None
+        if not isinstance(chat, dict):
+            hist = list(getattr(self.agent, "conversation_history", None) or [])
+            return self._history_tokens_cumulative(hist)
+        msgs = list(chat.get("messages") or [])
+        return self._history_tokens_cumulative(msgs)
 
     def _auto_tail_count_within_budget(self, rows: List[Tuple[int, Dict[str, Any]]], max_tokens: int) -> int:
         if not rows or max_tokens <= 0:
@@ -750,16 +815,14 @@ class LLMContextManager:
             budgets = self._context_token_budgets()
             if self._should_use_simple_chat_context(budgets):
                 user_text = str(user_input_hint or "")
+                source_history = self.history_for_regular_context()
                 history_messages, _stats = self._build_history_messages_by_budget(
                     int(budgets["history_budget"]),
                     int(budgets["history_summary_budget"]),
                     int(budgets["assistant_clip_tokens"]),
-                    source_history=self.history_for_regular_context(),
+                    source_history=source_history,
                 )
-                history_tokens = sum(
-                    self._estimate_message_tokens(str(m.get("role") or ""), str(m.get("content") or ""))
-                    for m in history_messages
-                )
+                history_tokens = self._context_usage_from_chat_record()
                 user_tokens = self._estimate_message_tokens("user", user_text)
                 total_input_tokens = int(history_tokens + user_tokens)
                 if expected:
@@ -770,7 +833,7 @@ class LLMContextManager:
                     return
                 self._store_context_usage_snapshot(
                     int(budgets.get("context_window") or DEFAULT_CONTEXT_WINDOW),
-                    total_input_tokens,
+                    history_tokens,
                 )
                 self._persist_context_usage_snapshot()
                 return
@@ -782,10 +845,7 @@ class LLMContextManager:
                 int(budgets["assistant_clip_tokens"]),
                 source_history=filtered_history,
             )
-            history_tokens = sum(
-                self._estimate_message_tokens(str(m.get("role") or ""), str(m.get("content") or ""))
-                for m in history_messages
-            )
+            history_tokens = self._context_usage_from_chat_record()
             compose_prompt = getattr(self.agent, "_compose_system_prompt_snapshot", None)
             if callable(compose_prompt):
                 try:
@@ -825,7 +885,7 @@ class LLMContextManager:
                 return
             self._store_context_usage_snapshot(
                 int(budgets.get("context_window") or DEFAULT_CONTEXT_WINDOW),
-                total_input_tokens,
+                history_tokens,
             )
             self._persist_context_usage_snapshot()
         except Exception:
@@ -1014,10 +1074,7 @@ class LLMContextManager:
             system_tokens = self._estimate_message_tokens("system", sys_prefix)
             if memory_system_content:
                 system_tokens += self._estimate_message_tokens("system", memory_system_content)
-            history_tokens = sum(
-                self._estimate_message_tokens(str(m.get("role") or ""), str(m.get("content") or ""))
-                for m in history_messages
-            )
+            history_tokens = self._history_tokens_cumulative(history_messages)
             user_tokens = self._estimate_message_tokens("user", current_input)
             total_input_tokens = int(system_tokens + history_tokens + user_tokens)
             ctx_window = int(budgets.get("context_window") or DEFAULT_CONTEXT_WINDOW)
@@ -1073,7 +1130,7 @@ class LLMContextManager:
                 if memory_system_content2:
                     system_tokens2 += self._estimate_message_tokens("system", memory_system_content2)
                 history_tokens2 = sum(
-                    self._estimate_message_tokens(str(m.get("role") or ""), str(m.get("content") or ""))
+                    self._message_cost_for_tail_budget(m)
                     for m in history_messages2
                 )
                 user_tokens2 = self._estimate_message_tokens("user", current_input2)

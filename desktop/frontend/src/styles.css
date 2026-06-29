@@ -1397,6 +1397,67 @@ body.resizing-x .browser-frame {
   cursor: default;
 }
 
+/* ── Cache Stats (Dashboard) ── */
+.cache-stats {
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.cache-stats-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
+  margin-bottom: 8px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.cache-stats-row {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.cache-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 60px;
+}
+
+.cache-stat-value {
+  font-size: 15px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+}
+
+.cache-stat-value.cache-hit {
+  color: var(--green);
+}
+
+.cache-stat-value.cache-miss {
+  color: var(--text-muted);
+}
+
+.cache-stat-label {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+/* ── Plan (To-dos list) ── */
+.plan-header {
+  padding: 12px 16px 8px;
+}
+
+.plan-header-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
+  margin-bottom: 8px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
 .plan-empty {
   padding: 18px 16px;
   color: var(--text-muted);

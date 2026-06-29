@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { useApp } from "../state/AppContext";
 import { Icon } from "./Icon";
-import { PlanContent, usePlanCounts } from "./PlanPanel";
+import { DashboardContent } from "./DashboardPanel";
 import { BrowserPanel } from "./BrowserPanel";
 import {
   MANDATORY_TABS,
@@ -21,7 +21,6 @@ function tabLabelKey(id: RightPanelTabId): string {
 export function RightPanel() {
   const { planOpen, togglePlan, hideBrowserTab, t } = useApp();
   const [prefs, setPrefs] = useState<RightPanelPrefs>(loadRightPanelPrefs);
-  const { total } = usePlanCounts();
 
   const applyPrefs = (next: RightPanelPrefs) => {
     setPrefs(next);
@@ -48,10 +47,7 @@ export function RightPanel() {
       <div className="right-panel-tabs">
         <div className="right-panel-tablist">
           {prefs.visible.map((id) => {
-            const label =
-              id === "todos"
-                ? `${t(tabLabelKey(id))} (${total})`
-                : t(tabLabelKey(id));
+            const label = t(tabLabelKey(id));
             const closable = !(MANDATORY_TABS as readonly string[]).includes(id);
             const isActive = prefs.active === id;
             return (
@@ -95,7 +91,7 @@ export function RightPanel() {
       </div>
 
       <div className="right-panel-body">
-        {prefs.active === "todos" && <PlanContent />}
+        {prefs.active === "dashboard" && <DashboardContent />}
         {/* Keep the Browser tab mounted (just hidden) whenever it is open so
             switching to To-dos and back does not tear down the overlay browser
             and reload a blank page — the page keeps running in the background

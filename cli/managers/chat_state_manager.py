@@ -399,6 +399,15 @@ class ChatStateManager:
         api_content = str(raw.get("_api_content") or "").strip()
         if api_content:
             out["_api_content"] = api_content
+        cache_stats = raw.get("_cache_stats")
+        if isinstance(cache_stats, dict) and cache_stats:
+            out["_cache_stats"] = cache_stats
+        token_count = raw.get("_token_count")
+        if isinstance(token_count, (int, float)) and token_count > 0:
+            out["_token_count"] = int(token_count)
+        model_name = str(raw.get("_model") or "").strip()
+        if model_name:
+            out["_model"] = model_name
         tool_calls = raw.get("tool_calls")
         if isinstance(tool_calls, list) and tool_calls:
             out["tool_calls"] = tool_calls
@@ -1013,6 +1022,15 @@ class ChatStateManager:
                 api_content = str(m.get("_api_content") or "").strip()
                 if api_content:
                     entry["_api_content"] = api_content
+                cache_stats = m.get("_cache_stats")
+                if isinstance(cache_stats, dict) and cache_stats:
+                    entry["_cache_stats"] = cache_stats
+                token_count = m.get("_token_count")
+                if isinstance(token_count, (int, float)) and token_count > 0:
+                    entry["_token_count"] = int(token_count)
+                model_name = str(m.get("_model") or "").strip()
+                if model_name:
+                    entry["_model"] = model_name
                 tool_calls = m.get("tool_calls")
                 if isinstance(tool_calls, list) and tool_calls:
                     entry["tool_calls"] = tool_calls

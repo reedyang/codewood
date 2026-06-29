@@ -1363,7 +1363,7 @@ function ContextUsageRing({
   const radius = 8;
   const circumference = 2 * Math.PI * radius;
   const dash = (pct / 100) * circumference;
-  const title = `${label}: ${pct}% (${tokens} / ${ctxWindow})`;
+  const title = `${label}: ${pct}% (${tokens.toLocaleString()} / ${ctxWindow.toLocaleString()})`;
   const danger = pct >= 90;
   const warn = !danger && pct >= 75;
   return (

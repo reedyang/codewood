@@ -686,7 +686,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         visible.includes(id),
       );
       const active: RightPanelTabId =
-        ordered.indexOf(prefs.active) >= 0 ? prefs.active : (ordered[0] ?? "todos");
+        ordered.indexOf(prefs.active) >= 0 ? prefs.active : (ordered[0] ?? "dashboard");
       saveRightPanelPrefs({ visible: ordered, active });
       window.dispatchEvent(new Event("codewood.rightPanelTabs"));
     } catch {

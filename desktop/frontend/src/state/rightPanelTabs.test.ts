@@ -4,12 +4,12 @@ import {
   type RightPanelPrefs,
 } from "./rightPanelTabs";
 
-const base: RightPanelPrefs = { visible: ["todos"], active: "todos" };
+const base: RightPanelPrefs = { visible: ["dashboard"], active: "dashboard" };
 
 describe("rightPanelTabs", () => {
   it("adds a non-mandatory tab and keeps canonical order", () => {
     const next = toggleTabVisibility(base, "browser");
-    expect(next.visible).toEqual(["todos", "browser"]);
+    expect(next.visible).toEqual(["dashboard", "browser"]);
   });
 
   it("activates a newly shown tab", () => {
@@ -19,26 +19,26 @@ describe("rightPanelTabs", () => {
 
   it("removes a visible non-mandatory tab", () => {
     const withBrowser: RightPanelPrefs = {
-      visible: ["todos", "browser"],
+      visible: ["dashboard", "browser"],
       active: "browser",
     };
     const next = toggleTabVisibility(withBrowser, "browser");
-    expect(next.visible).toEqual(["todos"]);
+    expect(next.visible).toEqual(["dashboard"]);
     // Active falls back to a still-visible tab.
-    expect(next.active).toBe("todos");
+    expect(next.active).toBe("dashboard");
   });
 
-  it("never hides the mandatory todos tab", () => {
-    const next = toggleTabVisibility(base, "todos");
-    expect(next.visible).toContain("todos");
+  it("never hides the mandatory dashboard tab", () => {
+    const next = toggleTabVisibility(base, "dashboard");
+    expect(next.visible).toContain("dashboard");
   });
 
   it("always keeps at least one visible tab", () => {
-    let prefs: RightPanelPrefs = { visible: ["todos", "browser"], active: "todos" };
+    let prefs: RightPanelPrefs = { visible: ["dashboard", "browser"], active: "dashboard" };
     prefs = toggleTabVisibility(prefs, "browser");
     expect(prefs.visible.length).toBeGreaterThanOrEqual(1);
-    // todos can't be toggled off, so we stay at >=1.
-    prefs = toggleTabVisibility(prefs, "todos");
+    // dashboard can't be toggled off, so we stay at >=1.
+    prefs = toggleTabVisibility(prefs, "dashboard");
     expect(prefs.visible.length).toBeGreaterThanOrEqual(1);
   });
 });

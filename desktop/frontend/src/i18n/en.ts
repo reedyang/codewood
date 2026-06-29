@@ -61,7 +61,7 @@ export const en: Dict = {
 
   "rightpanel.close": "Close right panel",
   "rightpanel.tabsMenu": "Choose panels",
-  "rightpanel.tab.todos": "To-dos",
+  "rightpanel.tab.dashboard": "Dashboard",
   "rightpanel.tab.browser": "Browser",
   "rightpanel.tab.close": "Close tab",
   "rightpanel.toggle": "Toggle right panel",

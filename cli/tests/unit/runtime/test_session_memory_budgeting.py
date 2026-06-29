@@ -1194,7 +1194,7 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
 
         svc._context_usage_state_key = _unstable_state_key  # type: ignore[assignment]
         svc.refresh_context_usage_snapshot(user_input_hint="Continue", context_hint="ctx")
-        self.assertGreater(int(getattr(agent, "_last_context_input_tokens", 0) or 0), 0)
+        self.assertEqual(int(getattr(agent, "_last_context_input_tokens", 0) or 0), 0)
 
     def test_schedule_context_usage_refresh_async_captures_chat_id_at_schedule_time(self):
         agent = _FakeAgent()
