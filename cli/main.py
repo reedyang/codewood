@@ -12,6 +12,13 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Optional
 
+# Required for PyInstaller builds: ``multiprocessing.spawn`` starts a new
+# instance of the frozen executable.  ``freeze_support()`` detects the
+# spawned child and runs the target function instead of the main app.
+if getattr(sys, "frozen", False):
+    import multiprocessing
+    multiprocessing.freeze_support()
+
 # Add the project root to Python path so the src package imports consistently
 # whether this file is launched as a script or imported by tests.
 current_dir = Path(__file__).resolve().parent
