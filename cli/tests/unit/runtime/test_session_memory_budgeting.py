@@ -527,7 +527,7 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
         self.assertGreater(memory_index, 1)
         self.assertLess(memory_index, len(messages) - 1)
 
-    def test_regular_task_messages_include_full_active_skill_prompt(self):
+    def test_skill_prompt_not_injected_into_system_messages(self):
         agent = _FakeAgent()
         agent._active_skill_id = "codex-usage"
         agent._active_skill_source = "local"
@@ -544,11 +544,9 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
         messages, _ = svc.build_regular_task_messages("Check my Codex usage")
         joined = "\n".join(str(m.get("content") or "") for m in messages)
 
-        self.assertIn("[Dynamic skill body (front-loaded full injection)]", joined)
-        self.assertIn("ACTIVE_SKILL_PROMPT_START", joined)
-        self.assertIn("ACTIVE_SKILL_PROMPT_END", joined)
-        self.assertIn("----- BEGIN ACTIVE SKILL PROMPT -----", joined)
-        self.assertIn("----- END ACTIVE SKILL PROMPT -----", joined)
+        self.assertNotIn("[Dynamic skill body (front-loaded full injection)]", joined)
+        self.assertNotIn("----- BEGIN ACTIVE SKILL PROMPT -----", joined)
+        self.assertNotIn("----- END ACTIVE SKILL PROMPT -----", joined)
 
     def test_context_window_below_64k_uses_history_only_chat_context(self):
         agent = _FakeAgent()

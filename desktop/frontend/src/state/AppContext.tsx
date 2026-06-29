@@ -1323,8 +1323,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
           const next = data.state;
           const isStreamingChat = !!streamingKeyRef.current &&
             eventKey === streamingKeyRef.current;
-          if (next && !isStreamingChat &&
-              (!eventWsId || !activeWsId || eventWsId === activeWsId)) {
+          const stateForFocused =
+            !eventWsId || !activeWsId || eventWsId === activeWsId ||
+            eventWsId === pendingFocusWsIdRef.current;
+          if (next && !isStreamingChat && stateForFocused) {
             setState(next);
           }
           break;

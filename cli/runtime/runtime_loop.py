@@ -3443,6 +3443,8 @@ def run_agent_loop(agent: Any):
                     )
                 if full_prompts:
                     self._active_skill_full_prompt = "\n".join(full_prompts)
+                    for fp in full_prompts:
+                        self._append_chat_message("user", fp, _internal=True)
             mcp_tool_selection_constraint = ""
             if bool(getattr(self, "mcp_tools_enabled", False)):
                 mcp_tool_selection_constraint = (
@@ -4064,7 +4066,9 @@ def run_agent_loop(agent: Any):
                         self._active_skill_chunked = bool(meta.get("chunked", False))
                         next_input = (
                             f"[Original user request]\n{original_user_task}\n\n"
-                            f"Injected the skill prompt for skill_id=`{sid}` . "
+                            f"----- BEGIN SKILL PROMPT (skill_id={sid}) -----\n"
+                            f"{full_prompt}\n"
+                            f"----- END SKILL PROMPT -----\n\n"
                             f"Current section progress: {self._active_skill_section}/{self._active_skill_total_sections if self._active_skill_total_sections else 1}。"
                             "Continue with standard tools; you may call one or more tools at once."
                         )
