@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
 import unicodedata
 from typing import Any, Callable, Dict, List, Pattern, Tuple
 
@@ -19,6 +20,11 @@ from .syntax_highlighter import SyntaxHighlighter
 
 # Shared, stateless syntax highlighter for fenced code blocks in TUI output.
 _CODE_HIGHLIGHTER = SyntaxHighlighter()
+
+
+def _hr_width() -> int:
+    """Return the horizontal-rule line length (terminal width minus margin)."""
+    return max(10, shutil.get_terminal_size((80, 20)).columns - 18)
 
 
 def _highlight_code_line(
@@ -725,6 +731,20 @@ def highlight_assistant_display_text(text: str) -> str:
     if not isinstance(text, str) or not text:
         return ""
     lines = text.split("\n")
+    # Collect footnote definitions
+    footnotes: Dict[str, str] = {}
+    filtered: List[str] = []
+    for l in lines:
+        m = re.match(r"^\[(\^[^\]]+)\]:\s*(.*)", l)
+        if m:
+            label = m.group(1)
+            body = m.group(2)
+            footnotes[label] = body
+        else:
+            filtered.append(l)
+    lines = filtered
+    _FN_RE = re.compile(r"\[(\^[^\]]+)\]")
+
     out: List[str] = []
     in_fence = False
     fence_marker = ""
@@ -831,8 +851,15 @@ def highlight_assistant_display_text(text: str) -> str:
                 i += 1
             out.extend(_render_markdown_table(header, aligns, body))
             continue
+        line = _FN_RE.sub(lambda m: _ansi_cyan(f"[{m.group(1)[1:]}]"), line)
+        line = line.replace("<u>", "\x1b[4m").replace("</u>", "\x1b[24m")
         out.append(highlight_assistant_display_line(line))
         i += 1
+    if footnotes:
+        out.append(_ansi_rgb("─" * _hr_width(), 80, 80, 80))
+        for label, body in footnotes.items():
+            painted = _highlight_assistant_inline_tokens(body)
+            out.append(f"   {_ansi_gray(f'[{label[1:]}]')} {painted}")
     return "\n".join(out)
 
 
@@ -849,7 +876,7 @@ def highlight_assistant_display_line(line: str) -> str:
         return _ansi_bold(line)
 
     if _HR_RE.match(line):
-        return _ansi_gray("─" * 24)
+        return _ansi_rgb("─" * _hr_width(), 80, 80, 80)
 
     stripped = line.lstrip()
     if stripped.startswith(">"):
@@ -1294,10 +1321,19 @@ def _highlight_assistant_inline_tokens(text: str) -> str:
 
     _bold_open, _bold_close = _style_open_close(_ansi_bold)
     _italic_open, _italic_close = _style_open_close(_ansi_italic)
+    _strike_open, _strike_close = "\x1b[9m", "\x1b[29m"
+    _uline_open, _uline_close = "\x1b[4m", "\x1b[24m"
+
+    def _paint_strikethrough(s: str) -> str:
+        inner = _highlight_assistant_inline_tokens(s[2:-2])
+        return _strike_open + inner + _strike_close
+
+    def _paint_bolditalic(s: str) -> str:
+        inner = _highlight_assistant_inline_tokens(s[3:-3])
+        return _wrap_style_over_inner(_bold_open, _bold_close,
+               _wrap_style_over_inner(_italic_open, _italic_close, inner))
 
     def _paint_bold(s: str) -> str:
-        # Recurse so nested inline code / italics inside the bold span are also
-        # styled, then keep bold applied across their resets.
         inner = _highlight_assistant_inline_tokens(s[2:-2])
         return _wrap_style_over_inner(_bold_open, _bold_close, inner)
 
@@ -1305,13 +1341,18 @@ def _highlight_assistant_inline_tokens(text: str) -> str:
         inner = _highlight_assistant_inline_tokens(s[1:-1])
         return _wrap_style_over_inner(_italic_open, _italic_close, inner)
 
+    def _paint_underline(s: str) -> str:
+        inner = _highlight_assistant_inline_tokens(s[3:-4])
+        return _uline_open + inner + _uline_close
+
     rules: List[Tuple[Pattern[str], Callable[[str], str]]] = [
-        # Emphasis first so a bold/italic span that *contains* inline code is
-        # recognised as a whole (its body is highlighted recursively); otherwise
-        # the inner code span would be painted and the surrounding ** markers
-        # would be left raw because their region was already "occupied".
+        # ``***bolditalic***`` / ``___bolditalic___`` (must be before bold).
+        (re.compile(r"\*\*\*(?=\S)(?:[^*\n]|\*(?!\*))+?(?<=\S)\*\*\*"), _paint_bolditalic),
+        (re.compile(r"(?<![A-Za-z0-9_])___(?=\S)[^_\n]+?(?<=\S)___(?![A-Za-z0-9_])"), _paint_bolditalic),
         (re.compile(r"\*\*(?=\S)(?:[^*\n]|\*(?!\*))+?(?<=\S)\*\*"), _paint_bold),
         (re.compile(r"(?<![A-Za-z0-9_])__(?=\S)[^_\n]+?(?<=\S)__(?![A-Za-z0-9_])"), _paint_bold),
+        # ``~~strikethrough~~`` (may not render on all terminal emulators).
+        (re.compile(r"~~(?=\S)(?:[^~\n]|~(?!~))+?(?<=\S)~~"), _paint_strikethrough),
         # ``*italic*`` / ``_italic_`` (avoid bare ``*`` bullets and snake_case).
         (re.compile(r"\*(?=\S)(?:[^*\n])+?(?<=\S)\*"), _paint_italic),
         (re.compile(r"(?<![A-Za-z0-9_])_(?=\S)[^_\n]+?(?<=\S)_(?![A-Za-z0-9_])"), _paint_italic),

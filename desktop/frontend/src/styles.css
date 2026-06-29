@@ -4053,7 +4053,7 @@ h6.md-h {
 }
 .md-hr {
   border: none;
-  border-top: 1px solid var(--border);
+  border-top: 1px solid var(--border, #ccc);
   margin: 12px 0;
 }
 .md-math-wrap {
@@ -4077,6 +4077,10 @@ h6.md-h {
 .md-math-block .katex {
   font-size: 1.05em;
 }
+.md-footnote-ref { text-decoration: none; color: var(--accent, #36f); font-size: 0.75em; }
+.md-footnotes { margin-top: 4px; font-size: 0.85em; opacity: 0.85; }
+.md-footnote-item { margin: 2px 0; }
+.md-footnote-label { font-weight: 600; margin-right: 4px; }
 .md-table {
   border-collapse: collapse;
   margin: 10px 0;

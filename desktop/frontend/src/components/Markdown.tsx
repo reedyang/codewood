@@ -9,7 +9,7 @@ import { CodeBlock } from "./CodeBlock";
 // All text flows through React children, so it is escaped by default.
 
 const INLINE_RE =
-  /(`[^`]+`)|(\*\*[^*]+\*\*)|(__[^_]+__)|(\*[^*]+\*)|(_[^_]+_)|(~~[^~]+~~)|(\[[^\]]+\]\([^)]+\))/g;
+  /(`[^`]+`)|(\*\*\*[^*]+\*\*\*)|(\*\*[^*]+\*\*)|(__[^_]+__)|(\*[^*]+\*)|(_[^_]+_)|(~~[^~]+~~)|(<u>[^<]*<\/u>)|(\[[^\]]+\]\([^)]+\))|(\[\^[^\]]+\])/g;
 
 // Curated LaTeX-command -> Unicode map for inline math the model commonly
 // emits in narrative (e.g. `$\rightarrow$`). The GUI has no TeX engine, so
@@ -106,6 +106,7 @@ function renderKatex(body: string, display: boolean): string {
 }
 
 let mathKeySeq = 0;
+let _fnMap: Map<string, string> | null = null;
 
 function katexNode(body: string, display: boolean): ReactNode {
   const html = renderKatex(body, display);
@@ -302,8 +303,12 @@ function renderInline(text: string, keyBase: string): ReactNode[] {
           {tok.slice(1, -1)}
         </code>,
       );
+    } else if (tok.startsWith("***")) {
+      nodes.push(<strong key={k}><em>{tok.slice(3, -3)}</em></strong>);
     } else if (tok.startsWith("**") || tok.startsWith("__")) {
       nodes.push(<strong key={k}>{tok.slice(2, -2)}</strong>);
+    } else if (tok.startsWith("<u>")) {
+      nodes.push(<u key={k}>{tok.slice(3, -4)}</u>);
     } else if (tok.startsWith("~~")) {
       nodes.push(<del key={k}>{tok.slice(2, -2)}</del>);
     } else if (tok.startsWith("*") || tok.startsWith("_")) {
@@ -317,6 +322,17 @@ function renderInline(text: string, keyBase: string): ReactNode[] {
             {mm[1]}
           </a>,
         );
+      } else if (tok.startsWith("[^")) {
+        const fn = /^\[(\^[^\]]+)\]$/.exec(tok);
+        if (fn && _fnMap?.has(fn[1])) {
+          nodes.push(
+            <sup key={k}>
+              <a href={`#fn-${fn[1]}`} className="md-footnote-ref">{fn[1].slice(1)}</a>
+            </sup>,
+          );
+        } else {
+          nodes.push(tok);
+        }
       } else {
         nodes.push(tok);
       }
@@ -397,11 +413,28 @@ export function MarkdownText({ text }: { text: string }): ReactNode {
 }
 
 function MarkdownBody({ text }: { text: string }): ReactNode {
-  // Defense-in-depth: drop any leaked pseudo tool-call / envelope markup that
-  // survived the backend streaming cutter (e.g. stale chat records). Complete
-  // <proposed_plan> blocks are handled by renderWithProposedPlan before we get
-  // here; this only removes dangling openers and angle-bracket tool fragments.
-  const lines = stripLeakedToolMarkup(text).replace(/\r\n/g, "\n").split("\n");
+  const rawLines = stripLeakedToolMarkup(text).replace(/\r\n/g, "\n").split("\n");
+
+  // ---- footnotes ----
+  // Collect footnote definitions (`[^label]: content ...`) before rendering.
+  const footnotes = new Map<string, string>();
+  for (let li = 0; li < rawLines.length; li++) {
+    const m = /^\[(\^[^\]]+)\]:\s*(.*)$/.exec(rawLines[li]);
+    if (m) {
+      const label = m[1];
+      const parts: string[] = [m[2]];
+      li++;
+      while (li < rawLines.length && /^\s{2,}/.test(rawLines[li])) {
+        parts.push(rawLines[li].trimStart());
+        li++;
+      }
+      li--;
+      footnotes.set(label, parts.join(" "));
+    }
+  }
+  const lines = rawLines.filter((l) => !/^\[\^[^\]]+\]:\s*/.test(l));
+  _fnMap = footnotes.size > 0 ? footnotes : null;
+
   const blocks: ReactNode[] = [];
   let i = 0;
   let key = 0;
@@ -527,7 +560,7 @@ function MarkdownBody({ text }: { text: string }): ReactNode {
       continue;
     }
 
-    if (/^\s*([-*_])(\s*\2){2,}\s*$/.test(line)) {
+    if (/^\s*([-*_])(\s*\1){2,}\s*$/.test(line)) {
       blocks.push(<hr key={key++} className="md-hr" />);
       i++;
       continue;
@@ -640,6 +673,24 @@ function MarkdownBody({ text }: { text: string }): ReactNode {
       <p key={key++} className="md-p">
         {inlineNodes}
       </p>,
+    );
+  }
+
+  // ---- footnote definitions at bottom ----
+  if (footnotes.size > 0) {
+    const items: ReactNode[] = [];
+    let fnKey = 0;
+    footnotes.forEach((body, label) => {
+      items.push(
+        <li key={fnKey++} className="md-footnote-item" id={`fn-${label}`}>
+          <sup className="md-footnote-label">{label.slice(1)}</sup>
+          {renderInline(body, `fn-${label}`)}
+        </li>,
+      );
+    });
+    blocks.push(
+      <hr key={key++} className="md-hr" />,
+      <ol key={key++} className="md-footnotes">{items}</ol>,
     );
   }
 
