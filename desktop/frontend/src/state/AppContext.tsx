@@ -376,6 +376,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const activeChatIdRef = useRef<string>("");
   const activeWorkspaceIdRef = useRef<string>("");
   const stateRef = useRef<AppState | null>(null);
+  // Track the most recently requested focus workspace so idle/state events
+  // from it can bypass the background-event guard during a focus switch.
+  const pendingFocusWsIdRef = useRef<string>("");
   useEffect(() => {
     stateRef.current = state;
   }, [state]);
@@ -1213,8 +1216,23 @@ export function AppProvider({ children }: { children: ReactNode }) {
       switch (event.event) {
         case "idle": {
           const next = data.state;
-          if (next) {
+          const idleForFocused =
+            !eventWsId || !activeWsId || eventWsId === activeWsId ||
+            eventWsId === pendingFocusWsIdRef.current;
+          // Only overwrite React state when this idle belongs to the
+          // focused workspace (or is the first idle after an explicit
+          // focus switch to that workspace — stateRef still carries the
+          // old workspace ID at that point).  Background-workspace events still need
+          // side-effect handling below (end turn, unread marker, draft
+          // transition) but must NOT change the focused workspace's
+          // activeChatId / app state, which would cause the turns
+          // selector to pull from the wrong bucket and the ChatView to
+          // render stale/empty turns during streaming.
+          if (next && idleForFocused) {
             setState(next);
+            if (eventWsId === pendingFocusWsIdRef.current) {
+              pendingFocusWsIdRef.current = "";
+            }
           }
           // An ``idle`` event can be emitted by paths other than a genuine
           // turn completion — most importantly the focus-switch broadcast
@@ -1234,8 +1252,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
           // we can't trust its chat list for the event's chat. In that case
           // fall back to whether a live turn is still open in the event's
           // bucket (it stays open until a real terminal idle for that chat).
-          const idleForFocused =
-            !eventWsId || !activeWsId || eventWsId === activeWsId;
           const stillRunning = idleForFocused
             ? Boolean(
                 chatId &&
@@ -1267,19 +1283,21 @@ export function AppProvider({ children }: { children: ReactNode }) {
           //   - File > Open Folder (workspace create)
           //   - Auto-opening a workspace with no chats (startup / delete+fallback)
           //   - Any other path that lands on a chatless workspace
-          const prevWsId = stateRef.current?.workspace?.id;
-          if (
-            prevWsId &&
-            next?.workspace?.id &&
-            prevWsId !== next.workspace.id &&
-            !next.activeChatId
-          ) {
-            setDraftMode(true);
-            setDraftWorkspaceId(next.workspace.id);
-            historyChatRef.current = "\u0000";
-            setHistoryTurns([]);
-            setHistoryStart(0);
-            setHistoryTotal(0);
+          if (idleForFocused) {
+            const prevWsId = stateRef.current?.workspace?.id;
+            if (
+              prevWsId &&
+              next?.workspace?.id &&
+              prevWsId !== next.workspace.id &&
+              !next.activeChatId
+            ) {
+              setDraftMode(true);
+              setDraftWorkspaceId(next.workspace.id);
+              historyChatRef.current = "\u0000";
+              setHistoryTurns([]);
+              setHistoryStart(0);
+              setHistoryTotal(0);
+            }
           }
           break;
         }
@@ -1288,8 +1306,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
           // ``update_plan``). Update the snapshot so the plan panel can
           // re-render but DO NOT close the active turn or clear the busy
           // flag — the model is still streaming its reply.
+          // Guard: only apply state updates for the focused workspace;
+          // background-workspace ``state`` events must not overwrite the
+          // focused workspace's activeChatId / app state.
           const next = data.state;
-          if (next) {
+          if (next && (!eventWsId || !activeWsId || eventWsId === activeWsId)) {
             setState(next);
           }
           break;
@@ -1728,6 +1749,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const switchToChat = useCallback(
     async (chatId: string, workspaceId = "") => {
       const prevKey = chatKey(activeWorkspaceIdRef.current, activeChatIdRef.current);
+      // When switching to a different workspace, record the target so the
+      // subsequent idle/state SSE event from that workspace can bypass the
+      // background-event guard (stateRef still has the old workspace ID).
+      if (workspaceId && workspaceId !== activeWorkspaceIdRef.current) {
+        pendingFocusWsIdRef.current = workspaceId;
+      }
       const ok = await client.selectChat(chatId, workspaceId);
       if (!ok) {
         return;
@@ -1743,6 +1770,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const selectWorkspace = useCallback(
     async (workspaceId: string) => {
+      pendingFocusWsIdRef.current = workspaceId;
       const ok = await client.selectChat("", workspaceId);
       if (!ok) {
         return;
@@ -2014,7 +2042,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const pickAndOpenFolder = useCallback(async () => {
     const path = await pickFolder();
     if (path) {
-      void client.openFolder(path);
+      const result = await client.openFolder(path);
+      if (result?.id) {
+        pendingFocusWsIdRef.current = result.id;
+      }
     }
   }, [pickFolder, client]);
 
@@ -2048,7 +2079,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
         case "open-folder": {
           const path = String(payload ?? "").trim();
           if (path) {
-            void client.openFolder(path);
+            client.openFolder(path).then((r) => {
+              if (r?.id) pendingFocusWsIdRef.current = r.id;
+            });
           }
           break;
         }
