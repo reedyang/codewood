@@ -678,6 +678,84 @@ def _safe_active_plan(agent: Any) -> Dict[str, Any]:
     return {"plan": steps, "explanation": str(snapshot.get("explanation") or "")}
 
 
+def _compute_chat_cache_stats(agent: Any) -> Dict[str, Any]:
+    """Aggregate cache-hit statistics for the active chat's current model.
+
+    Scans conversation_history for messages sent with the same model name,
+    summing recorded prompt_cache_hit_tokens and prompt_cache_miss_tokens.
+    Falls back to the persisted chat record when conversation_history is empty.
+    """
+    model_name = str(getattr(agent, "model_name", "") or "").strip()
+    result: Dict[str, Any] = {
+        "totalTokens": 0,
+        "hitTokens": 0,
+        "missTokens": 0,
+        "hitRate": 0.0,
+        "model": model_name,
+        "supported": False,
+    }
+    if not model_name:
+        return result
+    hist = list(getattr(agent, "conversation_history", None) or [])
+    if not hist:
+        cid = _primary_active_chat_id(agent)
+        chat = agent._find_chat_by_id(cid) if cid else None
+        if isinstance(chat, dict):
+            hist = list(chat.get("messages") or [])
+    total_hit = 0
+    total_miss = 0
+    for msg in hist:
+        if not isinstance(msg, dict):
+            continue
+        msg_model = str(msg.get("_model") or "").strip()
+        if msg_model != model_name:
+            continue
+        cs = msg.get("_cache_stats")
+        if isinstance(cs, dict):
+            result["supported"] = True
+            total_hit += int(cs.get("prompt_cache_hit_tokens") or 0)
+            total_miss += int(cs.get("prompt_cache_miss_tokens") or 0)
+        else:
+            tc = msg.get("_token_count")
+            if isinstance(tc, (int, float)) and tc > 0:
+                total_miss += int(tc)
+    total = total_hit + total_miss
+    if total > 0:
+        result["totalTokens"] = total
+        result["hitTokens"] = total_hit
+        result["missTokens"] = total_miss
+        result["hitRate"] = round(total_hit * 100.0 / max(1, total), 1)
+    return result
+
+
+def _compute_context_usage_fresh_from_messages(chat_record: Dict[str, Any]) -> "tuple[int, int, int]":
+    """Compute context usage (history tokens only) from chat record messages."""
+    from ..core.config.model_providers import DEFAULT_CONTEXT_WINDOW, parse_context_window
+
+    msgs = list(chat_record.get("messages") or [])
+    last_cache_idx = -1
+    for i, m in enumerate(msgs):
+        if isinstance(m, dict) and isinstance(m.get("_cache_stats"), dict):
+            last_cache_idx = i
+    total = 0
+    for i, m in enumerate(msgs):
+        if not isinstance(m, dict):
+            continue
+        if i < last_cache_idx:
+            continue
+        if i == last_cache_idx:
+            cs = m["_cache_stats"]
+            total += int(cs.get("prompt_cache_hit_tokens") or 0) + int(cs.get("prompt_cache_miss_tokens") or 0)
+        tc = m.get("_token_count")
+        if isinstance(tc, (int, float)) and int(tc) > 0:
+            total += int(tc)
+    window = parse_context_window(
+        chat_record.get("context_window"), default_value=DEFAULT_CONTEXT_WINDOW
+    )
+    pct = max(0, min(999, int(round(total * 100.0 / max(1, window)))))
+    return window, total, pct
+
+
 def _safe_reasoning_level(agent: Any) -> str:
     # Reasoning level is session-scoped; bind to the active chat so HTTP
     # handler threads read the focused chat's saved selection (restored from
@@ -866,6 +944,16 @@ def _build_state_inner(agent: Any) -> Dict[str, Any]:
                     active_context_window = int(c.get("context_window") or 0)
                 except Exception:
                     active_context_window = 0
+                # Fall back to in-memory agent attributes when file cache is
+                # not yet persisted (e.g. first state event after chat activation
+                # where the async refresh hasn't finished writing to disk).
+                if active_context_tokens <= 0 and active_context_percent <= 0:
+                    active_context_tokens = int(getattr(agent, "_last_context_input_tokens", 0) or 0)
+                    active_context_percent = int(getattr(agent, "_last_context_usage_percent", 0) or 0)
+                    if active_context_window <= 0:
+                        active_context_window = int(getattr(agent, "_last_context_window", 0) or 0)
+                    if active_context_tokens <= 0:
+                        active_context_window, active_context_tokens, active_context_percent = _compute_context_usage_fresh_from_messages(c)
             chats.append(
                 {
                     "index": i,
@@ -1012,6 +1100,7 @@ def _build_state_inner(agent: Any) -> Dict[str, Any]:
             "tokens": active_context_tokens,
             "window": active_context_window,
         },
+        "cacheStats": _compute_chat_cache_stats(agent),
         "language": language,
         "theme": theme,
         "uiPrefs": ui_prefs,

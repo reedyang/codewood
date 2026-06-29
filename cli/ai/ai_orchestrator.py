@@ -171,18 +171,14 @@ class AIOrchestrator:
                         self.context.history_writer("user", _clean)
                 assistant_text = str(ai_response or "")
                 tool_calls_data: Any = None
+                cache_stats: Any = None
                 if isinstance(message, dict):
                     tool_calls_data = message.get("tool_calls")
+                    cache_stats = message.get("_cache_stats")
                 if not assistant_text.strip():
-                    # When the model returned only standard ``tool_calls`` (no visible
-                    # text content), persist a synthetic JSON plan so the chat
-                    # history replay (``_parse_model_tool_plan_history_content``)
-                    # can still surface the tool call. This keeps tools like
-                    # ``apply_patch`` from disappearing from chat history when the
-                    # provider omits a textual content payload.
                     plan_payload = _build_tool_calls_plan_payload(message)
                     if plan_payload:
-                        self.context.history_writer("assistant", plan_payload, tool_calls=tool_calls_data)
+                        self.context.history_writer("assistant", plan_payload, tool_calls=tool_calls_data, cache_stats=cache_stats)
                         return
                     _AI_HISTORY_LOG.warning(
                         "llm-history empty-assistant skipped provider=%s model=%s stream=%s return_message=%s history_skip_user=%s",
@@ -193,7 +189,7 @@ class AIOrchestrator:
                         bool(call_ctx.history_skip_user),
                     )
                     return
-                self.context.history_writer("assistant", assistant_text, tool_calls=tool_calls_data)
+                self.context.history_writer("assistant", assistant_text, tool_calls=tool_calls_data, cache_stats=cache_stats)
 
             provider_ctx = ProviderCallContext(
                 provider=provider,

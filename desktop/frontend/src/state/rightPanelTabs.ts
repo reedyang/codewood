@@ -7,14 +7,14 @@
  * than the backend domain model.
  */
 
-export type RightPanelTabId = "todos" | "browser";
+export type RightPanelTabId = "dashboard" | "browser";
 
-/** All known tabs in display order. "todos" is always first and is the
+/** All known tabs in display order. "dashboard" is always first and is the
  *  mandatory tab (it can never be hidden to an empty tab bar). */
-export const RIGHT_PANEL_TABS: readonly RightPanelTabId[] = ["todos", "browser"];
+export const RIGHT_PANEL_TABS: readonly RightPanelTabId[] = ["dashboard", "browser"];
 
 /** Tabs that must always remain visible (cannot be toggled off). */
-export const MANDATORY_TABS: readonly RightPanelTabId[] = ["todos"];
+export const MANDATORY_TABS: readonly RightPanelTabId[] = ["dashboard"];
 
 export interface RightPanelPrefs {
   visible: RightPanelTabId[];
@@ -24,8 +24,8 @@ export interface RightPanelPrefs {
 const STORAGE_KEY = "codewood.rightPanelTabs";
 
 const DEFAULT_PREFS: RightPanelPrefs = {
-  visible: ["todos"],
-  active: "todos",
+  visible: ["dashboard"],
+  active: "dashboard",
 };
 
 function isTabId(value: unknown): value is RightPanelTabId {

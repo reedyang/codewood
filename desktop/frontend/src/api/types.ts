@@ -6,6 +6,16 @@ export interface WorkspaceSummary {
   isDefault?: boolean;
 }
 
+/** Per-model cumulative cache-hit statistics from the AI provider. */
+export interface CacheStats {
+  totalTokens: number;
+  hitTokens: number;
+  missTokens: number;
+  hitRate: number;
+  model: string;
+  supported: boolean;
+}
+
 export interface IndexStatus {
   hidden: boolean;
   files_total: number;
@@ -114,6 +124,8 @@ export interface AppState {
     tokens: number;
     window: number;
   };
+  /** Cumulative cache-hit/miss statistics for the active chat's current model. */
+  cacheStats?: CacheStats;
   language: string;
   theme?: string;
   uiPrefs?: {

@@ -731,6 +731,7 @@ def _stream_openai_like_response(
     class _OpenAIStreamResult:
         def __init__(self) -> None:
             self.final_message: Optional[Dict[str, Any]] = None
+            self.last_usage: Optional[Dict[str, Any]] = None
 
         def __iter__(self):
             buffer = ""
@@ -741,6 +742,7 @@ def _stream_openai_like_response(
             tool_call_states: Dict[str, Dict[str, Any]] = {}
             tool_call_order: List[str] = []
             sanitizer = _make_stream_sanitizer()
+            last_usage: Optional[Dict[str, Any]] = None
 
             def _emit(raw: str, *, first: bool) -> Tuple[str, bool]:
                 """Run raw chunk through the streaming sanitizer; lstrip the
@@ -775,6 +777,9 @@ def _stream_openai_like_response(
                     key_text = str(key)
                     if key_text not in seen_payload_keys:
                         seen_payload_keys.append(key_text)
+                usage = payload.get("usage")
+                if isinstance(usage, dict):
+                    last_usage = usage
                 _collect_stream_tool_calls_from_payload(
                     payload,
                     states=tool_call_states,
@@ -832,6 +837,9 @@ def _stream_openai_like_response(
                     bool(snapshot_message),
                     bool(self.final_message.get("tool_calls")),
                 )
+            self.last_usage = last_usage
+            if isinstance(last_usage, dict) and isinstance(self.final_message, dict):
+                _attach_cache_stats(self.final_message, {"usage": last_usage})
             append_history(buffer, self.final_message)
 
     return _OpenAIStreamResult()
@@ -1393,6 +1401,20 @@ def _post_openai_request(
     return resp
 
 
+def _attach_cache_stats(message: Dict[str, Any], response_data: Dict[str, Any]) -> None:
+    """Extract cache-hit stats from the API response and attach to message."""
+    from .cache_adapter import CacheAdapterManager
+
+    mgr = CacheAdapterManager()
+    for adapter in mgr._adapters:
+        if not adapter.supports_cache_stats():
+            continue
+        stats = adapter.extract_cache_stats(response_data)
+        if stats is not None:
+            message["_cache_stats"] = stats
+            return
+
+
 def _call_openai_once(
     *,
     model_name: str,
@@ -1446,6 +1468,7 @@ def _call_openai_once(
         ai_response = _sanitize_assistant_text(raw_content or "")
     message = dict(message)
     message["content"] = ai_response
+    _attach_cache_stats(message, data)
     if not ai_response:
         _OPENAI_ROUTE_LOG.warning(
             "openai-response empty-output api_kind=%s data_keys=%s message_keys=%s has_tool_calls=%s",

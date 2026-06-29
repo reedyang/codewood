@@ -61,7 +61,7 @@ export const zhCN: Dict = {
 
   "rightpanel.close": "关闭右侧面板",
   "rightpanel.tabsMenu": "选择面板",
-  "rightpanel.tab.todos": "待办事项",
+  "rightpanel.tab.dashboard": "仪表盘",
   "rightpanel.tab.browser": "浏览器",
   "rightpanel.tab.close": "关闭标签页",
   "rightpanel.toggle": "开关右侧面板",
