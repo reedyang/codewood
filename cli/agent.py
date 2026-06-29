@@ -6933,31 +6933,36 @@ class Agent:
         return "\n".join(lines)
 
     def _compact_result_for_next_input(self, result: Dict[str, Any], max_chars: int = 3000) -> str:
-        """
-        Keep next-round context focused by compressing large tool payloads.
-        Especially important for large shell outputs in long investigative tasks.
-        """
+        """Keep next-round context small — full output is already in history."""
         if not isinstance(result, dict):
             return ""
-        compact = dict(result)
-        # Sub-agent results carry a final answer in ``output`` that the main
-        # model must consume in full; never truncate that payload.
-        is_subagent_result = "subagent" in compact and "output" in compact
-        truncate_keys = ("content", "output", "stderr", "analysis")
-        if is_subagent_result:
-            truncate_keys = ("content", "stderr", "analysis")
-        for k in truncate_keys:
-            if k in compact and isinstance(compact.get(k), str):
-                v = str(compact.get(k) or "")
-                if len(v) > 800:
-                    compact[k] = v[:800] + " ...[truncated]"
-        # ``default=str`` guards against any non-JSON-serializable value that a
-        # tool may accidentally leave in its result (e.g. an unconsumed stream
-        # object), so a stray object can never crash the main loop here.
+        compact: Dict[str, Any] = {}
+        if "success" in result:
+            compact["success"] = bool(result["success"])
+        if "error" in result:
+            compact["error"] = str(result.get("error", "") or "")[:200]
+        if "message" in result:
+            compact["message"] = str(result.get("message", "") or "")[:200]
+        # Keep batch_results structure but strip output from each entry
+        if "batch_results" in result:
+            entries = []
+            for e in (result.get("batch_results") or []):
+                if isinstance(e, dict):
+                    ce: Dict[str, Any] = {}
+                    if "success" in e:
+                        ce["success"] = bool(e["success"])
+                    if "error" in e:
+                        ce["error"] = str(e.get("error", "") or "")[:200]
+                    if "message" in e:
+                        ce["message"] = str(e.get("message", "") or "")[:200]
+                    entries.append(ce)
+                else:
+                    entries.append(str(e)[:200])
+            compact["batch_results"] = entries
+        # Sub-agent final answer must survive; keep it untruncated.
+        if "subagent" in compact and "output" in result:
+            compact["output"] = str(result.get("output", "") or "")
         s = json.dumps(compact, ensure_ascii=False, default=str)
-        if is_subagent_result:
-            # Allow the full sub-agent output through the outer length cap too.
-            return s
         if len(s) > max_chars:
             s = s[:max_chars] + " ...[truncated]"
         return s

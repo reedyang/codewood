@@ -1727,16 +1727,18 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const switchToChat = useCallback(
     async (chatId: string, workspaceId = "") => {
+      const prevKey = chatKey(activeWorkspaceIdRef.current, activeChatIdRef.current);
       const ok = await client.selectChat(chatId, workspaceId);
       if (!ok) {
         return;
       }
+      clearLiveTurns(prevKey);
       setDraftMode(false);
       setDraftWorkspaceId("");
       historyChatRef.current = chatId;
       await loadChatHistory(chatId);
     },
-    [client, loadChatHistory],
+    [client, clearLiveTurns, loadChatHistory],
   );
 
   const selectWorkspace = useCallback(

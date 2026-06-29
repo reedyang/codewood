@@ -801,10 +801,6 @@ class LLMContextManager:
                 else self._first_user_requirement(str(user_input_hint or "").strip())
             )
             user_anchor = (
-                "[Key constraints]\n"
-                "1) The original user request must remain satisfied.\n"
-                "2) This turn's user input has highest priority.\n\n"
-                f"Original user request: {requirement}\n"
                 f"User input: {str(user_input_hint or '').strip()}\n"
             )
             if context_hint:
@@ -984,6 +980,15 @@ class LLMContextManager:
             source_history=filtered_history,
         )
         interruption_line = self._latest_interruption_context_line(filtered_history)
+        # The raw user input was already recorded to history by
+        # ``_try_record_user_task_message`` (crash safety).  Before
+        # appending the context-injected version below, drop the
+        # matching raw user message from history to avoid duplication.
+        _raw_input = user_input.strip().lower() if user_input else ""
+        if _raw_input and history_messages and history_messages[-1].get("role") == "user":
+            _last_user = str(history_messages[-1].get("content", "") or "").strip().lower()
+            if _last_user == _raw_input:
+                history_messages = history_messages[:-1]
         for msg in history_messages:
             messages.append(msg)
         if memory_system_content:
@@ -998,51 +1003,29 @@ class LLMContextManager:
             if force_new_requirement
             else self._first_user_requirement(user_input)
         )
-        current_input = ""
-        current_input += (
-            "[Key constraints]\n"
-            "1) The original user request must remain satisfied.\n"
-            "2) This turn's user input has highest priority.\n"
-            "3) If there is a recent operation result, conclusions must be consistent with it.\n\n"
-        )
+        # Include first-round evidence / contract from the runtime loop
+        # (appended to user_input by recorded_user_task), but NOT the raw
+        # user input itself — that is already in conversation history.
+        _extra = user_input or ""
+        _orig = self._first_user_requirement(user_input)
+        if _orig and _extra.startswith(_orig):
+            _extra = _extra[len(_orig):].lstrip()
+        current_input = _extra + ("\n" if _extra else "")
         if force_new_requirement:
             last_cancelled_task = str(getattr(self.agent, "_last_cancelled_task", "") or "").strip()
             current_input += (
-                "4) The previous task was cancelled by the user. If this turn is a new task, do not proactively resume or redo the cancelled task "
+                "[Cancelled task] The previous task was cancelled by the user. If this turn is a new task, do not proactively resume or redo the cancelled task "
                 "unless the user explicitly asks to continue.\n\n"
             )
             if last_cancelled_task:
                 current_input += f"Recently cancelled task: {last_cancelled_task}\n"
-        if mem_block:
-            current_input += (
-                "[Hard requirement] Before answering, check the experiential memory block placed after the history messages: "
-                "entries relevant to this turn's user question must be reflected in the answer; do not replace them with generic assistant or provider settings unrelated to those records.\n\n"
-            )
-        if skill_front_system_content:
-            current_input += (
-                "[Hard requirement] This turn has an active skill (see the front-loaded skill body and trailing anchor); "
-                "if it conflicts with ordinary history narration, execution must prioritize that skill (except for safety hard constraints).\n\n"
-            )
-        current_input += (
-            f"Current workspace: {self.agent.workspace_name}\n"
-            f"Current directory (workspace): {workspace_directory}\n"
-        )
         if self.agent.operation_results:
-            latest_op = self.agent.operation_results[-1]
-            if isinstance(latest_op, dict) and ("timestamp" in latest_op):
-                latest_op = dict(latest_op)
-                latest_op.pop("timestamp", None)
-            op_line = f"Most recent operation result: {latest_op}\n"
-            current_input += self._clip_text_to_token_budget(op_line, op_context_budget)
+            pass
         if context:
             ctx_line = f"Operation context: {context}\n"
             current_input += self._clip_text_to_token_budget(ctx_line, op_context_budget)
         if interruption_line:
             current_input += f"Most recent interruption status: {interruption_line}\n"
-        # The original user request must enter context even when history is compressed.
-        current_input += f"Original user request: {original_requirement}\n"
-        # Keep timestamp at the tail to preserve upstream cache prefix stability.
-        current_input += f"User input: {user_input}\n"
         current_input += f"Local time reference: {date_time}"
         if skill_tail_system_content:
             messages.append({"role": "system", "content": skill_tail_system_content})
@@ -1093,18 +1076,7 @@ class LLMContextManager:
                     aggressive_assistant_clip,
                     source_history=filtered_history,
                 )
-                current_input2_head = ""
-                current_input2_head += (
-                    "[Key constraints]\n"
-                    "1) The original user request must remain satisfied.\n"
-                    "2) This turn's user input has highest priority.\n"
-                    "3) If there is a recent operation result, conclusions must be consistent with it.\n\n"
-                )
-                if skill_front_system_content:
-                    current_input2_head += (
-                        "[Hard requirement] This turn has an active skill (see the front-loaded skill body and trailing anchor); "
-                        "if it conflicts with ordinary history narration, execution must prioritize that skill (except for safety hard constraints).\n\n"
-                    )
+                current_input2_head = _extra + ("\n" if _extra else "")
                 if force_new_requirement:
                     last_cancelled_task = str(getattr(self.agent, "_last_cancelled_task", "") or "").strip()
                     current_input2_head += (
@@ -1115,38 +1087,16 @@ class LLMContextManager:
                         current_input2_head += f"Recently cancelled task: {last_cancelled_task}\n"
                 if interruption_line:
                     current_input2_head += f"Most recent interruption status: {interruption_line}\n"
-                if mem_block2:
-                    current_input2_head += (
-                        "[Hard requirement] Before answering, check the experiential memory block placed after the history messages: "
-                        "entries relevant to this turn's user question must be reflected in the answer; do not replace them with generic assistant or provider settings unrelated to those records.\n\n"
-                    )
                 if self.agent.operation_results:
-                    latest_op2 = self.agent.operation_results[-1]
-                    if isinstance(latest_op2, dict) and ("timestamp" in latest_op2):
-                        latest_op2 = dict(latest_op2)
-                        latest_op2.pop("timestamp", None)
-                    op_line2 = f"Most recent operation result: {latest_op2}\n"
-                    current_input2_head += self._clip_text_to_token_budget(
-                        op_line2,
-                        max(48, aggressive_op_context_budget),
-                    )
-                current_input2_optional = (
-                    f"Current workspace: {self.agent.workspace_name}\n"
-                    f"Current directory (workspace): {workspace_directory}\n"
-                )
+                    pass
                 if context:
                     ctx_line2 = f"Operation context: {context}\n"
-                    current_input2_optional += self._clip_text_to_token_budget(ctx_line2, aggressive_op_context_budget)
-                # Hard anchors: never clip original requirement and current input.
+                    current_input2_head += self._clip_text_to_token_budget(ctx_line2, aggressive_op_context_budget)
+                # Hard anchors: never clip current input and time.
                 current_input2_tail = (
-                    f"Original user request: {original_requirement}\n"
-                    f"User input: {user_input}\n"
                     f"Local time reference: {date_time}"
                 )
-                required_anchor = current_input2_head + current_input2_tail
-                optional_budget = max(0, aggressive_user_budget - self._estimate_text_tokens(required_anchor))
-                current_input2_optional = self._clip_text_to_token_budget(current_input2_optional, optional_budget)
-                current_input2 = current_input2_head + current_input2_optional + current_input2_tail
+                current_input2 = current_input2_head + current_input2_tail
 
                 system_tokens2 = self._estimate_message_tokens("system", sys_prefix2)
                 if skill_front_system_content:

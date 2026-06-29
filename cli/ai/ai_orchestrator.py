@@ -158,7 +158,7 @@ class AIOrchestrator:
                         break
                 if call_ctx.history_skip_user:
                     if _api_content:
-                        self.context.history_writer("user", _api_content, _internal=True, api_content=_api_content)
+                        self.context.history_writer("user", _api_content, _internal=True)
                 else:
                     _clean = (
                         call_ctx.history_user_input

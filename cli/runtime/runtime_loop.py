@@ -3476,13 +3476,7 @@ def run_agent_loop(agent: Any):
                     "- `memory_add`: use it when the user explicitly asks to remember something or use a preference in the future and it is personal experiential information rather than documentation. If you believe the user's statement is clearly wrong, you may record your judgment in `system_note` according to tool rules.\n"
                 )
             task_uses_standard_openai_tools = bool(self._use_standard_openai_tools_call())
-            first_round_contract = (
-                "\n\n[First-turn hard requirements]\n"
-                + numbered_rules
-                + "\n"
-                + mcp_tool_selection_constraint
-                + memory_rules_block
-            )
+            first_round_contract = ""
             if not task_uses_standard_openai_tools:
                 first_round_contract = (
                     "\n\n[Basic chat mode]\n"
@@ -3494,15 +3488,6 @@ def run_agent_loop(agent: Any):
                 and self._project_context_feature_enabled()
                 and _should_prioritize_project_context_for_task(original_user_task)
             )
-            project_context_contract = ""
-            if project_context_task:
-                project_context_contract = (
-                    "\n\n[Project context retrieval policy]\n"
-                    "- This is a software development task. Use `project_context_search` as the first retrieval step before shell search or file reads.\n"
-                    "- If the index is empty or stale, refresh it once and retry the search before falling back to broader search.\n"
-                )
-            first_round_contract = first_round_contract + project_context_contract
-
             first_round_evidence = ""
             if project_context_task:
                 project_context_ready = False
@@ -3699,9 +3684,23 @@ def run_agent_loop(agent: Any):
                     # so outgoing messages are sent verbatim — no per-message
                     # directive suffix and nothing extra to strip from history.
                     model_input = next_input
+                    _brief_ctx = ""
+                    if last_result and isinstance(last_result, dict):
+                        _tool_ctx = str(last_tool_name or "")
+                        _succ_ctx = bool(last_result.get("success", True))
+                        _msg_ctx = str(last_result.get("message", "") or "")
+                        _err_ctx = str(last_result.get("error", "") or "")
+                        if _tool_ctx and _succ_ctx:
+                            _brief_ctx = f"Latest tool: {_tool_ctx}, success=True"
+                            if _msg_ctx:
+                                _brief_ctx += f", message: {_msg_ctx[:120]}"
+                        elif _tool_ctx:
+                            _brief_ctx = f"Latest tool: {_tool_ctx}, success=False"
+                            if _err_ctx:
+                                _brief_ctx += f", error: {_err_ctx[:120]}"
                     ai_result = self.call_ai(
                         model_input,
-                        context=json.dumps(last_result, ensure_ascii=False) if last_result else "",
+                        context=_brief_ctx,
                         stream=None,
                         return_message=task_uses_standard_openai_tools,
                         history_user_input=original_user_task if not user_message_recorded else None,
@@ -4318,9 +4317,6 @@ def run_agent_loop(agent: Any):
                     else ""
                 )
                 next_input = (
-                    f"[Original user request]\n{original_user_task}\n\n"
-                    f"{step_progress}\n\n"
-                    f"{active_plan_block}"
                     f"[Previous batch tool results (compact)]\n{self._compact_result_for_next_input(result_for_next_input)}\n\n"
                     + "Continue with standard tools when more tool work is needed; you may call one or more tools at once. "
                     "When no further tool action is required, reply in natural language with no tool_calls and the host will return to the command prompt. "
