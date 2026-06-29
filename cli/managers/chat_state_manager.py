@@ -393,6 +393,9 @@ class ChatStateManager:
             out["exclude_from_model_context"] = True
         if bool(raw.get("_internal", False)):
             out["_internal"] = True
+        context_suffix = str(raw.get("_context_suffix") or "").strip()
+        if context_suffix:
+            out["_context_suffix"] = context_suffix
         api_content = str(raw.get("_api_content") or "").strip()
         if api_content:
             out["_api_content"] = api_content
@@ -1004,6 +1007,9 @@ class ChatStateManager:
                     entry["exclude_from_model_context"] = True
                 if bool(m.get("_internal", False)):
                     entry["_internal"] = True
+                context_suffix = str(m.get("_context_suffix") or "").strip()
+                if context_suffix:
+                    entry["_context_suffix"] = context_suffix
                 api_content = str(m.get("_api_content") or "").strip()
                 if api_content:
                     entry["_api_content"] = api_content
