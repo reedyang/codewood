@@ -364,15 +364,34 @@ class SessionMemoryService:
         self._start_token_counter_warmup()
         return None
 
-    def append_chat_message(self, role: str, content: str, tool_calls: Any = None, _internal: bool = False, api_content: Optional[str] = None) -> None:
+    def append_chat_message(self, role: str, content: str, tool_calls: Any = None, _internal: bool = False, api_content: Optional[str] = None, context_suffix: Optional[str] = None) -> None:
         r = str(role or "").strip().lower()
         if r not in ("user", "assistant"):
             return
+        should_attach_suffix = False
+        if r == "user" and isinstance(context_suffix, str) and context_suffix.strip():
+            suffix_attached = False
+            for m in reversed(self.agent.conversation_history):
+                if (
+                    isinstance(m, dict)
+                    and str(m.get("role", "")).strip().lower() == "user"
+                    and not m.get("_internal")
+                ):
+                    if "_context_suffix" in m:
+                        suffix_attached = True
+                        break
+                    m["_context_suffix"] = str(context_suffix)
+                    self.agent._sync_active_chat_messages()
+                    return
+            if not suffix_attached:
+                should_attach_suffix = True
         message: Dict[str, Any] = {
             "role": r,
             "content": str(content or ""),
             "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         }
+        if should_attach_suffix:
+            message["_context_suffix"] = str(context_suffix)
         if _internal:
             message["_internal"] = True
         if isinstance(api_content, str) and api_content:

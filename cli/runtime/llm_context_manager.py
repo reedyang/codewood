@@ -243,6 +243,16 @@ class LLMContextManager:
             api_content = msg.get("_api_content")
             if isinstance(api_content, str) and api_content.strip():
                 raw_content = api_content
+            # ``_context_suffix`` carries auto-injected content (evidence block,
+            # local time, etc.) that was previously stored as a separate _internal
+            # user message. Append it to the message content so the model still
+            # receives it during history replay.
+            context_suffix = msg.get("_context_suffix")
+            if role == "user" and isinstance(context_suffix, str) and context_suffix.strip():
+                if raw_content.strip():
+                    raw_content = raw_content + "\n\n" + context_suffix.strip()
+                else:
+                    raw_content = context_suffix.strip()
             if role == "user" and self._is_excluded_user_message_for_model_context(msg):
                 continue
             if role == "user" and self._is_builtin_slash_user_message(role, raw_content):
@@ -1003,14 +1013,13 @@ class LLMContextManager:
             if force_new_requirement
             else self._first_user_requirement(user_input)
         )
-        # Include first-round evidence / contract from the runtime loop
-        # (appended to user_input by recorded_user_task), but NOT the raw
-        # user input itself — that is already in conversation history.
-        _extra = user_input or ""
-        _orig = self._first_user_requirement(user_input)
-        if _orig and _extra.startswith(_orig):
-            _extra = _extra[len(_orig):].lstrip()
-        current_input = _extra + ("\n" if _extra else "")
+        # Include the full user input (task + first-round evidence / contract
+        # from the runtime loop).  The raw user text is also in conversation
+        # history, but the final user message must carry the complete task
+        # context so the model sees the user's intent directly on the last
+        # message — stripping it caused the model to anchor on time/location
+        # instead of the actual question.
+        current_input = str(user_input or "").strip() + "\n"
         if force_new_requirement:
             last_cancelled_task = str(getattr(self.agent, "_last_cancelled_task", "") or "").strip()
             current_input += (
@@ -1076,7 +1085,7 @@ class LLMContextManager:
                     aggressive_assistant_clip,
                     source_history=filtered_history,
                 )
-                current_input2_head = _extra + ("\n" if _extra else "")
+                current_input2_head = str(user_input or "").strip() + "\n"
                 if force_new_requirement:
                     last_cancelled_task = str(getattr(self.agent, "_last_cancelled_task", "") or "").strip()
                     current_input2_head += (
