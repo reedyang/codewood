@@ -1337,6 +1337,12 @@ class ChatStateManager:
                 pass
             self._apply_chat_usage_snapshot(chat)
             try:
+                sync_refresh = getattr(self._agent, "_refresh_status_context_usage_snapshot", None)
+                if callable(sync_refresh):
+                    sync_refresh()
+            except Exception:
+                pass
+            try:
                 remember = getattr(self._agent, "_remember_active_chat_history_first_visible_index", None)
                 if callable(remember):
                     remember(0 if print_history else len(list(self._agent.conversation_history or [])))
@@ -1344,19 +1350,6 @@ class ChatStateManager:
                 pass
             if persist:
                 self.save_chat_state()
-        try:
-            refresh_usage = getattr(self._agent, "_refresh_status_context_usage_snapshot", None)
-            if callable(refresh_usage):
-                refresh_usage()
-        except Exception:
-            pass
-        try:
-            svc = getattr(self._agent, "session_memory_service", None)
-            schedule_refresh = getattr(svc, "schedule_context_usage_refresh_async", None)
-            if callable(schedule_refresh):
-                schedule_refresh(context_hint="chat activated")
-        except Exception:
-            pass
         if clear_screen:
             os.system("cls" if os.name == "nt" else "clear")
         if print_history:
