@@ -379,6 +379,20 @@ export function ModelsSettings({ onDirtyChange, saveSignal }: ModelsSettingsProp
                         onChange={(e) => update(idx, { base_url: e.target.value })}
                       />
                     </div>
+
+                    <div className="models-field">
+                      <label>{t("models.apiMode")}</label>
+                      <select
+                        className="select"
+                        aria-label={t("models.apiMode")}
+                        value={p.api_mode}
+                        onChange={(e) => update(idx, { api_mode: e.target.value })}
+                      >
+                        <option value="auto">{t("models.apiModeAuto")}</option>
+                        <option value="chat">{t("models.apiModeChat")}</option>
+                        <option value="responses">{t("models.apiModeResponses")}</option>
+                      </select>
+                    </div>
                   </>
                 )}
 
@@ -477,6 +491,20 @@ export function ModelsSettings({ onDirtyChange, saveSignal }: ModelsSettingsProp
                                     }
                                   />
                                   {t("models.multimodal")}
+                                </label>
+                              </div>
+                              <div className="models-field">
+                                <label className="models-effort">
+                                  <input
+                                    type="checkbox"
+                                    checked={m.streaming !== false}
+                                    onChange={(e) =>
+                                      patchModel(idx, m.name, {
+                                        streaming: e.target.checked,
+                                      })
+                                    }
+                                  />
+                                  {t("models.streaming")}
                                 </label>
                               </div>
                               {!isOllama && (
