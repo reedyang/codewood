@@ -21,6 +21,26 @@ from .syntax_highlighter import SyntaxHighlighter
 # Shared, stateless syntax highlighter for fenced code blocks in TUI output.
 _CODE_HIGHLIGHTER = SyntaxHighlighter()
 
+_THINK_TAG_RE = re.compile(r"<think>.*?</think>", flags=re.IGNORECASE | re.DOTALL)
+_CHANNEL_THOUGHT_RE = re.compile(
+    r"<\|channel\>\s*thought[\s\S]*?<channel\|>", flags=re.IGNORECASE
+)
+_ORPHAN_HIDDEN_MARKER_RE = re.compile(
+    r"<\|channel\>\s*thought|<channel\|>|</?think\s*>",
+    flags=re.IGNORECASE,
+)
+
+
+def _strip_hidden_blocks(text: str) -> str:
+    """Strip hidden blocks (``<think>...</think>``, ``<|channel>thought...<channel|>``)
+    and orphan sentinel markers from assistant text for display."""
+    if not isinstance(text, str) or not text:
+        return ""
+    text = _THINK_TAG_RE.sub("", text)
+    text = _CHANNEL_THOUGHT_RE.sub("", text)
+    text = _ORPHAN_HIDDEN_MARKER_RE.sub("", text)
+    return text
+
 
 def _hr_width() -> int:
     """Return the horizontal-rule line length (terminal width minus margin)."""
@@ -496,7 +516,9 @@ def _reframe_proposed_plan_blocks(text: str) -> str:
 
 def format_assistant_display_response(text: str) -> str:
     """Prepare assistant text for terminal display (clean + normalize + highlight)."""
-    reframed = _reframe_proposed_plan_blocks(strip_tool_json_blocks_for_display(text))
+    reframed = _reframe_proposed_plan_blocks(
+        strip_tool_json_blocks_for_display(_strip_hidden_blocks(text))
+    )
     normalized = normalize_display_text(reframed)
     if not normalized:
         return ""
@@ -511,10 +533,11 @@ def format_assistant_display_response_plain(text: str) -> str:
     no ANSI highlighting. The GUI's Markdown renderer turns the block into a
     "Proposed Plan" card and the chooser keys off the literal tags, so they MUST
     survive into the reloaded history — otherwise, after an app restart, the plan
-    card and the "Implement this plan?" options disappear. Tool-call JSON is
-    still stripped so the GUI never shows a serialized tool envelope.
+    card and the "Implement this plan?" options disappear. Tool-call JSON and
+    hidden blocks are stripped so the GUI never shows a serialized tool envelope
+    or model-internal thinking content.
     """
-    cleaned = strip_tool_json_blocks_for_display(text)
+    cleaned = strip_tool_json_blocks_for_display(_strip_hidden_blocks(text))
     return normalize_display_text(cleaned)
 
 

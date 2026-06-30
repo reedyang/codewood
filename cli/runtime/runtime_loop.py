@@ -1705,6 +1705,30 @@ def _replace_latest_assistant_history_content(
         return
 
 
+def _update_latest_assistant_display_content(agent: Any, display_content: str) -> None:
+    if not isinstance(display_content, str) or not display_content:
+        return
+    hist = getattr(agent, "conversation_history", None)
+    if not isinstance(hist, list):
+        return
+    for msg in reversed(hist):
+        if not isinstance(msg, dict):
+            continue
+        if str(msg.get("role") or "").strip().lower() != "assistant":
+            continue
+        if str(msg.get("_display_content") or "") == display_content:
+            return
+        if str(msg.get("content") or "") == display_content:
+            msg.pop("_display_content", None)
+        else:
+            msg["_display_content"] = display_content
+        try:
+            agent._sync_active_chat_messages()
+        except Exception:
+            pass
+        return
+
+
 def _model_tool_result_was_aborted(tool_name: str, result: Any) -> bool:
     if str(tool_name or "").strip() != "shell":
         return False
@@ -3758,14 +3782,7 @@ def run_agent_loop(agent: Any):
                         turn_used_request_user_input=turn_used_request_user_input,
                     )
                     break
-                cleaned_internal_ai_response = _strip_leaked_internal_history_markers(ai_response)
-                if cleaned_internal_ai_response != ai_response:
-                    _replace_latest_assistant_history_content(
-                        self,
-                        ai_response,
-                        cleaned_internal_ai_response,
-                    )
-                    ai_response = cleaned_internal_ai_response
+                ai_response = _strip_leaked_internal_history_markers(ai_response)
                 if not user_message_recorded:
                     user_message_recorded = True
 
@@ -3794,18 +3811,9 @@ def run_agent_loop(agent: Any):
                 if pseudo_text_tool_plans:
                     if not message_tool_plans:
                         message_tool_plans = pseudo_text_tool_plans
-                    _replace_latest_assistant_history_content(
-                        self,
-                        ai_response,
-                        visible_ai_response,
-                        pseudo_tool_call_text=pseudo_tool_call_text,
-                        pseudo_tool_call_tools=[
-                            tool_name
-                            for tool_name, _args in pseudo_text_tool_plans
-                        ],
-                    )
                     ai_response = visible_ai_response
 
+                _update_latest_assistant_display_content(self, ai_response)
                 fallback_plans = list(message_tool_plans)
                 ai_response_looks_like_pseudo_tool = _looks_like_pseudo_tool_call_text(ai_response)
                 if (
@@ -3815,25 +3823,14 @@ def run_agent_loop(agent: Any):
                 ):
                     # The compatibility parser could not recover executable
                     # plans from the assistant text (e.g. the inner JSON was
-                    # malformed by over-escaping). The streaming sanitizer
-                    # already withheld the JSON envelope from the live
-                    # terminal, but the persisted ``content`` still carries
-                    # the raw pseudo-tool-call JSON. Run the same final-mode
-                    # cutter over the recorded content and rewrite history
-                    # so ``/chat reload`` shows only the natural-language
-                    # prose, matching what the user saw live.
+                    # malformed by over-escaping). Strip the raw pseudo-tool-call
+                    # JSON from the display text and save the cleaned copy.
                     cleaned_for_history = _stream_visible_text_with_json_pause(
                         ai_response, final=True
                     )
                     if cleaned_for_history and cleaned_for_history != ai_response:
-                        pseudo_tail = ai_response[len(cleaned_for_history):].strip()
-                        _replace_latest_assistant_history_content(
-                            self,
-                            ai_response,
-                            cleaned_for_history,
-                            pseudo_tool_call_text=pseudo_tail,
-                        )
                         ai_response = cleaned_for_history
+                        _update_latest_assistant_display_content(self, ai_response)
                     no_tool_rounds += 1
                     if no_tool_rounds >= max_no_tool_rounds:
                         print(

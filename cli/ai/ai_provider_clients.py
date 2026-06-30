@@ -736,7 +736,8 @@ def _stream_openai_like_response(
             self.last_usage: Optional[Dict[str, Any]] = None
 
         def __iter__(self):
-            buffer = ""
+            raw_buffer = ""
+            yielded_text = ""
             first_chunk = True
             snapshot_message: Optional[Dict[str, Any]] = None
             seen_event_types: List[str] = []
@@ -747,9 +748,6 @@ def _stream_openai_like_response(
             last_usage: Optional[Dict[str, Any]] = None
 
             def _emit(raw: str, *, first: bool) -> Tuple[str, bool]:
-                """Run raw chunk through the streaming sanitizer; lstrip the
-                first non-empty visible chunk to keep prior leading-trim
-                behavior intact."""
                 produced = sanitizer.feed(raw)
                 if not produced:
                     return "", first
@@ -780,7 +778,6 @@ def _stream_openai_like_response(
                     if key_text not in seen_payload_keys:
                         seen_payload_keys.append(key_text)
                 usage = payload.get("usage")
-                # Responses API streaming nests usage under ``response.usage``
                 if not isinstance(usage, dict):
                     response_wrapper = payload.get("response")
                     if isinstance(response_wrapper, dict):
@@ -797,9 +794,10 @@ def _stream_openai_like_response(
                     snapshot_message = current_snapshot
                 raw_delta = _extract_stream_text_delta(payload)
                 if raw_delta:
+                    raw_buffer += raw_delta
                     delta, first_chunk = _emit(raw_delta, first=first_chunk)
                     if delta:
-                        buffer += delta
+                        yielded_text += delta
                         yield delta
             tail = sanitizer.flush()
             if tail:
@@ -808,27 +806,30 @@ def _stream_openai_like_response(
                     if tail:
                         first_chunk = False
                 if tail:
-                    buffer += tail
+                    yielded_text += tail
                     yield tail
             if snapshot_message:
-                snapshot_text = _sanitize_assistant_text(
-                    snapshot_message.get("content", "") or ""
-                )
+                raw_snapshot = snapshot_message.get("content", "") or ""
+                if raw_snapshot:
+                    if not raw_buffer or not raw_snapshot.startswith(raw_buffer):
+                        raw_buffer = raw_snapshot
+                snapshot_text = _sanitize_assistant_text(raw_snapshot)
                 if snapshot_text:
-                    if not buffer:
+                    if not yielded_text:
                         snapshot_delta = snapshot_text.lstrip() if first_chunk else snapshot_text
                         if snapshot_delta:
-                            buffer += snapshot_delta
+                            first_chunk = False
+                            yielded_text += snapshot_delta
                             yield snapshot_delta
-                    elif snapshot_text.startswith(buffer):
-                        snapshot_delta = snapshot_text[len(buffer) :]
+                    elif snapshot_text.startswith(yielded_text):
+                        snapshot_delta = snapshot_text[len(yielded_text) :]
                         if snapshot_delta:
-                            buffer += snapshot_delta
+                            yielded_text += snapshot_delta
                             yield snapshot_delta
                     else:
-                        buffer = snapshot_text
+                        yielded_text = snapshot_text
             self.final_message = _build_stream_tool_calls_message(
-                content=buffer,
+                content=raw_buffer,
                 states=tool_call_states,
                 order=tool_call_order,
             )
@@ -836,7 +837,7 @@ def _stream_openai_like_response(
                 snapshot_tools = snapshot_message.get("tool_calls")
                 if snapshot_tools and not self.final_message.get("tool_calls"):
                     self.final_message["tool_calls"] = snapshot_tools
-            if not buffer:
+            if not raw_buffer:
                 _OPENAI_ROUTE_LOG.warning(
                     "openai-stream empty-output event_types=%s payload_keys=%s snapshot_seen=%s has_tool_calls=%s",
                     ",".join(seen_event_types[-12:]),
@@ -847,7 +848,11 @@ def _stream_openai_like_response(
             self.last_usage = last_usage
             if isinstance(last_usage, dict) and isinstance(self.final_message, dict):
                 _attach_cache_stats(self.final_message, {"usage": last_usage}, url)
-            append_history(buffer, self.final_message)
+            if isinstance(self.final_message, dict):
+                display_content = _sanitize_assistant_text(raw_buffer)
+                if display_content and display_content != raw_buffer:
+                    self.final_message["_display_content"] = display_content
+            append_history(raw_buffer, self.final_message)
 
     return _OpenAIStreamResult()
 
@@ -1488,24 +1493,29 @@ def _call_openai_once(
     message = _extract_message_from_openai_response_data(data)
     raw_content = message.get("content", "")
     if isinstance(raw_content, list):
-        ai_response = _extract_text_from_response_content(raw_content)
+        raw_text = _extract_text_from_response_content(raw_content)
     else:
-        ai_response = _sanitize_assistant_text(raw_content or "")
-    message = dict(message)
-    message["content"] = ai_response
+        raw_text = str(raw_content or "")
+    display_text = _sanitize_assistant_text(raw_text)
+    message_for_history = dict(message)
+    message_for_history["content"] = raw_text
+    message_for_return = dict(message)
+    message_for_return["content"] = display_text
     _OPENAI_ROUTE_LOG.info("openai-route one-call nonstream data_keys=%s url=%s",
                            sorted(data.keys()), url)
-    _attach_cache_stats(message, data, url)
-    if not ai_response:
+    _attach_cache_stats(message_for_history, data, url)
+    if display_text and display_text != raw_text:
+        message_for_history["_display_content"] = display_text
+    if not raw_text:
         _OPENAI_ROUTE_LOG.warning(
             "openai-response empty-output api_kind=%s data_keys=%s message_keys=%s has_tool_calls=%s",
             api_kind,
             ",".join(sorted([str(k) for k in data.keys()])),
-            ",".join(sorted([str(k) for k in message.keys()])),
-            bool(message.get("tool_calls")),
+            ",".join(sorted([str(k) for k in message_for_history.keys()])),
+            bool(message_for_history.get("tool_calls")),
         )
-    append_history(ai_response, message)
-    return message if return_message else ai_response
+    append_history(raw_text, message_for_history)
+    return message_for_return if return_message else display_text
 
 
 def _call_openai_with_suffix_strategy(
@@ -2041,7 +2051,7 @@ def _call_with_ollama(
                     pass
 
             def __iter__(self):
-                buffer = ""
+                raw_buffer = ""
                 first_chunk = True
                 final_role = "assistant"
                 tool_calls: List[Dict[str, Any]] = []
@@ -2057,13 +2067,14 @@ def _call_with_ollama(
                         if current_tool_calls:
                             tool_calls = current_tool_calls
                         raw_delta = message.get("content", "") or ""
+                        if raw_delta:
+                            raw_buffer += raw_delta
                         delta = sanitizer.feed(raw_delta) if raw_delta else ""
                         if delta:
                             if first_chunk:
                                 delta = delta.lstrip()
                                 first_chunk = False
                             if delta:
-                                buffer += delta
                                 yield delta
                     tail = sanitizer.flush()
                     if tail:
@@ -2071,18 +2082,20 @@ def _call_with_ollama(
                             tail = tail.lstrip()
                             first_chunk = False
                         if tail:
-                            buffer += tail
                             yield tail
                     completed = True
                 finally:
                     self.final_message = {
                         "role": final_role,
-                        "content": buffer,
+                        "content": raw_buffer,
                     }
                     if tool_calls:
                         self.final_message["tool_calls"] = tool_calls
+                    display_content = _sanitize_assistant_text(raw_buffer)
+                    if display_content and display_content != raw_buffer:
+                        self.final_message["_display_content"] = display_content
                     if completed:
-                        append_history(buffer, self.final_message)
+                        append_history(raw_buffer, self.final_message)
                     self.close()
 
         return _OllamaStreamResult()
@@ -2097,8 +2110,15 @@ def _call_with_ollama(
         ) from e
     message = _extract_message_from_ollama_response_data(response_data)
     ai_response = str(message.get("content", "") or "")
+    display_response = _sanitize_assistant_text(ai_response)
+    if display_response and display_response != ai_response:
+        message["_display_content"] = display_response
     append_history(ai_response, message)
-    return message if return_message else ai_response
+    if return_message:
+        display_message = dict(message)
+        display_message["content"] = display_response
+        return display_message
+    return display_response
 
 
 def call_ai_with_provider(
