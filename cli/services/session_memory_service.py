@@ -398,9 +398,10 @@ class SessionMemoryService:
             message["_api_content"] = api_content
         if isinstance(cache_stats, dict):
             message["_cache_stats"] = cache_stats
+        provider = str(getattr(self.agent, "provider", "") or "").strip()
         model_name = str(getattr(self.agent, "model_name", "") or "").strip()
-        if model_name:
-            message["_model"] = model_name
+        if provider and model_name:
+            message["_model"] = f"{provider}/{model_name}"
         if r == "assistant" and self._is_internal_assistant_history_message(str(content or "")):
             pass
         else:
