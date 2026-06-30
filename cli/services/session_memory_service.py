@@ -364,7 +364,7 @@ class SessionMemoryService:
         self._start_token_counter_warmup()
         return None
 
-    def append_chat_message(self, role: str, content: str, tool_calls: Any = None, _internal: bool = False, api_content: Optional[str] = None, context_suffix: Optional[str] = None, cache_stats: Optional[Dict[str, Any]] = None) -> None:
+    def append_chat_message(self, role: str, content: str, tool_calls: Any = None, _internal: bool = False, api_content: Optional[str] = None, context_suffix: Optional[str] = None, cache_stats: Optional[Dict[str, Any]] = None, display_content: Optional[str] = None) -> None:
         r = str(role or "").strip().lower()
         if r not in ("user", "assistant"):
             return
@@ -394,6 +394,8 @@ class SessionMemoryService:
             message["_context_suffix"] = str(context_suffix)
         if _internal:
             message["_internal"] = True
+        if isinstance(display_content, str) and display_content and display_content != str(content or ""):
+            message["_display_content"] = display_content
         if isinstance(api_content, str) and api_content:
             message["_api_content"] = api_content
         if isinstance(cache_stats, dict):
