@@ -1415,38 +1415,26 @@ def _attach_cache_stats(message: Dict[str, Any], response_data: Dict[str, Any], 
     mgr = CacheAdapterManager()
     adapter = mgr.resolve(url)
     if adapter is None:
-        _OPENAI_ROUTE_LOG.info("cache-stats no-adapter url=%s", url)
+        _OPENAI_ROUTE_LOG.warning("cache-stats no-adapter url=%s", url)
         return
-    _OPENAI_ROUTE_LOG.info("cache-stats trying adapter=%s url=%s usage_keys=%s",
-                           type(adapter).__name__, url,
-                           sorted(response_data.get("usage", {}).keys()) if isinstance(response_data.get("usage"), dict) else "N/A")
+    usage_raw = response_data.get("usage")
+    usage_keys = sorted(usage_raw.keys()) if isinstance(usage_raw, dict) else "N/A"
+    _OPENAI_ROUTE_LOG.warning("cache-stats trying adapter=%s url=%s usage_keys=%s",
+                              type(adapter).__name__, url, usage_keys)
     stats = adapter.extract_cache_stats(response_data)
     if stats is not None:
         message["_cache_stats"] = stats
-        _OPENAI_ROUTE_LOG.info("cache-stats attached hit=%s miss=%s",
-                               stats.get("prompt_cache_hit_tokens"),
-                               stats.get("prompt_cache_miss_tokens"))
+        if "input_tokens" in stats:
+            _OPENAI_ROUTE_LOG.warning("cache-stats attached input_tokens=%s url=%s",
+                                      stats["input_tokens"], url)
+        else:
+            _OPENAI_ROUTE_LOG.warning("cache-stats attached hit=%s miss=%s url=%s",
+                                      stats.get("prompt_cache_hit_tokens"),
+                                      stats.get("prompt_cache_miss_tokens"),
+                                      url)
     else:
-        _OPENAI_ROUTE_LOG.info("cache-stats no-cache-data adapter=%s url=%s",
-                               type(adapter).__name__, url)
-
-    mgr = CacheAdapterManager()
-    adapter = mgr.resolve(url)
-    if adapter is None:
-        _OPENAI_ROUTE_LOG.info("cache-stats no-adapter url=%s", url)
-        return
-    _OPENAI_ROUTE_LOG.info("cache-stats trying adapter=%s url=%s usage_keys=%s",
-                           type(adapter).__name__, url,
-                           sorted(response_data.get("usage", {}).keys()) if isinstance(response_data.get("usage"), dict) else "N/A")
-    stats = adapter.extract_cache_stats(response_data)
-    if stats is not None:
-        message["_cache_stats"] = stats
-        _OPENAI_ROUTE_LOG.info("cache-stats attached hit=%s miss=%s",
-                               stats.get("prompt_cache_hit_tokens"),
-                               stats.get("prompt_cache_miss_tokens"))
-    else:
-        _OPENAI_ROUTE_LOG.info("cache-stats no-cache-data adapter=%s url=%s",
-                               type(adapter).__name__, url)
+        _OPENAI_ROUTE_LOG.warning("cache-stats no-cache-data adapter=%s url=%s",
+                                  type(adapter).__name__, url)
 
 
 def _call_openai_once(

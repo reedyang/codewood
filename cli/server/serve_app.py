@@ -683,6 +683,8 @@ def _compute_chat_cache_stats(agent: Any) -> Dict[str, Any]:
 
     Scans conversation_history for messages sent with the same model name,
     summing recorded prompt_cache_hit_tokens and prompt_cache_miss_tokens.
+    When the API only provides root-level input_tokens (no cache breakdown),
+    those are accumulated as totalTokens with hasBreakdown=False.
     Falls back to the persisted chat record when conversation_history is empty.
     """
     model_name = str(getattr(agent, "model_name", "") or "").strip()
@@ -693,6 +695,7 @@ def _compute_chat_cache_stats(agent: Any) -> Dict[str, Any]:
         "hitRate": 0.0,
         "model": model_name,
         "supported": False,
+        "hasBreakdown": True,
     }
     if not model_name:
         return result
@@ -702,6 +705,7 @@ def _compute_chat_cache_stats(agent: Any) -> Dict[str, Any]:
         chat = agent._find_chat_by_id(cid) if cid else None
         if isinstance(chat, dict):
             hist = list(chat.get("messages") or [])
+
     total_hit = 0
     total_miss = 0
     for msg in hist:
@@ -713,12 +717,12 @@ def _compute_chat_cache_stats(agent: Any) -> Dict[str, Any]:
         cs = msg.get("_cache_stats")
         if isinstance(cs, dict):
             result["supported"] = True
-            total_hit += int(cs.get("prompt_cache_hit_tokens") or 0)
-            total_miss += int(cs.get("prompt_cache_miss_tokens") or 0)
-        else:
-            tc = msg.get("_token_count")
-            if isinstance(tc, (int, float)) and tc > 0:
-                total_miss += int(tc)
+            if "input_tokens" in cs:
+                result["hasBreakdown"] = False
+                total_miss += int(cs["input_tokens"] or 0)
+            else:
+                total_hit += int(cs.get("prompt_cache_hit_tokens") or 0)
+                total_miss += int(cs.get("prompt_cache_miss_tokens") or 0)
     total = total_hit + total_miss
     if total > 0:
         result["totalTokens"] = total
@@ -745,7 +749,10 @@ def _compute_context_usage_fresh_from_messages(chat_record: Dict[str, Any]) -> "
             continue
         if i == last_cache_idx:
             cs = m["_cache_stats"]
-            total += int(cs.get("prompt_cache_hit_tokens") or 0) + int(cs.get("prompt_cache_miss_tokens") or 0)
+            if "input_tokens" in cs:
+                total += int(cs["input_tokens"] or 0)
+            else:
+                total += int(cs.get("prompt_cache_hit_tokens") or 0) + int(cs.get("prompt_cache_miss_tokens") or 0)
         tc = m.get("_token_count")
         if isinstance(tc, (int, float)) and int(tc) > 0:
             total += int(tc)

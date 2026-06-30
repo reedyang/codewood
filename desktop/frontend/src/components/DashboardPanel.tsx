@@ -17,20 +17,39 @@ function CacheStatsView({ stats }: { stats: CacheStats | null | undefined }) {
           <span className="cache-stat-value">{stats.totalTokens.toLocaleString()}</span>
           <span className="cache-stat-label">Input tokens</span>
         </div>
-        <div className="cache-stat">
-          <span className="cache-stat-value">{stats.hitTokens.toLocaleString()}</span>
-          <span className="cache-stat-label">Cache hits</span>
-        </div>
-        <div className="cache-stat">
-          <span className="cache-stat-value">{stats.missTokens.toLocaleString()}</span>
-          <span className="cache-stat-label">Cache misses</span>
-        </div>
-        <div className="cache-stat">
-          <span className={`cache-stat-value ${pct > 0 ? "cache-hit" : "cache-miss"}`}>
-            {pct}%
-          </span>
-          <span className="cache-stat-label">Hit rate</span>
-        </div>
+        {stats.hasBreakdown ? (
+          <>
+            <div className="cache-stat">
+              <span className="cache-stat-value">{stats.hitTokens.toLocaleString()}</span>
+              <span className="cache-stat-label">Cache hits</span>
+            </div>
+            <div className="cache-stat">
+              <span className="cache-stat-value">{stats.missTokens.toLocaleString()}</span>
+              <span className="cache-stat-label">Cache misses</span>
+            </div>
+            <div className="cache-stat">
+              <span className={`cache-stat-value ${pct > 0 ? "cache-hit" : "cache-miss"}`}>
+                {pct}%
+              </span>
+              <span className="cache-stat-label">Hit rate</span>
+            </div>
+          </>
+        ) : (
+          <>
+            <div className="cache-stat">
+              <span className="cache-stat-value">N/A</span>
+              <span className="cache-stat-label">Cache hits</span>
+            </div>
+            <div className="cache-stat">
+              <span className="cache-stat-value">N/A</span>
+              <span className="cache-stat-label">Cache misses</span>
+            </div>
+            <div className="cache-stat">
+              <span className="cache-stat-value">N/A</span>
+              <span className="cache-stat-label">Hit rate</span>
+            </div>
+          </>
+        )}
       </div>
     </div>
   );

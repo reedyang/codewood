@@ -30,14 +30,27 @@ class DeepSeekCacheAdapter(BaseCacheAdapter):
         usage = response_data.get("usage")
         if not isinstance(usage, dict):
             return None
-        if "prompt_cache_hit_tokens" not in usage and "prompt_cache_miss_tokens" not in usage:
-            return None
-        hit_val = _safe_int(usage.get("prompt_cache_hit_tokens"))
-        miss_val = _safe_int(usage.get("prompt_cache_miss_tokens"))
-        return {
-            "prompt_cache_hit_tokens": hit_val,
-            "prompt_cache_miss_tokens": miss_val,
-        }
+        if "prompt_cache_hit_tokens" in usage or "prompt_cache_miss_tokens" in usage:
+            hit_val = _safe_int(usage.get("prompt_cache_hit_tokens"))
+            miss_val = _safe_int(usage.get("prompt_cache_miss_tokens"))
+            return {
+                "prompt_cache_hit_tokens": hit_val,
+                "prompt_cache_miss_tokens": miss_val,
+            }
+        result = self._try_root_tokens_only(usage)
+        if result is not None:
+            return {"input_tokens": result}
+        return None
+
+    @staticmethod
+    def _try_root_tokens_only(usage: Dict[str, Any]) -> Optional[int]:
+        """Extract total input tokens when no cache-breakdown fields are
+        available.  Tries ``input_tokens`` first, then ``prompt_tokens``."""
+        if "input_tokens" in usage:
+            return _safe_int(usage["input_tokens"])
+        if "prompt_tokens" in usage:
+            return _safe_int(usage["prompt_tokens"])
+        return None
 
     @staticmethod
     def matches(base_url: str) -> bool:

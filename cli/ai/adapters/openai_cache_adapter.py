@@ -51,6 +51,10 @@ class OpenAICacheAdapter(BaseCacheAdapter):
                 "prompt_cache_miss_tokens": max(0, total_input - cached_tokens),
             }
 
+        result = self._try_root_tokens_only(usage)
+        if result is not None:
+            return {"input_tokens": result}
+
         return None
 
     @staticmethod
@@ -78,6 +82,17 @@ class OpenAICacheAdapter(BaseCacheAdapter):
         cached = _safe_int(details.get("cached_tokens"))
         total_input = _safe_int(usage.get("input_tokens"))
         return (cached, total_input)
+
+    @staticmethod
+    def _try_root_tokens_only(usage: Dict[str, Any]) -> Optional[int]:
+        """Extract total input tokens when no ``*_tokens_details.cached_tokens``
+        is available.  Tries ``input_tokens`` first (Responses API naming),
+        then ``prompt_tokens`` (Chat Completions naming)."""
+        if "input_tokens" in usage:
+            return _safe_int(usage["input_tokens"])
+        if "prompt_tokens" in usage:
+            return _safe_int(usage["prompt_tokens"])
+        return None
 
     @staticmethod
     def matches(base_url: str) -> bool:

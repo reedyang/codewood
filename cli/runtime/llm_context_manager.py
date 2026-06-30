@@ -419,7 +419,10 @@ class LLMContextManager:
                 continue
             if i == last_cache_idx:
                 cs = m["_cache_stats"]
-                total += int(cs.get("prompt_cache_hit_tokens") or 0) + int(cs.get("prompt_cache_miss_tokens") or 0)
+                if "input_tokens" in cs:
+                    total += int(cs["input_tokens"] or 0)
+                else:
+                    total += int(cs.get("prompt_cache_hit_tokens") or 0) + int(cs.get("prompt_cache_miss_tokens") or 0)
             tc = m.get("_token_count")
             if isinstance(tc, (int, float)) and int(tc) > 0:
                 total += int(tc)
