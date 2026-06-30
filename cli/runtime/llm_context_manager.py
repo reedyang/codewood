@@ -856,7 +856,7 @@ class LLMContextManager:
                 )
                 history_tokens = self._context_usage_from_chat_record()
                 user_tokens = self._estimate_message_tokens("user", user_text)
-                total_input_tokens = int(history_tokens + user_tokens)
+                total_input_tokens = int(history_tokens)
                 if expected:
                     current = str(getattr(self.agent, "active_chat_id", "") or "").strip()
                     if current != expected:
@@ -865,7 +865,7 @@ class LLMContextManager:
                     return
                 self._store_context_usage_snapshot(
                     int(budgets.get("context_window") or DEFAULT_CONTEXT_WINDOW),
-                    history_tokens,
+                    total_input_tokens,
                 )
                 self._persist_context_usage_snapshot()
                 return
@@ -908,7 +908,17 @@ class LLMContextManager:
             if context_hint:
                 user_anchor += f"Operation context: {str(context_hint)}\n"
             user_tokens = self._estimate_message_tokens("user", user_anchor)
-            total_input_tokens = int(system_tokens + history_tokens + user_tokens)
+            # When history has _cache_stats, prompt_cache_hit_tokens +
+            # prompt_cache_miss_tokens already include the system prompt.
+            # Adding system_tokens separately would double-count it.
+            has_cache_anchor = any(
+                isinstance(m.get("_cache_stats"), dict)
+                for m in filtered_history
+            )
+            if has_cache_anchor:
+                total_input_tokens = int(history_tokens)
+            else:
+                total_input_tokens = int(system_tokens + history_tokens)
             if expected:
                 current = str(getattr(self.agent, "active_chat_id", "") or "").strip()
                 if current != expected:
@@ -917,7 +927,7 @@ class LLMContextManager:
                 return
             self._store_context_usage_snapshot(
                 int(budgets.get("context_window") or DEFAULT_CONTEXT_WINDOW),
-                history_tokens,
+                total_input_tokens,
             )
             self._persist_context_usage_snapshot()
         except Exception:
