@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import io
 import logging
 import math
 import os
@@ -8,7 +7,6 @@ import sqlite3
 import sys
 import threading
 import time
-import warnings
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
@@ -26,6 +24,31 @@ _EMBEDDING_DIM = 384
 _SCHEMA_VERSION = 1
 _INDEX_CREATED: Set[str] = set()
 _INDEX_LOCK = threading.Lock()
+_EMBEDDING_MODEL_NAME = "all-MiniLM-L6-v2"
+
+
+def _resolve_model_path(model_name: str) -> Optional[str]:
+    candidates: List[str] = []
+    env_dir = os.environ.get("CODEWOOD_MODELS_DIR", "").strip()
+    if env_dir:
+        candidates.append(os.path.join(env_dir, model_name))
+    try:
+        from ..config.app_info import get_app_global_config_dir
+        candidates.append(os.path.join(get_app_global_config_dir(), "models", model_name))
+    except Exception:
+        pass
+    exe_dir = os.path.dirname(sys.executable) if getattr(sys, "frozen", False) else None
+    if exe_dir:
+        candidates.append(os.path.join(exe_dir, "models", model_name))
+    if not exe_dir:
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        root_dir = os.path.dirname(os.path.dirname(script_dir))
+        candidates.append(os.path.join(root_dir, "models", model_name))
+    for c in candidates:
+        if os.path.isdir(c) and os.path.isfile(os.path.join(c, "config.json")):
+            logger.info("Found local embedding model at: %s", c)
+            return c
+    return None
 
 
 def _cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
@@ -90,22 +113,18 @@ class EmbeddingProvider:
             lg.setLevel(logging.ERROR)
             lg.propagate = False
 
-        old_stdout = sys.stdout
-        old_stderr = sys.stderr
+        model_name = _EMBEDDING_MODEL_NAME
+        model_path = _resolve_model_path(model_name)
+        logger.info("Loading embedding model: model_name=%s model_path=%s", model_name, model_path)
+
         try:
-            sys.stdout = io.StringIO()
-            sys.stderr = io.StringIO()
-            logging.disable(logging.WARNING)
-            with warnings.catch_warnings():
-                warnings.simplefilter("ignore")
-                model = sentence_transformers.SentenceTransformer(
-                    "all-MiniLM-L6-v2",
-                    device="cpu",
-                )
-        finally:
-            sys.stdout = old_stdout
-            sys.stderr = old_stderr
-            logging.disable(logging.NOTSET)
+            model = sentence_transformers.SentenceTransformer(
+                model_path if model_path else model_name,
+                device="cpu",
+            )
+        except Exception as e:
+            logger.error("Failed to load embedding model: %s", e)
+            return None
 
         self._local_model = model
         logger.info("Local embedding model loaded: all-MiniLM-L6-v2 (dim=%d)", _EMBEDDING_DIM)
@@ -142,17 +161,24 @@ class FileEmbeddingIndex:
     def _ensure_schema(self) -> None:
         conn = self._connect()
         try:
-            conn.executescript("""
+            conn.execute("BEGIN")
+            conn.execute("""
                 CREATE TABLE IF NOT EXISTS meta (
                     key TEXT PRIMARY KEY,
                     value TEXT
-                );
+                )
+            """)
+            conn.execute("""
                 CREATE TABLE IF NOT EXISTS embeddings (
                     rel TEXT PRIMARY KEY,
                     embedding BLOB NOT NULL,
                     indexed_at REAL NOT NULL
-                );
-                CREATE INDEX IF NOT EXISTS idx_embeddings_rel ON embeddings(rel);
+                )
+            """)
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_embeddings_rel ON embeddings(rel)"
+            )
+            conn.execute("""
                 CREATE TABLE IF NOT EXISTS chunk_embeddings (
                     file_rel TEXT NOT NULL,
                     chunk_name TEXT NOT NULL,
@@ -161,14 +187,16 @@ class FileEmbeddingIndex:
                     embedding BLOB NOT NULL,
                     indexed_at REAL NOT NULL,
                     PRIMARY KEY (file_rel, chunk_name)
-                );
-                CREATE INDEX IF NOT EXISTS idx_chunk_file ON chunk_embeddings(file_rel);
+                )
             """)
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_chunk_file ON chunk_embeddings(file_rel)"
+            )
             conn.execute(
                 "INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
                 ("schema_version", str(_SCHEMA_VERSION)),
             )
-            conn.commit()
+            conn.execute("COMMIT")
         finally:
             try:
                 conn.close()

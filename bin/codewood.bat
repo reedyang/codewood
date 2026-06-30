@@ -31,8 +31,18 @@ if not defined INSTALL_NEEDED (
 )
 
 call :set_title_from_app_info
+call :download_model
 call :run_main %*
 exit /b %ERRORLEVEL%
+
+:download_model
+set "DOWNLOAD_SCRIPT=%SCRIPT_DIR%download_embedding_model.py"
+if not exist "%DOWNLOAD_SCRIPT%" exit /b 0
+"%VENV_PYTHON%" -c "import sys; sys.path.insert(0, r'%ROOT_DIR%'); from cli.tools.embedding import _resolve_model_path, _EMBEDDING_MODEL_NAME; p=_resolve_model_path(_EMBEDDING_MODEL_NAME); exit(0 if p else 1)" >nul 2>&1
+if not errorlevel 1 exit /b 0
+echo Embedding model not found. Downloading...
+"%VENV_PYTHON%" "%DOWNLOAD_SCRIPT%"
+exit /b 0
 
 :set_title_from_app_info
 set "APP_NAME="

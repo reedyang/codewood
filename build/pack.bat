@@ -76,6 +76,19 @@ rem pythonnet) are discoverable; fall back to one on PATH otherwise.
 set PYINSTALLER=.venv-windows\Scripts\pyinstaller.exe
 if not exist "%PYINSTALLER%" set PYINSTALLER=pyinstaller
 
+rem ---- Download the embedding model before building so PyInstaller can bundle it ----
+echo Checking embedding model for offline bundle...
+set "MODEL_NAME=all-MiniLM-L6-v2"
+if not exist "models\%MODEL_NAME%\config.json" (
+    echo Downloading embedding model...
+    "%VENV_PYTHON%" -c "from sentence_transformers import SentenceTransformer; m = SentenceTransformer('%MODEL_NAME%', device='cpu'); m.save(r'models\%MODEL_NAME%')"
+    if errorlevel 1 (
+        echo WARNING: Could not download embedding model. The package will require online HF access.
+    )
+) else (
+    echo Embedding model already cached in models\%MODEL_NAME%.
+)
+
 rem NOTE: --paths (pathex) is resolved relative to the current working
 rem directory (the project root here), unlike --add-data sources which are
 rem resolved relative to --specpath. So the venv path must NOT use "../../".
@@ -88,6 +101,7 @@ rem    functionality. Output: dist\codewood\codewood.exe (+ _internal\).
   --add-data "../../cli;cli" ^
   --add-data "../../desktop/frontend/dist;frontend" ^
   --add-data "../../desktop/host;host" ^
+  --add-data "../../models;models" ^
   --paths "%VENV_PATH%" ^
   --collect-all webview ^
   --collect-all pythonnet ^
