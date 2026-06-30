@@ -401,7 +401,10 @@ class SessionMemoryService:
         model_name = str(getattr(self.agent, "model_name", "") or "").strip()
         if model_name:
             message["_model"] = model_name
-        message["_token_count"] = self._estimate_message_tokens(r, str(content or ""))
+        if r == "assistant" and self._is_internal_assistant_history_message(str(content or "")):
+            pass
+        else:
+            message["_token_count"] = self._estimate_message_tokens(r, str(content or ""))
         if r == "assistant":
             manager = getattr(self.agent, "_chat_state_manager", None)
             attach = getattr(manager, "attach_pending_plan_to_message", None)

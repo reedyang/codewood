@@ -376,13 +376,45 @@ class LLMContextManager:
         (prompt_cache_hit_tokens + prompt_cache_miss_tokens).  Messages
         before it are covered by that anchor.  Messages at or after it are
         counted via their ``_token_count``.
+
+        Internal-bookkeeping messages (task-worked summaries, compaction
+        notices, slash results, etc.) are skipped — they are never sent to
+        the model and should not inflate the usage display.
         """
+        parse_worked_summary = getattr(self.agent, "_parse_task_worked_summary_history_content", None)
+        parse_slash_result = getattr(self.agent, "_parse_internal_slash_result_history_content", None)
+
+        def _is_internal_assistant(msg: Dict[str, Any]) -> bool:
+            role = str(msg.get("role") or "").strip().lower()
+            if role != "assistant":
+                return False
+            raw = str(msg.get("content") or "")
+            if not raw:
+                return False
+            if self.parse_context_compaction_notice_content(raw) is not None:
+                return True
+            if callable(parse_slash_result):
+                try:
+                    if isinstance(parse_slash_result(raw), dict):
+                        return True
+                except Exception:
+                    pass
+            if callable(parse_worked_summary):
+                try:
+                    if isinstance(parse_worked_summary(raw), dict):
+                        return True
+                except Exception:
+                    pass
+            return False
+
         last_cache_idx = -1
         for i, m in enumerate(messages):
             if isinstance(m.get("_cache_stats"), dict):
                 last_cache_idx = i
         total = 0
         for i, m in enumerate(messages):
+            if _is_internal_assistant(m):
+                continue
             if i < last_cache_idx:
                 continue
             if i == last_cache_idx:
