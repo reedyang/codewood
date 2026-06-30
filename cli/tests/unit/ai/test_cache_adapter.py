@@ -130,7 +130,7 @@ class TestOpenAICacheAdapter(unittest.TestCase):
         self.assertEqual(stats["prompt_cache_hit_tokens"], 0)
         self.assertEqual(stats["prompt_cache_miss_tokens"], 500)
 
-    def test_extract_chat_completions_no_details(self):
+    def test_extract_chat_completions_no_details_falls_back_to_root_tokens(self):
         data = {
             "usage": {
                 "prompt_tokens": 2006,
@@ -140,7 +140,8 @@ class TestOpenAICacheAdapter(unittest.TestCase):
             }
         }
         stats = self.adapter.extract_cache_stats(data)
-        self.assertIsNone(stats)
+        self.assertIsNotNone(stats)
+        self.assertEqual(stats["input_tokens"], 2006)
 
     def test_extract_chat_completions_cached_none(self):
         data = {
@@ -210,10 +211,11 @@ class TestOpenAICacheAdapter(unittest.TestCase):
         stats = self.adapter.extract_cache_stats(data)
         self.assertIsNone(stats)
 
-    def test_extract_cache_stats_no_cache_fields(self):
+    def test_extract_cache_stats_no_cache_fields_falls_back_to_root_tokens(self):
         data = {"usage": {"input_tokens": 100, "output_tokens": 50, "total_tokens": 150}}
         stats = self.adapter.extract_cache_stats(data)
-        self.assertIsNone(stats)
+        self.assertIsNotNone(stats)
+        self.assertEqual(stats["input_tokens"], 100)
 
 
 class TestFallbackCacheAdapter(unittest.TestCase):
@@ -242,12 +244,12 @@ class TestFallbackCacheAdapter(unittest.TestCase):
         self.assertTrue(self.adapter.supports_cache_stats())
 
     def test_supports_cache_stats_after_failure(self):
-        data = {"usage": {"prompt_tokens": 100, "completion_tokens": 50}}
+        data = {"usage": {"completion_tokens": 50}}
         self.adapter.extract_cache_stats(data)
         self.assertFalse(self.adapter.supports_cache_stats())
 
     def test_supports_cache_stats_flips_back_on_success(self):
-        data_fail = {"usage": {"prompt_tokens": 100}}
+        data_fail = {"usage": {"completion_tokens": 50}}
         data_ok = {
             "usage": {
                 "prompt_tokens": 100,
@@ -290,10 +292,35 @@ class TestFallbackCacheAdapter(unittest.TestCase):
         self.assertEqual(stats["prompt_cache_hit_tokens"], 200)
         self.assertEqual(stats["prompt_cache_miss_tokens"], 100)
 
-    def test_extract_no_cache_info(self):
+    def test_extract_no_cache_info_falls_back_to_root_tokens(self):
         data = {"usage": {"prompt_tokens": 100, "completion_tokens": 50, "total_tokens": 150}}
         stats = self.adapter.extract_cache_stats(data)
-        self.assertIsNone(stats)
+        self.assertIsNotNone(stats)
+        self.assertEqual(stats["input_tokens"], 100)
+
+    def test_extract_root_input_tokens(self):
+        data = {"usage": {"input_tokens": 200, "output_tokens": 80, "total_tokens": 280}}
+        stats = self.adapter.extract_cache_stats(data)
+        self.assertIsNotNone(stats)
+        self.assertEqual(stats["input_tokens"], 200)
+
+    def test_extract_root_tokens_prefers_input_tokens_over_prompt_tokens(self):
+        data = {
+            "usage": {
+                "input_tokens": 200,
+                "prompt_tokens": 100,
+                "output_tokens": 80,
+                "total_tokens": 280,
+            }
+        }
+        stats = self.adapter.extract_cache_stats(data)
+        self.assertIsNotNone(stats)
+        self.assertEqual(stats["input_tokens"], 200)
+
+    def test_extract_root_tokens_supports_cache_stats(self):
+        data = {"usage": {"prompt_tokens": 100, "completion_tokens": 50, "total_tokens": 150}}
+        self.adapter.extract_cache_stats(data)
+        self.assertTrue(self.adapter.supports_cache_stats())
 
     def test_extract_missing_usage(self):
         data = {"output": [{"type": "message"}]}

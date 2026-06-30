@@ -14,6 +14,9 @@ export interface CacheStats {
   hitRate: number;
   model: string;
   supported: boolean;
+  /** False when the provider only reports total input tokens without
+   *  cache-breakdown details (cache hits, misses, and hit rate are N/A). */
+  hasBreakdown: boolean;
 }
 
 export interface IndexStatus {
