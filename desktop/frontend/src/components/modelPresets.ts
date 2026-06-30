@@ -129,6 +129,8 @@ export interface EditorModel {
   multimodal?: boolean;
   /** Whether the model supports thinking/reasoning tokens. */
   thinking?: boolean;
+  /** Whether streaming responses are enabled (default true). */
+  streaming?: boolean;
   /** Reasoning-effort levels this model supports (subset of low/medium/high). */
   reasoning_effort: string[];
   /** Per-model custom request headers (OpenAI-compatible only). */
@@ -177,6 +179,7 @@ export function toEditorProvider(raw: unknown): EditorProvider {
       context_window: mm.context_window as string | number | undefined,
       multimodal: mm.multimodal as boolean | undefined,
       thinking: mm.thinking as boolean | undefined,
+      streaming: mm.streaming as boolean | undefined,
       reasoning_effort: re,
       extra_headers: headers,
     };
@@ -215,6 +218,9 @@ export function toConfigProviders(editors: EditorProvider[]): unknown[] {
         }
         if (m.multimodal !== undefined) {
           model.multimodal = m.multimodal;
+        }
+        if (m.streaming !== undefined) {
+          model.streaming = m.streaming;
         }
         // Ollama doesn't support reasoning effort, thinking, or custom headers; only
         // serialize them for OpenAI-compatible providers.
