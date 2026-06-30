@@ -687,7 +687,9 @@ def _compute_chat_cache_stats(agent: Any) -> Dict[str, Any]:
     those are accumulated as totalTokens with hasBreakdown=False.
     Falls back to the persisted chat record when conversation_history is empty.
     """
+    provider = str(getattr(agent, "provider", "") or "").strip()
     model_name = str(getattr(agent, "model_name", "") or "").strip()
+    agent_key = f"{provider}/{model_name}" if provider and model_name else ""
     result: Dict[str, Any] = {
         "totalTokens": 0,
         "hitTokens": 0,
@@ -712,7 +714,7 @@ def _compute_chat_cache_stats(agent: Any) -> Dict[str, Any]:
         if not isinstance(msg, dict):
             continue
         msg_model = str(msg.get("_model") or "").strip()
-        if msg_model != model_name:
+        if msg_model != agent_key:
             continue
         cs = msg.get("_cache_stats")
         if isinstance(cs, dict):
