@@ -12,6 +12,8 @@ import logging
 from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Optional
 
+
+
 _logger = logging.getLogger(__name__)
 
 
@@ -40,46 +42,18 @@ class BaseCacheAdapter(ABC):
         ...
 
 
-class DeepSeekCacheAdapter(BaseCacheAdapter):
-    """Extract cache stats from DeepSeek API responses.
-
-    DeepSeek returns these fields in ``response["usage"]``:
-      - ``prompt_cache_hit_tokens``
-      - ``prompt_cache_miss_tokens``
-
-    Both are integers representing the token counts for input cache hits/misses.
-    """
-
-    def supports_cache_stats(self) -> bool:
-        return True
-
-    def extract_cache_stats(
-        self, response_data: Dict[str, Any]
-    ) -> Optional[Dict[str, int]]:
-        usage = response_data.get("usage")
-        if not isinstance(usage, dict):
-            return None
-        if "prompt_cache_hit_tokens" not in usage and "prompt_cache_miss_tokens" not in usage:
-            return None
-        hit_val = _safe_int(usage.get("prompt_cache_hit_tokens"))
-        miss_val = _safe_int(usage.get("prompt_cache_miss_tokens"))
-        return {
-            "prompt_cache_hit_tokens": hit_val,
-            "prompt_cache_miss_tokens": miss_val,
-        }
-
-    @staticmethod
-    def matches(base_url: str) -> bool:
-        url_lower = str(base_url or "").strip().lower()
-        return "api.deepseek.com" in url_lower
-
-
 class CacheAdapterManager:
     """Registry of cache adapters resolved by base URL."""
 
     def __init__(self) -> None:
+        from cli.ai.adapters.deepseek_cache_adapter import DeepSeekCacheAdapter
+        from cli.ai.adapters.openai_cache_adapter import OpenAICacheAdapter
+        from cli.ai.adapters.fallback_cache_adapter import FallbackCacheAdapter
+
         self._adapters: List[BaseCacheAdapter] = [
             DeepSeekCacheAdapter(),
+            OpenAICacheAdapter(),
+            FallbackCacheAdapter(),
         ]
 
     def register(self, adapter: BaseCacheAdapter) -> None:
@@ -92,10 +66,3 @@ class CacheAdapterManager:
                     return adapter
                 return None
         return None
-
-
-def _safe_int(value: Any) -> int:
-    try:
-        return int(value) if value is not None else 0
-    except (ValueError, TypeError):
-        return 0

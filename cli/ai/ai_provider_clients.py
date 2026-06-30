@@ -682,7 +682,9 @@ def _build_stream_tool_calls_message(
 def _stream_openai_like_response(
     resp: Any,
     append_history: Callable[..., None],
+    url: str = "",
 ):
+    _OPENAI_ROUTE_LOG.info("openai-route stream-enter url=%s", url)
     def _extract_stream_text_delta(payload: Any) -> str:
         if not isinstance(payload, dict):
             return ""
@@ -778,6 +780,11 @@ def _stream_openai_like_response(
                     if key_text not in seen_payload_keys:
                         seen_payload_keys.append(key_text)
                 usage = payload.get("usage")
+                # Responses API streaming nests usage under ``response.usage``
+                if not isinstance(usage, dict):
+                    response_wrapper = payload.get("response")
+                    if isinstance(response_wrapper, dict):
+                        usage = response_wrapper.get("usage")
                 if isinstance(usage, dict):
                     last_usage = usage
                 _collect_stream_tool_calls_from_payload(
@@ -839,7 +846,7 @@ def _stream_openai_like_response(
                 )
             self.last_usage = last_usage
             if isinstance(last_usage, dict) and isinstance(self.final_message, dict):
-                _attach_cache_stats(self.final_message, {"usage": last_usage})
+                _attach_cache_stats(self.final_message, {"usage": last_usage}, url)
             append_history(buffer, self.final_message)
 
     return _OpenAIStreamResult()
@@ -1401,18 +1408,45 @@ def _post_openai_request(
     return resp
 
 
-def _attach_cache_stats(message: Dict[str, Any], response_data: Dict[str, Any]) -> None:
+def _attach_cache_stats(message: Dict[str, Any], response_data: Dict[str, Any], url: str = "") -> None:
     """Extract cache-hit stats from the API response and attach to message."""
     from .cache_adapter import CacheAdapterManager
 
     mgr = CacheAdapterManager()
-    for adapter in mgr._adapters:
-        if not adapter.supports_cache_stats():
-            continue
-        stats = adapter.extract_cache_stats(response_data)
-        if stats is not None:
-            message["_cache_stats"] = stats
-            return
+    adapter = mgr.resolve(url)
+    if adapter is None:
+        _OPENAI_ROUTE_LOG.info("cache-stats no-adapter url=%s", url)
+        return
+    _OPENAI_ROUTE_LOG.info("cache-stats trying adapter=%s url=%s usage_keys=%s",
+                           type(adapter).__name__, url,
+                           sorted(response_data.get("usage", {}).keys()) if isinstance(response_data.get("usage"), dict) else "N/A")
+    stats = adapter.extract_cache_stats(response_data)
+    if stats is not None:
+        message["_cache_stats"] = stats
+        _OPENAI_ROUTE_LOG.info("cache-stats attached hit=%s miss=%s",
+                               stats.get("prompt_cache_hit_tokens"),
+                               stats.get("prompt_cache_miss_tokens"))
+    else:
+        _OPENAI_ROUTE_LOG.info("cache-stats no-cache-data adapter=%s url=%s",
+                               type(adapter).__name__, url)
+
+    mgr = CacheAdapterManager()
+    adapter = mgr.resolve(url)
+    if adapter is None:
+        _OPENAI_ROUTE_LOG.info("cache-stats no-adapter url=%s", url)
+        return
+    _OPENAI_ROUTE_LOG.info("cache-stats trying adapter=%s url=%s usage_keys=%s",
+                           type(adapter).__name__, url,
+                           sorted(response_data.get("usage", {}).keys()) if isinstance(response_data.get("usage"), dict) else "N/A")
+    stats = adapter.extract_cache_stats(response_data)
+    if stats is not None:
+        message["_cache_stats"] = stats
+        _OPENAI_ROUTE_LOG.info("cache-stats attached hit=%s miss=%s",
+                               stats.get("prompt_cache_hit_tokens"),
+                               stats.get("prompt_cache_miss_tokens"))
+    else:
+        _OPENAI_ROUTE_LOG.info("cache-stats no-cache-data adapter=%s url=%s",
+                               type(adapter).__name__, url)
 
 
 def _call_openai_once(
@@ -1453,10 +1487,13 @@ def _call_openai_once(
         reasoning_effort=reasoning_effort,
     )
     resp = _post_openai_request(url=url, headers=headers, payload=payload, stream=stream)
+    _OPENAI_ROUTE_LOG.info("openai-route one-call stream=%s api_kind=%s url=%s",
+                           stream, api_kind, url)
     if stream:
         return _stream_openai_like_response(
             resp=resp,
             append_history=append_history,
+            url=url,
         )
 
     data = resp.json()
@@ -1468,7 +1505,9 @@ def _call_openai_once(
         ai_response = _sanitize_assistant_text(raw_content or "")
     message = dict(message)
     message["content"] = ai_response
-    _attach_cache_stats(message, data)
+    _OPENAI_ROUTE_LOG.info("openai-route one-call nonstream data_keys=%s url=%s",
+                           sorted(data.keys()), url)
+    _attach_cache_stats(message, data, url)
     if not ai_response:
         _OPENAI_ROUTE_LOG.warning(
             "openai-response empty-output api_kind=%s data_keys=%s message_keys=%s has_tool_calls=%s",
