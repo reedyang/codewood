@@ -326,6 +326,14 @@ def _index_refresh_worker(workspace_root: str, storage_dir: str, status_file: st
         _stop_poll.set()
         pt.join(timeout=3)
 
+        try:
+            idx.initialize_embedding_provider()
+            if idx._embedding_provider and idx._embedding_provider.available:
+                if len(idx.files) > 0:
+                    emb_result = idx.build_embeddings()
+        except Exception:
+            pass
+
         _write_status_file(status_file, {
             "phase": "done",
             "progress_total": result.get("files_total", 0),
@@ -962,6 +970,8 @@ class ProjectContextIndex:
         if should_save:
             self._save()
 
+        self._ensure_embedding_provider()
+
         return {
             "success": True,
             "force": bool(force),
@@ -986,10 +996,17 @@ class ProjectContextIndex:
         return self._embedding_index
 
     def _ensure_embedding_provider(self) -> None:
-        if self._embedding_provider is not None and self._embedding_provider.available:
-            return
         if getattr(self, "_embedding_provider_loading", False):
             return
+
+        ep = self._embedding_provider
+        if ep is not None and ep.available:
+            if len(self.files) > 0:
+                self._get_embedding_index()
+                self.build_embeddings()
+            return
+
+        self._get_embedding_index()
 
         def _init() -> None:
             try:
@@ -1209,6 +1226,7 @@ class ProjectContextIndex:
         ep = self._embedding_provider
         if ep is None:
             self._ensure_embedding_provider()
+        ep = self._embedding_provider
         has_emb = ep is not None and ep.available and self._get_embedding_index().has_embeddings()
         if has_emb and len(scored) > 1:
             candidate_rels = [x[1]["path"] for x in scored[:50]]

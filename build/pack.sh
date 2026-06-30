@@ -65,12 +65,26 @@ PYINSTALLER="$VENV_DIR/bin/pyinstaller"
 #
 # 1) codewood carries ALL terminal-UI and GUI logic (frontend bundle +
 #    pywebview host included). Default = terminal UI; "codewood app" = GUI.
+
+# ---- Download the embedding model before building so PyInstaller can bundle it ----
+echo "Checking embedding model for offline bundle..."
+MODEL_NAME="all-MiniLM-L6-v2"
+if [ ! -f "models/$MODEL_NAME/config.json" ]; then
+    echo "Downloading embedding model..."
+    if ! "$VENV_PYTHON" -c "from sentence_transformers import SentenceTransformer; m = SentenceTransformer('$MODEL_NAME', device='cpu'); m.save('models/$MODEL_NAME')"; then
+        echo "WARNING: Could not download embedding model. The package will require online HF access."
+    fi
+else
+    echo "Embedding model already cached in models/$MODEL_NAME."
+fi
+
 ARGS=(
   --onedir --noconfirm --name codewood
   --add-data "../../skills:skills"
   --add-data "../../cli:cli"
   --add-data "../../desktop/frontend/dist:frontend"
   --add-data "../../desktop/host:host"
+  --add-data "../../models:models"
   # pathex is resolved relative to the working dir (project root), unlike
   # --add-data sources which are relative to --specpath; so no "../../".
   --paths "$VENV_PATH"

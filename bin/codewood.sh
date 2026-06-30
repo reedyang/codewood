@@ -36,8 +36,23 @@ else
     exit 127
 fi
 
+download_embedding_model() {
+    DOWNLOAD_SCRIPT="$SCRIPT_DIR/download_embedding_model.py"
+    if [ ! -f "$DOWNLOAD_SCRIPT" ]; then
+        return 0
+    fi
+    "$VENV_PYTHON" -c "import sys; sys.path.insert(0, r'$ROOT_DIR'); from cli.tools.embedding import _resolve_model_path, _EMBEDDING_MODEL_NAME; p=_resolve_model_path(_EMBEDDING_MODEL_NAME); exit(0 if p else 1)" >/dev/null 2>&1
+    if [ $? -eq 0 ]; then
+        return 0
+    fi
+    echo "Embedding model not found. Downloading..."
+    "$VENV_PYTHON" "$DOWNLOAD_SCRIPT"
+}
+
+
 if [ -x "$VENV_PYTHON" ]; then
     set_title_from_app_info
+    download_embedding_model
     run_main "$@"
 fi
 
@@ -61,4 +76,5 @@ if echo "$MISSING" | grep -q "Could not find\|No matching distribution"; then
 fi
 
 set_title_from_app_info
+download_embedding_model
 run_main "$@"
