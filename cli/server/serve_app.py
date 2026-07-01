@@ -738,28 +738,10 @@ def _compute_chat_cache_stats(agent: Any) -> Dict[str, Any]:
 def _compute_context_usage_fresh_from_messages(chat_record: Dict[str, Any]) -> "tuple[int, int, int]":
     """Compute context usage (history tokens only) from chat record messages."""
     from ..core.config.model_providers import DEFAULT_CONTEXT_WINDOW, parse_context_window
+    from ..managers.chat_state_manager import _history_context_input_tokens
 
     msgs = list(chat_record.get("messages") or [])
-    last_cache_idx = -1
-    for i, m in enumerate(msgs):
-        if isinstance(m, dict) and isinstance(m.get("_cache_stats"), dict):
-            last_cache_idx = i
-    total = 0
-    for i, m in enumerate(msgs):
-        if not isinstance(m, dict):
-            continue
-        if i < last_cache_idx:
-            continue
-        if i == last_cache_idx:
-            cs = m["_cache_stats"]
-            if "input_tokens" in cs:
-                total += int(cs["input_tokens"] or 0)
-            else:
-                total += int(cs.get("prompt_cache_hit_tokens") or 0) + int(cs.get("prompt_cache_miss_tokens") or 0)
-        from ..services.session_memory_service import _message_effective_token_count
-        tc = _message_effective_token_count(m)
-        if tc is not None:
-            total += tc
+    total = _history_context_input_tokens(msgs)
     window = parse_context_window(
         chat_record.get("context_window"), default_value=DEFAULT_CONTEXT_WINDOW
     )

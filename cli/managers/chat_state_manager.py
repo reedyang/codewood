@@ -96,6 +96,63 @@ def _normalize_plan_items(raw_plan: Any) -> List[Dict[str, str]]:
     return out
 
 
+def _history_context_input_tokens(messages: List[Dict[str, Any]]) -> int:
+    """Compute persisted history-only context tokens from chat messages.
+
+    Mirrors the cumulative `_cache_stats` anchor rules used by runtime
+    context assembly so chat record snapshots don't get overwritten by a
+    transient "current request total" value from in-memory agent fields.
+    """
+    from ..services.session_memory_service import _message_effective_token_count
+
+    last_cache_idx = -1
+    for i, msg in enumerate(messages):
+        if isinstance(msg, dict) and isinstance(msg.get("_cache_stats"), dict):
+            last_cache_idx = i
+
+    def _is_internal_assistant(msg: Dict[str, Any]) -> bool:
+        if str(msg.get("role") or "").strip().lower() != "assistant":
+            return False
+        raw = str(msg.get("content") or "")
+        if not raw:
+            return False
+        return raw.startswith("[CONTEXT_COMPACTION_NOTICE]") or raw.startswith("[TASK_WORKED_SUMMARY]") or raw.startswith("[INTERNAL_SLASH_RESULT]")
+
+    total = 0
+    start_idx = 0
+    if 0 <= last_cache_idx < len(messages):
+        anchor = messages[last_cache_idx]
+        cs = anchor["_cache_stats"]
+        if "input_tokens" in cs:
+            total += int(cs["input_tokens"] or 0)
+        else:
+            total += int(cs.get("prompt_cache_hit_tokens") or 0) + int(cs.get("prompt_cache_miss_tokens") or 0)
+        tc = _message_effective_token_count(anchor)
+        if tc is not None:
+            total += int(tc)
+        else:
+            role = str(anchor.get("role") or "").strip().lower()
+            content = str(anchor.get("content") or "")
+            total += max(1, int(len(content) / 4) + 4 + (1 if role else 0))
+        start_idx = last_cache_idx + 1
+
+    for i, msg in enumerate(messages):
+        if not isinstance(msg, dict):
+            continue
+        if _is_internal_assistant(msg):
+            continue
+        if i < start_idx:
+            continue
+        tc = _message_effective_token_count(msg)
+        if tc is not None:
+            total += int(tc)
+            continue
+        token_count = msg.get("_token_count")
+        if isinstance(token_count, (int, float)) and int(token_count) > 0:
+            total += int(token_count)
+    return max(0, int(total))
+
+
 class ChatStateManager:
     """Encapsulates chat state persistence and active-chat switching logic."""
 
@@ -1076,15 +1133,19 @@ class ChatStateManager:
                     entry["_clean_content"] = clean_content
                 msgs.append(entry)
             chat["messages"] = msgs
-            chat["context_usage_percent"] = int(
-                getattr(self._agent, "_last_context_usage_percent", 0) or 0
-            )
-            chat["context_input_tokens"] = int(
-                getattr(self._agent, "_last_context_input_tokens", 0) or 0
-            )
-            chat["context_window"] = int(
-                getattr(self._agent, "_last_context_window", 0) or 0
-            )
+            context_window = int(getattr(self._agent, "_last_context_window", 0) or 0)
+            context_input_tokens = _history_context_input_tokens(msgs)
+            chat["context_input_tokens"] = context_input_tokens
+            chat["context_window"] = context_window
+            if context_window > 0:
+                chat["context_usage_percent"] = max(
+                    0,
+                    min(999, int(round((context_input_tokens * 100.0) / max(1, context_window)))),
+                )
+            else:
+                chat["context_usage_percent"] = int(
+                    getattr(self._agent, "_last_context_usage_percent", 0) or 0
+                )
             chat["updated_at"] = self._now_text()
             self.save_chat_state()
 
