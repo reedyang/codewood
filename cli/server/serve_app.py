@@ -282,7 +282,7 @@ def _build_structured_turns(agent: Any) -> List[Dict[str, Any]]:
             continue
         role = str(msg.get("role") or "").strip().lower()
         content = str(msg.get("content") or "")
-        display_content = str(msg.get("_display_content") or "") or content
+        clean_content = str(msg.get("_clean_content") or "") or content
         ts = _parse_ts(msg.get("created_at"))
         if idx in genuine:
             current = {
@@ -407,7 +407,7 @@ def _build_structured_turns(agent: Any) -> List[Dict[str, Any]]:
                 # the Markdown card and the plan chooser re-appear after a
                 # restart; the terminal-oriented formatter reframes/strips those
                 # tags, so use the GUI-plain variant here.
-                answer_text = format_assistant_display_response_plain(display_content) or ""
+                answer_text = format_assistant_display_response_plain(clean_content) or ""
             except Exception:
                 answer_text = ""
             answer_text = (

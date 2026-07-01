@@ -617,12 +617,12 @@ class ChatStateManager:
                             continue
 
                 for msg in chat.get("messages", []):
-                    if isinstance(msg, dict) and msg.get("role") == "assistant" and not msg.get("_display_content"):
+                    if isinstance(msg, dict) and msg.get("role") == "assistant" and not msg.get("_clean_content"):
                         raw = str(msg.get("content") or "")
                         from ..runtime.runtime_loop import _stream_visible_text_with_json_pause
                         cleaned = _stream_visible_text_with_json_pause(raw, final=True)
                         if cleaned and cleaned != raw:
-                            msg["_display_content"] = cleaned
+                            msg["_clean_content"] = cleaned
                 record_payload = {
                     k: v for k, v in chat.items() if not str(k).startswith("_") and k != "archived"
                 }
@@ -1053,9 +1053,9 @@ class ChatStateManager:
                         ]
                         if cleaned_tools:
                             entry["pseudo_tool_call_tools"] = cleaned_tools
-                display_content = str(m.get("_display_content") or "").strip()
-                if display_content:
-                    entry["_display_content"] = display_content
+                clean_content = str(m.get("_clean_content") or "").strip()
+                if clean_content:
+                    entry["_clean_content"] = clean_content
                 msgs.append(entry)
             chat["messages"] = msgs
             chat["context_usage_percent"] = int(
