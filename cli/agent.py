@@ -1012,6 +1012,43 @@ class Agent:
             return translate("reasoning.set", lang, level=self.reasoning_level)
         return translate("reasoning.cleared", lang)
 
+    def _refresh_model_dependent_caches(self) -> None:
+        """Refresh caches that depend on model size (prompts, tool specs)."""
+        try:
+            from .core.config.model_providers import is_small_model_context_window
+            _new_small = is_small_model_context_window(
+                (getattr(self, "params", None) or {}).get("context_window")
+            )
+            self._small_model = _new_small
+        except Exception:
+            pass
+        try:
+            self._base_system_prompt = None
+        except Exception:
+            pass
+        try:
+            svc = getattr(self, "session_memory_service", None)
+            llm_ctx = getattr(svc, "llm_context_manager", None)
+            if llm_ctx is not None:
+                llm_ctx._software_development_prompt_cache = None
+        except Exception:
+            pass
+        try:
+            self.tool_specs = self._load_tools_spec_from_jsonc()
+        except Exception:
+            pass
+        try:
+            _small = bool(getattr(self, "_small_model", False))
+            self.tools_prompt_template = self._load_tools_prompt_template(small_model=_small)
+            self.tools_prompt_mcp_management_template = "" if _small else self._load_tools_prompt_mcp_management_template()
+            self.tools_prompt_memory_template = self._load_tools_prompt_memory_template(small_model=_small)
+        except Exception:
+            pass
+        try:
+            self.system_prompt = self._compose_system_prompt_snapshot(include_tools=False)
+        except Exception:
+            pass
+
     def _apply_chat_model_from_entry(
         self, chat: Dict[str, Any], persist_if_missing: bool = False
     ) -> bool:
@@ -1036,6 +1073,7 @@ class Agent:
             choice = self._find_configured_model_choice(f"{provider}:{model_name}")
             if choice:
                 self._apply_runtime_model_choice(choice, validate=False)
+            self._refresh_model_dependent_caches()
             self.reasoning_level = self._normalize_reasoning_level(stored_level)
             self._pin_session_model()
             return False
@@ -1057,6 +1095,7 @@ class Agent:
                 },
                 validate=False,
             )
+        self._refresh_model_dependent_caches()
         # Restore this chat's reasoning level for the now-active model.
         self.reasoning_level = self._normalize_reasoning_level(stored_level)
         self._pin_session_model()
@@ -1094,7 +1133,12 @@ class Agent:
 
         self._apply_runtime_model_choice(choice, validate=True)
         self._set_active_chat_model(self.provider, self.model_name, save_state=True)
+        self._refresh_model_dependent_caches()
         self._refresh_status_context_usage_snapshot()
+        try:
+            self._persist_active_chat_usage_snapshot()
+        except Exception:
+            pass
         warning = self._basic_chat_only_context_warning_for_params()
         return f"✅ Switched model: {target}" + (f"\n\n{warning}\n" if warning else "")
 
@@ -5827,14 +5871,14 @@ class Agent:
     def _compose_system_prompt_snapshot(self, include_tools: bool) -> str:
         return prompt_composer.compose_system_prompt_snapshot(self, include_tools=include_tools)
 
-    def _load_tools_prompt_template(self) -> str:
-        return prompt_composer.load_tools_prompt_template()
+    def _load_tools_prompt_template(self, small_model: bool = False) -> str:
+        return prompt_composer.load_tools_prompt_template(small_model=small_model)
 
     def _load_tools_prompt_mcp_management_template(self) -> str:
         return prompt_composer.load_tools_prompt_mcp_management_template()
 
-    def _load_tools_prompt_memory_template(self) -> str:
-        return prompt_composer.load_tools_prompt_memory_template()
+    def _load_tools_prompt_memory_template(self, small_model: bool = False) -> str:
+        return prompt_composer.load_tools_prompt_memory_template(small_model=small_model)
 
     def _build_single_skill_prompt(
         self,

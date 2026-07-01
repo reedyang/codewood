@@ -14,6 +14,7 @@ from cli.config.app_info import (
     get_app_runtime_attr_name,
     get_app_slug_kebab,
 )
+from cli.agent import Agent
 from cli.ai.ai_special_mode_prompts import SESSION_SUMMARY_SYSTEM_PROMPT
 from cli.services.session_memory_service import SessionMemoryService
 
@@ -573,7 +574,8 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
         messages, _ = svc.build_regular_task_messages("Hello", context="ctx-should-not-be-sent")
         joined = "\n".join(str(m.get("content") or "") for m in messages)
 
-        self.assertFalse(any(str(m.get("role") or "") == "system" for m in messages))
+        self.assertTrue(any(str(m.get("role") or "") == "system" for m in messages))
+        self.assertIn("Software Development", joined)
         self.assertEqual(messages[-1], {"role": "user", "content": "Hello"})
         self.assertIn("Previous round question", joined)
         self.assertIn("Previous round answer", joined)
@@ -1035,6 +1037,41 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
         large_hist_count = len(large_messages[1:-1])
         self.assertGreaterEqual(large_hist_count, small_hist_count)
 
+    def test_refresh_model_dependent_caches_clears_domain_prompt_cache_for_model_switch(self):
+        agent = _FakeAgent()
+        agent.params = {"context_window": 128000}
+        agent._small_model = False
+        agent.tool_specs = []
+        agent._base_system_prompt = "BASE"
+        agent._load_tools_spec_from_jsonc = lambda: []
+        agent._load_tools_prompt_template = lambda small_model=False: f"TOOLS:{small_model}"
+        agent._load_tools_prompt_mcp_management_template = lambda: "MCP"
+        agent._load_tools_prompt_memory_template = lambda small_model=False: f"MEM:{small_model}"
+        compose_calls = []
+
+        def _compose(include_tools=True):
+            compose_calls.append(bool(include_tools))
+            return f"PROMPT:{agent.params.get('context_window')}"
+
+        agent._compose_system_prompt_snapshot = _compose
+        agent.session_memory_service = SessionMemoryService(agent)
+
+        prompt_dir = Path(__file__).resolve().parents[3] / "prompts"
+        large_expected = "\n\n" + (prompt_dir / "domain_software_development.md").read_text(encoding="utf-8").strip() + "\n"
+        small_expected = "\n\n" + (prompt_dir / "small" / "domain_software_development.md").read_text(encoding="utf-8").strip() + "\n"
+
+        first = agent.session_memory_service.llm_context_manager._software_development_prompt_append()
+        self.assertEqual(first, large_expected)
+
+        agent.params = {"context_window": 32000}
+        Agent._refresh_model_dependent_caches(agent)
+
+        second = agent.session_memory_service.llm_context_manager._software_development_prompt_append()
+        self.assertEqual(second, small_expected)
+        self.assertNotEqual(first, second)
+        self.assertEqual(agent.system_prompt, "PROMPT:32000")
+        self.assertIn(False, compose_calls)
+
     def test_custom_token_estimator_is_used(self):
         base = _FakeAgent()
         custom = _FakeAgent()
@@ -1230,7 +1267,7 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
 
         self.assertEqual(int(getattr(agent, "_last_context_input_tokens", 0) or 0), 16060 + 253)
 
-    def test_refresh_context_usage_snapshot_skips_system_prompt_for_basic_chat_models(self):
+    def test_refresh_context_usage_snapshot_includes_system_prompt_for_small_models(self):
         agent = _FakeAgent()
         agent.params = {"context_window": 32000}
         compose_calls = {"n": 0}
@@ -1246,7 +1283,9 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
         svc.refresh_context_usage_snapshot(user_input_hint="Continue", context_hint="ctx")
 
         self.assertEqual(compose_calls["n"], 0)
-        self.assertLessEqual(int(getattr(agent, "_last_context_usage_percent", 0) or 0), 1)
+        # Small models now inject a compact system prompt via
+        # _build_small_model_system_prompt, so usage > 1%.
+        self.assertGreater(int(getattr(agent, "_last_context_usage_percent", 0) or 0), 1)
 
     def test_refresh_context_usage_snapshot_skips_when_state_key_mismatch(self):
         agent = _FakeAgent()

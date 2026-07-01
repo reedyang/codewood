@@ -89,6 +89,14 @@ def is_basic_chat_only_context_window(value: Any) -> bool:
     return context_window < SIMPLE_CHAT_SYSTEM_PROMPT_MIN_CONTEXT_WINDOW
 
 
+def is_small_model_context_window(value: Any) -> bool:
+    """True when context window qualifies as a small model (< 64k).
+
+    Uses the same threshold as ``is_basic_chat_only_context_window``.
+    """
+    return is_basic_chat_only_context_window(value)
+
+
 def basic_chat_only_context_warning(value: Any) -> str:
     return SMALL_CONTEXT_WINDOW_BASIC_CHAT_WARNING if is_basic_chat_only_context_window(value) else ""
 

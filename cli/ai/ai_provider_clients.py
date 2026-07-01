@@ -1995,6 +1995,10 @@ def _call_with_ollama(
     else:
         provider_messages = messages
 
+    params_for_port = model_params if isinstance(model_params, dict) else {}
+    port = parse_port(params_for_port.get("port"), default_value=DEFAULT_OLLAMA_PORT)
+    url = f"http://127.0.0.1:{port}/api/chat"
+
     # Apply _clean_content substitution for non-DeepSeek providers:
     # avoid sending thinking tags and other noise to models that don't
     # benefit from prompt-prefix caching.
@@ -2013,10 +2017,6 @@ def _call_with_ollama(
         ollama_options.update({"num_predict": 512, "temperature": 0.3})
     elif memory_query_expansion_mode:
         ollama_options.update({"num_predict": 512, "temperature": 0.2})
-
-    params_for_port = model_params if isinstance(model_params, dict) else {}
-    port = parse_port(params_for_port.get("port"), default_value=DEFAULT_OLLAMA_PORT)
-    url = f"http://127.0.0.1:{port}/api/chat"
 
     payload: Dict[str, Any] = {
         "model": model_name,

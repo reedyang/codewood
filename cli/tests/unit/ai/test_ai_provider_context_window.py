@@ -958,11 +958,12 @@ class ProviderContextWindowTests(unittest.TestCase):
                     session_summary_mode=False,
                     memory_query_expansion_mode=False,
                 ),
-                append_history=lambda s, *_a, **_kw: history.append(s),
+                append_history=lambda s, message=None, *_a, **_kw: history.append((s, message)),
                 ollama_importer=lambda: None,
             )
         self.assertEqual("".join(list(chunks)), "Hello")
-        self.assertEqual(history, ["Hello"])
+        self.assertEqual(history[0][0], " Hello")
+        self.assertEqual(history[0][1].get("content"), " Hello")
 
     def test_openai_responses_stream_uses_completed_snapshot_when_no_text_delta(self):
         stream_resp = _FakeStreamResponse(

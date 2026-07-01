@@ -40,6 +40,7 @@ from ..tools.registry import (
     MEMORY_TOOLS,
     PLAN_MODE_EXCLUDED_TOOLS,
     PLAN_MODE_ONLY_TOOLS,
+    SMALL_MODEL_EXCLUDED_TOOLS,
 )
 from ..tools.plan import (
     PLAN_STATUS_COMPLETED,
@@ -3502,13 +3503,6 @@ def run_agent_loop(agent: Any):
                     "- `memory_add`: use it when the user explicitly asks to remember something or use a preference in the future and it is personal experiential information rather than documentation. If you believe the user's statement is clearly wrong, you may record your judgment in `system_note` according to tool rules.\n"
                 )
             task_uses_standard_openai_tools = bool(self._use_standard_openai_tools_call())
-            first_round_contract = ""
-            if not task_uses_standard_openai_tools:
-                first_round_contract = (
-                    "\n\n[Basic chat mode]\n"
-                    "The current model context window is under 64k. This turn must not use standard API tool_calls and must not simulate, write, or serialize any tool call in visible text.\n"
-                    "Answer only in natural language. If the task requires reading files, running commands, loading skills, calling MCP, or other tool capabilities, explain that this small-context model supports only basic chat and suggest switching to a 64k+ context model before executing it.\n"
-                )
             project_context_task = (
                 task_uses_standard_openai_tools
                 and self._project_context_feature_enabled()
@@ -3594,7 +3588,6 @@ def run_agent_loop(agent: Any):
                 _emit_flow_log("First-round project context retrieval preparation finished: skipped(feature_disabled)")
             next_input = (
                 f"{forced_mcp_prefix}{forced_skill_prefix}{original_user_task}"
-                f"{first_round_contract}"
                 f"{(chr(10) + chr(10) + first_round_evidence) if first_round_evidence else ''}"
             )
             ready_to_send_elapsed_ms = int((time.perf_counter() - turn_send_started_at) * 1000)
@@ -3656,52 +3649,50 @@ def run_agent_loop(agent: Any):
                 # the spinner line interleaved with the error output.
                 self._active_status_ticker_stopper = _stop_status_ticker_before_first_output
                 try:
-                    standard_tool_schemas = []
-                    if task_uses_standard_openai_tools:
-                        standard_tool_schemas = list(getattr(self, "tool_specs", []) or [])
-                        if not bool(getattr(self, "mcp_tools_enabled", False)):
-                            standard_tool_schemas = [
-                                item
-                                for item in standard_tool_schemas
-                                if str(
-                                    ((item or {}).get("function", {}) or {}).get("name", "")
-                                ).strip()
-                                not in MCP_MANAGEMENT_GATED_TOOLS
-                            ]
-                        if not bool(getattr(self, "memory_enabled", True)):
-                            standard_tool_schemas = [
-                                item
-                                for item in standard_tool_schemas
-                                if str(
-                                    ((item or {}).get("function", {}) or {}).get("name", "")
-                                ).strip()
-                                not in MEMORY_TOOLS
-                            ]
-                        if not self._multimodal_enabled_for_current_model():
-                            standard_tool_schemas = [
-                                item
-                                for item in standard_tool_schemas
-                                if str(
-                                    ((item or {}).get("function", {}) or {}).get("name", "")
-                                ).strip()
-                                not in IMAGE_INPUT_TOOLS
-                            ]
-                        # Collaboration-mode gating: in Plan mode hide mutating /
-                        # checklist tools (update_plan) and expose the Plan-only
-                        # ``request_user_input``; in Agent mode do the inverse.
-                        plan_mode_active = bool(getattr(self, "_plan_mode_sticky", False))
-                        drop_tools = (
-                            PLAN_MODE_EXCLUDED_TOOLS if plan_mode_active else PLAN_MODE_ONLY_TOOLS
-                        )
-                        if drop_tools:
-                            standard_tool_schemas = [
-                                item
-                                for item in standard_tool_schemas
-                                if str(
-                                    ((item or {}).get("function", {}) or {}).get("name", "")
-                                ).strip()
-                                not in drop_tools
-                            ]
+                    standard_tool_schemas = list(getattr(self, "tool_specs", []) or [])
+                    if not bool(getattr(self, "mcp_tools_enabled", False)):
+                        standard_tool_schemas = [
+                            item
+                            for item in standard_tool_schemas
+                            if str(
+                                ((item or {}).get("function", {}) or {}).get("name", "")
+                            ).strip()
+                            not in MCP_MANAGEMENT_GATED_TOOLS
+                        ]
+                    if not bool(getattr(self, "memory_enabled", True)):
+                        standard_tool_schemas = [
+                            item
+                            for item in standard_tool_schemas
+                            if str(
+                                ((item or {}).get("function", {}) or {}).get("name", "")
+                            ).strip()
+                            not in MEMORY_TOOLS
+                        ]
+                    if not self._multimodal_enabled_for_current_model():
+                        standard_tool_schemas = [
+                            item
+                            for item in standard_tool_schemas
+                            if str(
+                                ((item or {}).get("function", {}) or {}).get("name", "")
+                            ).strip()
+                            not in IMAGE_INPUT_TOOLS
+                        ]
+                    # Collaboration-mode gating: in Plan mode hide mutating /
+                    # checklist tools (update_plan) and expose the Plan-only
+                    # ``request_user_input``; in Agent mode do the inverse.
+                    plan_mode_active = bool(getattr(self, "_plan_mode_sticky", False))
+                    drop_tools = (
+                        PLAN_MODE_EXCLUDED_TOOLS if plan_mode_active else PLAN_MODE_ONLY_TOOLS
+                    )
+                    if drop_tools:
+                        standard_tool_schemas = [
+                            item
+                            for item in standard_tool_schemas
+                            if str(
+                                ((item or {}).get("function", {}) or {}).get("name", "")
+                            ).strip()
+                            not in drop_tools
+                        ]
                     # Open this round's wait timer for the GUI just before the
                     # model request goes out.
                     _gui_round_mark(self, True)

@@ -308,10 +308,23 @@ def setup_model_ai_stack(
     )
 
 
+def _is_small_model(agent: Any) -> bool:
+    from ..core.config.model_providers import is_small_model_context_window
+    return is_small_model_context_window(
+        (getattr(agent, "params", None) or {}).get("context_window")
+    )
+
+
 def setup_prompt_and_mcp(agent: Any) -> None:
     from .context.base_system_prompt import build_base_system_prompt
 
-    agent._base_system_prompt = build_base_system_prompt()
+    small_model = _is_small_model(agent)
+    try:
+        agent._small_model = small_model
+    except Exception:
+        pass
+
+    agent._base_system_prompt = build_base_system_prompt(small_model=small_model)
 
     agent.mcp_config = agent._load_mcp_config()
     agent.mcp_manager = McpManager(
@@ -334,9 +347,9 @@ def setup_prompt_and_mcp(agent: Any) -> None:
 
     agent.system_prompt = agent._compose_system_prompt_snapshot(include_tools=False)
     agent.tool_specs = agent._load_tools_spec_from_jsonc()
-    agent.tools_prompt_template = agent._load_tools_prompt_template()
-    agent.tools_prompt_mcp_management_template = agent._load_tools_prompt_mcp_management_template()
-    agent.tools_prompt_memory_template = agent._load_tools_prompt_memory_template()
+    agent.tools_prompt_template = agent._load_tools_prompt_template(small_model=small_model)
+    agent.tools_prompt_mcp_management_template = "" if small_model else agent._load_tools_prompt_mcp_management_template()
+    agent.tools_prompt_memory_template = agent._load_tools_prompt_memory_template(small_model=small_model)
 
 
 def setup_skills(agent: Any, builtin_skills_dir: Optional[str]) -> None:
@@ -462,3 +475,28 @@ def setup_runtime_services(agent: Any) -> None:
     agent._last_memory_reflect_at = 0.0
     agent._schedule_memory_service_background()
     agent.tool_dispatcher = ToolDispatcher(agent, agent._execute_tool_call_legacy)
+    _refresh_active_chat_usage_snapshot(agent)
+
+
+def _refresh_active_chat_usage_snapshot(agent: Any) -> None:
+    """Recompute the active chat's token snapshot after runtime bootstrap.
+
+    Chat activation runs before model/prompt/tool initialization during
+    startup, so the initial usage snapshot can still reflect the persisted
+    chat record instead of the current model profile. Recomputing here keeps
+    startup and later `/model` switches on the same estimation path.
+    """
+    if not str(getattr(agent, "active_chat_id", "") or "").strip():
+        return
+    try:
+        refresh = getattr(agent, "_refresh_status_context_usage_snapshot", None)
+        if callable(refresh):
+            refresh()
+    except Exception:
+        pass
+    try:
+        persist = getattr(agent, "_persist_active_chat_usage_snapshot", None)
+        if callable(persist):
+            persist()
+    except Exception:
+        pass
