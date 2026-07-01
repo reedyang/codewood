@@ -52,6 +52,9 @@ class DeepSeekCacheAdapter(BaseCacheAdapter):
             return _safe_int(usage["prompt_tokens"])
         return None
 
+    def use_clean_content(self) -> bool:
+        return False
+
     @staticmethod
     def matches(base_url: str) -> bool:
         url_lower = str(base_url or "").strip().lower()

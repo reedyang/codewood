@@ -16,6 +16,7 @@ from ..core.config.model_providers import (
 )
 from ..config.i18n import translate
 from ..core.logging.app_logging import get_logger
+from .cache_adapter import CacheAdapterManager
 
 
 _OPENAI_API_ROUTE_CACHE_FILE = "openai_api_route_cache.json"
@@ -934,12 +935,17 @@ def _extract_message_from_ollama_response_data(data: Any) -> Dict[str, Any]:
     return out
 
 
-def _normalize_openai_message_for_request(message: Any) -> Optional[Dict[str, Any]]:
+def _normalize_openai_message_for_request(
+    message: Any,
+    use_clean_content: bool = False,
+) -> Optional[Dict[str, Any]]:
     if not isinstance(message, dict):
         return None
     role = str(message.get("role") or "").strip() or "user"
     normalized = dict(message)
     normalized["role"] = role
+    if use_clean_content and normalized.get("_clean_content"):
+        normalized["content"] = normalized["_clean_content"]
     content = normalized.get("content", "")
     if isinstance(content, list):
         has_media_parts = any(
@@ -958,10 +964,13 @@ def _normalize_openai_message_for_request(message: Any) -> Optional[Dict[str, An
     return normalized
 
 
-def _normalize_openai_messages_for_request(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def _normalize_openai_messages_for_request(
+    messages: List[Dict[str, Any]],
+    use_clean_content: bool = False,
+) -> List[Dict[str, Any]]:
     normalized: List[Dict[str, Any]] = []
     for message in messages:
-        item = _normalize_openai_message_for_request(message)
+        item = _normalize_openai_message_for_request(message, use_clean_content=use_clean_content)
         if item is None:
             continue
         normalized.append(item)
@@ -1791,7 +1800,8 @@ def _call_with_openai_compatible(
     if not api_key:
         return api_key_error_msg
 
-    provider_messages = _normalize_openai_messages_for_request(messages)
+    use_clean = CacheAdapterManager().should_use_clean_content(base_url)
+    provider_messages = _normalize_openai_messages_for_request(messages, use_clean_content=use_clean)
     if image_data is not None and image_user_idx is not None:
         provider_messages = [dict(m) for m in provider_messages]
         provider_messages[image_user_idx] = {
@@ -1955,6 +1965,17 @@ def _call_with_ollama(
         }
     else:
         provider_messages = messages
+
+    # Apply _clean_content substitution for non-DeepSeek providers:
+    # avoid sending thinking tags and other noise to models that don't
+    # benefit from prompt-prefix caching.
+    use_clean = CacheAdapterManager().should_use_clean_content(url)
+    if use_clean and any(isinstance(m, dict) and m.get("_clean_content") for m in provider_messages):
+        if provider_messages is messages:
+            provider_messages = [dict(m) for m in provider_messages]
+        for m in provider_messages:
+            if isinstance(m, dict) and m.get("_clean_content"):
+                m["content"] = m["_clean_content"]
 
     ollama_options: Dict[str, Any] = {"num_ctx": int(context_window)}
     ollama_tools = _normalize_openai_tool_schemas(tool_schemas, api_kind="chat")
