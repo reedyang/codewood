@@ -1705,8 +1705,8 @@ def _replace_latest_assistant_history_content(
         return
 
 
-def _update_latest_assistant_display_content(agent: Any, display_content: str) -> None:
-    if not isinstance(display_content, str) or not display_content:
+def _update_latest_assistant_clean_content(agent: Any, clean_content: str) -> None:
+    if not isinstance(clean_content, str) or not clean_content:
         return
     hist = getattr(agent, "conversation_history", None)
     if not isinstance(hist, list):
@@ -1716,12 +1716,12 @@ def _update_latest_assistant_display_content(agent: Any, display_content: str) -
             continue
         if str(msg.get("role") or "").strip().lower() != "assistant":
             continue
-        if str(msg.get("_display_content") or "") == display_content:
+        if str(msg.get("_clean_content") or "") == clean_content:
             return
-        if str(msg.get("content") or "") == display_content:
-            msg.pop("_display_content", None)
+        if str(msg.get("content") or "") == clean_content:
+            msg.pop("_clean_content", None)
         else:
-            msg["_display_content"] = display_content
+            msg["_clean_content"] = clean_content
         try:
             agent._sync_active_chat_messages()
         except Exception:
@@ -3813,7 +3813,7 @@ def run_agent_loop(agent: Any):
                         message_tool_plans = pseudo_text_tool_plans
                     ai_response = visible_ai_response
 
-                _update_latest_assistant_display_content(self, ai_response)
+                _update_latest_assistant_clean_content(self, ai_response)
                 fallback_plans = list(message_tool_plans)
                 ai_response_looks_like_pseudo_tool = _looks_like_pseudo_tool_call_text(ai_response)
                 if (
@@ -3830,7 +3830,7 @@ def run_agent_loop(agent: Any):
                     )
                     if cleaned_for_history and cleaned_for_history != ai_response:
                         ai_response = cleaned_for_history
-                        _update_latest_assistant_display_content(self, ai_response)
+                        _update_latest_assistant_clean_content(self, ai_response)
                     no_tool_rounds += 1
                     if no_tool_rounds >= max_no_tool_rounds:
                         print(

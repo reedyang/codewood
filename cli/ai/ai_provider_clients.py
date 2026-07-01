@@ -849,9 +849,9 @@ def _stream_openai_like_response(
             if isinstance(last_usage, dict) and isinstance(self.final_message, dict):
                 _attach_cache_stats(self.final_message, {"usage": last_usage}, url)
             if isinstance(self.final_message, dict):
-                display_content = _sanitize_assistant_text(raw_buffer)
-                if display_content and display_content != raw_buffer:
-                    self.final_message["_display_content"] = display_content
+                clean_content = _sanitize_assistant_text(raw_buffer)
+                if clean_content and clean_content != raw_buffer:
+                    self.final_message["_clean_content"] = clean_content
             append_history(raw_buffer, self.final_message)
 
     return _OpenAIStreamResult()
@@ -1505,7 +1505,7 @@ def _call_openai_once(
                            sorted(data.keys()), url)
     _attach_cache_stats(message_for_history, data, url)
     if display_text and display_text != raw_text:
-        message_for_history["_display_content"] = display_text
+        message_for_history["_clean_content"] = display_text
     if not raw_text:
         _OPENAI_ROUTE_LOG.warning(
             "openai-response empty-output api_kind=%s data_keys=%s message_keys=%s has_tool_calls=%s",
@@ -2091,9 +2091,9 @@ def _call_with_ollama(
                     }
                     if tool_calls:
                         self.final_message["tool_calls"] = tool_calls
-                    display_content = _sanitize_assistant_text(raw_buffer)
-                    if display_content and display_content != raw_buffer:
-                        self.final_message["_display_content"] = display_content
+                    clean_content = _sanitize_assistant_text(raw_buffer)
+                    if clean_content and clean_content != raw_buffer:
+                        self.final_message["_clean_content"] = clean_content
                     if completed:
                         append_history(raw_buffer, self.final_message)
                     self.close()
@@ -2112,7 +2112,7 @@ def _call_with_ollama(
     ai_response = str(message.get("content", "") or "")
     display_response = _sanitize_assistant_text(ai_response)
     if display_response and display_response != ai_response:
-        message["_display_content"] = display_response
+        message["_clean_content"] = display_response
     append_history(ai_response, message)
     if return_message:
         display_message = dict(message)

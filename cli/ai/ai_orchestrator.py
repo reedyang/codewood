@@ -172,15 +172,15 @@ class AIOrchestrator:
                 assistant_text = str(ai_response or "")
                 tool_calls_data: Any = None
                 cache_stats: Any = None
-                display_content: Optional[str] = None
+                clean_content: Optional[str] = None
                 if isinstance(message, dict):
                     tool_calls_data = message.get("tool_calls")
                     cache_stats = message.get("_cache_stats")
-                    display_content = message.get("_display_content")
+                    clean_content = message.get("_clean_content")
                 if not assistant_text.strip():
                     plan_payload = _build_tool_calls_plan_payload(message)
                     if plan_payload:
-                        self.context.history_writer("assistant", plan_payload, tool_calls=tool_calls_data, cache_stats=cache_stats, display_content=display_content)
+                        self.context.history_writer("assistant", plan_payload, tool_calls=tool_calls_data, cache_stats=cache_stats, clean_content=clean_content)
                         return
                     _AI_HISTORY_LOG.warning(
                         "llm-history empty-assistant skipped provider=%s model=%s stream=%s return_message=%s history_skip_user=%s",
@@ -191,7 +191,7 @@ class AIOrchestrator:
                         bool(call_ctx.history_skip_user),
                     )
                     return
-                self.context.history_writer("assistant", assistant_text, tool_calls=tool_calls_data, cache_stats=cache_stats, display_content=display_content)
+                self.context.history_writer("assistant", assistant_text, tool_calls=tool_calls_data, cache_stats=cache_stats, clean_content=clean_content)
 
             provider_ctx = ProviderCallContext(
                 provider=provider,
