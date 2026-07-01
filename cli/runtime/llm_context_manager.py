@@ -296,9 +296,10 @@ class LLMContextManager:
                 cs = msg.get("_cache_stats")
                 if isinstance(cs, dict) and cs:
                     entry["_cache_stats"] = cs
-            tc = msg.get("_token_count")
-            if isinstance(tc, (int, float)) and int(tc) > 0:
-                entry["_token_count"] = int(tc)
+            from ..services.session_memory_service import _message_effective_token_count
+            tc = _message_effective_token_count(msg)
+            if tc is not None:
+                entry["_token_count"] = tc
             elif idx >= last_cache_src_idx:
                 local = self._estimate_message_tokens(role, raw_content)
                 msg["_token_count"] = local
@@ -362,9 +363,10 @@ class LLMContextManager:
         return working, stats
 
     def _message_cost_for_tail_budget(self, msg: Dict[str, Any]) -> int:
-        tc = msg.get("_token_count")
-        if isinstance(tc, (int, float)) and tc > 0:
-            return int(tc)
+        from ..services.session_memory_service import _message_effective_token_count
+        tc = _message_effective_token_count(msg)
+        if tc is not None:
+            return tc
         role = str(msg.get("role") or "").strip().lower()
         content = self._normalize_history_content_for_model(role, str(msg.get("content") or ""))
         return self._estimate_message_tokens(role, content)
@@ -423,9 +425,10 @@ class LLMContextManager:
                     total += int(cs["input_tokens"] or 0)
                 else:
                     total += int(cs.get("prompt_cache_hit_tokens") or 0) + int(cs.get("prompt_cache_miss_tokens") or 0)
-            tc = m.get("_token_count")
-            if isinstance(tc, (int, float)) and int(tc) > 0:
-                total += int(tc)
+            from ..services.session_memory_service import _message_effective_token_count
+            tc = _message_effective_token_count(m)
+            if tc is not None:
+                total += tc
         return total
 
     def _context_usage_from_chat_record(self) -> int:

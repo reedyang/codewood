@@ -849,6 +849,7 @@ def _stream_openai_like_response(
             self.last_usage = last_usage
             if isinstance(last_usage, dict) and isinstance(self.final_message, dict):
                 _attach_cache_stats(self.final_message, {"usage": last_usage}, url)
+                _attach_output_usage(self.final_message, {"usage": last_usage}, url)
             if isinstance(self.final_message, dict):
                 clean_content = _sanitize_assistant_text(raw_buffer)
                 if clean_content and clean_content != raw_buffer:
@@ -1451,6 +1452,33 @@ def _attach_cache_stats(message: Dict[str, Any], response_data: Dict[str, Any], 
                                   type(adapter).__name__, url)
 
 
+def _attach_output_usage(
+    message: Dict[str, Any],
+    response_data: Dict[str, Any],
+    url: str = "",
+) -> None:
+    """Extract output-token counts from the API response and attach to message.
+
+    Sets ``_output_tokens``, ``_reasoning_tokens`` and a pre-computed
+    ``_token_count`` (output_tokens minus reasoning_tokens for most
+    providers; raw output_tokens for DeepSeek where thinking tags are
+    retained in the content).
+    """
+    mgr = CacheAdapterManager()
+    adapter = mgr.resolve(url)
+    if adapter is None:
+        return
+    usage = adapter.extract_output_usage(response_data)
+    if usage is None:
+        return
+    output_tokens = int(usage.get("output_tokens", 0))
+    reasoning_tokens = int(usage.get("reasoning_tokens", 0))
+    message["_output_tokens"] = output_tokens
+    message["_reasoning_tokens"] = reasoning_tokens
+    # DeepSeek: completion_tokens includes reasoning; OpenAI etc: excludes it.
+    message["_token_count_includes_reasoning"] = not adapter.use_clean_content()
+
+
 def _call_openai_once(
     *,
     model_name: str,
@@ -1513,6 +1541,7 @@ def _call_openai_once(
     _OPENAI_ROUTE_LOG.info("openai-route one-call nonstream data_keys=%s url=%s",
                            sorted(data.keys()), url)
     _attach_cache_stats(message_for_history, data, url)
+    _attach_output_usage(message_for_history, data, url)
     if display_text and display_text != raw_text:
         message_for_history["_clean_content"] = display_text
     if not raw_text:
