@@ -173,14 +173,20 @@ class AIOrchestrator:
                 tool_calls_data: Any = None
                 cache_stats: Any = None
                 clean_content: Optional[str] = None
+                output_tokens: Optional[int] = None
+                reasoning_tokens: Optional[int] = None
+                token_count_includes_reasoning: Optional[bool] = None
                 if isinstance(message, dict):
                     tool_calls_data = message.get("tool_calls")
                     cache_stats = message.get("_cache_stats")
                     clean_content = message.get("_clean_content")
+                    output_tokens = message.get("_output_tokens")
+                    reasoning_tokens = message.get("_reasoning_tokens")
+                    token_count_includes_reasoning = message.get("_token_count_includes_reasoning")
                 if not assistant_text.strip():
                     plan_payload = _build_tool_calls_plan_payload(message)
                     if plan_payload:
-                        self.context.history_writer("assistant", plan_payload, tool_calls=tool_calls_data, cache_stats=cache_stats, clean_content=clean_content)
+                        self.context.history_writer("assistant", plan_payload, tool_calls=tool_calls_data, cache_stats=cache_stats, clean_content=clean_content, output_tokens=output_tokens, reasoning_tokens=reasoning_tokens, token_count_includes_reasoning=token_count_includes_reasoning)
                         return
                     _AI_HISTORY_LOG.warning(
                         "llm-history empty-assistant skipped provider=%s model=%s stream=%s return_message=%s history_skip_user=%s",
@@ -191,7 +197,7 @@ class AIOrchestrator:
                         bool(call_ctx.history_skip_user),
                     )
                     return
-                self.context.history_writer("assistant", assistant_text, tool_calls=tool_calls_data, cache_stats=cache_stats, clean_content=clean_content)
+                self.context.history_writer("assistant", assistant_text, tool_calls=tool_calls_data, cache_stats=cache_stats, clean_content=clean_content, output_tokens=output_tokens, reasoning_tokens=reasoning_tokens, token_count_includes_reasoning=token_count_includes_reasoning)
 
             provider_ctx = ProviderCallContext(
                 provider=provider,

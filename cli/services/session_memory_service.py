@@ -52,6 +52,28 @@ CONTEXT_COMPACTION_SUMMARY_PREFIX = "[CONTEXT_COMPACTION_SUMMARY]"
 CONTEXT_COMPACTION_NOTICE_PREFIX = "[CONTEXT_COMPACTION_NOTICE]"
 
 
+def _message_effective_token_count(msg: Dict[str, Any]) -> Optional[int]:
+    """Compute the effective token count for a message dict.
+
+    Priority:
+    1. ``_output_tokens`` (API-provided):
+       * ``_token_count_includes_reasoning`` = True (DeepSeek): ``output_tokens``.
+       * ``_token_count_includes_reasoning`` = False / absent (others): ``output_tokens - reasoning_tokens``.
+    2. ``_token_count`` (local estimate, already stored).
+    3. ``None`` — caller should fall back to its own estimation.
+    """
+    output = msg.get("_output_tokens")
+    if output is not None:
+        if msg.get("_token_count_includes_reasoning"):
+            return max(1, int(output))
+        reasoning = msg.get("_reasoning_tokens", 0) or 0
+        return max(1, int(output) - int(reasoning))
+    tc = msg.get("_token_count")
+    if isinstance(tc, (int, float)) and int(tc) > 0:
+        return int(tc)
+    return None
+
+
 class SessionMemoryService:
     def __init__(self, agent: Any) -> None:
         self.agent = agent
@@ -364,7 +386,7 @@ class SessionMemoryService:
         self._start_token_counter_warmup()
         return None
 
-    def append_chat_message(self, role: str, content: str, tool_calls: Any = None, _internal: bool = False, api_content: Optional[str] = None, context_suffix: Optional[str] = None, cache_stats: Optional[Dict[str, Any]] = None, clean_content: Optional[str] = None) -> None:
+    def append_chat_message(self, role: str, content: str, tool_calls: Any = None, _internal: bool = False, api_content: Optional[str] = None, context_suffix: Optional[str] = None, cache_stats: Optional[Dict[str, Any]] = None, clean_content: Optional[str] = None, output_tokens: Optional[int] = None, reasoning_tokens: Optional[int] = None, token_count_includes_reasoning: Optional[bool] = None) -> None:
         r = str(role or "").strip().lower()
         if r not in ("user", "assistant"):
             return
@@ -400,11 +422,21 @@ class SessionMemoryService:
             message["_api_content"] = api_content
         if isinstance(cache_stats, dict):
             message["_cache_stats"] = cache_stats
+        if output_tokens is not None:
+            message["_output_tokens"] = output_tokens
+            message["_reasoning_tokens"] = reasoning_tokens or 0
+            if token_count_includes_reasoning is not None:
+                message["_token_count_includes_reasoning"] = token_count_includes_reasoning
         provider = str(getattr(self.agent, "provider", "") or "").strip()
         model_name = str(getattr(self.agent, "model_name", "") or "").strip()
         if provider and model_name:
             message["_model"] = f"{provider}/{model_name}"
         if r == "assistant" and self._is_internal_assistant_history_message(str(content or "")):
+            pass
+        elif output_tokens is not None:
+            # API provided output tokens — _token_count is computed on the fly
+            # from _output_tokens - _reasoning_tokens at read time; skip local
+            # estimation and the _token_count field entirely.
             pass
         else:
             message["_token_count"] = self._estimate_message_tokens(r, str(content or ""))

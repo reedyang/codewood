@@ -756,9 +756,10 @@ def _compute_context_usage_fresh_from_messages(chat_record: Dict[str, Any]) -> "
                 total += int(cs["input_tokens"] or 0)
             else:
                 total += int(cs.get("prompt_cache_hit_tokens") or 0) + int(cs.get("prompt_cache_miss_tokens") or 0)
-        tc = m.get("_token_count")
-        if isinstance(tc, (int, float)) and int(tc) > 0:
-            total += int(tc)
+        from ..services.session_memory_service import _message_effective_token_count
+        tc = _message_effective_token_count(m)
+        if tc is not None:
+            total += tc
     window = parse_context_window(
         chat_record.get("context_window"), default_value=DEFAULT_CONTEXT_WINDOW
     )

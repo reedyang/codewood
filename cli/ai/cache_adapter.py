@@ -17,6 +17,13 @@ from typing import Any, Dict, List, Optional
 _logger = logging.getLogger(__name__)
 
 
+def _safe_int(value: Any) -> int:
+    try:
+        return int(value) if value is not None else 0
+    except (ValueError, TypeError):
+        return 0
+
+
 class BaseCacheAdapter(ABC):
     """Extract cache-hit statistics from a provider's API response.
 
@@ -58,6 +65,43 @@ class BaseCacheAdapter(ABC):
         Subclasses override this to change the default policy.
         """
         return True
+
+    def extract_output_usage(
+        self, response_data: Dict[str, Any]
+    ) -> Optional[Dict[str, int]]:
+        """Extract output-token counts from an API response.
+
+        Returns a dict with keys ``output_tokens`` and ``reasoning_tokens``,
+        or ``None`` when the response does not contain output-token info.
+
+        The default implementation tries the standard OpenAI fields:
+
+        * ``usage.output_tokens`` / ``usage.completion_tokens`` \
+          (whichever exists)
+        * ``usage.completion_tokens_details.reasoning_tokens`` / \
+          ``usage.output_tokens_details.reasoning_tokens`` \
+          (whichever exists; ``0`` if neither)
+        """
+        usage = response_data.get("usage")
+        if not isinstance(usage, dict):
+            return None
+
+        output_tokens = _safe_int(usage.get("output_tokens"))
+        if not output_tokens:
+            output_tokens = _safe_int(usage.get("completion_tokens"))
+        if not output_tokens:
+            return None
+
+        reasoning_tokens = 0
+        details = usage.get("completion_tokens_details")
+        if isinstance(details, dict):
+            reasoning_tokens = _safe_int(details.get("reasoning_tokens"))
+        if not reasoning_tokens:
+            details = usage.get("output_tokens_details")
+            if isinstance(details, dict):
+                reasoning_tokens = _safe_int(details.get("reasoning_tokens"))
+
+        return {"output_tokens": output_tokens, "reasoning_tokens": reasoning_tokens}
 
 
 class CacheAdapterManager:

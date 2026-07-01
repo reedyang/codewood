@@ -5448,8 +5448,8 @@ class Agent:
             self._stop_interrupt_monitor(cancel_task_on_interrupt=False)
             restore_app_console_title()
 
-    def _append_chat_message(self, role: str, content: str, tool_calls: Any = None, _internal: bool = False, api_content: Optional[str] = None, context_suffix: Optional[str] = None, cache_stats: Optional[Dict[str, Any]] = None, clean_content: Optional[str] = None) -> None:
-        self.session_memory_service.append_chat_message(role, content, tool_calls=tool_calls, _internal=_internal, api_content=api_content, context_suffix=context_suffix, cache_stats=cache_stats, clean_content=clean_content)
+    def _append_chat_message(self, role: str, content: str, tool_calls: Any = None, _internal: bool = False, api_content: Optional[str] = None, context_suffix: Optional[str] = None, cache_stats: Optional[Dict[str, Any]] = None, clean_content: Optional[str] = None, output_tokens: Optional[int] = None, reasoning_tokens: Optional[int] = None, token_count_includes_reasoning: Optional[bool] = None) -> None:
+        self.session_memory_service.append_chat_message(role, content, tool_calls=tool_calls, _internal=_internal, api_content=api_content, context_suffix=context_suffix, cache_stats=cache_stats, clean_content=clean_content, output_tokens=output_tokens, reasoning_tokens=reasoning_tokens, token_count_includes_reasoning=token_count_includes_reasoning)
         if str(role or "").strip().lower() == "assistant":
             try:
                 self.session_memory_service.schedule_context_usage_refresh_async()

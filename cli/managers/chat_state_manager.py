@@ -402,6 +402,15 @@ class ChatStateManager:
         cache_stats = raw.get("_cache_stats")
         if isinstance(cache_stats, dict) and cache_stats:
             out["_cache_stats"] = cache_stats
+        output_tokens = raw.get("_output_tokens")
+        if isinstance(output_tokens, int) and output_tokens > 0:
+            out["_output_tokens"] = output_tokens
+        reasoning_tokens = raw.get("_reasoning_tokens")
+        if isinstance(reasoning_tokens, int):
+            out["_reasoning_tokens"] = reasoning_tokens
+        token_count_includes_reasoning = raw.get("_token_count_includes_reasoning")
+        if isinstance(token_count_includes_reasoning, bool):
+            out["_token_count_includes_reasoning"] = token_count_includes_reasoning
         token_count = raw.get("_token_count")
         if isinstance(token_count, (int, float)) and token_count > 0:
             out["_token_count"] = int(token_count)
@@ -1032,6 +1041,15 @@ class ChatStateManager:
                 cache_stats = m.get("_cache_stats")
                 if isinstance(cache_stats, dict) and cache_stats:
                     entry["_cache_stats"] = cache_stats
+                output_tokens = m.get("_output_tokens")
+                if isinstance(output_tokens, int) and output_tokens > 0:
+                    entry["_output_tokens"] = output_tokens
+                reasoning_tokens = m.get("_reasoning_tokens")
+                if isinstance(reasoning_tokens, int):
+                    entry["_reasoning_tokens"] = reasoning_tokens
+                token_count_includes_reasoning = m.get("_token_count_includes_reasoning")
+                if isinstance(token_count_includes_reasoning, bool):
+                    entry["_token_count_includes_reasoning"] = token_count_includes_reasoning
                 token_count = m.get("_token_count")
                 if isinstance(token_count, (int, float)) and token_count > 0:
                     entry["_token_count"] = int(token_count)
