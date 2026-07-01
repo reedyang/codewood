@@ -4167,6 +4167,14 @@ def run_agent_loop(agent: Any):
                         self._force_current_input_as_requirement_once = True
                         self._last_cancelled_task = str(original_user_task or "").strip()
                         self._mark_cancelled_unanswered_user_message()
+                        try:
+                            self._record_conversation_interrupted_history(
+                                interrupted_kind="task",
+                                reason="user_cancelled",
+                                detail=str(original_user_task or ""),
+                            )
+                        except Exception:
+                            pass
                         _refresh_context_usage_after_task_boundary(
                             self,
                             user_input_hint=str(original_user_task or ""),
