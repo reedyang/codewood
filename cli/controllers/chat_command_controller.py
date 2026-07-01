@@ -318,6 +318,37 @@ def handle_chat_edit_command(agent: Any, raw_index: str) -> None:
         agent.conversation_history = list(
             agent.conversation_history[:target_history_index]
         )
+        # Clear cancellation state from a previously cancelled task since the
+        # conversation is being rewound. If a cancelled task marker (recorded
+        # as a [CONVERSATION_INTERRUPTED] assistant message) remains in the
+        # truncated history, preserve its cancellation context so the model
+        # still knows about it.
+        try:
+            agent._force_current_input_as_requirement_once = False
+        except Exception:
+            pass
+        try:
+            agent._last_cancelled_task = ""
+        except Exception:
+            pass
+        _PREFIX = "[CONVERSATION_INTERRUPTED]"
+        try:
+            for msg in reversed(agent.conversation_history):
+                if not isinstance(msg, dict):
+                    continue
+                content = str(msg.get("content") or "").strip()
+                if content.startswith(_PREFIX):
+                    parser = getattr(agent, "_parse_conversation_interrupted_history_content", None)
+                    if callable(parser):
+                        payload = parser(content)
+                        if isinstance(payload, dict):
+                            detail = str(payload.get("detail") or "").strip()
+                            if detail:
+                                agent._force_current_input_as_requirement_once = True
+                                agent._last_cancelled_task = detail
+                    break
+        except Exception:
+            pass
         # Editing erases this turn and everything after it, so the prior tool
         # call outcomes must not linger: operation_results feeds the model the
         # cached tool results, and any stale entries would let the next request
