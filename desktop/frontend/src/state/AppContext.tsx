@@ -1343,6 +1343,25 @@ export function AppProvider({ children }: { children: ReactNode }) {
         }
         case "round_end": {
           endRound(eventKey);
+          // Refresh context-usage ring and cache-stats dashboard from the
+          // round_end payload so they stay live during a multi-round task
+          // instead of freezing until the terminal idle event.
+          const roundMeta = event.data as Record<string, unknown>;
+          const cu = roundMeta.contextUsage as
+            | { percent?: number; tokens?: number; window?: number }
+            | undefined;
+          const cs = roundMeta.cacheStats as
+            | { totalTokens?: number; hitTokens?: number; missTokens?: number; hitRate?: number; supported?: boolean }
+            | undefined;
+          if (cu || cs) {
+            setState((prev) => {
+              if (!prev) return prev;
+              const next = { ...prev };
+              if (cu) next.contextUsage = cu as AppState["contextUsage"];
+              if (cs) next.cacheStats = cs as AppState["cacheStats"];
+              return next;
+            });
+          }
           break;
         }
         case "output": {

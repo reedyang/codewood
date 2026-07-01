@@ -4129,7 +4129,16 @@ class ServeApp:
             "round_start", self._route()
         )
         self.agent._gui_round_end = lambda: self.broadcaster.publish(  # type: ignore[attr-defined]
-            "round_end", self._route()
+            "round_end",
+            self._route(
+                contextUsage={
+                    "percent": int(getattr(self.agent, "_last_context_usage_percent", 0) or 0),
+                    "tokens": int(getattr(self.agent, "_last_context_input_tokens", 0) or 0),
+                    "window": int(getattr(self.agent, "_last_context_window", 0)
+                              or getattr(self.agent, "context_window", 0) or 0),
+                },
+                cacheStats=_compute_chat_cache_stats(self.agent),
+            ),
         )
         # Bridge for the GUI-only browser tools: lets a tool send a command to
         # the embedded browser and block for its result. Its presence also gates
