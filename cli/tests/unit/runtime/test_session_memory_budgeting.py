@@ -1142,6 +1142,94 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
         self.assertGreaterEqual(compose_calls["n"], 2)
         self.assertEqual(first, second)
 
+    def test_history_tokens_cumulative_uses_last_cache_anchor_and_anchor_output(self):
+        agent = _FakeAgent()
+        svc = SessionMemoryService(agent)
+
+        messages = [
+            {"role": "user", "content": "查看我的Codex用量", "_token_count": 14},
+            {
+                "role": "assistant",
+                "content": '{"tool_calls": []}',
+                "_cache_stats": {"input_tokens": 15097},
+                "_output_tokens": 176,
+                "_reasoning_tokens": 0,
+                "_token_count_includes_reasoning": False,
+            },
+            {
+                "role": "user",
+                "content": "[Original user request] ...",
+                "_internal": True,
+                "_token_count": 981,
+            },
+            {
+                "role": "assistant",
+                "content": '{"tool_calls": []}',
+                "_cache_stats": {"input_tokens": 16059},
+                "_output_tokens": 171,
+                "_reasoning_tokens": 0,
+                "_token_count_includes_reasoning": False,
+            },
+        ]
+
+        total = svc.llm_context_manager._history_tokens_cumulative(messages)
+
+        self.assertEqual(total, 16059 + 171)
+
+    def test_history_tokens_cumulative_estimates_anchor_when_output_tokens_missing(self):
+        agent = _FakeAgent()
+        svc = SessionMemoryService(agent)
+
+        anchor = {
+            "role": "assistant",
+            "content": "pending approval",
+            "_cache_stats": {"input_tokens": 2000},
+        }
+        messages = [
+            {"role": "user", "content": "hello", "_token_count": 10},
+            anchor,
+            {"role": "user", "content": "next", "_token_count": 33},
+        ]
+        estimated_anchor = svc.llm_context_manager._estimate_message_tokens("assistant", "pending approval")
+
+        total = svc.llm_context_manager._history_tokens_cumulative(messages)
+
+        self.assertEqual(total, 2000 + estimated_anchor + 33)
+
+    def test_build_regular_task_messages_snapshot_uses_history_only_when_cache_anchor_exists(self):
+        agent = _FakeAgent()
+        agent.params = {"context_window": 131072}
+        agent.conversation_history = [
+            {"role": "user", "content": "查看我的Codex用量", "_token_count": 14},
+            {
+                "role": "assistant",
+                "content": '{"tool_calls": [{"id": "a"}]}',
+                "_cache_stats": {"input_tokens": 15097},
+                "_output_tokens": 135,
+                "_reasoning_tokens": 0,
+                "_token_count_includes_reasoning": False,
+            },
+            {
+                "role": "user",
+                "content": "[Original user request] ...",
+                "_internal": True,
+                "_token_count": 981,
+            },
+            {
+                "role": "assistant",
+                "content": '{"tool_calls": [{"id": "b"}]}',
+                "_cache_stats": {"input_tokens": 16060},
+                "_output_tokens": 253,
+                "_reasoning_tokens": 0,
+                "_token_count_includes_reasoning": False,
+            },
+        ]
+        svc = SessionMemoryService(agent)
+
+        _messages, _ = svc.build_regular_task_messages("继续")
+
+        self.assertEqual(int(getattr(agent, "_last_context_input_tokens", 0) or 0), 16060 + 253)
+
     def test_refresh_context_usage_snapshot_skips_system_prompt_for_basic_chat_models(self):
         agent = _FakeAgent()
         agent.params = {"context_window": 32000}

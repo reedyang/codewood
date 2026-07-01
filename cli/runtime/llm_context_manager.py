@@ -375,9 +375,10 @@ class LLMContextManager:
         """Compute total history tokens using the cumulative formula.
 
         The last message with ``_cache_stats`` provides a cumulative anchor
-        (prompt_cache_hit_tokens + prompt_cache_miss_tokens).  Messages
-        before it are covered by that anchor.  Messages at or after it are
-        counted via their ``_token_count``.
+        for everything before that assistant response. Its ``input_tokens``
+        (or cache hit/miss sum) covers the prompt side, and its own response
+        contributes ``_output_tokens - _reasoning_tokens`` when available.
+        Messages after that anchor are counted individually.
 
         Internal-bookkeeping messages (task-worked summaries, compaction
         notices, slash results, etc.) are skipped — they are never sent to
@@ -413,22 +414,38 @@ class LLMContextManager:
         for i, m in enumerate(messages):
             if isinstance(m.get("_cache_stats"), dict):
                 last_cache_idx = i
+
+        from ..services.session_memory_service import _message_effective_token_count
+
+        def _message_cost(msg: Dict[str, Any]) -> int:
+            tc = _message_effective_token_count(msg)
+            if tc is not None:
+                return int(tc)
+            role = str(msg.get("role") or "").strip().lower()
+            content = self._normalize_history_content_for_model(role, str(msg.get("content") or ""))
+            return self._estimate_message_tokens(role, content)
+
         total = 0
+        start_idx = 0
+        if 0 <= last_cache_idx < len(messages):
+            anchor = messages[last_cache_idx]
+            cs = anchor["_cache_stats"]
+            if "input_tokens" in cs:
+                total += int(cs["input_tokens"] or 0)
+            else:
+                total += int(cs.get("prompt_cache_hit_tokens") or 0) + int(cs.get("prompt_cache_miss_tokens") or 0)
+
+            # Anchor input tokens already cover prior prompt context. Add the
+            # anchor response exactly once, preferring provider usage data.
+            total += _message_cost(anchor)
+            start_idx = last_cache_idx + 1
+
         for i, m in enumerate(messages):
             if _is_internal_assistant(m):
                 continue
-            if i < last_cache_idx:
+            if i < start_idx:
                 continue
-            if i == last_cache_idx:
-                cs = m["_cache_stats"]
-                if "input_tokens" in cs:
-                    total += int(cs["input_tokens"] or 0)
-                else:
-                    total += int(cs.get("prompt_cache_hit_tokens") or 0) + int(cs.get("prompt_cache_miss_tokens") or 0)
-            from ..services.session_memory_service import _message_effective_token_count
-            tc = _message_effective_token_count(m)
-            if tc is not None:
-                total += tc
+            total += _message_cost(m)
         return total
 
     def _context_usage_from_chat_record(self) -> int:
@@ -1124,7 +1141,12 @@ class LLMContextManager:
                 system_tokens += self._estimate_message_tokens("system", memory_system_content)
             history_tokens = self._history_tokens_cumulative(history_messages)
             user_tokens = self._estimate_message_tokens("user", current_input)
+            has_cache_anchor = any(
+                isinstance(m.get("_cache_stats"), dict)
+                for m in history_messages
+            )
             total_input_tokens = int(system_tokens + history_tokens + user_tokens)
+            snapshot_input_tokens = int(history_tokens) if has_cache_anchor else int(total_input_tokens)
             ctx_window = int(budgets.get("context_window") or DEFAULT_CONTEXT_WINDOW)
             usage_pct = max(0, min(999, int(round((total_input_tokens * 100.0) / max(1, ctx_window)))))
             self.agent._last_context_usage_percent_precompression = usage_pct
@@ -1183,6 +1205,11 @@ class LLMContextManager:
                 )
                 user_tokens2 = self._estimate_message_tokens("user", current_input2)
                 total_input_tokens2 = int(system_tokens2 + history_tokens2 + user_tokens2)
+                has_cache_anchor2 = any(
+                    isinstance(m.get("_cache_stats"), dict)
+                    for m in history_messages2
+                )
+                snapshot_input_tokens2 = int(history_tokens2) if has_cache_anchor2 else int(total_input_tokens2)
 
                 if total_input_tokens2 < total_input_tokens:
                     messages = [{"role": "system", "content": sys_prefix2}]
@@ -1198,6 +1225,7 @@ class LLMContextManager:
                     history_tokens = history_tokens2
                     user_tokens = user_tokens2
                     total_input_tokens = total_input_tokens2
+                    snapshot_input_tokens = snapshot_input_tokens2
                     self.agent._last_context_aggressive_compression_applied = True
                     get_logger().info(
                         "context-pack aggressive-compress triggered pre_pct=%s target_pct=%s post_pct=%s",
@@ -1206,7 +1234,7 @@ class LLMContextManager:
                         int(round((total_input_tokens2 * 100.0) / max(1, ctx_window))),
                     )
 
-            self._store_context_usage_snapshot(ctx_window, total_input_tokens)
+            self._store_context_usage_snapshot(ctx_window, snapshot_input_tokens)
             if force_new_requirement:
                 self.agent._force_current_input_as_requirement_once = False
             get_logger().info(

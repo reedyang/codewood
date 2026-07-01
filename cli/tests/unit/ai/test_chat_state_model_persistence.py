@@ -542,6 +542,75 @@ class ChatStateModelPersistenceTests(unittest.TestCase):
             self.assertEqual(saved_msgs[0].get("pseudo_tool_call_text"), pseudo_text)
             self.assertEqual(saved_msgs[0].get("pseudo_tool_call_tools"), ["shell", "shell"])
 
+    def test_sync_active_chat_messages_recomputes_history_context_usage_from_cache_anchor(self):
+        with tempfile.TemporaryDirectory() as td:
+            workspace = Path(td)
+            agent = _FakeAgent(workspace)
+            manager = ChatStateManager(agent, "chats.json")
+            agent._chat_state = {
+                "version": 2,
+                "active": "chat-1",
+                "chats": [
+                    {
+                        "id": "chat-1",
+                        "name": "Main",
+                        "name_source": "manual",
+                        "created_at": "",
+                        "updated_at": "",
+                        "model_provider": "openai",
+                        "model_name": "gpt-4.1",
+                        "messages": [],
+                        "context_usage_percent": 0,
+                        "context_input_tokens": 0,
+                        "context_window": 131072,
+                    }
+                ],
+            }
+            agent.active_chat_id = "chat-1"
+            agent._last_context_window = 131072
+            agent._last_context_input_tokens = 29516
+            agent._last_context_usage_percent = 23
+            agent.conversation_history = [
+                {
+                    "role": "user",
+                    "content": "查看我的Codex用量",
+                    "_token_count": 14,
+                },
+                {
+                    "role": "assistant",
+                    "content": '{"tool_calls": [{"id": "a"}]}',
+                    "_cache_stats": {"input_tokens": 15097},
+                    "_output_tokens": 135,
+                    "_reasoning_tokens": 0,
+                    "_token_count_includes_reasoning": False,
+                },
+                {
+                    "role": "user",
+                    "content": "[Original user request] ...",
+                    "_internal": True,
+                    "_token_count": 981,
+                },
+                {
+                    "role": "assistant",
+                    "content": '{"tool_calls": [{"id": "b"}]}',
+                    "_cache_stats": {"input_tokens": 16060},
+                    "_output_tokens": 253,
+                    "_reasoning_tokens": 0,
+                    "_token_count_includes_reasoning": False,
+                },
+            ]
+
+            manager.sync_active_chat_messages()
+
+            chat = manager.find_chat_by_id("chat-1")
+            self.assertIsNotNone(chat)
+            self.assertEqual(chat.get("context_input_tokens"), 16060 + 253)
+            self.assertEqual(chat.get("context_usage_percent"), 12)
+
+            saved_chat = _read_first_chat_record(workspace)
+            self.assertEqual(saved_chat.get("context_input_tokens"), 16060 + 253)
+            self.assertEqual(saved_chat.get("context_usage_percent"), 12)
+
     def test_sync_active_chat_messages_skips_memory_only_messages(self):
         with tempfile.TemporaryDirectory() as td:
             workspace = Path(td)
