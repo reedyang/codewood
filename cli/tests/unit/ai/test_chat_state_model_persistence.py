@@ -110,6 +110,7 @@ class ChatStateModelPersistenceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             agent = _FakeAgent(Path(td))
             schedule_calls = []
+            gui_usage_notifications = []
 
             class _FakeSessionMemoryService:
                 def schedule_context_usage_refresh_async(self, user_input_hint="", context_hint=""):
@@ -122,6 +123,7 @@ class ChatStateModelPersistenceTests(unittest.TestCase):
                     return True
 
             agent.session_memory_service = _FakeSessionMemoryService()
+            agent._gui_context_usage_changed = lambda: gui_usage_notifications.append("notify")
             manager = ChatStateManager(agent, "chats.json")
             agent._chat_state = {
                 "version": 1,
@@ -146,6 +148,7 @@ class ChatStateModelPersistenceTests(unittest.TestCase):
             self.assertEqual(agent.refresh_status_usage_calls, 1)
             self.assertEqual(len(schedule_calls), 1)
             self.assertEqual(schedule_calls[0]["context_hint"], "chat activated")
+            self.assertEqual(len(gui_usage_notifications), 1)
             self.assertEqual(agent._last_context_usage_percent, 44)
             self.assertEqual(agent._last_context_input_tokens, 1234)
             self.assertEqual(agent._last_context_window, 64000)
@@ -402,6 +405,8 @@ class ChatStateModelPersistenceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             workspace = Path(td)
             agent = _FakeAgent(workspace)
+            gui_usage_notifications = []
+            agent._gui_context_usage_changed = lambda: gui_usage_notifications.append("notify")
             manager = ChatStateManager(agent, "chats.json")
             agent._chat_state = {
                 "version": 2,
@@ -423,7 +428,7 @@ class ChatStateModelPersistenceTests(unittest.TestCase):
                 ],
             }
             agent.active_chat_id = "chat-1"
-            agent._last_context_usage_percent = 67
+            agent._last_context_usage_percent = 3
             agent._last_context_input_tokens = 4321
             agent._last_context_window = 128000
 
@@ -431,16 +436,17 @@ class ChatStateModelPersistenceTests(unittest.TestCase):
 
             chat = manager.find_chat_by_id("chat-1")
             self.assertIsNotNone(chat)
-            self.assertEqual(chat.get("context_usage_percent"), 67)
+            self.assertEqual(chat.get("context_usage_percent"), 3)
             self.assertEqual(chat.get("context_input_tokens"), 4321)
             self.assertEqual(chat.get("context_window"), 128000)
 
             payload = _read_chat_index(workspace)
             _assert_hash_record_file(self, payload["chats"][0].get("record_file"))
             saved_chat = _read_first_chat_record(workspace)
-            self.assertEqual(saved_chat.get("context_usage_percent"), 67)
+            self.assertEqual(saved_chat.get("context_usage_percent"), 3)
             self.assertEqual(saved_chat.get("context_input_tokens"), 4321)
             self.assertEqual(saved_chat.get("context_window"), 128000)
+            self.assertEqual(len(gui_usage_notifications), 1)
 
     def test_sync_active_chat_messages_persists_exclude_from_model_context_flag(self):
         with tempfile.TemporaryDirectory() as td:
@@ -604,6 +610,8 @@ class ChatStateModelPersistenceTests(unittest.TestCase):
 
             chat = manager.find_chat_by_id("chat-1")
             self.assertIsNotNone(chat)
+            # With a _cache_stats anchor, _history_context_input_tokens is used
+            # which correctly computes from the cache anchor + response tokens.
             self.assertEqual(chat.get("context_input_tokens"), 16060 + 253)
             self.assertEqual(chat.get("context_usage_percent"), 12)
 

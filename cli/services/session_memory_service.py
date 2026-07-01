@@ -193,6 +193,18 @@ class SessionMemoryService:
 
     def _context_usage_state_key(self) -> str:
         chat_id = str(getattr(self.agent, "active_chat_id", "") or "").strip()
+        provider = str(getattr(self.agent, "provider", "") or "").strip().lower()
+        model_name = str(getattr(self.agent, "model_name", "") or "").strip().lower()
+        try:
+            context_window = int(
+                parse_context_window((getattr(self.agent, "params", None) or {}).get("context_window"))
+                or DEFAULT_CONTEXT_WINDOW
+            )
+        except Exception:
+            context_window = DEFAULT_CONTEXT_WINDOW
+        plan_mode = "plan" if bool(getattr(self.agent, "_plan_mode_sticky", False)) else "agent"
+        memory_enabled = "mem1" if bool(getattr(self.agent, "memory_enabled", True)) else "mem0"
+        mcp_enabled = "mcp1" if bool(getattr(self.agent, "mcp_tools_enabled", False)) else "mcp0"
         hist = list(getattr(self.agent, "conversation_history", None) or [])
         size = len(hist)
         last_role = ""
@@ -207,7 +219,10 @@ class SessionMemoryService:
                 last_content = str(last.get("content") or "")
                 if len(last_content) > 120:
                     last_content = last_content[-120:]
-        return f"{chat_id}|{size}|{last_role}|{last_content}"
+        return (
+            f"{chat_id}|{provider}:{model_name}|ctx={context_window}|{plan_mode}|"
+            f"{memory_enabled}|{mcp_enabled}|{size}|{last_role}|{last_content}"
+        )
 
     @staticmethod
     def _normalize_summary_fragment(text: str, max_chars: int = SESSION_SUMMARY_MSG_SNIPPET) -> str:

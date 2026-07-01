@@ -4144,6 +4144,9 @@ class ServeApp:
         self.agent._gui_plan_changed = lambda: self.broadcaster.publish(  # type: ignore[attr-defined]
             "state", self._route(state=_build_state(self.agent))
         )
+        self.agent._gui_context_usage_changed = lambda: self.broadcaster.publish(  # type: ignore[attr-defined]
+            "state", self._route(state=_build_state(self.agent))
+        )
         # The GUI renders its own layout, so disable terminal hard-wrapping and
         # force SGR color emission (stdout is not a TTY here). The bridge keeps
         # the SGR runs so the GUI can color step output like the terminal.

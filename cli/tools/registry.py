@@ -7,8 +7,9 @@ tool spec (applying gating) and resolves a tool by name for dispatch.
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Type
+from typing import Any, Dict, FrozenSet, List, Optional, Type
 
+from ..core.config.model_providers import is_small_model_context_window
 from .base import BaseTool
 
 from .shell import ShellTool
@@ -124,6 +125,13 @@ PLAN_MODE_ONLY_TOOLS = frozenset(t.name for t in ALL_TOOLS if t.requires_plan_mo
 #: Tools hidden while Plan mode is active (e.g. update_plan / mutating helpers).
 PLAN_MODE_EXCLUDED_TOOLS = frozenset(t.name for t in ALL_TOOLS if t.excluded_in_plan_mode)
 
+#: Tools excluded for small-context-window models (< 64k).  All MCP
+#: tools (regardless of the ``requires_mcp`` flag) are excluded; memory
+#: tools are restricted to add/search/delete only.
+SMALL_MODEL_EXCLUDED_TOOLS: FrozenSet[str] = frozenset(
+    t.name for t in ALL_TOOLS if t.name.startswith("mcp_")
+) | frozenset(["memory_list", "memory_stats"])
+
 
 def tool_class_by_name(name: str) -> Optional[Type[BaseTool]]:
     return _BY_NAME.get(str(name or "").strip())
@@ -153,20 +161,28 @@ def _gating_flags(agent: Any) -> Dict[str, bool]:
             multimodal_enabled = True
     plan_mode = bool(getattr(agent, "_plan_mode_sticky", False))
     gui_enabled = callable(getattr(agent, "_browser_dispatch", None))
+    small_model = is_small_model_context_window(
+        (getattr(agent, "params", None) or {}).get("context_window")
+    )
     return {
         "mcp_enabled": mcp_enabled,
         "multimodal_enabled": multimodal_enabled,
         "has_subagents": has_subagents,
         "plan_mode": plan_mode,
         "gui_enabled": gui_enabled,
+        "small_model": small_model,
     }
 
 
 def iter_specs(agent: Any) -> List[Dict[str, Any]]:
     """Return the gated, ordered list of tool specs for the given agent."""
     flags = _gating_flags(agent)
+    small_model = flags.pop("small_model", False)
     specs: List[Dict[str, Any]] = []
     for cls in ALL_TOOLS:
-        if cls.is_available(**flags):
-            specs.append(cls.schema())
+        if not cls.is_available(**flags):
+            continue
+        if small_model and cls.name in SMALL_MODEL_EXCLUDED_TOOLS:
+            continue
+        specs.append(cls.schema())
     return specs

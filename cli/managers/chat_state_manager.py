@@ -556,6 +556,14 @@ class ChatStateManager:
         except Exception:
             self._agent._last_context_window = 0
 
+    def _notify_gui_context_usage_changed(self) -> None:
+        try:
+            notify = getattr(self._agent, "_gui_context_usage_changed", None)
+            if callable(notify):
+                notify()
+        except Exception:
+            pass
+
     def save_chat_state(self) -> None:
         # Serialize all writers under the agent's reentrant chat-state lock.
         # When several chat loops run concurrently they each persist their own
@@ -1134,7 +1142,22 @@ class ChatStateManager:
                 msgs.append(entry)
             chat["messages"] = msgs
             context_window = int(getattr(self._agent, "_last_context_window", 0) or 0)
-            context_input_tokens = _history_context_input_tokens(msgs)
+            # When messages carry _cache_stats, _history_context_input_tokens
+            # correctly accounts for the system prompt (already counted in the
+            # cache anchor's input_tokens).  Without a cache anchor the message
+            # content alone omits system prompt and tool schemas, so fall back
+            # to the agent's last known total.
+            has_cache_anchor = any(
+                isinstance(m.get("_cache_stats"), dict) for m in msgs
+            )
+            if has_cache_anchor:
+                context_input_tokens = _history_context_input_tokens(msgs)
+            else:
+                context_input_tokens = int(
+                    getattr(self._agent, "_last_context_input_tokens", 0) or 0
+                )
+                if context_input_tokens <= 0:
+                    context_input_tokens = _history_context_input_tokens(msgs)
             chat["context_input_tokens"] = context_input_tokens
             chat["context_window"] = context_window
             if context_window > 0:
@@ -1148,23 +1171,39 @@ class ChatStateManager:
                 )
             chat["updated_at"] = self._now_text()
             self.save_chat_state()
+            self._notify_gui_context_usage_changed()
 
     def persist_active_chat_usage_snapshot(self) -> None:
         with self._active_chat_state_lock():
             chat = self.find_chat_by_id(self._agent.active_chat_id)
             if not chat:
                 return
-            chat["context_usage_percent"] = int(
-                getattr(self._agent, "_last_context_usage_percent", 0) or 0
+            msgs = list(chat.get("messages") or [])
+            has_cache_anchor = any(
+                isinstance(m.get("_cache_stats"), dict) for m in msgs
             )
-            chat["context_input_tokens"] = int(
-                getattr(self._agent, "_last_context_input_tokens", 0) or 0
-            )
-            chat["context_window"] = int(
+            if has_cache_anchor:
+                context_input_tokens = _history_context_input_tokens(msgs)
+            else:
+                context_input_tokens = int(
+                    getattr(self._agent, "_last_context_input_tokens", 0) or 0
+                )
+                if context_input_tokens <= 0:
+                    context_input_tokens = _history_context_input_tokens(msgs)
+            context_window = int(
                 getattr(self._agent, "_last_context_window", 0) or 0
             )
+            context_usage_percent = (
+                max(0, min(999, int(round((context_input_tokens * 100.0) / max(1, context_window)))))
+                if context_window > 0
+                else int(getattr(self._agent, "_last_context_usage_percent", 0) or 0)
+            )
+            chat["context_usage_percent"] = context_usage_percent
+            chat["context_input_tokens"] = context_input_tokens
+            chat["context_window"] = context_window
             chat["updated_at"] = self._now_text()
             self.save_chat_state()
+            self._notify_gui_context_usage_changed()
 
     def clear_chat_context(self, chat_id: str) -> bool:
         cid = str(chat_id or "").strip()
@@ -1425,10 +1464,24 @@ class ChatStateManager:
             except Exception:
                 pass
             self._apply_chat_usage_snapshot(chat)
+            self._notify_gui_context_usage_changed()
             try:
                 sync_refresh = getattr(self._agent, "_refresh_status_context_usage_snapshot", None)
                 if callable(sync_refresh):
                     sync_refresh()
+            except Exception:
+                pass
+            try:
+                svc = getattr(self._agent, "session_memory_service", None)
+                schedule_refresh = getattr(svc, "schedule_context_usage_refresh_async", None)
+                if callable(schedule_refresh):
+                    try:
+                        schedule_refresh(
+                            expected_chat_id=str(getattr(self._agent, "active_chat_id", "") or "").strip(),
+                            context_hint="chat activated",
+                        )
+                    except TypeError:
+                        schedule_refresh(context_hint="chat activated")
             except Exception:
                 pass
             try:
