@@ -1659,9 +1659,27 @@ class ServeApp:
         if as_prompt and line:
             line = GUI_FORCE_PROMPT_PREFIX + line
         elif line.lstrip().startswith("/"):
-            # A non-prompt slash line is a command the GUI issued on the user's
-            # behalf (rename/switch/pin/...). Mark it so the runtime loop runs it
-            # but keeps it out of the user's input history (history.json).
+            stripped = line.lstrip()
+            # Apply execution-policy changes immediately so they take effect
+            # even while a multi-round task is executing (the inner tool loop
+            # does not poll the input queue until the current task finishes).
+            if stripped.startswith("/execution-policy "):
+                policy = stripped[len("/execution-policy "):].strip().lower()
+                if policy in ("unlimited", "moderate", "confirmation"):
+                    if policy != str(getattr(self.agent, "execution_policy", "")).lower():
+                        self.agent.execution_policy = policy
+                        try:
+                            save = getattr(self.agent, "_save_execution_policy_to_config", None)
+                            if callable(save):
+                                save()
+                        except Exception:
+                            pass
+                    self.broadcaster.publish(
+                        "state", self._route(state=_build_state(self.agent))
+                    )
+                    return
+            # All other slash commands: mark them so the runtime loop runs it
+            # but keeps them out of the user's input history (history.json).
             line = GUI_INTERNAL_COMMAND_PREFIX + line
         cid = str(chat_id or "").strip() or _primary_active_chat_id(self.agent)
         rt = self._get_or_spawn_runtime(cid)
