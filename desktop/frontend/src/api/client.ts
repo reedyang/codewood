@@ -86,11 +86,20 @@ export class ApiClient {
   }
 
   async interrupt(): Promise<void> {
-    await fetch(`${this.base}/interrupt`, {
-      method: "POST",
-      headers: this.headers(),
-      body: "{}",
-    });
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 5000);
+    try {
+      await fetch(`${this.base}/interrupt`, {
+        method: "POST",
+        headers: this.headers(),
+        body: "{}",
+        signal: controller.signal,
+      });
+    } catch {
+      // Best-effort: the interrupt flag is already set optimistically in the UI.
+    } finally {
+      clearTimeout(timeout);
+    }
   }
 
   /** List chats for any workspace by id (without switching to it). */

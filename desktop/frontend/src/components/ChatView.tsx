@@ -1698,6 +1698,7 @@ function TurnView({
   negIndex: number;
   handlers: MessageHandlers;
 }) {
+  const { t } = useApp();
   return (
     <div className="turn">
       {turn.userText && (
@@ -1713,6 +1714,15 @@ function TurnView({
           thinkingText={turn.thinkingText}
           running={turn.endedAt === null}
         />
+      )}
+      {turn.rounds.length === 0 && turn.endedAt === null && (
+        <div className="activity">
+          <div className="activity-header running">
+            <span className="activity-text marquee">
+              {t("activity.working")} ({formatElapsed(now - turn.startedAt)})
+            </span>
+          </div>
+        </div>
       )}
       {turn.rounds.map((round) => (
         <LiveRoundView

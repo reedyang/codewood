@@ -1541,6 +1541,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
           // any racing SSE ``setState``), then echo the message into its bucket.
           setFocusOverride({ chatId: newId, wsId: echoWsId });
           startOptimisticTurn(trimmed, chatKey(echoWsId, newId));
+          setBusyForChat(chatKey(echoWsId, newId), true);
         }
         setDraftMode(false);
         setDraftWorkspaceId("");
@@ -1551,7 +1552,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       // another chat is mid-task.
       await client.sendInput(trimmed, true, targetChatId);
     },
-    [client, startOptimisticTurn],
+    [client, startOptimisticTurn, setBusyForChat],
   );
 
   const runCommand = useCallback(
@@ -1562,8 +1563,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
   );
 
   const interrupt = useCallback(async () => {
+    const key = chatKey(activeWorkspaceIdRef.current, activeChatIdRef.current);
+    if (key) {
+      setBusyForChat(key, false);
+    }
     await client.interrupt();
-  }, [client]);
+  }, [client, setBusyForChat]);
 
   const answerConfirm = useCallback(
     async (answer: string) => {
