@@ -365,9 +365,9 @@ class Agent:
         if sess is None:
             return
         sess.call_provider = self.provider
-        # Inject the chat's reasoning level into the params/conf bags so the
+        # Inject the chat's reasoning effort into the params/conf bags so the
         # provider client emits ``reasoning_effort`` for this chat's calls.
-        level = self._current_reasoning_level()
+        level = self._current_reasoning_effort()
         sess.call_model_name = self.model_name
         sess.call_model_params = self._with_reasoning_effort(self.params, level)
         sess.call_openai_conf = self._with_reasoning_effort(self.openai_conf, level)
@@ -770,32 +770,32 @@ class Agent:
             return ""
         return f"{provider}:{model_name}"
 
-    def _current_model_reasoning_levels(self) -> List[str]:
-        """Reasoning levels the active model supports (empty if none)."""
+    def _current_model_reasoning_efforts(self) -> List[str]:
+        """Reasoning efforts the active model supports (empty if none)."""
         params = getattr(self, "params", {}) or {}
         raw = params.get("reasoning_effort") if isinstance(params, dict) else None
         if not isinstance(raw, list):
             return []
         return [str(x).strip() for x in raw if str(x).strip()]
 
-    def _current_reasoning_level(self) -> str:
-        """The active chat's selected reasoning level ("" if unset/unsupported)."""
+    def _current_reasoning_effort(self) -> str:
+        """The active chat's selected reasoning effort ("" if unset/unsupported)."""
         level = str(getattr(self, "reasoning_level", "") or "").strip()
         if not level:
             return ""
-        levels = self._current_model_reasoning_levels()
+        levels = self._current_model_reasoning_efforts()
         # Match case-insensitively but return the configured canonical casing.
         for candidate in levels:
             if candidate.lower() == level.lower():
                 return candidate
         return ""
 
-    def _normalize_reasoning_level(self, value: str) -> str:
-        """Return the canonical configured level matching ``value`` or ""."""
+    def _normalize_reasoning_effort(self, value: str) -> str:
+        """Return the canonical configured effort matching ``value`` or ""."""
         wanted = str(value or "").strip().lower()
         if not wanted:
             return ""
-        for candidate in self._current_model_reasoning_levels():
+        for candidate in self._current_model_reasoning_efforts():
             if candidate.lower() == wanted:
                 return candidate
         return ""
@@ -892,10 +892,10 @@ class Agent:
                 self._validate_single_model(self.provider, self.model_name, "model")
             except Exception:
                 pass
-        # Drop any selected reasoning level the new model does not support.
+        # Drop any selected reasoning effort the new model does not support.
         try:
             current_level = str(getattr(self, "reasoning_level", "") or "").strip()
-            if current_level and not self._normalize_reasoning_level(current_level):
+            if current_level and not self._normalize_reasoning_effort(current_level):
                 self.reasoning_level = ""
         except Exception:
             pass
@@ -976,18 +976,18 @@ class Agent:
                 return None
             return dict(raw)
 
-    def _set_reasoning_level(self, level: str, save_state: bool = True) -> str:
-        """Select a reasoning level for the active chat.
+    def _set_reasoning_effort(self, level: str, save_state: bool = True) -> str:
+        """Select a reasoning effort for the active chat.
 
         Returns a user-facing status message. An empty ``level`` clears the
         selection. A level the current model does not support is rejected.
         """
         wanted = str(level or "").strip()
-        supported = self._current_model_reasoning_levels()
+        supported = self._current_model_reasoning_efforts()
         if not wanted:
             self.reasoning_level = ""
         else:
-            canonical = self._normalize_reasoning_level(wanted)
+            canonical = self._normalize_reasoning_effort(wanted)
             if not canonical:
                 lang = self._ui_language()
                 if not supported:
@@ -1073,7 +1073,7 @@ class Agent:
             if choice:
                 self._apply_runtime_model_choice(choice, validate=False)
             self._refresh_model_dependent_caches()
-            self.reasoning_level = self._normalize_reasoning_level(stored_level)
+            self.reasoning_level = self._normalize_reasoning_effort(stored_level)
             self._pin_session_model()
             return False
 
@@ -1095,8 +1095,8 @@ class Agent:
                 validate=False,
             )
         self._refresh_model_dependent_caches()
-        # Restore this chat's reasoning level for the now-active model.
-        self.reasoning_level = self._normalize_reasoning_level(stored_level)
+        # Restore this chat's reasoning effort for the now-active model.
+        self.reasoning_level = self._normalize_reasoning_effort(stored_level)
         self._pin_session_model()
         return True
 
@@ -5989,6 +5989,7 @@ class Agent:
             model_selectors_provider=self._get_configured_model_selectors,
             skill_targets_provider=self._get_slash_skill_target_commands,
             mcp_root_server_commands_provider=self._get_slash_connected_mcp_server_commands,
+            reasoning_efforts_provider=self._get_reasoning_efforts_for_completion,
         )
 
     def _get_slash_mcp_server_target_commands(
@@ -5999,6 +6000,11 @@ class Agent:
             subcommand=subcommand,
             with_trailing_space=with_trailing_space,
         )
+
+    def _get_reasoning_efforts_for_completion(self) -> List[str]:
+        levels = [l[:1].upper() + l[1:] for l in (self._current_model_reasoning_efforts() or [])]
+        levels.insert(0, "Default")
+        return levels
 
     def _get_slash_mcp_scoped_groups(self) -> List[Tuple[str, List[str]]]:
         return build_mcp_scoped_groups(self.mcp_manager)
@@ -7205,7 +7211,7 @@ class Agent:
             str(getattr(self, "workspace_name", "") or ""),
             str(getattr(self, "active_chat_name", "") or ""),
             getattr(self, "_last_context_usage_percent", 0),
-            reasoning_level=self._current_reasoning_level(),
+            reasoning_effort=self._current_reasoning_effort(),
         )
 
     def _get_user_input_with_history(self) -> str:

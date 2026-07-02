@@ -117,8 +117,8 @@ export interface AppState {
     available: string[];
     /** True only when a usable (non-template) model is configured. */
     ready?: boolean;
-    reasoningLevel?: string;
-    reasoningLevels?: string[];
+    reasoningEffort?: string;
+    reasoningEfforts?: string[];
   };
   /** Active chat's last-known context-window usage snapshot. */
   contextUsage?: {

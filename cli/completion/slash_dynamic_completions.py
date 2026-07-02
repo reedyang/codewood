@@ -206,6 +206,7 @@ def build_slash_dynamic_rules(
     model_selectors_provider: Any = None,
     skill_targets_provider: Any = None,
     mcp_root_server_commands_provider: Any = None,
+    reasoning_efforts_provider: Any = None,
 ) -> List[Dict[str, Any]]:
     model_commands: List[str] = []
     skill_commands: List[str] = []
@@ -227,6 +228,12 @@ def build_slash_dynamic_rules(
             )
     except Exception:
         mcp_root_server_commands = []
+    reasoning_efforts: List[str] = []
+    try:
+        if callable(reasoning_efforts_provider):
+            reasoning_efforts = _sorted_unique_ci(list(reasoning_efforts_provider() or []))
+    except Exception:
+        reasoning_efforts = []
 
     return [
         {
@@ -280,6 +287,10 @@ def build_slash_dynamic_rules(
         {
             "trigger": "/model ",
             "candidates": model_commands,
+        },
+        {
+            "trigger": "/reasoning ",
+            "candidates": [f"/reasoning {l}" for l in reasoning_efforts],
         },
         {
             "trigger": "/skills/",

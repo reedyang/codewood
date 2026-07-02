@@ -51,6 +51,7 @@ export const en: Dict = {
   "attach.add": "Attach files",
   "attach.remove": "Remove file",
   "reasoning.label": "Reasoning effort",
+  "reasoning.effort.default": "Default",
   "reasoning.effort.low": "Low",
   "reasoning.effort.medium": "Medium",
   "reasoning.effort.high": "High",

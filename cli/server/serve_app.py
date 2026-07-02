@@ -753,21 +753,21 @@ def _compute_context_usage_fresh_from_messages(chat_record: Dict[str, Any]) -> "
     return window, total, pct
 
 
-def _safe_reasoning_level(agent: Any) -> str:
-    # Reasoning level is session-scoped; bind to the active chat so HTTP
+def _safe_reasoning_effort(agent: Any) -> str:
+    # Reasoning effort is session-scoped; bind to the active chat so HTTP
     # handler threads read the focused chat's saved selection (restored from
     # its chat record on activation), not the ambient/unbound session.
     try:
         with agent._session_scope(_primary_active_chat_id(agent)):
-            return str(agent._current_reasoning_level() or "")
+            return str(agent._current_reasoning_effort() or "")
     except Exception:
         return ""
 
 
-def _safe_reasoning_levels(agent: Any) -> List[str]:
+def _safe_reasoning_efforts(agent: Any) -> List[str]:
     try:
         with agent._session_scope(_primary_active_chat_id(agent)):
-            return [str(x) for x in (agent._current_model_reasoning_levels() or []) if str(x)]
+            return [str(x) for x in (agent._current_model_reasoning_efforts() or []) if str(x)]
     except Exception:
         return []
 
@@ -1089,8 +1089,8 @@ def _build_state_inner(agent: Any) -> Dict[str, Any]:
             "current": model_current,
             "available": model_available,
             "ready": model_ready,
-            "reasoningLevel": _safe_reasoning_level(agent),
-            "reasoningLevels": _safe_reasoning_levels(agent),
+            "reasoningEffort": _safe_reasoning_effort(agent),
+            "reasoningEfforts": _safe_reasoning_efforts(agent),
         },
         "contextUsage": {
             "percent": active_context_percent,

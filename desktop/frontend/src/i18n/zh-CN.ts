@@ -51,6 +51,7 @@ export const zhCN: Dict = {
   "attach.add": "添加文件",
   "attach.remove": "移除文件",
   "reasoning.label": "推理强度",
+  "reasoning.effort.default": "默认",
   "reasoning.effort.low": "低",
   "reasoning.effort.medium": "中",
   "reasoning.effort.high": "高",

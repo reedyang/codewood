@@ -27,11 +27,11 @@ def build_status_bar_render_data(
     workspace_name: str,
     active_chat_name: str,
     last_context_usage_percent: Any,
-    reasoning_level: str = "",
+    reasoning_effort: str = "",
 ) -> Tuple[List[Tuple[str, str]], str]:
     usage_pct = clamp_status_token_usage_percent(last_context_usage_percent)
     usage_text = f"({usage_pct}%)"
-    level = str(reasoning_level or "").strip()
+    level = str(reasoning_effort or "").strip()
     status_bar_fragments: List[Tuple[str, str]] = [
         ("", "  "),
         (f"fg:{STATUS_MODEL_COLOR_HEX}", str(model_name)),

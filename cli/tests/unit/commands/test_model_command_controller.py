@@ -15,13 +15,13 @@ class _FakeModelAgent:
     def _get_configured_model_selectors(self):
         return ["openai:gpt-4.1", "ollama:qwen2.5:7b"]
 
-    def _current_model_reasoning_levels(self):
+    def _current_model_reasoning_efforts(self):
         return []
 
-    def _current_reasoning_level(self):
+    def _current_reasoning_effort(self):
         return ""
 
-    def _set_reasoning_level(self, level, save_state=True):
+    def _set_reasoning_effort(self, level, save_state=True):
         return f"reasoning:{level}"
 
     def _switch_model_by_selector(self, selector: str):
