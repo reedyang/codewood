@@ -288,7 +288,7 @@ class MainStartupConfigTests(unittest.TestCase):
             self.assertIsNotNone(FakeAgent.last_instance)
             self.assertEqual(
                 getattr(FakeAgent.last_instance, "_pending_prompt_warning_line", ""),
-                "⚠️ Model context window is too small; only basic chat is supported.",
+                "",
             )
 
 

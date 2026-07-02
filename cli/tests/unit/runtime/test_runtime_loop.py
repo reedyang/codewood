@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from cli.runtime.runtime_loop import (
+    _build_thinking_tui_visible_rows,
     _consume_streaming_ai_response,
     _format_active_plan_reminder,
     _format_worked_for_summary_line,
@@ -807,6 +808,93 @@ class RuntimeLoopTests(unittest.TestCase):
         self.assertEqual(ai_response, "")
         self.assertFalse(streamed_any)
         self.assertEqual(callback_calls, 0)
+
+    def test_build_thinking_tui_visible_rows_keeps_only_last_five_rows(self):
+        class _Agent:
+            def _terminal_columns_for_line_estimate(self):
+                return 80
+
+            def _wrap_feedback_text_by_display_width(self, text, max_width):
+                _ = max_width
+                return [str(text or "")]
+
+        rows = _build_thinking_tui_visible_rows(
+            _Agent(),
+            "line1\nline2\nline3\nline4\nline5\nline6\nline7",
+            max_visible_lines=5,
+        )
+
+        self.assertEqual(rows, ["line3", "line4", "line5", "line6", "line7"])
+
+    def test_consume_streaming_ai_response_thinking_streams_incrementally_without_blank_gap(self):
+        class _FakeThinkingStream:
+            def __init__(self):
+                self.thinking_text = ""
+
+            def __iter__(self):
+                self.thinking_text = "P"
+                yield ""
+                self.thinking_text = "Pl"
+                yield ""
+                self.thinking_text = "Plan"
+                yield ""
+                self.thinking_text = "Plan\nN"
+                yield ""
+                self.thinking_text = "Plan\nNe"
+                yield "Done"
+
+        class _FakeTtyStream:
+            def __init__(self):
+                self.writes = []
+
+            def write(self, text):
+                s = str(text or "")
+                self.writes.append(s)
+                return len(s)
+
+            def flush(self):
+                return None
+
+            def isatty(self):
+                return True
+
+        class _Agent:
+            def __init__(self):
+                self.stop_calls = 0
+                self._active_status_ticker_stopper = self._stop_ticker
+                self.display_language = "zh-CN"
+
+            def _stop_ticker(self):
+                self.stop_calls += 1
+
+            def _hide_previous_shell_output_if_needed(self):
+                return None
+
+            def _ensure_terminal_line_start(self):
+                return None
+
+            def _terminal_columns_for_line_estimate(self):
+                return 80
+
+            def _wrap_feedback_text_by_display_width(self, text, max_width):
+                _ = max_width
+                return [str(text or "")]
+
+        fake_out = _FakeTtyStream()
+        agent = _Agent()
+
+        with patch("cli.runtime.runtime_loop.sys.stdout", fake_out):
+            ai_response, streamed_any = _consume_streaming_ai_response(
+                agent,
+                _FakeThinkingStream(),
+            )
+
+        merged = "".join(fake_out.writes)
+        self.assertEqual(ai_response, "Done")
+        self.assertTrue(streamed_any)
+        self.assertEqual(agent.stop_calls, 1)
+        self.assertEqual(merged.count("思考中"), 1)
+        self.assertIn("\n  \x1b[2mN\x1b[0m", merged)
 
     def test_consume_streaming_ai_response_closes_stream_on_interrupt(self):
         class _FakeAiStream:

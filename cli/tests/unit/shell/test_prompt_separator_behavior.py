@@ -110,7 +110,7 @@ class PromptSeparatorBehaviorTests(unittest.TestCase):
         events = []
         agent.input_handler = _RecordingInputHandler(events)
         agent._set_pending_prompt_warning(
-            "⚠️ Model context window is too small; only basic chat is supported."
+            "Some custom warning"
         )
 
         def _capture_print(text="", *args, **kwargs):
@@ -128,7 +128,7 @@ class PromptSeparatorBehaviorTests(unittest.TestCase):
         self.assertEqual(
             events,
             [
-                "⚠️ Model context window is too small; only basic chat is supported.",
+                "Some custom warning",
                 "",
                 "prompt",
             ],
