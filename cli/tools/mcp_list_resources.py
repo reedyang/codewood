@@ -9,7 +9,7 @@ from .base import BaseTool
 
 class McpListResourcesTool(BaseTool):
     name = "mcp_list_resources"
-    description = "List resources for a specified MCP server."
+    description = "List available resources for a specified MCP server."
     parameters: Dict[str, Any] = {
         "type": "object",
         "properties": {
@@ -43,7 +43,6 @@ class McpListResourcesTool(BaseTool):
                 timeout_s=timeout_s,
                 use_cache=use_cache,
             )
-            agent.system_prompt = agent._compose_system_prompt_snapshot(include_tools=False)
             return {
                 "success": True,
                 "server": server,

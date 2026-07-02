@@ -2959,6 +2959,8 @@ html[data-has-bg] .select {
    chips below — the chips are the primary call-to-action. */
 .mcp-bulk-toggle {
   font-size: 11px;
+
+  margin-left: 4px;
   font-weight: 600;
   color: var(--accent);
   background: transparent;

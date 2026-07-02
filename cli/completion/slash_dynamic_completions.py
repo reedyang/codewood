@@ -250,12 +250,6 @@ def build_slash_dynamic_rules(
             "candidates": build_mcp_server_target_commands(mcp_config, "list-resources"),
         },
         {
-            "trigger": "/mcp list-resource-templates ",
-            "candidates": build_mcp_server_target_commands(
-                mcp_config, "list-resource-templates"
-            ),
-        },
-        {
             "trigger": "/mcp list-prompts ",
             "candidates": build_mcp_server_target_commands(mcp_config, "list-prompts"),
         },

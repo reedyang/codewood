@@ -15,7 +15,6 @@ from cli.tools.registry import (
 def _agent(plan_mode: bool) -> SimpleNamespace:
     return SimpleNamespace(
         _plan_mode_sticky=plan_mode,
-        mcp_tools_enabled=False,
         memory_enabled=True,
         subagents=[],
         _multimodal_enabled_for_current_model=lambda: True,

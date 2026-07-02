@@ -34,9 +34,9 @@ from ..core.console_utils import (
     GUI_INTERNAL_COMMAND_PREFIX,
 )
 from ..controllers.builtin_command_router import dispatch_builtin_command
+from ..commands import is_command, run_command
 from ..tools.registry import (
     IMAGE_INPUT_TOOLS,
-    MCP_MANAGEMENT_GATED_TOOLS,
     MEMORY_TOOLS,
     PLAN_MODE_EXCLUDED_TOOLS,
     PLAN_MODE_ONLY_TOOLS,
@@ -3168,7 +3168,10 @@ def run_agent_loop(agent: Any):
                         bl = builtin_line.lower()
                         mcp_tool, mcp_args, mcp_err = self._parse_mcp_shortcut_command(builtin_line)
                         if mcp_tool:
-                            mcp_res = self.execute_tool_call(mcp_tool, mcp_args)
+                            if is_command(mcp_tool):
+                                mcp_res = run_command(self, mcp_tool, mcp_args)
+                            else:
+                                mcp_res = self.execute_tool_call(mcp_tool, mcp_args)
                             self._print_mcp_shortcut_result(mcp_tool, mcp_args, mcp_res if isinstance(mcp_res, dict) else {})
                             continue
                         if bl == "mcp" or bl.startswith("mcp "):
@@ -3235,12 +3238,12 @@ def run_agent_loop(agent: Any):
                             self._print_memory_status_details()
                             continue
                         if bl == "memory stats":
-                            self.execute_tool_call("memory_stats", {"verbose_print": True})
+                            print(run_command(self, "memory_stats", {"verbose_print": True}))
                             continue
                         if bl == "memory list":
-                            self.execute_tool_call(
-                                "memory_list", {"limit": 20, "verbose_print": True}
-                            )
+                            print(run_command(
+                                self, "memory_list", {"limit": 20, "verbose_print": True}
+                            ))
                             continue
                         if bl.startswith("memory search "):
                             q = builtin_line[len("memory search ") :].strip()
@@ -3755,13 +3758,6 @@ def run_agent_loop(agent: Any):
                     self._active_skill_full_prompt = "\n".join(full_prompts)
                     for fp in full_prompts:
                         self._append_chat_message("user", fp, _internal=True)
-            mcp_tool_selection_constraint = ""
-            if bool(getattr(self, "mcp_tools_enabled", False)):
-                mcp_tool_selection_constraint = (
-                    "[Additional MCP tool selection constraints]\n"
-                    "- If the user asks for information/details about one specific MCP server, the first query tool must be `mcp_server_info`.\n"
-                    "- `mcp_status` / `mcp_status_refresh` are only for global MCP status overview and must not replace details for a specific server.\n\n"
-                )
             memory_runtime_enabled = bool(getattr(self, "memory_enabled", True))
             base_rules: List[str] = [
                 "For tasks that require two or more steps, briefly state what will be done, then list Step 1..N with status (pending/in_progress/completed/failed).",
@@ -3935,15 +3931,6 @@ def run_agent_loop(agent: Any):
                 self._active_status_ticker_stopper = _stop_status_ticker_before_first_output
                 try:
                     standard_tool_schemas = list(getattr(self, "tool_specs", []) or [])
-                    if not bool(getattr(self, "mcp_tools_enabled", False)):
-                        standard_tool_schemas = [
-                            item
-                            for item in standard_tool_schemas
-                            if str(
-                                ((item or {}).get("function", {}) or {}).get("name", "")
-                            ).strip()
-                            not in MCP_MANAGEMENT_GATED_TOOLS
-                        ]
                     if not bool(getattr(self, "memory_enabled", True)):
                         standard_tool_schemas = [
                             item
@@ -4580,23 +4567,6 @@ def run_agent_loop(agent: Any):
                     }
                 last_result = result_for_next_input
                 step_progress = self._build_step_progress_context()
-                post_status_rule = ""
-                if last_tool_name in ("mcp_status", "mcp_status_refresh"):
-                    post_status_rule = (
-                        "You just ran an MCP status query tool. The next assistant message must render the complete status report from the previous tool result's `status` fields "
-                        "using the fixed template, and then finish without further tool calls."
-                    )
-                elif last_tool_name == "mcp_server_info":
-                    post_status_rule = (
-                        "You just ran `mcp_server_info`. The next assistant message must render the server details report from the previous tool result's `info`/`status` fields "
-                        "using the fixed template. "
-                        "After the report is visible, decide from [Original user request]: "
-                        "if it only asks to query/show that MCP server, finish without further tool calls; "
-                        "if it contains other unfinished goals, continue with the relevant next tool call. "
-                        "Query/show requests should not create files or run shell by default; "
-                        "create files only when the user explicitly asks to export/save/write a file. "
-                        "Do not call unrelated tools such as mcp_status/mcp_status_refresh or shell just to pad steps."
-                    )
                 post_result_synthesis_rule = self._build_post_result_synthesis_rule(
                     tool_name=last_tool_name,
                     args=last_tool_args,
@@ -4613,7 +4583,6 @@ def run_agent_loop(agent: Any):
                     + "Continue with standard tools when more tool work is needed; you may call one or more tools at once. "
                     "When no further tool action is required, reply in natural language with no tool_calls and the host will return to the command prompt. "
                     "If the previous batch result already satisfies the original request, finish in the next assistant message with a natural-language reply only."
-                    + (f"\n{post_status_rule}" if post_status_rule else "")
                     + (f"\n{post_result_synthesis_rule}" if post_result_synthesis_rule else "")
                 )
             if max_tool_rounds is not None and tool_round >= max_tool_rounds:

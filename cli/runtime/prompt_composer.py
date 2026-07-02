@@ -9,7 +9,6 @@ from ..core.localization import DEFAULT_DISPLAY_LANGUAGE, get_display_language, 
 from ..core.config.skills_loader import _list_bundled_script_paths
 from ..tools.registry import (
     IMAGE_INPUT_TOOLS,
-    MCP_MANAGEMENT_GATED_TOOLS,
     MEMORY_TOOLS,
     PLAN_MODE_EXCLUDED_TOOLS,
     PLAN_MODE_ONLY_TOOLS,
@@ -101,7 +100,7 @@ def build_console_system_append(agent: Any) -> str:
 
 
 def build_mcp_system_append(agent: Any) -> str:
-    """Build MCP section appended to system prompt (with redacted env values)."""
+    """Build MCP section appended to system prompt (only connected servers, only enabled tools)."""
     servers = (agent.mcp_config or {}).get("mcpServers", {})
     if not isinstance(servers, dict) or not servers:
         return "\n\n## MCP Configuration\nNo usable MCP server was detected; `mcp.jsonc` is missing or empty under the config directory."
@@ -115,7 +114,6 @@ def build_mcp_system_append(agent: Any) -> str:
     except Exception:
         status_servers = {}
     loaded: List[str] = []
-    not_loaded: List[str] = []
     lines: List[str] = [
         "",
         "",
@@ -124,21 +122,18 @@ def build_mcp_system_append(agent: Any) -> str:
         "Only capabilities from loaded servers may be treated as available. Do not describe unloaded servers as available capabilities.",
         "Decision constraint: when loaded cached MCP tools can satisfy the user intent, prefer `mcp_call_tool` ",
         "instead of creating a temporary script or simulating the capability through shell, unless the MCP tool clearly failed and no equivalent MCP tool exists.",
-        "Available servers (sensitive env values are redacted; only key names are shown):",
+        "Available servers (only connected servers are shown):",
     ]
     for name, conf in servers.items():
         if not isinstance(conf, dict):
-            lines.append(f"- {name}: invalid configuration; expected an object")
             continue
         st = status_servers.get(name, {})
         state_raw = str(st.get("state", "pending") or "pending").lower()
-        state = "loaded" if state_raw == "success" else state_raw
-        if state == "loaded":
-            loaded.append(str(name))
-        else:
-            not_loaded.append(str(name))
+        if state_raw != "success":
+            continue
+        loaded.append(str(name))
         if "url" in conf:
-            lines.append(f"- {name}: state={state}, type=remote, url={conf.get('url')}")
+            lines.append(f"- {name}: type=remote, url={conf.get('url')}")
         else:
             cmd = str(conf.get("command", "")).strip() or "<missing>"
             args = conf.get("args", [])
@@ -148,14 +143,13 @@ def build_mcp_system_append(agent: Any) -> str:
             if len(arg_preview) > 120:
                 arg_preview = arg_preview[:117] + "..."
             lines.append(
-                f"- {name}: state={state}, type=stdio, command={cmd}, args={arg_preview}"
+                f"- {name}: type=stdio, command={cmd}, args={arg_preview}"
             )
         env = conf.get("env")
         if isinstance(env, dict) and env:
             env_keys = ", ".join(str(k) for k in sorted(env.keys()))
             lines.append(f"  env_keys: {env_keys}")
-    lines.append(f"Loaded servers: {', '.join(loaded) if loaded else 'none'}")
-    lines.append(f"Not loaded servers: {', '.join(not_loaded) if not_loaded else 'none'}")
+    lines.append(f"Connected servers: {', '.join(loaded) if loaded else 'none'}")
     lines.append(
         "MCP initialize instructions from connected servers (treat these as active guidance; "
         "when you use a server, follow its instructions while planning and executing the task):"
@@ -164,17 +158,20 @@ def build_mcp_system_append(agent: Any) -> str:
         lines.append(agent.mcp_manager.cached_initialize_instructions_for_prompt())
     except Exception:
         lines.append("No cached MCP initialize instructions yet.")
-    lines.append("Cached tools (updated after `mcp_list_tools`):")
+    lines.append(
+        "Enabled tools (name + description only; use `mcp_get_tool_schemas` to fetch the full "
+        "input schema for a specific tool when you need its parameter details):"
+    )
     try:
         lines.append(agent.mcp_manager.cached_tools_for_prompt())
     except Exception:
         lines.append("No cached MCP tools yet.")
-    lines.append("Cached resources (updated after `mcp_list_resources`):")
+    lines.append("Cached resources:")
     try:
         lines.append(agent.mcp_manager.cached_resources_for_prompt())
     except Exception:
         lines.append("No cached MCP resources yet.")
-    lines.append("Cached prompts (updated after `mcp_list_prompts`):")
+    lines.append("Cached prompts:")
     try:
         lines.append(agent.mcp_manager.cached_prompts_for_prompt())
     except Exception:
@@ -518,13 +515,6 @@ def build_tools_prompt_append(agent: Any) -> str:
         flags=re.IGNORECASE,
     ).strip()
 
-    mcp_tools_enabled = bool(getattr(agent, "mcp_tools_enabled", False))
-    if mcp_tools_enabled:
-        # Append the gated MCP-management section only when those tools are actually exposed.
-        side_template = str(getattr(agent, "tools_prompt_mcp_management_template", "") or "").strip()
-        if side_template:
-            template = (template + "\n\n" + side_template).strip()
-
     memory_enabled = bool(getattr(agent, "memory_enabled", True))
     if memory_enabled:
         # Append the gated experiential-memory section only when memory tools are actually exposed.
@@ -558,8 +548,6 @@ def build_tools_prompt_append(agent: Any) -> str:
         fn = (t or {}).get("function", {})
         name = str(fn.get("name") or "").strip()
         if not name:
-            continue
-        if name in MCP_MANAGEMENT_GATED_TOOLS and not mcp_tools_enabled:
             continue
         if name in MEMORY_TOOLS and not memory_enabled:
             continue
@@ -616,24 +604,6 @@ def load_tools_prompt_template(small_model: bool = False) -> str:
     except Exception as e:
         print(_t(DEFAULT_DISPLAY_LANGUAGE, "prompt_composer.tools_prompt_load_failed", error=e))
         return "## Tool Catalog (prompt-injected)"
-
-
-def load_tools_prompt_mcp_management_template() -> str:
-    """Load the optional MCP-management prompt section.
-
-    This block describes the `mcp_server_info` selection boundaries and
-    rendering template. It is appended to the tools prompt only when
-    `mcp_tools_enabled` is true; otherwise the gated tools are filtered
-    out of the catalog and this section must not be injected.
-    """
-    path = _src_root() / "prompts" / "tools_prompt_mcp_management.md"
-    try:
-        return path.read_text(encoding="utf-8")
-    except FileNotFoundError:
-        return ""
-    except Exception as e:
-        print(_t(DEFAULT_DISPLAY_LANGUAGE, "prompt_composer.tools_prompt_load_failed", error=e))
-        return ""
 
 
 def load_tools_prompt_memory_template(small_model: bool = False) -> str:

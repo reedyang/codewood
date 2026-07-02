@@ -53,18 +53,10 @@ class ToolToggleGuardsTests(unittest.TestCase):
     def setUp(self):
         self.agent = Agent.__new__(Agent)
         self.agent.skills = []
-        self.agent.mcp_tools_enabled = False
         self.agent.mcp_manager = _FakeMcpManager()
         self.agent.system_prompt = ""
         self.agent._compose_system_prompt_snapshot = lambda include_tools=False: ""
         self.agent._mcp_pending_user_input = {}
-
-    def test_mcp_management_tools_still_run_when_hidden_from_model(self):
-        result = self.agent.execute_tool_call("mcp_server_info", {"server": "playwright"})
-        self.assertTrue(result.get("success"))
-        self.assertEqual(result.get("server"), "playwright")
-        self.assertIn("info", result)
-        self.assertIn("status", result["info"])
 
 
 if __name__ == "__main__":

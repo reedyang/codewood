@@ -43,7 +43,6 @@ class McpListPromptsTool(BaseTool):
                 timeout_s=timeout_s,
                 use_cache=use_cache,
             )
-            agent.system_prompt = agent._compose_system_prompt_snapshot(include_tools=False)
             return {
                 "success": True,
                 "server": server,

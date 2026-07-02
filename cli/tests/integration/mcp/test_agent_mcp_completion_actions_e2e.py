@@ -97,7 +97,6 @@ class AgentMcpCompletionActionsE2ETests(unittest.TestCase):
             json.dumps(
                 {
                     "execution_policy": "confirmation",
-                    "mcp_tools_enabled": True,
                 },
                 ensure_ascii=False,
             )
@@ -117,51 +116,6 @@ class AgentMcpCompletionActionsE2ETests(unittest.TestCase):
                 work_directory=str(self.repo_root),
                 config_dir=str(self.config_dir),
             )
-
-    def _assert_completion_action(self, server_name: str):
-        sink = io.StringIO()
-        with contextlib.redirect_stdout(sink), contextlib.redirect_stderr(sink):
-            completion_result = self.agent.execute_tool_call(
-                "mcp_completion_complete",
-                {
-                    "server": server_name,
-                    "completion_params": {"ref": {"name": "summarize_text"}, "argument": {"name": "text", "value": "hel"}},
-                    "timeout_s": 8.0,
-                },
-            )
-        self.assertTrue(completion_result.get("success"), completion_result)
-        values = completion_result.get("result", {}).get("completion", {}).get("values", [])
-        self.assertTrue(isinstance(values, list) and len(values) > 0)
-        self.assertIn("hel-1", values)
-
-    def test_execute_command_mcp_completion_stdio(self):
-        self._write_config(
-            {
-                "mcpServers": {
-                    "fake_stdio": {
-                        "command": sys.executable,
-                        "args": [str(self.server_script), "--transport", "stdio"],
-                        "skip_preload": True,
-                    }
-                }
-            }
-        )
-        self.agent = self._build_agent()
-        self._assert_completion_action("fake_stdio")
-
-    def test_execute_command_mcp_completion_url(self):
-        port = _get_free_port()
-        proc = subprocess.Popen(
-            [sys.executable, str(self.server_script), "--transport", "url", "--host", "127.0.0.1", "--port", str(port)],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-        self.procs.append(proc)
-        url = f"http://127.0.0.1:{port}/mcp"
-        _wait_http_ready(url)
-        self._write_config({"mcpServers": {"fake_url": {"url": url, "headers": {}, "skip_preload": True}}})
-        self.agent = self._build_agent()
-        self._assert_completion_action("fake_url")
 
 
 if __name__ == "__main__":

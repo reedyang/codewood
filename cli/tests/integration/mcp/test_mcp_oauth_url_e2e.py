@@ -235,7 +235,7 @@ class McpOauthUrlE2ETests(unittest.TestCase):
                 manager.list_tools("oauth_url", use_cache=False, timeout_s=12.0)
             self.assertEqual(calls["n"], 1)
 
-            # Force a fresh client (simulates mcp_reconnect/new session).
+            # Force a fresh client (simulates new session).
             manager._clients.pop("oauth_url", None)
             with self.assertRaises(Exception):
                 manager.list_tools("oauth_url", use_cache=False, timeout_s=12.0)

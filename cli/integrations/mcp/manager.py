@@ -2889,7 +2889,8 @@ class McpManager:
         if "session not found" in e or "invalid session" in e or "unknown session" in e:
             return (
                 "connect_failed",
-                "URL MCP session expired: automatic reconnect has been recommended; retry the operation or run mcp_reconnect to refresh the session.",
+                "URL MCP session expired: automatic reconnect has been recommended; retry the operation or run /mcp reconnect to refresh the session.",
+
             )
         if "url" in conf or "url is not currently supported" in e:
             return (
@@ -2904,7 +2905,8 @@ class McpManager:
             )
         return (
             "connect_failed",
-            "Connection/handshake failed: increase timeout, run mcp_reconnect, or set skip_preload=true in mcp.jsonc to skip startup preload.",
+            "Connection/handshake failed: increase timeout, run /mcp reconnect, or set skip_preload=true in mcp.jsonc to skip startup preload.",
+
         )
 
     def _log(self, level: str, message: str) -> None:
@@ -3080,7 +3082,7 @@ class McpManager:
                 "loading",
                 last_error="cache_miss",
                 failure_type="connect_failed",
-                suggestion="Cache is not ready; check mcp_status first, or fetch actively with use_cache=false.",
+                suggestion="Cache is not ready; check /mcp status first, or fetch actively with use_cache=false.",
             )
             raise McpError("Cache miss (use_cache=true); skipped live connection")
         self._mark_op(server, +1)
@@ -3534,7 +3536,7 @@ class McpManager:
                         "failed",
                         last_error=f"loading_hard_timeout>{int(hard_loading_timeout_s)}s",
                         failure_type="connect_failed",
-                        suggestion="Loading took too long and state was auto-reclaimed; run mcp_reconnect or mcp_status_refresh(force=true) and retry.",
+                        suggestion="Loading took too long and state was auto-reclaimed; run /mcp reconnect or /mcp status-refresh and retry.",
                     )
                     self._force_reset_active_ops(name)
                 elif since > 0 and active_ops <= 0 and elapsed > no_active_threshold_s:
@@ -3543,7 +3545,7 @@ class McpManager:
                         "failed",
                         last_error="loading_state_stuck_without_active_op",
                         failure_type="connect_failed",
-                        suggestion="Detected no active loading tasks while state is still loading; run mcp_status_refresh(force=true) or mcp_reconnect.",
+                        suggestion="Detected no active loading tasks while state is still loading; run /mcp status-refresh or /mcp reconnect.",
                     )
                 elif since > 0 and elapsed > stale_threshold_s:
                     self._set_status(
@@ -3551,7 +3553,7 @@ class McpManager:
                         "failed",
                         last_error=f"loading_timeout>{int(stale_threshold_s)}s",
                         failure_type="connect_failed",
-                        suggestion="Loading timed out; run mcp_reconnect or mcp_status_refresh(force=true) and retry.",
+                        suggestion="Loading timed out; run /mcp reconnect or /mcp status-refresh and retry.",
                     )
         with self._status_lock:
             items = {k: dict(v) for k, v in self._status.items()}
@@ -3672,7 +3674,7 @@ class McpManager:
 
     def cached_tools_for_prompt(self) -> str:
         if not self._tools_cache:
-            return "No cached MCP tools yet (run mcp_list_tools first)."
+            return "No cached MCP tools yet."
         lines: List[str] = []
         for server, info in self._tools_cache.items():
             tools_raw = info.get("tools", [])
@@ -3688,40 +3690,18 @@ class McpManager:
                     desc = str(t.get("description", "")).strip()
                     if len(desc) > 80:
                         desc = desc[:77] + "..."
-
-                    # Try to summarize parameter keys from common MCP schema shapes.
-                    param_keys: List[str] = []
-                    schema = t.get("inputSchema")
-                    if isinstance(schema, dict):
-                        props = schema.get("properties")
-                        if isinstance(props, dict):
-                            param_keys = [str(k) for k in props.keys()][:6]
-                        elif isinstance(schema.get("required"), list):
-                            param_keys = [str(k) for k in schema.get("required", [])][:6]
-                    elif isinstance(t.get("parameters"), dict):
-                        p = t.get("parameters", {})
-                        props = p.get("properties")
-                        if isinstance(props, dict):
-                            param_keys = [str(k) for k in props.keys()][:6]
-
-                    param_part = f" params=[{', '.join(param_keys)}]" if param_keys else ""
                     desc_part = f" - {desc}" if desc else ""
-                    entries.append(f"{name}{desc_part}{param_part}")
+                    entries.append(f"{name}{desc_part}")
 
             show = " | ".join(entries) if entries else "(none)"
             if isinstance(tools, list) and len(tools) > 20:
                 show += f" | ... total={len(tools)}"
-            disabled_count = 0
-            with self._policy_lock:
-                disabled_count = len(self._disabled_tools_by_server.get(str(server), set()))
-            if disabled_count > 0:
-                show += f" | disabled={disabled_count}"
             lines.append(f"- {server}: {show}")
         return "\n".join(lines)
 
     def cached_resources_for_prompt(self) -> str:
         if not self._resources_cache:
-            return "No cached MCP resources yet (run mcp_list_resources first)."
+            return "No cached MCP resources yet."
         lines: List[str] = []
         for server, info in self._resources_cache.items():
             resources = info.get("resources", [])

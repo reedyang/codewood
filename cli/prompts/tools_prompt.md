@@ -50,31 +50,6 @@ Two hard rules for `options`:
 1. Each option MUST carry the full human-readable label the user needs to make the decision — not just a numeric index, code, or placeholder. Bad: `options: ["1", "2", "3"]`. Good: `options: ["openclaw/gmail v1.0.6", "openclaw/gmail (latest)", "sanjay3290/gmail"]`. If the candidates already have meaningful names/URLs/IDs, put those strings directly into `options`.
 2. Do NOT also emit the same list in your natural-language message (no "Please reply with 1-N" bullet list, no Markdown enumeration of the same items). The host renders the option buttons from `options`; printing the list twice clutters the chat and is redundant. Your message should describe the question/context only, then call `request_user_input`.
 
-## MCP Status Output
-
-When the user asks for MCP status (`mcp_status` / `mcp_status_refresh`), after the tool result, visible content must use this Markdown template:
-
-**MCP Service Load Status (current working directory: `<cwd>`)**
-
-| Service | State | Tool Count | Details / Suggestion |
-| --- | --- | --- | --- |
-| | | | |
-
-**Summary**
-
-- **Total services:**
-- **Total tools:**
-- **Loading:**
-- **Failed:**
-- **Skipped:**
-- **All loaded:**
-
-**Repair Suggestions (from cache)**
-
--
-
-After `mcp_status` or `mcp_status_refresh`, render the report from returned JSON fields and then finish with a natural-language reply (no further tool_calls) unless the user has additional unfinished goals.
-
 ## `shell` And Skill `SKILL.md` Frontmatter
 
 A skill may optionally declare a frontmatter field named `model_context_file_env` or `modelContextFileEnv`. The value is a valid environment variable name chosen by the skill, such as `MY_SKILL_EXTENDED_CONTEXT`. The declaration lives in the same `SKILL.md`; no extra JSON sidecar is required.

@@ -97,7 +97,6 @@ class AgentMcpActionsE2ETests(unittest.TestCase):
             json.dumps(
                 {
                     "execution_policy": "confirmation",
-                    "mcp_tools_enabled": True,
                 },
                 ensure_ascii=False,
             )
@@ -120,13 +119,7 @@ class AgentMcpActionsE2ETests(unittest.TestCase):
 
     def _assert_actions(self, server_name: str):
         sink = io.StringIO()
-        with contextlib.redirect_stdout(sink), contextlib.redirect_stderr(sink):
-            tools_result = self.agent.execute_tool_call(
-                "mcp_list_tools",
-                {"server": server_name, "use_cache": False, "timeout_s": 8.0},
-            )
-        self.assertTrue(tools_result.get("success"), tools_result)
-
+        self.agent.mcp_manager.list_tools(server_name, use_cache=False)
         if server_name == "fake_stdio":
             with contextlib.redirect_stdout(sink), contextlib.redirect_stderr(sink):
                 stream_result = self.agent.execute_tool_call(
@@ -276,21 +269,6 @@ class AgentMcpActionsE2ETests(unittest.TestCase):
                 },
             )
         self.assertTrue(get_prompt_result.get("success"), get_prompt_result)
-
-        with contextlib.redirect_stdout(sink), contextlib.redirect_stderr(sink):
-            sampling_result = self.agent.execute_tool_call(
-                "mcp_sampling_create_message",
-                {
-                    "server": server_name,
-                    "sampling_params": {
-                        "messages": [{"role": "user", "content": {"type": "text", "text": "hi sampling"}}],
-                        "maxTokens": 32,
-                    },
-                    "timeout_s": 8.0,
-                },
-            )
-        self.assertTrue(sampling_result.get("success"), sampling_result)
-        self.assertIn("hi sampling", str(sampling_result.get("result", {}).get("content", {}).get("text", "")))
 
     def test_execute_command_mcp_resources_stdio(self):
         self._write_config(
