@@ -835,8 +835,8 @@ export function ChatView() {
   const currentPolicy = state?.executionPolicy || "moderate";
   const currentModel = state?.model.current || "";
   const models = state?.model.available ?? [];
-  const reasoningLevels = state?.model.reasoningLevels ?? [];
-  const reasoningLevel = state?.model.reasoningLevel || "";
+  const reasoningEfforts = state?.model.reasoningEfforts ?? [];
+  const reasoningEffort = state?.model.reasoningEffort || "";
 
   // From-end genuine-user indices (e.g. -1 = last user turn) so Fork/Edit can
   // address a turn the same way the TUI `/chat fork|edit <index>` commands do.
@@ -939,8 +939,8 @@ export function ChatView() {
             <ModelMenu
               models={models}
               currentModel={currentModel}
-              reasoningLevels={reasoningLevels}
-              reasoningLevel={reasoningLevel}
+              reasoningEfforts={reasoningEfforts}
+              reasoningEffort={reasoningEffort}
               onSelectModel={(selector) => void setModel(selector)}
               onSelectReasoning={(level) => void setReasoning(level)}
             />
@@ -1461,15 +1461,15 @@ function ContextUsageRing({
 function ModelMenu({
   models,
   currentModel,
-  reasoningLevels,
-  reasoningLevel,
+  reasoningEfforts,
+  reasoningEffort,
   onSelectModel,
   onSelectReasoning,
 }: {
   models: string[];
   currentModel: string;
-  reasoningLevels: string[];
-  reasoningLevel: string;
+  reasoningEfforts: string[];
+  reasoningEffort: string;
   onSelectModel: (selector: string) => void;
   onSelectReasoning: (level: string) => void;
 }) {
@@ -1522,8 +1522,8 @@ function ModelMenu({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [flyoutOpen, flyoutPos?.top, flyoutPos?.left]);
 
-  const supported = new Set(reasoningLevels.map((l) => l.toLowerCase()));
-  const selectedLower = reasoningLevel.toLowerCase();
+  const supported = new Set(reasoningEfforts.map((l) => l.toLowerCase()));
+  const selectedLower = reasoningEffort.toLowerCase();
   const currentName = currentModel.includes(":")
     ? currentModel.slice(currentModel.indexOf(":") + 1)
     : currentModel;
@@ -1554,8 +1554,8 @@ function ModelMenu({
     <div className="dropdown model-dropdown" ref={ref}>
       <button className="dropdown-trigger" onClick={() => setOpen((v) => !v)}>
         <span>{currentName || t("model.label")}</span>
-        {reasoningLevel && (
-          <span className="model-reasoning-level">{reasoningLevel}</span>
+        {reasoningEffort && (
+          <span className="model-reasoning-level">{reasoningEffort}</span>
         )}
         <Icon name="chevron" size={13} className="chevron down" />
       </button>
@@ -1563,6 +1563,20 @@ function ModelMenu({
         <div className="dropdown-menu align-right">
           <div className="model-group">
             <div className="model-group-header">{t("reasoning.label")}</div>
+            {supported.size > 0 && (
+              <button
+                className={`dropdown-item ${!reasoningEffort ? "active" : ""}`}
+                onClick={() => {
+                  close();
+                  onSelectReasoning("");
+                }}
+              >
+                <span className="dropdown-check">
+                  {!reasoningEffort && <Icon name="check" size={13} />}
+                </span>
+                <span>{t("reasoning.effort.default")}</span>
+              </button>
+            )}
             {FIXED_REASONING_EFFORTS.filter((level) => supported.has(level)).map((level) => {
               const active = level === selectedLower;
               return (

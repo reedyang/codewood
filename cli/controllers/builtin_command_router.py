@@ -108,6 +108,13 @@ def dispatch_builtin_command(
     if handle_language_builtin_command(agent, builtin_line):
         return True, False
 
+    if bl.startswith("reasoning "):
+        level = builtin_line.strip()[len("reasoning "):].strip()
+        if level.lower() == "default":
+            level = ""
+        print(agent._set_reasoning_effort(level))
+        return True, False
+
     if agent._handle_model_builtin_command(builtin_line):
         return True, False
 

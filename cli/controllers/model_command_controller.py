@@ -15,8 +15,8 @@ def model_usage(agent: Any) -> str:
         f"{_t(agent, 'common.usage')}\n"
         f"  /model\n"
         f"  /model <model_provider>:<name>\n"
-        f"  /model <model_provider>:<name> <reasoning_level>\n"
-        f"  /model reasoning <reasoning_level>\n"
+        f"  /model <model_provider>:<name> <reasoning_effort>\n"
+        f"  /reasoning <reasoning_effort>\n"
     )
 
 
@@ -31,9 +31,9 @@ def handle_model_builtin_command(agent: Any, builtin_line: str) -> bool:
         current = str(agent._current_model_selector() or "")
         if current:
             print(_t(agent, "model.current", current=current))
-        levels = list(agent._current_model_reasoning_levels() or [])
+        levels = list(agent._current_model_reasoning_efforts() or [])
         if levels:
-            active_level = str(agent._current_reasoning_level() or "")
+            active_level = str(agent._current_reasoning_effort() or "")
             if active_level:
                 print(_t(agent, "reasoning.current", level=active_level))
             print(_t(agent, "reasoning.available", levels=", ".join(levels)))
@@ -47,10 +47,12 @@ def handle_model_builtin_command(agent: Any, builtin_line: str) -> bool:
         print(model_usage(agent))
         return True
 
-    # ``/model reasoning <level>`` adjusts only the reasoning level.
+    # ``/reasoning <level>`` adjusts only the reasoning level.
     if parts[1].lower() == "reasoning":
         level = " ".join(parts[2:]).strip()
-        print(agent._set_reasoning_level(level))
+        if level.lower() == "default":
+            level = ""
+        print(agent._set_reasoning_effort(level))
         return True
 
     # ``/model <provider>:<name> [reasoning_level]``
@@ -71,5 +73,5 @@ def handle_model_builtin_command(agent: Any, builtin_line: str) -> bool:
     level = " ".join(parts[2:]).strip()
     print(agent._switch_model_by_selector(selector))
     if level:
-        print(agent._set_reasoning_level(level))
+        print(agent._set_reasoning_effort(level))
     return True

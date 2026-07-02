@@ -54,6 +54,7 @@ SLASH_BUILTIN_COMMANDS: List[str] = [
     "/memory stats",
     "/memory status",
     "/model",
+    "/reasoning ",
     "/plan",
     "/plan off",
     "/plan status",

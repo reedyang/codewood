@@ -2060,7 +2060,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const setReasoning = useCallback(
     async (level: string) => {
       await client.sendInput(
-        `/model reasoning ${level.trim()}`,
+        `/reasoning ${level.trim()}`,
         false,
         activeChatIdRef.current,
       );
