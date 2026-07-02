@@ -154,6 +154,7 @@
   "status.you_ran": "你执行了",
   "status.working": "工作中...",
   "status.esc_to_interrupt": "按 Esc 中断",
+  "runtime.thinking": "思考中...",
   "output.omitted_lines": "... 已省略 {count} 行 ...",
   "chat.none_in_workspace": "当前工作区中没有聊天记录",
   "chat.list_header": "聊天记录（工作区={workspace_name}）：",

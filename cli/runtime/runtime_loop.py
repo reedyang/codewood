@@ -60,6 +60,8 @@ _WORKING_STATUS_MARQUEE_FPS = 10.0
 _STREAM_ATTR_TERMINAL_COLUMNS = get_app_runtime_attr_name("terminal_columns")
 _STREAM_ATTR_OUTPUT_INDENT_WIDTH = get_app_runtime_attr_name("output_indent_width")
 _MODEL_TOOL_RESULT_HISTORY_PREFIX = "[MODEL_TOOL_RESULT]"
+_THINKING_TUI_MAX_VISIBLE_LINES = 5
+_THINKING_TUI_INDENT = "  "
 
 
 class _TeeTextStream:
@@ -115,6 +117,73 @@ def _estimate_visible_lines(agent: Any, text: str) -> int:
     if parts and parts[-1] == "":
         parts = parts[:-1]
     return max(0, len(parts))
+
+
+def _thinking_tui_char_display_width(ch: str) -> int:
+    if not ch or unicodedata.combining(ch):
+        return 0
+    return 2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1
+
+
+def _thinking_tui_text_display_width(text: str) -> int:
+    total = 0
+    for ch in str(text or ""):
+        total += _thinking_tui_char_display_width(ch)
+    return total
+
+
+def _wrap_thinking_tui_line(agent: Any, text: str, width: int) -> List[str]:
+    raw = str(text or "")
+    if raw == "":
+        return [""]
+    limit = max(1, int(width or 1))
+    wrap_fn = getattr(agent, "_wrap_feedback_text_by_display_width", None)
+    if callable(wrap_fn):
+        try:
+            wrapped = wrap_fn(raw, limit)
+            if isinstance(wrapped, list) and wrapped:
+                return [str(part) for part in wrapped]
+        except Exception:
+            pass
+    rows: List[str] = []
+    current: List[str] = []
+    current_w = 0
+    for ch in raw:
+        ch_w = _thinking_tui_char_display_width(ch)
+        if current and current_w + ch_w > limit:
+            rows.append("".join(current))
+            current = [ch]
+            current_w = ch_w
+            continue
+        current.append(ch)
+        current_w += ch_w
+    if current or not rows:
+        rows.append("".join(current))
+    return rows or [""]
+
+
+def _build_thinking_tui_visible_rows(
+    agent: Any,
+    thinking_text: str,
+    *,
+    max_visible_lines: int = _THINKING_TUI_MAX_VISIBLE_LINES,
+) -> List[str]:
+    normalized = str(thinking_text or "").replace("\r\n", "\n").replace("\r", "\n")
+    width = 80
+    width_fn = getattr(agent, "_terminal_columns_for_line_estimate", None)
+    if callable(width_fn):
+        try:
+            width = max(1, int(width_fn() or 0))
+        except Exception:
+            width = 80
+    rows: List[str] = []
+    wrap_width = max(1, width - len(_THINKING_TUI_INDENT))
+    for logical_line in normalized.split("\n"):
+        rows.extend(_wrap_thinking_tui_line(agent, logical_line, wrap_width))
+    if not rows:
+        rows = [""]
+    limit = max(1, int(max_visible_lines or 1))
+    return rows[-limit:]
 
 
 class _NullStatusTicker:
@@ -1304,6 +1373,8 @@ def _consume_streaming_ai_response(
     ai_result: Any,
     before_first_visible_output: Optional[Callable[[], None]] = None,
 ) -> Tuple[Optional[str], bool]:
+    from ..core.localization import translate as _translate
+
     if isinstance(ai_result, str):
         return ai_result, False
     if ai_result is None:
@@ -1350,17 +1421,158 @@ def _consume_streaming_ai_response(
     append_sink = (
         _TeeTextStream(sys.stdout, append_mirror) if append_mirror is not None else None
     )
+    thinking_header = _translate(
+        "runtime.thinking",
+        getattr(agent, "display_language", None) or "en",
+        fallback="Thinking",
+    )
 
     # Thinking display state (TUI only — GUI uses a dedicated SSE hook).
     _thinking_prev = ""
     _thinking_lines_rendered = 0
     _thinking_ticker_stopped = False
+    _thinking_visible_rows: List[str] = []
+    _thinking_last_width = 0
+
+    def _count_thinking_screen_lines(rows: List[str], term_width: int) -> int:
+        content_width = max(1, term_width - len(_THINKING_TUI_INDENT))
+        lines = 1
+        for row in rows:
+            w = _thinking_tui_text_display_width(row)
+            if w <= 0:
+                lines += 1
+            else:
+                lines += (w + content_width - 1) // content_width
+        return lines
+
+    def _clear_rendered_thinking_tui_block() -> None:
+        nonlocal _thinking_lines_rendered
+        if _thinking_lines_rendered <= 0:
+            _thinking_lines_rendered = 0
+            return
+        try:
+            sys.stdout.write("\r\x1b[2K")
+            for _ in range(max(0, _thinking_lines_rendered - 1)):
+                sys.stdout.write("\x1b[1A\r\x1b[2K")
+            sys.stdout.flush()
+        except Exception:
+            pass
+        _thinking_lines_rendered = 0
+
+    def _redraw_thinking_tui_rows(rows: List[str]) -> None:
+        nonlocal _thinking_lines_rendered, _thinking_visible_rows
+        _thinking_visible_rows = list(rows or [""])
+        _clear_rendered_thinking_tui_block()
+        try:
+            sys.stdout.write("\r\x1b[2K")
+            sys.stdout.write(f"{_THINKING_TUI_INDENT}{thinking_header}")
+            for row in _thinking_visible_rows:
+                sys.stdout.write("\n")
+                if row:
+                    sys.stdout.write("\x1b[2m")
+                    sys.stdout.write(f"{_THINKING_TUI_INDENT}{row}")
+                    sys.stdout.write("\x1b[0m")
+                else:
+                    sys.stdout.write(_THINKING_TUI_INDENT)
+            sys.stdout.flush()
+            _thinking_lines_rendered = 1 + len(_thinking_visible_rows)
+        except Exception:
+            _thinking_lines_rendered = 0
+
+    def _ensure_thinking_tui_started() -> None:
+        nonlocal _thinking_ticker_stopped, _thinking_lines_rendered, _thinking_visible_rows
+        if _thinking_ticker_stopped:
+            return
+        stopper = getattr(agent, "_active_status_ticker_stopper", None)
+        if callable(stopper):
+            try:
+                stopper()
+            except Exception:
+                pass
+        try:
+            agent._active_status_ticker_stopper = None
+        except Exception:
+            pass
+        _thinking_ticker_stopped = True
+        _thinking_visible_rows = [""]
+        try:
+            sys.stdout.write("\r\x1b[2K")
+            sys.stdout.write(f"{_THINKING_TUI_INDENT}{thinking_header}\n{_THINKING_TUI_INDENT}")
+            sys.stdout.flush()
+            _thinking_lines_rendered = 2
+        except Exception:
+            _thinking_lines_rendered = 0
+
+    def _append_thinking_tui_char(ch: str) -> None:
+        nonlocal _thinking_lines_rendered, _thinking_visible_rows, _thinking_prev, _thinking_last_width
+        if not _thinking_visible_rows:
+            _thinking_visible_rows = [""]
+        width = 80
+        width_fn = getattr(agent, "_terminal_columns_for_line_estimate", None)
+        if callable(width_fn):
+            try:
+                width = max(1, int(width_fn() or 0))
+            except Exception:
+                width = 80
+        width = max(1, width - len(_THINKING_TUI_INDENT))
+        if _thinking_last_width and width != _thinking_last_width:
+            _thinking_lines_rendered = _count_thinking_screen_lines(
+                _thinking_visible_rows,
+                width + len(_THINKING_TUI_INDENT),
+            )
+            visible_rows = _build_thinking_tui_visible_rows(
+                agent,
+                _thinking_prev,
+                max_visible_lines=_THINKING_TUI_MAX_VISIBLE_LINES,
+            )
+            _redraw_thinking_tui_rows(visible_rows)
+            _thinking_last_width = width
+            return
+        _thinking_last_width = width
+        current = _thinking_visible_rows[-1]
+        if ch == "\n":
+            _thinking_visible_rows.append("")
+            if len(_thinking_visible_rows) > _THINKING_TUI_MAX_VISIBLE_LINES:
+                _thinking_visible_rows = _thinking_visible_rows[-_THINKING_TUI_MAX_VISIBLE_LINES :]
+                _redraw_thinking_tui_rows(_thinking_visible_rows)
+                return
+            try:
+                sys.stdout.write(f"\n{_THINKING_TUI_INDENT}")
+                _thinking_lines_rendered = 1 + len(_thinking_visible_rows)
+            except Exception:
+                pass
+            return
+        ch_w = _thinking_tui_char_display_width(ch)
+        current_w = _thinking_tui_text_display_width(current)
+        if current and current_w + ch_w > width:
+            _thinking_visible_rows.append(ch)
+            if len(_thinking_visible_rows) > _THINKING_TUI_MAX_VISIBLE_LINES:
+                _thinking_visible_rows = _thinking_visible_rows[-_THINKING_TUI_MAX_VISIBLE_LINES :]
+                _redraw_thinking_tui_rows(_thinking_visible_rows)
+                return
+            try:
+                sys.stdout.write(f"\n{_THINKING_TUI_INDENT}")
+                sys.stdout.write("\x1b[2m")
+                sys.stdout.write(ch)
+                sys.stdout.write("\x1b[0m")
+                _thinking_lines_rendered = 1 + len(_thinking_visible_rows)
+            except Exception:
+                pass
+            return
+        _thinking_visible_rows[-1] = current + ch
+        try:
+            sys.stdout.write("\x1b[2m")
+            sys.stdout.write(ch)
+            sys.stdout.write("\x1b[0m")
+        except Exception:
+            pass
 
     def _render_thinking_tui(new_thinking: str) -> None:
         nonlocal _thinking_prev, _thinking_lines_rendered, _thinking_ticker_stopped
 
         # Compute delta from last rendered state
-        delta = new_thinking[len(_thinking_prev) :] if new_thinking.startswith(_thinking_prev) else new_thinking
+        had_prefix = new_thinking.startswith(_thinking_prev)
+        delta = new_thinking[len(_thinking_prev) :] if had_prefix else new_thinking
         if not delta:
             return
         _thinking_prev = new_thinking
@@ -1376,54 +1588,24 @@ def _consume_streaming_ai_response(
         if gui_plain or not is_tty:
             return
 
-        # First thinking chunk: stop the status ticker, clear its "Working…"
-        # line, write the "Thinking" header on a fresh line, and begin the
-        # dimmed section.
-        if not _thinking_ticker_stopped:
-            stopper = getattr(agent, "_active_status_ticker_stopper", None)
-            if callable(stopper):
-                try:
-                    stopper()
-                except Exception:
-                    pass
-            try:
-                agent._active_status_ticker_stopper = None
-            except Exception:
-                pass
-            _thinking_ticker_stopped = True
-            # The stopper already cleared the ticker line via
-            # _clear_last_thinking_line.  Move to the next line so
-            # "Thinking" never overlaps the spinner glyph.
-            sys.stdout.write("\r\x1b[2K\n")
-            sys.stdout.write("\x1b[2mThinking\x1b[0m\n")
-            _thinking_lines_rendered = 2  # cleared ticker line + header
-
-        # Write delta incrementally in dimmed colour.  Each newline starts a
-        # fresh dimmed line so the content stays readable without re-flowing
-        # the entire block on every tiny streaming delta.
-        for ch in delta:
-            if ch == "\n":
-                _thinking_lines_rendered += 1
-                sys.stdout.write("\n\x1b[2m")
-            else:
-                sys.stdout.write(ch)
-        # Reset attributes at the end of the line so normal output after
-        # the thinking block is not accidentally dimmed.
-        sys.stdout.write("\x1b[0m")
-        sys.stdout.flush()
-
-    def _clear_thinking_tui() -> None:
-        nonlocal _thinking_lines_rendered
-        if _thinking_lines_rendered <= 0:
-            _thinking_lines_rendered = 0
+        _ensure_thinking_tui_started()
+        if not had_prefix:
+            visible_rows = _build_thinking_tui_visible_rows(
+                agent,
+                new_thinking,
+                max_visible_lines=_THINKING_TUI_MAX_VISIBLE_LINES,
+            )
+            _redraw_thinking_tui_rows(visible_rows)
             return
         try:
-            for _ in range(min(_thinking_lines_rendered, 200)):
-                sys.stdout.write("\x1b[1A\r\x1b[2K")
+            for ch in delta:
+                _append_thinking_tui_char(ch)
             sys.stdout.flush()
         except Exception:
             pass
-        _thinking_lines_rendered = 0
+
+    def _clear_thinking_tui() -> None:
+        _clear_rendered_thinking_tui_block()
 
     def _append_term_out() -> Any:
         return append_sink if append_sink is not None else sys.stdout
@@ -3832,42 +4014,44 @@ def run_agent_loop(agent: Any):
                     _stop_status_ticker_before_first_output()
                     self._active_status_ticker_stopper = None
                     raise
-                self._active_status_ticker_stopper = None
-                if self._consume_task_interrupt_requested():
-                    raise KeyboardInterrupt
-                message_tool_plans: List[Tuple[str, Dict[str, Any]]] = []
-                if isinstance(ai_result, dict):
-                    if not status_ticker_stopped:
-                        _stop_status_ticker_before_first_output()
-                    msg_content = ai_result.get("content", "")
-                    ai_response = msg_content if isinstance(msg_content, str) else str(msg_content or "")
-                    streamed_assistant_output = False
-                    message_tool_plans = (
-                        _parse_tool_plans_from_model_message(ai_result)
-                        if task_uses_standard_openai_tools
-                        else []
-                    )
-                else:
-                    ai_response, streamed_assistant_output = _consume_streaming_ai_response(
-                        self,
-                        ai_result,
-                        before_first_visible_output=_stop_status_ticker_before_first_output,
-                    )
-                    stream_final_message = getattr(ai_result, "final_message", None)
-                    if isinstance(stream_final_message, dict):
-                        if not ai_response:
-                            msg_content = stream_final_message.get("content", "")
-                            ai_response = msg_content if isinstance(msg_content, str) else str(msg_content or "")
+                try:
+                    if self._consume_task_interrupt_requested():
+                        raise KeyboardInterrupt
+                    message_tool_plans: List[Tuple[str, Dict[str, Any]]] = []
+                    if isinstance(ai_result, dict):
+                        if not status_ticker_stopped:
+                            _stop_status_ticker_before_first_output()
+                        msg_content = ai_result.get("content", "")
+                        ai_response = msg_content if isinstance(msg_content, str) else str(msg_content or "")
+                        streamed_assistant_output = False
                         message_tool_plans = (
-                            _parse_tool_plans_from_model_message(stream_final_message)
+                            _parse_tool_plans_from_model_message(ai_result)
                             if task_uses_standard_openai_tools
                             else []
                         )
-                    # Ensure thinking content from the stream result is stored in
-                    # the latest assistant message in conversation history.
-                    _thinking = getattr(ai_result, "thinking_text", "") or ""
-                    if _thinking:
-                        _ensure_thinking_in_latest_assistant_message(self, _thinking)
+                    else:
+                        ai_response, streamed_assistant_output = _consume_streaming_ai_response(
+                            self,
+                            ai_result,
+                            before_first_visible_output=_stop_status_ticker_before_first_output,
+                        )
+                        stream_final_message = getattr(ai_result, "final_message", None)
+                        if isinstance(stream_final_message, dict):
+                            if not ai_response:
+                                msg_content = stream_final_message.get("content", "")
+                                ai_response = msg_content if isinstance(msg_content, str) else str(msg_content or "")
+                            message_tool_plans = (
+                                _parse_tool_plans_from_model_message(stream_final_message)
+                                if task_uses_standard_openai_tools
+                                else []
+                            )
+                        # Ensure thinking content from the stream result is stored in
+                        # the latest assistant message in conversation history.
+                        _thinking = getattr(ai_result, "thinking_text", "") or ""
+                        if _thinking:
+                            _ensure_thinking_in_latest_assistant_message(self, _thinking)
+                finally:
+                    self._active_status_ticker_stopper = None
                 # The model has fully responded for this round; freeze its wait
                 # timer before any tool output for the round streams out.
                 _gui_round_mark(self, False)

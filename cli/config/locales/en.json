@@ -154,6 +154,7 @@
   "status.you_ran": "You ran",
   "status.working": "Working...",
   "status.esc_to_interrupt": "esc to interrupt",
+  "runtime.thinking": "Thinking...",
   "output.omitted_lines": "... omitted {count} lines ...",
   "chat.none_in_workspace": "No chats found in the current workspace",
   "chat.list_header": "Chats (workspace={workspace_name}):",

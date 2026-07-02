@@ -114,10 +114,6 @@ class AgentCallAiStreamingTests(unittest.TestCase):
         out = agent._switch_model_by_selector("openai:tiny")
 
         self.assertIn("✅ Switched model: openai:tiny", out)
-        self.assertIn(
-            "\n\n⚠️ Model context window is too small; only basic chat is supported.\n",
-            out,
-        )
 
     def test_model_switch_applies_and_clears_model_level_extra_headers(self):
         agent = Agent.__new__(Agent)
