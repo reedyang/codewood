@@ -1867,6 +1867,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
       setHistoryTurns([]);
       setHistoryStart(0);
       setHistoryTotal(0);
+      setState((prev) => {
+        if (!prev) return prev;
+        return { ...prev, contextUsage: undefined };
+      });
     },
     [state?.workspace.id],
   );
