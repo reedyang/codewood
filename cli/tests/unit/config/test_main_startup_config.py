@@ -44,7 +44,6 @@ class MainStartupConfigTests(unittest.TestCase):
             "project_context_first_round_evidence": True,
             "max_tool_rounds": None,
             "memory_enabled": False,
-            "mcp_tools_enabled": False,
         }
 
     @classmethod

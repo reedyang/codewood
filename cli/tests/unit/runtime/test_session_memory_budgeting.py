@@ -1045,7 +1045,6 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
         agent._base_system_prompt = "BASE"
         agent._load_tools_spec_from_jsonc = lambda: []
         agent._load_tools_prompt_template = lambda small_model=False: f"TOOLS:{small_model}"
-        agent._load_tools_prompt_mcp_management_template = lambda: "MCP"
         agent._load_tools_prompt_memory_template = lambda small_model=False: f"MEM:{small_model}"
         compose_calls = []
 

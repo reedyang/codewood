@@ -29,9 +29,6 @@ class BaseTool:
     #: JSON schema for the tool's arguments (the ``function.parameters`` block).
     parameters: Dict[str, Any] = {}
 
-    #: Only expose this tool when MCP management tools are enabled.
-    requires_mcp: bool = False
-
     #: Only expose this tool when the model supports multimodal/image input.
     requires_multimodal: bool = False
 
@@ -64,15 +61,12 @@ class BaseTool:
     def is_available(
         cls,
         *,
-        mcp_enabled: bool,
         multimodal_enabled: bool,
         has_subagents: bool,
         plan_mode: bool = False,
         gui_enabled: bool = False,
     ) -> bool:
         """Whether this tool should appear in the model-visible spec."""
-        if cls.requires_mcp and not mcp_enabled:
-            return False
         if cls.requires_multimodal and not multimodal_enabled:
             return False
         if cls.requires_subagents and not has_subagents:

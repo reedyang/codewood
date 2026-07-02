@@ -54,7 +54,7 @@ class McpCallToolTool(BaseTool):
                     "success": False,
                     "error": (
                         f"server={server} is not ready (state={state_raw}); "
-                        "run mcp_list_tools(use_cache=false) first"
+                        "run mcp_call_tool with fresh timeout"
                     ),
                 }
         except Exception:

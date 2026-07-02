@@ -7,5 +7,5 @@
 - Optional `memory_search`: in other cases, call it only when the injected memory block is insufficient and additional hits are truly needed. If the injected memory is sufficient and no planned multi-step work is unfinished, answer in natural language and let the loop end.
 - `memory_add` stores only short factual information, such as a convention, preference conclusion, or correction. Do not use it as a substitute for `user_preferences_patch` for permanent identity/default preferences. Do not write secrets. If the user's statement appears wrong, you may include your judgment in `system_note`.
 - When the user corrects names or display names without asking to delete old memory, prefer adding a new entry that states the current name and prior names, preserving history.
-- When the user asks to forget/delete/retract information, `memory_add` alone is not enough. Use `memory_search` or `memory_list` to find matching entries, then call `memory_delete` for the relevant `memory_id`s. Optionally add a corrected memory afterward.
-- `memory_list`, `memory_stats`, and `memory_delete` list, summarize, and delete memory entries. Deletion requires valid `memory_id`s from list/search results.
+- When the user asks to forget/delete/retract information, `memory_add` alone is not enough. Use `memory_search` to find matching entries, then call `memory_delete` for the relevant `memory_id`s. Optionally add a corrected memory afterward.
+- `memory_delete` deletes memory entries. Deletion requires valid `memory_id`s from search results.

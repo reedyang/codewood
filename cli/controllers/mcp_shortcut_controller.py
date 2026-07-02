@@ -63,17 +63,13 @@ def parse_mcp_shortcut_command(
     if cmd == "server-info":
         return None, {}, _err("mcp.shortcut.usage.server_info")
     if cmd == "list-tools" and len(parts) == 3:
-        return "mcp_list_tools", {"server": parts[2]}, None
+        return "mcp_list_tools", {"server": parts[2], "use_cache": False}, None
     if cmd == "list-tools":
         return None, {}, _err("mcp.shortcut.usage.list_tools")
     if cmd == "list-resources" and len(parts) == 3:
-        return "mcp_list_resources", {"server": parts[2]}, None
+        return "mcp_list_resources", {"server": parts[2], "use_cache": False}, None
     if cmd == "list-resources":
         return None, {}, _err("mcp.shortcut.usage.list_resources")
-    if cmd == "list-resource-templates" and len(parts) == 3:
-        return "mcp_list_resource_templates", {"server": parts[2]}, None
-    if cmd == "list-resource-templates":
-        return None, {}, _err("mcp.shortcut.usage.list_resource_templates")
     if cmd == "list-prompts" and len(parts) == 3:
         return "mcp_list_prompts", {"server": parts[2]}, None
     if cmd == "list-prompts":
@@ -220,23 +216,40 @@ def print_mcp_shortcut_result(
                 )
         else:
             print(_t(agent, "mcp.shortcut.disabled_tools_none"))
-    elif tool_name in (
-        "mcp_list_tools",
-        "mcp_list_resources",
-        "mcp_list_resource_templates",
-        "mcp_list_prompts",
-    ):
+    elif tool_name == "mcp_list_tools":
+        server = result.get("server", args.get("server", ""))
+        count = result.get("count", 0)
+        enabled_count = result.get("enabled_count", 0)
+        disabled_count = result.get("disabled_count", 0)
+        print(_t(agent, "mcp.shortcut.server", value=server))
+        print(_t(agent, "mcp.shortcut.count", value=count))
+        enabled_items = result.get("enabled_tools", []) if isinstance(result.get("enabled_tools"), list) else []
+        disabled_items = result.get("disabled_tools", []) if isinstance(result.get("disabled_tools"), list) else []
+        if enabled_items:
+            labels = [mcp_item_label(x) for x in enabled_items]
+            print(_t(agent, "mcp.shortcut.enabled_tools", count=enabled_count, items=", ".join(labels)))
+        else:
+            print(_t(agent, "mcp.shortcut.enabled_tools_none"))
+        if disabled_items:
+            labels = [mcp_item_label(x) for x in disabled_items]
+            print(_t(agent, "mcp.shortcut.disabled_tools", count=disabled_count, items=", ".join(labels)))
+        else:
+            print(_t(agent, "mcp.shortcut.disabled_tools_none"))
+    elif tool_name == "mcp_list_prompts":
         server = result.get("server", args.get("server", ""))
         count = result.get("count", 0)
         print(_t(agent, "mcp.shortcut.server", value=server))
         print(_t(agent, "mcp.shortcut.count", value=count))
-        key = {
-            "mcp_list_tools": "tools",
-            "mcp_list_resources": "resources",
-            "mcp_list_resource_templates": "templates",
-            "mcp_list_prompts": "prompts",
-        }.get(tool_name, "")
-        items = result.get(key, []) if isinstance(result.get(key), list) else []
+        items = result.get("prompts", []) if isinstance(result.get("prompts"), list) else []
+        if items:
+            labels = [mcp_item_label(x) for x in items]
+            print(_t(agent, "mcp.shortcut.items_label", value=", ".join(labels)))
+    elif tool_name == "mcp_list_resources":
+        server = result.get("server", args.get("server", ""))
+        count = result.get("count", 0)
+        print(_t(agent, "mcp.shortcut.server", value=server))
+        print(_t(agent, "mcp.shortcut.count", value=count))
+        items = result.get("resources", []) if isinstance(result.get("resources"), list) else []
         if items:
             labels = [mcp_item_label(x) for x in items]
             print(_t(agent, "mcp.shortcut.items_label", value=", ".join(labels)))

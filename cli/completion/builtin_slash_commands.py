@@ -36,7 +36,6 @@ SLASH_BUILTIN_COMMANDS: List[str] = [
     "/mcp enable-tools ",
     "/mcp list-disabled-tools",
     "/mcp list-prompts ",
-    "/mcp list-resource-templates ",
     "/mcp list-resources ",
     "/mcp list-tools ",
     "/mcp reload-config",
@@ -99,7 +98,6 @@ SLASH_BUILTIN_DISPLAY_OVERRIDES = {
     # /mcp
     "/mcp list-tools ": "/mcp list-tools <server>",
     "/mcp list-resources ": "/mcp list-resources <server>",
-    "/mcp list-resource-templates ": "/mcp list-resource-templates <server>",
     "/mcp list-prompts ": "/mcp list-prompts <server>",
     "/mcp list-disabled-tools": "/mcp list-disabled-tools [server]",
     "/mcp reconnect ": "/mcp reconnect <server>",

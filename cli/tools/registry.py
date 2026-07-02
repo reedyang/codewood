@@ -16,28 +16,15 @@ from .shell import ShellTool
 from .apply_patch import ApplyPatchTool
 from .read import ReadTool
 from .project_context_search import ProjectContextSearchTool
-from .mcp_server_info import McpServerInfoTool
-from .mcp_reload_config import McpReloadConfigTool
-from .mcp_disable_tools import McpDisableToolsTool
-from .mcp_enable_tools import McpEnableToolsTool
-from .mcp_list_disabled_tools import McpListDisabledToolsTool
-from .mcp_list_tools import McpListToolsTool
+from .mcp_get_tool_schemas import McpGetToolSchemasTool
 from .mcp_call_tool import McpCallToolTool
 from .mcp_call_tool_batch import McpCallToolBatchTool
-from .mcp_list_resources import McpListResourcesTool
 from .mcp_read_resource import McpReadResourceTool
-from .mcp_list_resource_templates import McpListResourceTemplatesTool
+from .mcp_list_resources import McpListResourcesTool
 from .mcp_list_prompts import McpListPromptsTool
 from .mcp_get_prompt import McpGetPromptTool
-from .mcp_sampling_create_message import McpSamplingCreateMessageTool
-from .mcp_completion_complete import McpCompletionCompleteTool
-from .mcp_status import McpStatusTool
-from .mcp_status_refresh import McpStatusRefreshTool
-from .mcp_reconnect import McpReconnectTool
 from .memory_search import MemorySearchTool
 from .memory_add import MemoryAddTool
-from .memory_list import MemoryListTool
-from .memory_stats import MemoryStatsTool
 from .memory_delete import MemoryDeleteTool
 from .user_preferences_read import UserPreferencesReadTool
 from .user_preferences_patch import UserPreferencesPatchTool
@@ -68,28 +55,15 @@ ALL_TOOLS: List[Type[BaseTool]] = [
     ApplyPatchTool,
     ReadTool,
     ProjectContextSearchTool,
-    McpServerInfoTool,
-    McpReloadConfigTool,
-    McpDisableToolsTool,
-    McpEnableToolsTool,
-    McpListDisabledToolsTool,
-    McpListToolsTool,
+    McpGetToolSchemasTool,
     McpCallToolTool,
     McpCallToolBatchTool,
-    McpListResourcesTool,
     McpReadResourceTool,
-    McpListResourceTemplatesTool,
+    McpListResourcesTool,
     McpListPromptsTool,
     McpGetPromptTool,
-    McpSamplingCreateMessageTool,
-    McpCompletionCompleteTool,
-    McpStatusTool,
-    McpStatusRefreshTool,
-    McpReconnectTool,
     MemorySearchTool,
     MemoryAddTool,
-    MemoryListTool,
-    MemoryStatsTool,
     MemoryDeleteTool,
     UserPreferencesReadTool,
     UserPreferencesPatchTool,
@@ -117,7 +91,6 @@ _INSTANCES: Dict[str, BaseTool] = {}
 # Tool-name groups derived from class gating flags, kept as module-level
 # frozensets for callers that gate tool *injection* at runtime (not just spec
 # generation), e.g. prompt_composer and the runtime loop.
-MCP_MANAGEMENT_GATED_TOOLS = frozenset(t.name for t in ALL_TOOLS if t.requires_mcp)
 IMAGE_INPUT_TOOLS = frozenset(t.name for t in ALL_TOOLS if t.requires_multimodal)
 MEMORY_TOOLS = frozenset(t.name for t in ALL_TOOLS if t.name.startswith("memory_"))
 #: Tools available only while Plan mode is active (filtered out in Agent mode).
@@ -126,11 +99,10 @@ PLAN_MODE_ONLY_TOOLS = frozenset(t.name for t in ALL_TOOLS if t.requires_plan_mo
 PLAN_MODE_EXCLUDED_TOOLS = frozenset(t.name for t in ALL_TOOLS if t.excluded_in_plan_mode)
 
 #: Tools excluded for small-context-window models (< 64k).  All MCP
-#: tools (regardless of the ``requires_mcp`` flag) are excluded; memory
-#: tools are restricted to add/search/delete only.
+#: tools are excluded.
 SMALL_MODEL_EXCLUDED_TOOLS: FrozenSet[str] = frozenset(
     t.name for t in ALL_TOOLS if t.name.startswith("mcp_")
-) | frozenset(["memory_list", "memory_stats"])
+)
 
 
 def tool_class_by_name(name: str) -> Optional[Type[BaseTool]]:
@@ -150,7 +122,6 @@ def tool_by_name(name: str) -> Optional[BaseTool]:
 
 
 def _gating_flags(agent: Any) -> Dict[str, bool]:
-    mcp_enabled = bool(getattr(agent, "mcp_tools_enabled", False))
     has_subagents = bool(list(getattr(agent, "subagents", []) or []))
     checker = getattr(agent, "_multimodal_enabled_for_current_model", None)
     multimodal_enabled = True
@@ -165,7 +136,6 @@ def _gating_flags(agent: Any) -> Dict[str, bool]:
         (getattr(agent, "params", None) or {}).get("context_window")
     )
     return {
-        "mcp_enabled": mcp_enabled,
         "multimodal_enabled": multimodal_enabled,
         "has_subagents": has_subagents,
         "plan_mode": plan_mode,

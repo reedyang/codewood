@@ -4,6 +4,7 @@ import os
 from typing import Any, Tuple
 
 from ..config.app_info import get_app_name
+from ..commands import is_command, run_command
 from .language_command_controller import handle_language_builtin_command
 from .mcp_shortcut_controller import format_mcp_shortcut_error
 
@@ -48,7 +49,10 @@ def dispatch_builtin_command(
 
     mcp_tool, mcp_args, mcp_err = agent._parse_mcp_shortcut_command(builtin_line)
     if mcp_tool:
-        mcp_res = agent.execute_tool_call(mcp_tool, mcp_args)
+        if is_command(mcp_tool):
+            mcp_res = run_command(agent, mcp_tool, mcp_args)
+        else:
+            mcp_res = agent.execute_tool_call(mcp_tool, mcp_args)
         agent._print_mcp_shortcut_result(
             mcp_tool, mcp_args, mcp_res if isinstance(mcp_res, dict) else {}
         )

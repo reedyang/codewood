@@ -300,8 +300,7 @@ Create `.codewood/config.jsonc` in your user directory:
   "project_context_first_round_evidence": true,
   "auto_compact_trigger_percent": 60,
   "max_tool_rounds": 30,
-  "memory_enabled": false,
-  "mcp_tools_enabled": false
+  "memory_enabled": false
 }
 ```
 
@@ -327,7 +326,6 @@ Create `.codewood/config.jsonc` in your user directory:
 - `reasoning_effort`: optional per-model list of reasoning-effort levels the model supports (e.g. `["low","medium","high"]`). When set, a level can be selected per chat — in the TUI via `/model reasoning <level>` and in the GUI model menu — and the choice is sent to the provider as `reasoning_effort` (chat API) or `reasoning.effort` (responses API). The selected level is saved per chat and restored on reload. Omit or leave empty to disable reasoning-effort selection for the model. Object-form example: `{"name":"gpt-oss-120b","context_window":"128K","reasoning_effort":["low","medium","high"]}`
 - `auto_compact_trigger_percent`: automatic summarization threshold, default `60`
 - `model_providers[i].params`: provider-specific parameters such as API keys and base URLs
-- `mcp_tools_enabled`: enables MCP management tools. When `false`, the following tools are unavailable: `mcp_server_info`, `mcp_disable_tools`, `mcp_enable_tools`, `mcp_list_disabled_tools`, `mcp_sampling_create_message`, and `mcp_completion_complete`
 - All string values in `config.jsonc` support environment variable placeholders of the form `${ENV_NAME}`
 - Placeholders are type-converted automatically, including `bool`, `int`, `float`, `null`, and JSON `list` / `dict` values
 
@@ -343,21 +341,14 @@ Code Wood automatically reads `mcp.jsonc` from the same directory as `config.jso
 
 ### Available MCP Actions
 
-- `mcp_status`: show preload status, success and failure lists, and per-server details
-- `mcp_status_refresh`: refresh MCP status for all or selected servers
 - `mcp_list_tools`: list tools for a specific server
-- `mcp_reconnect`: force a reconnect and refresh the cached tools for a server
-- `mcp_call_tool`: call a specific tool
-- `mcp_call_tool_batch`: call multiple tools in one JSON-RPC batch request, with optional partial-failure handling and summary counts
 - `mcp_list_resources`: list resources for a specific server
 - `mcp_read_resource`: read a resource URI
-- `mcp_list_resource_templates`: list resource templates for a specific server
+- `mcp_call_tool`: call a specific tool
+- `mcp_call_tool_batch`: call multiple tools in one JSON-RPC batch request, with optional partial-failure handling and summary counts
 - `mcp_list_prompts`: list prompts for a specific server
 - `mcp_get_prompt`: fetch a prompt result by name and parameters
-- `mcp_sampling_create_message`: use the sampling capability to create a message, requires `mcp_tools_enabled=true`
-- `mcp_completion_complete`: use the completion capability, requires `mcp_tools_enabled=true`
-- `mcp_server_info`, `mcp_disable_tools`, `mcp_enable_tools`, and `mcp_list_disabled_tools`: require `mcp_tools_enabled=true`
-- Failure states are classified as `unsupported`, `missing_dependency`, or `connect_failed`, and `mcp_status` returns suggested fixes
+- Failure states are classified as `unsupported`, `missing_dependency`, or `connect_failed`
 
 ### OAuth 2.0 for URL-Based MCP Servers
 

@@ -204,7 +204,6 @@ class SessionMemoryService:
             context_window = DEFAULT_CONTEXT_WINDOW
         plan_mode = "plan" if bool(getattr(self.agent, "_plan_mode_sticky", False)) else "agent"
         memory_enabled = "mem1" if bool(getattr(self.agent, "memory_enabled", True)) else "mem0"
-        mcp_enabled = "mcp1" if bool(getattr(self.agent, "mcp_tools_enabled", False)) else "mcp0"
         hist = list(getattr(self.agent, "conversation_history", None) or [])
         size = len(hist)
         last_role = ""
@@ -221,7 +220,7 @@ class SessionMemoryService:
                     last_content = last_content[-120:]
         return (
             f"{chat_id}|{provider}:{model_name}|ctx={context_window}|{plan_mode}|"
-            f"{memory_enabled}|{mcp_enabled}|{size}|{last_role}|{last_content}"
+            f"{memory_enabled}|{size}|{last_role}|{last_content}"
         )
 
     @staticmethod

@@ -2602,7 +2602,6 @@ class ServeApp:
         "auto_compact_trigger_percent",
         "max_tool_rounds",
         "memory_enabled",
-        "mcp_tools_enabled",
     )
 
     def get_general_config(self) -> Dict[str, Any]:
@@ -2622,7 +2621,6 @@ class ServeApp:
             ),
             "max_tool_rounds": getattr(agent, "max_tool_rounds", None),
             "memory_enabled": bool(getattr(agent, "memory_enabled", False)),
-            "mcp_tools_enabled": bool(getattr(agent, "mcp_tools_enabled", False)),
         }
         try:
             from ..core.config.config_jsonc import (
@@ -2652,8 +2650,6 @@ class ServeApp:
                                 pass
                     if "memory_enabled" in cfg:
                         out["memory_enabled"] = bool(cfg.get("memory_enabled"))
-                    if "mcp_tools_enabled" in cfg:
-                        out["mcp_tools_enabled"] = bool(cfg.get("mcp_tools_enabled"))
         except Exception:
             pass
         return out
@@ -2691,8 +2687,6 @@ class ServeApp:
                     normalized["max_tool_rounds"] = rounds
         if "memory_enabled" in payload:
             normalized["memory_enabled"] = bool(payload.get("memory_enabled"))
-        if "mcp_tools_enabled" in payload:
-            normalized["mcp_tools_enabled"] = bool(payload.get("mcp_tools_enabled"))
         if not normalized:
             return False
         agent = self.agent
@@ -2948,7 +2942,7 @@ class ServeApp:
                 if mgr_obj is not None:
                     if tools_count == 0:
                         try:
-                            cached_tools, _ = mgr_obj.list_tools(str(name), use_cache=True)
+                            cached_tools, _ = mgr_obj.list_tools_with_disabled(str(name), use_cache=True)
                             if isinstance(cached_tools, list):
                                 tools_count = len(cached_tools)
                         except Exception:
@@ -2986,7 +2980,7 @@ class ServeApp:
         tools: List[Dict[str, Any]] = []
         prompts: List[Dict[str, Any]] = []
         try:
-            t, _ = mgr.list_tools(srv, use_cache=True)
+            t, _ = mgr.list_tools_with_disabled(srv, use_cache=True)
             tools = list(t) if isinstance(t, list) else []
         except Exception:
             tools = []
@@ -3143,20 +3137,11 @@ class ServeApp:
     def set_mcp_tools_enabled(
         self, server: str, tools: Any, enabled: bool
     ) -> bool:
-        """Bulk-toggle several tools' disabled-by-policy state at once.
-
-        Used by the MCP settings page's "Enable all" / "Disable all" button
-        so the page can flip every tool on a server in a single round-trip
-        instead of sending one request per tool (which both flickers the UI
-        and risks the writes interleaving with a concurrent reload).
-        """
         srv = str(server or "").strip()
         if not srv:
             return False
         if not isinstance(tools, (list, tuple)):
             return False
-        # Bound the per-name length and overall count to keep this from
-        # turning into an abuse vector via a runaway payload.
         names: List[str] = []
         for item in tools[:1024]:
             n = str(item or "").strip()[:256]

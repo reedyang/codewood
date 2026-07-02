@@ -150,8 +150,6 @@ def setup_runtime_preferences(agent: Any) -> None:
     agent.project_context_first_round_evidence_enabled = True
     agent.auto_compact_trigger_percent = DEFAULT_AUTO_COMPACT_TRIGGER_PERCENT
     agent.display_language = DEFAULT_DISPLAY_LANGUAGE
-    # Tool gates: default disabled so only core built-in coding tools are available.
-    agent.mcp_tools_enabled = False
     # None means unlimited auto-execution rounds for a single task.
     agent.max_tool_rounds = None
     # Plan-mode is a session-sticky flag toggled via ``/plan`` /``/agent``
@@ -205,13 +203,6 @@ def setup_runtime_preferences(agent: Any) -> None:
                 _pcfr
                 if isinstance(_pcfr, bool)
                 else str(_pcfr).strip().lower() in ("1", "true", "yes", "on")
-            )
-
-            _mcp_tools_enabled = cfg_data.get("mcp_tools_enabled", False)
-            agent.mcp_tools_enabled = (
-                _mcp_tools_enabled
-                if isinstance(_mcp_tools_enabled, bool)
-                else str(_mcp_tools_enabled).strip().lower() in ("1", "true", "yes", "on")
             )
 
             _compact_pct = cfg_data.get("auto_compact_trigger_percent", DEFAULT_AUTO_COMPACT_TRIGGER_PERCENT)
@@ -348,7 +339,6 @@ def setup_prompt_and_mcp(agent: Any) -> None:
     agent.system_prompt = agent._compose_system_prompt_snapshot(include_tools=False)
     agent.tool_specs = agent._load_tools_spec_from_jsonc()
     agent.tools_prompt_template = agent._load_tools_prompt_template(small_model=small_model)
-    agent.tools_prompt_mcp_management_template = "" if small_model else agent._load_tools_prompt_mcp_management_template()
     agent.tools_prompt_memory_template = agent._load_tools_prompt_memory_template(small_model=small_model)
 
 

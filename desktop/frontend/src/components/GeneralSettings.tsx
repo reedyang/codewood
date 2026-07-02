@@ -69,7 +69,6 @@ export function GeneralSettings({ onDirtyChange }: GeneralSettingsProps) {
       auto_compact_trigger_percent: Math.floor(pct),
       max_tool_rounds: mtr,
       memory_enabled: next.memory_enabled,
-      mcp_tools_enabled: next.mcp_tools_enabled,
     };
     void saveGeneralConfig(payload).then((ok) => {
       if (!ok) setError(t("general.errSave"));
@@ -192,25 +191,6 @@ export function GeneralSettings({ onDirtyChange }: GeneralSettingsProps) {
             />
           </div>
           <p className="setting-hint">{t("general.memoryEnabledHint")}</p>
-        </div>
-      </div>
-
-      <div className="setting-row">
-        <label htmlFor="general-mcp">{t("general.mcpToolsEnabled")}</label>
-        <div className="setting-control">
-          <div className="setting-input-row">
-            <input
-              id="general-mcp"
-              type="checkbox"
-              checked={draft.mcp_tools_enabled}
-              onChange={(e) => {
-                const next = { ...draft, mcp_tools_enabled: e.target.checked };
-                setDraft(next);
-                persist(next, maxRoundsText);
-              }}
-            />
-          </div>
-          <p className="setting-hint">{t("general.mcpToolsEnabledHint")}</p>
         </div>
       </div>
 

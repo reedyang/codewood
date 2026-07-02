@@ -1040,7 +1040,6 @@ class Agent:
         try:
             _small = bool(getattr(self, "_small_model", False))
             self.tools_prompt_template = self._load_tools_prompt_template(small_model=_small)
-            self.tools_prompt_mcp_management_template = "" if _small else self._load_tools_prompt_mcp_management_template()
             self.tools_prompt_memory_template = self._load_tools_prompt_memory_template(small_model=_small)
         except Exception:
             pass
@@ -2710,9 +2709,44 @@ class Agent:
 
     def _tool_action_detail(self, tool_name: str, a: Dict[str, Any]) -> str:
         """One-line argument detail for a non-shell tool, in ``(...)`` form."""
-        if str(tool_name).strip().lower() == "run_subagent":
-            name = str(a.get("subagent") or "").strip() or "-"
-            return f"(subagent={name})"
+        name = str(tool_name).strip().lower()
+        if name == "run_subagent":
+            sn = str(a.get("subagent") or "").strip() or "-"
+            return f"(subagent={sn})"
+
+        if name in ("mcp_call_tool", "mcp_get_prompt"):
+            server = str(a.get("server") or "").strip()
+            tool = str(a.get("tool") or "").strip()
+            if server and tool:
+                return f"(server={server}, tool={tool})"
+            if server:
+                return f"(server={server})"
+
+        if name == "mcp_get_tool_schemas":
+            server = str(a.get("server") or "").strip()
+            tools_param = a.get("tools") or ""
+            parts: List[str] = []
+            if isinstance(tools_param, list):
+                parts = [str(x).strip() for x in tools_param if str(x).strip()]
+            elif isinstance(tools_param, str) and tools_param.strip():
+                parts = [x.strip() for x in tools_param.split(",") if x.strip()]
+            tool_list = ", ".join(parts[:8])
+            if len(parts) > 8:
+                tool_list += f", ... ({len(parts)} total)"
+            if server and tool_list:
+                return f"(server={server}, tools=[{tool_list}])"
+            if server:
+                return f"(server={server})"
+
+        if name == "mcp_call_tool_batch":
+            server = str(a.get("server") or "").strip()
+            calls = a.get("calls", [])
+            count = len(calls) if isinstance(calls, list) else 0
+            if server and count:
+                return f"(server={server}, calls={count})"
+            if server:
+                return f"(server={server})"
+
         for k in (
             "skill_id",
             "mcp",
@@ -5874,9 +5908,6 @@ class Agent:
     def _load_tools_prompt_template(self, small_model: bool = False) -> str:
         return prompt_composer.load_tools_prompt_template(small_model=small_model)
 
-    def _load_tools_prompt_mcp_management_template(self) -> str:
-        return prompt_composer.load_tools_prompt_mcp_management_template()
-
     def _load_tools_prompt_memory_template(self, small_model: bool = False) -> str:
         return prompt_composer.load_tools_prompt_memory_template(small_model=small_model)
 
@@ -6915,8 +6946,7 @@ class Agent:
         print(t("help.section.mcp_commands"))
         print("  /mcp status | status-refresh | reload-config")
         print("  /mcp reconnect <server> | server-info <server>")
-        print("  /mcp list-tools <server> | list-resources <server>")
-        print("  /mcp list-resource-templates <server> | list-prompts <server>")
+        print("  /mcp list-tools <server> | list-prompts <server>")
         print("  /mcp list-disabled-tools [server]")
         print("  /mcp disable-tools <server> <tool1,tool2>")
         print("  /mcp enable-tools <server> <tool1,tool2>")
