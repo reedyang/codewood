@@ -1257,6 +1257,58 @@ function RoundShell({
   );
 }
 
+function ThinkingPanel({
+  thinkingText,
+  running,
+}: {
+  thinkingText: string;
+  running: boolean;
+}) {
+  const [expanded, setExpanded] = useState(running);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const { t } = useApp();
+
+  // Auto-expand when streaming starts, but let user control thereafter.
+  useEffect(() => {
+    if (running) {
+      setExpanded(true);
+    }
+  }, [running]);
+
+  useEffect(() => {
+    if (expanded && scrollRef.current) {
+      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+    }
+  }, [thinkingText, expanded]);
+
+  if (!thinkingText.trim()) {
+    return null;
+  }
+
+  return (
+    <div className={`thinking-panel ${!expanded ? "collapsed" : ""}`}>
+      {expanded && (
+        <div className="thinking-scroll" ref={scrollRef}>
+          <div className="thinking-content">
+            <MarkdownText text={thinkingText} />
+          </div>
+        </div>
+      )}
+      <button
+        className="thinking-toggle"
+        onClick={() => setExpanded((v) => !v)}
+      >
+        <span>{expanded ? t("thinking.hide") : t("thinking.show")}</span>
+        <Icon
+          name="chevron"
+          size={12}
+          className={`chevron ${expanded ? "open" : ""}`}
+        />
+      </button>
+    </div>
+  );
+}
+
 function HistoryRoundView({ round }: { round: HistoryRound }) {
   const { t } = useApp();
   if (round.selection && round.selection.trim().length > 0) {
@@ -1306,7 +1358,12 @@ function HistoryTurnView({
         />
       )}
       {turn.rounds.map((round, index) => (
-        <HistoryRoundView key={index} round={round} />
+        <div key={index}>
+          {round.thinking && (
+            <ThinkingPanel thinkingText={round.thinking} running={false} />
+          )}
+          <HistoryRoundView round={round} />
+        </div>
       ))}
     </div>
   );
@@ -1649,6 +1706,12 @@ function TurnView({
           timeMs={turn.startedAt}
           index={negIndex}
           handlers={handlers}
+        />
+      )}
+      {turn.thinkingText && (
+        <ThinkingPanel
+          thinkingText={turn.thinkingText}
+          running={turn.endedAt === null}
         />
       )}
       {turn.rounds.map((round) => (

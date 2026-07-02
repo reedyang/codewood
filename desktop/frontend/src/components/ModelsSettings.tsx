@@ -507,8 +507,6 @@ export function ModelsSettings({ onDirtyChange, saveSignal }: ModelsSettingsProp
                                   {t("models.streaming")}
                                 </label>
                               </div>
-                              {!isOllama && (
-                              <>
                               <div className="models-field">
                                 <label className="models-effort">
                                   <input
@@ -524,6 +522,8 @@ export function ModelsSettings({ onDirtyChange, saveSignal }: ModelsSettingsProp
                                 </label>
                                 <div className="models-hint">{t("models.thinkingHint")}</div>
                               </div>
+                              {!isOllama && (
+                              <>
                               <div className="models-field">
                                 <label>{t("reasoning.label")}</label>
                                 <div className="models-effort-row">

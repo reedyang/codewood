@@ -279,6 +279,8 @@ export const zhCN: Dict = {
   "models.streaming": "流式响应",
   "models.thinking": "启用深度思考/推理",
   "models.thinkingHint": "允许模型输出内部推理过程。",
+  "thinking.show": "显示思考",
+  "thinking.hide": "隐藏思考",
   "models.extraHeaders": "Extra headers",
   "models.headerName": "Header",
   "models.headerValue": "Value",

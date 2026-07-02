@@ -453,6 +453,9 @@ class ChatStateManager:
         context_suffix = str(raw.get("_context_suffix") or "").strip()
         if context_suffix:
             out["_context_suffix"] = context_suffix
+        thinking = str(raw.get("_thinking") or "").strip()
+        if thinking:
+            out["_thinking"] = thinking
         api_content = str(raw.get("_api_content") or "").strip()
         if api_content:
             out["_api_content"] = api_content
@@ -1139,6 +1142,9 @@ class ChatStateManager:
                 clean_content = str(m.get("_clean_content") or "").strip()
                 if clean_content:
                     entry["_clean_content"] = clean_content
+                thinking = str(m.get("_thinking") or "").strip()
+                if thinking:
+                    entry["_thinking"] = thinking
                 msgs.append(entry)
             chat["messages"] = msgs
             context_window = int(getattr(self._agent, "_last_context_window", 0) or 0)

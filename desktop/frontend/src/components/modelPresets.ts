@@ -222,12 +222,12 @@ export function toConfigProviders(editors: EditorProvider[]): unknown[] {
         if (m.streaming !== undefined) {
           model.streaming = m.streaming;
         }
-        // Ollama doesn't support reasoning effort, thinking, or custom headers; only
+        if (m.thinking !== undefined) {
+          model.thinking = m.thinking;
+        }
+        // Ollama doesn't support reasoning effort or custom headers; only
         // serialize them for OpenAI-compatible providers.
         if ((e.api_mode || "").toLowerCase() !== "ollama") {
-          if (m.thinking !== undefined) {
-            model.thinking = m.thinking;
-          }
           const re = (m.reasoning_effort || [])
             .map((x) => String(x).trim().toLowerCase())
             .filter(Boolean);

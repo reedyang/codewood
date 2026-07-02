@@ -195,7 +195,7 @@ def _build_structured_turns(agent: Any) -> List[Dict[str, Any]]:
         return current
 
     def _new_round(turn: Dict[str, Any], wait_seconds: float) -> Dict[str, Any]:
-        rnd = {"waitSeconds": max(0, int(round(wait_seconds))), "text": "", "tools": ""}
+        rnd = {"waitSeconds": max(0, int(round(wait_seconds))), "text": "", "tools": "", "thinking": ""}
         turn["rounds"].append(rnd)
         return rnd
 
@@ -429,6 +429,9 @@ def _build_structured_turns(agent: Any) -> List[Dict[str, Any]]:
                 continue
             current_round = _new_round(turn, wait)
             current_round["text"] = answer_text
+            thinking_text = str(msg.get("_thinking") or "").strip()
+            if thinking_text:
+                current_round["thinking"] = thinking_text
         else:
             rendered = _render_step(idx, msg)
             if current_round is None or current_round.get("text"):
@@ -447,6 +450,7 @@ def _build_structured_turns(agent: Any) -> List[Dict[str, Any]]:
                 "text": str(r.get("text") or "").rstrip("\n"),
                 "tools": str(r.get("tools") or "").rstrip("\n"),
                 "selection": str(r.get("selection") or "").strip(),
+                "thinking": str(r.get("thinking") or "").strip(),
             }
             for r in turn.get("rounds", [])
         ]
@@ -4104,6 +4108,11 @@ class ServeApp:
         self.agent._gui_plain_stream = True  # type: ignore[attr-defined]
         self.agent._gui_assistant_begin = lambda: bridge.set_tag("assistant")  # type: ignore[attr-defined]
         self.agent._gui_assistant_end = lambda: bridge.set_tag("output")  # type: ignore[attr-defined]
+        # Forward thinking/reasoning content deltas to the GUI as "thinking" SSE events.
+        self.agent._gui_thinking_chunk = lambda delta: (  # type: ignore[attr-defined]
+            bridge.set_tag("thinking"),
+            bridge.write(str(delta or "")),
+        )
         # Each model round (one request->response within a turn) is bracketed so
         # the GUI can show a per-round "Working/Worked" wait timer and lay out
         # model text + tool output for that round in natural order. Scoped to the

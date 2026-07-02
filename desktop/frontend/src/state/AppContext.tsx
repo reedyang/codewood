@@ -1009,6 +1009,23 @@ export function AppProvider({ children }: { children: ReactNode }) {
     [],
   );
 
+  const appendThinking = useCallback((text: string, chatId: string) => {
+    if (!text || !chatId) {
+      return;
+    }
+    setTurnsByChat((prev) => {
+      const existing = prev[chatId];
+      if (!existing || existing.length === 0) {
+        return prev;
+      }
+      const next = [...existing];
+      const turn = next[next.length - 1];
+      const prevText = turn.thinkingText ?? "";
+      next[next.length - 1] = { ...turn, thinkingText: prevText + text };
+      return { ...prev, [chatId]: next };
+    });
+  }, []);
+
   const startTurn = useCallback((userText: string, chatId: string) => {
     if (!chatId) {
       return;
@@ -1370,6 +1387,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
         }
         case "assistant": {
           appendSegment("answer", String(data.text ?? ""), eventKey);
+          break;
+        }
+        case "thinking": {
+          appendThinking(String(data.text ?? ""), eventKey);
           break;
         }
         case "confirm": {
