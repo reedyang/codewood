@@ -197,7 +197,7 @@ class AIOrchestrator:
                         bool(call_ctx.history_skip_user),
                     )
                     return
-                self.context.history_writer("assistant", assistant_text, tool_calls=tool_calls_data, cache_stats=cache_stats, clean_content=clean_content, output_tokens=output_tokens, reasoning_tokens=reasoning_tokens, token_count_includes_reasoning=token_count_includes_reasoning)
+                self.context.history_writer("assistant", assistant_text, tool_calls=tool_calls_data, cache_stats=cache_stats, clean_content=clean_content, output_tokens=output_tokens, reasoning_tokens=reasoning_tokens, token_count_includes_reasoning=token_count_includes_reasoning, thinking=message.get("_thinking", "") if isinstance(message, dict) else None)
 
             provider_ctx = ProviderCallContext(
                 provider=provider,

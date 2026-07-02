@@ -24,7 +24,10 @@ _OPENAI_API_ROUTE_CACHE_LOCK = threading.Lock()
 _OPENAI_API_ROUTE_CACHE_LOADED = False
 _OPENAI_API_ROUTE_CACHE: Dict[str, Any] = {"prefer_no_suffix": {}}
 _OPENAI_ROUTE_LOG = get_logger(f"{get_app_logger_root()}.openai_route")
-_THINK_TAG_RE = re.compile(r"<think>.*?</think>", flags=re.IGNORECASE | re.DOTALL)
+# Matches <think>...</think> and  think... think (DeepSeek-R1 XML format).
+_THINK_TAG_RE = re.compile(
+    r"<\s*/?\s*think\s*>.*?</\s*think\s*>", flags=re.IGNORECASE | re.DOTALL
+)
 _CHANNEL_THOUGHT_RE = re.compile(
     r"<\|channel\>\s*thought[\s\S]*?<channel\|>", flags=re.IGNORECASE
 )
@@ -34,7 +37,7 @@ _CHANNEL_THOUGHT_RE = re.compile(
 # legitimate use in user-facing assistant text — so it is safe to remove them
 # unconditionally after the paired-block regexes have run.
 _ORPHAN_HIDDEN_MARKER_RE = re.compile(
-    r"<\|channel\>\s*thought|<channel\|>|</?think\s*>",
+    r"<\|channel\>\s*thought|<channel\|>|</?\s*think\s*>",
     flags=re.IGNORECASE,
 )
 
@@ -50,18 +53,16 @@ _ORPHAN_HIDDEN_MARKER_RE = re.compile(
 # in the consumer logic, while these literals are simple.
 _STREAM_HIDDEN_BLOCKS: List[Tuple[re.Pattern, re.Pattern, re.Pattern]] = [
     (
-        re.compile(r"<think>", re.IGNORECASE),
-        re.compile(r"</think>", re.IGNORECASE),
-        # Any non-empty prefix of "<think>" anchored at end of text.
-        re.compile(r"<(?:t(?:h(?:i(?:n(?:k>?)?)?)?)?)?\Z", re.IGNORECASE),
+        # Matches <think>,  think, <think > etc. (standard + DeepSeek-R1)
+        re.compile(r"<\s*/?\s*think\s*>", re.IGNORECASE),
+        re.compile(r"</\s*think\s*>", re.IGNORECASE),
+        # Any non-empty prefix of " think>" / "<think>" / "</think>" anchored
+        # at end of text.
+        re.compile(r"<[\s/]*(?:t(?:h(?:i(?:n(?:k(?:\s*>?)?)?)?)?)?)?\Z", re.IGNORECASE),
     ),
     (
         re.compile(r"<\|channel\>\s*thought", re.IGNORECASE),
         re.compile(r"<channel\|>", re.IGNORECASE),
-        # Any non-empty prefix of "<|channel>" optionally followed by whitespace
-        # and an optional prefix of "thought", anchored at end of text. We must
-        # also withhold a partial closer "<channel|>" (prefix at end of text)
-        # because the closer of one block looks similar to the opener.
         re.compile(
             r"(?:<(?:\|(?:c(?:h(?:a(?:n(?:n(?:e(?:l(?:>(?:\s*t(?:h(?:o(?:u(?:g(?:h(?:t)?)?)?)?)?)?)?)?)?)?)?)?)?)?)?)?)\Z",
             re.IGNORECASE,
@@ -75,7 +76,7 @@ _STREAM_HIDDEN_BLOCKS: List[Tuple[re.Pattern, re.Pattern, re.Pattern]] = [
 # in some streams the closer of a hidden block could appear without a clearly
 # matched opener due to provider re-segmentation; flushing it would leak it).
 _STREAM_CLOSER_PREFIX_RE: List[re.Pattern] = [
-    re.compile(r"</(?:t(?:h(?:i(?:n(?:k>?)?)?)?)?)?\Z", re.IGNORECASE),
+    re.compile(r"</[\s/]*(?:t(?:h(?:i(?:n(?:k>?)?)?)?)?)?\Z", re.IGNORECASE),
     re.compile(
         r"<(?:c(?:h(?:a(?:n(?:n(?:e(?:l(?:\|(?:>)?)?)?)?)?)?)?)?)?\Z",
         re.IGNORECASE,
@@ -96,7 +97,8 @@ def _sanitize_assistant_text(text: Any) -> str:
 
 
 class _StreamingSanitizer:
-    """Stateful sanitizer that strips hidden ``<think>...</think>`` and
+    """Stateful sanitizer that strips hidden ``<think>...</think>``,
+    `` think... think`` (DeepSeek-R1), and
     ``<|channel>thought ... <channel|>`` blocks from a streamed assistant
     text even when the open/close markers are split across chunk boundaries.
 
@@ -114,6 +116,15 @@ class _StreamingSanitizer:
     def __init__(self) -> None:
         self._pending = ""
         self._closer: Optional[re.Pattern] = None
+        self._thinking_parts: List[str] = []
+
+    def get_thinking(self) -> str:
+        """Return accumulated thinking text and clear the buffer."""
+        if not self._thinking_parts:
+            return ""
+        text = "".join(self._thinking_parts)
+        self._thinking_parts.clear()
+        return text
 
     def feed(self, delta: str) -> str:
         if not isinstance(delta, str) or not delta:
@@ -131,6 +142,8 @@ class _StreamingSanitizer:
         # A bare ``<`` is preserved because it is more likely a real
         # character (math, code, comparisons) than an aborted sentinel.
         if self._closer is not None:
+            if self._pending:
+                self._thinking_parts.append(self._pending)
             self._pending = ""
             self._closer = None
             return ""
@@ -148,6 +161,9 @@ class _StreamingSanitizer:
                 m = self._closer.search(self._pending)
                 if m is None:
                     return "".join(out_parts)
+                thinking = self._pending[: m.start()]
+                if thinking:
+                    self._thinking_parts.append(thinking)
                 self._pending = self._pending[m.end():]
                 self._closer = None
                 continue
@@ -686,12 +702,19 @@ def _stream_openai_like_response(
     url: str = "",
 ):
     _OPENAI_ROUTE_LOG.info("openai-route stream-enter url=%s", url)
-    def _extract_stream_text_delta(payload: Any) -> str:
+    def _extract_stream_text_delta(payload: Any) -> Tuple[str, str]:
         if not isinstance(payload, dict):
-            return ""
+            return "", ""
         event_type = str(payload.get("type") or "").strip().lower()
+        # Collect reasoning text from reasoning-specific events and from
+        # ``reasoning_content`` fields in delta objects.
+        reasoning_parts: List[str] = []
         if "reasoning" in event_type:
-            return ""
+            for key in ("delta", "text", "output_text"):
+                val = payload.get(key)
+                if isinstance(val, str) and val:
+                    reasoning_parts.append(val)
+            return "", "".join(reasoning_parts)
         try:
             choices = payload.get("choices")
             if isinstance(choices, list) and choices:
@@ -700,8 +723,11 @@ def _stream_openai_like_response(
                     delta_obj = first.get("delta")
                     if isinstance(delta_obj, dict):
                         content = delta_obj.get("content")
+                        reasoning = delta_obj.get("reasoning_content")
+                        if isinstance(reasoning, str) and reasoning:
+                            reasoning_parts.append(reasoning)
                         if isinstance(content, str):
-                            return content
+                            return content, "".join(reasoning_parts)
                         if isinstance(content, list):
                             pieces: List[str] = []
                             for item in content:
@@ -709,32 +735,42 @@ def _stream_openai_like_response(
                                     continue
                                 item_type = str(item.get("type") or "").strip().lower()
                                 if "reasoning" in item_type:
+                                    text = item.get("text")
+                                    if isinstance(text, str) and text:
+                                        reasoning_parts.append(text)
                                     continue
                                 text = item.get("text")
                                 if isinstance(text, str):
                                     pieces.append(text)
                             if pieces:
-                                return "".join(pieces)
+                                return "".join(pieces), "".join(reasoning_parts)
+                            return "", "".join(reasoning_parts)
+                        # content is None/null (DeepSeek sends null content during
+                        # reasoning streaming). If reasoning was captured, return it.
+                        if reasoning_parts:
+                            return "", "".join(reasoning_parts)
         except Exception:
             pass
 
         if "output_text.delta" in event_type:
             d = payload.get("delta")
             if isinstance(d, str):
-                return d
+                return d, ""
         if event_type.endswith(".delta") and "output_text" in event_type:
             d = payload.get("delta")
             if isinstance(d, str):
-                return d
+                return d, ""
         out = payload.get("output_text")
         if isinstance(out, str):
-            return out
-        return ""
+            return out, ""
+        return "", ""
 
     class _OpenAIStreamResult:
         def __init__(self) -> None:
             self.final_message: Optional[Dict[str, Any]] = None
             self.last_usage: Optional[Dict[str, Any]] = None
+            self.thinking_text: str = ""
+            self._sanitizer: Optional[_StreamingSanitizer] = None
 
         def __iter__(self):
             raw_buffer = ""
@@ -746,7 +782,9 @@ def _stream_openai_like_response(
             tool_call_states: Dict[str, Dict[str, Any]] = {}
             tool_call_order: List[str] = []
             sanitizer = _make_stream_sanitizer()
+            self._sanitizer = sanitizer
             last_usage: Optional[Dict[str, Any]] = None
+            _accumulated_thinking: List[str] = []
 
             def _emit(raw: str, *, first: bool) -> Tuple[str, bool]:
                 produced = sanitizer.feed(raw)
@@ -793,14 +831,33 @@ def _stream_openai_like_response(
                 current_snapshot = _extract_stream_snapshot_message(payload)
                 if current_snapshot:
                     snapshot_message = current_snapshot
-                raw_delta = _extract_stream_text_delta(payload)
+                raw_delta, reasoning_delta = _extract_stream_text_delta(payload)
+                if reasoning_delta:
+                    _accumulated_thinking.append(reasoning_delta)
+                    self.thinking_text = "".join(_accumulated_thinking)
+                delta_yielded = False
                 if raw_delta:
                     raw_buffer += raw_delta
                     delta, first_chunk = _emit(raw_delta, first=first_chunk)
                     if delta:
                         yielded_text += delta
                         yield delta
+                        delta_yielded = True
+                # Drain any newly captured thinking from the sanitizer
+                new_thinking = sanitizer.get_thinking()
+                if new_thinking:
+                    _accumulated_thinking.append(new_thinking)
+                    self.thinking_text = "".join(_accumulated_thinking)
+                # When reasoning-only chunks arrive (no visible text), yield an
+                # empty heartbeat so the consumer checks thinking_text.
+                if reasoning_delta and not delta_yielded:
+                    yield ""
             tail = sanitizer.flush()
+            # Extract thinking captured by the sanitizer (stripped <think> blocks etc.)
+            sanitizer_thinking = sanitizer.get_thinking()
+            if sanitizer_thinking:
+                _accumulated_thinking.append(sanitizer_thinking)
+            self.thinking_text = "".join(_accumulated_thinking)
             if tail:
                 if first_chunk:
                     tail = tail.lstrip()
@@ -854,6 +911,8 @@ def _stream_openai_like_response(
                 clean_content = _sanitize_assistant_text(raw_buffer)
                 if clean_content and clean_content != raw_buffer:
                     self.final_message["_clean_content"] = clean_content
+            if isinstance(self.final_message, dict) and self.thinking_text:
+                self.final_message["_thinking"] = self.thinking_text
             append_history(raw_buffer, self.final_message)
 
     return _OpenAIStreamResult()
@@ -930,6 +989,9 @@ def _extract_message_from_ollama_response_data(data: Any) -> Dict[str, Any]:
         "role": str(message.get("role") or "assistant"),
         "content": ai_response,
     }
+    thinking = message.get("thinking") or message.get("reasoning_content") or ""
+    if isinstance(thinking, str) and thinking:
+        out["_thinking"] = thinking
     tool_calls = _normalize_ollama_tool_calls(message.get("tool_calls"))
     if tool_calls:
         out["tool_calls"] = tool_calls
@@ -939,6 +1001,7 @@ def _extract_message_from_ollama_response_data(data: Any) -> Dict[str, Any]:
 def _normalize_openai_message_for_request(
     message: Any,
     use_clean_content: bool = False,
+    include_thinking: bool = False,
 ) -> Optional[Dict[str, Any]]:
     if not isinstance(message, dict):
         return None
@@ -947,6 +1010,17 @@ def _normalize_openai_message_for_request(
     normalized["role"] = role
     if use_clean_content and normalized.get("_clean_content"):
         normalized["content"] = normalized["_clean_content"]
+    # Map stored _thinking to reasoning_content when the provider requires it
+    # (DeepSeek needs it for cache prefix matching; 400 error if missing after
+    # tool-call turns). Other providers skip this to avoid unknown-field errors.
+    if role == "assistant" and normalized.get("_thinking"):
+        if include_thinking:
+            if not normalized.get("reasoning_content"):
+                normalized["reasoning_content"] = normalized.pop("_thinking")
+            else:
+                normalized.pop("_thinking", None)
+        else:
+            normalized.pop("_thinking", None)
     content = normalized.get("content", "")
     if isinstance(content, list):
         has_media_parts = any(
@@ -968,10 +1042,11 @@ def _normalize_openai_message_for_request(
 def _normalize_openai_messages_for_request(
     messages: List[Dict[str, Any]],
     use_clean_content: bool = False,
+    include_thinking: bool = False,
 ) -> List[Dict[str, Any]]:
     normalized: List[Dict[str, Any]] = []
     for message in messages:
-        item = _normalize_openai_message_for_request(message, use_clean_content=use_clean_content)
+        item = _normalize_openai_message_for_request(message, use_clean_content=use_clean_content, include_thinking=include_thinking)
         if item is None:
             continue
         normalized.append(item)
@@ -1830,7 +1905,10 @@ def _call_with_openai_compatible(
         return api_key_error_msg
 
     use_clean = CacheAdapterManager().should_use_clean_content(base_url)
-    provider_messages = _normalize_openai_messages_for_request(messages, use_clean_content=use_clean)
+    include_thinking = CacheAdapterManager().should_include_thinking(base_url)
+    provider_messages = _normalize_openai_messages_for_request(
+        messages, use_clean_content=use_clean, include_thinking=include_thinking
+    )
     if image_data is not None and image_user_idx is not None:
         provider_messages = [dict(m) for m in provider_messages]
         provider_messages[image_user_idx] = {
@@ -2092,6 +2170,7 @@ def _call_with_ollama(
         class _OllamaStreamResult:
             def __init__(self) -> None:
                 self.final_message: Optional[Dict[str, Any]] = None
+                self.thinking_text: str = ""
                 self._response = response
 
             def close(self) -> None:
@@ -2107,6 +2186,8 @@ def _call_with_ollama(
                 tool_calls: List[Dict[str, Any]] = []
                 completed = False
                 sanitizer = _make_stream_sanitizer()
+                self._sanitizer = sanitizer
+                _accumulated_thinking: List[str] = []
                 try:
                     for chunk in _iter_stream_payloads():
                         message = chunk.get("message")
@@ -2120,13 +2201,37 @@ def _call_with_ollama(
                         if raw_delta:
                             raw_buffer += raw_delta
                         delta = sanitizer.feed(raw_delta) if raw_delta else ""
+                        # Ollama API sends thinking in message.thinking (separate chunks
+                        # from content). Also check reasoning_content for compat.
+                        thinking_delta = (
+                            message.get("thinking", "")
+                            or message.get("reasoning_content", "")
+                            or ""
+                        )
+                        if thinking_delta:
+                            _accumulated_thinking.append(thinking_delta)
+                            self.thinking_text = "".join(_accumulated_thinking)
+                        # Drain thinking captured by the sanitizer
+                        new_thinking = sanitizer.get_thinking()
+                        if new_thinking:
+                            _accumulated_thinking.append(new_thinking)
+                            self.thinking_text = "".join(_accumulated_thinking)
                         if delta:
                             if first_chunk:
                                 delta = delta.lstrip()
                                 first_chunk = False
                             if delta:
                                 yield delta
+                        elif thinking_delta:
+                            # Thinking arrived but no visible text yet — yield an
+                            # empty string so the consumer checks thinking_text.
+                            yield ""
                     tail = sanitizer.flush()
+                    # Capture final sanitizer thinking
+                    sanitizer_thinking = sanitizer.get_thinking()
+                    if sanitizer_thinking:
+                        _accumulated_thinking.append(sanitizer_thinking)
+                    self.thinking_text = "".join(_accumulated_thinking)
                     if tail:
                         if first_chunk:
                             tail = tail.lstrip()
@@ -2144,6 +2249,8 @@ def _call_with_ollama(
                     clean_content = _sanitize_assistant_text(raw_buffer)
                     if clean_content and clean_content != raw_buffer:
                         self.final_message["_clean_content"] = clean_content
+                    if self.thinking_text:
+                        self.final_message["_thinking"] = self.thinking_text
                     if completed:
                         append_history(raw_buffer, self.final_message)
                     self.close()

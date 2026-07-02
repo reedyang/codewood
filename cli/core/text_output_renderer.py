@@ -21,19 +21,22 @@ from .syntax_highlighter import SyntaxHighlighter
 # Shared, stateless syntax highlighter for fenced code blocks in TUI output.
 _CODE_HIGHLIGHTER = SyntaxHighlighter()
 
-_THINK_TAG_RE = re.compile(r"<think>.*?</think>", flags=re.IGNORECASE | re.DOTALL)
+# Matches <think>...</think> and  think... think (DeepSeek-R1 XML format).
+_THINK_TAG_RE = re.compile(
+    r"<\s*/?\s*think\s*>.*?</\s*think\s*>", flags=re.IGNORECASE | re.DOTALL
+)
 _CHANNEL_THOUGHT_RE = re.compile(
     r"<\|channel\>\s*thought[\s\S]*?<channel\|>", flags=re.IGNORECASE
 )
 _ORPHAN_HIDDEN_MARKER_RE = re.compile(
-    r"<\|channel\>\s*thought|<channel\|>|</?think\s*>",
+    r"<\|channel\>\s*thought|<channel\|>|</?\s*think\s*>",
     flags=re.IGNORECASE,
 )
 
 
 def _strip_hidden_blocks(text: str) -> str:
-    """Strip hidden blocks (``<think>...</think>``, ``<|channel>thought...<channel|>``)
-    and orphan sentinel markers from assistant text for display."""
+    """Strip hidden blocks (``<think>...</think>``, `` think... think``,
+    ``<|channel>thought...<channel|>``) and orphan sentinel markers."""
     if not isinstance(text, str) or not text:
         return ""
     text = _THINK_TAG_RE.sub("", text)

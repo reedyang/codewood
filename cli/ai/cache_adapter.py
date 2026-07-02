@@ -66,6 +66,17 @@ class BaseCacheAdapter(ABC):
         """
         return True
 
+    def include_thinking_in_messages(self) -> bool:
+        """Return True if previous assistant messages sent to this provider
+        should include ``reasoning_content`` alongside ``content``.
+
+        * DeepSeek — True (required for cache prefix matching; 400 error if
+          missing after tool-call turns).
+        * All other providers — False (most providers ignore or reject
+          unknown fields).
+        """
+        return False
+
     def extract_output_usage(
         self, response_data: Dict[str, Any]
     ) -> Optional[Dict[str, int]]:
@@ -139,3 +150,14 @@ class CacheAdapterManager:
             if adapter.matches(base_url):
                 return adapter.use_clean_content()
         return True
+
+    def should_include_thinking(self, base_url: str) -> bool:
+        """Return True when previous assistant messages sent to this provider
+        should include ``reasoning_content`` alongside ``content``.
+
+        Defaults to ``False`` for unrecognised providers (safe default).
+        """
+        for adapter in self._adapters:
+            if adapter.matches(base_url):
+                return adapter.include_thinking_in_messages()
+        return False

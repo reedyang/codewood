@@ -281,6 +281,8 @@ export const en: Dict = {
   "models.streaming": "Streaming",
   "models.thinking": "Enable thinking/reasoning tokens",
   "models.thinkingHint": "Allows the model to output its internal reasoning steps.",
+  "thinking.show": "Show thinking",
+  "thinking.hide": "Hide thinking",
   "models.extraHeaders": "Extra headers",
   "models.headerName": "Header",
   "models.headerValue": "Value",

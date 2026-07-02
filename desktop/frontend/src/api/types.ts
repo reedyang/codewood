@@ -232,6 +232,7 @@ export type ServerEvent =
   | { event: "round_end"; data: { chatId?: string } }
   | { event: "output"; data: { text: string } }
   | { event: "assistant"; data: { text: string } }
+  | { event: "thinking"; data: { text: string } }
   | { event: "confirm"; data: ConfirmRequest }
   | { event: "request_user_input"; data: AskMoreInfoRequest }
   | { event: string; data: Record<string, unknown> };
@@ -267,6 +268,8 @@ export interface Turn {
    *  than appending a duplicate, and ``endActiveTurn`` won't settle it while it
    *  has no rounds yet (so a premature ``idle`` can't split it in two). */
   optimistic?: boolean;
+  /** Accumulated model reasoning/thinking text for this turn. */
+  thinkingText?: string;
 }
 
 /** A previously-recorded model round loaded from chat history. */
@@ -277,6 +280,8 @@ export interface HistoryRound {
   /** A recorded request_user_input selection, rendered as a left-side bubble
    *  (a reply to the agent's question, not a user-initiated turn). */
   selection?: string;
+  /** Model thinking/reasoning content for this round. */
+  thinking?: string;
 }
 
 /** A previously-recorded turn loaded from chat history (already classified). */

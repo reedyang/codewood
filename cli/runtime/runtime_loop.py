@@ -1351,6 +1351,80 @@ def _consume_streaming_ai_response(
         _TeeTextStream(sys.stdout, append_mirror) if append_mirror is not None else None
     )
 
+    # Thinking display state (TUI only — GUI uses a dedicated SSE hook).
+    _thinking_prev = ""
+    _thinking_lines_rendered = 0
+    _thinking_ticker_stopped = False
+
+    def _render_thinking_tui(new_thinking: str) -> None:
+        nonlocal _thinking_prev, _thinking_lines_rendered, _thinking_ticker_stopped
+
+        # Compute delta from last rendered state
+        delta = new_thinking[len(_thinking_prev) :] if new_thinking.startswith(_thinking_prev) else new_thinking
+        if not delta:
+            return
+        _thinking_prev = new_thinking
+
+        # GUI hook: forward thinking deltas to the bridge so the GUI can render
+        # them in its own thinking panel.
+        gui_thinking_hook = getattr(agent, "_gui_thinking_chunk", None)
+        if callable(gui_thinking_hook):
+            try:
+                gui_thinking_hook(delta)
+            except Exception:
+                pass
+        if gui_plain or not is_tty:
+            return
+
+        # First thinking chunk: stop the status ticker, clear its "Working…"
+        # line, write the "Thinking" header on a fresh line, and begin the
+        # dimmed section.
+        if not _thinking_ticker_stopped:
+            stopper = getattr(agent, "_active_status_ticker_stopper", None)
+            if callable(stopper):
+                try:
+                    stopper()
+                except Exception:
+                    pass
+            try:
+                agent._active_status_ticker_stopper = None
+            except Exception:
+                pass
+            _thinking_ticker_stopped = True
+            # The stopper already cleared the ticker line via
+            # _clear_last_thinking_line.  Move to the next line so
+            # "Thinking" never overlaps the spinner glyph.
+            sys.stdout.write("\r\x1b[2K\n")
+            sys.stdout.write("\x1b[2mThinking\x1b[0m\n")
+            _thinking_lines_rendered = 2  # cleared ticker line + header
+
+        # Write delta incrementally in dimmed colour.  Each newline starts a
+        # fresh dimmed line so the content stays readable without re-flowing
+        # the entire block on every tiny streaming delta.
+        for ch in delta:
+            if ch == "\n":
+                _thinking_lines_rendered += 1
+                sys.stdout.write("\n\x1b[2m")
+            else:
+                sys.stdout.write(ch)
+        # Reset attributes at the end of the line so normal output after
+        # the thinking block is not accidentally dimmed.
+        sys.stdout.write("\x1b[0m")
+        sys.stdout.flush()
+
+    def _clear_thinking_tui() -> None:
+        nonlocal _thinking_lines_rendered
+        if _thinking_lines_rendered <= 0:
+            _thinking_lines_rendered = 0
+            return
+        try:
+            for _ in range(min(_thinking_lines_rendered, 200)):
+                sys.stdout.write("\x1b[1A\r\x1b[2K")
+            sys.stdout.flush()
+        except Exception:
+            pass
+        _thinking_lines_rendered = 0
+
     def _append_term_out() -> Any:
         return append_sink if append_sink is not None else sys.stdout
 
@@ -1405,6 +1479,7 @@ def _consume_streaming_ai_response(
         if first_visible_output_ready:
             return
         first_visible_output_ready = True
+        _clear_thinking_tui()
         _gui_mark(True)
         if callable(before_first_visible_output):
             try:
@@ -1470,6 +1545,10 @@ def _consume_streaming_ai_response(
         for chunk in ai_result:
             if callable(consume_interrupt) and bool(consume_interrupt()):
                 raise KeyboardInterrupt
+            # Check for new thinking content (side-channel on the stream result)
+            thinking_now = getattr(ai_result, "thinking_text", "") or ""
+            if thinking_now:
+                _render_thinking_tui(thinking_now)
             piece = str(chunk or "")
             if not piece:
                 continue
@@ -1664,6 +1743,7 @@ def _consume_streaming_ai_response(
             pass
     if first_visible_output_ready:
         _gui_mark(False)
+    _clear_thinking_tui()
     return ai_response, streamed_any
 
 
@@ -1723,6 +1803,29 @@ def _update_latest_assistant_clean_content(agent: Any, clean_content: str) -> No
             msg.pop("_clean_content", None)
         else:
             msg["_clean_content"] = clean_content
+        try:
+            agent._sync_active_chat_messages()
+        except Exception:
+            pass
+        return
+
+
+def _ensure_thinking_in_latest_assistant_message(agent: Any, thinking: str) -> None:
+    """Ensure the most recent assistant message in conversation history has
+    ``_thinking`` set, so it persists to chat state and is available on reload."""
+    if not isinstance(thinking, str) or not thinking:
+        return
+    hist = getattr(agent, "conversation_history", None)
+    if not isinstance(hist, list):
+        return
+    for msg in reversed(hist):
+        if not isinstance(msg, dict):
+            continue
+        if str(msg.get("role") or "").strip().lower() != "assistant":
+            continue
+        if msg.get("_thinking"):
+            return
+        msg["_thinking"] = thinking
         try:
             agent._sync_active_chat_messages()
         except Exception:
@@ -3760,6 +3863,11 @@ def run_agent_loop(agent: Any):
                             if task_uses_standard_openai_tools
                             else []
                         )
+                    # Ensure thinking content from the stream result is stored in
+                    # the latest assistant message in conversation history.
+                    _thinking = getattr(ai_result, "thinking_text", "") or ""
+                    if _thinking:
+                        _ensure_thinking_in_latest_assistant_message(self, _thinking)
                 # The model has fully responded for this round; freeze its wait
                 # timer before any tool output for the round streams out.
                 _gui_round_mark(self, False)
