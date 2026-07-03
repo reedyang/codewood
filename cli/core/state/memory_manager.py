@@ -1,42 +1,31 @@
 """
-Experiential memory (internalized lessons and preferences).
+Experiential memory (user-requested facts and conventions).
 
-Storage: Markdown files plus one manifest.json per scope (machine-readable) and INDEX.md (human-readable index).
-No Chroma / embedding model is used to avoid first-load latency.
+Storage: SQLite + sentence-transformer embeddings (all-MiniLM-L6-v2).
+Search: cosine similarity on 384-dim embedding vectors.
 """
 
 from __future__ import annotations
 
 import concurrent.futures
-import hashlib
-import json
 import logging
 import queue
-import re
+import sqlite3
 import threading
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Tuple, Callable
+from typing import Any, Callable, Dict, List, Optional
 
-import yaml
-from ...config.app_info import get_app_logger_root, get_app_prompt_name
+import numpy as np
+
+from ...config.app_info import get_app_logger_root
 
 _mem_log = logging.getLogger(f"{get_app_logger_root()}.memory")
 
-# No heavy dependency; enabled by default. MemoryService only marks it unavailable if initialization raises.
 MEMORY_AVAILABLE = True
 
-MANIFEST_VERSION = 1
-INDEX_HEADER = (
-    "# Experiential Memory Index\n\n"
-    f"This file is generated automatically by {get_app_prompt_name()} from `manifest.json`. It is readable, but do not edit the structure lines by hand.\n\n"
-)
-
-
-def _scope_hash(scope_key: str) -> str:
-    raw = scope_key or "global"
-    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:24]
+_EMBEDDING_DIM = 384
 
 
 def _tier_expires_at(tier: str, now_ts: float) -> Optional[float]:
@@ -49,183 +38,106 @@ def _tier_expires_at(tier: str, now_ts: float) -> Optional[float]:
     return now_ts + 7 * 24 * 3600
 
 
-def _query_tokens(query: str) -> List[str]:
-    """Lightweight Chinese/English tokenization: split on whitespace/punctuation plus short-token filtering."""
-    q = (query or "").strip()
-    if not q:
-        return []
-    parts = re.split(r"[\s,，。;；、.!?？！\n\r\t]+", q)
-    out: List[str] = []
-    for p in parts:
-        s = p.strip()
-        if len(s) >= 2:
-            out.append(s)
-    if not out and len(q) >= 1:
-        out = [q]
-    # Deduplicate while preserving order.
-    seen: Set[str] = set()
-    uniq: List[str] = []
-    for t in out:
-        low = t.lower()
-        if low not in seen:
-            seen.add(low)
-            uniq.append(t)
-    return uniq
+def _cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
+    dot = float(np.dot(a, b))
+    norm_a = float(np.linalg.norm(a))
+    norm_b = float(np.linalg.norm(b))
+    if norm_a == 0.0 or norm_b == 0.0:
+        return 0.0
+    return dot / (norm_a * norm_b)
 
 
-def _read_md_document(path: Path) -> Tuple[Dict[str, Any], str]:
-    raw = path.read_text(encoding="utf-8", errors="replace")
-    if not raw.startswith("---"):
-        return {}, raw
-    end = raw.find("\n---", 3)
-    if end < 0:
-        return {}, raw
-    fm_text = raw[3:end].strip()
-    body = raw[end + 4 :].lstrip("\n")
+def _init_embedding_provider() -> Any:
+    """Lazy-init and return an EmbeddingProvider instance."""
     try:
-        meta = yaml.safe_load(fm_text) or {}
-        if not isinstance(meta, dict):
-            return {}, body
-        return meta, body
+        from ...tools.embedding import EmbeddingProvider
+        p = EmbeddingProvider()
+        p.initialize()
+        return p
     except Exception:
-        return {}, raw
-
-
-def _write_md_document(path: Path, meta: Dict[str, Any], body: str) -> None:
-    fm = yaml.safe_dump(
-        meta,
-        allow_unicode=True,
-        default_flow_style=False,
-        sort_keys=False,
-    ).strip()
-    text = f"---\n{fm}\n---\n\n{body}"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(text, encoding="utf-8")
+        _mem_log.warning("Embedding provider initialization failed", exc_info=True)
+        return None
 
 
 class MemoryManager:
-    """
-    Experiential memory: directories are organized by scope_key; entries/*.md are the source of truth; manifest.json is the retrieval index; INDEX.md is for manual browsing.
-    """
+    """SQLite + embedding-based experiential memory store."""
 
     def __init__(self, config_dir: str, embedding_model: str = ""):
         self.config_dir = Path(config_dir)
         self.memory_root = self.config_dir / "memory"
         self.memory_root.mkdir(parents=True, exist_ok=True)
-        self._embedding_model_legacy = embedding_model  # Compatibility field for stats
+        self._db_path = self.memory_root / "memory_embeddings.db"
         self._lock = threading.Lock()
+        self._provider: Any = None
+        self._ensure_schema()
 
-    def _scopes_base(self) -> Path:
-        d = self.memory_root / "scopes"
-        d.mkdir(parents=True, exist_ok=True)
-        return d
+    def _connect(self) -> sqlite3.Connection:
+        conn = sqlite3.connect(str(self._db_path))
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
+        return conn
 
-    def _scope_dir(self, scope_key: str) -> Path:
-        sk = scope_key or "global"
-        return self._scopes_base() / _scope_hash(sk)
-
-    def _manifest_path(self, scope_key: str) -> Path:
-        return self._scope_dir(scope_key) / "manifest.json"
-
-    def _load_manifest(self, scope_key: str) -> Dict[str, Any]:
-        p = self._manifest_path(scope_key)
-        if not p.is_file():
-            return {
-                "version": MANIFEST_VERSION,
-                "scope_key": scope_key or "global",
-                "updated_at": time.time(),
-                "entries": [],
-            }
+    def _ensure_schema(self) -> None:
+        conn = self._connect()
         try:
-            data = json.loads(p.read_text(encoding="utf-8"))
-            if not isinstance(data, dict):
-                raise ValueError("invalid manifest root")
-            entries = data.get("entries")
-            if not isinstance(entries, list):
-                data["entries"] = []
-            data.setdefault("version", MANIFEST_VERSION)
-            data.setdefault("scope_key", scope_key or "global")
-            return data
-        except Exception as e:
-            _mem_log.warning("Failed to read manifest; using an empty manifest: %s", e)
-            return {
-                "version": MANIFEST_VERSION,
-                "scope_key": scope_key or "global",
-                "updated_at": time.time(),
-                "entries": [],
-            }
-
-    def _save_manifest(self, scope_key: str, data: Dict[str, Any]) -> None:
-        data["updated_at"] = time.time()
-        data["version"] = MANIFEST_VERSION
-        data["scope_key"] = scope_key or "global"
-        p = self._manifest_path(scope_key)
-        p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(
-            json.dumps(data, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
-        self._write_index_md(scope_key, data)
-
-    def _write_index_md(self, scope_key: str, data: Dict[str, Any]) -> None:
-        scope_dir = self._scope_dir(scope_key)
-        lines = [
-            INDEX_HEADER,
-            f"**Scope scope_key**: `{data.get('scope_key', '')}`\n\n",
-            "| id | type | tier | title | summary | file |\n",
-            "| --- | --- | --- | --- | --- | --- |\n",
-        ]
-        for e in data.get("entries") or []:
-            if not isinstance(e, dict):
-                continue
-            eid = str(e.get("id", ""))[:8] + "…"
-            mid = str(e.get("id", ""))
-            mt = str(e.get("memory_type", ""))[:20]
-            tier = str(e.get("tier", ""))[:12]
-            title = str(e.get("title", ""))[:80].replace("|", "\\|")
-            summ = str(e.get("summary", ""))[:120].replace("|", "\\|")
-            rel = str(e.get("rel_path", "")).replace("|", "\\|")
-            lines.append(f"| `{eid}` | {mt} | {tier} | {title} | {summ} | `{rel}` |\n")
-        (scope_dir / "INDEX.md").write_text("".join(lines), encoding="utf-8")
-
-    def _entry_path(self, scope_key: str, rel_path: str) -> Path:
-        return self._scope_dir(scope_key) / rel_path
-
-    def _purge_expired_unlocked(self) -> None:
-        now = time.time()
-        for manifest_path in self._scopes_base().glob("*/manifest.json"):
+            conn.execute("BEGIN")
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS memories (
+                    id TEXT PRIMARY KEY,
+                    title TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    summary TEXT NOT NULL DEFAULT '',
+                    tier TEXT NOT NULL DEFAULT 'episodic',
+                    memory_type TEXT NOT NULL DEFAULT 'lesson',
+                    scope_key TEXT NOT NULL DEFAULT 'global',
+                    source TEXT NOT NULL DEFAULT 'user_request',
+                    strength REAL NOT NULL DEFAULT 0.55,
+                    created_at REAL NOT NULL,
+                    last_access REAL NOT NULL,
+                    expires_at REAL,
+                    system_note TEXT,
+                    user_request TEXT,
+                    embedding BLOB,
+                    indexed_at REAL
+                )
+            """)
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_memories_scope ON memories(scope_key)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_memories_expires ON memories(expires_at)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_memories_last_access ON memories(last_access)")
+            conn.execute("COMMIT")
+        finally:
             try:
-                data = json.loads(manifest_path.read_text(encoding="utf-8"))
+                conn.close()
             except Exception:
-                continue
-            entries = data.get("entries")
-            if not isinstance(entries, list):
-                continue
-            scope_key = str(data.get("scope_key") or "global")
-            kept: List[Dict[str, Any]] = []
-            removed = False
-            for e in entries:
-                if not isinstance(e, dict):
-                    continue
-                exp = e.get("expires_at")
-                if exp is not None:
-                    try:
-                        if float(exp) < now:
-                            rel = str(e.get("rel_path", ""))
-                            ep = self._entry_path(scope_key, rel)
-                            if ep.is_file():
-                                try:
-                                    ep.unlink()
-                                except Exception:
-                                    pass
-                            removed = True
-                            continue
-                    except (TypeError, ValueError):
-                        pass
-                kept.append(e)
-            if removed or len(kept) != len(entries):
-                data["entries"] = kept
-                self._save_manifest(scope_key, data)
+                pass
+
+    def _lazy_provider(self) -> Any:
+        if self._provider is None:
+            self._provider = _init_embedding_provider()
+        return self._provider
+
+    def _embed(self, text: str) -> Optional[np.ndarray]:
+        provider = self._lazy_provider()
+        if provider is None or not provider.available:
+            return None
+        vecs = provider.embed([text[:4096]])
+        if vecs:
+            return vecs[0]
+        return None
+
+    def _purge_expired(self) -> None:
+        now = time.time()
+        conn = self._connect()
+        try:
+            conn.execute("DELETE FROM memories WHERE expires_at IS NOT NULL AND expires_at < ?", (now,))
+            conn.commit()
+        except Exception:
+            pass
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
     def add_memory(
         self,
@@ -235,7 +147,7 @@ class MemoryManager:
         tier: str = "episodic",
         memory_type: str = "lesson",
         scope_key: str = "",
-        source: str = "auto",
+        source: str = "user_request",
         user_request: Optional[str] = None,
         system_note: Optional[str] = None,
         strength: float = 0.55,
@@ -246,6 +158,7 @@ class MemoryManager:
         expires_at_override: Optional[float] = None,
     ) -> str:
         with self._lock:
+            self._purge_expired()
             mid = (memory_id or str(uuid.uuid4())).strip()
             now = time.time()
             cr = float(created_at) if created_at is not None else now
@@ -259,140 +172,56 @@ class MemoryManager:
             if exp is None:
                 exp = _tier_expires_at(tier, cr)
             summary = content.replace("\n", " ").strip()[:240]
-            rel_path = f"entries/{mid}.md"
-            ep = self._entry_path(sk, rel_path)
-            meta_fm: Dict[str, Any] = {
-                "id": mid,
-                "tier": tier,
-                "memory_type": memory_type,
-                "title": title,
-                "scope_key": sk,
-                "strength": float(strength),
-                "created_at": cr,
-                "last_access": la,
-                "expires_at": exp,
-                "source": source,
-            }
-            if user_request:
-                meta_fm["user_request"] = user_request
-            if system_note:
-                meta_fm["system_note"] = system_note
-            if extra:
-                meta_fm["extra"] = extra
-            _write_md_document(ep, meta_fm, content)
 
-            data = self._load_manifest(sk)
-            entries = [e for e in (data.get("entries") or []) if isinstance(e, dict) and str(e.get("id")) != mid]
-            entries.append(
-                {
-                    "id": mid,
-                    "rel_path": rel_path,
-                    "title": title,
-                    "summary": summary,
-                    "created_at": cr,
-                    "last_access": la,
-                    "strength": float(strength),
-                    "tier": tier,
-                    "memory_type": memory_type,
-                    "expires_at": exp,
-                    "source": source,
-                }
-            )
-            entries.sort(key=lambda x: float(x.get("last_access") or 0), reverse=True)
-            data["entries"] = entries
-            self._save_manifest(sk, data)
+            # Generate embedding
+            embed_text = f"{title}\n{summary}\n{content}"[:4096]
+            vec = self._embed(embed_text)
+            embedding_blob = vec.tobytes() if vec is not None else None
+            indexed_at = time.time() if vec is not None else None
+
+            conn = self._connect()
+            try:
+                conn.execute(
+                    """INSERT OR REPLACE INTO memories
+                       (id, title, content, summary, tier, memory_type, scope_key,
+                        source, strength, created_at, last_access, expires_at,
+                        system_note, user_request, embedding, indexed_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        mid, title, content, summary, tier, memory_type, sk,
+                        source, float(strength), cr, la, exp,
+                        system_note, user_request, embedding_blob, indexed_at,
+                    ),
+                )
+                conn.commit()
+            except Exception:
+                raise
+            finally:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+
             return mid
 
     def delete_memory(self, memory_id: str) -> bool:
         with self._lock:
-            self._purge_expired_unlocked()
+            self._purge_expired()
             mid = (memory_id or "").strip()
             if not mid:
                 return False
-            for manifest_path in self._scopes_base().glob("*/manifest.json"):
-                try:
-                    raw = json.loads(manifest_path.read_text(encoding="utf-8"))
-                except Exception:
-                    continue
-                sk = str(raw.get("scope_key") or "global")
-                entries = raw.get("entries")
-                if not isinstance(entries, list):
-                    continue
-                new_entries: List[Dict[str, Any]] = []
-                hit = False
-                for e in entries:
-                    if not isinstance(e, dict):
-                        continue
-                    if str(e.get("id")) == mid:
-                        hit = True
-                        rel = str(e.get("rel_path", ""))
-                        ep = self._entry_path(sk, rel)
-                        if ep.is_file():
-                            try:
-                                ep.unlink()
-                            except Exception:
-                                pass
-                        continue
-                    new_entries.append(e)
-                if hit:
-                    raw["entries"] = new_entries
-                    self._save_manifest(sk, raw)
-                    return True
-            return False
-
-    def _score_entry(
-        self, tokens: List[str], title: str, summary: str, body: str
-    ) -> float:
-        blob = f"{title}\n{summary}\n{body}"
-        if not tokens:
-            return 0.0
-        score = 0.0
-        blob_lower = blob.lower()
-        for t in tokens:
-            tl = t.lower()
-            c = blob_lower.count(tl)
-            score += float(c) * 2.0
-            if tl in title.lower():
-                score += 3.0
-            if tl in summary.lower():
-                score += 1.5
-        return score
-
-    def _collect_entries_for_scope(self, scope_key: str) -> List[Dict[str, Any]]:
-        data = self._load_manifest(scope_key)
-        out: List[Dict[str, Any]] = []
-        sk = str(data.get("scope_key") or scope_key or "global")
-        now = time.time()
-        for e in data.get("entries") or []:
-            if not isinstance(e, dict):
-                continue
-            exp = e.get("expires_at")
-            if exp is not None:
-                try:
-                    if float(exp) < now:
-                        continue
-                except (TypeError, ValueError):
-                    pass
-            e = dict(e)
-            e["_scope_key"] = sk
-            out.append(e)
-        return out
-
-    def _collect_all_entries(self) -> List[Dict[str, Any]]:
-        all_e: List[Dict[str, Any]] = []
-        for manifest_path in sorted(self._scopes_base().glob("*/manifest.json")):
+            conn = self._connect()
             try:
-                data = json.loads(manifest_path.read_text(encoding="utf-8"))
+                cur = conn.execute("DELETE FROM memories WHERE id = ?", (mid,))
+                conn.commit()
+                return cur.rowcount > 0
             except Exception:
-                continue
-            sk = str(data.get("scope_key") or "global")
-            for e in data.get("entries") or []:
-                if not isinstance(e, dict):
-                    continue
-                e = dict(e)
-                e["_scope_key"] = sk
-                all_e.append(e)
-        return all_e
+                return False
+            finally:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
 
     def search_memories(
         self,
@@ -401,177 +230,176 @@ class MemoryManager:
         scope_key: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         with self._lock:
-            self._purge_expired_unlocked()
+            self._purge_expired()
             q = (query or "").strip()
             if not q:
                 return []
-            tokens = _query_tokens(q)
             top_k = max(1, min(top_k, 20))
 
-            def run_pool(candidates: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-                scored: List[Tuple[float, Dict[str, Any], str, str]] = []
-                for e in candidates:
-                    sk = str(e.get("_scope_key", "global"))
-                    rel = str(e.get("rel_path", ""))
-                    title = str(e.get("title", ""))
-                    summary = str(e.get("summary", ""))
-                    body = ""
-                    ep = self._entry_path(sk, rel)
-                    if ep.is_file():
-                        meta, body = _read_md_document(ep)
-                        title = str(meta.get("title") or title)
-                        if meta.get("system_note"):
-                            summary = f"{summary} {meta.get('system_note')}"
-                    sc = self._score_entry(tokens, title, summary, body)
-                    if sc > 0:
-                        mid = str(e.get("id", ""))
-                        scored.append((sc, e, title, body))
-                if not scored:
-                    return []
-                max_s = max(s[0] for s in scored)
-                if max_s <= 0:
-                    max_s = 1.0
-                out: List[Dict[str, Any]] = []
-                for sc, e, title, body in sorted(
-                    scored, key=lambda x: x[0], reverse=True
-                )[:top_k]:
-                    sim = min(1.0, sc / max_s)
-                    mid = str(e.get("id", ""))
-                    sys_note = None
-                    ep = self._entry_path(str(e.get("_scope_key", "global")), str(e.get("rel_path", "")))
-                    created_ts: Optional[float] = None
-                    if ep.is_file():
-                        meta, body = _read_md_document(ep)
-                        sys_note = meta.get("system_note")
-                        body = body.strip()
-                        try:
-                            if meta.get("created_at") is not None:
-                                created_ts = float(meta.get("created_at"))
-                        except (TypeError, ValueError):
-                            created_ts = None
-                    if created_ts is None:
-                        try:
-                            if e.get("created_at") is not None:
-                                created_ts = float(e.get("created_at"))
-                        except (TypeError, ValueError):
-                            created_ts = None
-                    if created_ts is None:
-                        created_ts = 0.0
-                    out.append(
-                        {
-                            "id": mid,
-                            "title": title,
-                            "content": body[:8000],
-                            "tier": str(e.get("tier", "")),
-                            "memory_type": str(e.get("memory_type", "")),
-                            "source": str(e.get("source", "")),
-                            "similarity": round(float(sim), 4),
-                            "raw_score": round(float(sc), 4),
-                            "created_at": created_ts,
-                            "system_note": sys_note,
-                        }
-                    )
-                return out
+            # Embed query
+            query_vec = self._embed(q)
+            if query_vec is None:
+                return []
 
-            sk_filter = (scope_key or "").strip() or None
-            if sk_filter:
-                candidates = self._collect_entries_for_scope(sk_filter)
-                res = run_pool(candidates)
-                if res:
-                    return res
-            # Global fallback (matches the old Chroma behavior of relaxing scope when nothing matches).
-            return run_pool(self._collect_all_entries())
+            conn = self._connect()
+            try:
+                scope_filter = (scope_key or "").strip() or None
+                if scope_filter:
+                    rows = conn.execute(
+                        "SELECT id, title, content, tier, memory_type, source, "
+                        "strength, created_at, last_access, expires_at, "
+                        "system_note, embedding "
+                        "FROM memories WHERE scope_key = ? AND embedding IS NOT NULL",
+                        (scope_filter,),
+                    ).fetchall()
+                else:
+                    rows = conn.execute(
+                        "SELECT id, title, content, tier, memory_type, source, "
+                        "strength, created_at, last_access, expires_at, "
+                        "system_note, embedding "
+                        "FROM memories WHERE embedding IS NOT NULL"
+                    ).fetchall()
+            except Exception:
+                return []
+            finally:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+
+            scored: List[Tuple[float, Dict[str, Any]]] = []
+            for row in rows:
+                mem_id = str(row[0])
+                title = str(row[1] or "")
+                content = str(row[2] or "")
+                tier = str(row[3] or "")
+                mem_type = str(row[4] or "")
+                source = str(row[5] or "")
+                strength = float(row[6] or 0.0)
+                created_at = float(row[7] or 0.0)
+                system_note = str(row[10]) if row[10] else None
+                emb_blob = row[11]
+
+                if emb_blob is None:
+                    continue
+
+                try:
+                    stored_vec = np.frombuffer(emb_blob, dtype=np.float32)
+                except Exception:
+                    continue
+
+                if stored_vec.shape[0] != _EMBEDDING_DIM:
+                    continue
+
+                sim = _cosine_similarity(query_vec, stored_vec)
+                scored.append((
+                    sim,
+                    {
+                        "id": mem_id,
+                        "title": title,
+                        "content": content[:8000],
+                        "tier": tier,
+                        "memory_type": mem_type,
+                        "source": source,
+                        "similarity": round(float(sim), 4),
+                        "raw_score": round(float(sim), 4),
+                        "created_at": created_at,
+                        "system_note": system_note,
+                    },
+                ))
+
+            scored.sort(key=lambda x: x[0], reverse=True)
+            return [item for _, item in scored[:top_k]]
 
     def touch_memory(self, memory_id: str, delta_strength: float = 0.05) -> None:
         with self._lock:
-            self._purge_expired_unlocked()
+            self._purge_expired()
             mid = (memory_id or "").strip()
             if not mid:
                 return
-            for manifest_path in self._scopes_base().glob("*/manifest.json"):
-                try:
-                    data = json.loads(manifest_path.read_text(encoding="utf-8"))
-                except Exception:
-                    continue
-                sk = str(data.get("scope_key") or "global")
-                entries = data.get("entries")
-                if not isinstance(entries, list):
-                    continue
-                for i, e in enumerate(entries):
-                    if not isinstance(e, dict):
-                        continue
-                    if str(e.get("id")) != mid:
-                        continue
-                    now = time.time()
-                    e["last_access"] = now
-                    try:
-                        st = float(e.get("strength") or 0.5) + delta_strength
-                    except (TypeError, ValueError):
-                        st = 0.5 + delta_strength
-                    e["strength"] = min(1.0, st)
-                    entries[i] = e
-                    rel = str(e.get("rel_path", ""))
-                    ep = self._entry_path(sk, rel)
-                    if ep.is_file():
-                        meta, body = _read_md_document(ep)
-                        meta["last_access"] = now
-                        meta["strength"] = e["strength"]
-                        _write_md_document(ep, meta, body)
-                    data["entries"] = entries
-                    self._save_manifest(sk, data)
+            conn = self._connect()
+            try:
+                row = conn.execute(
+                    "SELECT strength FROM memories WHERE id = ?", (mid,)
+                ).fetchone()
+                if row is None:
                     return
+                now = time.time()
+                st = min(1.0, float(row[0] or 0.5) + delta_strength)
+                conn.execute(
+                    "UPDATE memories SET last_access = ?, strength = ? WHERE id = ?",
+                    (now, st, mid),
+                )
+                conn.commit()
+            except Exception:
+                pass
+            finally:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
 
     def list_recent(self, limit: int = 20, scope_key: Optional[str] = None) -> List[Dict[str, Any]]:
         with self._lock:
-            self._purge_expired_unlocked()
+            self._purge_expired()
             limit = max(1, min(limit, 100))
-            sk = (scope_key or "").strip() or None
-            if sk:
-                data = self._load_manifest(sk)
-                entries = [
-                    e
-                    for e in (data.get("entries") or [])
-                    if isinstance(e, dict)
-                ]
-            else:
-                entries = self._collect_all_entries()
-            entries.sort(
-                key=lambda x: float(x.get("last_access") or 0), reverse=True
-            )
+            conn = self._connect()
+            try:
+                scope_filter = (scope_key or "").strip() or None
+                if scope_filter:
+                    rows = conn.execute(
+                        "SELECT id, title, tier, memory_type, source, strength, created_at, content "
+                        "FROM memories WHERE scope_key = ? "
+                        "ORDER BY last_access DESC LIMIT ?",
+                        (scope_filter, limit),
+                    ).fetchall()
+                else:
+                    rows = conn.execute(
+                        "SELECT id, title, tier, memory_type, source, strength, created_at, content "
+                        "FROM memories "
+                        "ORDER BY last_access DESC LIMIT ?",
+                        (limit,),
+                    ).fetchall()
+            except Exception:
+                return []
+            finally:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+
             out: List[Dict[str, Any]] = []
-            for e in entries[:limit]:
-                if not isinstance(e, dict):
-                    continue
-                preview = str(e.get("summary", ""))[:200]
-                out.append(
-                    {
-                        "id": e.get("id"),
-                        "title": e.get("title"),
-                        "tier": e.get("tier"),
-                        "memory_type": e.get("memory_type"),
-                        "source": e.get("source"),
-                        "strength": e.get("strength"),
-                        "created_at": e.get("created_at"),
-                        "preview": preview,
-                    }
-                )
+            for row in rows:
+                preview = str(row[7] or "").replace("\n", " ").strip()[:200]
+                out.append({
+                    "id": row[0],
+                    "title": row[1],
+                    "tier": row[2],
+                    "memory_type": row[3],
+                    "source": row[4],
+                    "strength": row[5],
+                    "created_at": row[6],
+                    "preview": preview,
+                })
             return out
 
     def stats(self) -> Dict[str, Any]:
         with self._lock:
-            n = 0
-            for manifest_path in self._scopes_base().glob("*/manifest.json"):
+            conn = self._connect()
+            try:
+                row = conn.execute("SELECT COUNT(*) FROM memories").fetchone()
+                n = int(row[0]) if row else 0
+            except Exception:
+                n = 0
+            finally:
                 try:
-                    data = json.loads(manifest_path.read_text(encoding="utf-8"))
-                    entries = data.get("entries")
-                    if isinstance(entries, list):
-                        n += len(entries)
+                    conn.close()
                 except Exception:
                     pass
             return {
                 "total_memories": n,
-                "storage_backend": "markdown",
-                "embedding_model": None,
+                "storage_backend": "sqlite+embedding",
+                "embedding_model": "all-MiniLM-L6-v2",
                 "storage_dir": str(self.memory_root),
             }
 
@@ -632,7 +460,7 @@ class MemoryService:
         try:
             _mem_log.info("Experiential memory thread initialization started, config_dir=%s", self._config_dir)
             self._mm = MemoryManager(self._config_dir, self._embedding_model)
-            _mem_log.info("Experiential memory thread initialization completed (Markdown backend)")
+            _mem_log.info("Experiential memory thread initialization completed (SQLite+embedding backend)")
         except Exception:
             _mem_log.exception("Experiential memory thread initialization failed")
             self._mm = None

@@ -9,7 +9,7 @@ from .base import BaseTool
 
 class MemoryAddTool(BaseTool):
     name = "memory_add"
-    description = "Write one experiential memory entry. Use only for short factual entries such as agreements, preference conclusions, or corrections. If the user emphasizes permanent/long-term memory and the content is a stable default (forms of address, assistant display name, long-term interaction rules), use user_preferences_patch instead of only this tool. Do not save code snippets, raw script/command output, raw logs, or long summarized text; code/output information should be read live through shell when needed (with summarize if necessary). Do not write passwords, tokens, or private keys. If you believe the user's view may be wrong, record your independent judgment in system_note."
+    description = "Write one experiential memory entry. This is the DEFAULT tool for any 'remember that...' / '记住...' request. Only use user_preferences_patch instead when the user explicitly says it is a preference ('I prefer', 'set a preference'). Do not save code snippets, raw script/command output, raw logs, or long summarized text. Do not write passwords, tokens, or private keys. If you believe the user's view may be wrong, record your independent judgment in system_note."
     parameters: Dict[str, Any] = {
         "type": "object",
         "properties": {
@@ -73,6 +73,6 @@ class MemoryAddTool(BaseTool):
                 user_request=ur,
                 system_note=sn,
             )
-            return {"success": True, "memory_id": mid, "title": title}
+            return {"success": True, "memory_id": mid, "title": title, "output": f"stored memory_id={mid} title={title}"}
         except Exception as e:
             return {"success": False, "error": f"memory add failed: {e}"}

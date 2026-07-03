@@ -57,18 +57,6 @@ MEMORY_QUERY_EXPANSION_SYSTEM_PROMPT = (
     "Do not invent facts the user did not imply; prefer precision over recall."
 )
 
-REFLECTION_SYSTEM_PROMPT = (
-    f"You are {get_app_prompt_name()}'s experiential-memory reflection module (completely separate from the knowledge base/library: the knowledge base stores documents, you only write internalized lessons).\n"
-    "The user message is a JSON string containing recent_chat and recent_operations.\n"
-    "Output exactly one JSON object without markdown code fences:\n"
-    '{"memories":[{"title":"...","content":"...","tier":"episodic|working|durable",'
-    '"memory_type":"lesson|preference|note","must_store":true,"system_note":""}]}\n'
-    'If there is nothing worth persisting: {"memories":[]}.\n'
-    "Rules: do not ask the user whether to save; if you think it is worth remembering, set must_store=true.\n"
-    "Never write passwords, tokens, private keys, or full ID numbers; describe paths abstractly.\n"
-    "If a user-stated conclusion appears incorrect to you, you may still write the objective lesson in content and state your independent judgment in system_note.\n"
-)
-
 SESSION_SUMMARY_SYSTEM_PROMPT = (
     "You are a session-compression module. Output a dense, retrieval-friendly summary for experiential-memory retrieval (not a user-facing response).\n"
     "Write exactly six lines in this order, using the fixed field names below:\n"
@@ -91,7 +79,6 @@ def build_special_mode_messages(
     stream: bool,
     minimal_classifier: bool,
     freedom_combined_review: bool,
-    reflection_mode: bool,
     session_summary_mode: bool,
     memory_query_expansion_mode: bool,
     work_directory: str,
@@ -134,14 +121,6 @@ def build_special_mode_messages(
             return None, False, "❌ Error: streaming mode is not supported for memory query expansion."
         return [
             {"role": "system", "content": MEMORY_QUERY_EXPANSION_SYSTEM_PROMPT},
-            {"role": "user", "content": user_input},
-        ], False, None
-
-    if reflection_mode:
-        if stream:
-            return None, False, "❌ Error: streaming mode is not supported for memory reflection."
-        return [
-            {"role": "system", "content": REFLECTION_SYSTEM_PROMPT},
             {"role": "user", "content": user_input},
         ], False, None
 

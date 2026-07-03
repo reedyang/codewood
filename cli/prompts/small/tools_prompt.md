@@ -20,5 +20,5 @@ Before finishing, check if you need more info from the user. If so, call `reques
 
 ## User Preferences
 
-Use `user_preferences_read` / `user_preferences_patch` for permanent preferences (names, tone, defaults). Location: `<config>/user_preferences.md`.
+Use `user_preferences_patch` ONLY when the user explicitly says "I prefer" or "set a preference". Generic "remember that..." goes to `memory_add`. Location: `<config>/user_preferences.md`.
 

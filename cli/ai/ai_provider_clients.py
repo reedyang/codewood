@@ -251,7 +251,6 @@ class AICallContext:
     minimal_classifier: bool = False
     freedom_combined_review: bool = False
     return_message: bool = False
-    reflection_mode: bool = False
     session_summary_mode: bool = False
     memory_query_expansion_mode: bool = False
     image_path: Optional[str] = None

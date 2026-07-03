@@ -357,7 +357,7 @@ class LLMContextManager:
                     worked_payload = None
                 if isinstance(worked_payload, dict):
                     continue
-            content = self._normalize_history_content_for_model(role, raw_content)
+            content = self._normalize_history_content_for_model(role, raw_content, message=msg)
             if role == "assistant":
                 before = content
                 content = self._clip_text_to_token_budget(content, assistant_clip_tokens)
@@ -443,7 +443,7 @@ class LLMContextManager:
         if tc is not None:
             return tc
         role = str(msg.get("role") or "").strip().lower()
-        content = self._normalize_history_content_for_model(role, str(msg.get("content") or ""))
+        content = self._normalize_history_content_for_model(role, str(msg.get("content") or ""), message=msg)
         return self._estimate_message_tokens(role, content)
 
     def _history_tokens_cumulative(self, messages: List[Dict[str, Any]]) -> int:
@@ -497,7 +497,7 @@ class LLMContextManager:
             if tc is not None:
                 return int(tc)
             role = str(msg.get("role") or "").strip().lower()
-            content = self._normalize_history_content_for_model(role, str(msg.get("content") or ""))
+            content = self._normalize_history_content_for_model(role, str(msg.get("content") or ""), message=msg)
             return self._estimate_message_tokens(role, content)
 
         total = 0
@@ -1121,28 +1121,6 @@ class LLMContextManager:
         self.agent._reload_skills()
         self.agent.system_prompt = self.agent._compose_system_prompt_snapshot(include_tools=True)
         op_context_budget = int(budgets["op_context_budget"])
-        memory_share = float(int(budgets.get("memory_share_ratio", 45))) / 100.0
-        mem_budget = max(80, int(int(budgets["system_budget"]) * memory_share))
-        tail_budget = max(120, int(int(budgets["system_budget"]) - mem_budget))
-        mem_block_raw = self.memory_context_for_prompt(user_input)
-        mem_block = mem_block_raw
-        if mem_block:
-            mem_block = self._clip_text_to_token_budget(mem_block, mem_budget)
-        def _build_memory_system_content(block: str, compressed: bool = False) -> str:
-            if not block:
-                return ""
-            header = (
-                "[Experiential memory - compressed mode]"
-                if compressed
-                else "[Experiential memory - must be applied proactively]"
-            )
-            return (
-                f"{header}\n"
-                "The following entries are persisted for the current workspace. Before each subsequent reply, first decide whether they are relevant; "
-                "if relevant, natural-language output must follow this section and must not replace it with a generic cloud/provider default persona.\n\n"
-                f"{block}"
-            )
-        memory_system_content = _build_memory_system_content(mem_block)
         immutable_system_core = (
             f"{self.agent._skills_routing_prefix}{self.agent.system_prompt}\n"
             f"{self._software_development_prompt_append()}"
@@ -1187,8 +1165,6 @@ class LLMContextManager:
                 history_messages = history_messages[:-1]
         for msg in history_messages:
             messages.append(msg)
-        if memory_system_content:
-            messages.append({"role": "system", "content": memory_system_content})
 
         force_new_requirement = bool(
             getattr(self.agent, "_force_current_input_as_requirement_once", False)
@@ -1199,13 +1175,12 @@ class LLMContextManager:
             if force_new_requirement
             else self._first_user_requirement(user_input)
         )
-        # Include the full user input (task + first-round evidence / contract
-        # from the runtime loop).  The raw user text is also in conversation
-        # history, but the final user message must carry the complete task
-        # context so the model sees the user's intent directly on the last
-        # message — stripping it caused the model to anchor on time/location
-        # instead of the actual question.
+
+        # Retrieve memory context and inject into user message
+        mem_context = self.memory_context_for_user_message(user_input)
         current_input = str(user_input or "").strip() + "\n"
+        if mem_context:
+            current_input = mem_context.strip() + "\n" + current_input
         if force_new_requirement:
             last_cancelled_task = str(getattr(self.agent, "_last_cancelled_task", "") or "").strip()
             current_input += (
@@ -1223,6 +1198,8 @@ class LLMContextManager:
             current_input += f"Most recent interruption status: {interruption_line}\n"
         current_input += f"Local time reference: {date_time}"
         current_user_msg = {"role": "user", "content": current_input}
+        if mem_context:
+            current_user_msg["_memory_context"] = mem_context.strip()
         messages.append(current_user_msg)
 
         system_tokens = 0
@@ -1231,8 +1208,6 @@ class LLMContextManager:
         tool_schemas_tokens = 0
         try:
             system_tokens = self._estimate_message_tokens("system", sys_prefix)
-            if memory_system_content:
-                system_tokens += self._estimate_message_tokens("system", memory_system_content)
             history_tokens = self._history_tokens_cumulative(history_messages)
             user_tokens = self._estimate_message_tokens("user", current_input)
             tool_schemas_tokens = self._estimate_tool_schemas_tokens()
@@ -1254,12 +1229,7 @@ class LLMContextManager:
                 aggressive_history_summary_budget = max(30, int(aggressive_history_budget * 0.55))
                 aggressive_assistant_clip = max(48, int(int(budgets.get("assistant_clip_tokens") or 180) * 0.35))
                 aggressive_op_context_budget = max(24, int(op_context_budget * 0.35))
-                aggressive_mem_budget = max(24, int(aggressive_system_budget * 0.35))
 
-                mem_block2 = ""
-                if mem_block_raw:
-                    mem_block2 = self._clip_text_to_token_budget(mem_block_raw, aggressive_mem_budget)
-                memory_system_content2 = _build_memory_system_content(mem_block2, compressed=True)
                 tail_context2 = immutable_system_core + runtime_tail_raw
                 sys_prefix2 = tail_context2
 
@@ -1269,31 +1239,29 @@ class LLMContextManager:
                     aggressive_assistant_clip,
                     source_history=filtered_history,
                 )
-                current_input2_head = str(user_input or "").strip() + "\n"
+                current_input2 = str(user_input or "").strip() + "\n"
+                mem_context2 = self.memory_context_for_user_message(user_input)
+                if mem_context2:
+                    current_input2 = mem_context2.strip() + "\n" + current_input2
                 if force_new_requirement:
                     last_cancelled_task = str(getattr(self.agent, "_last_cancelled_task", "") or "").strip()
-                    current_input2_head += (
+                    current_input2 += (
                         "4) The previous task was cancelled by the user. If this turn is a new task, do not proactively resume or redo the cancelled task "
                         "unless the user explicitly asks to continue.\n\n"
                     )
                     if last_cancelled_task:
-                        current_input2_head += f"Recently cancelled task: {last_cancelled_task}\n"
+                        current_input2 += f"Recently cancelled task: {last_cancelled_task}\n"
                 if interruption_line:
-                    current_input2_head += f"Most recent interruption status: {interruption_line}\n"
+                    current_input2 += f"Most recent interruption status: {interruption_line}\n"
                 if self.agent.operation_results:
                     pass
                 if context:
                     ctx_line2 = f"Operation context: {context}\n"
-                    current_input2_head += self._clip_text_to_token_budget(ctx_line2, aggressive_op_context_budget)
+                    current_input2 += self._clip_text_to_token_budget(ctx_line2, aggressive_op_context_budget)
                 # Hard anchors: never clip current input and time.
-                current_input2_tail = (
-                    f"Local time reference: {date_time}"
-                )
-                current_input2 = current_input2_head + current_input2_tail
+                current_input2 += f"Local time reference: {date_time}"
 
                 system_tokens2 = self._estimate_message_tokens("system", sys_prefix2)
-                if memory_system_content2:
-                    system_tokens2 += self._estimate_message_tokens("system", memory_system_content2)
                 history_tokens2 = sum(
                     self._message_cost_for_tail_budget(m)
                     for m in history_messages2
@@ -1309,9 +1277,10 @@ class LLMContextManager:
                 if total_input_tokens2 < total_input_tokens:
                     messages = [{"role": "system", "content": sys_prefix2}]
                     messages += list(history_messages2)
-                    if memory_system_content2:
-                        messages.append({"role": "system", "content": memory_system_content2})
-                    messages.append({"role": "user", "content": current_input2})
+                    user_msg2 = {"role": "user", "content": current_input2}
+                    if mem_context2:
+                        user_msg2["_memory_context"] = mem_context2.strip()
+                    messages.append(user_msg2)
                     sys_prefix = sys_prefix2
                     history_messages = history_messages2
                     current_input = current_input2

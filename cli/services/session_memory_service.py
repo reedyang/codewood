@@ -21,7 +21,7 @@ from ..core.logging.app_logging import get_logger
 MEMORY_RETRIEVAL_ROUNDS = 3
 MEMORY_RETRIEVAL_MSG_MAX_CHARS = 400
 MEMORY_RETRIEVAL_QUERY_MAX_CHARS = 2000
-MEMORY_FALLBACK_MIN_RAW_SCORE = 4.0
+MEMORY_FALLBACK_MIN_COSINE_SCORE = 0.55
 MEMORY_EXPANSION_MAX_KEYWORD_CHARS = 600
 MEMORY_IDENTITY_CLUSTER_TYPES = frozenset({"preference", "identity"})
 SESSION_SUMMARY_FIELD_NAMES = ("Goals", "Facts", "Preferences", "Decisions", "Errors", "Next steps")
@@ -761,11 +761,16 @@ class SessionMemoryService:
                 return rows[idx:]
         return rows
 
-    def _normalize_history_content_for_model(self, role: str, content: str) -> str:
+    def _normalize_history_content_for_model(self, role: str, content: str, message: Optional[Dict[str, Any]] = None) -> str:
         text = str(content or "")
         norm_role = str(role or "").strip().lower()
         if not text:
             return ""
+        # Restore stored memory context for user messages (injected on creation, persisted for cache prefix)
+        if norm_role == "user" and isinstance(message, dict):
+            mem_ctx = message.get("_memory_context", "")
+            if mem_ctx and isinstance(mem_ctx, str) and mem_ctx.strip():
+                text = mem_ctx.strip() + "\n" + text
         if norm_role == "assistant":
             compact_summary = self._context_compaction_summary_for_model(text)
             if compact_summary:
@@ -1140,10 +1145,10 @@ class SessionMemoryService:
             return False
         if not rows_sem:
             return True
-        scores = [float(r.get("raw_score") or 0) for r in rows_sem]
+        scores = [float(r.get("similarity") or 0) for r in rows_sem]
         if not scores:
             return True
-        return max(scores) < MEMORY_FALLBACK_MIN_RAW_SCORE
+        return max(scores) < MEMORY_FALLBACK_MIN_COSINE_SCORE
 
     def run_memory_expansion_llm(self, user_input: str) -> Optional[Dict[str, Any]]:
         ref = self.memory_expansion_reference_block()
@@ -1187,14 +1192,14 @@ class SessionMemoryService:
         rows_exp: List[Dict[str, Any]] = []
         _mem_log = get_logger()
         if self.should_run_memory_query_expansion(rows_sem, rows_boost, identity_mode):
-            max_raw = max((float(r.get("raw_score") or 0) for r in rows_sem), default=0.0)
+            max_sim = max((float(r.get("similarity") or 0) for r in rows_sem), default=0.0)
             if not rows_sem:
                 _mem_log.info("Experiential memory: triggered query expansion fallback (primary retrieval had no hits)")
             else:
                 _mem_log.info(
-                    "Experiential memory: triggered query expansion fallback (primary retrieval weak max_raw=%.2f < %.2f)",
-                    max_raw,
-                    MEMORY_FALLBACK_MIN_RAW_SCORE,
+                    "Experiential memory: triggered query expansion fallback (primary retrieval weak max_sim=%.2f < %.2f)",
+                    max_sim,
+                    MEMORY_FALLBACK_MIN_COSINE_SCORE,
                 )
             exp = self.run_memory_expansion_llm(raw_ui)
             if exp:
@@ -1260,7 +1265,7 @@ class SessionMemoryService:
         merged.sort(key=self.memory_row_sort_key)
         return merged[:12]
 
-    def memory_context_for_prompt(self, user_input: str, max_chars: int = 2400) -> str:
+    def memory_context_for_user_message(self, user_input: str, max_chars: int = 2400) -> str:
         if not self.agent._ensure_memory_service():
             return ""
         try:
@@ -1270,13 +1275,12 @@ class SessionMemoryService:
             rows = self.memory_rows_for_prompt(user_input)
             if not rows:
                 return ""
-            lines = [
-                "[Experiential memory (internalized lessons and preferences; still verify key facts)]",
-                "If multiple entries cover the same topic (such as form of address or display name), use the newest record as the current stance when replying. Older entries are history/previous usage; do not expand unless the user asks, but be truthful if asked.",
-            ]
-            total = len("\n".join(lines))
+            lines: List[str] = []
+            total = 0
             for r in rows:
-                block = f"- ({r.get('tier', '')}) {r.get('title', '')}: {r.get('content', '')[:500]}"
+                mid = str(r.get("id", "") or "")
+                mid_tag = f"(id={mid[:12]})" if mid else ""
+                block = f"[Memory: {r.get('title', '')}]{mid_tag} {r.get('content', '')[:500]}"
                 if r.get("system_note"):
                     block += f" [System note: {r['system_note'][:200]}]"
                 ca = r.get("created_at")
@@ -1297,97 +1301,9 @@ class SessionMemoryService:
                         self.agent.memory_service.touch_memory(mid)
                     except Exception:
                         pass
-            return "\n".join(lines) if len(lines) > 1 else ""
+            return "\n".join(lines) if lines else ""
         except Exception:
             return ""
-
-    def schedule_auto_memory_reflect(self) -> None:
-        if not self.agent._ensure_memory_service():
-            return
-        now = time.monotonic()
-        if now - getattr(self.agent, "_last_memory_reflect_at", 0.0) < 45.0:
-            return
-        self.agent._last_memory_reflect_at = now
-
-        def _run() -> None:
-            try:
-                self.run_memory_reflection_body()
-            except Exception:
-                try:
-                    get_logger().exception("Automatic memory reflection failed")
-                except Exception:
-                    pass
-
-        threading.Thread(target=_run, daemon=True, name=f"{get_app_logger_root()}-memory-reflect").start()
-
-    def run_memory_reflection_body(self) -> None:
-        if not self.agent._ensure_memory_service():
-            return
-        hist_all = self.agent.conversation_history[-12:] if self.agent.conversation_history else []
-        hist: List[Dict[str, Any]] = []
-        for msg in hist_all:
-            role = str(msg.get("role") or "").strip().lower()
-            content = str(msg.get("content") or "")
-            if self._is_internal_slash_history_message(role, content):
-                continue
-            hist.append(msg)
-        if len(hist) > 6:
-            hist = hist[-6:]
-        op_tail = self.agent.operation_results[-4:] if self.agent.operation_results else []
-        blob = {"recent_chat": hist, "recent_operations": op_tail}
-        payload = json.dumps(blob, ensure_ascii=False)[:12000]
-        raw = self.agent.call_ai(payload, context="", stream=False, reflection_mode=True, return_message=False)
-        if not isinstance(raw, str) or not raw.strip():
-            return
-        text = raw.strip()
-        data = None
-        try:
-            data = json.loads(text)
-        except Exception:
-            start = text.find("{")
-            if start >= 0:
-                depth = 0
-                for i in range(start, len(text)):
-                    if text[i] == "{":
-                        depth += 1
-                    elif text[i] == "}":
-                        depth -= 1
-                        if depth == 0:
-                            try:
-                                data = json.loads(text[start : i + 1])
-                            except Exception:
-                                data = None
-                            break
-        if not isinstance(data, dict):
-            return
-        mems = data.get("memories")
-        if not isinstance(mems, list):
-            return
-        sk = self.agent._memory_scope_key()
-        for m in mems[:8]:
-            if not isinstance(m, dict) or not m.get("must_store"):
-                continue
-            title = str(m.get("title") or "experience").strip()[:500]
-            content = str(m.get("content") or "").strip()
-            if not content:
-                continue
-            tier = str(m.get("tier") or "episodic").strip().lower()
-            if tier not in ("working", "episodic", "durable"):
-                tier = "episodic"
-            mtype = str(m.get("memory_type") or "lesson").strip()[:64]
-            sys_note = str(m.get("system_note") or "").strip()[:2000] or None
-            try:
-                self.agent.memory_service.add_memory(
-                    title=title,
-                    content=content,
-                    tier=tier,
-                    memory_type=mtype,
-                    scope_key=sk,
-                    source="auto",
-                    system_note=sys_note,
-                )
-            except Exception:
-                continue
 
     def _estimate_text_tokens(self, text: str) -> int:
         return self.token_estimator.estimate_text_tokens(text)

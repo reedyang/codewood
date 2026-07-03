@@ -462,7 +462,7 @@ def setup_runtime_services(agent: Any) -> None:
         pass
     agent._schedule_model_validation_background()
     agent.memory_service = None
-    agent._last_memory_reflect_at = 0.0
+
     agent._schedule_memory_service_background()
     agent.tool_dispatcher = ToolDispatcher(agent, agent._execute_tool_call_legacy)
     _refresh_active_chat_usage_snapshot(agent)

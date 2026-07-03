@@ -4606,7 +4606,6 @@ def run_agent_loop(agent: Any):
                 active_status_ticker = None
                 self._clear_last_thinking_line()
             self._stop_interrupt_monitor(cancel_task_on_interrupt=True)
-            self._schedule_auto_memory_reflect()
             # Plan mode: once the agent has drafted a plan, offer an
             # interactive "execute now / modify plan" choice (mirrors the
             # GUI's Execute-now affordance). Choosing execute switches to
