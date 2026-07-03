@@ -2420,9 +2420,38 @@ class ServeApp:
                 count = int(data.get("count") or 200)
             except (TypeError, ValueError):
                 count = 200
-            return {"success": True, **session.read_lines(start, count)}
+            r = session.read_lines(start, count)
+            out_lines = list(r.get("lines") or [])
+            pending = str(r.get("pending") or "")
+            total_lines = r.get("totalLines", 0)
+            truncated = r.get("truncated", False)
+            if truncated:
+                out_lines.insert(0, "(truncated: oldest lines dropped)")
+            if out_lines:
+                output_text = "\n".join(out_lines)
+            elif pending:
+                output_text = f"[partial] {pending}"
+            else:
+                output_text = "(no output yet)"
+            if pending and out_lines:
+                output_text += f"\n[pending] {pending}"
+            if total_lines:
+                clip_start = r.get("start", 0)
+                clip_end = clip_start + len(out_lines) - (1 if truncated else 0)
+                output_text += f"\n(totalLines: {total_lines}, showing lines {clip_start}-{clip_end})"
+            else:
+                output_text += f"\n(totalLines: 0)"
+            r["output"] = output_text
+            return {"success": True, **r}
         if act == "info":
-            return {"success": True, **session.info()}
+            r = session.info()
+            r["output"] = (
+                f"Shell: {r.get('kind', '?')}, CWD: {r.get('cwd', '?')}, "
+                f"Size: {r.get('cols', '?')}x{r.get('rows', '?')}, "
+                f"totalLines: {r.get('totalLines', 0)}, "
+                f"alive: {r.get('alive', False)}"
+            )
+            return {"success": True, **r}
         return {"success": False, "error": f"unknown console action: {action}"}
 
     # ----------------------------------------------------------------------
