@@ -106,7 +106,11 @@ rem    functionality. Output: dist\codewood\codewood.exe (+ _internal\).
   --collect-all webview ^
   --collect-all pythonnet ^
   --collect-all clr_loader ^
+  --collect-all winpty ^
   --hidden-import clr ^
+  --hidden-import winpty ^
+  --hidden-import winpty.ptyprocess ^
+  --hidden-import winpty.enums ^
   --collect-all tiktoken ^
   --hidden-import tiktoken_ext ^
   --hidden-import tiktoken_ext.openai_public ^
