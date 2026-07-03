@@ -5,7 +5,7 @@ description: Use to analyze an image (UI mockup, screenshot, design, diagram, ch
 # model_providers in config.jsonc, e.g. openai:gpt-4o. The image is analyzed by
 # THIS model, not the main model, so a non-multimodal main model can still
 # "see" the image through this sub-agent.
-model: openai:gpt-4o
+model: openai/gpt-4o
 # No tools: this sub-agent only inspects the attached image and returns text.
 # The image is supplied directly via the run_subagent `image` argument.
 tools: []

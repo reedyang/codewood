@@ -168,7 +168,7 @@ export function SubAgentsSettings() {
                 />
               </button>
               <span className="mcp-server-name">{agent.name}</span>
-              {agent.model && <span className="mcp-badge">{agent.model}</span>}
+              {agent.model && <span className="mcp-badge">{agent.model.replace(":", "/")}</span>}
               <div className="mcp-server-actions">
                 <button
                   type="button"
@@ -214,7 +214,7 @@ export function SubAgentsSettings() {
                     {t("subagents.fieldModel")}
                   </span>
                   <span className="subagent-prop-value">
-                    {agent.model || t("subagents.modelDefault")}
+                    {agent.model ? agent.model.replace(":", "/") : t("subagents.modelDefault")}
                   </span>
                 </div>
                 <div className="subagent-prop">

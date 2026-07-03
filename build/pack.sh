@@ -81,6 +81,7 @@ fi
 ARGS=(
   --onedir --noconfirm --name codewood
   --add-data "../../skills:skills"
+  --add-data "../../additional-subagents:additional-subagents"
   --add-data "../../cli:cli"
   --add-data "../../desktop/frontend/dist:frontend"
   --add-data "../../desktop/host:host"
