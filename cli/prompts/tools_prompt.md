@@ -64,8 +64,8 @@ If no valid matching skill/frontmatter field exists, the host does not create a 
 
 ## User Preference File `user_preferences_read` / `user_preferences_patch`
 
-- Location: `<config>/user_preferences.md`. It is injected every round as system context before MCP/tool catalog. It is a Markdown document with sections. Use it for long-term stable preferences such as names, tone, defaults, and taboos. It is not for one-off lessons; if experiential-memory tools are available, route those into them per their dedicated section.
-- Use `user_preferences_patch` when the user emphasizes permanent/long-term preferences such as “always remember”, “forever”, “from now on”, names, identity, or default behavior. Usually use `operation=upsert_section` with `section_heading` and `section_body`. You may read first with `user_preferences_read`.
-- Examples: “remember your name forever”, “always call me XX”, “Remember my preference forever”, “default to English replies” -> `user_preferences_patch`.
+- Location: `<config>/user_preferences.md`. It is injected every round as system context before MCP/tool catalog. It is a Markdown document with sections. ONLY write to it when the user **explicitly says it is a preference** (words like "preference", "prefer", "偏好", "always call me", "default to"). For generic "remember that...", use experiential memory tools (`memory_add`) instead.
+- Use `user_preferences_patch` ONLY when the user explicitly requests a preference: "set a preference", "as my preference", "I prefer", "always call me XX", "default to English". Usually use `operation=upsert_section` with `section_heading` and `section_body`. You may read first with `user_preferences_read`.
+- Examples: "I prefer you to call me Boss" (explicit preference), "set a preference to use tabs" (explicit preference), "My default language is Chinese" (explicit preference) -> `user_preferences_patch`. "Remember that I use Python 3.11" (generic remember) -> `memory_add`.
 - `replace_body` replaces the whole body except YAML frontmatter and should be used cautiously. `upsert_section` requires a heading without `##` plus a body.
 - Do not store secrets, tokens, private keys, or long pasted content.

@@ -101,7 +101,6 @@ class AIOrchestrator:
                     stream=call_ctx.stream,
                     minimal_classifier=call_ctx.minimal_classifier,
                     freedom_combined_review=call_ctx.freedom_combined_review,
-                    reflection_mode=call_ctx.reflection_mode,
                     session_summary_mode=call_ctx.session_summary_mode,
                     memory_query_expansion_mode=call_ctx.memory_query_expansion_mode,
                     work_directory=str(self.context.work_directory),
@@ -125,7 +124,6 @@ class AIOrchestrator:
                 (
                     call_ctx.freedom_combined_review,
                     call_ctx.minimal_classifier,
-                    call_ctx.reflection_mode,
                     call_ctx.session_summary_mode,
                     call_ctx.memory_query_expansion_mode,
                 )

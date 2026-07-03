@@ -9,7 +9,7 @@ from .base import BaseTool
 
 class UserPreferencesPatchTool(BaseTool):
     name = "user_preferences_patch"
-    description = "Write/update the persistent user preferences file (Markdown + YAML frontmatter). It is injected into system every turn. When the user says to remember something permanently/always/not forget and the content is a stable stance (especially assistant/user forms of address, default tone, or rules), use this tool, usually upsert_section, instead of only memory_add. operation=replace_body replaces the body; operation=upsert_section inserts or replaces a section by level-2 heading. Do not write secrets/tokens."
+    description = "Write/update the persistent user preferences file. ONLY use when the user explicitly says it is a preference ('I prefer', 'set a preference', 'as my preference', 'always call me', 'default to'). For generic 'remember that...' requests, use memory_add instead. operation=replace_body replaces the body; operation=upsert_section inserts or replaces a section by level-2 heading. Do not write secrets/tokens."
     parameters: Dict[str, Any] = {
         "type": "object",
         "properties": {

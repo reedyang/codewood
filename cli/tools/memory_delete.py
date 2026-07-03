@@ -31,6 +31,6 @@ class MemoryDeleteTool(BaseTool):
             return {"success": False, "error": "missing memory_id"}
         try:
             ok = agent.memory_service.delete_memory(mid)
-            return {"success": ok, "memory_id": mid}
+            return {"success": ok, "memory_id": mid, "output": f"deleted memory_id={mid}" if ok else f"memory_id={mid} not found"}
         except Exception as e:
             return {"success": False, "error": f"memory delete failed: {e}"}

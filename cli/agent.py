@@ -5705,7 +5705,8 @@ class Agent:
         self.system_prompt = self._compose_system_prompt_snapshot(include_tools=False)
         self._reload_skills()
         self.memory_service = None
-        self._last_memory_reflect_at = 0.0
+
+
         self._schedule_memory_service_background()
         self._schedule_project_context_refresh_background(force=False, reason="workspace-refresh")
 
@@ -5763,9 +5764,6 @@ class Agent:
             return str(self.work_directory.resolve())
         except Exception:
             return str(self.work_directory)
-
-    def _schedule_auto_memory_reflect(self) -> None:
-        return self.session_memory_service.schedule_auto_memory_reflect()
 
     def _schedule_model_validation_background(self) -> None:
         """
@@ -6388,7 +6386,6 @@ class Agent:
         minimal_classifier: bool = False,
         freedom_combined_review: bool = False,
         return_message: bool = False,
-        reflection_mode: bool = False,
         session_summary_mode: bool = False,
         memory_query_expansion_mode: bool = False,
         image_path: Optional[str] = None,
@@ -6408,7 +6405,6 @@ class Agent:
             minimal_classifier=minimal_classifier,
             freedom_combined_review=freedom_combined_review,
             return_message=return_message,
-            reflection_mode=reflection_mode,
             session_summary_mode=session_summary_mode,
             memory_query_expansion_mode=memory_query_expansion_mode,
             image_path=image_path,

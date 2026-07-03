@@ -504,7 +504,7 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
         system_content = str(messages[0].get("content") or "")
         self.assertIn("Domain Prompt: Software Development", system_content)
 
-    def test_experiential_memory_is_inserted_after_history_messages(self):
+    def test_experiential_memory_is_injected_into_user_message(self):
         agent = _FakeAgent()
         agent._compose_system_prompt_snapshot = lambda include_tools=True: "SYSTEM"
         agent.conversation_history = [
@@ -512,21 +512,20 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
             {"role": "assistant", "content": "History assistant message"},
         ]
         svc = SessionMemoryService(agent)
-        svc.memory_context_for_prompt = lambda user_input, max_chars=2400: (
+        svc.memory_context_for_user_message = lambda user_input, max_chars=2400: (
             "[Experiential memory test]\nRemember this"
         )
 
         messages, _ = svc.build_regular_task_messages("Current request")
         joined = "\n".join(str(m.get("content") or "") for m in messages)
-        memory_index = next(
-            i for i, m in enumerate(messages) if "[Experiential memory test]" in str(m.get("content") or "")
-        )
 
         self.assertIn("History user message", joined)
         self.assertIn("History assistant message", joined)
-        self.assertNotIn("[Experiential memory test]", str(messages[0].get("content") or ""))
-        self.assertGreater(memory_index, 1)
-        self.assertLess(memory_index, len(messages) - 1)
+        # Memory context is injected into the last user message, not as a separate system message
+        last_msg = messages[-1]
+        self.assertEqual("user", last_msg.get("role"))
+        self.assertIn("[Experiential memory test]", str(last_msg.get("content") or ""))
+        self.assertIn("_memory_context", last_msg)
 
     def test_skill_prompt_not_injected_into_system_messages(self):
         agent = _FakeAgent()
