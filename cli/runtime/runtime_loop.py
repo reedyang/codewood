@@ -570,7 +570,6 @@ def _build_pseudo_tool_call_retry_prompt(
     so the model has an unambiguous template to mirror.
     """
     base = (
-        f"[Original user request]\n{original_user_task}\n\n"
         "Your previous assistant text contained a pseudo tool call, "
         "but no API-standard `tool_calls` were sent and the runtime could not recover it into executable tool plans.\n"
         "Tool calls written as JSON/YAML/tags/pseudocode in assistant text are invalid; "
@@ -691,7 +690,6 @@ def _build_plan_finalize_nudge_prompt(
     """
     plan_block = _format_active_plan_reminder(plan_summary)
     return (
-        f"[Original user request]\n{original_user_task}\n\n"
         f"{plan_block}\n\n"
         "Before finishing, reconcile the active plan with the work that "
         "has actually been done in this turn. Call `update_plan` to mark "
@@ -4249,7 +4247,6 @@ def run_agent_loop(agent: Any):
                                 )
                             )
                             next_input = (
-                                f"[Original user request]\n{original_user_task}\n\n"
                                 "Your previous `apply_patch` tool plan was missing required arguments.\n"
                                 "Retry with a valid standard API tool_calls entry for `apply_patch`; do not print JSON in visible text:\n"
                                 "{\"tool\":\"apply_patch\",\"args\":{\"path\":\"<file>\",\"patch\":\"--- a/<file>\\n+++ b/<file>\\n@@ ... @@\\n- old\\n+ new\"}}\n"
@@ -4275,7 +4272,6 @@ def run_agent_loop(agent: Any):
                         request_is_expansion = force_full or (requested_section is not None and requested_section > 1)
                         if canon_sid and canon_sid in preloaded_skill_ids and not request_is_expansion:
                             next_input = (
-                                f"[Original user request]\n{original_user_task}\n\n"
                                 f"skill_id=`{sid}` was explicitly pre-injected this turn through `/skills/<skill-name>`. "
                                 "Do not call request_skill_prompt again. Continue directly with standard tools."
                             )
@@ -4291,7 +4287,6 @@ def run_agent_loop(agent: Any):
                             and not request_is_expansion
                         ):
                             next_input = (
-                                f"[Original user request]\n{original_user_task}\n\n"
                                 f"skill_id=`{sid}` has already been injected in this session. "
                                 "Do not call request_skill_prompt repeatedly. Continue directly with standard tools."
                             )
@@ -4317,7 +4312,6 @@ def run_agent_loop(agent: Any):
                         if not full_prompt:
                             no_tool_rounds += 1
                             next_input = (
-                                f"[Original user request]\n{original_user_task}\n\n"
                                 f"The requested skill_id=`{sid}` does not exist. "
                                 "Retry based on the loaded skill index with a valid request_skill_prompt call, or continue directly with standard tools."
                             )
@@ -4332,7 +4326,6 @@ def run_agent_loop(agent: Any):
                         self._active_skill_total_sections = int(meta.get("total") or 0)
                         self._active_skill_chunked = bool(meta.get("chunked", False))
                         next_input = (
-                            f"[Original user request]\n{original_user_task}\n\n"
                             f"----- BEGIN SKILL PROMPT (skill_id={sid}) -----\n"
                             f"{full_prompt}\n"
                             f"----- END SKILL PROMPT -----\n\n"
@@ -4346,7 +4339,6 @@ def run_agent_loop(agent: Any):
                     pseudo_command = {"tool": tool_name, "args": args}
                     if self._is_repeated_tool_call_pattern(tool_name, args):
                         next_input = (
-                            f"[Original user request]\n{original_user_task}\n\n"
                             "Detected repeated calls to the same shell command with nearly identical arguments.\n"
                             "Stop repeating the search. Instead:\n"
                             "1) Provide an interim conclusion from existing results;\n"
@@ -4504,7 +4496,6 @@ def run_agent_loop(agent: Any):
                         except Exception:
                             pass
                         next_input = (
-                            f"[Original user request]\n{original_user_task}\n\n"
                             f"[User supplement]\n{supplement_text}\n\n"
                             "Continue handling the original request together with this supplement using standard tools; "
                             "you may call one or more tools at once. If information is still insufficient, call `request_user_input` again."

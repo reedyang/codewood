@@ -592,7 +592,7 @@ class ChatStateModelPersistenceTests(unittest.TestCase):
                 },
                 {
                     "role": "user",
-                    "content": "[Original user request] ...",
+                    "content": "...",
                     "_internal": True,
                     "_token_count": 981,
                 },

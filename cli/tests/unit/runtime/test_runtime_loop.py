@@ -1735,7 +1735,7 @@ class PseudoToolCallRetryPromptTests(unittest.TestCase):
             original_user_task="reproduce the bug",
             attempt=1,
         )
-        self.assertIn("[Original user request]\nreproduce the bug", prompt)
+        self.assertIn("reproduce the bug", prompt)
         self.assertIn("pseudo tool call", prompt)
         # The example must NOT appear yet — we want to give the
         # descriptive prompt a chance to work first.
@@ -1748,7 +1748,7 @@ class PseudoToolCallRetryPromptTests(unittest.TestCase):
             attempt=2,
         )
         # Base content remains.
-        self.assertIn("[Original user request]\nreproduce the bug", prompt)
+        self.assertIn("reproduce the bug", prompt)
         # Escalation banner.
         self.assertIn("previous retry also produced pseudo tool-call text", prompt)
         # Concrete example.
@@ -1942,7 +1942,7 @@ class PlanFinalizeNudgePromptTests(unittest.TestCase):
             original_user_task="今天比亚迪股票的行情如何？",
             plan_summary=summary,
         )
-        self.assertIn("[Original user request]\n今天比亚迪股票的行情如何？", prompt)
+        self.assertIn("今天比亚迪股票的行情如何？", prompt)
         self.assertIn("[Active plan]", prompt)
         self.assertIn("fetch data", prompt)
         self.assertIn("analyze", prompt)
