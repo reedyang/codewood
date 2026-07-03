@@ -506,8 +506,8 @@ html[data-has-bg] .ws-selector-menu {
 
 /* Sidebar */
 .sidebar {
-  width: var(--sidebar-width, 200px);
-  min-width: var(--sidebar-width, 200px);
+  width: var(--sidebar-width, 267px);
+  min-width: var(--sidebar-width, 267px);
   flex-shrink: 0;
   overflow: hidden;
   transition: width 0.2s ease, min-width 0.2s ease;
