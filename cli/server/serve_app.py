@@ -1024,7 +1024,7 @@ def _build_state_inner(agent: Any) -> Dict[str, Any]:
     ui_prefs: Dict[str, Any] = {}
     gui_language = ""
     console_options: Dict[str, Any] = {"fontFamily": "", "bufferLines": 1000}
-    background: Dict[str, Any] = {"hasImage": False, "fileName": "", "opacity": 60, "version": 0}
+    background: Dict[str, Any] = {"hasImage": False, "fileName": "", "opacity": 85, "version": 0}
     try:
         from ..core.config.gui_config import (
             background_ext_from_filename,
@@ -1066,7 +1066,7 @@ def _build_state_inner(agent: Any) -> Dict[str, Any]:
         ui_prefs = {}
         gui_language = ""
         console_options = {"fontFamily": "", "bufferLines": 1000}
-        background = {"hasImage": False, "fileName": "", "opacity": 60, "version": 0}
+        background = {"hasImage": False, "fileName": "", "opacity": 85, "version": 0}
 
     # The GUI's display language is intentionally decoupled from the agent's
     # ``display_language`` (which drives TUI prompts and model system text).

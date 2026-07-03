@@ -155,7 +155,7 @@ function Shell() {
 
   return (
     <div className="window-root">
-      <TitleBar onTogglePanel={() => setCollapsed((v) => !v)} />
+      <TitleBar collapsed={collapsed} onTogglePanel={() => setCollapsed((v) => !v)} />
       {settingsOpen ? (
         <div className="app-shell">
           <SettingsView />
@@ -165,28 +165,24 @@ function Shell() {
           className={`app-shell ${collapsed ? "sidebar-collapsed" : ""}`}
           style={{ "--sidebar-width": `${sidebarWidth}px` } as CSSProperties}
         >
-          {!collapsed && <Sidebar onOpenSettings={openSettings} />}
-          {!collapsed && (
-            <div
-              className={`sidebar-resizer ${resizing ? "resizing" : ""}`}
-              role="separator"
-              aria-orientation="vertical"
-              onMouseDown={startResize}
-            />
-          )}
+          <Sidebar collapsed={collapsed} onOpenSettings={openSettings} />
+          <div
+            className={`sidebar-resizer ${resizing ? "resizing" : ""} ${collapsed ? "collapsed" : ""}`}
+            role="separator"
+            aria-orientation="vertical"
+            onMouseDown={startResize}
+          />
           <main
             className="main"
             style={{ "--right-panel-width": `${rightPanelWidth}px` } as CSSProperties}
           >
             <ChatView />
-            {planOpen && (
-              <div
-                className={`right-panel-resizer ${resizingRight ? "resizing" : ""}`}
-                role="separator"
-                aria-orientation="vertical"
-                onMouseDown={startResizeRight}
-              />
-            )}
+            <div
+              className={`right-panel-resizer ${resizingRight ? "resizing" : ""} ${planOpen ? "" : "collapsed"}`}
+              role="separator"
+              aria-orientation="vertical"
+              onMouseDown={startResizeRight}
+            />
             <RightPanel />
           </main>
         </div>

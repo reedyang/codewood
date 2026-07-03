@@ -36,7 +36,7 @@ export function RightPanel() {
   }, []);
 
   if (!planOpen) {
-    return null;
+    return <aside className="right-panel collapsed" aria-label={t("plan.title")} />;
   }
 
   const setActive = (id: RightPanelTabId) =>
@@ -81,7 +81,7 @@ export function RightPanel() {
           })}
         </div>
         <button
-          className="right-panel-close"
+          className="right-panel-close active"
           aria-label={t("rightpanel.close")}
           title={t("rightpanel.toggle")}
           onClick={togglePlan}

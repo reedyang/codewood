@@ -31,7 +31,7 @@ type MenuEntry =
   | "separator"
   | { label: string; shortcut?: string; checked?: boolean; onSelect: () => void };
 
-export function TitleBar({ onTogglePanel }: { onTogglePanel: () => void }) {
+export function TitleBar({ collapsed, onTogglePanel }: { collapsed: boolean; onTogglePanel: () => void }) {
   const { t, pickAndOpenFolder, newChat, openSettings, openAbout, showBrowserTab, hideBrowserTab, showConsole, hideConsole, consoleOpen, browserOpen } = useApp();
 
   const [openMenu, setOpenMenu] = useState<string | null>(null);
@@ -138,7 +138,7 @@ export function TitleBar({ onTogglePanel }: { onTogglePanel: () => void }) {
   return (
     <div className="titlebar" ref={barRef}>
       <button
-        className="icon-btn titlebar-toggle"
+        className={`icon-btn titlebar-toggle ${collapsed ? "" : "active"}`}
         aria-label={t("panel.toggle")}
         title={t("panel.toggle")}
         onClick={onTogglePanel}

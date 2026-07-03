@@ -789,7 +789,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const bgState = state?.background;
   const bgHasImage = Boolean(bgState?.hasImage);
   const bgVersion = bgState?.version ?? 0;
-  const bgServerOpacity = bgState?.opacity ?? 60;
+  const bgServerOpacity = bgState?.opacity ?? 85;
   useEffect(() => {
     const root = document.documentElement;
     if (bgHasImage) {
@@ -804,7 +804,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     // The slider value is the *image transparency* the user asked for (default
-    // 80 = faint). The background image layer itself is always fully painted;
+    // 85 = faint). The background image layer itself is always fully painted;
     // we instead control how much of it shows through by setting the opacity of
     // the app surfaces stacked on top via ``--app-surface-alpha`` (0-1). A
     // higher transparency keeps the surfaces more opaque, so the image stays
@@ -818,7 +818,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     // of only near 0. A linear mapping made surfaces feel too opaque past ~50%
     // (e.g. 60% transparency still mostly hid the image). The exponent (<1)
     // lowers surface alpha faster as transparency drops:
-    //   t=80 -> ~0.62 (faint, default)   t=60 -> ~0.42   t=40 -> ~0.25   t=0 -> 0
+    //   t=85 -> ~0.77 (faint, default)   t=60 -> ~0.44   t=40 -> ~0.23   t=0 -> 0
     const surfaceAlpha = Math.pow(transparency / 100, 1.6);
     document.documentElement.style.setProperty(
       "--app-surface-alpha",

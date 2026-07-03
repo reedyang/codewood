@@ -27,6 +27,9 @@ export function ChatTitleBar() {
     toggleChatArchive,
     planOpen,
     togglePlan,
+    consoleOpen,
+    showConsole,
+    hideConsole,
   } = useApp();
   const [menu, setMenu] = useState<MenuState | null>(null);
   const [renaming, setRenaming] = useState(false);
@@ -102,6 +105,15 @@ export function ChatTitleBar() {
         onClick={openMenu}
       >
         <Icon name="dots" size={16} />
+      </button>
+      <button
+        className={`chat-titlebar-console ${consoleOpen ? "active" : ""}`}
+        aria-label={consoleOpen ? t("console.hide") : t("console.show")}
+        aria-pressed={consoleOpen}
+        title={consoleOpen ? t("console.hide") : t("console.show")}
+        onClick={() => { consoleOpen ? hideConsole() : showConsole(); }}
+      >
+        <Icon name="panel-bottom" size={18} />
       </button>
       {!planOpen && (
         <button

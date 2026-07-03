@@ -53,7 +53,7 @@ interface ChatRow {
   running?: boolean;
 }
 
-export function Sidebar({ onOpenSettings }: { onOpenSettings: () => void }) {
+export function Sidebar({ collapsed, onOpenSettings }: { collapsed: boolean; onOpenSettings: () => void }) {
   const {
     state,
     uiPrefs,
@@ -407,7 +407,7 @@ export function Sidebar({ onOpenSettings }: { onOpenSettings: () => void }) {
   };
 
   return (
-    <aside className="sidebar">
+    <aside className={`sidebar ${collapsed ? "collapsed" : ""}`}>
       <div className="sidebar-top">
         <button className="btn-newchat" onClick={() => void newChat()}>
           <Icon name="new-chat" size={16} />

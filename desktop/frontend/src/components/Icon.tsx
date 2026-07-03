@@ -34,6 +34,7 @@ import spinner from "../assets/icons/spinner.svg";
 import eye from "../assets/icons/eye.svg";
 import eyeOff from "../assets/icons/eye-off.svg";
 import panelRight from "../assets/icons/panel-right.svg";
+import panelBottom from "../assets/icons/panel-bottom.svg";
 import cube from "../assets/icons/cube.svg";
 import trash from "../assets/icons/trash.svg";
 import sparkles from "../assets/icons/sparkles.svg";
@@ -80,6 +81,7 @@ const SOURCES = {
   eye,
   "eye-off": eyeOff,
   "panel-right": panelRight,
+  "panel-bottom": panelBottom,
   cube,
   trash,
   sparkles,

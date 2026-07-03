@@ -1125,7 +1125,7 @@ export function ChatView() {
           <div className="composer-dock">{composer}</div>
         </>
       )}
-      {consoleOpen && <ConsoleDock />}
+      <ConsoleDock open={consoleOpen} />
     </div>
   );
 }
@@ -1144,7 +1144,7 @@ function loadConsoleHeight(): number {
 
 /** The console dock below the transcript: a draggable top divider resizes it
  *  (dragging up grows it) and the persisted height survives reloads. */
-function ConsoleDock() {
+function ConsoleDock({ open }: { open: boolean }) {
   const [height, setHeight] = useState(loadConsoleHeight);
   const [resizing, setResizing] = useState(false);
 
@@ -1177,7 +1177,7 @@ function ConsoleDock() {
   };
 
   return (
-    <div className="console-dock" style={{ height: `${height}px` }}>
+    <div className={`console-dock ${open ? "" : "collapsed"}`} style={{ height: open ? `${height}px` : "0px" }}>
       <div
         className={`console-resizer ${resizing ? "resizing" : ""}`}
         role="separator"
