@@ -18,6 +18,8 @@ export const en: Dict = {
   "activity.workedFor": "Worked for",
   "activity.steps": "Work steps",
   "activity.collapse": "Collapse",
+  "activity.thinking": "Thinking",
+  "activity.thoughtFor": "Thought for",
   "history.more": "Scroll up to load earlier messages",
   "history.loading": "Loading earlier messages…",
 

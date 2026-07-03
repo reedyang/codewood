@@ -1260,9 +1260,11 @@ function RoundShell({
 function ThinkingPanel({
   thinkingText,
   running,
+  timerText,
 }: {
   thinkingText: string;
   running: boolean;
+  timerText?: string;
 }) {
   const [expanded, setExpanded] = useState(running);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -1285,26 +1287,38 @@ function ThinkingPanel({
     return null;
   }
 
+  const hasTimer = !!timerText;
+
   return (
     <div className={`thinking-panel ${!expanded ? "collapsed" : ""}`}>
-      {expanded && (
-        <div className="thinking-scroll" ref={scrollRef}>
-          <div className="thinking-content">
-            <MarkdownText text={thinkingText} />
-          </div>
-        </div>
-      )}
-      <button
-        className="thinking-toggle"
-        onClick={() => setExpanded((v) => !v)}
-      >
-        <span>{expanded ? t("thinking.hide") : t("thinking.show")}</span>
-        <Icon
-          name="chevron"
-          size={12}
-          className={`chevron ${expanded ? "open" : ""}`}
-        />
-      </button>
+      <div className="thinking-activity">
+        <button
+          className={`activity-header thinking-header ${running ? "running" : ""}`}
+          onClick={() => setExpanded((v) => !v)}
+        >
+          <span className={`activity-text ${hasTimer && running ? "marquee" : ""}`}>
+            {timerText ?? t("thinking.show")}
+          </span>
+          <Icon name="chevron" size={14} className={`chevron ${expanded ? "open" : ""}`} />
+        </button>
+        {expanded && (
+          <>
+            <div className="thinking-scroll" ref={scrollRef}>
+              <div className="thinking-content">
+                <MarkdownText text={thinkingText} />
+              </div>
+            </div>
+            <button
+              className="activity-collapse"
+              onClick={() => setExpanded(false)}
+              title={t("activity.collapse")}
+              aria-label={t("activity.collapse")}
+            >
+              <Icon name="chevron" size={14} className="chevron up" />
+            </button>
+          </>
+        )}
+      </div>
     </div>
   );
 }
@@ -1347,6 +1361,7 @@ function HistoryTurnView({
   negIndex: number;
   handlers: MessageHandlers;
 }) {
+  const { t } = useApp();
   return (
     <div className="turn">
       {turn.userText && (
@@ -1360,7 +1375,11 @@ function HistoryTurnView({
       {turn.rounds.map((round, index) => (
         <div key={index}>
           {round.thinking && (
-            <ThinkingPanel thinkingText={round.thinking} running={false} />
+            <ThinkingPanel
+              thinkingText={round.thinking}
+              running={false}
+              timerText={`${t("activity.thoughtFor")} ${formatElapsed(round.waitSeconds * 1000)}`}
+            />
           )}
           <HistoryRoundView round={round} />
         </div>
@@ -1727,6 +1746,15 @@ function TurnView({
         <ThinkingPanel
           thinkingText={turn.thinkingText}
           running={turn.endedAt === null}
+          timerText={(() => {
+            const running = turn.endedAt === null;
+            const startedAt = turn.thinkingStartedAt ?? turn.startedAt;
+            const elapsedMs = (turn.endedAt ?? now) - startedAt;
+            const elapsed = formatElapsed(elapsedMs);
+            return running
+              ? `${t("activity.thinking")} (${elapsed})`
+              : `${t("activity.thoughtFor")} ${elapsed}`;
+          })()}
         />
       )}
       {turn.rounds.length === 0 && turn.endedAt === null && (

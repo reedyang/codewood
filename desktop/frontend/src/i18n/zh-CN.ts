@@ -18,6 +18,8 @@ export const zhCN: Dict = {
   "activity.workedFor": "用时",
   "activity.steps": "执行过程",
   "activity.collapse": "折叠",
+  "activity.thinking": "思考中",
+  "activity.thoughtFor": "思考用时",
   "history.more": "向上滚动加载更早的消息",
   "history.loading": "正在加载更早的消息……",
 
