@@ -22,7 +22,7 @@ function loadSidebarWidth(): number {
   if (Number.isFinite(raw) && raw >= SIDEBAR_MIN && raw <= SIDEBAR_MAX) {
     return raw;
   }
-  return 200;
+  return 267;
 }
 
 function loadRightPanelWidth(): number {
