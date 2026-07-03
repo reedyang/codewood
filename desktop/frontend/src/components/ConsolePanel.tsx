@@ -25,6 +25,73 @@ const POSIX_SHELL_KINDS: { kind: string; labelKey: string }[] = [
   { kind: "shell", labelKey: "console.new.terminal" },
 ];
 
+/** Standard ANSI palette tuned for light terminal backgrounds so that
+ *  PowerShell / PSReadLine syntax highlighting stays readable. */
+const ANSI_LIGHT = {
+  black: "#1f2329",
+  red: "#c41a16",
+  green: "#007400",
+  yellow: "#9c6500",
+  blue: "#004ec2",
+  magenta: "#a824a8",
+  cyan: "#00727c",
+  white: "#6a737d",
+  brightBlack: "#959da5",
+  brightRed: "#d1242f",
+  brightGreen: "#128a1e",
+  brightYellow: "#b87600",
+  brightBlue: "#0366d6",
+  brightMagenta: "#c72ec7",
+  brightCyan: "#0096a8",
+  brightWhite: "#24292e",
+};
+
+/** Standard ANSI palette tuned for dark terminal backgrounds. */
+const ANSI_DARK = {
+  black: "#2e3436",
+  red: "#cc0000",
+  green: "#4e9a06",
+  yellow: "#c4a000",
+  blue: "#3465a4",
+  magenta: "#75507b",
+  cyan: "#06989a",
+  white: "#d3d7cf",
+  brightBlack: "#555753",
+  brightRed: "#ef2929",
+  brightGreen: "#8ae234",
+  brightYellow: "#fce94f",
+  brightBlue: "#729fcf",
+  brightMagenta: "#ad7fa8",
+  brightCyan: "#34e2e2",
+  brightWhite: "#eeeeec",
+};
+
+/** Read the terminal colour scheme from the active theme. The xterm internal
+ *  background is overridden by CSS (`.xterm-viewport` uses `var(--console-bg)`)
+ *  so the JS theme handles the foreground, cursor, selection, and ANSI palette. */
+function readConsoleTheme() {
+  const isDark = document.documentElement.dataset.theme === "dark";
+  return isDark
+    ? {
+        ...ANSI_DARK,
+        background: "#1e1e1e",
+        foreground: "#d4d4d4",
+        cursor: "#ffffff",
+        cursorAccent: "#1e1e1e",
+        selectionBackground: "#264f78",
+        selectionInactiveBackground: "#3a3a3a",
+      }
+    : {
+        ...ANSI_LIGHT,
+        background: "#ffffff",
+        foreground: "#1f2329",
+        cursor: "#1f2329",
+        cursorAccent: "#ffffff",
+        selectionBackground: "#c4d9f1",
+        selectionInactiveBackground: "#e8e8e8",
+      };
+}
+
 /** A single xterm.js instance wired to a backend console session over a
  *  WebSocket. Output frames are binary (raw PTY bytes); input/resize are sent
  *  as small JSON text frames. The terminal mounts once per session id. */
@@ -61,7 +128,7 @@ function ConsoleTerminal({
         fontFamily ||
         'Consolas, "Cascadia Mono", "DejaVu Sans Mono", monospace',
       fontSize: 13,
-      theme: { background: "#1e1e1e", foreground: "#d4d4d4" },
+      theme: readConsoleTheme(),
     });
     const fit = new FitAddon();
     term.loadAddon(fit);
@@ -143,8 +210,26 @@ function ConsoleTerminal({
     });
     ro.observe(host);
 
+    // Keep terminal colours in sync with CSS variables (theme + background
+    // image transparency). The MutationObserver catches attribute/style
+    // changes on <html> that affect the computed --console-bg / --console-fg.
+    const observer = new MutationObserver((mutations) => {
+      if (disposed) return;
+      for (const m of mutations) {
+        if (m.type === "attributes") {
+          term.options.theme = readConsoleTheme();
+          break;
+        }
+      }
+    });
+    observer.observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ["data-theme", "data-has-bg", "style"],
+    });
+
     return () => {
       disposed = true;
+      observer.disconnect();
       unsubscribe();
       dataDisp.dispose();
       resizeDisp.dispose();

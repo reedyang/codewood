@@ -35,6 +35,9 @@
   --panel-radius: 10px;
   --scrollbar-thumb: rgba(0, 0, 0, 0.22);
   --scrollbar-thumb-hover: rgba(0, 0, 0, 0.34);
+  --console-bg-solid: #ffffff;
+  --console-bg: #ffffff;
+  --console-fg: #1f2329;
 }
 
 [data-theme="dark"] {
@@ -72,6 +75,9 @@
   --shadow: 0 8px 30px rgba(0, 0, 0, 0.5);
   --scrollbar-thumb: rgba(255, 255, 255, 0.10);
   --scrollbar-thumb-hover: rgba(255, 255, 255, 0.3);
+  --console-bg-solid: #1e1e1e;
+  --console-bg: #1e1e1e;
+  --console-fg: #d4d4d4;
 }
 
 * {
@@ -215,6 +221,13 @@ html[data-has-bg] {
   --output-bg: color-mix(
     in srgb,
     var(--output-bg-solid) calc(min(1, var(--app-surface-alpha, 0.85) + 0.15) * 100%),
+    transparent
+  );
+  /* The console panel uses the same lighter glass layer as the right sidebar
+     so the terminal background transparency stays consistent. */
+  --console-bg: color-mix(
+    in srgb,
+    var(--console-bg-solid) calc(var(--app-surface-alpha, 0.85) * 50%),
     transparent
   );
 }
@@ -5103,7 +5116,14 @@ h6.md-h {
   flex: 1;
   min-height: 0;
   position: relative;
-  background: #1e1e1e;
+  background: var(--console-bg);
+}
+
+/* Override xterm.js internal element backgrounds so they respect the theme
+   and background-image transparency instead of hardcoded JS inline colours. */
+.console-body .xterm-viewport,
+.console-body .xterm-screen {
+  background: var(--console-bg) !important;
 }
 
 .console-term {
