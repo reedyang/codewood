@@ -555,23 +555,18 @@ class _OutputBridge(io.TextIOBase):
     def set_tag(self, tag: str) -> None:
         self._tls.tag = str(tag or "output")
 
-    def write(self, s: Any) -> int:  # type: ignore[override]
+    def write_tagged(self, tag: str, s: Any) -> int:
         if s is None:
             return 0
         text = s if isinstance(s, str) else str(s)
         if not text:
             return 0
         if bool(getattr(self._tls, "suppressed", False)):
-            # Consume silently so the command still runs but nothing streams.
             return len(text)
-        # Keep SGR color runs (so the GUI can theme step output like the
-        # terminal) but drop cursor/erase control sequences a non-TTY SSE
-        # sink cannot honor. Normalize carriage returns to plain newlines.
         cleaned = strip_ansi_keep_sgr(text).replace("\r\n", "\n").replace("\r", "")
         if cleaned:
-            tag = str(getattr(self._tls, "tag", "output") or "output")
             self._broadcaster.publish(
-                tag,
+                str(tag or "output"),
                 {
                     "text": cleaned,
                     "chatId": self._chat_id(),
@@ -579,6 +574,12 @@ class _OutputBridge(io.TextIOBase):
                 },
             )
         return len(text)
+
+    def write(self, s: Any) -> int:  # type: ignore[override]
+        # Keep SGR color runs (so the GUI can theme step output like the
+        # terminal) but drop cursor/erase control sequences a non-TTY SSE
+        # sink cannot honor. Normalize carriage returns to plain newlines.
+        return self.write_tagged(str(getattr(self._tls, "tag", "output") or "output"), s)
 
     def writable(self) -> bool:  # type: ignore[override]
         return True
@@ -4187,8 +4188,7 @@ class ServeApp:
         self.agent._gui_assistant_end = lambda: bridge.set_tag("output")  # type: ignore[attr-defined]
         # Forward thinking/reasoning content deltas to the GUI as "thinking" SSE events.
         self.agent._gui_thinking_chunk = lambda delta: (  # type: ignore[attr-defined]
-            bridge.set_tag("thinking"),
-            bridge.write(str(delta or "")),
+            bridge.write_tagged("thinking", str(delta or "")),
         )
         # Each model round (one request->response within a turn) is bracketed so
         # the GUI can show a per-round "Working/Worked" wait timer and lay out

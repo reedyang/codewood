@@ -1577,6 +1577,11 @@ class RuntimeLoopTests(unittest.TestCase):
         self.assertTrue(_looks_like_pseudo_tool_call_text('{"content":"plan","tool_calls":[{"function":{"name":"done"}}]}'))
         self.assertFalse(_looks_like_pseudo_tool_call_text('{"toolbox": true}'))
         self.assertFalse(_looks_like_pseudo_tool_call_text('I checked the tool output and summarized it.'))
+        self.assertFalse(
+            _looks_like_pseudo_tool_call_text(
+                "```text\n# optional args:\n#   -GatewayBase http://127.0.0.1:4001\n```"
+            )
+        )
 
 
 class ActivePlanReminderTests(unittest.TestCase):

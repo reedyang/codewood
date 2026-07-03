@@ -4074,6 +4074,33 @@ html[data-has-bg] .select {
   padding-left: 2ch;
 }
 
+.activity-steps .cmd-output-block + .cmd-output-block,
+.activity-steps .cmd-prompt + .cmd-output-block,
+.activity-steps .cmd-output-block + .cmd-prompt,
+.activity-steps .step-text + .cmd-output-block,
+.activity-steps .cmd-output-block + .step-text {
+  margin-top: 4px;
+}
+
+.activity-steps .cmd-output-header {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+
+.activity-steps .cmd-output-title {
+  font: inherit;
+  color: var(--muted, #8a8a8a);
+}
+
 /* "• Ran <command>" prompt: bullet keeps its own column; the command text
    wraps naturally and stays left-aligned under itself (hanging indent). */
 .activity-steps .cmd-prompt {
@@ -4101,14 +4128,14 @@ html[data-has-bg] .select {
   word-break: break-word;
 }
 
-/* A "Ran apply_patch" line that carries a diff: the whole row toggles the
-   preview, and the chevron sits inline right after the description text (using
-   the same chevron icon as the "Worked for" activity header). */
-.activity-steps .cmd-prompt.has-diff {
+/* A "Ran ..." line that carries command output or a diff: the whole row
+   toggles the preview, and the chevron sits inline right after the
+   description text. */
+.activity-steps .cmd-prompt.has-attachment {
   cursor: pointer;
 }
 
-.activity-steps .cmd-prompt.has-diff:hover .cmd-prompt-diff-toggle {
+.activity-steps .cmd-prompt.has-attachment:hover .cmd-prompt-diff-toggle {
   opacity: 1;
 }
 

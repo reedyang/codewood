@@ -506,7 +506,9 @@ def _looks_like_pseudo_tool_call_text(ai_response: Any) -> bool:
         return True
     if re.search(r"""(?is)(["']?\btool_calls\b["']?)\s*[:=]\s*\[""", text):
         return True
-    if re.search(r"""(?is)```[^\n]*\n.*(["']?\b(?:tool|tool_calls|args|arguments)\b["']?)\s*[:=]""", text):
+    if re.search(r"""(?is)```[^\n]*\n.*(["']?\btool_calls\b["']?)\s*[:=]\s*\[""", text):
+        return True
+    if re.search(r"""(?is)```[^\n]*\n.*(["']?\btool\b["']?)\s*[:=].*(["']?\b(?:args|arguments)\b["']?)\s*[:=]""", text):
         return True
     if re.search(r"(?im)^\s*tool\s*[:=]\s*[\w.-]+\s*$", text):
         return True
