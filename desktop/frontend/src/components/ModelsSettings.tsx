@@ -31,10 +31,12 @@ export function ModelsSettings({ onDirtyChange, saveSignal }: ModelsSettingsProp
   const [expandModel, setExpandModel] = useState<Record<string, boolean>>({});
   const [confirmRemoveIdx, setConfirmRemoveIdx] = useState<number | null>(null);
   const lastSaveSignal = useRef<number | undefined>(saveSignal);
+  const getModelsConfigRef = useRef(getModelsConfig);
+  getModelsConfigRef.current = getModelsConfig;
 
   useEffect(() => {
     let alive = true;
-    void getModelsConfig().then((raw) => {
+    void getModelsConfigRef.current().then((raw) => {
       if (!alive) return;
       const loaded = raw.map(toEditorProvider);
       setProviders(loaded);
@@ -49,7 +51,7 @@ export function ModelsSettings({ onDirtyChange, saveSignal }: ModelsSettingsProp
     return () => {
       alive = false;
     };
-  }, [getModelsConfig]);
+  }, []);
 
   // A provider freshly added but otherwise untouched needs no delete confirm.
   const isPristineProvider = (p: EditorProvider): boolean => {
