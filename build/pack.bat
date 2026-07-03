@@ -98,6 +98,7 @@ rem    functionality. Output: dist\codewood\codewood.exe (+ _internal\).
   --icon "../../build/app_icon.ico" ^
   --add-data "../../vendors/rg.exe;bin" ^
   --add-data "../../skills;skills" ^
+  --add-data "../../additional-subagents;additional-subagents" ^
   --add-data "../../cli;cli" ^
   --add-data "../../desktop/frontend/dist;frontend" ^
   --add-data "../../desktop/host;host" ^

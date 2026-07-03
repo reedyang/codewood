@@ -3,7 +3,7 @@ name: code-reviewer
 description: Use to review a diff, file, or change for bugs, security issues, and style problems. Returns a concise findings list grouped by severity. Trigger when the user asks for a code review, wants feedback on a change, or asks "is this code correct/safe?".
 # Optional provider:name selector referencing model_providers in config.jsonc.
 # Remove this line to reuse the main model.
-model: openai:gpt-4o
+model: openai/gpt-4o
 # Optional tool allowlist. Defaults to the core coding set when omitted.
 # run_subagent is always excluded (sub-agents cannot nest).
 tools: [shell, project_context_search, read]

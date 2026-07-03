@@ -23,6 +23,7 @@ from ..core.config.skills_loader import (
 )
 from ..core.config.subagents_loader import (
     calc_subagents_dirs_fingerprint,
+    ensure_bundled_subagents,
     load_subagents_merged,
 )
 from ..tooling.dispatcher import ToolDispatcher
@@ -370,6 +371,8 @@ def setup_skills(agent: Any, builtin_skills_dir: Optional[str]) -> None:
 
 def setup_subagents(agent: Any) -> None:
     """Load user-configured sub-agents (markdown + frontmatter)."""
+    # Auto-copy bundled sub-agents that don't exist yet in the config dir.
+    ensure_bundled_subagents(agent.config_dir)
     language = getattr(agent, "display_language", "en") or "en"
     merged = load_subagents_merged(
         agent.config_dir,

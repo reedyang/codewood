@@ -6,7 +6,7 @@ Each sub-agent is a single ``<subagents_root>/<name>.md`` file:
     ---
     name: code-reviewer
     description: Use to review a diff or file for bugs and style issues.
-    model: openai:gpt-4o            # optional; default = main model
+    model: openai/gpt-4o            # optional; default = main model
     tools: [shell, apply_patch]      # optional allowlist; default = core tools
     max_rounds: 20                   # optional
     ---
@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -43,7 +44,7 @@ class SubAgentRecord:
     name: str
     description: str
     instructions: str
-    # Optional ``provider:name`` selector referencing ``model_providers``;
+    # Optional ``provider/name`` selector referencing ``model_providers``;
     # empty means "reuse the main agent's current model".
     model_selector: str = ""
     # Optional allowlist of tool names. When ``tools_specified`` is False the
@@ -405,6 +406,54 @@ def delete_subagent(config_dir: Path, name: str) -> Dict[str, object]:
     except OSError:
         return {"ok": False, "error": "io_error"}
     return {"ok": True, "error": ""}
+
+
+def ensure_bundled_subagents(config_dir: Path) -> None:
+    """Copy bundled sub-agents from the package into ``<config_dir>/subagents/``
+    if they do not already exist there.
+
+    Newly copied sub-agents are set to ``enabled: false`` so the user can
+    opt in via the config UI without surprises.
+    """
+    # Resolve the bundled ``additional-subagents/`` directory.
+    # When frozen (PyInstaller), files are in ``sys._MEIPASS``; otherwise
+    # resolve relative to this source file (project root).
+    if getattr(sys, "frozen", False):
+        bundled_root = Path(sys._MEIPASS) / "additional-subagents"
+    else:
+        bundled_root = Path(__file__).resolve().parent.parent.parent.parent / "additional-subagents"
+    if not bundled_root.is_dir():
+        return
+
+    target_root = _global_subagents_root(config_dir)
+    try:
+        target_root.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return
+
+    existing = {child.name.lower() for child in target_root.iterdir() if child.is_file()}
+    for child in sorted(bundled_root.iterdir()):
+        if not child.is_file() or child.suffix.lower() != ".md":
+            continue
+        if child.name.lower() in existing:
+            continue
+        try:
+            raw = child.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        # Remove ``model`` so the sub-agent defaults to the main model.
+        # Set ``enabled: false`` so the user can opt in via the config UI.
+        meta, body = _split_frontmatter(raw)
+        if meta is None:
+            meta = {}
+        meta.pop("model", None)
+        meta["enabled"] = False
+        front = _yaml.safe_dump(meta, allow_unicode=True, sort_keys=False).strip()
+        out = f"---\n{front}\n---\n\n{body.strip()}\n"
+        try:
+            (target_root / child.name).write_text(out, encoding="utf-8")
+        except OSError:
+            continue
 
 
 def set_subagent_enabled(config_dir: Path, name: str, enabled: bool) -> Dict[str, object]:

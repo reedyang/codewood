@@ -223,7 +223,7 @@ interface ModelGroup {
   items: { selector: string; name: string }[];
 }
 
-/** Group "provider:name" model selectors under their provider, preserving order. */
+/** Group "provider/name" model selectors under their provider, preserving order. */
 export function groupModelsByProvider(selectors: string[]): ModelGroup[] {
   const groups: ModelGroup[] = [];
   const byProvider = new Map<string, ModelGroup>();
