@@ -1679,11 +1679,9 @@ function ModelMenu({
 function LiveRoundView({
   round,
   now,
-  turnActive,
 }: {
   round: TurnRound;
   now: number;
-  turnActive: boolean;
 }) {
   const { t } = useApp();
   const running = round.waitEndedAt === null;
@@ -1700,14 +1698,16 @@ function LiveRoundView({
     .filter((s) => s.kind === "step")
     .map((s) => s.text)
     .join("");
+  const autoExpandTools = running && toolText.trim().length > 0 && answer.trim().length === 0;
   return (
     <RoundShell
       timerText={timerText}
       running={running}
-      // Keep tools expanded while the turn is still streaming so back-to-back
-      // tool calls (round_end then round_start on the same merged group) don't
-      // collapse and immediately re-open. Collapse only once the turn settles.
-      autoExpand={turnActive}
+      // Keep the outer "Working" group open while the model is still in a
+      // tool-only phase. The inner command outputs remain collapsed by default
+      // in StepsView. Once the model starts replying or the round ends, fold
+      // the outer group automatically.
+      autoExpand={autoExpandTools}
       toolText={toolText}
       textNode={
         answer.trim().length > 0 ? (
@@ -1771,7 +1771,6 @@ function TurnView({
           key={round.id}
           round={round}
           now={now}
-          turnActive={turn.endedAt === null}
         />
       ))}
     </div>

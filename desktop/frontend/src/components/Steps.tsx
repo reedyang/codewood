@@ -106,10 +106,10 @@ export function StepsView({ text }: { text: string }) {
       lastContentIdx = i;
     }
   });
-  // A "diff" segment that directly follows a "prompt" segment (the
-  // "• Ran apply_patch ..." line) is rendered as a toggle appended to that
-  // line, so the expand/collapse control sits at the end of the tool-call
-  // description instead of in its own header.
+  // A "cmd"/"diff" segment that directly follows a "prompt" segment (the
+  // "• Ran ..." line) is rendered as a toggle appended to that line, so the
+  // expand/collapse control sits at the end of the tool-call description
+  // instead of in its own header.
   const consumed = new Set<number>();
   return (
     <div className="activity-steps">
@@ -123,16 +123,25 @@ export function StepsView({ text }: { text: string }) {
         }
         if (seg.kind === "prompt") {
           const { bullet, body } = splitPromptBullet(value);
-          // Find the next non-blank segment; if it is a diff, fuse it.
+          // Find the next non-blank segment; if it is a command-output or diff
+          // block, fuse it into the command row and render it collapsibly.
+          let cmdIdx = -1;
+          let cmdPayload = "";
           let diffIdx = -1;
           for (let j = index + 1; j < segments.length; j += 1) {
             if (!trimBlankEdges(segments[j].text)) {
               continue;
             }
-            if (segments[j].kind === "diff") {
+            if (segments[j].kind === "cmd") {
+              cmdIdx = j;
+              cmdPayload = trimBlankEdges(segments[j].text);
+            } else if (segments[j].kind === "diff") {
               diffIdx = j;
             }
             break;
+          }
+          if (cmdIdx >= 0 && cmdPayload) {
+            consumed.add(cmdIdx);
           }
           const diffPayload = diffIdx >= 0 ? trimBlankEdges(segments[diffIdx].text) : "";
           if (diffPayload) {
@@ -140,10 +149,11 @@ export function StepsView({ text }: { text: string }) {
           }
           const isBrowserPreview = /browser_preview/i.test(body);
           return (
-            <PromptWithDiff
+            <PromptWithAttachment
               key={index}
               bullet={bullet}
               body={body}
+              cmdPayload={cmdPayload}
               diffPayload={diffPayload}
               defaultExpanded={diffIdx === lastContentIdx}
               onPathPreview={isBrowserPreview ? onPathPreview : undefined}
@@ -155,8 +165,11 @@ export function StepsView({ text }: { text: string }) {
             <DiffStep key={index} payload={value} defaultExpanded={index === lastContentIdx} />
           );
         }
+        if (seg.kind === "cmd") {
+          return <CmdOutputBlock key={index} text={value} />;
+        }
         return (
-          <div className={seg.kind === "cmd" ? "cmd-output" : "step-text"} key={index}>
+          <div className="step-text" key={index}>
             <AnsiText text={value} />
           </div>
         );
@@ -165,23 +178,25 @@ export function StepsView({ text }: { text: string }) {
   );
 }
 
-/** A "• Ran ..." prompt line. When it carries an apply_patch diff, the
- *  expand/collapse chevron is appended to the end of the line (matching the
- *  "Worked for" activity toggle icon) and the diff renders below when open. */
-function PromptWithDiff({
+/** A "• Ran ..." prompt line. When it carries command output or an apply_patch
+ *  diff, the expand/collapse chevron is appended to the end of the line and
+ *  the payload renders below when open. Command output defaults to collapsed. */
+function PromptWithAttachment({
   bullet,
   body,
+  cmdPayload,
   diffPayload,
   defaultExpanded,
   onPathPreview,
 }: {
   bullet: string;
   body: string;
+  cmdPayload: string;
   diffPayload: string;
   defaultExpanded: boolean;
   onPathPreview?: (path: string) => void;
 }) {
-  const [expanded, setExpanded] = useState(defaultExpanded);
+  const hasCmd = !!cmdPayload;
   let parsed: DiffPayload | null = null;
   if (diffPayload) {
     try {
@@ -192,7 +207,9 @@ function PromptWithDiff({
   }
   const rows = parsed?.diffRows ?? [];
   const hasDiff = rows.length > 0;
-  if (!hasDiff) {
+  const hasAttachment = hasCmd || hasDiff;
+  const [expanded, setExpanded] = useState(hasDiff ? defaultExpanded : false);
+  if (!hasAttachment) {
     return (
       <div className="cmd-prompt">
         <span className="cmd-prompt-bullet">
@@ -207,10 +224,10 @@ function PromptWithDiff({
   return (
     <>
       <div
-        className="cmd-prompt has-diff"
+        className="cmd-prompt has-attachment"
         role="button"
         tabIndex={0}
-        title={expanded ? "Collapse diff" : "Expand diff"}
+        title={expanded ? "Collapse output" : "Expand output"}
         onClick={() => setExpanded((v) => !v)}
         onKeyDown={(e) => {
           if (e.key === "Enter" || e.key === " ") {
@@ -230,8 +247,36 @@ function PromptWithDiff({
           </span>
         </span>
       </div>
-      {expanded && <DiffPreview rows={rows} lang={langFromPath(parsed?.file)} />}
+      {expanded && hasCmd && (
+        <div className="cmd-output">
+          <AnsiText text={cmdPayload} />
+        </div>
+      )}
+      {expanded && hasDiff && <DiffPreview rows={rows} lang={langFromPath(parsed?.file)} />}
     </>
+  );
+}
+
+function CmdOutputBlock({ text }: { text: string }) {
+  const [expanded, setExpanded] = useState(false);
+  return (
+    <div className="cmd-output-block">
+      <button
+        type="button"
+        className="cmd-output-header"
+        onClick={() => setExpanded((v) => !v)}
+        aria-expanded={expanded}
+        title={expanded ? "Collapse output" : "Expand output"}
+      >
+        <span className="cmd-output-title">Output</span>
+        <Icon name="chevron" size={14} className={`chevron ${expanded ? "open" : ""}`} />
+      </button>
+      {expanded && (
+        <div className="cmd-output">
+          <AnsiText text={text} />
+        </div>
+      )}
+    </div>
   );
 }
 
