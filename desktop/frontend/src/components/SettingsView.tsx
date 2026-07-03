@@ -53,7 +53,7 @@ export function SettingsView() {
     isPageId(settingsInitialPage) ? settingsInitialPage : "general",
   );
   const bgHasImage = Boolean(state?.background?.hasImage);
-  const bgOpacity = state?.background?.opacity ?? 60;
+  const bgOpacity = state?.background?.opacity ?? 85;
   const bgVersion = state?.background?.version ?? 0;
   // Local mirror so the slider drags smoothly; resynced when the server value
   // changes (e.g. after another window edits it).

@@ -125,6 +125,18 @@ html[data-has-bg] #root {
   background: transparent;
 }
 
+/* Give the whole window a single shared translucent shell surface over the
+   background image. Regions that should visually match (title bar, sidebar,
+   divider, and the rounded main panel edges) can then stay transparent and
+   reveal this one common layer, instead of stacking slightly different fills. */
+html[data-has-bg] .window-root {
+  background: var(--bg-outer-shell) !important;
+}
+
+html[data-has-bg] .app-shell {
+  background: transparent !important;
+}
+
 html[data-has-bg] #root {
   position: relative;
   z-index: 1;
@@ -153,10 +165,33 @@ html[data-has-bg] {
     var(--bg-sidebar-solid) calc(var(--app-surface-alpha, 0.85) * 100%),
     transparent
   );
+  /* Shared shell behind the title bar / sidebar / seam. Keep it a touch less
+     transparent than the generic sidebar token so the outer chrome reads as a
+     stable frame around the lighter message panel. */
+  --bg-outer-shell: color-mix(
+    in srgb,
+    var(--bg-sidebar-solid) calc(min(1, var(--app-surface-alpha, 0.85) + 0.04) * 100%),
+    transparent
+  );
   --bg-elevated: color-mix(
     in srgb,
     var(--bg-elevated-solid)
       calc(min(1, var(--app-surface-alpha, 0.85) + 0.15) * 100%),
+    transparent
+  );
+  /* The right-side panel should feel a little more glassy than the main chat
+     area, so its surface tracks the slider but keeps a slightly lower alpha. */
+  --bg-right-panel: color-mix(
+    in srgb,
+    var(--bg-solid) calc(var(--app-surface-alpha, 0.85) * 50%),
+    transparent
+  );
+  /* The main chat surface should stay a bit less transparent than the shared
+     shell behind the sidebar/titlebar so the rounded panel edge remains
+     visible over a background image. */
+  --bg-main-shell: color-mix(
+    in srgb,
+    var(--bg-solid) calc(min(1, var(--app-surface-alpha, 0.85) + 0.01) * 100%),
     transparent
   );
   /* The message input field used to stay fully opaque (``--bg-input`` had no
@@ -184,18 +219,55 @@ html[data-has-bg] {
   );
 }
 
-/* The chat title bar, the plan (right) panel + its header, and the composer's
-   outer frame previously shared the SAME surface alpha as everything else, so
-   the previous "slightly more transparent" tweak read as no different. Make
-   them fully transparent so the background image shows straight through these
-   chrome frames, with only their bottom/side borders left for separation. The
-   readable surfaces (message bubbles, the input field) keep their own fills.
-   ``!important`` defeats the ``--bg`` / ``--bg-elevated`` token re-tint above. */
-html[data-has-bg] .chat-titlebar,
+/* The right-side chrome (plan panel + composer frame) stays more transparent
+   over a background image so the picture can show through. The chat title bar
+   is intentionally excluded: it should visually merge with the left sidebar,
+   using the SAME translucent sidebar surface instead of a clearer window. */
 html[data-has-bg] .plan-panel,
 html[data-has-bg] .plan-panel-head,
 html[data-has-bg] .composer {
   background: transparent !important;
+}
+
+/* Right-side panels keep their own lighter glass layer so they stay distinct
+   from the message panel, and a soft left-edge shadow separates the two areas
+   like the native split-pane reference. */
+html[data-has-bg] .plan-panel,
+html[data-has-bg] .right-panel {
+  background: var(--bg-right-panel) !important;
+  box-shadow: -10px 0 18px -16px rgba(0, 0, 0, 0.45);
+}
+
+html[data-has-bg] .plan-panel-head,
+html[data-has-bg] .right-panel-tabs,
+html[data-has-bg] .right-panel-body {
+  background: transparent !important;
+}
+
+/* These regions should all expose the same shared shell surface. Keep the
+   containers themselves transparent so they do not accumulate extra coats. */
+html[data-has-bg] .titlebar,
+html[data-has-bg] .sidebar,
+html[data-has-bg] .sidebar-top,
+html[data-has-bg] .sidebar-scroll,
+html[data-has-bg] .sidebar-footer,
+html[data-has-bg] .settings-view,
+html[data-has-bg] .settings-nav,
+html[data-has-bg] .chat-titlebar,
+html[data-has-bg] .chat-view,
+html[data-has-bg] .transcript,
+html[data-has-bg] .composer-dock,
+html[data-has-bg] .console-dock,
+html[data-has-bg] .sidebar-resizer {
+  background: transparent !important;
+}
+
+/* The message area should still read as its own panel. Use a slightly more
+   opaque surface than the shared shell so its rounded left edge is visible
+   again, while the inner chat layers stay transparent and do not stack more
+   translucency on top. */
+html[data-has-bg] .main {
+  background: var(--bg-main-shell) !important;
 }
 
 /* When a background image is active, pop-up menus opt OUT of the slider-driven
@@ -305,6 +377,10 @@ html[data-has-bg] .ws-selector-menu {
 
 .titlebar .icon-btn.titlebar-toggle {
   margin-left: 0;
+}
+
+.titlebar .icon-btn.titlebar-toggle.active {
+  background: var(--sidebar-hover);
 }
 
 .titlebar-drag {
@@ -418,12 +494,22 @@ html[data-has-bg] .ws-selector-menu {
 /* Sidebar */
 .sidebar {
   width: var(--sidebar-width, 200px);
+  min-width: var(--sidebar-width, 200px);
   flex-shrink: 0;
+  overflow: hidden;
+  transition: width 0.2s ease, min-width 0.2s ease;
   background: var(--bg-sidebar);
   color: var(--text-on-dark);
   display: flex;
   flex-direction: column;
-  padding: 18px 14px;
+  padding: 18px 14px 0;
+}
+
+.sidebar.collapsed {
+  width: 0;
+  min-width: 0;
+  padding: 0;
+  border-right: none;
 }
 
 /* Draggable divider between the sidebar and the main panel. */
@@ -434,6 +520,12 @@ html[data-has-bg] .ws-selector-menu {
   background: transparent;
   position: relative;
   z-index: 6;
+  transition: flex-basis 0.2s ease;
+}
+
+.sidebar-resizer.collapsed {
+  flex-basis: 0;
+  cursor: default;
 }
 
 .sidebar-resizer::after {
@@ -1065,6 +1157,7 @@ body.resizing-x .browser-frame {
   cursor: pointer;
   padding: 6px;
   border-radius: 6px;
+  margin-right: -8px;
 }
 
 .chat-titlebar-plan:hover {
@@ -1075,6 +1168,29 @@ body.resizing-x .browser-frame {
 .chat-titlebar-plan.active {
   background: color-mix(in srgb, var(--accent) 16%, transparent);
   color: var(--accent);
+}
+
+.chat-titlebar-console {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 6px;
+  border-radius: 6px;
+  margin-right: -8px;
+}
+
+.chat-titlebar-console:hover {
+  background: var(--user-bg);
+  color: var(--text);
+}
+
+.chat-titlebar-console.active {
+  background: var(--user-bg);
 }
 
 /* Right-hand plan panel. */
@@ -1126,6 +1242,12 @@ body.resizing-x .browser-frame {
   border-left: 1px solid var(--border);
   background: var(--bg);
   overflow: hidden;
+  transition: flex-basis 0.2s ease;
+}
+
+.right-panel.collapsed {
+  flex-basis: 0;
+  border-left: none;
 }
 
 .right-panel-resizer {
@@ -1135,6 +1257,12 @@ body.resizing-x .browser-frame {
   background: transparent;
   position: relative;
   z-index: 6;
+  transition: flex-basis 0.2s ease;
+}
+
+.right-panel-resizer.collapsed {
+  flex-basis: 0;
+  cursor: default;
 }
 
 .right-panel-resizer::after {
@@ -1263,8 +1391,7 @@ body.resizing-x .browser-frame {
 }
 
 .right-panel-close.active {
-  background: color-mix(in srgb, var(--accent) 16%, transparent);
-  color: var(--accent);
+  background: var(--user-bg);
 }
 
 .right-panel-body {
@@ -3363,7 +3490,7 @@ html[data-has-bg] .select {
 /* Cursor-style sidebar */
 .sidebar {
   width: var(--sidebar-width, 248px);
-  padding: 14px 10px 10px;
+  padding: 14px 10px 0;
 }
 
 .sidebar-top {
@@ -3720,9 +3847,8 @@ html[data-has-bg] .select {
 }
 
 .sidebar-footer {
-  padding: 8px 6px 2px;
-  border-top: 1px solid var(--sidebar-border);
-  margin-top: 6px;
+  padding: 4px 6px 4px;
+  margin-top: auto;
 }
 
 .settings-btn {
@@ -4814,6 +4940,11 @@ h6.md-h {
   background: var(--bg);
   overflow: hidden;
   position: relative;
+  transition: height 0.2s ease;
+}
+
+.console-dock.collapsed {
+  border-top: none;
 }
 
 .console-resizer {

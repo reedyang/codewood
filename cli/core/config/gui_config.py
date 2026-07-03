@@ -33,7 +33,7 @@ _MAX_ID_LEN = 512
 # doubles as the accepted upload type guard.
 BACKGROUND_IMAGE_STEM = "bg"
 _ALLOWED_BACKGROUND_EXTS = ("png", "jpg", "jpeg", "webp", "gif", "bmp")
-_DEFAULT_BACKGROUND_OPACITY = 60
+_DEFAULT_BACKGROUND_OPACITY = 85
 
 # Embedded console options (GUI-only). Font name is free text bounded for
 # safety; buffer lines (xterm scrollback) is clamped to a sane range.
