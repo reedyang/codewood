@@ -270,6 +270,8 @@ export interface Turn {
   optimistic?: boolean;
   /** Accumulated model reasoning/thinking text for this turn. */
   thinkingText?: string;
+  /** When model reasoning/thinking started (first ``thinking`` SSE event). */
+  thinkingStartedAt?: number;
 }
 
 /** A previously-recorded model round loaded from chat history. */

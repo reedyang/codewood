@@ -1021,7 +1021,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
       const next = [...existing];
       const turn = next[next.length - 1];
       const prevText = turn.thinkingText ?? "";
-      next[next.length - 1] = { ...turn, thinkingText: prevText + text };
+      // Record the moment thinking first started so the UI can show a live timer.
+      const thinkingStartedAt = turn.thinkingStartedAt ?? (!prevText ? Date.now() : undefined);
+      next[next.length - 1] = { ...turn, thinkingText: prevText + text, thinkingStartedAt };
       return { ...prev, [chatId]: next };
     });
   }, []);

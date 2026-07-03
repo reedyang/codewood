@@ -4136,18 +4136,38 @@ html[data-has-bg] .select {
 /* Thinking/reasoning panel */
 .thinking-panel {
   margin: 4px 0 0 0;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  overflow: hidden;
 }
 .thinking-panel.collapsed {
   border: none;
+}
+.thinking-activity {
+  margin: 8px 0;
+}
+.thinking-header {
+  display: flex !important;
+  align-items: center;
+  gap: 8px;
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 13px;
+  padding: 4px 0;
+}
+.thinking-header .chevron {
+  transition: transform 0.15s;
+}
+.thinking-header .chevron.open {
+  transform: rotate(180deg);
 }
 .thinking-scroll {
   max-height: 100px;
   overflow-y: auto;
   padding: 8px 12px;
   background: var(--surface, rgba(127, 127, 127, 0.06));
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  margin-top: 4px;
 }
 .thinking-content {
   font-size: 13px;
@@ -4158,33 +4178,6 @@ html[data-has-bg] .select {
 }
 .thinking-content .md-p {
   margin: 4px 0;
-}
-.thinking-toggle {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  width: 100%;
-  padding: 4px 8px;
-  background: none;
-  border: none;
-  border-top: 1px solid var(--border, #ddd);
-  font-size: 12px;
-  color: var(--text-muted, #888);
-  cursor: pointer;
-  user-select: none;
-}
-.thinking-toggle:hover {
-  background: var(--hover, rgba(127, 127, 127, 0.08));
-}
-.thinking-panel.collapsed .thinking-toggle {
-  border: 1px solid var(--border, #ddd);
-  border-radius: 6px;
-}
-.thinking-toggle .chevron {
-  transition: transform 0.15s;
-}
-.thinking-toggle .chevron.open {
-  transform: rotate(180deg);
 }
 
 /* Selectable message text */
