@@ -98,11 +98,13 @@ function readConsoleTheme() {
 function ConsoleTerminal({
   sessionId,
   active,
+  visible,
   fontFamily,
   bufferLines,
 }: {
   sessionId: string;
   active: boolean;
+  visible: boolean;
   fontFamily: string;
   bufferLines: number;
 }) {
@@ -259,32 +261,50 @@ function ConsoleTerminal({
     }
   }, [fontFamily, bufferLines]);
 
-  // Refit + focus when this tab becomes active (it was display:none before).
+  // Refit + refresh + focus whenever the active terminal becomes visible. This
+  // covers both tab switches and the first time the dock is expanded: xterm
+  // can mis-measure rows if it mounts while the dock is still height:0.
   useEffect(() => {
-    if (!active) {
+    if (!active || !visible) {
       return;
     }
-    const id = window.setTimeout(() => {
+    const run = () => {
       try {
         fitRef.current?.fit();
       } catch {
         // ignore
       }
-      termRef.current?.focus();
-    }, 0);
-    return () => window.clearTimeout(id);
-  }, [active]);
+      const term = termRef.current;
+      if (term) {
+        term.refresh(0, Math.max(0, term.rows - 1));
+        term.focus();
+      }
+    };
+    const raf1 = window.requestAnimationFrame(() => {
+      run();
+      window.requestAnimationFrame(run);
+    });
+    const id = window.setTimeout(() => {
+      // The dock animates its height when opening; refit again after the
+      // transition settles so the first prompt line lands on the correct row.
+      run();
+    }, 220);
+    return () => {
+      window.cancelAnimationFrame(raf1);
+      window.clearTimeout(id);
+    };
+  }, [active, visible]);
 
   return (
     <div
       className="console-term"
       ref={hostRef}
-      style={{ display: active ? "block" : "none" }}
+      style={{ display: active && visible ? "block" : "none" }}
     />
   );
 }
 
-export function ConsolePanel() {
+export function ConsolePanel({ dockOpen }: { dockOpen: boolean }) {
   const {
     t,
     consoleOptions,
@@ -343,12 +363,14 @@ export function ConsolePanel() {
   useEffect(() => {
     // Wait until the platform is known so the first auto-opened tab uses the
     // right shell kind (PowerShell on Windows, the default shell elsewhere).
-    if (bootstrappedRef.current || isWindows === null) {
+    // Only bootstrap after the dock is actually visible; opening xterm inside
+    // the collapsed height:0 dock can leave the first prompt mis-rendered.
+    if (bootstrappedRef.current || isWindows === null || !dockOpen) {
       return;
     }
     bootstrappedRef.current = true;
     void addTab(defaultKind);
-  }, [addTab, isWindows, defaultKind]);
+  }, [addTab, isWindows, defaultKind, dockOpen]);
 
   const selectTab = useCallback(
     (id: string) => {
@@ -447,6 +469,7 @@ export function ConsolePanel() {
               key={tabItem.id}
               sessionId={tabItem.id}
               active={tabItem.id === activeId}
+              visible={dockOpen}
               fontFamily={consoleOptions.fontFamily}
               bufferLines={consoleOptions.bufferLines}
             />

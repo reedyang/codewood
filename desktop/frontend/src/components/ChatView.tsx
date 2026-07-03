@@ -1184,7 +1184,7 @@ function ConsoleDock({ open }: { open: boolean }) {
         aria-orientation="horizontal"
         onMouseDown={startResize}
       />
-      <ConsolePanel />
+      <ConsolePanel dockOpen={open} />
     </div>
   );
 }
