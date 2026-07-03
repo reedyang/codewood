@@ -2578,6 +2578,11 @@ class McpManager:
         from_cache = False
         if use_cache and srv in self._tools_cache:
             from_cache = True
+        elif use_cache:
+            # Keep cache-only callers truly non-blocking. The GUI settings page
+            # relies on this path while rendering/expanding rows and must not
+            # accidentally trigger a live MCP handshake on a cache miss.
+            raise McpError("Cache miss (use_cache=true); skipped live connection")
         else:
             # Ensure raw cache exists; list_tools applies filtering only to return value.
             self.list_tools(srv, timeout_s=timeout_s, use_cache=False)

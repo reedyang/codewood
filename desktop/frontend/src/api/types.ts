@@ -83,6 +83,7 @@ export interface McpServerDetails {
   tools: { name: string; description: string }[];
   prompts: { name: string; description: string }[];
   disabledTools: string[];
+  loading?: boolean;
 }
 
 /** Catalog used by the composer's slash popup. */

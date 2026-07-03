@@ -50,8 +50,11 @@ export function McpSettings() {
   const [error, setError] = useState("");
   const aliveRef = useRef(true);
 
-  const refresh = async () => {
-    setLoading(true);
+  const refresh = async (opts?: { silent?: boolean }) => {
+    const silent = !!opts?.silent;
+    if (!silent) {
+      setLoading(true);
+    }
     const list = await getMcpOverview();
     if (!aliveRef.current) return;
     setServers(list);
@@ -65,7 +68,9 @@ export function McpSettings() {
       }
       return next;
     });
-    setLoading(false);
+    if (!silent) {
+      setLoading(false);
+    }
   };
 
   useEffect(() => {
@@ -76,6 +81,37 @@ export function McpSettings() {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    const hasLoadingServer = servers.some((server) => isServerLoading(server));
+    if (!hasLoadingServer) return;
+    const timer = window.setInterval(() => {
+      void refresh({ silent: true });
+    }, 1500);
+    return () => {
+      window.clearInterval(timer);
+    };
+    // ``refresh`` is intentionally recreated per render; resetting the polling
+    // interval while MCP status changes is harmless here.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [servers]);
+
+  useEffect(() => {
+    for (const server of servers) {
+      if (!server.enabled || collapsed[server.name] !== false) continue;
+      if (loadingDetails[server.name]) continue;
+      const detail = details[server.name];
+      if (!detail) {
+        void loadDetails(server.name);
+        continue;
+      }
+      if (detail.loading && !isServerLoading(server)) {
+        void loadDetails(server.name);
+      }
+    }
+    // Driven by expansion state and live MCP status only.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [servers, collapsed, details, loadingDetails]);
 
   const toggleCollapsed = (name: string) => {
     const wasCollapsed = collapsed[name] !== false;
@@ -115,7 +151,7 @@ export function McpSettings() {
       return;
     }
     // Refresh the overview to pick up the new enabled state + status.
-    await refresh();
+    await refresh({ silent: true });
     // If the server was just enabled and we have it expanded, also refresh
     // its tool/prompt catalog since reconnect may have repopulated the cache.
     if (!server.enabled && collapsed[server.name] === false) {
@@ -145,7 +181,7 @@ export function McpSettings() {
       return result.error || "save_failed";
     }
     setEditor(null);
-    await refresh();
+    await refresh({ silent: true });
     return "";
   };
 
@@ -156,7 +192,7 @@ export function McpSettings() {
       setError(t("mcp.errDelete"));
       return;
     }
-    await refresh();
+    await refresh({ silent: true });
   };
 
   const onToggleAllTools = async (server: string, targetEnabled: boolean) => {
@@ -263,6 +299,9 @@ export function McpSettings() {
         const isCollapsed = collapsed[server.name] !== false;
         const detail = details[server.name];
         const isLoadingDetail = !!loadingDetails[server.name];
+        const isLoadingServer = isServerLoading(server);
+        const isCatalogLoading =
+          isLoadingDetail || !!detail?.loading || isLoadingServer;
         const disabledNames = new Set(server.disabledTools);
         // Only surface a textual status while the server is enabled — when
         // disabled, the toggle below already conveys that state, so an
@@ -308,8 +347,9 @@ export function McpSettings() {
                   role="switch"
                   aria-checked={server.enabled}
                   className={`mcp-toggle ${server.enabled ? "is-on" : ""}`}
-                  disabled={!!busyServer[server.name]}
-                  title={t("mcp.enabled")}
+                  disabled={!!busyServer[server.name] || isLoadingServer}
+                  title={isLoadingServer ? t("mcp.stateLoading") : t("mcp.enabled")}
+                  aria-busy={isLoadingServer}
                   onClick={() => void onToggleServer(server)}
                 >
                   <span className="mcp-toggle-thumb" />
@@ -336,8 +376,9 @@ export function McpSettings() {
             </div>
             {server.enabled && !isCollapsed && (
               <div className="mcp-server-body">
-                {isLoadingDetail && <p className="muted">{t("models.loading")}</p>}
-                {detail && (
+                {isCatalogLoading ? (
+                  <p className="muted">{t("models.loading")}</p>
+                ) : detail ? (
                   <>
                     <div className="mcp-section-header">
                       <span className="mcp-section-label">{t("mcp.toolsLabel")}</span>
@@ -377,9 +418,9 @@ export function McpSettings() {
                         );
                       })()}
                     </div>
-                    {detail.tools.length === 0 ? (
+                    {detail.tools.length === 0 && !isCatalogLoading ? (
                       <p className="muted">{t("mcp.noTools")}</p>
-                    ) : (
+                    ) : detail.tools.length > 0 ? (
                       <div className="mcp-chip-grid">
                         {detail.tools.map((tool) => {
                           const enabled = !disabledNames.has(tool.name);
@@ -397,11 +438,11 @@ export function McpSettings() {
                           );
                         })}
                       </div>
-                    )}
+                    ) : null}
                     <div className="mcp-section-label">{t("mcp.promptsLabel")}</div>
-                    {detail.prompts.length === 0 ? (
+                    {detail.prompts.length === 0 && !isCatalogLoading ? (
                       <p className="muted">{t("mcp.noPrompts")}</p>
-                    ) : (
+                    ) : detail.prompts.length > 0 ? (
                       <div className="mcp-chip-grid">
                         {detail.prompts.map((prompt) => (
                           <span
@@ -413,10 +454,10 @@ export function McpSettings() {
                           </span>
                         ))}
                       </div>
-                    )}
+                    ) : null}
                   </>
-                )}
-                {server.lastError && (
+                ) : null}
+                {!isCatalogLoading && server.lastError && (
                   <p className="setting-error">{server.lastError}</p>
                 )}
               </div>
@@ -721,4 +762,9 @@ function serverStateLabel(
   if (s === "loading" || s === "pending") return t("mcp.stateLoading");
   if (s === "failed" || s === "error") return t("mcp.stateFailed");
   return t("mcp.stateIdle");
+}
+
+function isServerLoading(server: McpServerSummary): boolean {
+  const s = (server.state || "").toLowerCase();
+  return s === "loading" || s === "pending";
 }

@@ -1183,6 +1183,8 @@ class ServeApp:
         self._shutdown_event = threading.Event()
         self._token = secrets.token_urlsafe(32)
         self._httpd: Optional[ThreadingHTTPServer] = None
+        self._mcp_reconnect_threads: Dict[str, threading.Thread] = {}
+        self._mcp_reconnect_lock = threading.Lock()
         # One runtime (input queue + busy flag + loop thread + per-turn timing)
         # per chat, so multiple chats can run their agent loop concurrently. A
         # chat's runtime is created lazily the first time input is routed to it.
@@ -2932,7 +2934,7 @@ class ServeApp:
             mgr = getattr(agent, "mcp_manager", None)
             if mgr is not None:
                 snap = mgr.get_status() or {}
-                items = snap.get("items") if isinstance(snap, dict) else None
+                items = snap.get("servers") if isinstance(snap, dict) else None
                 if isinstance(items, dict):
                     statuses = items
                 try:
@@ -2962,23 +2964,25 @@ class ServeApp:
             # settings page just after launch the status entry may still be
             # ``loading`` and report ``0`` even though the catalog cache for
             # this server has already been hydrated by a prior list_tools
-            # call. Fall back to a direct cache lookup so the row reflects
-            # the true catalog size instead of a transient zero.
+            # call. For tools, the settings row should show TOTAL catalog size,
+            # not only currently enabled tools, so prefer the raw cache count
+            # whenever it exists.
             tools_count = int(status_dict.get("tools_count") or 0)
             prompts_count = int(status_dict.get("prompts_count") or 0)
-            if enabled and (tools_count == 0 or prompts_count == 0):
+            if enabled:
                 mgr_obj = getattr(agent, "mcp_manager", None)
                 if mgr_obj is not None:
-                    if tools_count == 0:
-                        try:
-                            cached_tools, _ = mgr_obj.list_tools_with_disabled(str(name), use_cache=True)
-                            if isinstance(cached_tools, list):
-                                tools_count = len(cached_tools)
-                        except Exception:
-                            pass
+                    try:
+                        cached = getattr(mgr_obj, "_tools_cache", {}).get(str(name), {})
+                        cached_tools = cached.get("tools", []) if isinstance(cached, dict) else []
+                        if isinstance(cached_tools, list) and cached_tools:
+                            tools_count = len(cached_tools)
+                    except Exception:
+                        pass
                     if prompts_count == 0:
                         try:
-                            cached_prompts, _ = mgr_obj.list_prompts(str(name), use_cache=True)
+                            cached = getattr(mgr_obj, "_prompts_cache", {}).get(str(name), {})
+                            cached_prompts = cached.get("prompts", []) if isinstance(cached, dict) else []
                             if isinstance(cached_prompts, list):
                                 prompts_count = len(cached_prompts)
                         except Exception:
@@ -3001,13 +3005,14 @@ class ServeApp:
         """Fetch the tool/prompt catalog for a single server (cache-first)."""
         srv = str(name or "").strip()
         if not srv:
-            return {"ok": False, "tools": [], "prompts": []}
+            return {"ok": False, "tools": [], "prompts": [], "loading": False}
         agent = self.agent
         mgr = getattr(agent, "mcp_manager", None)
         if mgr is None:
-            return {"ok": False, "tools": [], "prompts": []}
+            return {"ok": False, "tools": [], "prompts": [], "loading": False}
         tools: List[Dict[str, Any]] = []
         prompts: List[Dict[str, Any]] = []
+        loading = False
         try:
             t, _ = mgr.list_tools_with_disabled(srv, use_cache=True)
             tools = list(t) if isinstance(t, list) else []
@@ -3024,6 +3029,13 @@ class ServeApp:
             disabled_names = list(mapping.get(srv, []))
         except Exception:
             disabled_names = []
+        try:
+            status_map = (mgr.get_status() or {}).get("servers", {})
+            status = status_map.get(srv, {}) if isinstance(status_map, dict) else {}
+            state = str(status.get("state") or "").strip().lower()
+            loading = state in ("loading", "pending")
+        except Exception:
+            loading = False
         # Trim each tool/prompt to the fields the GUI actually renders to
         # keep payloads small (some MCP catalogs are very chatty).
         def _slim(item: Dict[str, Any]) -> Dict[str, Any]:
@@ -3039,7 +3051,64 @@ class ServeApp:
             "tools": [_slim(x) for x in tools],
             "prompts": [_slim(x) for x in prompts],
             "disabledTools": sorted({str(x) for x in disabled_names if str(x)}),
+            "loading": loading,
         }
+
+    def _start_mcp_reconnect_async(self, server: str, timeout_s: float = 12.0) -> bool:
+        """Reconnect one MCP server on a background thread.
+
+        GUI settings handlers call this helper so an IO-bound MCP startup never
+        blocks the HTTP request thread that is serving the settings page.
+        """
+        srv = str(server or "").strip()
+        if not srv:
+            return False
+        mgr = getattr(self.agent, "mcp_manager", None)
+        if mgr is None:
+            return False
+        with self._mcp_reconnect_lock:
+            running = self._mcp_reconnect_threads.get(srv)
+            if running is not None and running.is_alive():
+                return False
+            try:
+                set_status = getattr(mgr, "_set_status", None)
+                if callable(set_status):
+                    set_status(srv, "loading", last_error="", failure_type="", suggestion="")
+            except Exception:
+                pass
+
+            def _worker() -> None:
+                try:
+                    mgr.reconnect_server(srv, timeout_s=timeout_s)
+                except Exception:
+                    # ``McpManager`` already records failure status/logs.
+                    pass
+                finally:
+                    with self._mcp_reconnect_lock:
+                        current = self._mcp_reconnect_threads.get(srv)
+                        if current is thread:
+                            self._mcp_reconnect_threads.pop(srv, None)
+                    try:
+                        self.broadcaster.publish(
+                            "idle", self._route(state=_build_state(self.agent))
+                        )
+                    except Exception:
+                        pass
+
+            thread = threading.Thread(
+                target=_worker,
+                name=f"mcp-reconnect-{srv}",
+                daemon=True,
+            )
+            self._mcp_reconnect_threads[srv] = thread
+            thread.start()
+        try:
+            self.broadcaster.publish(
+                "idle", self._route(state=_build_state(self.agent))
+            )
+        except Exception:
+            pass
+        return True
 
     def set_mcp_server_enabled(self, name: str, enabled: bool) -> bool:
         """Toggle a server's ``skip_preload`` flag and apply the change live.
@@ -3080,13 +3149,10 @@ class ServeApp:
                     mgr.mcp_config = cfg
                 except Exception:
                     pass
-                if enabled:
-                    try:
-                        mgr.reconnect_server(srv, timeout_s=12.0)
-                    except Exception:
-                        pass
         except Exception:
             pass
+        if enabled:
+            self._start_mcp_reconnect_async(srv, timeout_s=12.0)
         # Push fresh state so the page reflects the change immediately.
         try:
             self.broadcaster.publish(
@@ -3270,13 +3336,10 @@ class ServeApp:
                     mgr.mcp_config = cfg
                 except Exception:
                     pass
-                if reconnect:
-                    try:
-                        mgr.reconnect_server(server, timeout_s=12.0)
-                    except Exception:
-                        pass
         except Exception:
             pass
+        if reconnect:
+            self._start_mcp_reconnect_async(server, timeout_s=12.0)
         try:
             self.broadcaster.publish(
                 "idle", self._route(state=_build_state(self.agent))
