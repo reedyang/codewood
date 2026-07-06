@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import base64
 import contextlib
+import datetime
 import os
 import re
 import shlex
@@ -1192,14 +1193,33 @@ def action_shell_command(
                             banner_lines = int(banner_fn() or 0)
                     except Exception:
                         banner_lines = 0
+            # Determine the chat data directory for full output storage.
+            _shell_output_path: Optional[Path] = None
+            try:
+                _chat_mgr = getattr(agent, "_chat_state_manager", None)
+                _chat_id = str(getattr(agent, "active_chat_id", "") or "")
+                if _chat_mgr is not None and _chat_id:
+                    _data_dir = _chat_mgr.chat_data_dir_for_chat(_chat_id)
+                    if _data_dir is not None:
+                        _stem = datetime.datetime.now().strftime("shell_output_%Y%m%d_%H%M%S_%f")
+                        _shell_output_path = _data_dir / f"{_stem}.txt"
+            except Exception:
+                _shell_output_path = None
+
+            _shell_buf = CommandExecutionBuffer(out)
+            _shell_rendered = _shell_buf.render(file_path=_shell_output_path)
+            _shell_was_truncated = bool(_shell_output_path) and (_shell_rendered != _shell_buf.raw)
+
             base_out: Dict[str, Any] = {
-                "output": CommandExecutionBuffer(out).render(),
+                "output": _shell_rendered,
                 "return_code": return_code,
                 "interactive": interactive,
                 "aborted_by_user": bool(aborted_by_user),
                 "display_output": replay_out_text,
                 "display_rendered_lines": int(replay_rendered_lines) + int(banner_lines),
             }
+            if _shell_was_truncated:
+                base_out["full_output_path"] = str(_shell_output_path)
         finally:
             _stop_status_ticker()
             if merge_path:

@@ -1,6 +1,11 @@
 from __future__ import annotations
 
-from typing import List
+import os
+from pathlib import Path
+from typing import List, Optional, Union
+
+
+PathLike = Union[str, Path]
 
 
 class CommandExecutionBuffer:
@@ -10,6 +15,10 @@ class CommandExecutionBuffer:
     portion is elided on line boundaries so that roughly ``target_chars``
     characters remain (head + tail). The elision is reported inline so the
     model knows output was dropped.
+
+    If ``file_path`` is passed to :meth:`render`, the full (un-truncated)
+    output is written to that path and the omission message includes the
+    path so the model can use ``read`` to access the complete output.
     """
 
     MAX_CHARS = 12000
@@ -30,7 +39,7 @@ class CommandExecutionBuffer:
     def raw(self) -> str:
         return self._text
 
-    def render(self) -> str:
+    def render(self, file_path: Optional[PathLike] = None) -> str:
         text = self._text
         if len(text) <= self._max_chars:
             return text
@@ -78,8 +87,23 @@ class CommandExecutionBuffer:
         head_text = "".join(head_lines)
         if head_text and not head_text.endswith("\n"):
             head_text += "\n"
+
+        # Write full output to disk so the model can read the omitted portion.
+        # Use write_bytes to avoid text-mode newline translation (\n -> \r\n)
+        # which would double existing \r\n sequences from Windows process output.
+        if file_path is not None:
+            p = Path(file_path)
+            try:
+                p.parent.mkdir(parents=True, exist_ok=True)
+                p.write_bytes(text.encode("utf-8"))
+            except OSError:
+                pass
+
         marker = (
             f"... omitted lines {omitted_start} to {omitted_end} "
             f"({omitted_end - omitted_start + 1} lines) ...\n"
         )
+        if file_path is not None:
+            marker += f"(Full output saved to: {file_path}. Use `read` tool to read it.)\n"
+
         return header + head_text + marker + "".join(tail_lines)

@@ -290,11 +290,12 @@ def setup_model_ai_stack(
             model_name=agent.model_name,
             model_params=agent.params,
             openai_conf=agent.openai_conf,
-            work_directory=str(agent.work_directory),
             history_writer=agent._append_chat_message,
             regular_message_builder=agent._build_regular_task_messages,
             ollama_importer=ollama_importer,
             ephemeral_notice_writer=agent.add_ephemeral_screen_notice,
+            workspace_root=str(getattr(agent, "workspace_root", "") or ""),
+            self_repo_root=str(getattr(agent, "_self_repo_root", "") or ""),
             display_language=getattr(agent, "display_language", "en") or "en",
         )
     )

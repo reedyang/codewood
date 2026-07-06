@@ -56,6 +56,7 @@ from ..core.console_utils import (
     _ansi_yellow,
 )
 
+
 _WORKING_STATUS_MARQUEE_FPS = 10.0
 _STREAM_ATTR_TERMINAL_COLUMNS = get_app_runtime_attr_name("terminal_columns")
 _STREAM_ATTR_OUTPUT_INDENT_WIDTH = get_app_runtime_attr_name("output_indent_width")
@@ -1147,7 +1148,7 @@ def _stream_visible_text_with_json_pause(text: str, *, final: bool) -> str:
         fence_closed = bool(re.search(r"(?m)^```", fence_body))
         jsonish_fence = bool(re.search(r"(?i)```\s*(?:json|javascript|js)?\s*\n", fence_header))
         jsonish_body = bool(re.match(r"\s*(?:\{|\[)", fence_body))
-        if re.search(toolish_key_pattern, block):
+        if (jsonish_fence or jsonish_body) and re.search(toolish_key_pattern, block):
             starts.append(m.start())
         elif (not final) and (not fence_closed) and (jsonish_fence or jsonish_body):
             starts.append(m.start())
