@@ -2658,6 +2658,9 @@ class ServeApp:
                 output_text += f"\n(totalLines: {total_lines}, showing lines {clip_start}-{clip_end})"
             else:
                 output_text += f"\n(totalLines: 0)"
+            # Cap output at 12 000 characters to avoid blowing the context window.
+            if len(output_text) > 12000:
+                output_text = output_text[:11980] + "\n... (output truncated at 12000 chars) ...\n"
             r["output"] = output_text
             return {"success": True, **r}
         if act == "info":

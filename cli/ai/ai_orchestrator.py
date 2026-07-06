@@ -73,10 +73,11 @@ class AgentAIContext:
     model_name: str
     model_params: Optional[Dict[str, Any]]
     openai_conf: Optional[Dict[str, Any]]
-    work_directory: str
     history_writer: Callable[..., None]
     regular_message_builder: Callable[[str, str], Tuple[List[Dict[str, Any]], bool]]
     ollama_importer: Callable[[], Any]
+    workspace_root: str = ""
+    self_repo_root: str = ""
     display_language: str = "en"
     # Optional sink for multi-attempt model-call error messages that should be
     # displayed on screen and survive terminal-resize redraws but must NOT be
@@ -103,7 +104,8 @@ class AIOrchestrator:
                     freedom_combined_review=call_ctx.freedom_combined_review,
                     session_summary_mode=call_ctx.session_summary_mode,
                     memory_query_expansion_mode=call_ctx.memory_query_expansion_mode,
-                    work_directory=str(self.context.work_directory),
+                    workspace_root=self.context.workspace_root,
+                    self_repo_root=self.context.self_repo_root,
                 )
                 if special_error:
                     return special_error

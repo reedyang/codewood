@@ -3293,6 +3293,7 @@ class Agent:
                 data = {k: v for k, v in r.items() if k not in _meta_keys}
                 if data:
                     output_text = json.dumps(data, ensure_ascii=False, default=str)
+        full_output_path = str(r.get("full_output_path") or "")
         payload = {
             "kind": "model_tool_result",
             "tool": t,
@@ -3304,6 +3305,8 @@ class Agent:
             "message": message_text,
             "created_at": created_at or datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         }
+        if full_output_path:
+            payload["full_output_path"] = full_output_path
         return f"{MODEL_TOOL_RESULT_HISTORY_PREFIX}{json.dumps(payload, ensure_ascii=False)}"
 
     def _parse_model_tool_result_history_content(self, content: str) -> Optional[Dict[str, Any]]:
@@ -6867,6 +6870,51 @@ class Agent:
             with open(tmp, "w", encoding="utf-8") as fh:
                 json.dump(pruned, fh, ensure_ascii=False)
             tmp.replace(path)
+        except Exception:
+            pass
+
+    def _prune_shell_output_files(self) -> None:
+        """Delete ``shell_output_*.txt`` files whose tool result message no
+        longer exists in the active chat. Called after editing a message
+        truncates the conversation so orphaned output files don't linger."""
+        try:
+            mgr = getattr(self, "_chat_state_manager", None)
+            if mgr is None:
+                return
+            chat_id = str(getattr(self, "active_chat_id", "") or "")
+            data_dir = mgr.chat_data_dir_for_chat(chat_id)
+            if data_dir is None or not data_dir.exists():
+                return
+            chat = self._find_chat_by_id(chat_id)
+            messages = (chat or {}).get("messages") if isinstance(chat, dict) else None
+            if not isinstance(messages, list):
+                return
+            live_paths = set()
+            for msg in messages:
+                if not isinstance(msg, dict):
+                    continue
+                content = str(msg.get("content") or "")
+                if "[MODEL_TOOL_RESULT]" not in content:
+                    continue
+                try:
+                    payload = json.loads(content.split("[MODEL_TOOL_RESULT]", 1)[1])
+                except Exception:
+                    continue
+                if not isinstance(payload, dict):
+                    continue
+                fp = str(payload.get("full_output_path") or "")
+                if fp:
+                    live_paths.add(fp)
+            for child in list(data_dir.iterdir()):
+                if not child.is_file():
+                    continue
+                if not child.name.startswith("shell_output_") or not child.name.endswith(".txt"):
+                    continue
+                if str(child) not in live_paths:
+                    try:
+                        child.unlink()
+                    except Exception:
+                        pass
         except Exception:
             pass
 

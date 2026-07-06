@@ -446,7 +446,7 @@ class ConsoleSession:
         first_retained = total - retained_count
         try:
             start = max(0, int(start))
-            count = max(0, min(5000, int(count)))
+            count = max(0, min(2000, int(count)))
         except (TypeError, ValueError):
             start, count = 0, 0
         end = start + count

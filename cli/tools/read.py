@@ -18,7 +18,7 @@ def action_read(agent: Any, path: str, offset: int = 0, limit: int = 2000, promp
     try:
         _rp = Path(path)
         if not _rp.is_absolute():
-            _rp = agent.work_directory / path
+            _rp = (agent.workspace_root / path) if hasattr(agent, "workspace_root") and agent.workspace_root else (agent.work_directory / path)
         try:
             _rel = _rp.relative_to(agent.workspace_root)
         except Exception:
@@ -29,17 +29,8 @@ def action_read(agent: Any, path: str, offset: int = 0, limit: int = 2000, promp
     try:
         abs_path = Path(path)
         if not abs_path.is_absolute():
-            p1 = agent.work_directory / path
-            p_temp = agent.ai_workspace_temp_dir / path
-            p2 = agent.workspace_config_dir / path
-            if p1.exists():
-                abs_path = p1
-            elif p_temp.exists():
-                abs_path = p_temp
-            elif p2.exists():
-                abs_path = p2
-            else:
-                abs_path = p1
+            ws_root = getattr(agent, "workspace_root", None) or agent.work_directory
+            abs_path = ws_root / path
 
         if not abs_path.exists():
             return {"success": False, "error": f"File '{path}' does not exist"}
