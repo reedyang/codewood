@@ -1873,6 +1873,65 @@ class ServeApp:
         start = max(0, end - limit)
         return {"turns": turns[start:end], "start": start, "total": total}
 
+    def export_chat(
+        self, chat_id: str, file_path: str, workspace_id: str = ""
+    ) -> bool:
+        """Export a chat transcript as plain-text markdown to ``file_path``.
+        Only includes content that is always visible in the GUI — user messages,
+        assistant text replies, and user selections — filtering out collapsed
+        sections (tool calls/results, thinking blocks) and internal bookkeeping.
+        """
+        import io
+        from datetime import datetime
+
+        agent = self.agent
+        try:
+            wsid = str(workspace_id or "").strip()
+            tls = agent.__dict__.get("_session_tls")
+            prev_chat = str(getattr(tls, "chat_id", "") or "") if tls is not None else ""
+            prev_session = getattr(tls, "session", None) if tls is not None else None
+            agent._bind_session(chat_id, wsid if wsid else None)
+            try:
+                turns = _build_structured_turns(agent)
+            finally:
+                tls2 = agent.__dict__.get("_session_tls")
+                if tls2 is not None:
+                    tls2.chat_id = prev_chat
+                    tls2.session = prev_session
+            if not turns:
+                return False
+
+            buf = io.StringIO()
+            buf.write("# Chat Transcript\n\n")
+            buf.write(
+                f"*Exported on {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}*\n\n"
+            )
+            buf.write("---\n\n")
+
+            for turn in turns:
+                user_text = str(turn.get("userText") or "")
+                ts = str(turn.get("timestamp") or "")
+
+                if user_text:
+                    header = "**User**"
+                    if ts:
+                        header += f" · {ts}"
+                    buf.write(f"{header}\n\n{user_text}\n\n---\n\n")
+
+                for rnd in turn.get("rounds", []):
+                    rnd_text = str(rnd.get("text") or "").strip()
+                    rnd_selection = str(rnd.get("selection") or "").strip()
+
+                    if rnd_selection:
+                        buf.write(f"**Selection**\n\n{rnd_selection}\n\n---\n\n")
+                    elif rnd_text:
+                        buf.write(f"**Assistant**\n\n{rnd_text}\n\n---\n\n")
+
+            Path(file_path).write_text(buf.getvalue(), encoding="utf-8")
+            return True
+        except Exception:
+            return False
+
     def select_chat(self, chat_id: str, workspace_id: str = "") -> bool:
         """Silently switch the focused workspace and/or chat (no history replay).
 
@@ -4800,6 +4859,13 @@ def _make_handler(app: ServeApp):
             if path == "/interrupt":
                 app.interrupt()
                 self._send_json(200, {"ok": True})
+                return
+            if path == "/export-chat":
+                cid = str(body.get("id") or "")[:256]
+                wsid = str(body.get("workspaceId") or "")[:256]
+                file_path = str(body.get("filePath") or "")[:1024]
+                ok = app.export_chat(cid, file_path, wsid)
+                self._send_json(200 if ok else 400, {"ok": ok})
                 return
             if path == "/open-workspace":
                 ws_id = str(body.get("id") or "")[:256]

@@ -30,6 +30,7 @@ export const zhCN: Dict = {
   "menu.archiveChats": "归档对话",
   "menu.remove": "移除",
   "menu.pinChat": "置顶对话",
+  "menu.exportChat": "导出聊天记录",
   "menu.unpinChat": "取消置顶",
   "menu.archiveChat": "归档对话",
   "menu.unarchiveChat": "取消归档",

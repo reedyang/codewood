@@ -30,6 +30,7 @@ export const en: Dict = {
   "menu.archiveChats": "Archive chats",
   "menu.remove": "Remove",
   "menu.pinChat": "Pin Chat",
+  "menu.exportChat": "Export transcript",
   "menu.unpinChat": "Unpin Chat",
   "menu.archiveChat": "Archive chat",
   "menu.unarchiveChat": "Unarchive chat",

@@ -32,6 +32,8 @@ export interface HostBridgeApi {
   browser_overlay_preview_path?: (
     path: string,
   ) => boolean | Promise<boolean>;
+  /** Open a native Save As dialog; returns the chosen file path or "". */
+  save_file_dialog?: () => string | Promise<string>;
 }
 
 /** Return the host bridge if running inside the desktop host, else undefined. */
