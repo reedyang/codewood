@@ -22,6 +22,7 @@ import base64
 import datetime
 import io
 import json
+import logging
 import os
 import queue
 import re
@@ -30,15 +31,19 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Dict, List, Optional
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, urljoin, urlparse
 
 from ..core.console_utils import (
     GUI_FORCE_PROMPT_PREFIX,
     GUI_INTERNAL_COMMAND_PREFIX,
 )
+from ..config.app_info import get_app_slug_snake
+
+_MCP_LOGGER_NAME = f"{get_app_slug_snake()}.mcp"
 
 try:  # diagnostics: workspace-switch persistence routing (temporary)
     from ..core.logging.app_logging import get_logger as _get_logger
@@ -2198,6 +2203,7 @@ class ServeApp:
     }
     # Hard cap on a decoded pasted image (10 MB).
     _PASTE_IMAGE_MAX_BYTES = 10 * 1024 * 1024
+    _MCP_ICON_MAX_BYTES = 2 * 1024 * 1024
 
     def save_pasted_image(self, chat_id: str, data_url: str) -> Dict[str, Any]:
         """Validate and persist a clipboard bitmap (``data:image/...;base64,``)
@@ -2278,6 +2284,155 @@ class ServeApp:
             return target.read_bytes(), ct
         except Exception:
             return None
+
+    def read_mcp_icon(self, server: str, src: str) -> Optional[tuple]:
+        """Fetch a remote MCP icon over HTTP(S) and return ``(bytes, content_type)``.
+
+        The GUI cannot load arbitrary remote ``img`` URLs directly because its
+        CSP only allows loopback/data images, so remote icon URLs are proxied
+        through this local authenticated endpoint instead.
+        """
+        server_name = str(server or "").strip()
+        raw = str(src or "").strip()
+        if not raw or not server_name:
+            logging.getLogger(_MCP_LOGGER_NAME).info(
+                f"[ICON_PROXY] skip server={server_name or '?'} empty_input={not bool(raw)}"
+            )
+            return None
+
+        def _same_origin(a: str, b: str) -> bool:
+            try:
+                pa = urlparse(a)
+                pb = urlparse(b)
+                return (
+                    pa.scheme in {"http", "https"}
+                    and pb.scheme == pa.scheme
+                    and pb.netloc == pa.netloc
+                )
+            except Exception:
+                return False
+
+        def _favicon_fallback_urls(url: str) -> List[str]:
+            try:
+                parsed_url = urlparse(url)
+                host = str(parsed_url.hostname or "").strip(".")
+                if parsed_url.path != "/favicon.ico" or not host:
+                    return []
+                parts = [p for p in host.split(".") if p]
+                if len(parts) < 2:
+                    return []
+                apex = ".".join(parts[-2:])
+                out: List[str] = []
+                for fallback_host in (apex, f"www.{apex}"):
+                    if fallback_host == host:
+                        continue
+                    candidate = f"{parsed_url.scheme}://{fallback_host}/favicon.ico"
+                    if candidate != url and candidate not in out:
+                        out.append(candidate)
+                return out
+            except Exception:
+                return []
+
+        def _fetch_icon_url(url: str, extra_headers: Dict[str, str], auth_enabled: bool) -> Optional[tuple]:
+            parsed_url = urlparse(url)
+            if parsed_url.scheme not in {"http", "https"}:
+                logging.getLogger(_MCP_LOGGER_NAME).info(
+                    f"[ICON_PROXY] skip server={server_name} unsupported_scheme src={url[:200]}"
+                )
+                return None
+            try:
+                from ..config.app_info import get_app_name, get_app_version
+
+                user_agent = f"{get_app_name()}/{get_app_version()}"
+            except Exception:
+                user_agent = "CodeWood/unknown"
+            try:
+                req_headers = {
+                    "User-Agent": user_agent,
+                    "Accept": "image/*,*/*;q=0.8",
+                }
+                req_headers.update(extra_headers)
+                logging.getLogger(_MCP_LOGGER_NAME).info(
+                    f"[ICON_PROXY] fetch server={server_name} auth_headers={1 if auth_enabled else 0} src={url[:200]}"
+                )
+                req = urllib.request.Request(
+                    url=url,
+                    headers=req_headers,
+                    method="GET",
+                )
+                with urllib.request.urlopen(req, timeout=5.0) as resp:
+                    data = resp.read(self._MCP_ICON_MAX_BYTES + 1)
+                    if not data or len(data) > self._MCP_ICON_MAX_BYTES:
+                        logging.getLogger(_MCP_LOGGER_NAME).info(
+                            f"[ICON_PROXY] reject server={server_name} reason=size bytes={len(data) if data else 0}"
+                        )
+                        return None
+                    header_ct = str(resp.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
+                    guessed_ct = {
+                        ".ico": "image/x-icon",
+                        ".png": "image/png",
+                        ".jpg": "image/jpeg",
+                        ".jpeg": "image/jpeg",
+                        ".svg": "image/svg+xml",
+                        ".webp": "image/webp",
+                        ".gif": "image/gif",
+                        ".bmp": "image/bmp",
+                    }.get(Path(parsed_url.path).suffix.lower(), "")
+                    content_type = header_ct or guessed_ct
+                    if not content_type:
+                        logging.getLogger(_MCP_LOGGER_NAME).info(
+                            f"[ICON_PROXY] reject server={server_name} reason=missing_content_type src={url[:200]}"
+                        )
+                        return None
+                    if not (content_type.startswith("image/") or content_type == "image/vnd.microsoft.icon"):
+                        logging.getLogger(_MCP_LOGGER_NAME).info(
+                            f"[ICON_PROXY] reject server={server_name} reason=bad_content_type ct={content_type} src={url[:200]}"
+                        )
+                        return None
+                    logging.getLogger(_MCP_LOGGER_NAME).info(
+                        f"[ICON_PROXY] ok server={server_name} ct={content_type} bytes={len(data)} src={url[:200]}"
+                    )
+                    return data, content_type
+            except Exception as e:
+                logging.getLogger(_MCP_LOGGER_NAME).info(
+                    f"[ICON_PROXY] fail server={server_name} err={str(e)[:200]} src={url[:200]}"
+                )
+                return None
+
+        headers: Dict[str, str] = {}
+        target_url = raw
+        used_auth_headers = False
+        try:
+            cfg = self._mcp_load_jsonc()
+            servers_cfg = cfg.get("mcpServers") if isinstance(cfg, dict) else {}
+            conf = servers_cfg.get(server_name) if isinstance(servers_cfg, dict) else None
+            if isinstance(conf, dict):
+                base_url = str(conf.get("url") or "").strip()
+                if base_url:
+                    target_url = urljoin(base_url, raw)
+                    if _same_origin(base_url, target_url):
+                        raw_headers = conf.get("headers")
+                        if isinstance(raw_headers, dict):
+                            for hk, hv in raw_headers.items():
+                                key = str(hk or "").strip()
+                                val = str(hv or "").strip()
+                                if key and val:
+                                    headers[key] = val
+                        used_auth_headers = bool(headers)
+        except Exception:
+            target_url = raw
+            headers = {}
+        result = _fetch_icon_url(target_url, headers, used_auth_headers)
+        if result is not None:
+            return result
+        for fallback_url in _favicon_fallback_urls(target_url):
+            logging.getLogger(_MCP_LOGGER_NAME).info(
+                f"[ICON_PROXY] fallback server={server_name} src={fallback_url[:200]}"
+            )
+            result = _fetch_icon_url(fallback_url, {}, False)
+            if result is not None:
+                return result
+        return None
 
     # Embedded browser command channel
     # ----------------------------------------------------------------------
@@ -2988,6 +3143,11 @@ class ServeApp:
                                 prompts_count = len(cached_prompts)
                         except Exception:
                             pass
+            # Use only runtime-discovered icon sources for GUI display.
+            status_icon = str(status_dict.get("icon") or "").strip()
+            icon = status_icon
+            if icon:
+                print(f"[MCP icon] server={name} icon={icon[:200]}", flush=True)
             out.append(
                 {
                     "name": str(name),
@@ -2998,6 +3158,7 @@ class ServeApp:
                     "toolsCount": tools_count,
                     "promptsCount": prompts_count,
                     "disabledTools": disabled_by_server.get(str(name), []),
+                    "icon": icon,
                 }
             )
         return {"servers": out}
@@ -4529,6 +4690,18 @@ def _make_handler(app: ServeApp):
                 vals = query.get("path") or []
                 file_path = str(vals[0]) if vals else ""
                 result = app.read_chat_file(file_path)
+                if result is None:
+                    self._send_json(404, {"error": "not found"})
+                else:
+                    data, content_type = result
+                    self._send_bytes(200, data, content_type)
+                return
+            if path == "/mcp-icon":
+                server_vals = query.get("server") or []
+                server = str(server_vals[0]) if server_vals else ""
+                vals = query.get("src") or []
+                src = str(vals[0]) if vals else ""
+                result = app.read_mcp_icon(server, src)
                 if result is None:
                     self._send_json(404, {"error": "not found"})
                 else:

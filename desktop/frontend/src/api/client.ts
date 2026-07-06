@@ -292,6 +292,27 @@ export class ApiClient {
     return `${this.base}/chat-image?${params.toString()}`;
   }
 
+  /** Resolve an MCP icon source into a GUI-loadable URL. Remote HTTP(S) icons
+   *  are proxied through the local backend because the desktop WebView CSP
+   *  only allows loopback/data images. */
+  mcpIconUrl(server: string, icon: string): string {
+    const src = String(icon || "").trim();
+    const name = String(server || "").trim();
+    if (!src) return "";
+    const lower = src.toLowerCase();
+    if (lower.startsWith("data:")) {
+      return src;
+    }
+    if (src.startsWith(`${this.base}/`)) {
+      return src;
+    }
+    if (lower.startsWith("http://127.0.0.1:") || lower.startsWith("http://localhost:")) {
+      return src;
+    }
+    const params = new URLSearchParams({ token: this.token, src, server: name });
+    return `${this.base}/mcp-icon?${params.toString()}`;
+  }
+
   /** Post the outcome of a backend-issued browser command back to the waiting
    *  tool call, keyed by its requestId. */
   async browserResult(

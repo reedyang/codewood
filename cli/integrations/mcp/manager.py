@@ -212,6 +212,53 @@ def _extract_initialize_instructions(result: Any) -> str:
         return ""
     return str(result.get("instructions", "") or "").strip()
 
+def _extract_icons_from_dict(value: Any) -> List[Dict[str, Any]]:
+    """Extract icon candidates from standard and common extension fields."""
+    if not isinstance(value, dict):
+        return []
+    out: List[Dict[str, Any]] = []
+
+    def _append_icon(src_value: Any, mime_value: Any = "") -> None:
+        src = str(src_value or "").strip()
+        if not src:
+            return
+        mime = str(mime_value or "").strip()
+        item = {"src": src, "mimeType": mime}
+        if item not in out:
+            out.append(item)
+
+    def _consume_icons_field(obj: Dict[str, Any]) -> None:
+        icons = obj.get("icons", [])
+        if isinstance(icons, list):
+            for ic in icons:
+                if isinstance(ic, dict):
+                    _append_icon(ic.get("src"), ic.get("mimeType"))
+                elif isinstance(ic, str):
+                    _append_icon(ic)
+        single = obj.get("icon")
+        if isinstance(single, (str, dict)):
+            if isinstance(single, dict):
+                _append_icon(single.get("src"), single.get("mimeType"))
+            else:
+                _append_icon(single)
+
+    _consume_icons_field(value)
+    for meta_key in ("_meta", "meta"):
+        meta_obj = value.get(meta_key)
+        if isinstance(meta_obj, dict):
+            _consume_icons_field(meta_obj)
+    return out
+
+
+def _extract_initialize_icons(result: Any) -> List[Dict[str, Any]]:
+    """Extract icons from InitializeResult.serverInfo and common extensions."""
+    if not isinstance(result, dict):
+        return []
+    server_info = result.get("serverInfo")
+    if not isinstance(server_info, dict):
+        return []
+    return _extract_icons_from_dict(server_info)
+
 
 @dataclass
 class McpServerClient:
@@ -233,6 +280,7 @@ class McpServerClient:
     _hs_last_raw_log_ts: float = 0.0
     peer_request_handler: Optional[Callable[[str, Dict[str, Any]], Dict[str, Any]]] = None
     initialize_instructions: str = ""
+    initialize_icons: List[Dict[str, Any]] = field(default_factory=list)
 
     def _handshake_debug_enabled(self) -> bool:
         """Enable handshake debug by env or per-server config."""
@@ -782,6 +830,21 @@ class McpServerClient:
                             timeout_s=min(left, per_try_floor),
                         )
                         self.initialize_instructions = _extract_initialize_instructions(result)
+                        self.initialize_icons = _extract_initialize_icons(result)
+                        if self.initialize_icons:
+                            logging.getLogger(_MCP_LOGGER_NAME).info(
+                                f"[ICON] server={self.name} protocol={pv} extracted {len(self.initialize_icons)} icon(s)"
+                                f", first src={self.initialize_icons[0].get('src','')[:200]}"
+                            )
+                        else:
+                            # Log full serverInfo for debugging
+                            si = result.get("serverInfo", {}) if isinstance(result, dict) else {}
+                            si_keys = ",".join(str(k) for k in (si if isinstance(si, dict) else {}).keys())
+                            result_keys = ",".join(str(k) for k in (result if isinstance(result, dict) else {}).keys())
+                            logging.getLogger(_MCP_LOGGER_NAME).info(
+                                f"[ICON] server={self.name} protocol={pv} no icons in serverInfo"
+                                f" serverInfo_keys=[{si_keys}] result_keys=[{result_keys}]"
+                            )
                         self.negotiated_protocol = pv
                         last_error = None
                         break
@@ -2259,6 +2322,20 @@ class McpUrlClient:
                     timeout_s=timeout_s,
                 )
                 self.initialize_instructions = _extract_initialize_instructions(result)
+                self.initialize_icons = _extract_initialize_icons(result)
+                if self.initialize_icons:
+                    logging.getLogger(_MCP_LOGGER_NAME).info(
+                        f"[ICON] server={self.name} protocol={pv} extracted {len(self.initialize_icons)} icon(s)"
+                        f", first src={self.initialize_icons[0].get('src','')[:200]}"
+                    )
+                else:
+                    si = result.get("serverInfo", {}) if isinstance(result, dict) else {}
+                    si_keys = ",".join(str(k) for k in (si if isinstance(si, dict) else {}).keys())
+                    result_keys = ",".join(str(k) for k in (result if isinstance(result, dict) else {}).keys())
+                    logging.getLogger(_MCP_LOGGER_NAME).info(
+                        f"[ICON] server={self.name} protocol={pv} no icons in serverInfo"
+                        f" serverInfo_keys=[{si_keys}] result_keys=[{result_keys}]"
+                    )
                 self.initialized = True
                 # best-effort initialized notification
                 try:
@@ -3580,6 +3657,32 @@ class McpManager:
                 v["resources_count"] = len(resources_list) if isinstance(resources_list, list) else 0
                 v["resource_templates_count"] = len(templates_list) if isinstance(templates_list, list) else 0
                 v["prompts_count"] = len(prompts_list) if isinstance(prompts_list, list) else 0
+                # Expose server icon. Priority: serverInfo > URL favicon > config.
+                if not v.get("icon"):
+                    client = self._clients.get(name)
+                    if client is not None:
+                        ics = getattr(client, "initialize_icons", [])
+                        if isinstance(ics, list) and ics:
+                            icon_src = str(ics[0].get("src", "") or "")
+                            if icon_src:
+                                v["icon"] = icon_src
+                if not v.get("icon"):
+                    # Fallback: derive favicon URL from HTTP server's base URL.
+                    servers_cfg = self.mcp_config.get("mcpServers", {})
+                    conf = servers_cfg.get(name) if isinstance(servers_cfg, dict) else None
+                    if isinstance(conf, dict):
+                        url = str(conf.get("url") or "").strip()
+                        if url:
+                            try:
+                                parsed = urllib.parse.urlparse(url)
+                                if parsed.scheme and parsed.netloc:
+                                    favicon = f"{parsed.scheme}://{parsed.netloc}/favicon.ico"
+                                    v["icon"] = favicon
+                                    logging.getLogger(_MCP_LOGGER_NAME).info(
+                                        f"status_icon server={name} src=url_favicon/{favicon}"
+                                    )
+                            except Exception:
+                                pass
         loaded = sum(1 for v in items.values() if v.get("state") in ("success", "failed", "skipped"))
         success = sum(1 for v in items.values() if v.get("state") == "success")
         failed = sum(1 for v in items.values() if v.get("state") == "failed")

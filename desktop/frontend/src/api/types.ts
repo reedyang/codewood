@@ -75,6 +75,8 @@ export interface McpServerSummary {
   toolsCount: number;
   promptsCount: number;
   disabledTools: string[];
+  /** URL or data URI of the runtime-discovered server icon. */
+  icon?: string;
 }
 
 /** Lazy-loaded tool/prompt catalog for a single MCP server. */

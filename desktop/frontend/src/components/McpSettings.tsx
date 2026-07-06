@@ -30,6 +30,7 @@ export function McpSettings() {
     addMcpServer,
     updateMcpServer,
     deleteMcpServer,
+    mcpIconUrl,
     t,
   } = useApp();
   const [servers, setServers] = useState<McpServerSummary[]>([]);
@@ -303,11 +304,6 @@ export function McpSettings() {
         const isCatalogLoading =
           isLoadingDetail || !!detail?.loading || isLoadingServer;
         const disabledNames = new Set(server.disabledTools);
-        // Only surface a textual status while the server is enabled — when
-        // disabled, the toggle below already conveys that state, so an
-        // extra "Disabled" pill would be redundant noise.
-        const showStatus = server.enabled;
-        const stateLabel = showStatus ? serverStateLabel(server, t) : "";
         return (
           <div className="mcp-server" key={server.name}>
             <div className="mcp-server-head">
@@ -325,14 +321,15 @@ export function McpSettings() {
                 // keep the row's column layout intact.
                 <span className="mcp-collapse-placeholder" />
               )}
+              <McpServerIcon
+                name={server.name}
+                icon={mcpIconUrl(server.name, server.icon || "")}
+                state={server.state}
+                enabled={server.enabled}
+              />
               <span className="mcp-server-name">{server.name}</span>
               {server.transport && (
                 <span className="mcp-badge">{server.transport.toUpperCase()}</span>
-              )}
-              {showStatus && (
-                <span className={`mcp-status mcp-status-${serverStateClass(server)}`}>
-                  {stateLabel}
-                </span>
               )}
               <div className="mcp-server-actions">
                 {server.enabled && (
@@ -743,25 +740,44 @@ function McpServerEditor({
   );
 }
 
-function serverStateClass(server: McpServerSummary): string {
-  if (!server.enabled) return "off";
-  const s = (server.state || "").toLowerCase();
-  if (s === "success") return "ok";
-  if (s === "loading" || s === "pending") return "loading";
-  if (s === "failed" || s === "error") return "error";
-  return "idle";
-}
-
-function serverStateLabel(
-  server: McpServerSummary,
-  t: (key: string) => string,
-): string {
-  if (!server.enabled) return t("mcp.stateDisabled");
-  const s = (server.state || "").toLowerCase();
-  if (s === "success") return t("mcp.stateConnected");
-  if (s === "loading" || s === "pending") return t("mcp.stateLoading");
-  if (s === "failed" || s === "error") return t("mcp.stateFailed");
-  return t("mcp.stateIdle");
+/** Avatar-style icon for an MCP server, with a status dot overlay.
+ *  Renders the server's icon image when available, falling back to
+ *  the first letter of the server name. */
+function McpServerIcon({
+  name,
+  icon,
+  state,
+  enabled,
+}: {
+  name: string;
+  icon?: string;
+  state: string;
+  enabled: boolean;
+}) {
+  const [imgFailed, setImgFailed] = useState(false);
+  useEffect(() => {
+    setImgFailed(false);
+  }, [icon]);
+  const initial = (name || "?").charAt(0).toUpperCase();
+  const dotClass = !enabled ? "" : (() => {
+    const s = (state || "").toLowerCase();
+    if (s === "success") return "dot-ok";
+    if (s === "loading" || s === "pending") return "dot-loading";
+    return "dot-error";
+  })();
+  const useImg = icon && !imgFailed;
+  return (
+    <span className="mcp-server-icon">
+      {useImg ? (
+        <img className="mcp-server-icon-img" src={icon} alt="" onError={() => setImgFailed(true)} />
+      ) : (
+        <span className="mcp-server-icon-char">{initial}</span>
+      )}
+      {enabled && dotClass && (
+        <span className={`mcp-server-icon-dot ${dotClass}`} />
+      )}
+    </span>
+  );
 }
 
 function isServerLoading(server: McpServerSummary): boolean {
