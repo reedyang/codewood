@@ -2142,6 +2142,23 @@ export function AppProvider({ children }: { children: ReactNode }) {
       const result = await client.openFolder(path);
       if (result?.id) {
         pendingFocusWsIdRef.current = result.id;
+        // Re-fetch state because the SSE idle event from /open-folder
+        // may have arrived before pendingFocusWsIdRef was set (race),
+        // causing the SSE handler to discard it (idleForFocused=false).
+        try {
+          const next = await client.getState();
+          setState(next);
+          if (!next.activeChatId) {
+            setDraftMode(true);
+            setDraftWorkspaceId(next.workspace.id);
+            historyChatRef.current = "\u0000";
+            setHistoryTurns([]);
+            setHistoryStart(0);
+            setHistoryTotal(0);
+          }
+        } catch {
+          // getState failure is non-fatal; the workspace was created.
+        }
       }
     }
   }, [pickFolder, client]);
@@ -2176,8 +2193,24 @@ export function AppProvider({ children }: { children: ReactNode }) {
         case "open-folder": {
           const path = String(payload ?? "").trim();
           if (path) {
-            client.openFolder(path).then((r) => {
-              if (r?.id) pendingFocusWsIdRef.current = r.id;
+            client.openFolder(path).then(async (r) => {
+              if (r?.id) {
+                pendingFocusWsIdRef.current = r.id;
+                try {
+                  const next = await client.getState();
+                  setState(next);
+                  if (!next.activeChatId) {
+                    setDraftMode(true);
+                    setDraftWorkspaceId(next.workspace.id);
+                    historyChatRef.current = "\u0000";
+                    setHistoryTurns([]);
+                    setHistoryStart(0);
+                    setHistoryTotal(0);
+                  }
+                } catch {
+                  // non-fatal
+                }
+              }
             });
           }
           break;
