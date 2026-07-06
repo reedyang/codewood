@@ -93,12 +93,7 @@ def action_read(agent: Any, path: str, offset: int = 0, limit: int = 2000, promp
 
 class ReadTool(BaseTool):
     name = "read"
-    description = (
-        "Read a file from the local filesystem. For text files, returns the "
-        "content with line numbers. For image files, returns an AI "
-        "interpretation of the image. For directories, returns a listing of "
-        "entries."
-    )
+    description = "Read a file, directory, or image from the local filesystem."
     parameters: Dict[str, Any] = {
         "type": "object",
         "properties": {

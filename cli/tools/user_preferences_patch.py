@@ -9,7 +9,7 @@ from .base import BaseTool
 
 class UserPreferencesPatchTool(BaseTool):
     name = "user_preferences_patch"
-    description = "Write/update the persistent user preferences file. ONLY use when the user explicitly says it is a preference ('I prefer', 'set a preference', 'as my preference', 'always call me', 'default to'). For generic 'remember that...' requests, use memory_add instead. operation=replace_body replaces the body; operation=upsert_section inserts or replaces a section by level-2 heading. Do not write secrets/tokens."
+    description = "Write/update the persistent user preferences file. Supports replace_body and upsert_section operations."
     parameters: Dict[str, Any] = {
         "type": "object",
         "properties": {

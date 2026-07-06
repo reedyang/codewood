@@ -9,7 +9,7 @@ from .base import BaseTool
 
 class McpListResourcesTool(BaseTool):
     name = "mcp_list_resources"
-    description = "List available resources for a specified MCP server."
+    description = "List resources on an MCP server."
     parameters: Dict[str, Any] = {
         "type": "object",
         "properties": {

@@ -46,7 +46,7 @@ class UpdatePlanTool(BaseTool):
     # Mirror Codex by hiding it from the spec while Plan mode is active and
     # rejecting any call that slips through (see ``execute``).
     excluded_in_plan_mode = True
-    description = "Maintain an up-to-date, step-by-step plan for the current task. Provide an ordered list of short steps, each with a status (pending, in_progress, or completed). Keep at most one step in_progress at a time. The plan is stored on the active chat record as model context only and is not surfaced verbatim to the user."
+    description = "Maintain a step-by-step plan (pending/in_progress/completed) for the current task. At most one step in_progress at a time."
     parameters: Dict[str, Any] = {
         "type": "object",
         "properties": {

@@ -30,13 +30,7 @@ def _dispatch(agent: Any, action: str, payload: Optional[Dict[str, Any]] = None)
 
 class ConsoleExecTool(BaseTool):
     name = "console_exec"
-    description = (
-        "Run a command in the desktop GUI's ACTIVE embedded console tab. The "
-        "command is typed into the user's live, interactive shell (sharing its "
-        "working directory, environment and history). The call returns "
-        "immediately; use `console_read` afterwards to read the output the "
-        "command produced."
-    )
+    description = "Run a command in the active embedded console tab. Use console_read to get the output."
     requires_gui = True
     parameters: Dict[str, Any] = {
         "type": "object",
@@ -58,13 +52,7 @@ class ConsoleExecTool(BaseTool):
 
 class ConsoleReadTool(BaseTool):
     name = "console_read"
-    description = (
-        "Read output lines from the ACTIVE embedded console. Returns lines in "
-        "the absolute range [start, start + count) along with `totalLines` (the "
-        "total number of lines produced so far) so you can page through the "
-        "scrollback. Older lines beyond the buffer may be truncated (the result "
-        "flags this)."
-    )
+    description = "Read output lines from the active embedded console. Returns totalLines for pagination."
     requires_gui = True
     parameters: Dict[str, Any] = {
         "type": "object",
@@ -97,10 +85,7 @@ class ConsoleReadTool(BaseTool):
 
 class ConsoleInfoTool(BaseTool):
     name = "console_info"
-    description = (
-        "Return basic info about the ACTIVE embedded console: shell kind, "
-        "current working directory, terminal dimensions and total line count."
-    )
+    description = "Return info about the active embedded console: shell, cwd, dimensions, line count."
     requires_gui = True
     parameters: Dict[str, Any] = {"type": "object", "properties": {}}
 

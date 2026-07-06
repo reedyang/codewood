@@ -9,7 +9,7 @@ from .base import BaseTool
 
 class MemorySearchTool(BaseTool):
     name = "memory_search"
-    description = "Search experiential memory (user-requested remembered facts) within the current workspace scope. Use when the user explicitly asks 'do you remember...', when you need information from past explicit remembers, or when the memory context injected into the user message is insufficient. Prefer descriptive natural-language queries. Limit is optional."
+    description = "Search experiential memory (user-requested remembered facts) in the current workspace."
     parameters: Dict[str, Any] = {
         "type": "object",
         "properties": {

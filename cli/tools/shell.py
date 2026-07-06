@@ -2126,7 +2126,7 @@ from ..core.security.git_guard import guard_git_clone_precheck  # noqa: E402
 
 class ShellTool(BaseTool):
     name = "shell"
-    description = "Execute a system shell command in the current working directory."
+    description = "Run a shell command."
     parameters: Dict[str, Any] = {
         "type": "object",
         "properties": {

@@ -9,7 +9,7 @@ from .base import BaseTool
 
 class MemoryDeleteTool(BaseTool):
     name = "memory_delete"
-    description = "Delete one experiential memory entry by id."
+    description = "Delete a memory entry by id."
     parameters: Dict[str, Any] = {
         "type": "object",
         "properties": {
