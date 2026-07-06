@@ -9,7 +9,7 @@ from .base import BaseTool
 
 class RequestSkillPromptTool(BaseTool):
     name = "request_skill_prompt"
-    description = "Request injection of the prompt for a specified skill. This is a virtual control tool and does not directly perform business actions. Supports chunked long skill bodies: pass section to load a specific section, or full=true to load the complete body."
+    description = "Request the prompt for a specified skill."
     parameters: Dict[str, Any] = {
         "type": "object",
         "properties": {

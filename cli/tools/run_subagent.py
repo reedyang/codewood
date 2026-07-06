@@ -9,7 +9,7 @@ from .base import BaseTool
 
 class RunSubagentTool(BaseTool):
     name = "run_subagent"
-    description = "Delegate a self-contained subtask to a configured sub-agent. The sub-agent runs an isolated agentic loop with its own model, instructions, and tools, and returns a final text result that you should use to continue the main task. Choose the sub-agent whose description best matches the subtask. Sub-agents cannot call run_subagent themselves."
+    description = "Delegate a subtask to a configured sub-agent. Returns a text result to continue the main task."
     requires_subagents = True
     parameters: Dict[str, Any] = {
         "type": "object",

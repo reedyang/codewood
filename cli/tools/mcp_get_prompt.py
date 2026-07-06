@@ -9,7 +9,7 @@ from .base import BaseTool
 
 class McpGetPromptTool(BaseTool):
     name = "mcp_get_prompt"
-    description = "Resolve a single MCP prompt with optional arguments."
+    description = "Resolve an MCP prompt with optional arguments."
     parameters: Dict[str, Any] = {
         "type": "object",
         "properties": {

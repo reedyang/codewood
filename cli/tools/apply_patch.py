@@ -480,7 +480,7 @@ from .base import BaseTool  # noqa: E402
 
 class ApplyPatchTool(BaseTool):
     name = "apply_patch"
-    description = "Apply a standard unified diff to a specified text file (patch/git apply format, including ---/+++ and @@ hunks)."
+    description = "Apply a unified diff patch to a text file."
     parameters: Dict[str, Any] = {
         "type": "object",
         "properties": {

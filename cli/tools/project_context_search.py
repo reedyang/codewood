@@ -9,7 +9,7 @@ from .base import BaseTool
 
 class ProjectContextSearchTool(BaseTool):
     name = "project_context_search"
-    description = "Fast code-context retrieval for any size project (SQLite + BM25 + semantic embeddings): returns ranked candidate files with matched symbols, imports, and match reasons. Supports call-graph queries (callers/callees of a symbol) for change-impact and dependency tracing. Much faster than shell-based grep/ripgrep — use this as the FIRST retrieval step before falling back to shell search or file reads."
+    description = "Fast code-context retrieval using BM25 + embeddings. Supports text search and call-graph queries (callers/callees)."
     parameters: Dict[str, Any] = {
         "type": "object",
         "properties": {

@@ -9,7 +9,7 @@ from .base import BaseTool
 
 class MemoryAddTool(BaseTool):
     name = "memory_add"
-    description = "Write one experiential memory entry. This is the DEFAULT tool for any 'remember that...' / '记住...' request. Only use user_preferences_patch instead when the user explicitly says it is a preference ('I prefer', 'set a preference'). Do not save code snippets, raw script/command output, raw logs, or long summarized text. Do not write passwords, tokens, or private keys. If you believe the user's view may be wrong, record your independent judgment in system_note."
+    description = "Write one experiential memory entry."
     parameters: Dict[str, Any] = {
         "type": "object",
         "properties": {

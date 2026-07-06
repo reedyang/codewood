@@ -9,7 +9,7 @@ from .base import BaseTool
 
 class UserPreferencesReadTool(BaseTool):
     name = "user_preferences_read"
-    description = "Read the full persistent user preferences file (user_preferences.md under config) to inspect current content before editing. This is not the experiential memory store; its content is always injected into system. Optional max_chars truncates the returned content."
+    description = "Read the persistent user preferences file (user_preferences.md). Optional max_chars truncates the content."
     parameters: Dict[str, Any] = {
         "type": "object",
         "properties": {

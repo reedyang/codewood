@@ -9,7 +9,7 @@ from .base import BaseTool
 
 class McpListPromptsTool(BaseTool):
     name = "mcp_list_prompts"
-    description = "List prompts for a specified MCP server."
+    description = "List prompts on an MCP server."
     parameters: Dict[str, Any] = {
         "type": "object",
         "properties": {

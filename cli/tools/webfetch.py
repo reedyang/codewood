@@ -186,11 +186,7 @@ def _html_to_markdown(html: str) -> str:
 
 class WebFetchTool(BaseTool):
     name = "webfetch"
-    description = (
-        "Fetch content from an HTTP or HTTPS URL and return it as text, "
-        "markdown, or HTML. Markdown is the default. "
-        "Use a more targeted tool when one is available. This tool is read-only."
-    )
+    description = "Fetch HTTP/HTTPS content as text, markdown, or HTML (default: markdown). Read-only."
     parameters: Dict[str, Any] = {
         "type": "object",
         "properties": {
