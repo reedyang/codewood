@@ -163,6 +163,20 @@ export class ApiClient {
     }
   }
 
+  /** Export a chat transcript as markdown to a file path. */
+  async exportChat(
+    id: string,
+    workspaceId: string,
+    filePath: string,
+  ): Promise<boolean> {
+    const res = await fetch(`${this.base}/export-chat`, {
+      method: "POST",
+      headers: this.headers(),
+      body: JSON.stringify({ id, workspaceId, filePath }),
+    });
+    return res.ok;
+  }
+
   /** Toggle a chat's archived flag (GUI-only, persistent). */
   async toggleChatArchive(id: string, workspaceId = ""): Promise<boolean> {
     const res = await fetch(`${this.base}/toggle-chat-archive`, {

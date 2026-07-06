@@ -14,6 +14,7 @@ export interface ChatMenuDeps {
   onToggleArchive: () => void;
   onRename: () => void;
   onRemove: () => void;
+  onExport: () => void;
 }
 
 /** The chat context menu shared by the sidebar rows and the chat title bar. */
@@ -23,6 +24,11 @@ export function buildChatMenuItems(deps: ChatMenuDeps): MenuItem[] {
       id: "pin",
       label: deps.isPinned ? deps.t("menu.unpinChat") : deps.t("menu.pinChat"),
       onSelect: deps.onTogglePin,
+    },
+    {
+      id: "export",
+      label: deps.t("menu.exportChat"),
+      onSelect: deps.onExport,
     },
     {
       id: "archive",

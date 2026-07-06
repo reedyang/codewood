@@ -102,6 +102,14 @@ def _open_dialog():
     return webview.OPEN_DIALOG
 
 
+def _save_dialog():
+    """Resolve the save-file dialog kind across pywebview versions."""
+    file_dialog = getattr(webview, "FileDialog", None)
+    if file_dialog is not None and hasattr(file_dialog, "SAVE"):
+        return file_dialog.SAVE
+    return webview.SAVE_DIALOG
+
+
 def _pick_folder() -> str:
     """Open a native folder picker; return the selected path or ""."""
     window = webview.active_window()
@@ -178,6 +186,24 @@ def _pick_image(directory: str = "") -> str:
     if isinstance(result, (list, tuple)):
         return str(result[0]) if result else ""
     return str(result)
+
+
+def _save_file_dialog() -> str:
+    """Open a native Save As dialog for markdown files; return the chosen path or ""."""
+    window = webview.active_window()
+    if window is None:
+        return ""
+    try:
+        result = window.create_file_dialog(
+            _save_dialog(),
+            save_filename="chat-export.md",
+            file_types=("Markdown files (*.md)",),
+        )
+    except Exception:
+        return ""
+    if not result:
+        return ""
+    return result[0] if isinstance(result, (list, tuple)) else str(result)
 
 
 class HostApi:
@@ -335,6 +361,9 @@ class HostApi:
 
     def pick_image(self, directory: str = "") -> str:
         return _pick_image(directory)
+
+    def save_file_dialog(self) -> str:
+        return _save_file_dialog()
 
     def minimize(self) -> None:
         window = webview.active_window()

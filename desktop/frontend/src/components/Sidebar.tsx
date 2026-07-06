@@ -74,6 +74,7 @@ export function Sidebar({ collapsed, onOpenSettings }: { collapsed: boolean; onO
     archiveChats,
     toggleWorkspaceExpanded,
     refreshWorkspaceChats,
+    client,
   } = useApp();
 
   const [menu, setMenu] = useState<MenuState | null>(null);
@@ -231,6 +232,13 @@ export function Sidebar({ collapsed, onOpenSettings }: { collapsed: boolean; onO
       onRename: () => startRename("chat", chat.id, wsId, chat.name),
       onRemove: () => {
         setChatToDelete({ id: chat.id, wsId });
+      },
+      onExport: async () => {
+        const api = (window as unknown as { pywebview?: { api?: { save_file_dialog?: () => string | Promise<string> } } }).pywebview?.api;
+        if (!api?.save_file_dialog) return;
+        const filePath = await api.save_file_dialog();
+        if (!filePath) return;
+        await client.exportChat(chat.id, wsId, filePath);
       },
     });
     setMenu({ x: e.clientX, y: e.clientY, items });

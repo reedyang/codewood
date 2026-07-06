@@ -30,6 +30,7 @@ export function ChatTitleBar() {
     consoleOpen,
     showConsole,
     hideConsole,
+    client,
   } = useApp();
   const [menu, setMenu] = useState<MenuState | null>(null);
   const [renaming, setRenaming] = useState(false);
@@ -68,6 +69,13 @@ export function ChatTitleBar() {
       },
       onRemove: () => {
         setConfirmDelete(true);
+      },
+      onExport: async () => {
+        const api = (window as unknown as { pywebview?: { api?: { save_file_dialog?: () => string | Promise<string> } } }).pywebview?.api;
+        if (!api?.save_file_dialog) return;
+        const filePath = await api.save_file_dialog();
+        if (!filePath) return;
+        await client.exportChat(activeChat.id, wsId, filePath);
       },
     });
     setMenu({ x: e.clientX, y: e.clientY, items });
