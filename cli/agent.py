@@ -3284,8 +3284,20 @@ class Agent:
         # (The trailing-newline normalization needed for prompt placement on
         # reload is applied at render time in _extract_model_shell_replay_output
         # so legacy records are fixed too.)
-        if (not output_text) and (not success):
-            output_text = error_text or message_text
+        if not output_text:
+            if not success:
+                output_text = error_text or message_text
+            else:
+                # MCP tools (mcp_get_prompt, mcp_call_tool, etc.) return data
+                # in tool-specific keys like "result", "prompts", "contents", etc.
+                # instead of "output". Auto-capture any non-metadata keys.
+                _meta_keys = {"success", "error", "message", "return_code",
+                              "server", "tool", "prompt", "uri", "arguments",
+                              "from_cache", "count", "total_count", "ok_count",
+                              "error_count", "has_error", "calls"}
+                data = {k: v for k, v in r.items() if k not in _meta_keys}
+                if data:
+                    output_text = json.dumps(data, ensure_ascii=False, default=str)
         payload = {
             "kind": "model_tool_result",
             "tool": t,
@@ -6161,9 +6173,21 @@ class Agent:
             if kind == "prompt":
                 try:
                     pobj = self.mcp_manager.get_prompt(srv, name, {}, timeout_s=20.0)
-                    desc = str((pobj or {}).get("description", "")).strip() if isinstance(pobj, dict) else ""
-                    if desc:
-                        lines.append(f"  prompt.description: {desc}")
+                    if isinstance(pobj, dict):
+                        desc = str(pobj.get("description", "")).strip()
+                        if desc:
+                            lines.append(f"  prompt.description: {desc}")
+                        msgs = pobj.get("messages", [])
+                        if isinstance(msgs, list):
+                            for msg in msgs:
+                                if not isinstance(msg, dict):
+                                    continue
+                                role = str(msg.get("role", "")).strip()
+                                content = msg.get("content", {})
+                                if isinstance(content, dict) and content.get("type") == "text":
+                                    text = str(content.get("text", "")).strip()
+                                    if text:
+                                        lines.append(f"  prompt.{role}: {text}")
                 except Exception:
                     pass
         lines.append("If AGENTS.md or general rules conflict, these explicitly specified MCP targets take precedence (except hard safety/privilege constraints).")
