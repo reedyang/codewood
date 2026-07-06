@@ -2714,36 +2714,31 @@ class Agent:
             sn = str(a.get("subagent") or "").strip() or "-"
             return f"(subagent={sn})"
 
-        if name in ("mcp_call_tool", "mcp_get_prompt"):
+        if name.startswith("mcp__"):
+            parts = name.split("__", 2)
+            if len(parts) == 3:
+                _, srv, tool = parts
+                items = []
+                for k in sorted(a.keys()):
+                    if k.startswith("_"):
+                        continue
+                    v = a[k]
+                    if v is None:
+                        items.append(f"{k}=null")
+                    else:
+                        s = str(v)
+                        if len(s) > 60:
+                            s = s[:57] + "..."
+                        items.append(f"{k}={s}")
+                if items:
+                    return f"(server={srv}, tool={tool}, args=[{', '.join(items)}])"
+                return f"(server={srv}, tool={tool})"
+
+        if name == "mcp_get_prompt":
             server = str(a.get("server") or "").strip()
             tool = str(a.get("tool") or "").strip()
             if server and tool:
                 return f"(server={server}, tool={tool})"
-            if server:
-                return f"(server={server})"
-
-        if name == "mcp_get_tool_schemas":
-            server = str(a.get("server") or "").strip()
-            tools_param = a.get("tools") or ""
-            parts: List[str] = []
-            if isinstance(tools_param, list):
-                parts = [str(x).strip() for x in tools_param if str(x).strip()]
-            elif isinstance(tools_param, str) and tools_param.strip():
-                parts = [x.strip() for x in tools_param.split(",") if x.strip()]
-            tool_list = ", ".join(parts[:8])
-            if len(parts) > 8:
-                tool_list += f", ... ({len(parts)} total)"
-            if server and tool_list:
-                return f"(server={server}, tools=[{tool_list}])"
-            if server:
-                return f"(server={server})"
-
-        if name == "mcp_call_tool_batch":
-            server = str(a.get("server") or "").strip()
-            calls = a.get("calls", [])
-            count = len(calls) if isinstance(calls, list) else 0
-            if server and count:
-                return f"(server={server}, calls={count})"
             if server:
                 return f"(server={server})"
 
@@ -3288,10 +3283,10 @@ class Agent:
             if not success:
                 output_text = error_text or message_text
             else:
-                # MCP tools (mcp_get_prompt, mcp_call_tool, etc.) return data
-                # in tool-specific keys like "result", "prompts", "contents", etc.
+                # MCP tools return data in tool-specific keys like
+                # "result", "prompts", "contents", etc.
                 # instead of "output". Auto-capture any non-metadata keys.
-                _meta_keys = {"success", "error", "message", "return_code",
+                _meta_keys = {"success", "error", "message", "return_code", "output",
                               "server", "tool", "prompt", "uri", "arguments",
                               "from_cache", "count", "total_count", "ok_count",
                               "error_count", "has_error", "calls"}

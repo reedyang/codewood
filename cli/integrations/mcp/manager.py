@@ -3780,6 +3780,62 @@ class McpManager:
                     self._log("WARNING", f"refresh_status_sync list failed for {server}: {e}")
         return self.get_status()
 
+    @staticmethod
+    def sanitize_server_name(name: str) -> str:
+        """Sanitize a server name for use in a prefixed tool name:
+        lowercase, spaces/special chars → underscores, collapse consecutive underscores.
+        """
+        sanitized = re.sub(r'[^a-zA-Z0-9_]', '_', str(name or "")).lower()
+        sanitized = re.sub(r'_+', '_', sanitized)
+        return sanitized.strip('_')
+
+    def list_all_tools_aggregated(self) -> Dict[str, List[Dict[str, Any]]]:
+        """Aggregate enabled tools from all connected (state=success) servers.
+
+        Returns ``{sanitized_server_name: [{name, description, inputSchema}, ...]}``.
+        """
+        aggregated: Dict[str, List[Dict[str, Any]]] = {}
+        servers = self.mcp_config.get("mcpServers", {})
+        for raw_name in servers:
+            name = str(raw_name or "").strip()
+            if not name:
+                continue
+            st = self._status.get(name, {})
+            if str(st.get("state", "pending") or "pending").lower() != "success":
+                continue
+            cached = self._tools_cache.get(name)
+            if not isinstance(cached, dict):
+                continue
+            tools_raw = cached.get("tools", [])
+            if not isinstance(tools_raw, list):
+                continue
+            tools = self._filter_disabled_tools(name, tools_raw)
+            if not tools:
+                continue
+            key = self.sanitize_server_name(name)
+            aggregated[key] = tools
+        return aggregated
+
+    def get_tool_schema(self, server: str, tool_name: str) -> Optional[Dict[str, Any]]:
+        """Return the full inputSchema for an MCP tool from cache, or None."""
+        cached = self._tools_cache.get(str(server))
+        if not isinstance(cached, dict):
+            return None
+        tools_raw = cached.get("tools", [])
+        if not isinstance(tools_raw, list):
+            return None
+        for t in tools_raw:
+            if not isinstance(t, dict):
+                continue
+            name = str(t.get("name", "")).strip()
+            if name != str(tool_name):
+                continue
+            schema = _extract_tool_schema(t)
+            if isinstance(schema, dict):
+                return schema
+            return None
+        return None
+
     def cached_tools_for_prompt(self) -> str:
         if not self._tools_cache:
             return "No cached MCP tools yet."
