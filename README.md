@@ -344,8 +344,7 @@ Code Wood automatically reads `mcp.jsonc` from the same directory as `config.jso
 - `mcp_list_tools`: list tools for a specific server
 - `mcp_list_resources`: list resources for a specific server
 - `mcp_read_resource`: read a resource URI
-- `mcp_call_tool`: call a specific tool
-- `mcp_call_tool_batch`: call multiple tools in one JSON-RPC batch request, with optional partial-failure handling and summary counts
+- `mcp__<server>__<tool>`: MCP tools are injected directly into the function-calling tool list with a `mcp__server__toolname` prefix; call them like any native tool
 - `mcp_list_prompts`: list prompts for a specific server
 - `mcp_get_prompt`: fetch a prompt result by name and parameters
 - Failure states are classified as `unsupported`, `missing_dependency`, or `connect_failed`

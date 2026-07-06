@@ -115,6 +115,11 @@ class PromptComposerTests(unittest.TestCase):
             def get_status(self):
                 return {"servers": {"codegraph": {"state": "success"}}}
 
+            @staticmethod
+            def sanitize_server_name(name: str) -> str:
+                from cli.integrations.mcp.manager import McpManager
+                return McpManager.sanitize_server_name(name)
+
             def cached_initialize_instructions_for_prompt(self):
                 return "- codegraph:\n  CodeGraph instructions\n  Use codegraph_explore first"
 

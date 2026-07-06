@@ -2171,7 +2171,7 @@ class ShellTool(BaseTool):
                 "success": False,
                 "error": (
                     "manual MCP server start via shell is blocked; "
-                    "use MCP tools (mcp_call_tool/etc.)"
+                    "use MCP tools directly (mcp__server__tool)"
                 ),
             }
 

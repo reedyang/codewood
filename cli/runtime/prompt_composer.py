@@ -118,10 +118,11 @@ def build_mcp_system_append(agent: Any) -> str:
         "",
         "",
         "## MCP Configuration",
-        "MCP servers were loaded from `mcp.jsonc` under the config directory. Before calling a tool, choose the most relevant loaded server.",
-        "Only capabilities from loaded servers may be treated as available. Do not describe unloaded servers as available capabilities.",
-        "Decision constraint: when loaded cached MCP tools can satisfy the user intent, prefer `mcp_call_tool` ",
-        "instead of creating a temporary script or simulating the capability through shell, unless the MCP tool clearly failed and no equivalent MCP tool exists.",
+        "MCP servers were loaded from `mcp.jsonc` under the config directory.",
+        "Each server's tools are injected directly into your function-calling tool list with the naming pattern `mcp__server__toolname`. ",
+        "You can call them like any other tool — no intermediate lookup step needed. ",
+        "The provided parameter schemas are simplified to save tokens; if the schema shows few or generic parameter types, ",
+        "pass what you think is correct — on validation failure the full schema will be returned in the error message.",
         "Available servers (only connected servers are shown):",
     ]
     for name, conf in servers.items():
@@ -150,6 +151,13 @@ def build_mcp_system_append(agent: Any) -> str:
             env_keys = ", ".join(str(k) for k in sorted(env.keys()))
             lines.append(f"  env_keys: {env_keys}")
     lines.append(f"Connected servers: {', '.join(loaded) if loaded else 'none'}")
+    # Show the prefix mapping that the model sees in the tool list, so when MCP
+    # prompts / instructions refer to a tool by its short name the model can
+    # derive the correct ``mcp__server__toolname`` form.
+    lines.append("Tool name prefix per server (as injected in the tool list above):")
+    for name in loaded:
+        sanitized = agent.mcp_manager.sanitize_server_name(str(name))
+        lines.append(f"- `{name}` → `mcp__{sanitized}__`")
     lines.append(
         "MCP initialize instructions from connected servers (treat these as active guidance; "
         "when you use a server, follow its instructions while planning and executing the task):"
@@ -158,14 +166,6 @@ def build_mcp_system_append(agent: Any) -> str:
         lines.append(agent.mcp_manager.cached_initialize_instructions_for_prompt())
     except Exception:
         lines.append("No cached MCP initialize instructions yet.")
-    lines.append(
-        "Enabled tools (name + description only; use `mcp_get_tool_schemas` to fetch the full "
-        "input schema for a specific tool when you need its parameter details):"
-    )
-    try:
-        lines.append(agent.mcp_manager.cached_tools_for_prompt())
-    except Exception:
-        lines.append("No cached MCP tools yet.")
     lines.append("Cached resources:")
     try:
         lines.append(agent.mcp_manager.cached_resources_for_prompt())
