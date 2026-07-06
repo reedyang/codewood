@@ -105,6 +105,7 @@ interface AppContextValue {
     dataUrl: string,
   ) => Promise<{ path: string; name: string } | null>;
   chatImageUrl: (path: string) => string;
+  mcpIconUrl: (server: string, icon: string) => string;
   subscribeBrowserCommand: (
     handler: (cmd: Record<string, unknown>) => void,
   ) => () => void;
@@ -569,6 +570,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const chatImageUrl = useCallback(
     (path: string) => client.chatImageUrl(path),
+    [client],
+  );
+
+  const mcpIconUrl = useCallback(
+    (server: string, icon: string) => client.mcpIconUrl(server, icon),
     [client],
   );
 
@@ -2228,6 +2234,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     backgroundImageUrl,
     pasteImage,
     chatImageUrl,
+    mcpIconUrl,
     subscribeBrowserCommand,
     sendBrowserResult,
     previewHtml,
