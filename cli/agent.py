@@ -2680,8 +2680,16 @@ class Agent:
             else:
                 detail = ""
             return (label, detail)
+        if name.startswith("mcp__"):
+            parts = name.split("__", 2)
+            if len(parts) == 3:
+                _, srv, tool = parts
+                label = f"{translate('status.call', self._ui_language())} {srv} {tool}"
+            else:
+                label = self._humanize_tool_name(tool_name)
+            return (label, self._tool_action_detail(tool_name, a))
         # Look up a localized action label by tool name, falling back to the
-        # humanized English name for unknown/MCP tools (which have no key).
+        # humanized English name for unknown tools (which have no key).
         name_key = name.replace(".", "_")
         label = translate(
             f"tool.label.{name_key}",
@@ -2717,10 +2725,19 @@ class Agent:
         if name.startswith("mcp__"):
             parts = name.split("__", 2)
             if len(parts) == 3:
-                _, srv, tool = parts
+                _SENSITIVE_KEYS = frozenset({
+                    "token", "tokens", "api_key", "apikey", "api-key",
+                    "secret", "secrets", "password", "passwd", "pwd",
+                    "key", "keys", "auth", "authorization",
+                    "access_token", "refresh_token", "user_token",
+                    "jwt", "credential", "credentials",
+                })
                 items = []
                 for k in sorted(a.keys()):
                     if k.startswith("_"):
+                        continue
+                    if k.lower() in _SENSITIVE_KEYS:
+                        items.append(f"{k}=***")
                         continue
                     v = a[k]
                     if v is None:
@@ -2731,8 +2748,8 @@ class Agent:
                             s = s[:57] + "..."
                         items.append(f"{k}={s}")
                 if items:
-                    return f"(server={srv}, tool={tool}, args=[{', '.join(items)}])"
-                return f"(server={srv}, tool={tool})"
+                    return f"({', '.join(items)})"
+                return ""
 
         if name == "mcp_get_prompt":
             server = str(a.get("server") or "").strip()

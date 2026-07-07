@@ -125,6 +125,7 @@
   "common.usage": "用法：",
   "status.worked_for": "已运行",
   "status.ran": "执行",
+  "status.call": "调用",
   "status.apply_patch": "修改文件",
   "status.create_file": "创建文件",
   "tool.label.read": "读取",
