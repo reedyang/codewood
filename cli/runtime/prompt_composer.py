@@ -1,11 +1,13 @@
 import json
 import os
+import platform
 import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from ..config.app_info import get_app_config_dirname
 from ..core.localization import DEFAULT_DISPLAY_LANGUAGE, get_display_language, translate
+from .prompt_preprocessor import preprocess_prompt
 from ..core.config.skills_loader import _list_bundled_script_paths
 from ..tools.registry import (
     IMAGE_INPUT_TOOLS,
@@ -602,7 +604,8 @@ def load_tools_prompt_template(small_model: bool = False) -> str:
     else:
         path = _src_root() / "prompts" / "tools_prompt.md"
     try:
-        return path.read_text(encoding="utf-8")
+        raw = path.read_text(encoding="utf-8")
+        return preprocess_prompt(raw, {"os": platform.system()})
     except Exception as e:
         print(_t(DEFAULT_DISPLAY_LANGUAGE, "prompt_composer.tools_prompt_load_failed", error=e))
         return "## Tool Catalog (prompt-injected)"
@@ -625,7 +628,8 @@ def load_tools_prompt_memory_template(small_model: bool = False) -> str:
     else:
         path = _src_root() / "prompts" / "tools_prompt_memory.md"
     try:
-        return path.read_text(encoding="utf-8")
+        raw = path.read_text(encoding="utf-8")
+        return preprocess_prompt(raw, {"os": platform.system()})
     except FileNotFoundError:
         return ""
     except Exception as e:

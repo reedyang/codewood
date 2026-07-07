@@ -15,11 +15,14 @@ thin same-named wrappers so existing call sites and tests are unchanged.
 from __future__ import annotations
 
 import json
+import platform
 import sys
 import threading
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
+
+from .prompt_preprocessor import preprocess_prompt
 
 from ..config.app_info import (
     get_app_global_config_dir,
@@ -231,7 +234,8 @@ class LLMContextManager:
         try:
             from .context.base_system_prompt import _prompts_root
             prompt_path = _prompts_root() / "small" / "system_prompt.md"
-            base = prompt_path.read_text(encoding="utf-8").strip()
+            raw = prompt_path.read_text(encoding="utf-8").strip()
+            base = preprocess_prompt(raw, {"os": platform.system()})
             base = (base
                 .replace("{{APP_NAME}}", get_app_prompt_name())
                 .replace("{{APP_SLUG_KEBAB}}", get_app_prompt_slug_kebab())
@@ -267,7 +271,8 @@ class LLMContextManager:
         else:
             prompt_path = Path(__file__).resolve().parents[1] / "prompts" / "domain_software_development.md"
         try:
-            text = prompt_path.read_text(encoding="utf-8").strip()
+            raw = prompt_path.read_text(encoding="utf-8").strip()
+            text = preprocess_prompt(raw, {"os": platform.system()})
         except Exception:
             text = ""
         if text:
@@ -668,7 +673,8 @@ class LLMContextManager:
             "use the Current workspace skills directory (absolute path) only when the user explicitly asks to install into the workspace.\n"
         )
         prompt_path = Path(__file__).resolve().parents[1] / "prompts" / "compact_prompt.md"
-        compact_prompt_text = prompt_path.read_text(encoding="utf-8").strip()
+        raw = prompt_path.read_text(encoding="utf-8").strip()
+        compact_prompt_text = preprocess_prompt(raw, {"os": platform.system()})
         sys_content = (
             f"{str(getattr(self.agent, '_skills_routing_prefix', '') or '')}"
             f"{system_prompt}\n"
