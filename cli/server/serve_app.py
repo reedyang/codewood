@@ -1777,6 +1777,7 @@ class ServeApp:
                 "refresh_phase": str(st.get("refresh_phase", "") or ""),
                 "refresh_progress_total": int(st.get("refresh_progress_total", 0)),
                 "refresh_progress_done": int(st.get("refresh_progress_done", 0)),
+                "refresh_progress_percent": int(st.get("refresh_progress_percent", 0)),
             }
         except Exception:
             return {"hidden": True}

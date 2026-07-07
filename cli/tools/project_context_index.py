@@ -269,6 +269,25 @@ def _write_status_file(path: str, data: dict) -> None:
         pass
 
 
+def _make_status_payload(
+    phase: str,
+    progress_total: int = 0,
+    progress_done: int = 0,
+    expected_total: int = 0,
+    checkpointed_done: int = 0,
+    **extra: Any,
+) -> Dict[str, Any]:
+    payload: Dict[str, Any] = {
+        "phase": str(phase or ""),
+        "progress_total": int(progress_total or 0),
+        "progress_done": int(progress_done or 0),
+        "expected_total": int(expected_total or 0),
+        "checkpointed_done": int(checkpointed_done or 0),
+    }
+    payload.update(extra)
+    return payload
+
+
 def _index_refresh_worker(workspace_root: str, storage_dir: str, status_file: str) -> None:
     """Run in a child process (``multiprocessing.spawn``) to build the
     project context index.  Writes progress to *status_file* so the
@@ -280,7 +299,10 @@ def _index_refresh_worker(workspace_root: str, storage_dir: str, status_file: st
         _ts_ok = bool(_TS_AVAILABLE)
     except Exception:
         pass
-    _write_status_file(status_file, {"phase": "starting", "progress_total": 0, "progress_done": 0, "expected_total": 0, "ts": _ts_ok})
+    _write_status_file(
+        status_file,
+        _make_status_payload("scanning", ts=_ts_ok),
+    )
     try:
         from cli.tools.project_context_index import ProjectContextIndex
 
@@ -301,23 +323,39 @@ def _index_refresh_worker(workspace_root: str, storage_dir: str, status_file: st
                 phase = idx._refresh_progress_phase or ""
                 total = idx._refresh_progress_total
                 done = idx._refresh_progress_done
+                checkpointed_done = idx._refresh_checkpointed_done
+                expected_total = max(idx._index_expected_total, checkpointed_done, len(idx.files))
                 if phase and phase != "saving":
                     _stable_phase[0] = phase
                 if phase == "scanning" and done > _phase1_peak[0]:
                     _phase1_peak[0] = done
-                if phase in ("indexing",):
-                    display = done
-                else:
-                    display = done or _phase1_peak[0]
-                _write_status_file(status_file, {
-                    "phase": _stable_phase[0] or "indexing",
-                    "progress_total": total or _phase1_peak[0],
-                    "progress_done": done,
-                    "expected_total": _phase1_peak[0],
-                    "elapsed_sec": int(time.time() - _t0),
-                    "ts": _ts_ok,
-                })
-                _stop_poll.wait(timeout=2.0)
+                display_phase = phase or _stable_phase[0] or "scanning"
+                if (
+                    not phase
+                    and _stable_phase[0] == "indexing"
+                    and total == 0
+                    and done == 0
+                    and expected_total > 0
+                    and max(checkpointed_done, len(idx.files)) >= expected_total
+                ):
+                    # Parsing is finished and the in-memory counters have been
+                    # reset, but the worker is still saving/finalizing. Keep
+                    # the GUI on the terminal phase instead of flashing back
+                    # to "Indexing 0%".
+                    display_phase = "saving"
+                _write_status_file(
+                    status_file,
+                    _make_status_payload(
+                        display_phase,
+                        progress_total=(total or _phase1_peak[0]),
+                        progress_done=done,
+                        expected_total=max(expected_total, _phase1_peak[0]),
+                        checkpointed_done=checkpointed_done,
+                        elapsed_sec=int(time.time() - _t0),
+                        ts=_ts_ok,
+                    ),
+                )
+                _stop_poll.wait(timeout=0.5)
 
         pt = threading.Thread(target=_poll_progress, daemon=True)
         pt.start()
@@ -334,18 +372,21 @@ def _index_refresh_worker(workspace_root: str, storage_dir: str, status_file: st
         except Exception:
             pass
 
-        _write_status_file(status_file, {
-            "phase": "done",
-            "progress_total": result.get("files_total", 0),
-            "progress_done": result.get("files_total", 0),
-        })
+        _write_status_file(
+            status_file,
+            _make_status_payload(
+                "done",
+                progress_total=result.get("files_total", 0),
+                progress_done=result.get("files_total", 0),
+                expected_total=result.get("files_total", 0),
+                checkpointed_done=result.get("files_total", 0),
+            ),
+        )
     except Exception as exc:
-        _write_status_file(status_file, {
-            "phase": "error",
-            "progress_total": 0,
-            "progress_done": 0,
-            "error": str(exc),
-        })
+        _write_status_file(
+            status_file,
+            _make_status_payload("error", error=str(exc)),
+        )
         raise
 
 
@@ -375,20 +416,12 @@ class ProjectContextIndex:
         self._file_watcher: Optional[Any] = None
         self._yield_event = threading.Event()
         self._subprocess: Optional[multiprocessing.Process] = None
-        self._status_file: Optional[str] = None
+        self._status_file: Optional[str] = str(self.storage_dir / ".index_status.json")
         self._index_expected_total: int = 0
+        self._index_checkpointed_done: int = 0
+        self._refresh_checkpointed_done: int = 0
         self._load()
-        # Read the stale status file (if any) for expected_total so
-        # the count doesn't drop when restarting mid-indexing.
-        try:
-            st = self._read_status_file_by_path(self.storage_dir / ".index_status.json")
-            if st is not None:
-                v = int(st.get("expected_total", 0) or 0)
-                if v == 0:
-                    v = int(st.get("progress_total", 0) or 0)
-                self._index_expected_total = v
-        except Exception:
-            pass
+        self._load_stale_status_counters()
         self._start_watcher()
 
     def _start_watcher(self) -> None:
@@ -429,6 +462,14 @@ class ProjectContextIndex:
             ctx = multiprocessing.get_context("spawn")
             sf = str(self.storage_dir / ".index_status.json")
             self._status_file = sf
+            _write_status_file(
+                sf,
+                _make_status_payload(
+                    "scanning",
+                    expected_total=max(self._index_expected_total, len(self.files)),
+                    checkpointed_done=max(self._index_checkpointed_done, len(self.files)),
+                ),
+            )
             proc = ctx.Process(
                 target=_index_refresh_worker,
                 args=(str(self.workspace_root), str(self.storage_dir), sf),
@@ -468,6 +509,150 @@ class ProjectContextIndex:
             return None
         return self._read_status_file_by_path(Path(sf))
 
+    def _load_stale_status_counters(self) -> None:
+        expected_total = 0
+        checkpointed_done = 0
+        try:
+            st = self._read_status_file()
+            if st is not None:
+                expected_total = int(st.get("expected_total", 0) or 0)
+                if expected_total == 0:
+                    expected_total = int(st.get("progress_total", 0) or 0)
+                checkpointed_done = int(st.get("checkpointed_done", 0) or 0)
+        except Exception:
+            pass
+        self._index_expected_total = max(expected_total, len(self.files))
+        self._index_checkpointed_done = max(checkpointed_done, len(self.files))
+
+    def _compute_refresh_progress_percent(
+        self,
+        phase: str,
+        total: int,
+        done: int,
+        expected_total: int = 0,
+    ) -> int:
+        phase_l = str(phase or "").strip().lower()
+        total_i = max(0, int(total or 0))
+        done_i = max(0, int(done or 0))
+        expected_i = max(0, int(expected_total or 0), int(self._index_expected_total or 0))
+        if phase_l == "scanning":
+            denom = max(expected_i, done_i)
+            if denom <= 0:
+                return 0
+            if done_i >= denom:
+                return 100
+            return min(99, math.floor((done_i * 100) / denom))
+        if phase_l == "indexing":
+            if total_i <= 0:
+                return 0
+            return max(0, min(100, math.floor((done_i * 100) / total_i)))
+        if phase_l == "saving":
+            if total_i <= 0:
+                return 100
+            return max(0, min(100, math.floor((done_i * 100) / total_i)))
+        if phase_l == "done":
+            return 100
+        return 0
+
+    def _save_checkpoint_batch(
+        self,
+        entries: Dict[str, _FileEntry],
+        checkpoint_ts: Optional[float] = None,
+    ) -> None:
+        if not entries:
+            return
+        when = float(checkpoint_ts) if checkpoint_ts is not None else _now_ts()
+        conn = self._connect()
+        try:
+            self._create_schema(conn)
+            rels = list(entries.keys())
+            conn.executemany(
+                "INSERT OR REPLACE INTO files (rel, path, mtime_ns, size) VALUES (?, ?, ?, ?)",
+                [(rel, e.path, e.mtime_ns, e.size) for rel, e in entries.items()],
+            )
+            conn.executemany("DELETE FROM symbols WHERE file_rel = ?", [(rel,) for rel in rels])
+            conn.executemany("DELETE FROM imports WHERE file_rel = ?", [(rel,) for rel in rels])
+            conn.executemany("DELETE FROM tokens WHERE file_rel = ?", [(rel,) for rel in rels])
+            conn.executemany("DELETE FROM calls WHERE file_rel = ?", [(rel,) for rel in rels])
+            sym_rows: List[Tuple[str, str, int]] = []
+            imp_rows: List[Tuple[str, str, int]] = []
+            tok_rows: List[Tuple[str, str]] = []
+            call_rows: List[Tuple[str, str, str, int]] = []
+            for rel, e in entries.items():
+                for i, s in enumerate(e.symbols):
+                    sym_rows.append((rel, s, i))
+                for i, imp in enumerate(e.imports):
+                    imp_rows.append((rel, imp, i))
+                for t in e.tokens:
+                    tok_rows.append((rel, t))
+                for i, c in enumerate(e.calls):
+                    call_rows.append((rel, c.caller, c.callee, i))
+            if sym_rows:
+                conn.executemany(
+                    "INSERT INTO symbols (file_rel, name, ord) VALUES (?, ?, ?)",
+                    sym_rows,
+                )
+            if imp_rows:
+                conn.executemany(
+                    "INSERT INTO imports (file_rel, value, ord) VALUES (?, ?, ?)",
+                    imp_rows,
+                )
+            if tok_rows:
+                conn.executemany(
+                    "INSERT INTO tokens (file_rel, token) VALUES (?, ?)",
+                    tok_rows,
+                )
+            if call_rows:
+                conn.executemany(
+                    "INSERT INTO calls (file_rel, caller, callee, ord) VALUES (?, ?, ?, ?)",
+                    call_rows,
+                )
+            conn.execute(
+                "INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', ?)",
+                (str(_SCHEMA_VERSION),),
+            )
+            conn.execute(
+                "INSERT OR REPLACE INTO meta (key, value) VALUES ('workspace_root', ?)",
+                (str(self.workspace_root),),
+            )
+            conn.execute(
+                "INSERT OR REPLACE INTO meta (key, value) VALUES ('last_index_at', ?)",
+                (repr(float(when)),),
+            )
+            conn.commit()
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+    def _emit_status_snapshot(self, phase_override: Optional[str] = None) -> None:
+        sf = self._status_file
+        if not sf:
+            return
+        phase = str(phase_override or self._refresh_progress_phase or "").strip()
+        if not phase:
+            return
+        expected_total = max(
+            int(self._index_expected_total or 0),
+            int(self._refresh_checkpointed_done or 0),
+            len(self.files),
+        )
+        progress_total = int(self._refresh_progress_total or 0)
+        progress_done = int(self._refresh_progress_done or 0)
+        if phase == "scanning" and progress_total <= 0:
+            progress_total = progress_done
+        _write_status_file(
+            sf,
+            _make_status_payload(
+                phase,
+                progress_total=progress_total,
+                progress_done=progress_done,
+                expected_total=expected_total,
+                checkpointed_done=int(self._refresh_checkpointed_done or 0),
+            ),
+        )
+
     def bind_workspace(self, workspace_root: Path, storage_dir: Optional[Path] = None) -> None:
         root = Path(workspace_root).resolve()
         target_storage = (
@@ -485,9 +670,11 @@ class ProjectContextIndex:
                 self.storage_dir = target_storage
                 self.storage_dir.mkdir(parents=True, exist_ok=True)
                 self.index_path = self.storage_dir / "project_context_index.db"
+            self._status_file = str(self.storage_dir / ".index_status.json")
             self.files = {}
             self.last_index_at = 0.0
             self._load()
+            self._load_stale_status_counters()
             self._start_watcher()
 
     def _connect(self) -> sqlite3.Connection:
@@ -620,16 +807,37 @@ class ProjectContextIndex:
         # Caller controls synchronization. Keep this helper lock-free.
         conn = self._connect()
         try:
+            save_total = 10
+            save_done = 0
+
+            def _advance_save_progress(steps: int = 1) -> None:
+                nonlocal save_done
+                save_done = min(save_total, save_done + max(0, int(steps or 0)))
+                if self._refresh_progress_phase == "saving":
+                    self._refresh_progress_total = save_total
+                    self._refresh_progress_done = save_done
+
+            if self._refresh_progress_phase == "saving":
+                self._refresh_progress_total = save_total
+                self._refresh_progress_done = 0
+
             self._create_schema(conn)
+            _advance_save_progress()
             conn.execute("DELETE FROM files")
+            _advance_save_progress()
             conn.execute("DELETE FROM symbols")
+            _advance_save_progress()
             conn.execute("DELETE FROM imports")
+            _advance_save_progress()
             conn.execute("DELETE FROM tokens")
+            _advance_save_progress()
             conn.execute("DELETE FROM calls")
+            _advance_save_progress()
             conn.executemany(
                 "INSERT OR REPLACE INTO files (rel, path, mtime_ns, size) VALUES (?, ?, ?, ?)",
                 [(rel, e.path, e.mtime_ns, e.size) for rel, e in self.files.items()],
             )
+            _advance_save_progress()
             sym_rows: List[Tuple[str, str, int]] = []
             imp_rows: List[Tuple[str, str, int]] = []
             tok_rows: List[Tuple[str, str]] = []
@@ -656,6 +864,7 @@ class ProjectContextIndex:
                 "INSERT INTO calls (file_rel, caller, callee, ord) VALUES (?, ?, ?, ?)",
                 call_rows,
             )
+            _advance_save_progress()
             conn.execute(
                 "INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', ?)",
                 (str(_SCHEMA_VERSION),),
@@ -668,7 +877,9 @@ class ProjectContextIndex:
                 "INSERT OR REPLACE INTO meta (key, value) VALUES ('last_index_at', ?)",
                 (repr(float(self.last_index_at)),),
             )
+            _advance_save_progress()
             conn.commit()
+            _advance_save_progress()
         finally:
             try:
                 conn.close()
@@ -706,10 +917,12 @@ class ProjectContextIndex:
                 if _is_gitignored(rel, git_spec):
                     continue
                 out.append(p)
-                if callable(progress_cb) and len(out) % 200 == 0:
+                if callable(progress_cb) and len(out) % 10 == 0:
                     progress_cb(len(out))
             if timed_out:
                 break
+        if callable(progress_cb):
+            progress_cb(len(out))
         return out, timed_out
 
     def _parse_file(self, p: Path, rel: str, st_mtime_ns: int, st_size: int) -> _FileEntry:
@@ -852,10 +1065,13 @@ class ProjectContextIndex:
         self._refresh_progress_phase = "scanning"
         self._refresh_progress_total = 0
         self._refresh_progress_done = 0
+        self._refresh_checkpointed_done = 0
         def _scan_progress(count: int) -> None:
             self._refresh_progress_done = count
+            self._emit_status_snapshot("scanning")
         scanned, _discovery_timed_out = self._iter_code_files(deadline_ts=None, progress_cb=_scan_progress)
         self._refresh_progress_done = len(scanned)
+        self._emit_status_snapshot("scanning")
         self._refresh_progress_phase = ""
 
         with self._lock:
@@ -888,21 +1104,53 @@ class ProjectContextIndex:
             is_new = old is None
             to_parse.append((p, rel, mtime_ns, size, is_new))
 
+        deleted_candidates = 0
+        if not force and base_files:
+            for rel in base_files.keys():
+                if rel not in seen_rel:
+                    deleted_candidates += 1
+
+        if base_files and (not to_parse) and deleted_candidates == 0 and not force:
+            self.last_index_at = _now_ts()
+            self._refresh_progress_phase = "done"
+            self._refresh_progress_total = len(scanned)
+            self._refresh_progress_done = len(scanned)
+            self._refresh_checkpointed_done = len(self.files)
+            self._emit_status_snapshot("done")
+            self._ensure_embedding_provider()
+            return {
+                "success": True,
+                "force": False,
+                "workspace_root": str(root),
+                "files_total": len(self.files),
+                "scanned": len(scanned),
+                "processed": processed,
+                "added": 0,
+                "updated": 0,
+                "unchanged": unchanged,
+                "deleted": 0,
+                "timed_out": False,
+                "stale": False,
+                "elapsed_ms": int((_now_ts() - t0) * 1000),
+                "index_path": str(self.index_path),
+            }
+
         # Phase 3 (no lock): parse changed files with a thread pool.
         # When running in a child process (subprocess mode) this gives
         # true parallelism without GIL contention; when running in the
         # main process the cooperative _yield_if_requested() after each
         # file keeps HTTP handlers responsive.
         parsed_entries: Dict[str, _FileEntry] = {}
-        parsed_added = 0
-        parsed_updated = 0
         timed_out = False
         parse_deadline = (_now_ts() + budget_s) if budget_s is not None else None
-        is_full_rebuild = force or len(base_files) == 0
         if to_parse:
             self._refresh_progress_total = len(to_parse)
             self._refresh_progress_phase = "indexing"
             self._refresh_progress_done = 0
+            self._refresh_checkpointed_done = len(base_files)
+            checkpoint_batch: Dict[str, _FileEntry] = {}
+            checkpoint_batch_count = 0
+            checkpoint_last_saved_at = _now_ts()
             workers = max(2, (os.cpu_count() or 4) // 2)
             with ThreadPoolExecutor(max_workers=workers) as executor:
                 future_to_info: Dict[Any, Tuple[str, bool]] = {}
@@ -920,12 +1168,42 @@ class ProjectContextIndex:
                         self._refresh_progress_done += 1
                         continue
                     parsed_entries[rel] = entry
+                    checkpoint_batch[rel] = entry
+                    checkpoint_batch_count += 1
                     self._refresh_progress_done += 1
-                    if is_new:
-                        parsed_added += 1
-                    else:
-                        parsed_updated += 1
+                    should_checkpoint = checkpoint_batch_count >= 100
+                    if not should_checkpoint and (_now_ts() - checkpoint_last_saved_at) >= 2.0:
+                        should_checkpoint = True
+                    if should_checkpoint:
+                        checkpoint_ts = _now_ts()
+                        self._save_checkpoint_batch(checkpoint_batch, checkpoint_ts=checkpoint_ts)
+                        with self._lock:
+                            next_checkpointed = dict(self.files)
+                            next_checkpointed.update(checkpoint_batch)
+                            self.files = next_checkpointed
+                            self.last_index_at = checkpoint_ts
+                        self._refresh_checkpointed_done = len(self.files)
+                        self._index_checkpointed_done = max(
+                            self._index_checkpointed_done,
+                            self._refresh_checkpointed_done,
+                        )
+                        checkpoint_batch = {}
+                        checkpoint_batch_count = 0
+                        checkpoint_last_saved_at = checkpoint_ts
                     self._yield_if_requested()
+            if checkpoint_batch:
+                checkpoint_ts = _now_ts()
+                self._save_checkpoint_batch(checkpoint_batch, checkpoint_ts=checkpoint_ts)
+                with self._lock:
+                    next_checkpointed = dict(self.files)
+                    next_checkpointed.update(checkpoint_batch)
+                    self.files = next_checkpointed
+                    self.last_index_at = checkpoint_ts
+                self._refresh_checkpointed_done = len(self.files)
+                self._index_checkpointed_done = max(
+                    self._index_checkpointed_done,
+                    self._refresh_checkpointed_done,
+                )
 
         # Phase 4 (lock): commit results
         self._refresh_progress_phase = "saving"
@@ -939,7 +1217,7 @@ class ProjectContextIndex:
         with self._lock:
             next_files = dict(self.files)
             for rel, entry in parsed_entries.items():
-                if rel not in next_files:
+                if rel not in base_files:
                     added += 1
                 else:
                     updated += 1
@@ -959,9 +1237,10 @@ class ProjectContextIndex:
 
             self.files = next_files
             self.last_index_at = _now_ts()
-            self._refresh_progress_phase = ""
-            self._refresh_progress_total = 0
-            self._refresh_progress_done = 0
+            self._index_expected_total = (
+                len(next_files) if not timed_out else max(self._index_expected_total, len(next_files))
+            )
+            self._index_checkpointed_done = len(next_files)
             should_save = changed or (not index_existed_before_refresh) or (timed_out and (added > 0 or updated > 0))
 
         # Save outside the lock so HTTP handler threads (status(), search())
@@ -969,6 +1248,10 @@ class ProjectContextIndex:
         # connection (WAL mode allows concurrent readers).
         if should_save:
             self._save()
+        self._refresh_progress_phase = ""
+        self._refresh_progress_total = 0
+        self._refresh_progress_done = 0
+        self._refresh_checkpointed_done = 0
 
         self._ensure_embedding_provider()
 
@@ -1085,10 +1368,17 @@ class ProjectContextIndex:
         if self._subprocess is not None:
             st = self._read_status_file()
             if st is not None:
-                phase = st.get("phase", "indexing") or "indexing"
+                raw_phase = str(st.get("phase", "scanning") or "scanning")
+                phase = "scanning" if raw_phase == "starting" else raw_phase
                 total = int(st.get("progress_total", 0) or 0)
                 done = int(st.get("progress_done", 0) or 0)
-                display = max(self._index_expected_total, len(self.files) + done) if phase in ("indexing", "scanning", "starting", "") else (total if phase == "done" else done)
+                expected_total = int(st.get("expected_total", 0) or 0)
+                checkpointed_done = int(st.get("checkpointed_done", 0) or 0)
+                display = (
+                    max(self._index_expected_total, expected_total, checkpointed_done, len(self.files))
+                    if phase in ("scanning", "indexing", "")
+                    else (total if phase == "done" else done)
+                )
                 return {
                     "success": True,
                     "workspace_root": str(self.workspace_root) if self.workspace_root else "",
@@ -1098,6 +1388,12 @@ class ProjectContextIndex:
                     "refresh_phase": phase,
                     "refresh_progress_total": total,
                     "refresh_progress_done": done,
+                    "refresh_progress_percent": self._compute_refresh_progress_percent(
+                        phase,
+                        total,
+                        done,
+                        expected_total=expected_total,
+                    ),
                 }
 
         phase = self._refresh_progress_phase
@@ -1118,6 +1414,12 @@ class ProjectContextIndex:
             "refresh_phase": phase,
             "refresh_progress_total": self._refresh_progress_total,
             "refresh_progress_done": self._refresh_progress_done,
+            "refresh_progress_percent": self._compute_refresh_progress_percent(
+                phase,
+                self._refresh_progress_total,
+                self._refresh_progress_done,
+                expected_total=max(self._index_expected_total, self._index_checkpointed_done),
+            ),
         }
 
     def search(
