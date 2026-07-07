@@ -27,6 +27,7 @@ import type {
   WorkspaceChatSummary,
 } from "../api/types";
 import { normalizeLang, translate, type Lang } from "../i18n";
+import { MODEL_PRESETS } from "../components/modelPresets";
 import {
   loadUiPrefs,
   saveUiPrefs,
@@ -190,6 +191,7 @@ interface AppContextValue {
     api_mode?: string;
     port?: number;
   }) => Promise<{ ok: boolean; models?: string[]; error?: string }>;
+  getModelPresets: () => Promise<unknown[]>;
   getGeneralConfig: () => Promise<GeneralConfig | null>;
   saveGeneralConfig: (general: Partial<GeneralConfig>) => Promise<boolean>;
   getMcpOverview: () => Promise<McpServerSummary[]>;
@@ -1509,6 +1511,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
       .then((value) => {
         setState(value);
         setConnected(true);
+        // Sync model presets to backend on startup (fire-and-forget).
+        client.syncModelPresets(MODEL_PRESETS).catch(() => {});
       })
       .catch(() => setConnected(false));
 
@@ -2326,6 +2330,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       api_mode?: string;
       port?: number;
     }) => client.fetchProviderModels(params),
+    getModelPresets: () => client.getModelPresets(),
     getGeneralConfig: () => client.getGeneralConfig(),
     saveGeneralConfig: (general: Partial<GeneralConfig>) =>
       client.saveGeneralConfig(general),

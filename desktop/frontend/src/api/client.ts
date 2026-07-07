@@ -523,6 +523,38 @@ export class ApiClient {
     return res.ok;
   }
 
+  /** Sync app-level presets into model_presets.json (merge), return merged list. */
+  async syncModelPresets(presets: unknown[]): Promise<unknown[]> {
+    const res = await fetch(`${this.base}/sync-model-presets`, {
+      method: "POST",
+      headers: this.headers(),
+      body: JSON.stringify({ presets }),
+    });
+    if (!res.ok) return [];
+    try {
+      const data = (await res.json()) as { presets?: unknown[] };
+      return Array.isArray(data.presets) ? data.presets : [];
+    } catch {
+      return [];
+    }
+  }
+
+  /** Read current model_presets.json (already merged). */
+  async getModelPresets(): Promise<unknown[]> {
+    const res = await fetch(`${this.base}/model-presets`, {
+      method: "POST",
+      headers: this.headers(),
+      body: "{}",
+    });
+    if (!res.ok) return [];
+    try {
+      const data = (await res.json()) as { presets?: unknown[] };
+      return Array.isArray(data.presets) ? data.presets : [];
+    } catch {
+      return [];
+    }
+  }
+
   /** General-runtime settings (auto-compact / tool rounds / memory / mcp). */
   async getGeneralConfig(): Promise<GeneralConfig | null> {
     const res = await fetch(`${this.base}/general-config`, {

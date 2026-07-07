@@ -3985,6 +3985,49 @@ class ServeApp:
             pass
         return True
 
+    def sync_model_presets(self, app_presets: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Merge app-level presets into ``model_presets.json`` and return the merged list.
+
+        Presets already in the file are kept unchanged; new presets (by ``id``)
+        that exist in ``app_presets`` but not in the file are appended.
+        """
+        if not isinstance(app_presets, list):
+            return []
+        path = self.agent.config_dir / "model_presets.json"
+        existing: List[Dict[str, Any]] = []
+        if path.exists():
+            try:
+                raw = path.read_text(encoding="utf-8")
+                parsed = json.loads(raw)
+                if isinstance(parsed, list):
+                    existing = parsed
+            except Exception:
+                pass
+        existing_ids = {str(p.get("id", "")) for p in existing if isinstance(p, dict)}
+        merged = list(existing)
+        for p in app_presets:
+            if isinstance(p, dict) and str(p.get("id", "")) not in existing_ids:
+                merged.append(p)
+        try:
+            path.write_text(
+                json.dumps(merged, indent=2, ensure_ascii=False), encoding="utf-8"
+            )
+        except Exception:
+            pass
+        return merged
+
+    def get_model_presets(self) -> List[Dict[str, Any]]:
+        """Read the current ``model_presets.json``, or return empty list."""
+        path = self.agent.config_dir / "model_presets.json"
+        if not path.exists():
+            return []
+        try:
+            raw = path.read_text(encoding="utf-8")
+            parsed = json.loads(raw)
+            return parsed if isinstance(parsed, list) else []
+        except Exception:
+            return []
+
     def fetch_provider_models(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """Fetch the model list from an OpenAI-compatible provider.
 
@@ -5095,6 +5138,15 @@ def _make_handler(app: ServeApp):
                 providers = body.get("providers")
                 ok = app.save_models_config(providers if isinstance(providers, list) else [])
                 self._send_json(200 if ok else 400, {"ok": ok})
+                return
+            if path == "/sync-model-presets":
+                app_presets = body.get("presets")
+                merged = app.sync_model_presets(app_presets if isinstance(app_presets, list) else [])
+                self._send_json(200, {"ok": True, "presets": merged})
+                return
+            if path == "/model-presets":
+                presets = app.get_model_presets()
+                self._send_json(200, {"ok": True, "presets": presets})
                 return
             if path == "/general-config":
                 self._send_json(200, {"ok": True, "general": app.get_general_config()})
