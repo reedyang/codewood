@@ -368,6 +368,10 @@ def setup_skills(agent: Any, builtin_skills_dir: Optional[str]) -> None:
     agent._active_skill_section = 0
     agent._active_skill_total_sections = 0
     agent._active_skill_chunked = False
+    # Note: _session_injected_skills and _session_injected_mcp_prompts are
+    # per-chat SessionState fields (see session_state.py), initialized in the
+    # SessionState constructor. Do NOT set them here — they route through the
+    # session property system to the calling thread's bound session.
 
 
 def setup_subagents(agent: Any) -> None:

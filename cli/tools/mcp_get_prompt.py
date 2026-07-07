@@ -53,12 +53,19 @@ class McpGetPromptTool(BaseTool):
                 arguments,
                 timeout_s=timeout_s,
             )
+            # Track in session-level set so future forced MCP references
+            # don't re-inject the prompt content.
+            session_injected = getattr(agent, "_session_injected_mcp_prompts", None)
+            if session_injected is not None:
+                session_injected.add(f"{server}/{prompt_name}")
             return {
                 "success": True,
                 "server": server,
                 "prompt": prompt_name,
                 "result": result,
                 "message": f"MCP prompt fetched ({server}/{prompt_name})",
+                # Marker for history reconciliation scanner.
+                "_mcp_marker": f"----- BEGIN MCP PROMPT (server={server}, name={prompt_name}) -----",
             }
         except McpError as e:
             return {"success": False, "error": f"MCP get prompt failed: {e}"}

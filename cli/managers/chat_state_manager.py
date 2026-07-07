@@ -1,5 +1,7 @@
 ﻿import json
+import logging
 import os
+import re
 import secrets
 import shutil
 import time
@@ -8,6 +10,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from ..core.localization import translate
+
+logger = logging.getLogger("codewood.chat_state")
 
 
 def _safe_replace(src: Path, dst: Path) -> None:
@@ -754,6 +758,12 @@ class ChatStateManager:
                     if stale.name not in known_record_files:
                         # Unknown to this process: assume a peer owns it.
                         continue
+                    logger.info(
+                        "save_chat_state stale-sweep deleting record_file=%s "
+                        "(not in current_index, known=%s)",
+                        stale.name,
+                        stale.name in known_record_files,
+                    )
                     stale.unlink()
                     # Delete the chat's side-data directory alongside its record.
                     self.delete_chat_data(stale.name)
@@ -922,6 +932,13 @@ class ChatStateManager:
                 persist=False,
             )
         except Exception as e:
+            logger.exception(
+                "load_chat_state failed for %s; resetting chat state. total_chats=%d, active=%s, error=%s",
+                p,
+                len(chats_raw) if 'chats_raw' in dir() else -1,
+                str(loaded.get("active", "N/A")) if 'loaded' in dir() else "N/A",
+                e,
+            )
             self._agent._startup_chat_state_warning = (
                 f"⚠️ Failed to read chat state; it has been reset to the default session: {e}"
             )
@@ -1426,6 +1443,12 @@ class ChatStateManager:
         print_history: bool = False,
         persist: bool = True,
     ) -> str:
+        logger.info(
+            "activate_chat enter chat_id=%s prev_active=%s persist=%s",
+            chat_id,
+            str(getattr(self._agent, "active_chat_id", "") or ""),
+            persist,
+        )
         with self._agent._chat_state_lock:
             prev_active_chat_id = str(getattr(self._agent, "active_chat_id", "") or "").strip()
             prev_operation_results = list(getattr(self._agent, "operation_results", None) or [])
@@ -1443,6 +1466,21 @@ class ChatStateManager:
             self._agent.active_chat_id = chat_id
             self._agent.active_chat_name = str(chat.get("name") or "New Chat")
             self._agent.conversation_history = list(chat.get("messages") or [])
+            hist_len = len(self._agent.conversation_history)
+            # Reconcile session injection tracking when restoring history.
+            # When switching to a different chat, clear cross-chat contamination
+            # first, then rebuild tracking sets from restored history messages
+            # so that skill/MCP prompt content already present in context is
+            # not re-injected on subsequent forced references.
+            if chat_id != prev_active_chat_id:
+                self._agent._session_injected_skills = set()
+                self._agent._session_injected_mcp_prompts = set()
+                logger.info(
+                    "activate_chat cleared session injection tracking: "
+                    "switched from %s to %s, hist_len=%d",
+                    prev_active_chat_id, chat_id, hist_len,
+                )
+            self._reconcile_session_injected_from_history()
             self.refresh_active_chat_plan_from_messages()
             # Resume the sticky Plan/Agent mode this chat was last left in.
             self.restore_active_chat_plan_mode()
@@ -1505,3 +1543,49 @@ class ChatStateManager:
         if announce:
             return f"✅ Switched to Chat: [{self._agent.active_chat_name}]"
         return ""
+
+    def _reconcile_session_injected_from_history(self) -> None:
+        """Scan restored conversation_history and rebuild session injection
+        tracking sets so that content already present in context is not
+        re-injected on subsequent forced references.
+
+        This method MUST never raise — it runs inside ``activate_chat`` which is
+        called from ``load_chat_state`` whose except-path resets the entire chat
+        state and deletes orphaned record files via the stale-record sweep in
+        ``save_chat_state``.
+        """
+        try:
+            agent = self._agent
+            history = list(getattr(agent, "conversation_history", None) or [])
+            if not history:
+                return
+            skill_pattern = re.compile(
+                r"----- BEGIN SKILL PROMPT \(skill_id=([^)]+)\) -----"
+            )
+            mcp_pattern = re.compile(
+                r"----- BEGIN MCP PROMPT \(server=([^,]+),\s*name=([^)]+)\) -----"
+            )
+            for msg in history:
+                if not isinstance(msg, dict):
+                    continue
+                content = str(msg.get("content") or "")
+                if not content:
+                    continue
+                for m in skill_pattern.finditer(content):
+                    sid = m.group(1).strip()
+                    if sid:
+                        canon = getattr(agent, "_canonical_skill_id", None)
+                        if callable(canon):
+                            canon_sid = canon(sid)
+                            if canon_sid:
+                                agent._session_injected_skills.add(canon_sid)
+                        else:
+                            agent._session_injected_skills.add(sid.lower())
+                for m in mcp_pattern.finditer(content):
+                    srv = m.group(1).strip()
+                    name = m.group(2).strip()
+                    if srv and name:
+                        agent._session_injected_mcp_prompts.add(f"{srv}/{name}")
+        except Exception:
+            logger.exception("_reconcile_session_injected_from_history failed")
+

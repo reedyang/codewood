@@ -6163,12 +6163,18 @@ class Agent:
         lines: List[str] = [
             "[Forced MCP references] For this task, prioritize referencing and using the following explicitly specified MCP targets (in the order provided by the user):",
         ]
+        session_injected_prompts = getattr(self, "_session_injected_mcp_prompts", set())
         for e in entries:
             srv = str(e.get("server", "")).strip()
             name = str(e.get("name", "")).strip()
             kind = str(e.get("kind", "")).strip() or "unknown"
+            prompt_key = f"{srv}/{name}"
+            if kind == "prompt" and prompt_key in session_injected_prompts:
+                lines.append(f"- `/mcp/{srv}/{name}` (prompt)")
+                continue
             lines.append(f"- `/mcp/{srv}/{name}` ({kind})")
             if kind == "prompt":
+                lines.append(f"  ----- BEGIN MCP PROMPT (server={srv}, name={name}) -----")
                 try:
                     pobj = self.mcp_manager.get_prompt(srv, name, {}, timeout_s=20.0)
                     if isinstance(pobj, dict):
@@ -6186,8 +6192,10 @@ class Agent:
                                     text = str(content.get("text", "")).strip()
                                     if text:
                                         lines.append(f"  prompt.{role}: {text}")
+                    session_injected_prompts.add(prompt_key)
                 except Exception:
                     pass
+                lines.append(f"  ----- END MCP PROMPT -----")
         lines.append("If AGENTS.md or general rules conflict, these explicitly specified MCP targets take precedence (except hard safety/privilege constraints).")
         return "\n".join(lines) + "\n\n"
 
