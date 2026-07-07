@@ -52,6 +52,7 @@ def action_read(agent: Any, path: str, offset: int = 0, limit: int = 2000, promp
         # ---------- images ----------
         _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp", ".tiff", ".tif", ".svg", ".ico"}
         if abs_path.suffix.lower() in _IMAGE_EXTS:
+            _call_desc = f"Read {_rel}"
             image_task_context = f"Image file path: {str(abs_path)}"
             image_user_prompt = prompt if prompt else "Please read this image and describe its contents."
             analysis = agent.call_ai(
@@ -59,7 +60,10 @@ def action_read(agent: Any, path: str, offset: int = 0, limit: int = 2000, promp
                 context=image_task_context,
                 image_path=str(abs_path),
                 stream=False,
+                record_history_override=False,
             )
+            # Record user prompt as internal-only for API cache prefix matching.
+            agent._append_chat_message("user", image_user_prompt, _internal=True, api_content=image_user_prompt)
             return {"success": True, "content": str(analysis or ""), "file": str(abs_path), "call": _call_desc}
 
         # ---------- text files ----------
