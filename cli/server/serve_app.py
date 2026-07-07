@@ -2359,6 +2359,14 @@ class ServeApp:
             )
             return None
 
+        # Check disk cache first.
+        cached = self._get_cached_mcp_icon(server_name, raw)
+        if cached is not None:
+            logging.getLogger(_MCP_LOGGER_NAME).info(
+                f"[ICON_PROXY] cache_hit server={server_name} src={raw[:200]}"
+            )
+            return cached
+
         def _same_origin(a: str, b: str) -> bool:
             try:
                 pa = urlparse(a)
@@ -2483,6 +2491,7 @@ class ServeApp:
             headers = {}
         result = _fetch_icon_url(target_url, headers, used_auth_headers)
         if result is not None:
+            self._save_cached_mcp_icon(server_name, raw, result[0], result[1])
             return result
         for fallback_url in _favicon_fallback_urls(target_url):
             logging.getLogger(_MCP_LOGGER_NAME).info(
@@ -2490,8 +2499,71 @@ class ServeApp:
             )
             result = _fetch_icon_url(fallback_url, {}, False)
             if result is not None:
+                self._save_cached_mcp_icon(server_name, raw, result[0], result[1])
                 return result
         return None
+
+    # ------------------------------------------------------------------
+    # MCP icon disk cache
+    # ------------------------------------------------------------------
+
+    def _mcp_icon_cache_dir(self) -> Path:
+        """Return the directory for cached MCP icon data."""
+        d = self.agent.config_dir / "cache" / "mcp_icons"
+        try:
+            d.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            pass
+        return d
+
+    def _get_cached_mcp_icon(self, server_name: str, src: str) -> Optional[tuple]:
+        """Return ``(bytes, content_type)`` from disk cache if still valid.
+
+        The cache entry is considered valid only when its stored ``src``
+        matches the caller's ``src`` — if the icon URL has changed the
+        cached blob is discarded.
+        """
+        if not server_name or not src:
+            return None
+        try:
+            path = self._mcp_icon_cache_dir() / f"{server_name}.json"
+            if not path.is_file():
+                return None
+            raw = path.read_bytes()
+            obj = json.loads(raw)
+            if not isinstance(obj, dict):
+                return None
+            if str(obj.get("src") or "") != src:
+                path.unlink(missing_ok=True)
+                return None
+            data_b64 = obj.get("data")
+            if not isinstance(data_b64, str):
+                return None
+            data = base64.b64decode(data_b64)
+            content_type = str(obj.get("content_type") or "")
+            if not data or not content_type:
+                return None
+            return data, content_type
+        except Exception:
+            return None
+
+    def _save_cached_mcp_icon(
+        self, server_name: str, src: str, data: bytes, content_type: str
+    ) -> None:
+        """Persist icon bytes to the disk cache."""
+        if not server_name or not src or not data or not content_type:
+            return
+        try:
+            payload = {
+                "src": src,
+                "content_type": content_type,
+                "data": base64.b64encode(data).decode("ascii"),
+                "cached_at": time.time(),
+            }
+            path = self._mcp_icon_cache_dir() / f"{server_name}.json"
+            path.write_text(json.dumps(payload), encoding="utf-8")
+        except Exception:
+            pass
 
     # Embedded browser command channel
     # ----------------------------------------------------------------------
@@ -3221,7 +3293,33 @@ class ServeApp:
                     "icon": icon,
                 }
             )
+        # Fire background pre-fetch to populate the icon cache.
+        self._prefetch_mcp_icons(out)
         return {"servers": out}
+
+    def _prefetch_mcp_icons(self, servers: List[Dict[str, Any]]) -> None:
+        """Pre-fetch MCP server icons in a background thread to warm the cache."""
+        icon_tasks: List[tuple] = []
+        for srv in servers:
+            srv_name = str(srv.get("name") or "").strip()
+            srv_icon = str(srv.get("icon") or "").strip()
+            if srv_name and srv_icon:
+                icon_tasks.append((srv_name, srv_icon))
+        if not icon_tasks:
+            return
+
+        def _worker() -> None:
+            for srv_name, srv_icon in icon_tasks:
+                try:
+                    self.read_mcp_icon(srv_name, srv_icon)
+                except Exception:
+                    pass
+
+        threading.Thread(
+            target=_worker,
+            name=f"mcp-icon-prefetch",
+            daemon=True,
+        ).start()
 
     def get_mcp_server_details(self, name: str) -> Dict[str, Any]:
         """Fetch the tool/prompt catalog for a single server (cache-first)."""
