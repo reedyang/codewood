@@ -125,6 +125,7 @@
   "common.usage": "Usage:",
   "status.worked_for": "Worked for",
   "status.ran": "Ran",
+  "status.call": "Call",
   "status.apply_patch": "Edit",
   "status.create_file": "Create file",
   "tool.label.read": "Read",
