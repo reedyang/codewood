@@ -3,12 +3,12 @@ import { useApp } from "../state/AppContext";
 import { Icon } from "./Icon";
 import {
   MODEL_PRESETS,
-  findPreset,
   toEditorProvider,
   toConfigProviders,
   type EditorProvider,
   type EditorModel,
   type EditorHeader,
+  type ModelPreset,
 } from "./modelPresets";
 
 const FIXED_EFFORTS = ["low", "medium", "high", "max"] as const;
@@ -19,8 +19,9 @@ interface ModelsSettingsProps {
 }
 
 export function ModelsSettings({ onDirtyChange, saveSignal }: ModelsSettingsProps) {
-  const { getModelsConfig, saveModelsConfig, fetchProviderModels, t } = useApp();
+  const { getModelsConfig, saveModelsConfig, getModelPresets, fetchProviderModels, t } = useApp();
   const [providers, setProviders] = useState<EditorProvider[]>([]);
+  const [presets, setPresets] = useState<ModelPreset[]>(MODEL_PRESETS);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [dirty, setDirty] = useState(false);
@@ -48,14 +49,19 @@ export function ModelsSettings({ onDirtyChange, saveSignal }: ModelsSettingsProp
       setCollapsed(allCollapsed);
       setLoading(false);
     });
+    // Also load merged presets from backend.
+    void getModelPresets().then((remote) => {
+      if (!alive || !Array.isArray(remote) || remote.length === 0) return;
+      setPresets(remote as ModelPreset[]);
+    });
     return () => {
       alive = false;
     };
-  }, []);
+  }, [getModelPresets]);
 
   // A provider freshly added but otherwise untouched needs no delete confirm.
   const isPristineProvider = (p: EditorProvider): boolean => {
-    const preset = findPreset(p.presetId);
+    const preset = presets.find((pr) => pr.id === p.presetId);
     const defaultBase = preset?.base_url ?? "";
     return (
       !p.display_name.trim() &&
@@ -79,7 +85,7 @@ export function ModelsSettings({ onDirtyChange, saveSignal }: ModelsSettingsProp
   };
 
   const changePreset = (idx: number, presetId: string) => {
-    const preset = findPreset(presetId);
+    const preset = presets.find((pr) => pr.id === presetId);
     if (!preset) return;
     update(idx, {
       presetId,
@@ -90,7 +96,7 @@ export function ModelsSettings({ onDirtyChange, saveSignal }: ModelsSettingsProp
   };
 
   const addProvider = () => {
-    const preset = MODEL_PRESETS[0];
+    const preset = presets[0];
     if (!preset) return;
     setProviders((prev) => {
       const next: EditorProvider = {
@@ -286,7 +292,7 @@ export function ModelsSettings({ onDirtyChange, saveSignal }: ModelsSettingsProp
       <h2 className="settings-page-title">{t("settings.page.models")}</h2>
 
       {providers.map((p, idx) => {
-        const preset = findPreset(p.presetId);
+        const preset = presets.find((pr) => pr.id === p.presetId);
         const isOllama = preset?.kind === "ollama" || p.api_mode === "ollama";
         const isCollapsed = Boolean(collapsed[idx]);
         const collapsedLabel =
@@ -315,7 +321,7 @@ export function ModelsSettings({ onDirtyChange, saveSignal }: ModelsSettingsProp
                   value={p.presetId}
                   onChange={(e) => changePreset(idx, e.target.value)}
                 >
-                  {MODEL_PRESETS.map((mp) => (
+                  {presets.map((mp) => (
                     <option key={mp.id} value={mp.id}>
                       {mp.label}
                     </option>
