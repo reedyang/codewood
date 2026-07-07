@@ -80,6 +80,14 @@ export const MODEL_PRESETS: ModelPreset[] = [
     kind: "openai",
   },
   {
+    id: "sensenova",
+    label: "SenseNova (商汤日日新)",
+    provider: "SenseNova",
+    base_url: "https://token.sensenova.cn/v1",
+    api_mode: "chat",
+    kind: "openai",
+  },
+  {
     id: "ollama",
     label: "Ollama",
     provider: "Ollama",
