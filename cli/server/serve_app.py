@@ -3171,6 +3171,85 @@ class ServeApp:
         except Exception:
             return False
 
+    def _mcp_server_enabled_in_config(self, server: str) -> bool:
+        """Return the latest persisted enabled flag for one MCP server."""
+        srv = str(server or "").strip()
+        if not srv:
+            return False
+        try:
+            cfg = self._mcp_load_jsonc()
+            servers = cfg.get("mcpServers")
+            if not isinstance(servers, dict):
+                return False
+            conf = servers.get(srv)
+            if not isinstance(conf, dict):
+                return False
+            return not bool(conf.get("skip_preload", False))
+        except Exception:
+            return False
+
+    def _mcp_reconnect_running(self, server: str) -> bool:
+        srv = str(server or "").strip()
+        if not srv:
+            return False
+        with self._mcp_reconnect_lock:
+            thread = self._mcp_reconnect_threads.get(srv)
+            return bool(thread is not None and thread.is_alive())
+
+    def _refresh_mcp_agent_tools(self) -> None:
+        """Rebuild model-visible tool specs after an MCP config/runtime change."""
+        try:
+            agent = self.agent
+            agent.tool_specs = agent._load_tools_spec_from_jsonc()
+            agent.system_prompt = agent._compose_system_prompt_snapshot(include_tools=True)
+        except Exception:
+            pass
+
+    def _publish_mcp_state(self) -> None:
+        try:
+            self.broadcaster.publish(
+                "idle", self._route(state=_build_state(self.agent))
+            )
+        except Exception:
+            pass
+
+    def _deactivate_mcp_server_runtime(self, server: str) -> None:
+        """Best-effort live unload for a disabled MCP server."""
+        srv = str(server or "").strip()
+        if not srv:
+            return
+        mgr = getattr(self.agent, "mcp_manager", None)
+        if mgr is None:
+            return
+        remove_runtime = getattr(mgr, "_remove_server_runtime", None)
+        if callable(remove_runtime):
+            try:
+                remove_runtime(srv)
+            except Exception:
+                pass
+        set_status = getattr(mgr, "_set_status", None)
+        if callable(set_status):
+            try:
+                set_status(
+                    srv,
+                    "skipped",
+                    last_error="skip_preload=true",
+                    failure_type="",
+                    suggestion="This server is configured with skip_preload=true; set it to false if you need automatic preload.",
+                )
+            except Exception:
+                pass
+
+    def _reconcile_mcp_server_after_reconnect(self, server: str) -> None:
+        """Apply the latest toggle state after an async reconnect settles."""
+        srv = str(server or "").strip()
+        if not srv:
+            return
+        if not self._mcp_server_enabled_in_config(srv):
+            self._deactivate_mcp_server_runtime(srv)
+        self._refresh_mcp_agent_tools()
+        self._publish_mcp_state()
+
     def search_workspace_files(
         self, query: str, workspace_id: str = "", limit: int = 10
     ) -> Dict[str, Any]:
@@ -3408,12 +3487,7 @@ class ServeApp:
                         current = self._mcp_reconnect_threads.get(srv)
                         if current is thread:
                             self._mcp_reconnect_threads.pop(srv, None)
-                    try:
-                        self.broadcaster.publish(
-                            "idle", self._route(state=_build_state(self.agent))
-                        )
-                    except Exception:
-                        pass
+                    self._reconcile_mcp_server_after_reconnect(srv)
 
             thread = threading.Thread(
                 target=_worker,
@@ -3422,12 +3496,7 @@ class ServeApp:
             )
             self._mcp_reconnect_threads[srv] = thread
             thread.start()
-        try:
-            self.broadcaster.publish(
-                "idle", self._route(state=_build_state(self.agent))
-            )
-        except Exception:
-            pass
+        self._publish_mcp_state()
         return True
 
     def set_mcp_server_enabled(self, name: str, enabled: bool) -> bool:
@@ -3473,19 +3542,12 @@ class ServeApp:
             pass
         if enabled:
             self._start_mcp_reconnect_async(srv, timeout_s=12.0)
+        elif not self._mcp_reconnect_running(srv):
+            self._deactivate_mcp_server_runtime(srv)
         # Refresh tool specs so the model no longer sees disabled servers' tools.
-        try:
-            agent.tool_specs = agent._load_tools_spec_from_jsonc()
-            agent.system_prompt = agent._compose_system_prompt_snapshot(include_tools=True)
-        except Exception:
-            pass
+        self._refresh_mcp_agent_tools()
         # Push fresh state so the page reflects the change immediately.
-        try:
-            self.broadcaster.publish(
-                "idle", self._route(state=_build_state(self.agent))
-            )
-        except Exception:
-            pass
+        self._publish_mcp_state()
         return True
 
     def set_plan_mode(self, enabled: bool) -> bool:
