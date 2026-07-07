@@ -2670,7 +2670,9 @@ class Agent:
             except Exception:
                 rel = p
             label = translate("tool.label.read", self._ui_language())
-            detail = f"{rel} [offset={off}, limit={lim}]"
+            _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp", ".tiff", ".tif", ".svg", ".ico"}
+            is_image = Path(p).suffix.lower() in _IMAGE_EXTS
+            detail = f"{rel}" if is_image else f"{rel} [offset={off}, limit={lim}]"
             return (label, detail)
         if name == "project_context_search":
             q = str(a.get("query") or "").strip()

@@ -4024,6 +4024,23 @@ def run_agent_loop(agent: Any):
                             _stop_status_ticker_before_first_output()
                         msg_content = ai_result.get("content", "")
                         ai_response = msg_content if isinstance(msg_content, str) else str(msg_content or "")
+                        # Forward thinking content to GUI for non-streaming responses.
+                        _thinking_text = str(ai_result.get("_thinking", ai_result.get("thinking", "")) or "").strip()
+                        if not _thinking_text:
+                            _m = re.search(
+                                r"<\|channel\>\s*thought\s*\n?(.*?)<channel\|>",
+                                ai_response,
+                                re.IGNORECASE | re.DOTALL,
+                            )
+                            if _m:
+                                _thinking_text = _m.group(1).strip()
+                        if _thinking_text:
+                            _gui_thinking_hook = getattr(self, "_gui_thinking_chunk", None)
+                            if callable(_gui_thinking_hook):
+                                try:
+                                    _gui_thinking_hook(_thinking_text)
+                                except Exception:
+                                    pass
                         streamed_assistant_output = False
                         message_tool_plans = (
                             _parse_tool_plans_from_model_message(ai_result)

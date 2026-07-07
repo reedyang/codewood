@@ -851,6 +851,11 @@ def _stream_openai_like_response(
                 # empty heartbeat so the consumer checks thinking_text.
                 if reasoning_delta and not delta_yielded:
                     yield ""
+                # Also yield heartbeat when the sanitizer captured thinking from
+                # hidden blocks (e.g. <|channel>thought...<channel|>) but yielded
+                # no visible text, so the consumer can forward it to the GUI.
+                if new_thinking and not delta_yielded:
+                    yield ""
             tail = sanitizer.flush()
             # Extract thinking captured by the sanitizer (stripped <think> blocks etc.)
             sanitizer_thinking = sanitizer.get_thinking()

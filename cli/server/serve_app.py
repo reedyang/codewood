@@ -445,6 +445,9 @@ def _build_structured_turns(agent: Any) -> List[Dict[str, Any]]:
                 current_round["waitSeconds"] += max(0, int(round(wait)))
             if rendered.strip():
                 current_round["tools"] = current_round["tools"] + rendered + "\n"
+            thinking_text = str(msg.get("_thinking") or "").strip()
+            if thinking_text and not current_round.get("thinking"):
+                current_round["thinking"] = thinking_text
         if ts is not None:
             prev_ts = ts
 
@@ -465,7 +468,7 @@ def _build_structured_turns(agent: Any) -> List[Dict[str, Any]]:
         turn["rounds"] = [
             r
             for r in rounds
-            if r["text"].strip() or r["tools"].strip() or r["selection"].strip()
+            if r["text"].strip() or r["tools"].strip() or r["selection"].strip() or r["thinking"].strip()
         ]
     return turns
 
