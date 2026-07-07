@@ -24,7 +24,8 @@ def run_mcp_enable_tools(agent: Any, params: Dict[str, Any]) -> Dict[str, Any]:
         return {"success": False, "error": "tools is empty"}
     try:
         disabled = agent.mcp_manager.enable_tools(str(server), names)
-        agent.system_prompt = agent._compose_system_prompt_snapshot(include_tools=False)
+        agent.tool_specs = agent._load_tools_spec_from_jsonc()
+        agent.system_prompt = agent._compose_system_prompt_snapshot(include_tools=True)
         return {
             "success": True,
             "server": server,
