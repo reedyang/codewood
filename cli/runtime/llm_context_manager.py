@@ -1176,8 +1176,14 @@ class LLMContextManager:
             else self._first_user_requirement(user_input)
         )
 
-        # Retrieve memory context and inject into user message
-        mem_context = self.memory_context_for_user_message(user_input)
+        # Retrieve memory context and inject into user message.
+        # Only inject on the first round of a task (active user message), not on
+        # auto-generated continuation rounds (tool results, retries, etc.).
+        if not getattr(self.agent, '_memory_injected_this_task', False):
+            mem_context = self.memory_context_for_user_message(user_input)
+            self.agent._memory_injected_this_task = True
+        else:
+            mem_context = ""
         current_input = str(user_input or "").strip() + "\n"
         if mem_context:
             current_input = mem_context.strip() + "\n" + current_input
@@ -1240,7 +1246,7 @@ class LLMContextManager:
                     source_history=filtered_history,
                 )
                 current_input2 = str(user_input or "").strip() + "\n"
-                mem_context2 = self.memory_context_for_user_message(user_input)
+                mem_context2 = mem_context
                 if mem_context2:
                     current_input2 = mem_context2.strip() + "\n" + current_input2
                 if force_new_requirement:

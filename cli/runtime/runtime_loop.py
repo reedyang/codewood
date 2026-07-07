@@ -3886,6 +3886,7 @@ def run_agent_loop(agent: Any):
             )
             ready_to_send_elapsed_ms = int((time.perf_counter() - turn_send_started_at) * 1000)
             _emit_flow_log(f"First-round request preparation complete; sending actual request: elapsed_ms={ready_to_send_elapsed_ms}")
+            self._memory_injected_this_task = False
             is_first_round = True
             last_announced_skill_key: Optional[str] = None
             raw_max_tool_rounds = getattr(self, "max_tool_rounds", None)

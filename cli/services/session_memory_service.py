@@ -23,6 +23,7 @@ MEMORY_RETRIEVAL_MSG_MAX_CHARS = 400
 MEMORY_RETRIEVAL_QUERY_MAX_CHARS = 2000
 MEMORY_FALLBACK_MIN_COSINE_SCORE = 0.55
 MEMORY_EXPANSION_MAX_KEYWORD_CHARS = 600
+MEMORY_SEMANTIC_MIN_COSINE_SCORE = 0.20
 MEMORY_IDENTITY_CLUSTER_TYPES = frozenset({"preference", "identity"})
 SESSION_SUMMARY_FIELD_NAMES = ("Goals", "Facts", "Preferences", "Decisions", "Errors", "Next steps")
 SESSION_SUMMARY_FACT_SUBFIELDS = ("Paths/Commands/Tool results", "Environment/Workspace", "Errors/Fixes")
@@ -1217,6 +1218,27 @@ class SessionMemoryService:
             else:
                 _mem_log.info("Experiential memory: query expansion did not take effect (model response could not be parsed or call failed)")
 
+        # Filter semantic results: strong matches (>= 0.55) always pass; weak
+        # matches (0.20-0.55) must share meaningful characters to avoid noise.
+        def _passes_semantic_filter(r: Dict[str, Any]) -> bool:
+            sim = float(r.get("similarity") or 0)
+            if sim >= MEMORY_FALLBACK_MIN_COSINE_SCORE:
+                return True
+            if sim < MEMORY_SEMANTIC_MIN_COSINE_SCORE:
+                return False
+            # Weak match: require meaningful character overlap (entity sharing)
+            q_raw = (user_input or "").lower()
+            m_raw = ((r.get("title") or "") + " " + (r.get("content") or "")).lower()
+            q_cn = {c for c in q_raw if '\u4e00' <= c <= '\u9fff'}
+            m_cn = {c for c in m_raw if '\u4e00' <= c <= '\u9fff'}
+            common = q_cn & m_cn
+            common -= set("的了是在有不你我他她它你们这那什么怎么吧吗啊呢哈的和与或及")
+            return len(common) >= 2
+        rows_sem = [r for r in rows_sem if _passes_semantic_filter(r)]
+        # Query expansion results are speculative (LLM-generated queries) and
+        # more prone to drift, so use a higher threshold.
+        rows_exp = [r for r in rows_exp if float(r.get("similarity") or 0) >= MEMORY_FALLBACK_MIN_COSINE_SCORE]
+
         seen: Set[str] = set()
         merged: List[Dict[str, Any]] = []
 
@@ -1252,15 +1274,21 @@ class SessionMemoryService:
                 "created_at": ca_f,
             }
 
-        recent = self.agent.memory_service.list_recent(limit=20, scope_key=sk)
-        for item in recent:
-            if len(merged) >= 12:
-                break
-            rid = str(item.get("id") or "").strip()
-            if not rid or rid in seen:
-                continue
-            merged.append(_from_recent_item(item))
-            seen.add(rid)
+        # Only include recent memories when semantic retrieval found at least
+        # some relevant results, and cap at 3 to avoid filling context with
+        # unrelated recent activity.
+        if len(merged) > 0:
+            recent = self.agent.memory_service.list_recent(limit=10, scope_key=sk)
+            recent_added = 0
+            for item in recent:
+                if len(merged) >= 12 or recent_added >= 3:
+                    break
+                rid = str(item.get("id") or "").strip()
+                if not rid or rid in seen:
+                    continue
+                merged.append(_from_recent_item(item))
+                seen.add(rid)
+                recent_added += 1
 
         merged.sort(key=self.memory_row_sort_key)
         return merged[:12]
