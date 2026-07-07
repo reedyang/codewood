@@ -3208,8 +3208,6 @@ class ServeApp:
             # Use only runtime-discovered icon sources for GUI display.
             status_icon = str(status_dict.get("icon") or "").strip()
             icon = status_icon
-            if icon:
-                print(f"[MCP icon] server={name} icon={icon[:200]}", flush=True)
             out.append(
                 {
                     "name": str(name),
