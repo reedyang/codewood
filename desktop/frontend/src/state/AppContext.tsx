@@ -1000,6 +1000,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
           };
           rounds.push(round);
         }
+        // Freeze the thinking timer on the first content (answer or step)
+        // so the "Thought for Xs" text stops counting.
+        const updatedTurn =
+          turn.thinkingText && !turn.thinkingEndedAt
+            ? { ...turn, thinkingEndedAt: Date.now() }
+            : turn;
         const segments = [...round.segments];
         const last = segments[segments.length - 1];
         if (last && last.kind === kind) {
@@ -1008,7 +1014,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
           segments.push({ id: nextIdRef.current++, kind, text });
         }
         rounds[rounds.length - 1] = { ...round, segments };
-        next[next.length - 1] = { ...turn, rounds };
+        next[next.length - 1] = { ...updatedTurn, rounds };
         return { ...prev, [chatId]: next };
       });
     },

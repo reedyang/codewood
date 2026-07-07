@@ -1756,7 +1756,10 @@ function TurnView({
           running={thinkingRunning}
           timerText={(() => {
             const startedAt = turn.thinkingStartedAt ?? turn.startedAt;
-            const elapsedMs = (turn.endedAt ?? now) - startedAt;
+            // Use thinkingEndedAt when available so the timer freezes at the
+            // moment the model moved on to visible content / tool calls.
+            const endedAt = turn.thinkingEndedAt ?? turn.endedAt ?? now;
+            const elapsedMs = endedAt - startedAt;
             const elapsed = formatElapsed(elapsedMs);
             return thinkingRunning
               ? `${t("activity.thinking")} (${elapsed})`

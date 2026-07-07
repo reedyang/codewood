@@ -274,6 +274,9 @@ export interface Turn {
   thinkingText?: string;
   /** When model reasoning/thinking started (first ``thinking`` SSE event). */
   thinkingStartedAt?: number;
+  /** When model reasoning/thinking ended (first non-thinking content arrived).
+   *  Used to freeze the timer text when the thinking panel auto-collapses. */
+  thinkingEndedAt?: number;
 }
 
 /** A previously-recorded model round loaded from chat history. */
