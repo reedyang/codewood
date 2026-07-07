@@ -14,10 +14,12 @@ runtime variables are the only dynamic part.
 
 from __future__ import annotations
 
+import platform
 from pathlib import Path
 from typing import Any, Dict
 
 from ..config.app_info import get_app_prompt_name
+from .prompt_preprocessor import preprocess_prompt
 
 MODE_AGENT = "agent"
 MODE_PLAN = "plan"
@@ -67,7 +69,8 @@ def load_mode_prompt(mode: str) -> str:
     """Read the raw Markdown template for ``mode`` (no substitution)."""
     path = _prompts_dir() / f"{normalize_mode(mode)}.md"
     try:
-        return path.read_text(encoding="utf-8")
+        raw = path.read_text(encoding="utf-8")
+        return preprocess_prompt(raw, {"os": platform.system()})
     except Exception:
         return ""
 

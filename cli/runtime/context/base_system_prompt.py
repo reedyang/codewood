@@ -8,10 +8,12 @@ so callers/tests can still pre-seed or read the attribute directly.
 
 from __future__ import annotations
 
+import platform
 from pathlib import Path
 from typing import Any
 
 from ...config.app_info import get_app_prompt_name, get_app_prompt_slug_kebab
+from ..prompt_preprocessor import preprocess_prompt
 from .base import ModelContextPart
 
 
@@ -30,11 +32,13 @@ def build_base_system_prompt(small_model: bool = False) -> str:
     else:
         prompt_path = _prompts_root() / "system_prompt.md"
     with open(prompt_path, "r", encoding="utf-8") as f:
-        return (
-            f.read()
-            .replace("{{APP_NAME}}", get_app_prompt_name())
-            .replace("{{APP_SLUG_KEBAB}}", get_app_prompt_slug_kebab())
-        )
+        raw = f.read()
+    raw = preprocess_prompt(raw, {"os": platform.system()})
+    return (
+        raw
+        .replace("{{APP_NAME}}", get_app_prompt_name())
+        .replace("{{APP_SLUG_KEBAB}}", get_app_prompt_slug_kebab())
+    )
 
 
 class BaseSystemPromptPart(ModelContextPart):
