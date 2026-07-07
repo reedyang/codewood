@@ -495,9 +495,9 @@ def build_runtime_cache_prompt_append(agent: Any, default_workspace_id: str) -> 
     ws_root = Path(getattr(agent, "workspace_root", agent.work_directory))
     ws_id = str(getattr(agent, "workspace_id", "") or "").strip().lower()
     if ws_id == default_workspace_id:
-        cache_root = (ws_root / ".cache").resolve()
+        cache_root = (ws_root / "cache").resolve()
     else:
-        cache_root = (ws_root / get_app_config_dirname() / ".cache").resolve()
+        cache_root = (ws_root / get_app_config_dirname() / "cache").resolve()
     return (
         "\n\n## Runtime Cache Directory Hint\n"
         "- General cache root directory (workspace-level): "
@@ -697,9 +697,9 @@ def default_skill_cache_dir(
     ws_root = Path(getattr(agent, "workspace_root", agent.work_directory))
     ws_id = str(getattr(agent, "workspace_id", "") or "").strip().lower()
     if ws_id == default_workspace_id:
-        base = ws_root / ".cache"
+        base = ws_root / "cache"
     else:
-        base = ws_root / get_app_config_dirname() / ".cache"
+        base = ws_root / get_app_config_dirname() / "cache"
     return (base / sid).resolve()
 
 
