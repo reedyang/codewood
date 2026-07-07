@@ -55,7 +55,7 @@ def _app(cfg_dir: Path) -> ServeApp:
     stub.broadcaster = _FakeBroadcaster()
     stub._mcp_reconnect_threads = {}
     stub._mcp_reconnect_lock = threading.Lock()
-    for name in ("_mcp_load_jsonc", "get_mcp_overview"):
+    for name in ("_mcp_load_jsonc", "get_mcp_overview", "_prefetch_mcp_icons"):
         setattr(stub, name, getattr(ServeApp, name).__get__(stub, _Stub))
     return stub  # type: ignore[return-value]
 
