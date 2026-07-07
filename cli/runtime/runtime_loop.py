@@ -3727,13 +3727,17 @@ def run_agent_loop(agent: Any):
             preloaded_skill_ids: Set[str] = set()
             if forced_skills:
                 skill_items = []
-                full_prompts: List[str] = []
+                full_prompts: List[Tuple[str, str]] = []  # (skill_id, prompt_text)
+                session_injected = getattr(self, "_session_injected_skills", set())
                 for s in forced_skills:
                     sid = str(s.get("skill_id") or "").strip()
                     sname = str(s.get("name") or sid).strip()
                     if not sid:
                         continue
+                    canon_sid = self._canonical_skill_id(sid)
                     skill_items.append(f"`{sname}`(skill_id=`{sid}`)")
+                    if canon_sid and canon_sid in session_injected:
+                        continue
                     full_prompt, meta = self._build_single_skill_prompt(sid)
                     if full_prompt:
                         pre_task_status_ticker = _stop_pre_task_status_ticker_for_console_output(
@@ -3741,8 +3745,10 @@ def run_agent_loop(agent: Any):
                             pre_task_status_ticker,
                         )
                         print(t("runtime.skill_enabled", skill=sname))
-                        full_prompts.append(full_prompt)
-                        preloaded_skill_ids.add(self._canonical_skill_id(sid))
+                        full_prompts.append((sid, full_prompt))
+                        preloaded_skill_ids.add(canon_sid)
+                        if canon_sid:
+                            session_injected.add(canon_sid)
                         if not self._active_skill_id:
                             self._active_skill_id = sid
                             self._active_skill_source = "local" if self._is_local_skill_id(sid) else "mcp"
@@ -3756,9 +3762,14 @@ def run_agent_loop(agent: Any):
                         "the skill bodies take precedence except for safety, privilege, and destructive-action hard limits.\n\n"
                     )
                 if full_prompts:
-                    self._active_skill_full_prompt = "\n".join(full_prompts)
-                    for fp in full_prompts:
-                        self._append_chat_message("user", fp, _internal=True)
+                    self._active_skill_full_prompt = "\n".join(fp for _, fp in full_prompts)
+                    for sid, fp in full_prompts:
+                        skill_msg = (
+                            f"----- BEGIN SKILL PROMPT (skill_id={sid}) -----\n"
+                            f"{fp}\n"
+                            f"----- END SKILL PROMPT -----"
+                        )
+                        self._append_chat_message("user", skill_msg, _internal=False)
             memory_runtime_enabled = bool(getattr(self, "memory_enabled", True))
             base_rules: List[str] = [
                 "For tasks that require two or more steps, briefly state what will be done, then list Step 1..N with status (pending/in_progress/completed/failed).",
@@ -4328,10 +4339,33 @@ def run_agent_loop(agent: Any):
                         self._active_skill_section = int(meta.get("section") or 0)
                         self._active_skill_total_sections = int(meta.get("total") or 0)
                         self._active_skill_chunked = bool(meta.get("chunked", False))
+                        # Track in session-level set so future forced references
+                        # don't re-inject the full body.
+                        session_injected = getattr(self, "_session_injected_skills", set())
+                        if canon_sid:
+                            session_injected.add(canon_sid)
+                        # Record the skill prompt as a tool result (assistant message
+                        # with [MODEL_TOOL_RESULT] prefix), so the GUI renders it as
+                        # a tool call output rather than a user-sent message.
+                        tool_result_payload = {
+                            "kind": "model_tool_result",
+                            "tool": "request_skill_prompt",
+                            "args": {"skill_id": sid},
+                            "success": True,
+                            "output": (
+                                f"----- BEGIN SKILL PROMPT (skill_id={sid}) -----\n"
+                                f"{full_prompt}\n"
+                                f"----- END SKILL PROMPT -----"
+                            ),
+                            "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        }
+                        tool_result_content = (
+                            f"{_MODEL_TOOL_RESULT_HISTORY_PREFIX}"
+                            f"{json.dumps(tool_result_payload, ensure_ascii=False)}"
+                        )
+                        self._append_chat_message("assistant", tool_result_content)
                         next_input = (
-                            f"----- BEGIN SKILL PROMPT (skill_id={sid}) -----\n"
-                            f"{full_prompt}\n"
-                            f"----- END SKILL PROMPT -----\n\n"
+                            f"[Skill prompt for `{sid}` injected above] "
                             f"Current section progress: {self._active_skill_section}/{self._active_skill_total_sections if self._active_skill_total_sections else 1}。"
                             "Continue with standard tools; you may call one or more tools at once."
                         )

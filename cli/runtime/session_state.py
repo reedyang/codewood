@@ -47,6 +47,10 @@ class SessionState:
         "call_openai_conf",
         "call_model_set",
         "reasoning_effort",
+        # Session-level injection tracking: which skill bodies and MCP prompt
+        # contents have been injected into this chat's history at least once.
+        "session_injected_skills",
+        "session_injected_mcp_prompts",
     )
 
     def __init__(self) -> None:
@@ -79,6 +83,8 @@ class SessionState:
         self.call_model_set: bool = False
         # Selected reasoning effort level for this chat ("" = none/unsupported).
         self.reasoning_effort: str = ""
+        self.session_injected_skills: set = set()
+        self.session_injected_mcp_prompts: set = set()
 
 
 # Maps each public Agent attribute name to the SessionState slot backing it.
@@ -103,6 +109,8 @@ SESSION_FIELD_MAP: Dict[str, str] = {
     "_force_current_input_as_requirement_once": "force_current_input_as_requirement_once",
     "_last_cancelled_task": "last_cancelled_task",
     "reasoning_level": "reasoning_effort",
+    "_session_injected_skills": "session_injected_skills",
+    "_session_injected_mcp_prompts": "session_injected_mcp_prompts",
 }
 
 
