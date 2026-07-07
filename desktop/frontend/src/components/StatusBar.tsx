@@ -2,15 +2,6 @@ import { useState, useEffect, useRef } from "react";
 import { useApp } from "../state/AppContext";
 import type { IndexStatus } from "../api/types";
 
-function Dots() {
-  const [n, setN] = useState(0);
-  useEffect(() => {
-    const t = setInterval(() => setN((x) => (x + 1) % 4), 600);
-    return () => clearInterval(t);
-  }, []);
-  return <>{Array(n).fill(".").join("")}</>;
-}
-
 export function StatusBar() {
   const { state, client } = useApp();
   const [status, setStatus] = useState<IndexStatus | null>(null);
@@ -26,7 +17,7 @@ export function StatusBar() {
     };
 
     poll();
-    intervalRef.current = setInterval(poll, 2000);
+    intervalRef.current = setInterval(poll, 500);
 
     return () => {
       cancelled = true;
@@ -41,20 +32,17 @@ export function StatusBar() {
   const isScanning = phase === "scanning";
   const isIndexing = phase === "indexing";
   const isSaving = phase === "saving";
+  const percent = Math.max(0, Math.floor(status?.refresh_progress_percent ?? 0));
 
   return (
     <footer className="status-bar">
       <div className="status-bar-left">
         {isDefault ? null : isSaving ? (
-          <span className="status-label">Saving...</span>
+          <span className="status-label">Saving {percent}%</span>
         ) : isScanning ? (
-          <span className="status-label">
-            Found {(status?.files_total ?? 0).toLocaleString()} file{(status?.files_total ?? 0) !== 1 ? "s" : ""}
-          </span>
+          <span className="status-label">Scanning {percent}%</span>
         ) : isIndexing ? (
-          <span className="status-label">
-            Indexing<Dots />
-          </span>
+          <span className="status-label">Indexing {percent}%</span>
         ) : status ? (
           <span className="status-label">
             Index: {(status.files_total ?? 0).toLocaleString()} file{(status.files_total ?? 0) !== 1 ? "s" : ""}

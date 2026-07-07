@@ -6,6 +6,8 @@ from pathlib import Path
 from cli.agent import Agent
 from cli.tools.project_context_index import (
     ProjectContextIndex,
+    _CallEdge,
+    _FileEntry,
     search_workspace_files,
 )
 
@@ -19,6 +21,41 @@ class _DummyProjectContextIndex:
 
 
 class ProjectContextIndexTests(unittest.TestCase):
+    def test_status_reports_progress_percent_for_all_phases(self):
+        with tempfile.TemporaryDirectory() as td_workspace, tempfile.TemporaryDirectory() as td_storage:
+            index = ProjectContextIndex(
+                workspace_root=Path(td_workspace), storage_dir=Path(td_storage)
+            )
+            index._index_expected_total = 200
+
+            index._refresh_progress_phase = "scanning"
+            index._refresh_progress_done = 50
+            index._refresh_progress_total = 0
+            self.assertEqual(index.status()["refresh_progress_percent"], 25)
+
+            index._refresh_progress_phase = "scanning"
+            index._refresh_progress_done = 200
+            index._refresh_progress_total = 0
+            self.assertEqual(index.status()["refresh_progress_percent"], 100)
+
+            index._refresh_progress_phase = "indexing"
+            index._refresh_progress_done = 3
+            index._refresh_progress_total = 8
+            self.assertEqual(index.status()["refresh_progress_percent"], 37)
+
+            index._refresh_progress_phase = "saving"
+            index._refresh_progress_done = 0
+            index._refresh_progress_total = 0
+            self.assertEqual(index.status()["refresh_progress_percent"], 100)
+
+            index._refresh_progress_phase = "saving"
+            index._refresh_progress_done = 3
+            index._refresh_progress_total = 10
+            self.assertEqual(index.status()["refresh_progress_percent"], 30)
+
+            index._refresh_progress_phase = ""
+            self.assertEqual(index.status()["refresh_progress_percent"], 0)
+
     def test_refresh_writes_index_file_even_when_workspace_has_no_code_files(self):
         with tempfile.TemporaryDirectory() as td_workspace, tempfile.TemporaryDirectory() as td_storage:
             workspace = Path(td_workspace)
@@ -94,6 +131,151 @@ class ProjectContextIndexTests(unittest.TestCase):
             cg = reloaded.call_graph("main", direction="callees", auto_refresh=False)
             callee_names = {c["callee"] for c in cg.get("callees", [])}
             self.assertIn("helper", callee_names)
+
+    def test_checkpoint_batch_roundtrip_is_loadable(self):
+        with tempfile.TemporaryDirectory() as td_workspace, tempfile.TemporaryDirectory() as td_storage:
+            workspace = Path(td_workspace)
+            storage = Path(td_storage)
+            index = ProjectContextIndex(workspace_root=workspace, storage_dir=storage)
+            entry = _FileEntry(
+                path="pkg/mod.py",
+                mtime_ns=123,
+                size=456,
+                symbols=["main"],
+                imports=["os"],
+                tokens=["pkg", "mod", "main"],
+                calls=[_CallEdge(caller="main", callee="helper")],
+            )
+
+            index._save_checkpoint_batch({"pkg/mod.py": entry}, checkpoint_ts=42.0)
+
+            reloaded = ProjectContextIndex(workspace_root=workspace, storage_dir=storage)
+            saved = reloaded.files["pkg/mod.py"]
+            self.assertEqual(saved.symbols, ["main"])
+            self.assertEqual(saved.imports, ["os"])
+            self.assertEqual(saved.tokens, [])
+            cg = reloaded.call_graph("main", direction="callees", auto_refresh=False)
+            self.assertEqual(cg["callees"][0]["callee"], "helper")
+
+    def test_refresh_resumes_from_checkpointed_files_without_reparsing_them(self):
+        with tempfile.TemporaryDirectory() as td_workspace, tempfile.TemporaryDirectory() as td_storage:
+            workspace = Path(td_workspace)
+            storage = Path(td_storage)
+            first = workspace / "first.py"
+            second = workspace / "second.py"
+            first.write_text("def first():\n    return 1\n", encoding="utf-8")
+            second.write_text("def second():\n    return 2\n", encoding="utf-8")
+
+            seed = ProjectContextIndex(workspace_root=workspace, storage_dir=storage)
+            first_stat = first.stat()
+            first_entry = seed._parse_file(
+                first,
+                "first.py",
+                int(getattr(first_stat, "st_mtime_ns", int(first_stat.st_mtime * 1e9))),
+                int(first_stat.st_size),
+            )
+            seed._save_checkpoint_batch({"first.py": first_entry}, checkpoint_ts=1.0)
+
+            resumed = ProjectContextIndex(workspace_root=workspace, storage_dir=storage)
+            parsed_rels = []
+            original_parse = resumed._parse_file
+
+            def _tracked_parse(p, rel, st_mtime_ns, st_size):
+                parsed_rels.append(rel)
+                return original_parse(p, rel, st_mtime_ns, st_size)
+
+            resumed._parse_file = _tracked_parse  # type: ignore[method-assign]
+            result = resumed.refresh_index(force=False)
+
+            self.assertTrue(result["success"])
+            self.assertEqual(parsed_rels, ["second.py"])
+            self.assertEqual(sorted(resumed.files.keys()), ["first.py", "second.py"])
+
+    def test_refresh_short_circuits_when_existing_index_is_fully_unchanged(self):
+        with tempfile.TemporaryDirectory() as td_workspace, tempfile.TemporaryDirectory() as td_storage:
+            workspace = Path(td_workspace)
+            storage = Path(td_storage)
+            mod = workspace / "mod.py"
+            mod.write_text("def mod():\n    return 1\n", encoding="utf-8")
+
+            seeded = ProjectContextIndex(workspace_root=workspace, storage_dir=storage)
+            seeded.refresh_index(force=True)
+
+            index = ProjectContextIndex(workspace_root=workspace, storage_dir=storage)
+            parse_calls = []
+            save_calls = []
+            original_parse = index._parse_file
+            original_save = index._save
+
+            def _tracked_parse(*args, **kwargs):
+                parse_calls.append(True)
+                return original_parse(*args, **kwargs)
+
+            def _tracked_save():
+                save_calls.append(True)
+                return original_save()
+
+            index._parse_file = _tracked_parse  # type: ignore[method-assign]
+            index._save = _tracked_save  # type: ignore[method-assign]
+            result = index.refresh_index(force=False)
+
+            self.assertTrue(result["success"])
+            self.assertEqual(parse_calls, [])
+            self.assertEqual(save_calls, [])
+
+    def test_final_save_removes_deleted_files_after_checkpoint_resume(self):
+        with tempfile.TemporaryDirectory() as td_workspace, tempfile.TemporaryDirectory() as td_storage:
+            workspace = Path(td_workspace)
+            storage = Path(td_storage)
+            doomed = workspace / "doomed.py"
+            doomed.write_text("def doomed():\n    return 0\n", encoding="utf-8")
+
+            index = ProjectContextIndex(workspace_root=workspace, storage_dir=storage)
+            index.refresh_index(force=True)
+            self.assertIn("doomed.py", index.files)
+
+            doomed.unlink()
+            refreshed = ProjectContextIndex(workspace_root=workspace, storage_dir=storage)
+            result = refreshed.refresh_index(force=False)
+
+            self.assertTrue(result["success"])
+            self.assertNotIn("doomed.py", refreshed.files)
+
+    def test_refresh_keeps_saving_phase_while_running_full_save(self):
+        with tempfile.TemporaryDirectory() as td_workspace, tempfile.TemporaryDirectory() as td_storage:
+            workspace = Path(td_workspace)
+            storage = Path(td_storage)
+            (workspace / "save_me.py").write_text("def save_me():\n    return 1\n", encoding="utf-8")
+
+            index = ProjectContextIndex(workspace_root=workspace, storage_dir=storage)
+            phases_seen = []
+            original_save = index._save
+
+            def _wrapped_save():
+                phases_seen.append(index._refresh_progress_phase)
+                original_save()
+
+            index._save = _wrapped_save  # type: ignore[method-assign]
+            result = index.refresh_index(force=True)
+
+            self.assertTrue(result["success"])
+            self.assertIn("saving", phases_seen)
+
+    def test_iter_code_files_reports_final_progress_for_small_workspaces(self):
+        with tempfile.TemporaryDirectory() as td_workspace, tempfile.TemporaryDirectory() as td_storage:
+            workspace = Path(td_workspace)
+            storage = Path(td_storage)
+            (workspace / "one.py").write_text("x = 1\n", encoding="utf-8")
+            (workspace / "two.py").write_text("y = 2\n", encoding="utf-8")
+
+            index = ProjectContextIndex(workspace_root=workspace, storage_dir=storage)
+            progress = []
+
+            files, timed_out = index._iter_code_files(progress_cb=lambda count: progress.append(count))
+
+            self.assertFalse(timed_out)
+            self.assertEqual(len(files), 2)
+            self.assertEqual(progress[-1], 2)
 
     def test_call_graph_callers_and_callees(self):
         with tempfile.TemporaryDirectory() as td_workspace, tempfile.TemporaryDirectory() as td_storage:

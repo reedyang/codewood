@@ -55,7 +55,7 @@ export class ApiClient {
   async fetchIndexStatus(): Promise<IndexStatus> {
     const res = await fetch(`${this.base}/index-status`, { headers: this.headers() });
     if (!res.ok) {
-      return { hidden: true, files_total: 0, workspace_name: "", is_default_workspace: true, refresh_phase: "", refresh_progress_total: 0, refresh_progress_done: 0 };
+      return { hidden: true, files_total: 0, workspace_name: "", is_default_workspace: true, refresh_phase: "", refresh_progress_total: 0, refresh_progress_done: 0, refresh_progress_percent: 0 };
     }
     return (await res.json()) as IndexStatus;
   }
