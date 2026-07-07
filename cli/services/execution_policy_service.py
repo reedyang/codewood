@@ -698,10 +698,6 @@ def freedom_auto_confirm(agent: Any, command: Dict[str, Any]) -> bool:
                     )
                     reversible, reason = ai_assess_reversible(agent, command)
                     if reversible:
-                        _print_with_auto_hide_tracking(
-                            agent,
-                            f"{mode_prefix} {_t(agent, 'execution_policy.review.classified_safe', fallback='classified as safe, auto-skipping confirmation - {reason}', reason=reason)}",
-                        )
                         agent._manual_confirm_required_shell_once = False
                     else:
                         _print_with_auto_hide_tracking(
@@ -776,16 +772,8 @@ def freedom_auto_confirm(agent: Any, command: Dict[str, Any]) -> bool:
                 agent._manual_confirm_required_shell_once = False
                 return True
 
-        _print_with_auto_hide_tracking(
-            agent,
-            f"{mode_prefix} {_t(agent, 'execution_policy.review.asking_safety', fallback='asking AI to classify whether the operation is safe...')}"
-        )
         reversible, reason = ai_assess_reversible(agent, command)
         if reversible:
-            _print_with_auto_hide_tracking(
-                agent,
-                f"{mode_prefix} {_t(agent, 'execution_policy.review.classified_safe', fallback='classified as safe, auto-skipping confirmation - {reason}', reason=reason)}"
-            )
             agent._manual_confirm_required_shell_once = False
         else:
             _print_with_auto_hide_tracking(
@@ -795,17 +783,8 @@ def freedom_auto_confirm(agent: Any, command: Dict[str, Any]) -> bool:
             agent._manual_confirm_required_shell_once = True
         return reversible
 
-    _print_with_auto_hide_tracking(
-        agent,
-        f"{mode_prefix} {_t(agent, 'execution_policy.review.asking_safety', fallback='asking AI to classify whether the operation is safe...')}"
-    )
     reversible, reason = ai_assess_reversible(agent, command)
-    if reversible:
-        _print_with_auto_hide_tracking(
-            agent,
-            f"{mode_prefix} {_t(agent, 'execution_policy.review.classified_safe', fallback='classified as safe, auto-skipping confirmation - {reason}', reason=reason)}"
-        )
-    else:
+    if not reversible:
         _print_with_auto_hide_tracking(
             agent,
             f"{mode_prefix} {_t(agent, 'execution_policy.review.classified_unsafe', fallback='classified as unsafe or uncertain, manual confirmation is still required - {reason}', reason=reason)}"

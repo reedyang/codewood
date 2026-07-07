@@ -268,7 +268,6 @@ function CmdOutputBlock({ text }: { text: string }) {
         aria-expanded={expanded}
         title={expanded ? "Collapse output" : "Expand output"}
       >
-        <span className="cmd-output-title">Output</span>
         <Icon name="chevron" size={14} className={`chevron ${expanded ? "open" : ""}`} />
       </button>
       {expanded && (
