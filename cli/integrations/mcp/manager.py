@@ -3800,6 +3800,9 @@ class McpManager:
             name = str(raw_name or "").strip()
             if not name:
                 continue
+            entry = servers.get(raw_name)
+            if isinstance(entry, dict) and entry.get("skip_preload"):
+                continue
             st = self._status.get(name, {})
             if str(st.get("state", "pending") or "pending").lower() != "success":
                 continue

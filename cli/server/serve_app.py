@@ -3375,6 +3375,12 @@ class ServeApp:
             pass
         if enabled:
             self._start_mcp_reconnect_async(srv, timeout_s=12.0)
+        # Refresh tool specs so the model no longer sees disabled servers' tools.
+        try:
+            agent.tool_specs = agent._load_tools_spec_from_jsonc()
+            agent.system_prompt = agent._compose_system_prompt_snapshot(include_tools=True)
+        except Exception:
+            pass
         # Push fresh state so the page reflects the change immediately.
         try:
             self.broadcaster.publish(
@@ -3447,6 +3453,9 @@ class ServeApp:
                 mgr.enable_tools(srv, [name])
             else:
                 mgr.disable_tools(srv, [name])
+            agent = self.agent
+            agent.tool_specs = agent._load_tools_spec_from_jsonc()
+            agent.system_prompt = agent._compose_system_prompt_snapshot(include_tools=True)
         except Exception:
             return False
         return True
@@ -3474,6 +3483,9 @@ class ServeApp:
                 mgr.enable_tools(srv, names)
             else:
                 mgr.disable_tools(srv, names)
+            agent = self.agent
+            agent.tool_specs = agent._load_tools_spec_from_jsonc()
+            agent.system_prompt = agent._compose_system_prompt_snapshot(include_tools=True)
         except Exception:
             return False
         return True

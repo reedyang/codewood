@@ -128,6 +128,8 @@ def build_mcp_system_append(agent: Any) -> str:
     for name, conf in servers.items():
         if not isinstance(conf, dict):
             continue
+        if conf.get("skip_preload"):
+            continue
         st = status_servers.get(name, {})
         state_raw = str(st.get("state", "pending") or "pending").lower()
         if state_raw != "success":
