@@ -19,9 +19,13 @@ class _FakeMcpManager:
         self.reconnect_started = threading.Event()
         self.allow_finish = threading.Event()
         self.status_updates = []
+        self.removed_servers = []
 
     def _set_status(self, server, state, **kwargs):
         self.status_updates.append((server, state, kwargs))
+
+    def _remove_server_runtime(self, server):
+        self.removed_servers.append(server)
 
     def reconnect_server(self, server, timeout_s=12.0):
         _ = timeout_s
@@ -53,6 +57,12 @@ def _app(cfg_dir: Path) -> ServeApp:
     for name in (
         "_mcp_load_jsonc",
         "_mcp_save_jsonc",
+        "_mcp_server_enabled_in_config",
+        "_mcp_reconnect_running",
+        "_refresh_mcp_agent_tools",
+        "_publish_mcp_state",
+        "_deactivate_mcp_server_runtime",
+        "_reconcile_mcp_server_after_reconnect",
         "_start_mcp_reconnect_async",
         "set_mcp_server_enabled",
     ):
@@ -90,6 +100,80 @@ class ServeAppMcpSettingsTests(unittest.TestCase):
             saved = app._mcp_load_jsonc()
             self.assertFalse(saved["mcpServers"]["slow"].get("skip_preload", False))
             app.agent.mcp_manager.allow_finish.set()
+
+    def test_disable_during_reconnect_applies_after_connect_finishes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg_dir = Path(tmp)
+            (cfg_dir / "mcp.jsonc").write_text(
+                '{\n'
+                '  "mcpServers": {\n'
+                '    "slow": {\n'
+                '      "command": "python",\n'
+                '      "args": [],\n'
+                '      "skip_preload": true\n'
+                "    }\n"
+                "  }\n"
+                "}\n",
+                encoding="utf-8",
+            )
+            app = _app(cfg_dir)
+            self.assertTrue(app.set_mcp_server_enabled("slow", True))
+            self.assertTrue(app.agent.mcp_manager.reconnect_started.wait(0.5))
+
+            self.assertTrue(app.set_mcp_server_enabled("slow", False))
+            saved = app._mcp_load_jsonc()
+            self.assertTrue(saved["mcpServers"]["slow"].get("skip_preload", False))
+            self.assertEqual(app.agent.mcp_manager.removed_servers, [])
+
+            thread = app._mcp_reconnect_threads["slow"]
+            app.agent.mcp_manager.allow_finish.set()
+            thread.join(1.0)
+
+            self.assertIn("slow", app.agent.mcp_manager.removed_servers)
+            self.assertIn(
+                (
+                    "slow",
+                    "skipped",
+                    {
+                        "last_error": "skip_preload=true",
+                        "failure_type": "",
+                        "suggestion": "This server is configured with skip_preload=true; set it to false if you need automatic preload.",
+                    },
+                ),
+                app.agent.mcp_manager.status_updates,
+            )
+
+    def test_reenable_during_reconnect_cancels_pending_disable(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg_dir = Path(tmp)
+            (cfg_dir / "mcp.jsonc").write_text(
+                '{\n'
+                '  "mcpServers": {\n'
+                '    "slow": {\n'
+                '      "command": "python",\n'
+                '      "args": [],\n'
+                '      "skip_preload": true\n'
+                "    }\n"
+                "  }\n"
+                "}\n",
+                encoding="utf-8",
+            )
+            app = _app(cfg_dir)
+            self.assertTrue(app.set_mcp_server_enabled("slow", True))
+            self.assertTrue(app.agent.mcp_manager.reconnect_started.wait(0.5))
+
+            self.assertTrue(app.set_mcp_server_enabled("slow", False))
+            self.assertTrue(app.set_mcp_server_enabled("slow", True))
+            saved = app._mcp_load_jsonc()
+            self.assertFalse(saved["mcpServers"]["slow"].get("skip_preload", False))
+
+            thread = app._mcp_reconnect_threads["slow"]
+            app.agent.mcp_manager.allow_finish.set()
+            thread.join(1.0)
+
+            self.assertEqual(app.agent.mcp_manager.removed_servers, [])
+            skipped_updates = [item for item in app.agent.mcp_manager.status_updates if item[1] == "skipped"]
+            self.assertEqual(skipped_updates, [])
 
 
 if __name__ == "__main__":

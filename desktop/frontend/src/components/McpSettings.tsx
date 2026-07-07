@@ -344,7 +344,7 @@ export function McpSettings() {
                   role="switch"
                   aria-checked={server.enabled}
                   className={`mcp-toggle ${server.enabled ? "is-on" : ""}`}
-                  disabled={!!busyServer[server.name] || isLoadingServer}
+                  disabled={!!busyServer[server.name]}
                   title={isLoadingServer ? t("mcp.stateLoading") : t("mcp.enabled")}
                   aria-busy={isLoadingServer}
                   onClick={() => void onToggleServer(server)}
