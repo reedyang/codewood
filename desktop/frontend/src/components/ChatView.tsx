@@ -1250,8 +1250,10 @@ function RoundShell({
   ) : null;
   return (
     <div className="turn-round">
-      {!timerBelow && timer}
+      {/* Answer text first (above tools), then the timer+tools block.
+          Only the live answer-only round puts the timer below the answer. */}
       {textNode}
+      {!timerBelow && timer}
       {timerBelow && timer}
     </div>
   );
@@ -1270,11 +1272,10 @@ function ThinkingPanel({
   const scrollRef = useRef<HTMLDivElement>(null);
   const { t } = useApp();
 
-  // Auto-expand when streaming starts, but let user control thereafter.
+  // Auto-expand when thinking starts, auto-collapse when thinking ends
+  // (model moves on to visible text or tool calls).
   useEffect(() => {
-    if (running) {
-      setExpanded(true);
-    }
+    setExpanded(running);
   }, [running]);
 
   useEffect(() => {
@@ -1732,6 +1733,13 @@ function TurnView({
   handlers: MessageHandlers;
 }) {
   const { t } = useApp();
+  // Thinking is considered "active" only while no answer text or tool output
+  // has been produced yet. Once the model moves on to visible content or tool
+  // calls, the thinking panel auto-collapses.
+  const hasContent = turn.rounds.some((r) =>
+    r.segments.some((s) => s.text.trim().length > 0),
+  );
+  const thinkingRunning = turn.endedAt === null && !hasContent;
   return (
     <div className="turn">
       {turn.userText && (
@@ -1745,13 +1753,12 @@ function TurnView({
       {turn.thinkingText && (
         <ThinkingPanel
           thinkingText={turn.thinkingText}
-          running={turn.endedAt === null}
+          running={thinkingRunning}
           timerText={(() => {
-            const running = turn.endedAt === null;
             const startedAt = turn.thinkingStartedAt ?? turn.startedAt;
             const elapsedMs = (turn.endedAt ?? now) - startedAt;
             const elapsed = formatElapsed(elapsedMs);
-            return running
+            return thinkingRunning
               ? `${t("activity.thinking")} (${elapsed})`
               : `${t("activity.thoughtFor")} ${elapsed}`;
           })()}

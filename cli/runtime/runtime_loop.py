@@ -1308,10 +1308,11 @@ def _format_stream_visible_text(text: str) -> str:
         return text
     from ..core.text_output_renderer import (
         _reframe_proposed_plan_blocks,
+        _strip_hidden_blocks,
         convert_inline_latex_math,
     )
 
-    return _reframe_proposed_plan_blocks(convert_inline_latex_math(text))
+    return _reframe_proposed_plan_blocks(convert_inline_latex_math(_strip_hidden_blocks(text)))
 
 
 # Block- and inline-level Markdown the live append stream cannot render
