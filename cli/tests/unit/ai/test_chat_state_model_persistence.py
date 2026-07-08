@@ -4,6 +4,7 @@ import unittest
 import json
 from pathlib import Path
 
+from cli.agent import Agent
 from cli.managers.chat_state_manager import CHAT_STATE_VERSION, ChatStateManager
 
 
@@ -98,6 +99,28 @@ class _FakeAgent:
 
 
 class ChatStateModelPersistenceTests(unittest.TestCase):
+    def test_reconcile_session_injected_from_history_tolerates_missing_skills_attr(self):
+        with tempfile.TemporaryDirectory() as td:
+            agent = _FakeAgent(Path(td))
+            agent._canonical_skill_id = Agent._canonical_skill_id.__get__(agent, _FakeAgent)
+            agent._session_injected_skills = set()
+            agent._session_injected_mcp_prompts = set()
+            agent.conversation_history = [
+                {
+                    "role": "system",
+                    "content": (
+                        "----- BEGIN SKILL PROMPT (skill_id=My-Skill) -----\n"
+                        "body\n"
+                        "----- END SKILL PROMPT -----"
+                    ),
+                }
+            ]
+            manager = ChatStateManager(agent, "chats.json")
+
+            manager._reconcile_session_injected_from_history()
+
+            self.assertEqual(agent._session_injected_skills, {"my-skill"})
+
     def test_new_chat_entry_inherits_current_model(self):
         with tempfile.TemporaryDirectory() as td:
             agent = _FakeAgent(Path(td))

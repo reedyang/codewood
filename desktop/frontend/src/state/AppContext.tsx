@@ -12,6 +12,7 @@ import { ApiClient } from "../api/client";
 import type {
   AppState,
   AskMoreInfoRequest,
+  ChatSummary,
   CompletionCatalog,
   ConfirmRequest,
   GeneralConfig,
@@ -67,6 +68,9 @@ function parseChatKey(key: string): { wsId: string; chatId: string } {
 
 interface AppContextValue {
   state: AppState | null;
+  activeWorkspaceId: string;
+  activeChatId: string;
+  activeChats: ChatSummary[];
   client: ApiClient;
   turns: Turn[];
   historyTurns: HistoryTurn[];
@@ -251,6 +255,12 @@ interface HostApiBridge {
   pick_image?: (directory?: string) => string | Promise<string>;
 }
 
+interface OptimisticChatFocus {
+  wsId: string;
+  chatId: string;
+  name: string;
+}
+
 const AppContext = createContext<AppContextValue | null>(null);
 
 const THEME_STORAGE_KEY = "codewood.theme";
@@ -419,14 +429,36 @@ export function AppProvider({ children }: { children: ReactNode }) {
     chatId: string;
     wsId: string;
   } | null>(null);
+  const [optimisticChatFocus, setOptimisticChatFocus] =
+    useState<OptimisticChatFocus | null>(null);
   useEffect(() => {
-    if (focusOverride && state?.activeChatId === focusOverride.chatId) {
+    const wsReady = (state?.workspace.id ?? "") === (focusOverride?.wsId ?? "");
+    const chatReady =
+      (state?.activeChatId ?? "") === (focusOverride?.chatId ?? "") &&
+      Boolean(state?.chats?.some((chat) => chat.id === focusOverride?.chatId));
+    if (focusOverride && wsReady && chatReady) {
       setFocusOverride(null);
     }
-  }, [state?.activeChatId, focusOverride]);
+  }, [state?.workspace.id, state?.activeChatId, state?.chats, focusOverride]);
+  useEffect(() => {
+    if (!optimisticChatFocus) {
+      return;
+    }
+    const wsReady = (state?.workspace.id ?? "") === optimisticChatFocus.wsId;
+    const chatReady =
+      (state?.activeChatId ?? "") === optimisticChatFocus.chatId &&
+      Boolean(state?.chats?.some((chat) => chat.id === optimisticChatFocus.chatId));
+    if (wsReady && chatReady) {
+      setOptimisticChatFocus(null);
+    }
+  }, [state?.workspace.id, state?.activeChatId, state?.chats, optimisticChatFocus]);
 
-  const activeChatId = focusOverride?.chatId ?? state?.activeChatId ?? "";
-  const activeChatWsId = focusOverride?.wsId ?? state?.workspace.id ?? "";
+  const selectedWorkspaceId =
+    focusOverride?.wsId ?? optimisticChatFocus?.wsId ?? state?.workspace.id ?? "";
+  const selectedChatId =
+    focusOverride?.chatId ?? optimisticChatFocus?.chatId ?? state?.activeChatId ?? "";
+  const activeChatId = selectedChatId;
+  const activeChatWsId = selectedWorkspaceId;
   useEffect(() => {
     activeChatIdRef.current = activeChatId;
     // Opening (or switching to) a chat clears its unread marker. The unread
@@ -472,7 +504,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   // chat's turns/busy/messages after a focus switch. ``chatKey`` builds the
   // composite; an empty workspace id degrades to the bare id (single-workspace
   // / legacy behavior unchanged).
-  const activeWorkspaceId = focusOverride?.wsId ?? state?.workspace.id ?? "";
+  const activeWorkspaceId = selectedWorkspaceId;
   const activeKey = chatKey(activeWorkspaceId, activeChatId);
   // The active chat's live turns / busy flag are what the chat view renders.
   const turns = turnsByChat[activeKey] ?? EMPTY_TURNS;
@@ -484,6 +516,66 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const lang = useMemo(() => normalizeLang(state?.language), [state?.language]);
   const t = useCallback((key: string) => translate(lang, key), [lang]);
+  const selectedChats = useMemo(() => {
+    if (!state || !selectedWorkspaceId) {
+      return [] as ChatSummary[];
+    }
+    const baseChats =
+      selectedWorkspaceId === (state.workspace.id ?? "")
+        ? state.chats
+        : (workspaceChats[selectedWorkspaceId] ?? []);
+    const targetName =
+      optimisticChatFocus?.chatId === selectedChatId
+        ? optimisticChatFocus.name
+        : t("chat.new");
+    let foundTarget = false;
+    const chats: ChatSummary[] = baseChats.map((chat, index) => {
+      const summary = chat as Partial<ChatSummary>;
+      const isTarget = chat.id === selectedChatId;
+      if (isTarget) {
+        foundTarget = true;
+      }
+      return {
+        index: typeof summary.index === "number" ? summary.index : index,
+        id: chat.id,
+        name: chat.name,
+        messageCount:
+          typeof summary.messageCount === "number" ? summary.messageCount : 0,
+        updatedAt: chat.updatedAt,
+        active: isTarget,
+        model: summary.model,
+        running: summary.running,
+        planMode: summary.planMode,
+        archived: Boolean(chat.archived),
+      };
+    });
+    if (selectedChatId && !foundTarget && (focusOverride || optimisticChatFocus)) {
+      chats.unshift({
+        index: 0,
+        id: selectedChatId,
+        name: targetName,
+        messageCount: 0,
+        updatedAt: new Date().toISOString(),
+        active: true,
+        model: undefined,
+        running: undefined,
+        planMode: undefined,
+        archived: false,
+      });
+      for (let i = 1; i < chats.length; i += 1) {
+        chats[i] = { ...chats[i], index: i };
+      }
+    }
+    return chats;
+  }, [
+    state,
+    workspaceChats,
+    selectedWorkspaceId,
+    selectedChatId,
+    focusOverride,
+    optimisticChatFocus,
+    t,
+  ]);
 
   // Apply the resolved theme, re-resolving when the OS preference changes
   // while in "system" mode.
@@ -1567,10 +1659,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
       if (draftModeRef.current) {
         const wsId = draftWorkspaceIdRef.current;
         const switchWs = Boolean(wsId && wsId !== activeWorkspaceIdRef.current);
+        if (switchWs) {
+          pendingFocusWsIdRef.current = wsId;
+        }
         const newId = await client.newChat(switchWs ? wsId : "");
         if (newId) {
           targetChatId = newId;
-          historyChatRef.current = newId;
           // Optimistically focus the new chat AND echo the user's message right
           // away instead of waiting for the backend's ``idle`` / ``turn_start``
           // SSE round-trip. Without the optimistic focus the view keeps
@@ -1584,13 +1678,25 @@ export function AppProvider({ children }: { children: ReactNode }) {
           const echoWsId = switchWs
             ? wsId
             : wsId || activeWorkspaceIdRef.current;
+          historyChatRef.current = chatKey(echoWsId, newId);
+          const optimisticName = translate(
+            normalizeLang(stateRef.current?.language),
+            "chat.new",
+          );
           activeChatIdRef.current = newId;
           activeWorkspaceIdRef.current = echoWsId;
           // Force the view onto the new chat via the focus override (survives
           // any racing SSE ``setState``), then echo the message into its bucket.
           setFocusOverride({ chatId: newId, wsId: echoWsId });
+          setOptimisticChatFocus({
+            chatId: newId,
+            wsId: echoWsId,
+            name: optimisticName,
+          });
           startOptimisticTurn(trimmed, chatKey(echoWsId, newId));
           setBusyForChat(chatKey(echoWsId, newId), true);
+        } else if (switchWs && pendingFocusWsIdRef.current === wsId) {
+          pendingFocusWsIdRef.current = "";
         }
         setDraftMode(false);
         setDraftWorkspaceId("");
@@ -1723,12 +1829,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
   // right after a switch before the idle state arrives); its live turns are
   // dropped since they are now part of the persisted history.
   const loadChatHistory = useCallback(
-    async (forChatId?: string) => {
-      const cid = forChatId ?? activeChatIdRef.current;
+    async (target?: { chatId?: string; wsId?: string }) => {
+      const cid = target?.chatId ?? activeChatIdRef.current;
+      const wsId = target?.wsId ?? activeWorkspaceIdRef.current;
       // ``getChatHistory`` always returns the focused chat's history, so the
       // live-turn bucket to reconcile is the focused workspace's composite
       // key for ``cid``.
-      const key = chatKey(activeWorkspaceIdRef.current, cid);
+      const key = chatKey(wsId, cid);
       setHistoryLoading(true);
       try {
         const page = await client.getChatHistory(undefined, INITIAL_HISTORY);
@@ -1779,7 +1886,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
   // (which closes over an old render) can trigger a reload on demand.
   useEffect(() => {
     reloadHistoryRef.current = () => {
-      void loadChatHistory();
+      void loadChatHistory({
+        chatId: activeChatIdRef.current,
+        wsId: activeWorkspaceIdRef.current,
+      });
     };
   }, [loadChatHistory]);
 
@@ -1791,19 +1901,21 @@ export function AppProvider({ children }: { children: ReactNode }) {
   // triggered the prompt and this GUI's backend was never asked.
   useEffect(() => {
     const cid = state?.activeChatId ?? "";
+    const wsId = state?.workspace.id ?? "";
     if (!cid) {
       return;
     }
     const persisted = state?.askMoreInfo;
+    const bucketKey = chatKey(wsId, cid);
     setAskMoreInfoByChat((prev) => {
-      const existing = prev[cid];
+      const existing = prev[bucketKey];
       if (!persisted) {
         if (!existing) {
           return prev;
         }
         // Backend says no pending prompt for this chat -> drop stale.
         const next = { ...prev };
-        delete next[cid];
+        delete next[bucketKey];
         return next;
       }
       if (
@@ -1818,7 +1930,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       }
       return {
         ...prev,
-        [cid]: {
+        [bucketKey]: {
           id: String(persisted.id || ""),
           question: String(persisted.question || ""),
           options: Array.isArray(persisted.options)
@@ -1829,7 +1941,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         },
       };
     });
-  }, [state?.activeChatId, state?.askMoreInfo]);
+  }, [state?.workspace.id, state?.activeChatId, state?.askMoreInfo]);
 
   const loadOlderHistory = useCallback(async () => {
     if (historyLoading || historyStart <= 0) {
@@ -1850,7 +1962,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
   // Our own switchToChat/newChat update historyChatRef so this won't double-run.
   useEffect(() => {
     const cid = state?.activeChatId ?? "";
-    if (!cid || cid === historyChatRef.current) {
+    const wsId = state?.workspace.id ?? "";
+    const nextKey = chatKey(wsId, cid);
+    if (!cid || !nextKey || nextKey === historyChatRef.current) {
       return;
     }
     // If the previously active chat still has a turn that hasn't finished
@@ -1861,18 +1975,20 @@ export function AppProvider({ children }: { children: ReactNode }) {
     // the in-progress streaming content.  Defer the reload until the
     // streaming turn settles (the idle handler will retry via
     // pendingHistoryReloadRef).
-    const prevKey = chatKey(activeWorkspaceIdRef.current, historyChatRef.current);
+    const prevKey = historyChatRef.current;
     if (turnsByChatRef.current[prevKey]?.some((t) => t.endedAt === null)) {
       pendingHistoryReloadRef.current = true;
       return;
     }
-    historyChatRef.current = cid;
-    void loadChatHistory(cid);
-  }, [state?.activeChatId, loadChatHistory]);
+    historyChatRef.current = nextKey;
+    void loadChatHistory({ chatId: cid, wsId });
+  }, [state?.workspace.id, state?.activeChatId, loadChatHistory]);
 
   const switchToChat = useCallback(
     async (chatId: string, workspaceId = "") => {
       const prevKey = chatKey(activeWorkspaceIdRef.current, activeChatIdRef.current);
+      setFocusOverride(null);
+      setOptimisticChatFocus(null);
       // When switching to a different workspace, record the target so the
       // subsequent idle/state SSE event from that workspace can bypass the
       // background-event guard (stateRef still has the old workspace ID).
@@ -1886,14 +2002,17 @@ export function AppProvider({ children }: { children: ReactNode }) {
       clearLiveTurns(prevKey);
       setDraftMode(false);
       setDraftWorkspaceId("");
-      historyChatRef.current = chatId;
-      await loadChatHistory(chatId);
+      const targetWsId = workspaceId || activeWorkspaceIdRef.current;
+      historyChatRef.current = chatKey(targetWsId, chatId);
+      await loadChatHistory({ chatId, wsId: targetWsId });
     },
     [client, clearLiveTurns, loadChatHistory],
   );
 
   const selectWorkspace = useCallback(
     async (workspaceId: string) => {
+      setFocusOverride(null);
+      setOptimisticChatFocus(null);
       pendingFocusWsIdRef.current = workspaceId;
       const ok = await client.selectChat("", workspaceId);
       if (!ok) {
@@ -1915,6 +2034,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
     async (workspaceId?: string) => {
       const wsId =
         workspaceId ?? state?.workspace.id ?? draftWorkspaceIdRef.current ?? "";
+      setFocusOverride(null);
+      setOptimisticChatFocus(null);
       setDraftWorkspaceId(wsId);
       setDraftMode(true);
       historyChatRef.current = "\u0000";
@@ -2277,6 +2398,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const value: AppContextValue = {
     client,
     state,
+    activeWorkspaceId: selectedWorkspaceId,
+    activeChatId: selectedChatId,
+    activeChats: selectedChats,
     turns,
     historyTurns,
     historyStart,

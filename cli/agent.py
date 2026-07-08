@@ -6576,7 +6576,7 @@ class Agent:
         sid = (skill_id or "").strip().lower()
         if not sid:
             return False
-        for s in self.skills or []:
+        for s in getattr(self, "skills", None) or []:
             cur = str(getattr(s, "skill_id", "")).strip().lower()
             if cur == sid:
                 return True
@@ -6586,7 +6586,7 @@ class Agent:
         sid = (skill_id or "").strip().lower()
         if not sid:
             return False
-        for s in self.skills or []:
+        for s in getattr(self, "skills", None) or []:
             if str(getattr(s, "skill_id", "")).strip().lower() == sid:
                 return True
         return False
@@ -6596,7 +6596,7 @@ class Agent:
         key = str(skill_id_or_name or "").strip().lower()
         if not key:
             return ""
-        for s in self.skills or []:
+        for s in getattr(self, "skills", None) or []:
             sid = str(getattr(s, "skill_id", "")).strip()
             sname = str(getattr(s, "name", "")).strip()
             if not sid:

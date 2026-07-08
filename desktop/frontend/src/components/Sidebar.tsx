@@ -56,6 +56,9 @@ interface ChatRow {
 export function Sidebar({ collapsed, onOpenSettings }: { collapsed: boolean; onOpenSettings: () => void }) {
   const {
     state,
+    activeWorkspaceId,
+    activeChatId,
+    activeChats,
     uiPrefs,
     workspaceChats,
     expandedWorkspaceIds,
@@ -82,8 +85,8 @@ export function Sidebar({ collapsed, onOpenSettings }: { collapsed: boolean; onO
   const [chatToDelete, setChatToDelete] = useState<{ id: string; wsId: string } | null>(null);
 
   const workspaces = state?.workspaces ?? [];
-  const activeChats: ChatRow[] = state?.chats ?? [];
-  const activeWsId = state?.workspace.id ?? "";
+  const activeWsId = activeWorkspaceId;
+  const backendWsId = state?.workspace.id ?? "";
 
   const pinnedWs = new Set(uiPrefs.pinnedWorkspaceIds);
   const pinnedChat = new Set(uiPrefs.pinnedChatIds);
@@ -159,7 +162,7 @@ export function Sidebar({ collapsed, onOpenSettings }: { collapsed: boolean; onO
   };
 
   const switchChat = async (wsId: string, chatId: string) => {
-    await switchToChat(chatId, wsId && wsId !== activeWsId ? wsId : "");
+    await switchToChat(chatId, wsId);
   };
 
   const newChatInWorkspace = async (wsId: string) => {
@@ -172,7 +175,7 @@ export function Sidebar({ collapsed, onOpenSettings }: { collapsed: boolean; onO
   };
 
   const runChatCommand = async (wsId: string, command: string) => {
-    if (wsId && wsId !== activeWsId) {
+    if (wsId && wsId !== backendWsId) {
       await runCommand(`/workspace switch ${wsId}`);
     }
     await runCommand(command);
@@ -292,7 +295,7 @@ export function Sidebar({ collapsed, onOpenSettings }: { collapsed: boolean; onO
     rename?.kind === "chat" && rename.wsId === wsId && rename.id === id;
 
   const renderChatRow = (chat: ChatRow, wsId: string) => {
-    const isActive = wsId === activeWsId && chat.active;
+    const isActive = wsId === activeWsId && chat.id === activeChatId;
     const rel = formatRelative(chat.updatedAt);
     const isPinned = isPinnedChat(wsId, chat.id);
     // Chat ids are only unique within a workspace, so the transient
