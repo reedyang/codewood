@@ -80,6 +80,8 @@ interface AppContextValue {
   busy: boolean;
   /** Per-chat busy flags so the sidebar can mark every running chat. */
   busyByChat: Record<string, boolean>;
+  /** Start time of each chat's currently running turn, keyed by chatKey. */
+  runningChatStartedAtByChat: Record<string, number>;
   /** Chats with a completed turn the user hasn't opened yet (unread). */
   unreadChatIds: Record<string, boolean>;
   connected: boolean;
@@ -509,6 +511,20 @@ export function AppProvider({ children }: { children: ReactNode }) {
   // The active chat's live turns / busy flag are what the chat view renders.
   const turns = turnsByChat[activeKey] ?? EMPTY_TURNS;
   const busy = busyByChat[activeKey] ?? false;
+  const runningChatStartedAtByChat = useMemo(() => {
+    const out: Record<string, number> = {};
+    for (const [key, list] of Object.entries(turnsByChat)) {
+      const last = list[list.length - 1];
+      if (last && last.endedAt === null) {
+        out[key] = last.startedAt;
+      }
+    }
+    return out;
+  }, [turnsByChat]);
+  const anyBusy = useMemo(
+    () => Object.values(busyByChat).some(Boolean),
+    [busyByChat],
+  );
   // When set, the next `idle` event reloads chat history even if the active
   // chat id is unchanged (e.g. after `/chat edit` truncates the conversation).
   const pendingHistoryReloadRef = useRef(false);
@@ -1012,13 +1028,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   // Tick a 1s clock while busy so the active turn shows live elapsed time.
   useEffect(() => {
-    if (!busy) {
+    if (!anyBusy) {
       return;
     }
     setNow(Date.now());
     const handle = window.setInterval(() => setNow(Date.now()), 1000);
     return () => window.clearInterval(handle);
-  }, [busy]);
+  }, [anyBusy]);
 
   // Append a streamed delta to the current round of the active turn. Within a
   // round, consecutive same-kind deltas merge into one segment so model text
@@ -2408,6 +2424,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     historyLoading,
     busy,
     busyByChat,
+    runningChatStartedAtByChat,
     unreadChatIds,
     connected,
     now,

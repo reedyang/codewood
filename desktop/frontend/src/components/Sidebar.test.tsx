@@ -12,6 +12,7 @@ import { Sidebar } from "./Sidebar";
 describe("Sidebar workspace routing", () => {
   beforeEach(() => {
     useAppMock.mockReset();
+    vi.useRealTimers();
   });
 
   it("passes the clicked workspace id when selecting a chat from an optimistic workspace view", () => {
@@ -60,7 +61,9 @@ describe("Sidebar workspace routing", () => {
       },
       expandedWorkspaceIds: ["ws-2"],
       busyByChat: {},
+      runningChatStartedAtByChat: {},
       unreadChatIds: {},
+      now: Date.parse("2026-07-08T15:20:00"),
       t: (key: string) => key,
       runCommand,
       switchToChat,
@@ -85,5 +88,79 @@ describe("Sidebar workspace routing", () => {
 
     expect(switchToChat).toHaveBeenCalledWith("chat-3", "ws-2");
     expect(runCommand).not.toHaveBeenCalled();
+  });
+
+  it("shows elapsed time only for the running chat and relative updated time for idle chats", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-08T15:20:00"));
+
+    useAppMock.mockReturnValue({
+      state: {
+        workspace: {
+          id: "ws-2",
+          name: "Workspace B",
+          root: "D:/workspace-b",
+        },
+        workspaces: [{
+          id: "ws-2",
+          name: "Workspace B",
+          root: "D:/workspace-b",
+          active: true,
+          isDefault: false,
+        }],
+      },
+      activeWorkspaceId: "ws-2",
+      activeChatId: "chat-2",
+      activeChats: [{
+        id: "chat-2",
+        name: "Running Chat",
+        active: true,
+        archived: false,
+        updatedAt: "2026-07-08 15:15:00",
+        running: true,
+      }, {
+        id: "chat-3",
+        name: "Idle Chat",
+        active: false,
+        archived: false,
+        updatedAt: "2026-07-08 15:14:30",
+      }],
+      uiPrefs: {
+        pinnedWorkspaceIds: [],
+        pinnedChatIds: [],
+      },
+      workspaceChats: {},
+      expandedWorkspaceIds: ["ws-2"],
+      busyByChat: {
+        "ws-2\u0000chat-2": true,
+      },
+      runningChatStartedAtByChat: {
+        "ws-2\u0000chat-2": Date.parse("2026-07-08T15:19:30"),
+      },
+      unreadChatIds: {},
+      now: Date.parse("2026-07-08T15:20:00"),
+      t: (key: string) => key,
+      runCommand: vi.fn(async () => undefined),
+      switchToChat: vi.fn(async () => undefined),
+      newChat: vi.fn(async () => undefined),
+      deleteChat: vi.fn(async () => undefined),
+      openWorkspaceInExplorer: vi.fn(async () => true),
+      deleteWorkspace: vi.fn(async () => true),
+      toggleWorkspacePin: vi.fn(),
+      toggleChatPin: vi.fn(),
+      toggleChatArchive: vi.fn(async () => undefined),
+      archiveChats: vi.fn(async () => undefined),
+      toggleWorkspaceExpanded: vi.fn(),
+      refreshWorkspaceChats: vi.fn(async () => undefined),
+      client: {
+        exportChat: vi.fn(async () => true),
+      },
+    });
+
+    render(<Sidebar collapsed={false} onOpenSettings={() => {}} />);
+
+    expect(screen.getByText("30s")).toBeInTheDocument();
+    expect(screen.getByText("5m")).toBeInTheDocument();
+    expect(screen.getAllByText("30s")).toHaveLength(1);
   });
 });
