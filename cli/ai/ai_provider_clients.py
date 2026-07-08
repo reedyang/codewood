@@ -315,6 +315,22 @@ class ModelCallError(RuntimeError):
         self.attempt_errors: List[Dict[str, str]] = list(attempt_errors or [])
 
 
+def _should_retry_openai_alternate_url(error: Exception) -> bool:
+    """Whether an alternate suffix/no-suffix URL is worth probing.
+
+    The fallback exists to recover from base-URL shape mismatches such as
+    providers that expect ``.../v1`` vs ``.../v1/chat/completions``. Only
+    route-shaped failures should trigger the alternate probe; semantic API
+    failures like HTTP 400/401/403 have already reached the provider and a
+    second URL just adds misleading noise (for example a follow-up 404 that
+    obscures the real 400 cause).
+    """
+    if not isinstance(error, OpenAIRequestError):
+        return True
+    code = int(error.status_code or 0)
+    return code in (404, 405)
+
+
 def _openai_api_route_cache_path() -> Path:
     return (get_app_global_config_dir() / _OPENAI_API_ROUTE_CACHE_FILE).resolve()
 
@@ -1711,6 +1727,16 @@ def _call_openai_with_suffix_strategy(
             primary_url,
             str(e),
         )
+
+    if first_error is not None and not _should_retry_openai_alternate_url(first_error):
+        attempts: List[Dict[str, str]] = [
+            {
+                "label": f"{api_kind} {'with-suffix' if primary_append else 'no-suffix'}",
+                "url": primary_url,
+                "error": str(first_error),
+            }
+        ]
+        raise ModelCallError(str(first_error), attempt_errors=attempts) from first_error
 
     if secondary_url == primary_url:
         attempts: List[Dict[str, str]] = [

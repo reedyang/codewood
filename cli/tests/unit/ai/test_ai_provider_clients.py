@@ -1,7 +1,13 @@
 import os
 import unittest
+from unittest.mock import patch
 
-from cli.ai.ai_provider_clients import _build_openai_payload
+from cli.ai.ai_provider_clients import (
+    ModelCallError,
+    OpenAIRequestError,
+    _build_openai_payload,
+    _call_openai_with_suffix_strategy,
+)
 from cli.core.config.config_env import resolve_env_placeholder, resolve_string_values_in_data
 
 
@@ -190,6 +196,94 @@ class ResolveStringValuesInDataTests(unittest.TestCase):
                 os.environ.pop("CFG_YES", None)
             else:
                 os.environ["CFG_YES"] = old_yes
+
+
+class OpenAIRouteFallbackTests(unittest.TestCase):
+    def test_semantic_400_does_not_probe_alternate_suffix_url(self):
+        calls = []
+
+        def _fake_call_once(**kwargs):
+            calls.append(str(kwargs.get("url") or ""))
+            raise OpenAIRequestError(
+                "400 Bad Request; response_body={\"error\":{\"code\":\"data_inspection_failed\"}}",
+                status_code=400,
+                response_body='{"error":{"code":"data_inspection_failed"}}',
+                url=str(kwargs.get("url") or ""),
+            )
+
+        with patch("cli.ai.ai_provider_clients._openai_get_prefer_no_suffix", return_value=False):
+            with patch("cli.ai.ai_provider_clients._call_openai_once", _fake_call_once):
+                with self.assertRaises(ModelCallError) as ctx:
+                    _call_openai_with_suffix_strategy(
+                        model_name="m",
+                        api_kind="chat",
+                        base_url="https://token.sensenova.cn/v1",
+                        headers={},
+                        messages=[{"role": "user", "content": "hi"}],
+                        stream=False,
+                        return_message=False,
+                        image_data=None,
+                        image_user_idx=None,
+                        image_user_text="",
+                        session_summary_mode=False,
+                        memory_query_expansion_mode=False,
+                        additional_drop_params=[],
+                        tool_schemas=None,
+                        tool_choice=None,
+                        append_history=lambda *_args, **_kwargs: None,
+                    )
+
+        self.assertEqual(calls, ["https://token.sensenova.cn/v1/chat/completions"])
+        self.assertEqual(len(ctx.exception.attempt_errors), 1)
+        self.assertEqual(
+            ctx.exception.attempt_errors[0]["label"],
+            "chat with-suffix",
+        )
+
+    def test_route_404_still_probes_alternate_suffix_url(self):
+        calls = []
+
+        def _fake_call_once(**kwargs):
+            url = str(kwargs.get("url") or "")
+            calls.append(url)
+            if len(calls) == 1:
+                raise OpenAIRequestError(
+                    "404 Not Found",
+                    status_code=404,
+                    response_body='{"error":"not found"}',
+                    url=url,
+                )
+            return "ok"
+
+        with patch("cli.ai.ai_provider_clients._openai_get_prefer_no_suffix", return_value=False):
+            with patch("cli.ai.ai_provider_clients._call_openai_once", _fake_call_once):
+                result = _call_openai_with_suffix_strategy(
+                    model_name="m",
+                    api_kind="chat",
+                    base_url="https://token.sensenova.cn/v1",
+                    headers={},
+                    messages=[{"role": "user", "content": "hi"}],
+                    stream=False,
+                    return_message=False,
+                    image_data=None,
+                    image_user_idx=None,
+                    image_user_text="",
+                    session_summary_mode=False,
+                    memory_query_expansion_mode=False,
+                    additional_drop_params=[],
+                    tool_schemas=None,
+                    tool_choice=None,
+                    append_history=lambda *_args, **_kwargs: None,
+                )
+
+        self.assertEqual(result, "ok")
+        self.assertEqual(
+            calls,
+            [
+                "https://token.sensenova.cn/v1/chat/completions",
+                "https://token.sensenova.cn/v1",
+            ],
+        )
 
 
 if __name__ == "__main__":
