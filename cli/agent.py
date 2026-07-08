@@ -5649,6 +5649,12 @@ class Agent:
                 if chat_id == self.active_chat_id:
                     self.active_chat_name = t
                 self._save_chat_state()
+            try:
+                gui_plan_changed = getattr(self, "_gui_plan_changed", None)
+                if callable(gui_plan_changed):
+                    gui_plan_changed()
+            except Exception:
+                pass
         except Exception:
             with self._chat_state_lock:
                 chat = self._find_chat_by_id(chat_id)
@@ -5663,6 +5669,12 @@ class Agent:
                 if chat_id == self.active_chat_id:
                     self.active_chat_name = t
                 self._save_chat_state()
+            try:
+                gui_plan_changed = getattr(self, "_gui_plan_changed", None)
+                if callable(gui_plan_changed):
+                    gui_plan_changed()
+            except Exception:
+                pass
 
     def _handle_chat_builtin_command(self, builtin_line: str) -> bool:
         return handle_chat_builtin_command(self, builtin_line)
