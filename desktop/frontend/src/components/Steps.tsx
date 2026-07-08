@@ -20,6 +20,7 @@ const CMD_PROMPT_END = "\uE005";
 // syntax-highlighted diff block instead of raw JSON.
 const DIFF_BEGIN = "\uE006";
 const DIFF_END = "\uE007";
+const ANSI_SGR_RE = /\x1b\[[0-9;]*m/g;
 
 type SegKind = "text" | "cmd" | "prompt" | "diff";
 type Segment = { kind: SegKind; text: string };
@@ -86,6 +87,10 @@ function trimBlankEdges(text: string): string {
   return text.replace(/^\n+/, "").replace(/\n+$/, "");
 }
 
+function stripAnsi(text: string): string {
+  return text.replace(ANSI_SGR_RE, "");
+}
+
 /** Count how many tool-call prompt rows are present in a rendered tool block. */
 export function countToolCalls(text: string): number {
   return splitSteps(text).reduce((count, seg) => {
@@ -94,6 +99,27 @@ export function countToolCalls(text: string): number {
     }
     return trimBlankEdges(seg.text) ? count + 1 : count;
   }, 0);
+}
+
+/** Return the last rendered tool-call description from a tool block, stripped
+ *  of ANSI color codes so it can be reused as a plain-text activity title. */
+export function getLastToolPromptBody(text: string): string | null {
+  let lastBody: string | null = null;
+  for (const seg of splitSteps(text)) {
+    if (seg.kind !== "prompt") {
+      continue;
+    }
+    const value = trimBlankEdges(seg.text);
+    if (!value) {
+      continue;
+    }
+    const { body } = splitPromptBullet(value);
+    const plain = stripAnsi(body).trim();
+    if (plain) {
+      lastBody = plain;
+    }
+  }
+  return lastBody;
 }
 
 /** Render collapsible execution steps, isolating command output blocks. */
