@@ -1093,6 +1093,10 @@ class ChatStateManager:
                 pass
             if not chat:
                 return
+            prev_messages = list(chat.get("messages") or [])
+            prev_context_input_tokens = int(chat.get("context_input_tokens") or 0)
+            prev_context_window = int(chat.get("context_window") or 0)
+            prev_context_usage_percent = int(chat.get("context_usage_percent") or 0)
             msgs = []
             for m in list(self._agent.conversation_history):
                 if not isinstance(m, dict):
@@ -1192,7 +1196,15 @@ class ChatStateManager:
                 chat["context_usage_percent"] = int(
                     getattr(self._agent, "_last_context_usage_percent", 0) or 0
                 )
-            chat["updated_at"] = self._now_text()
+            if (
+                prev_messages == msgs
+                and prev_context_input_tokens == int(chat.get("context_input_tokens") or 0)
+                and prev_context_window == int(chat.get("context_window") or 0)
+                and prev_context_usage_percent == int(chat.get("context_usage_percent") or 0)
+            ):
+                return
+            if msgs:
+                chat["updated_at"] = str(msgs[-1].get("created_at") or "").strip() or self._now_text()
             self.save_chat_state()
             self._notify_gui_context_usage_changed()
 
@@ -1201,6 +1213,9 @@ class ChatStateManager:
             chat = self.find_chat_by_id(self._agent.active_chat_id)
             if not chat:
                 return
+            prev_context_usage_percent = int(chat.get("context_usage_percent") or 0)
+            prev_context_input_tokens = int(chat.get("context_input_tokens") or 0)
+            prev_context_window = int(chat.get("context_window") or 0)
             msgs = list(chat.get("messages") or [])
             has_cache_anchor = any(
                 isinstance(m.get("_cache_stats"), dict) for m in msgs
@@ -1224,7 +1239,12 @@ class ChatStateManager:
             chat["context_usage_percent"] = context_usage_percent
             chat["context_input_tokens"] = context_input_tokens
             chat["context_window"] = context_window
-            chat["updated_at"] = self._now_text()
+            if (
+                prev_context_usage_percent == context_usage_percent
+                and prev_context_input_tokens == context_input_tokens
+                and prev_context_window == context_window
+            ):
+                return
             self.save_chat_state()
             self._notify_gui_context_usage_changed()
 
@@ -1588,4 +1608,3 @@ class ChatStateManager:
                         agent._session_injected_mcp_prompts.add(f"{srv}/{name}")
         except Exception:
             logger.exception("_reconcile_session_injected_from_history failed")
-

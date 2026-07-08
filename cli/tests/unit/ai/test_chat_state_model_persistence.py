@@ -471,6 +471,85 @@ class ChatStateModelPersistenceTests(unittest.TestCase):
             self.assertEqual(saved_chat.get("context_window"), 128000)
             self.assertEqual(len(gui_usage_notifications), 1)
 
+    def test_persist_active_chat_usage_snapshot_does_not_touch_updated_at_when_usage_is_unchanged(self):
+        with tempfile.TemporaryDirectory() as td:
+            workspace = Path(td)
+            agent = _FakeAgent(workspace)
+            manager = ChatStateManager(agent, "chats.json")
+            original_updated_at = "2026-07-08 15:20:00"
+            agent._chat_state = {
+                "version": 2,
+                "active": "chat-1",
+                "chats": [
+                    {
+                        "id": "chat-1",
+                        "name": "Demo",
+                        "name_source": "manual",
+                        "created_at": "",
+                        "updated_at": original_updated_at,
+                        "model_provider": "openai",
+                        "model_name": "gpt-4.1",
+                        "messages": [],
+                        "context_usage_percent": 3,
+                        "context_input_tokens": 4321,
+                        "context_window": 128000,
+                    }
+                ],
+            }
+            agent.active_chat_id = "chat-1"
+            agent._last_context_usage_percent = 3
+            agent._last_context_input_tokens = 4321
+            agent._last_context_window = 128000
+
+            save_calls = []
+            manager.save_chat_state = lambda: save_calls.append("saved")
+
+            manager.persist_active_chat_usage_snapshot()
+
+            chat = manager.find_chat_by_id("chat-1")
+            self.assertIsNotNone(chat)
+            self.assertEqual(chat.get("updated_at"), original_updated_at)
+            self.assertEqual(save_calls, [])
+
+    def test_persist_active_chat_usage_snapshot_keeps_updated_at_when_usage_changes(self):
+        with tempfile.TemporaryDirectory() as td:
+            workspace = Path(td)
+            agent = _FakeAgent(workspace)
+            manager = ChatStateManager(agent, "chats.json")
+            original_updated_at = "2026-07-08 15:20:00"
+            agent._chat_state = {
+                "version": 2,
+                "active": "chat-1",
+                "chats": [
+                    {
+                        "id": "chat-1",
+                        "name": "Demo",
+                        "name_source": "manual",
+                        "created_at": "",
+                        "updated_at": original_updated_at,
+                        "model_provider": "openai",
+                        "model_name": "gpt-4.1",
+                        "messages": [],
+                        "context_usage_percent": 1,
+                        "context_input_tokens": 100,
+                        "context_window": 64000,
+                    }
+                ],
+            }
+            agent.active_chat_id = "chat-1"
+            agent._last_context_usage_percent = 3
+            agent._last_context_input_tokens = 4321
+            agent._last_context_window = 128000
+
+            manager.persist_active_chat_usage_snapshot()
+
+            chat = manager.find_chat_by_id("chat-1")
+            self.assertIsNotNone(chat)
+            self.assertEqual(chat.get("context_usage_percent"), 3)
+            self.assertEqual(chat.get("context_input_tokens"), 4321)
+            self.assertEqual(chat.get("context_window"), 128000)
+            self.assertEqual(chat.get("updated_at"), original_updated_at)
+
     def test_sync_active_chat_messages_persists_exclude_from_model_context_flag(self):
         with tempfile.TemporaryDirectory() as td:
             workspace = Path(td)
@@ -689,6 +768,84 @@ class ChatStateModelPersistenceTests(unittest.TestCase):
             _assert_hash_record_file(self, payload["chats"][0].get("record_file"))
             saved_msgs = list(_read_first_chat_record(workspace).get("messages") or [])
             self.assertEqual([m.get("content") for m in saved_msgs], ["persisted"])
+
+    def test_sync_active_chat_messages_does_not_touch_updated_at_when_messages_are_unchanged(self):
+        with tempfile.TemporaryDirectory() as td:
+            workspace = Path(td)
+            agent = _FakeAgent(workspace)
+            manager = ChatStateManager(agent, "chats.json")
+            original_updated_at = "2026-07-08 15:20:00"
+            agent._chat_state = {
+                "version": 2,
+                "active": "chat-1",
+                "chats": [
+                    {
+                        "id": "chat-1",
+                        "name": "Main",
+                        "name_source": "manual",
+                        "created_at": "",
+                        "updated_at": original_updated_at,
+                        "model_provider": "openai",
+                        "model_name": "gpt-4.1",
+                        "messages": [
+                            {"role": "user", "content": "persisted", "created_at": "2026-07-08 15:10:00"}
+                        ],
+                        "context_usage_percent": 0,
+                        "context_input_tokens": 0,
+                        "context_window": 0,
+                    }
+                ],
+            }
+            agent.active_chat_id = "chat-1"
+            agent.conversation_history = [
+                {"role": "user", "content": "persisted", "created_at": "2026-07-08 15:10:00"}
+            ]
+
+            save_calls = []
+            manager.save_chat_state = lambda: save_calls.append("saved")
+
+            manager.sync_active_chat_messages()
+
+            chat = manager.find_chat_by_id("chat-1")
+            self.assertIsNotNone(chat)
+            self.assertEqual(chat.get("updated_at"), original_updated_at)
+            self.assertEqual(save_calls, [])
+
+    def test_sync_active_chat_messages_sets_updated_at_to_latest_message_time(self):
+        with tempfile.TemporaryDirectory() as td:
+            workspace = Path(td)
+            agent = _FakeAgent(workspace)
+            manager = ChatStateManager(agent, "chats.json")
+            agent._chat_state = {
+                "version": 2,
+                "active": "chat-1",
+                "chats": [
+                    {
+                        "id": "chat-1",
+                        "name": "Main",
+                        "name_source": "manual",
+                        "created_at": "",
+                        "updated_at": "2026-07-08 15:00:00",
+                        "model_provider": "openai",
+                        "model_name": "gpt-4.1",
+                        "messages": [],
+                        "context_usage_percent": 0,
+                        "context_input_tokens": 0,
+                        "context_window": 0,
+                    }
+                ],
+            }
+            agent.active_chat_id = "chat-1"
+            agent.conversation_history = [
+                {"role": "user", "content": "persisted", "created_at": "2026-07-08 15:10:00"},
+                {"role": "assistant", "content": "reply", "created_at": "2026-07-08 15:12:34"},
+            ]
+
+            manager.sync_active_chat_messages()
+
+            chat = manager.find_chat_by_id("chat-1")
+            self.assertIsNotNone(chat)
+            self.assertEqual(chat.get("updated_at"), "2026-07-08 15:12:34")
 
 
 class RefreshChatRecordFromDiskTests(unittest.TestCase):
