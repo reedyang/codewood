@@ -10,6 +10,8 @@ export interface ModelPreset {
   provider: string;
   base_url: string;
   api_mode: string;
+  /** Provider-level default for replaying assistant thinking into request history. */
+  include_thinking_in_messages?: boolean;
   /** Distinguishes connection shape: OpenAI-compatible, Ollama, or custom. */
   kind: PresetKind;
 }
@@ -21,6 +23,7 @@ export const MODEL_PRESETS: ModelPreset[] = [
     provider: "DeepSeek",
     base_url: "https://api.deepseek.com",
     api_mode: "chat",
+    include_thinking_in_messages: true,
     kind: "openai",
   },
   {
@@ -29,6 +32,7 @@ export const MODEL_PRESETS: ModelPreset[] = [
     provider: "OpenAI",
     base_url: "https://api.openai.com/v1",
     api_mode: "chat",
+    include_thinking_in_messages: false,
     kind: "openai",
   },
   {
@@ -37,6 +41,7 @@ export const MODEL_PRESETS: ModelPreset[] = [
     provider: "Zhipu",
     base_url: "https://open.bigmodel.cn/api/paas/v4",
     api_mode: "chat",
+    include_thinking_in_messages: false,
     kind: "openai",
   },
   {
@@ -45,6 +50,7 @@ export const MODEL_PRESETS: ModelPreset[] = [
     provider: "Qwen",
     base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1",
     api_mode: "chat",
+    include_thinking_in_messages: false,
     kind: "openai",
   },
   {
@@ -53,6 +59,7 @@ export const MODEL_PRESETS: ModelPreset[] = [
     provider: "Mimo",
     base_url: "https://api.mimo.xiaomi.com/v1",
     api_mode: "chat",
+    include_thinking_in_messages: false,
     kind: "openai",
   },
   {
@@ -61,6 +68,7 @@ export const MODEL_PRESETS: ModelPreset[] = [
     provider: "MiniMax",
     base_url: "https://api.minimax.chat/v1",
     api_mode: "chat",
+    include_thinking_in_messages: false,
     kind: "openai",
   },
   {
@@ -69,6 +77,7 @@ export const MODEL_PRESETS: ModelPreset[] = [
     provider: "Doubao",
     base_url: "https://ark.cn-beijing.volces.com/api/v3",
     api_mode: "chat",
+    include_thinking_in_messages: false,
     kind: "openai",
   },
   {
@@ -77,6 +86,7 @@ export const MODEL_PRESETS: ModelPreset[] = [
     provider: "Moonshot",
     base_url: "https://api.moonshot.cn/v1",
     api_mode: "chat",
+    include_thinking_in_messages: false,
     kind: "openai",
   },
   {
@@ -85,6 +95,7 @@ export const MODEL_PRESETS: ModelPreset[] = [
     provider: "SenseNova",
     base_url: "https://token.sensenova.cn/v1",
     api_mode: "chat",
+    include_thinking_in_messages: false,
     kind: "openai",
   },
   {
@@ -93,6 +104,7 @@ export const MODEL_PRESETS: ModelPreset[] = [
     provider: "Ollama",
     base_url: "",
     api_mode: "ollama",
+    include_thinking_in_messages: false,
     kind: "ollama",
   },
   {
@@ -101,6 +113,7 @@ export const MODEL_PRESETS: ModelPreset[] = [
     provider: "",
     base_url: "",
     api_mode: "chat",
+    include_thinking_in_messages: false,
     kind: "custom",
   },
 ];
@@ -152,6 +165,8 @@ export interface EditorProvider {
   api_key: string;
   base_url: string;
   api_mode: string;
+  /** Whether assistant thinking is replayed into subsequent provider requests. */
+  include_thinking_in_messages?: boolean;
   port?: number;
   models: EditorModel[];
   /** Auto-refresh + select-all on every app start when true. */
@@ -194,16 +209,24 @@ export function toEditorProvider(raw: unknown): EditorProvider {
   });
   const api_mode = String(params.api_mode ?? "chat");
   const base_url = String(params.base_url ?? "");
+  const presetId = presetIdForProvider({ api_mode, base_url });
+  const preset = findPreset(presetId);
+  const includeThinkingRaw = params.include_thinking_in_messages;
+  const include_thinking_in_messages =
+    typeof includeThinkingRaw === "boolean"
+      ? includeThinkingRaw
+      : preset?.include_thinking_in_messages ?? false;
   return {
     provider: String(obj.provider ?? ""),
     display_name: String(obj.display_name ?? ""),
     api_key: String(params.api_key ?? ""),
     base_url,
     api_mode,
+    include_thinking_in_messages,
     port: typeof params.port === "number" ? params.port : undefined,
     models,
     auto_refresh: Boolean(params.auto_refresh),
-    presetId: presetIdForProvider({ api_mode, base_url }),
+    presetId,
   };
 }
 
@@ -215,6 +238,12 @@ export function toConfigProviders(editors: EditorProvider[]): unknown[] {
     };
     if (e.api_key) params.api_key = e.api_key;
     if (e.base_url) params.base_url = e.base_url;
+    if (
+      (e.api_mode || "").toLowerCase() !== "ollama" &&
+      typeof e.include_thinking_in_messages === "boolean"
+    ) {
+      params.include_thinking_in_messages = e.include_thinking_in_messages;
+    }
     if (typeof e.port === "number") params.port = e.port;
     if (e.auto_refresh) params.auto_refresh = true;
     params.models = e.models

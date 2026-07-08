@@ -265,6 +265,11 @@ export const en: Dict = {
   "models.apiModeAuto": "Auto",
   "models.apiModeChat": "Chat",
   "models.apiModeResponses": "Responses",
+  "models.includeThinkingInMessages": "Include thinking/reasoning in message history",
+  "models.includeThinkingInMessagesHint":
+    "This replays prior model thinking back to the provider with later requests. Some API platforms such as DeepSeek can get better prefix-cache hit rates when it is enabled.",
+  "models.includeThinkingInMessagesWarning":
+    "This preset enables the setting by default. Turning it off may reduce cache hit rate; for DeepSeek API it can also affect compatibility in some request flows.",
   "models.refresh": "Refresh models",
   "models.autoRefresh": "Auto-refresh on launch",
   "models.noModels": "No models yet. Click Refresh to fetch.",

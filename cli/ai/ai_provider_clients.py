@@ -1047,9 +1047,9 @@ def _normalize_openai_message_for_request(
     normalized["role"] = role
     if use_clean_content and normalized.get("_clean_content"):
         normalized["content"] = normalized["_clean_content"]
-    # Map stored _thinking to reasoning_content when the provider requires it
-    # (DeepSeek needs it for cache prefix matching; 400 error if missing after
-    # tool-call turns). Other providers skip this to avoid unknown-field errors.
+    # Map stored _thinking to reasoning_content only when the active provider
+    # configuration explicitly enables it. This is provider-level policy now,
+    # not cache-adapter behavior.
     if role == "assistant" and normalized.get("_thinking"):
         if include_thinking:
             if not normalized.get("reasoning_content"):
@@ -1951,8 +1951,12 @@ def _call_with_openai_compatible(
     if not api_key:
         return api_key_error_msg
 
-    use_clean = CacheAdapterManager().should_use_clean_content(base_url)
-    include_thinking = CacheAdapterManager().should_include_thinking(base_url)
+    adapter_manager = CacheAdapterManager()
+    use_clean = adapter_manager.should_use_clean_content(base_url)
+    include_thinking = parse_bool_flag(
+        conf.get("include_thinking_in_messages"),
+        default_value=False,
+    )
     provider_messages = _normalize_openai_messages_for_request(
         messages, use_clean_content=use_clean, include_thinking=include_thinking
     )

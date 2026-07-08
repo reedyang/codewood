@@ -773,6 +773,22 @@ body.resizing-x .browser-frame {
   margin-bottom: 8px;
 }
 
+.models-hint {
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.models-warning {
+  color: #a45a00;
+  background: rgba(244, 179, 80, 0.14);
+  border: 1px solid rgba(244, 179, 80, 0.35);
+  border-radius: 8px;
+  font-size: 12px;
+  line-height: 1.45;
+  padding: 8px 10px;
+}
+
 .models-list {
   display: flex;
   flex-direction: column;

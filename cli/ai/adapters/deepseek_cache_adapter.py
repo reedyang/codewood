@@ -55,12 +55,6 @@ class DeepSeekCacheAdapter(BaseCacheAdapter):
     def use_clean_content(self) -> bool:
         return False
 
-    def include_thinking_in_messages(self) -> bool:
-        # DeepSeek requires reasoning_content in previous assistant messages
-        # for cache prefix matching. Omitting it after tool-call turns causes
-        # a 400 error.
-        return True
-
     @staticmethod
     def matches(base_url: str) -> bool:
         url_lower = str(base_url or "").strip().lower()

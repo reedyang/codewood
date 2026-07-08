@@ -263,6 +263,11 @@ export const zhCN: Dict = {
   "models.apiModeAuto": "自动",
   "models.apiModeChat": "Chat",
   "models.apiModeResponses": "Responses",
+  "models.includeThinkingInMessages": "在历史消息中附带 thinking/reasoning 内容",
+  "models.includeThinkingInMessagesHint":
+    "这会把模型之前输出的思考内容一并发给当前 Provider。某些 API 平台例如 DeepSeek API 打开后更有利于提高前缀缓存命中率。",
+  "models.includeThinkingInMessagesWarning":
+    "当前预置平台默认建议开启此项。关闭后可能降低缓存命中率；对于 DeepSeek API，这也可能影响部分请求场景的兼容性。",
   "models.refresh": "刷新模型",
   "models.autoRefresh": "启动时自动刷新",
   "models.noModels": "暂无模型，点击刷新拉取。",
