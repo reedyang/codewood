@@ -204,6 +204,14 @@ def _build_structured_turns(agent: Any) -> List[Dict[str, Any]]:
         turn["rounds"].append(rnd)
         return rnd
 
+    def _extract_thinking(msg: Dict[str, Any], rnd: Dict[str, Any]) -> None:
+        """Copy the ``_thinking`` field from *msg* into *rnd* if present,
+        without overwriting an existing thinking value (first message wins
+        within the same round)."""
+        thinking_text = str(msg.get("_thinking") or "").strip()
+        if thinking_text and not rnd.get("thinking"):
+            rnd["thinking"] = thinking_text
+
     def _render_step(idx: int, msg: Dict[str, Any]) -> str:
         buffer = io.StringIO()
         try:
@@ -394,6 +402,10 @@ def _build_structured_turns(agent: Any) -> List[Dict[str, Any]]:
                 rendered = _render_step(idx, msg)
                 if rendered.strip():
                     current_round["tools"] = current_round["tools"] + rendered + "\n"
+            # Extract _thinking even when the assistant message is a pure
+            # tool-call plan (no natural-language reply). The thinking panel
+            # must survive a chat reload.
+            _extract_thinking(msg, current_round)
             if ts is not None:
                 prev_ts = ts
             continue
@@ -445,9 +457,7 @@ def _build_structured_turns(agent: Any) -> List[Dict[str, Any]]:
                 current_round["waitSeconds"] += max(0, int(round(wait)))
             if rendered.strip():
                 current_round["tools"] = current_round["tools"] + rendered + "\n"
-            thinking_text = str(msg.get("_thinking") or "").strip()
-            if thinking_text and not current_round.get("thinking"):
-                current_round["thinking"] = thinking_text
+            _extract_thinking(msg, current_round)
         if ts is not None:
             prev_ts = ts
 
