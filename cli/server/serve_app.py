@@ -4402,7 +4402,10 @@ class ServeApp:
                 workspace_switch_command,
             )
 
-            if wsid and wsid != str(getattr(agent, "workspace_id", "") or ""):
+            original_wsid = str(getattr(agent, "workspace_id", "") or "").strip()
+            switched = bool(wsid and wsid != original_wsid)
+
+            if switched:
                 with agent._chat_state_lock:
                     workspace_switch_command(agent, wsid)
             with agent._chat_state_lock:
@@ -4454,6 +4457,13 @@ class ServeApp:
                             clear_screen=False,
                             print_history=False,
                         )
+            # Switch back to the original workspace so the idle event is
+            # broadcast from the focused workspace, not the deleted chat's
+            # workspace. Otherwise the frontend ignores the state update
+            # (idleForFocused=false) and marks remaining chats as unread.
+            if switched:
+                with agent._chat_state_lock:
+                    workspace_switch_command(agent, original_wsid)
         except Exception:
             return False
         self.broadcaster.publish(
