@@ -241,7 +241,7 @@ def _starter_user_config() -> dict:
                             "use_clean_content": False,
                             "multimodal": True,
                             "thinking": True,
-                            "reasoning_effort": ["low", "medium", "high"],
+                            "reasoning_effort": ["none", "low", "medium", "high", "xhigh", "max"],
                         }
                     ],
                 },
