@@ -328,7 +328,24 @@ def _should_retry_openai_alternate_url(error: Exception) -> bool:
     if not isinstance(error, OpenAIRequestError):
         return True
     code = int(error.status_code or 0)
-    return code in (404, 405)
+    if code in (404, 405):
+        return True
+    if code == 400:
+        body = str(getattr(error, "response_body", "") or "").lower()
+        semantic_markers = (
+            "data_inspection_failed",
+            "invalid_request_error",
+            "content_filter",
+            "policy_violation",
+            "inappropriate content",
+            "reasoning_effort",
+            "unknown field",
+            "unsupported",
+        )
+        return not any(marker in body for marker in semantic_markers)
+    if code in (401, 403, 407, 429):
+        return False
+    return True
 
 
 def _openai_api_route_cache_path() -> Path:
