@@ -4003,11 +4003,11 @@ html[data-has-bg] .select {
 /* One model round inside a turn: wait timer + model text + tool output,
    stacked in natural order. Consecutive rounds get a little breathing room. */
 .turn-round + .turn-round {
-  margin-top: 4px;
+  margin-top: 2px;
 }
 
 .activity {
-  margin: 8px 0;
+  margin: 4px 0;
 }
 
 .activity-header {
@@ -4058,7 +4058,7 @@ html[data-has-bg] .select {
   align-items: center;
   justify-content: center;
   width: 100%;
-  margin-top: 4px;
+  margin-top: 2px;
   padding: 2px 0;
   background: transparent;
   border: none;
@@ -4180,6 +4180,22 @@ html[data-has-bg] .select {
 
 .activity-steps > .diff-preview {
   margin-top: 4px;
+}
+
+.worked-for-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 4px;
+}
+
+.worked-for-body .answer {
+  margin-top: 0;
+}
+
+.worked-for-thinking {
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .answer {

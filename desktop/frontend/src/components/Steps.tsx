@@ -86,6 +86,16 @@ function trimBlankEdges(text: string): string {
   return text.replace(/^\n+/, "").replace(/\n+$/, "");
 }
 
+/** Count how many tool-call prompt rows are present in a rendered tool block. */
+export function countToolCalls(text: string): number {
+  return splitSteps(text).reduce((count, seg) => {
+    if (seg.kind !== "prompt") {
+      return count;
+    }
+    return trimBlankEdges(seg.text) ? count + 1 : count;
+  }, 0);
+}
+
 /** Render collapsible execution steps, isolating command output blocks. */
 export function StepsView({ text }: { text: string }) {
   const segments = splitSteps(text);
