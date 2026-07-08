@@ -3680,6 +3680,7 @@ html[data-has-bg] .select {
 .tree-meta {
   font-size: 11px;
   color: var(--text-on-dark-muted);
+  margin-left: 6px;
 }
 
 .tree-more {
@@ -3748,8 +3749,8 @@ html[data-has-bg] .select {
   display: none;
 }
 
-/* Running (pulsing) / unread (steady) status dot. Pushed flush to the row's
-   right edge with no timestamp beside it; the name (flex:1) takes the slack. */
+/* Running (pulsing) / unread (steady) status dot. Pushed to the right edge;
+   when a timestamp follows, the whole status cluster stays right-aligned. */
 .chat-status-dot {
   margin-left: auto;
 }
@@ -3788,6 +3789,7 @@ html[data-has-bg] .select {
 
 /* Hovering the row swaps the time for the action button; hide the unread dot
    too so the row controls don't crowd. */
+.chat-row:hover .chat-busy-dot,
 .chat-row:hover .chat-unread-dot {
   display: none;
 }

@@ -2003,6 +2003,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const switchToChat = useCallback(
     async (chatId: string, workspaceId = "") => {
       const prevKey = chatKey(activeWorkspaceIdRef.current, activeChatIdRef.current);
+      const targetWsId = workspaceId || activeWorkspaceIdRef.current;
       setFocusOverride(null);
       setOptimisticChatFocus(null);
       // When switching to a different workspace, record the target so the
@@ -2015,14 +2016,22 @@ export function AppProvider({ children }: { children: ReactNode }) {
       if (!ok) {
         return;
       }
-      clearLiveTurns(prevKey);
+      // Preserve any still-running turn in the chat we just left so its
+      // background timer and live transcript keep updating in the sidebar /
+      // switch-back view. Settled live turns are safe to drop because they are
+      // already represented in persisted history.
+      dropSettledLiveTurns(prevKey);
+      // Switching to a still-running chat emits a mid-stream ``state`` event
+      // that we intentionally ignore to protect segment accumulation, so carry
+      // an optimistic focus override until the backend's terminal idle snapshot
+      // catches up.
+      setFocusOverride({ chatId, wsId: targetWsId });
       setDraftMode(false);
       setDraftWorkspaceId("");
-      const targetWsId = workspaceId || activeWorkspaceIdRef.current;
       historyChatRef.current = chatKey(targetWsId, chatId);
       await loadChatHistory({ chatId, wsId: targetWsId });
     },
-    [client, clearLiveTurns, loadChatHistory],
+    [client, dropSettledLiveTurns, loadChatHistory],
   );
 
   const selectWorkspace = useCallback(
