@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { AppState, ServerEvent, Turn } from "../api/types";
 
@@ -11,11 +11,19 @@ const apiMock = vi.hoisted(() => {
   });
   const getChatHistory = vi.fn(async () => ({ turns: [], start: 0, total: 0 }));
   const listWorkspaceChats = vi.fn(async () => []);
+  const newChat = vi.fn(async () => "chat-2");
+  const selectChat = vi.fn(async () => true);
+  const sendInput = vi.fn(async () => undefined);
+  const syncModelPresets = vi.fn(async () => undefined);
   return {
     getState,
     connectEvents,
     getChatHistory,
     listWorkspaceChats,
+    newChat,
+    selectChat,
+    sendInput,
+    syncModelPresets,
     emit(event: ServerEvent) {
       if (!eventHandler) {
         throw new Error("Event handler not connected");
@@ -28,6 +36,10 @@ const apiMock = vi.hoisted(() => {
       connectEvents.mockClear();
       getChatHistory.mockClear();
       listWorkspaceChats.mockClear();
+      newChat.mockClear();
+      selectChat.mockClear();
+      sendInput.mockClear();
+      syncModelPresets.mockClear();
     },
   };
 });
@@ -38,13 +50,17 @@ vi.mock("../api/client", () => ({
     connectEvents = apiMock.connectEvents;
     getChatHistory = apiMock.getChatHistory;
     listWorkspaceChats = apiMock.listWorkspaceChats;
+    newChat = apiMock.newChat;
+    selectChat = apiMock.selectChat;
+    sendInput = apiMock.sendInput;
+    syncModelPresets = apiMock.syncModelPresets;
   },
 }));
 
 import { AppProvider, useApp } from "./AppContext";
 
-function buildState(): AppState {
-  return {
+function buildState(overrides: Partial<AppState> = {}): AppState {
+  const base: AppState = {
     app: { name: "Code Wood", version: "test" },
     workspace: {
       id: "ws-1",
@@ -57,6 +73,12 @@ function buildState(): AppState {
       name: "Workspace",
       root: "D:/workspace",
       active: true,
+      isDefault: false,
+    }, {
+      id: "ws-2",
+      name: "Workspace B",
+      root: "D:/workspace-b",
+      active: false,
       isDefault: false,
     }],
     chats: [{
@@ -81,11 +103,61 @@ function buildState(): AppState {
     language: "en",
     executionPolicy: "default",
   };
+  return {
+    ...base,
+    ...overrides,
+  };
 }
 
 function TurnsProbe() {
   const { turns } = useApp();
   return <pre data-testid="turns">{JSON.stringify(turns)}</pre>;
+}
+
+function DraftCreateProbe() {
+  const {
+    state,
+    activeWorkspaceId,
+    activeChatId,
+    activeChats,
+    turns,
+    newChat,
+    sendInput,
+  } = useApp();
+  return (
+    <>
+      <button
+        onClick={() => {
+          void newChat("ws-2");
+        }}
+      >
+        enter draft
+      </button>
+      <button
+        onClick={() => {
+          void sendInput("hello from draft");
+        }}
+      >
+        send draft
+      </button>
+      <pre data-testid="app-state">{JSON.stringify(state)}</pre>
+      <pre
+        data-testid="active-view"
+      >{JSON.stringify({ activeWorkspaceId, activeChatId, activeChats, turns })}</pre>
+    </>
+  );
+}
+
+function HistoryReloadProbe() {
+  const { state, selectWorkspace } = useApp();
+  return (
+    <>
+      <button onClick={() => { void selectWorkspace("ws-2"); }}>
+        switch workspace
+      </button>
+      <pre data-testid="history-state">{JSON.stringify(state)}</pre>
+    </>
+  );
 }
 
 describe("AppContext thinking rounds", () => {
@@ -156,6 +228,212 @@ describe("AppContext thinking rounds", () => {
       expect(turns[0].rounds[0].segments.map((segment) => segment.text).join("")).toContain("tool output 1");
       expect(turns[0].rounds[1].segments.map((segment) => segment.text).join("")).toContain("tool output 2");
       expect(turns[0].rounds[0].thinkingEndedAt).toBeTypeOf("number");
+    });
+  });
+
+  it("exposes an optimistic active workspace/chat without mutating the raw backend state", async () => {
+    render(
+      <AppProvider>
+        <DraftCreateProbe />
+      </AppProvider>,
+    );
+
+    await waitFor(() => expect(apiMock.connectEvents).toHaveBeenCalled());
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "enter draft" }));
+    });
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "send draft" }));
+    });
+
+    await waitFor(() => {
+      const state = JSON.parse(screen.getByTestId("app-state").textContent || "{}") as AppState;
+      const view = JSON.parse(screen.getByTestId("active-view").textContent || "{}") as {
+        activeWorkspaceId: string;
+        activeChatId: string;
+        activeChats: AppState["chats"];
+        turns: Turn[];
+      };
+      expect(apiMock.newChat).toHaveBeenCalledWith("ws-2");
+      expect(apiMock.sendInput).toHaveBeenCalledWith("hello from draft", true, "chat-2");
+      expect(state.workspace.id).toBe("ws-1");
+      expect(state.activeChatId).toBe("chat-1");
+      expect(view.activeWorkspaceId).toBe("ws-2");
+      expect(view.activeChatId).toBe("chat-2");
+      expect(view.activeChats[0]?.id).toBe("chat-2");
+      expect(view.activeChats[0]?.active).toBe(true);
+      expect(view.turns).toHaveLength(1);
+    });
+  });
+
+  it("keeps the optimistic transcript focused when the new workspace chat id matches the current one", async () => {
+    apiMock.newChat.mockResolvedValueOnce("chat-1");
+
+    render(
+      <AppProvider>
+        <DraftCreateProbe />
+      </AppProvider>,
+    );
+
+    await waitFor(() => expect(apiMock.connectEvents).toHaveBeenCalled());
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "enter draft" }));
+    });
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "send draft" }));
+    });
+
+    await waitFor(() => {
+      const view = JSON.parse(screen.getByTestId("active-view").textContent || "{}") as {
+        activeWorkspaceId: string;
+        activeChatId: string;
+        turns: Turn[];
+      };
+      expect(view.activeWorkspaceId).toBe("ws-2");
+      expect(view.activeChatId).toBe("chat-1");
+      expect(view.turns).toHaveLength(1);
+      expect(view.turns[0]?.userText).toContain("hello from draft");
+    });
+  });
+
+  it("accepts the target workspace idle snapshot after draft creation in another workspace", async () => {
+    render(
+      <AppProvider>
+        <DraftCreateProbe />
+      </AppProvider>,
+    );
+
+    await waitFor(() => expect(apiMock.connectEvents).toHaveBeenCalled());
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "enter draft" }));
+    });
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "send draft" }));
+    });
+
+    act(() => {
+      apiMock.emit({
+        event: "idle",
+        data: {
+          chatId: "chat-2",
+          workspaceId: "ws-2",
+          state: buildState({
+            workspace: {
+              id: "ws-2",
+              name: "Workspace B",
+              root: "D:/workspace-b",
+              workDirectory: "D:/workspace-b",
+            },
+            workspaces: [{
+              id: "ws-1",
+              name: "Workspace",
+              root: "D:/workspace",
+              active: false,
+              isDefault: false,
+            }, {
+              id: "ws-2",
+              name: "Workspace B",
+              root: "D:/workspace-b",
+              active: true,
+              isDefault: false,
+            }],
+            chats: [{
+              index: 0,
+              id: "chat-2",
+              name: "Updated Title",
+              messageCount: 2,
+              active: true,
+              running: false,
+              archived: false,
+              planMode: false,
+              model: "provider:model",
+            }],
+            activeChatId: "chat-2",
+          }),
+        },
+      });
+    });
+
+    await waitFor(() => {
+      const state = JSON.parse(screen.getByTestId("app-state").textContent || "{}") as AppState;
+      const view = JSON.parse(screen.getByTestId("active-view").textContent || "{}") as {
+        activeWorkspaceId: string;
+        activeChatId: string;
+        activeChats: AppState["chats"];
+      };
+      expect(state.workspace.id).toBe("ws-2");
+      expect(state.activeChatId).toBe("chat-2");
+      expect(view.activeWorkspaceId).toBe("ws-2");
+      expect(view.activeChatId).toBe("chat-2");
+      expect(view.activeChats[0]?.name).toBe("Updated Title");
+    });
+  });
+
+  it("reloads history when switching to a same-id chat in another workspace", async () => {
+    render(
+      <AppProvider>
+        <HistoryReloadProbe />
+      </AppProvider>,
+    );
+
+    await waitFor(() => expect(apiMock.connectEvents).toHaveBeenCalled());
+    await waitFor(() => expect(apiMock.getChatHistory).toHaveBeenCalledTimes(1));
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "switch workspace" }));
+    });
+
+    act(() => {
+      apiMock.emit({
+        event: "idle",
+        data: {
+          chatId: "chat-1",
+          workspaceId: "ws-2",
+          state: buildState({
+            workspace: {
+              id: "ws-2",
+              name: "Workspace B",
+              root: "D:/workspace-b",
+              workDirectory: "D:/workspace-b",
+            },
+            workspaces: [{
+              id: "ws-1",
+              name: "Workspace",
+              root: "D:/workspace",
+              active: false,
+              isDefault: false,
+            }, {
+              id: "ws-2",
+              name: "Workspace B",
+              root: "D:/workspace-b",
+              active: true,
+              isDefault: false,
+            }],
+            chats: [{
+              index: 0,
+              id: "chat-1",
+              name: "Workspace B Chat 1",
+              messageCount: 3,
+              active: true,
+              running: false,
+              archived: false,
+              planMode: false,
+              model: "provider:model",
+            }],
+            activeChatId: "chat-1",
+          }),
+        },
+      });
+    });
+
+    await waitFor(() => {
+      expect(apiMock.getChatHistory).toHaveBeenCalledTimes(2);
     });
   });
 });

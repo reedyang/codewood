@@ -18,7 +18,9 @@ interface MenuState {
  *  marker when applicable, and a "more" menu identical to the sidebar's. */
 export function ChatTitleBar() {
   const {
-    state,
+    activeWorkspaceId,
+    activeChatId,
+    activeChats,
     uiPrefs,
     t,
     runCommand,
@@ -37,8 +39,8 @@ export function ChatTitleBar() {
   const [renameValue, setRenameValue] = useState("");
   const [confirmDelete, setConfirmDelete] = useState(false);
 
-  const wsId = state?.workspace.id ?? "";
-  const activeChat = state?.chats.find((c) => c.active);
+  const wsId = activeWorkspaceId;
+  const activeChat = activeChats.find((c) => c.id === activeChatId);
   if (!activeChat) {
     return null;
   }

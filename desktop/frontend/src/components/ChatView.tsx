@@ -16,6 +16,7 @@ import { StepsView } from "./Steps";
 import { ChatTitleBar } from "./ChatTitleBar";
 import { AskMoreInfoPanel } from "./AskMoreInfoPanel";
 import { ConfirmDialog } from "./ConfirmDialog";
+import { chatKey } from "./chatMenu";
 import { decodeAttachments } from "../utils/attachments";
 import {
   appendImageRefs,
@@ -474,6 +475,9 @@ function useOutsideClose(open: boolean, onClose: () => void) {
 export function ChatView() {
   const {
     state,
+    activeWorkspaceId,
+    activeChatId,
+    activeChats,
     turns,
     historyTurns,
     historyStart,
@@ -505,7 +509,7 @@ export function ChatView() {
   // key is used while we're still in "draft mode" (no chat exists yet) so
   // that first composition survives until the user sends or discards.
   const DRAFT_KEY = "__draft__";
-  const draftKey = draftMode ? DRAFT_KEY : state?.activeChatId || "";
+  const draftKey = draftMode ? DRAFT_KEY : chatKey(activeWorkspaceId, activeChatId);
   const [segmentsByChat, setSegmentsByChat] = useState<Record<string, Segment[]>>({});
   const segments = segmentsByChat[draftKey] ?? [];
   // Pending pasted-image attachments for the active draft, keyed by chat so
@@ -566,13 +570,13 @@ export function ChatView() {
   // yet tracked locally, so an in-session toggle is never overridden by a later
   // state refresh.
   useEffect(() => {
-    const chats = state?.chats ?? [];
+    const chats = activeChats;
     if (chats.length === 0) {
       return;
     }
     const seeds: Record<string, ChatMode> = {};
     for (const c of chats) {
-      const id = c?.id || "";
+      const id = chatKey(activeWorkspaceId, c?.id || "");
       if (!id || seededPlanModeRef.current.has(id)) {
         continue;
       }
@@ -584,7 +588,7 @@ export function ChatView() {
     if (Object.keys(seeds).length > 0) {
       setChatModeMap((prev) => ({ ...seeds, ...prev }));
     }
-  }, [state?.chats]);
+  }, [activeChats, activeWorkspaceId]);
 
   // Sync the agent's sticky plan-mode flag with the active chat's mode so
   // that switching back into a chat that was last left in Plan mode keeps
@@ -977,7 +981,7 @@ export function ChatView() {
     const workspaces = state?.workspaces ?? [];
     const targetWs = draftMode
       ? workspaces.find((w) => w.id === draftWorkspaceId)
-      : workspaces.find((w) => w.active);
+      : workspaces.find((w) => w.id === activeWorkspaceId);
     const inDefaultWs = !targetWs || targetWs.isDefault;
     const workspaceName = targetWs?.name || state?.workspace.name || "";
     const emptyTitle = inDefaultWs
@@ -1799,7 +1803,7 @@ function WorkspaceSelector({
   draftWorkspaceId?: string;
   onPickDraft?: (id: string) => void;
 }) {
-  const { state, runCommand, clearTurns, selectWorkspace, pickFolder, t } = useApp();
+  const { state, activeWorkspaceId, runCommand, clearTurns, selectWorkspace, pickFolder, t } = useApp();
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState("");
   const [adding, setAdding] = useState(false);
@@ -1812,7 +1816,7 @@ function WorkspaceSelector({
   // an existing chat (the active workspace).
   const selectedId = draft
     ? draftWorkspaceId
-    : workspaces.find((w) => w.active)?.id || "";
+    : activeWorkspaceId;
   const selectedWs = workspaces.find((w) => w.id === selectedId);
   // The Default workspace is not a real project; surface it only through the
   // dedicated "Don't work in a workspace" entry, never in the workspace list.
