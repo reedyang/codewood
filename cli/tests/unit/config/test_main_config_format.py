@@ -132,6 +132,27 @@ class MainConfigFormatTests(unittest.TestCase):
         self.assertIsNone(error)
         self.assertFalse(model_config["params"]["streaming"])
 
+    def test_supports_model_level_use_clean_content_flag(self):
+        _, _, model_config, error = _extract_model_runtime_config(
+            {
+                "model_providers": [
+                    {
+                        "provider": "openai",
+                        "params": {
+                            "models": [
+                                {
+                                    "name": "gpt-oss-120b",
+                                    "use_clean_content": "true",
+                                },
+                            ]
+                        },
+                    }
+                ]
+            }
+        )
+        self.assertIsNone(error)
+        self.assertTrue(model_config["params"]["use_clean_content"])
+
     def test_supports_model_level_extra_headers(self):
         _, _, model_config, error = _extract_model_runtime_config(
             {

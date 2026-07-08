@@ -238,6 +238,7 @@ def _starter_user_config() -> dict:
                             "name": "<YOUR MODEL NAME>",
                             "context_window": "256k",
                             "streaming": True,
+                            "use_clean_content": False,
                             "multimodal": True,
                             "thinking": True,
                             "reasoning_effort": ["low", "medium", "high"],
@@ -335,6 +336,7 @@ def _extract_model_runtime_config(config: dict, requested_model: str | None = No
                     "name": model_name,
                     "context_window": int(model_item.get("context_window") or 0),
                     "streaming": bool(model_item.get("streaming", True)),
+                    "use_clean_content": bool(model_item.get("use_clean_content", False)),
                     "multimodal": bool(model_item.get("multimodal", True)),
                     "extra_headers": dict(model_item.get("extra_headers") or {}),
                     "params_raw": params_raw,
@@ -356,6 +358,7 @@ def _extract_model_runtime_config(config: dict, requested_model: str | None = No
             "name": str(first_model.get("name") or "").strip(),
             "context_window": int(first_model.get("context_window") or 0),
             "streaming": bool(first_model.get("streaming", True)),
+            "use_clean_content": bool(first_model.get("use_clean_content", False)),
             "multimodal": bool(first_model.get("multimodal", True)),
             "extra_headers": dict(first_model.get("extra_headers") or {}),
             "params_raw": first_provider["params_raw"],
@@ -440,6 +443,7 @@ def _extract_model_runtime_config(config: dict, requested_model: str | None = No
     params["model"] = model_name
     params["context_window"] = int(selected.get("context_window") or 0)
     params["streaming"] = bool(selected.get("streaming", True))
+    params["use_clean_content"] = bool(selected.get("use_clean_content", False))
     params["multimodal"] = bool(selected.get("multimodal", True))
     params["extra_headers"] = dict(selected.get("extra_headers") or {})
     # The Ollama-native HTTP backend is selected via ``api_mode``;

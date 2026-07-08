@@ -733,6 +733,7 @@ class Agent:
                 model_name = str(model_item.get("name") or "").strip()
                 context_window = int(model_item.get("context_window") or 0)
                 streaming = bool(model_item.get("streaming", True))
+                use_clean_content = bool(model_item.get("use_clean_content", False))
                 multimodal = bool(model_item.get("multimodal", True))
                 thinking = bool(model_item.get("thinking", True))
                 selector = f"{provider}:{model_name}"
@@ -744,6 +745,7 @@ class Agent:
                 params["model"] = model_name
                 params["context_window"] = context_window
                 params["streaming"] = streaming
+                params["use_clean_content"] = use_clean_content
                 params["multimodal"] = multimodal
                 params["thinking"] = thinking
                 params["extra_headers"] = dict(model_item.get("extra_headers") or {})

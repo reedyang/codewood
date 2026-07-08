@@ -280,6 +280,7 @@ Create `.codewood/config.jsonc` in your user directory:
             "name": "gpt-oss-120b",
             "context_window": "128K",
             "streaming": true,
+            "use_clean_content": false,
             "multimodal": false
           },
           { "name": "gpt-4o-mini", "context_window": 64000, "streaming": false }
@@ -319,10 +320,11 @@ Create `.codewood/config.jsonc` in your user directory:
 - `model_providers[i].params.port`: used by `api_mode: "ollama"`, with a default of `11434`
 - `model_providers[i].params.models`: model list; the first model is used by default
   - String form: `"gpt-oss-120b"` uses the default `context_window=128000` and `streaming=true`
-  - Object form: `{"name":"gpt-oss-120b","context_window":"128K","streaming":true,"multimodal":false,"extra_headers":{"X-Model":"gpt-oss-120b"}}`
+  - Object form: `{"name":"gpt-oss-120b","context_window":"128K","streaming":true,"use_clean_content":false,"multimodal":false,"extra_headers":{"X-Model":"gpt-oss-120b"}}`
 - `context_window`: accepts a positive integer or a string matching `^\d+[kKmM]?$`; invalid values fall back to `128000`
 - When `context_window < 64000`, Code Wood skips system prompts, tool prompts, skill prompts, memory, and operational context, and only sends conversation history plus the current user input
 - `streaming`: per-model streaming toggle, default `true`
+- `use_clean_content`: per-model history-cleaning toggle, default `false`. When enabled, Code Wood prefers stored `_clean_content` over raw assistant `content` when replaying prior history to the model
 - `multimodal`: per-model image-input capability, default `true`. When set to `false`, Code Wood hides image-input capability from the `read` tool. To still analyze images, delegate to a multimodal sub-agent via `run_subagent`'s `image` argument (see `additional-subagents/image-analyzer.md`)
 - `extra_headers`: per-model custom request headers, available only for OpenAI-compatible `api_mode` values (`auto`/`chat`/`responses`)
 - `reasoning_effort`: optional per-model list of reasoning-effort levels the model supports (e.g. `["low","medium","high"]`). When set, a level can be selected per chat — in the TUI via `/model reasoning <level>` and in the GUI model menu — and the choice is sent to the provider as `reasoning_effort` (chat API) or `reasoning.effort` (responses API). The selected level is saved per chat and restored on reload. Omit or leave empty to disable reasoning-effort selection for the model. Object-form example: `{"name":"gpt-oss-120b","context_window":"128K","reasoning_effort":["low","medium","high"]}`

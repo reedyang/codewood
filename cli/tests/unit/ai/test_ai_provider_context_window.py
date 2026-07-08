@@ -330,6 +330,75 @@ class ProviderContextWindowTests(unittest.TestCase):
         self.assertEqual(sent[1]["content"], "a1")
         self.assertEqual(sent[2]["content"], "u2")
 
+    def test_openai_use_clean_content_defaults_off(self):
+        with patch("requests.post", return_value=_FakeResponse()) as mock_post:
+            out = call_ai_with_provider(
+                context=ProviderCallContext(
+                    provider="openai",
+                    model_name="gpt-oss-120b",
+                    model_params={},
+                    openai_conf={
+                        "api_key": "k",
+                        "base_url": "https://example.com/v1",
+                    },
+                    messages=[
+                        {
+                            "role": "assistant",
+                            "content": "<think>hidden</think>raw answer",
+                            "_clean_content": "raw answer",
+                        },
+                        {"role": "user", "content": "follow up"},
+                    ],
+                    stream=False,
+                    return_message=False,
+                    image_data=None,
+                    image_user_idx=None,
+                    image_user_text="",
+                    session_summary_mode=False,
+                    memory_query_expansion_mode=False,
+                ),
+                append_history=lambda *_a, **_kw: None,
+                ollama_importer=lambda: None,
+            )
+        self.assertEqual(out, "ok")
+        sent = mock_post.call_args.kwargs.get("json", {}).get("messages", [])
+        self.assertEqual(sent[0]["content"], "<think>hidden</think>raw answer")
+
+    def test_openai_model_config_can_enable_clean_content(self):
+        with patch("requests.post", return_value=_FakeResponse()) as mock_post:
+            out = call_ai_with_provider(
+                context=ProviderCallContext(
+                    provider="openai",
+                    model_name="gpt-oss-120b",
+                    model_params={"use_clean_content": True},
+                    openai_conf={
+                        "api_key": "k",
+                        "base_url": "https://example.com/v1",
+                        "use_clean_content": True,
+                    },
+                    messages=[
+                        {
+                            "role": "assistant",
+                            "content": "<think>hidden</think>raw answer",
+                            "_clean_content": "raw answer",
+                        },
+                        {"role": "user", "content": "follow up"},
+                    ],
+                    stream=False,
+                    return_message=False,
+                    image_data=None,
+                    image_user_idx=None,
+                    image_user_text="",
+                    session_summary_mode=False,
+                    memory_query_expansion_mode=False,
+                ),
+                append_history=lambda *_a, **_kw: None,
+                ollama_importer=lambda: None,
+            )
+        self.assertEqual(out, "ok")
+        sent = mock_post.call_args.kwargs.get("json", {}).get("messages", [])
+        self.assertEqual(sent[0]["content"], "raw answer")
+
     def test_openai_provider_can_explicitly_include_thinking_in_history(self):
         with patch("requests.post", return_value=_FakeResponse()) as mock_post:
             out = call_ai_with_provider(
@@ -972,6 +1041,41 @@ class ProviderContextWindowTests(unittest.TestCase):
         sent_tools = mock_post.call_args.kwargs.get("json", {}).get("tools") or []
         self.assertTrue(sent_tools)
         self.assertEqual(sent_tools[0].get("function", {}).get("name"), "read_file")
+
+    def test_ollama_model_config_can_enable_clean_content(self):
+        fake_response = _FakeOllamaHttpResponse(data={"message": {"content": "ok"}})
+        with patch("requests.post", return_value=fake_response) as mock_post:
+            out = call_ai_with_provider(
+                context=ProviderCallContext(
+                    provider="ollama",
+                    model_name="qwen2.5:14b",
+                    model_params={
+                        "context_window": "96K",
+                        "use_clean_content": True,
+                    },
+                    openai_conf=None,
+                    messages=[
+                        {
+                            "role": "assistant",
+                            "content": "<think>hidden</think>raw answer",
+                            "_clean_content": "raw answer",
+                        },
+                        {"role": "user", "content": "follow up"},
+                    ],
+                    stream=False,
+                    return_message=False,
+                    image_data=None,
+                    image_user_idx=None,
+                    image_user_text="",
+                    session_summary_mode=False,
+                    memory_query_expansion_mode=False,
+                ),
+                append_history=lambda *_a, **_kw: None,
+                ollama_importer=lambda: None,
+            )
+        self.assertEqual(out, "ok")
+        sent = mock_post.call_args.kwargs.get("json", {}).get("messages", [])
+        self.assertEqual(sent[0]["content"], "raw answer")
 
     def test_ollama_stream_summary_keeps_num_ctx_and_summary_options(self):
         fake_response = _FakeOllamaHttpResponse(

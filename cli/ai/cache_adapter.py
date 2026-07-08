@@ -25,12 +25,7 @@ def _safe_int(value: Any) -> int:
 
 
 class BaseCacheAdapter(ABC):
-    """Extract cache-hit statistics from a provider's API response.
-
-    Subclasses may also override :meth:`use_clean_content` to control
-    whether ``_clean_content`` should be preferred over raw ``content``
-    when building messages for this provider.
-    """
+    """Extract cache-hit statistics from a provider's API response."""
 
     @abstractmethod
     def supports_cache_stats(self) -> bool:
@@ -52,19 +47,6 @@ class BaseCacheAdapter(ABC):
     def matches(base_url: str) -> bool:
         """Return True if this adapter should handle the given base URL."""
         ...
-
-    def use_clean_content(self) -> bool:
-        """Return True if messages sent to this provider should use
-        ``_clean_content`` (when available) instead of raw ``content``.
-
-        * DeepSeek — False (raw content including thinking tags maximises
-          cache prefix hits).
-        * All other providers — True (removing thinking-tag noise is
-          generally preferable).
-
-        Subclasses override this to change the default policy.
-        """
-        return True
 
     def extract_output_usage(
         self, response_data: Dict[str, Any]
@@ -128,14 +110,3 @@ class CacheAdapterManager:
                     return adapter
                 return None
         return None
-
-    def should_use_clean_content(self, base_url: str) -> bool:
-        """Return True when the provider identified by ``base_url`` should
-        use ``_clean_content`` (when available) instead of raw ``content``.
-
-        Defaults to ``True`` for unrecognised providers (safe default).
-        """
-        for adapter in self._adapters:
-            if adapter.matches(base_url):
-                return adapter.use_clean_content()
-        return True
