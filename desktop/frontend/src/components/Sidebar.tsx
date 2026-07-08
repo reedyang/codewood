@@ -10,7 +10,7 @@ function quote(value: string): string {
   return `"${value.replace(/"/g, "")}"`;
 }
 
-function formatRelative(value?: string): string {
+function formatRelative(value?: string, now = Date.now()): string {
   if (!value) {
     return "";
   }
@@ -18,7 +18,7 @@ function formatRelative(value?: string): string {
   if (Number.isNaN(ts)) {
     return "";
   }
-  const s = Math.max(0, Math.floor((Date.now() - ts) / 1000));
+  const s = Math.max(0, Math.floor((now - ts) / 1000));
   if (s < 60) return `${s}s`;
   const m = Math.floor(s / 60);
   if (m < 60) return `${m}m`;
@@ -31,6 +31,20 @@ function formatRelative(value?: string): string {
   const mo = Math.floor(d / 30);
   if (mo < 12) return `${mo}mo`;
   return `${Math.floor(d / 365)}y`;
+}
+
+function formatElapsed(ms: number): string {
+  const totalSeconds = Math.max(0, Math.floor(ms / 1000));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  if (hours > 0) {
+    return `${hours}h ${minutes}m`;
+  }
+  if (minutes > 0) {
+    return `${minutes}m ${seconds}s`;
+  }
+  return `${seconds}s`;
 }
 
 interface MenuState {
@@ -63,7 +77,9 @@ export function Sidebar({ collapsed, onOpenSettings }: { collapsed: boolean; onO
     workspaceChats,
     expandedWorkspaceIds,
     busyByChat,
+    runningChatStartedAtByChat,
     unreadChatIds,
+    now,
     t,
     runCommand,
     switchToChat,
@@ -110,6 +126,12 @@ export function Sidebar({ collapsed, onOpenSettings }: { collapsed: boolean; onO
     }
     return map;
   }, [activeChats, workspaceChats, activeWsId]);
+  // Freeze idle-chat relative timestamps until the chat data itself changes,
+  // so only the actively running chat shows a live second-by-second timer.
+  const relativeNow = useMemo(
+    () => Date.now(),
+    [activeChats, workspaceChats, state?.workspace.id, state?.activeChatId],
+  );
 
   const pinnedWorkspaces = workspaces.filter((w) => pinnedWs.has(w.id) && !w.isDefault);
   const unpinnedWorkspaces = workspaces.filter((w) => !pinnedWs.has(w.id) && !w.isDefault);
@@ -296,7 +318,6 @@ export function Sidebar({ collapsed, onOpenSettings }: { collapsed: boolean; onO
 
   const renderChatRow = (chat: ChatRow, wsId: string) => {
     const isActive = wsId === activeWsId && chat.id === activeChatId;
-    const rel = formatRelative(chat.updatedAt);
     const isPinned = isPinnedChat(wsId, chat.id);
     // Chat ids are only unique within a workspace, so the transient
     // ``busyByChat`` / ``unreadChatIds`` maps are keyed by a
@@ -310,6 +331,10 @@ export function Sidebar({ collapsed, onOpenSettings }: { collapsed: boolean; onO
     const isBusy =
       Boolean(busyByChat[rowKey]) ||
       (wsId === activeWsId && Boolean(chat.running));
+    const startedAt = runningChatStartedAtByChat[rowKey];
+    const metaText = isBusy && typeof startedAt === "number"
+      ? formatElapsed(now - startedAt)
+      : formatRelative(chat.updatedAt, relativeNow);
     // Unread: a turn finished while the user was elsewhere. Never show on the
     // chat currently being viewed.
     const isUnread = !isActive && !isBusy && Boolean(unreadChatIds[rowKey]);
@@ -336,24 +361,17 @@ export function Sidebar({ collapsed, onOpenSettings }: { collapsed: boolean; onO
             >
               <button className="tree-label" onClick={() => void switchChat(wsId, chat.id)}>
                 <span className="tree-name">{chat.name}</span>
-                {/* While running (pulsing dot) or with an unread result (steady
-                    dot) the chat shows ONLY the dot, pushed flush to the right
-                    edge — no timestamp. Otherwise the row shows the relative time
-                    of its most recent message. */}
-                {isBusy ? (
-                  <span
-                    className="chat-status-dot chat-busy-dot"
-                    aria-label={t("chat.busy")}
-                    title={t("chat.busy")}
-                  />
-                ) : isUnread ? (
+                {/* Running chats show their live elapsed task time; idle chats
+                    show time since last update; unread chats keep the steady
+                    dot so completion stands out at a glance. */}
+                {isUnread ? (
                   <span
                     className="chat-status-dot chat-unread-dot"
                     aria-label={t("chat.unread")}
                     title={t("chat.unread")}
                   />
                 ) : (
-                  rel && <span className="tree-meta">{rel}</span>
+                  metaText && <span className="tree-meta">{metaText}</span>
                 )}
               </button>
             </HoverTooltip>
