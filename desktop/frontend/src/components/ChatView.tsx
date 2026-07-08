@@ -12,7 +12,7 @@ import { ConsolePanel } from "./ConsolePanel";
 import type { HistoryRound, HistoryTurn, Turn, TurnRound } from "../api/types";
 import { Icon, type IconName } from "./Icon";
 import { MarkdownText } from "./Markdown";
-import { StepsView, countToolCalls } from "./Steps";
+import { StepsView, countToolCalls, getLastToolPromptBody } from "./Steps";
 import { ChatTitleBar } from "./ChatTitleBar";
 import { AskMoreInfoPanel } from "./AskMoreInfoPanel";
 import { ConfirmDialog } from "./ConfirmDialog";
@@ -1197,8 +1197,9 @@ function ConsoleDock({ open }: { open: boolean }) {
 /** One model round laid out in natural order. The round can render either as
  *  "answer first, then tools" (live streaming) or "collapsed details first,
  *  then the final paragraph" (history / completed rounds). */
-function RoundShell({
+export function RoundShell({
   timerText,
+  expandedTimerText,
   running,
   showTimer,
   autoExpand,
@@ -1207,6 +1208,7 @@ function RoundShell({
   textNode,
 }: {
   timerText: string;
+  expandedTimerText?: string;
   running: boolean;
   showTimer: boolean;
   autoExpand: boolean;
@@ -1224,11 +1226,13 @@ function RoundShell({
   const timer = showTimer ? (
     <div className="activity">
       <button
-        className={`activity-header ${running ? "running" : ""}`}
+        className={`activity-header ${running ? "running" : ""} ${hasDetails ? "has-details" : ""}`}
         onClick={() => hasDetails && setExpanded((v) => !v)}
         disabled={!hasDetails}
       >
-        <span className={`activity-text ${running ? "marquee" : ""}`}>{timerText}</span>
+        <span className={`activity-text ${running ? "marquee" : ""}`}>
+          {hasDetails && expanded && expandedTimerText ? expandedTimerText : timerText}
+        </span>
         {hasDetails && (
           <Icon name="chevron" size={14} className={`chevron ${expanded ? "open" : ""}`} />
         )}
@@ -1289,6 +1293,7 @@ export function HistoryRoundDetailView({
         {thinkingNode}
         <RoundShell
           timerText={t("activity.toolCalls").replace("{count}", String(toolCount))}
+          expandedTimerText={`${t("activity.working")} (${formatElapsed(round.waitSeconds * 1000)})`}
           running={false}
           showTimer={true}
           autoExpand={false}
@@ -1488,6 +1493,154 @@ function HistoryTurnView({
   handlers: MessageHandlers;
 }) {
   return <CompletedTurnView turn={turn} negIndex={negIndex} handlers={handlers} />;
+}
+
+type LiveRoundGroup =
+  | { kind: "tool"; rounds: TurnRound[] }
+  | { kind: "other"; round: TurnRound };
+
+function isLiveToolRound(round: TurnRound): boolean {
+  const hasSteps = round.segments.some((segment) => segment.kind === "step" && segment.text.trim());
+  const hasAnswer = round.segments.some((segment) => segment.kind === "answer" && segment.text.trim());
+  return hasSteps && !hasAnswer;
+}
+
+export function groupLiveRounds(rounds: TurnRound[]): LiveRoundGroup[] {
+  const groups: LiveRoundGroup[] = [];
+  let toolRounds: TurnRound[] = [];
+  const flushTools = () => {
+    if (toolRounds.length > 0) {
+      groups.push({ kind: "tool", rounds: toolRounds });
+      toolRounds = [];
+    }
+  };
+
+  for (const round of rounds) {
+    const hasThinking = String(round.thinkingText || "").trim().length > 0;
+    const hasSteps = round.segments.some((segment) => segment.kind === "step" && segment.text.trim());
+    const hasAnswer = round.segments.some((segment) => segment.kind === "answer" && segment.text.trim());
+    if (!hasThinking && !hasSteps && !hasAnswer) {
+      continue;
+    }
+    if (isLiveToolRound(round)) {
+      toolRounds.push(round);
+      continue;
+    }
+    flushTools();
+    groups.push({ kind: "other", round });
+  }
+
+  flushTools();
+  return groups;
+}
+
+function hasVisibleRoundContent(round: TurnRound | undefined): boolean {
+  if (!round) {
+    return false;
+  }
+  const hasThinking = Boolean(round.thinkingText?.trim().length);
+  const hasSegments = round.segments.some((segment) => segment.text.trim().length > 0);
+  return hasThinking || hasSegments;
+}
+
+export function hasPendingInvisibleRound(
+  turn: Pick<Turn, "endedAt" | "rounds">,
+): boolean {
+  const lastRound = turn.rounds[turn.rounds.length - 1];
+  return Boolean(
+    turn.endedAt === null &&
+      lastRound &&
+      lastRound.waitEndedAt === null &&
+      !hasVisibleRoundContent(lastRound),
+  );
+}
+
+export function shouldShowPendingWorking(
+  turn: Pick<Turn, "startedAt" | "endedAt" | "rounds">,
+  hasVisibleLiveGroups = false,
+): boolean {
+  return hasPendingInvisibleRound(turn) && !hasVisibleLiveGroups;
+}
+
+function LiveToolGroupView({
+  rounds,
+  now,
+  isLatestGroup,
+  waitingForContinuation,
+  continuationElapsedMs,
+}: {
+  rounds: TurnRound[];
+  now: number;
+  isLatestGroup: boolean;
+  waitingForContinuation: boolean;
+  continuationElapsedMs: number;
+}) {
+  const { t } = useApp();
+  const thinkingNodes = rounds.flatMap((round, index) => {
+    const thinkingText = String(round.thinkingText || "");
+    if (!thinkingText.trim()) {
+      return [];
+    }
+    const thinkingRunning = round.waitEndedAt === null && !round.thinkingEndedAt;
+    const startedAt = round.thinkingStartedAt ?? round.waitStartedAt;
+    const endedAt = round.thinkingEndedAt ?? round.waitEndedAt ?? now;
+    const elapsed = formatElapsed(Math.max(0, endedAt - startedAt));
+    return [
+      <ThinkingPanel
+        key={`thinking-${round.id}-${index}`}
+        thinkingText={thinkingText}
+        running={thinkingRunning}
+        timerText={
+          thinkingRunning
+            ? `${t("activity.thinking")} (${elapsed})`
+            : `${t("activity.thoughtFor")} ${elapsed}`
+        }
+      />,
+    ];
+  });
+  const toolText = rounds
+    .map((round) =>
+      round.segments
+        .filter((segment) => segment.kind === "step")
+        .map((segment) => segment.text)
+        .join(""),
+    )
+    .join("\n");
+  const toolCount = countToolCalls(toolText);
+  const toolTitle = getLastToolPromptBody(toolText);
+  const lastRound = rounds[rounds.length - 1];
+  const lastRunning = lastRound?.waitEndedAt === null;
+  const elapsedMs = rounds.reduce(
+    (sum, round) => sum + Math.max(0, (round.waitEndedAt ?? now) - round.waitStartedAt),
+    0,
+  );
+  const completedText = t("activity.toolCalls").replace("{count}", String(toolCount));
+  const waitingText = `${t("activity.working")} (${formatElapsed(
+    waitingForContinuation ? continuationElapsedMs : elapsedMs,
+  )})`;
+  const timerText = isLatestGroup
+    ? lastRunning
+      ? (toolTitle ?? completedText)
+      : waitingForContinuation
+        ? waitingText
+        : completedText
+    : completedText;
+  const running = isLatestGroup && (lastRunning || waitingForContinuation);
+
+  return (
+    <>
+      {thinkingNodes}
+      <RoundShell
+        timerText={timerText}
+        expandedTimerText={waitingText}
+        running={running}
+        showTimer={true}
+        autoExpand={false}
+        detailsNode={<StepsView text={toolText} />}
+        textNode={null}
+      />
+    </>
+  );
 }
 
 function Dropdown({
@@ -1798,9 +1951,9 @@ function LiveRoundView({
     .map((s) => s.text)
     .join("");
   const toolCount = countToolCalls(toolText);
+  const toolTitle = getLastToolPromptBody(toolText);
   const hasAnswer = answer.trim().length > 0;
   const hasTools = toolText.trim().length > 0;
-  const autoExpandTools = running && toolText.trim().length > 0 && answer.trim().length === 0;
   const thinkingRunning = running && Boolean(round.thinkingText) && !round.thinkingEndedAt;
   const showTimer = shouldShowRoundTimer({
     running,
@@ -1821,7 +1974,7 @@ function LiveRoundView({
     );
   }
   const timerText = hasTools
-    ? t("activity.toolCalls").replace("{count}", String(toolCount))
+    ? toolTitle ?? t("activity.toolCalls").replace("{count}", String(toolCount))
     : `${t("activity.working")} (${elapsed})`;
   return (
     <>
@@ -1841,13 +1994,10 @@ function LiveRoundView({
       )}
       <RoundShell
         timerText={timerText}
+        expandedTimerText={`${t("activity.working")} (${elapsed})`}
         running={running}
         showTimer={showTimer}
-        // Keep the outer "Working" group open while the model is still in a
-        // tool-only phase. The inner command outputs remain collapsed by default
-        // in StepsView. Once the model starts replying or the round ends, fold
-        // the outer group automatically.
-        autoExpand={autoExpandTools}
+        autoExpand={false}
         detailsNode={hasTools ? <StepsView text={toolText} /> : null}
         textNode={
           answer.trim().length > 0 ? (
@@ -1873,6 +2023,13 @@ function TurnView({
   handlers: MessageHandlers;
 }) {
   const { t } = useApp();
+  const liveGroups = groupLiveRounds(turn.rounds);
+  const lastRound = turn.rounds[turn.rounds.length - 1];
+  const hasPendingContinuation = hasPendingInvisibleRound(turn);
+  const showPendingWorking = shouldShowPendingWorking(turn, liveGroups.length > 0);
+  const pendingWorkingElapsed = lastRound
+    ? formatElapsed(now - lastRound.waitStartedAt)
+    : formatElapsed(now - turn.startedAt);
   return (
     <div className="turn">
       {turn.userText && (
@@ -1892,13 +2049,34 @@ function TurnView({
           </div>
         </div>
       )}
-      {turn.rounds.map((round) => (
-        <LiveRoundView
-          key={round.id}
-          round={round}
-          now={now}
-        />
-      ))}
+      {liveGroups.map((group, index) => {
+        if (group.kind === "tool") {
+          return (
+            <LiveToolGroupView
+              key={`tool-${group.rounds[0]?.id ?? index}`}
+              rounds={group.rounds}
+              now={now}
+              isLatestGroup={index === liveGroups.length - 1}
+              waitingForContinuation={index === liveGroups.length - 1 && hasPendingContinuation}
+              continuationElapsedMs={
+                index === liveGroups.length - 1 && lastRound
+                  ? Math.max(0, now - lastRound.waitStartedAt)
+                  : 0
+              }
+            />
+          );
+        }
+        return <LiveRoundView key={group.round.id} round={group.round} now={now} />;
+      })}
+      {showPendingWorking && (
+        <div className="activity">
+          <div className="activity-header running">
+            <span className="activity-text marquee">
+              {t("activity.working")} ({pendingWorkingElapsed})
+            </span>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

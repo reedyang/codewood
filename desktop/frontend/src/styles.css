@@ -4022,6 +4022,13 @@ html[data-has-bg] .select {
   padding: 4px 0;
 }
 
+.activity-header.has-details {
+  display: inline-flex;
+  width: auto;
+  justify-content: flex-start;
+  text-align: left;
+}
+
 .activity-header:disabled {
   cursor: default;
 }
@@ -4030,7 +4037,16 @@ html[data-has-bg] .select {
   font-weight: 600;
 }
 
+.activity-header.has-details .activity-text {
+  flex: 0 1 auto;
+  min-width: 0;
+  text-align: left;
+}
+
 .activity-text.marquee {
+  display: inline-block;
+  min-width: max-content;
+  white-space: nowrap;
   background: linear-gradient(
     90deg,
     var(--text-muted) 0%,

@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
 vi.mock("../state/AppContext", () => ({
@@ -15,16 +15,16 @@ vi.mock("../state/AppContext", () => ({
   }),
 }));
 
-import { HistoryRoundDetailView } from "./ChatView";
+import { HistoryRoundDetailView, RoundShell } from "./ChatView";
 
 describe("HistoryRoundDetailView", () => {
-  it("renders thought before the tool summary when both are present", () => {
+  it("renders thought before the completed tool summary when both are present", () => {
     render(
       <HistoryRoundDetailView
         round={{
           waitSeconds: 9,
           thinking: "hidden reasoning",
-          tools: "\uE004• Request skill prompt (skill_id=codex-usage)\uE005",
+          tools: "\uE004• Read hello.py\uE005",
         }}
       />,
     );
@@ -35,5 +35,28 @@ describe("HistoryRoundDetailView", () => {
     expect(
       thought.compareDocumentPosition(tools) & Node.DOCUMENT_POSITION_FOLLOWING,
     ).not.toBe(0);
+  });
+});
+
+describe("RoundShell", () => {
+  it("shows the tool description when collapsed and Working when expanded", () => {
+    render(
+      <RoundShell
+        timerText="Read hello.py"
+        expandedTimerText="Working..."
+        running={true}
+        showTimer={true}
+        autoExpand={false}
+        detailsNode={<div>details</div>}
+        textNode={null}
+      />,
+    );
+
+    expect(screen.getByText("Read hello.py")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Read hello.py" }));
+
+    expect(screen.getByText("Working...")).toBeTruthy();
+    expect(screen.getByText("details")).toBeTruthy();
   });
 });

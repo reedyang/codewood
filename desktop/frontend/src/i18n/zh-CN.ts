@@ -14,7 +14,7 @@ export const zhCN: Dict = {
   "sidebar.noChats": "暂无对话",
   "sidebar.noWorkspaces": "暂无工作区",
 
-  "activity.working": "处理中 ...",
+  "activity.working": "处理中...",
   "activity.workedFor": "用时",
   "activity.toolCalls": "调用了 {count} 次工具",
   "activity.steps": "执行过程",

@@ -34,4 +34,15 @@ describe("shouldShowRoundTimer", () => {
       }),
     ).toBe(true);
   });
+
+  it("hides the timer once the round is no longer running", () => {
+    expect(
+      shouldShowRoundTimer({
+        running: false,
+        hasTools: false,
+        hasAnswer: false,
+        thinkingRunning: false,
+      }),
+    ).toBe(false);
+  });
 });
