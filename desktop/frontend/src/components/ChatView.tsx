@@ -39,6 +39,7 @@ import {
 } from "../utils/tokens";
 import type { Segment, TokenKind } from "../utils/tokens";
 import { RichComposer } from "./RichComposer";
+import { shouldShowRoundTimer } from "./chatRoundTimer";
 
 function quote(value: string): string {
   return `"${value.replace(/"/g, "")}"`;
@@ -1189,22 +1190,22 @@ function ConsoleDock({ open }: { open: boolean }) {
   );
 }
 
-/** One model round laid out in natural order: the tool group first (its wait
- *  timer + collapsible tool output), then the model's natural-language reply.
+/** One model round laid out in natural order: the Thinking block (if any),
+ *  then the tool/output shell, then the model's natural-language reply.
  *  `running` marks a live, in-flight round so the timer animates. `autoExpand`
- *  keeps the tool output open while the turn is still streaming — it stays open
- *  across the brief round_end→round_start gap between back-to-back tool calls,
- *  so the tools don't collapse-then-reopen. It only auto-collapses once the
- *  whole turn settles. The timer shows only for a tool group (or while live). */
+ *  keeps tool output open while the current round is still active. The timer
+ *  shows only for a tool group (or while live). */
 function RoundShell({
   timerText,
   running,
+  showTimer,
   autoExpand,
   toolText,
   textNode,
 }: {
   timerText: string;
   running: boolean;
+  showTimer: boolean;
   autoExpand: boolean;
   toolText: string;
   textNode: ReactNode;
@@ -1216,7 +1217,6 @@ function RoundShell({
     setExpanded(autoExpand);
   }, [autoExpand]);
 
-  const showTimer = hasTools || running;
   // For a pure answer round (no tools) that is still live, the model has
   // already produced this reply and is now thinking about the next step — so
   // the running "Working" timer reads more naturally BELOW the answer text.
@@ -1340,6 +1340,7 @@ function HistoryRoundView({ round }: { round: HistoryRound }) {
     <RoundShell
       timerText={timerText}
       running={false}
+      showTimer={round.tools.trim().length > 0}
       autoExpand={false}
       toolText={round.tools}
       textNode={
@@ -1699,25 +1700,51 @@ function LiveRoundView({
     .filter((s) => s.kind === "step")
     .map((s) => s.text)
     .join("");
+  const hasAnswer = answer.trim().length > 0;
+  const hasTools = toolText.trim().length > 0;
   const autoExpandTools = running && toolText.trim().length > 0 && answer.trim().length === 0;
+  const thinkingRunning = running && Boolean(round.thinkingText) && !round.thinkingEndedAt;
+  const showTimer = shouldShowRoundTimer({
+    running,
+    hasTools,
+    hasAnswer,
+    thinkingRunning,
+  });
   return (
-    <RoundShell
-      timerText={timerText}
-      running={running}
-      // Keep the outer "Working" group open while the model is still in a
-      // tool-only phase. The inner command outputs remain collapsed by default
-      // in StepsView. Once the model starts replying or the round ends, fold
-      // the outer group automatically.
-      autoExpand={autoExpandTools}
-      toolText={toolText}
-      textNode={
-        answer.trim().length > 0 ? (
-          <div className="answer">
-            <MarkdownText text={answer} />
-          </div>
-        ) : null
-      }
-    />
+    <>
+      {round.thinkingText && (
+        <ThinkingPanel
+          thinkingText={round.thinkingText}
+          running={thinkingRunning}
+          timerText={(() => {
+            const startedAt = round.thinkingStartedAt ?? round.waitStartedAt;
+            const endedAt = round.thinkingEndedAt ?? round.waitEndedAt ?? now;
+            const elapsed = formatElapsed(endedAt - startedAt);
+            return thinkingRunning
+              ? `${t("activity.thinking")} (${elapsed})`
+              : `${t("activity.thoughtFor")} ${elapsed}`;
+          })()}
+        />
+      )}
+      <RoundShell
+        timerText={timerText}
+        running={running}
+        showTimer={showTimer}
+        // Keep the outer "Working" group open while the model is still in a
+        // tool-only phase. The inner command outputs remain collapsed by default
+        // in StepsView. Once the model starts replying or the round ends, fold
+        // the outer group automatically.
+        autoExpand={autoExpandTools}
+        toolText={toolText}
+        textNode={
+          answer.trim().length > 0 ? (
+            <div className="answer">
+              <MarkdownText text={answer} />
+            </div>
+          ) : null
+        }
+      />
+    </>
   );
 }
 
@@ -1733,13 +1760,6 @@ function TurnView({
   handlers: MessageHandlers;
 }) {
   const { t } = useApp();
-  // Thinking is considered "active" only while no answer text or tool output
-  // has been produced yet. Once the model moves on to visible content or tool
-  // calls, the thinking panel auto-collapses.
-  const hasContent = turn.rounds.some((r) =>
-    r.segments.some((s) => s.text.trim().length > 0),
-  );
-  const thinkingRunning = turn.endedAt === null && !hasContent;
   return (
     <div className="turn">
       {turn.userText && (
@@ -1748,23 +1768,6 @@ function TurnView({
           timeMs={turn.startedAt}
           index={negIndex}
           handlers={handlers}
-        />
-      )}
-      {turn.thinkingText && (
-        <ThinkingPanel
-          thinkingText={turn.thinkingText}
-          running={thinkingRunning}
-          timerText={(() => {
-            const startedAt = turn.thinkingStartedAt ?? turn.startedAt;
-            // Use thinkingEndedAt when available so the timer freezes at the
-            // moment the model moved on to visible content / tool calls.
-            const endedAt = turn.thinkingEndedAt ?? turn.endedAt ?? now;
-            const elapsedMs = endedAt - startedAt;
-            const elapsed = formatElapsed(elapsedMs);
-            return thinkingRunning
-              ? `${t("activity.thinking")} (${elapsed})`
-              : `${t("activity.thoughtFor")} ${elapsed}`;
-          })()}
         />
       )}
       {turn.rounds.length === 0 && turn.endedAt === null && (

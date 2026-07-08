@@ -373,16 +373,20 @@ def _build_structured_turns(agent: Any) -> List[Dict[str, Any]]:
                 prev_ts = ts
             continue
 
-        # A pure tool-call model message (no natural-language reply) belongs to
-        # the same collapsible tool group: merge it into the current tool round
-        # (creating one only if none is open) so its wait adds to the group's
-        # total time instead of spawning a separate timer.
+        # A pure tool-call model message (no natural-language reply) still
+        # represents a distinct model pass. Keep it in its own round whenever
+        # the previous round already produced visible tool/thinking content, so
+        # later reasoning blocks do not overwrite the first Thinking panel.
         if _is_tool_plan(content):
             turn = _ensure_turn()
             wait = (ts - prev_ts) if (ts is not None and prev_ts is not None) else 0
-            if current_round is None or current_round.get("text"):
-                # Start a fresh tool group either at the turn's first activity or
-                # right after a round that already carried a model reply.
+            if (
+                current_round is None
+                or current_round.get("text")
+                or current_round.get("tools")
+                or current_round.get("thinking")
+                or current_round.get("selection")
+            ):
                 current_round = _new_round(turn, wait)
             else:
                 current_round["waitSeconds"] += max(0, int(round(wait)))

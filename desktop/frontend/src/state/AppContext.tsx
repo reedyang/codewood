@@ -962,9 +962,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
         const turn = next[next.length - 1];
         const rounds = [...turn.rounds];
         let round = rounds[rounds.length - 1];
-        // If the last round is closed (timer ended) and a new step arrives,
-        // open a fresh round rather than appending to the closed one.
-        if (round && round.waitEndedAt !== null && kind === "step") {
+        // If the last round is closed (timer ended), open a fresh round rather
+        // than appending new visible output to an earlier model pass.
+        if (round && round.waitEndedAt !== null) {
           round = {
             id: nextIdRef.current++,
             waitStartedAt: Date.now(),
@@ -985,11 +985,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
           round.segments.some((s) => s.kind === "step") &&
           !round.segments.some((s) => s.kind === "answer")
         ) {
-          // The model finished its tool calls for this round and is now
-          // replying. Freeze the tool group's timer and open a fresh round so
-          // the answer (and the live "Working" timer that follows for the next
-          // tool call) sits BELOW the tools, in natural order — instead of the
-          // tool group's running timer hovering above the just-streamed reply.
+          // If answer text lands after tool output without an intervening
+          // ``round_start`` event, still open a fresh round so the reply gets
+          // its own Thinking/timer block instead of being merged into the
+          // previous tool-only pass.
           rounds[rounds.length - 1] = {
             ...round,
             waitEndedAt: round.waitEndedAt ?? Date.now(),
@@ -1002,12 +1001,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
           };
           rounds.push(round);
         }
-        // Freeze the thinking timer on the first content (answer or step)
-        // so the "Thought for Xs" text stops counting.
-        const updatedTurn =
-          turn.thinkingText && !turn.thinkingEndedAt
-            ? { ...turn, thinkingEndedAt: Date.now() }
-            : turn;
+        // Freeze the current round's thinking timer on the first visible
+        // content so that later model passes can open their own Thinking block.
+        if (round.thinkingText && !round.thinkingEndedAt) {
+          round = { ...round, thinkingEndedAt: Date.now() };
+        }
         const segments = [...round.segments];
         const last = segments[segments.length - 1];
         if (last && last.kind === kind) {
@@ -1016,7 +1014,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
           segments.push({ id: nextIdRef.current++, kind, text });
         }
         rounds[rounds.length - 1] = { ...round, segments };
-        next[next.length - 1] = { ...updatedTurn, rounds };
+        next[next.length - 1] = { ...turn, rounds };
         return { ...prev, [chatId]: next };
       });
     },
@@ -1030,14 +1028,52 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setTurnsByChat((prev) => {
       const existing = prev[chatId];
       if (!existing || existing.length === 0) {
-        return prev;
+        const placeholder = {
+          id: nextIdRef.current++,
+          userText: "",
+          rounds: [{
+            id: nextIdRef.current++,
+            waitStartedAt: Date.now(),
+            waitEndedAt: null,
+            segments: [],
+            thinkingText: text,
+            thinkingStartedAt: Date.now(),
+          }],
+          startedAt: Date.now(),
+          endedAt: null,
+        };
+        return { ...prev, [chatId]: [placeholder] };
       }
       const next = [...existing];
       const turn = next[next.length - 1];
-      const prevText = turn.thinkingText ?? "";
+      const rounds = [...turn.rounds];
+      let round = rounds[rounds.length - 1];
+      const roundHasVisibleContent = Boolean(
+        round?.segments.some((segment) => segment.text.trim().length > 0),
+      );
+      if (
+        !round ||
+        round.waitEndedAt !== null ||
+        roundHasVisibleContent ||
+        round.thinkingEndedAt !== undefined
+      ) {
+        round = {
+          id: nextIdRef.current++,
+          waitStartedAt: Date.now(),
+          waitEndedAt: null,
+          segments: [],
+        };
+        rounds.push(round);
+      }
+      const prevText = round.thinkingText ?? "";
       // Record the moment thinking first started so the UI can show a live timer.
-      const thinkingStartedAt = turn.thinkingStartedAt ?? (!prevText ? Date.now() : undefined);
-      next[next.length - 1] = { ...turn, thinkingText: prevText + text, thinkingStartedAt };
+      const thinkingStartedAt = round.thinkingStartedAt ?? (!prevText ? Date.now() : undefined);
+      rounds[rounds.length - 1] = {
+        ...round,
+        thinkingText: prevText + text,
+        thinkingStartedAt,
+      };
+      next[next.length - 1] = { ...turn, rounds };
       return { ...prev, [chatId]: next };
     });
   }, []);
@@ -1111,12 +1147,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
     [],
   );
 
-  // Open a model round's wait timer on the active turn. Consecutive rounds
-  // that only issue tool calls (no natural-language reply yet) belong to one
-  // collapsible tool group with a single running timer, so instead of starting
-  // a new round we just reopen the previous round's timer when it carries tool
-  // output but no answer. A new round starts only after a round produced an
-  // answer (or at the turn's first round).
+  // Open a model round's wait timer on the active turn. Each backend
+  // ``round_start`` becomes its own UI round so repeated tool-call loops can
+  // render distinct Thinking blocks instead of merging later reasoning into the
+  // first one.
   const startRound = useCallback((chatId: string) => {
     if (!chatId) {
       return;
@@ -1135,16 +1169,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
         next.push(turn);
       }
       const last = turn.rounds[turn.rounds.length - 1];
-      const lastIsOpenToolGroup =
-        last &&
-        last.segments.some((s) => s.kind === "step") &&
-        !last.segments.some((s) => s.kind === "answer");
-      let rounds;
-      if (lastIsOpenToolGroup) {
-        // Keep the group's original start time; just resume its timer.
-        rounds = [...turn.rounds];
-        rounds[rounds.length - 1] = { ...last, waitEndedAt: null };
-      } else {
+      let rounds = [...turn.rounds];
+      if (
+        !last ||
+        last.waitEndedAt !== null ||
+        last.segments.length > 0 ||
+        last.thinkingText
+      ) {
         rounds = [
           ...turn.rounds,
           {

@@ -256,6 +256,12 @@ export interface TurnRound {
   waitStartedAt: number;
   waitEndedAt: number | null;
   segments: TurnSegment[];
+  /** Accumulated model reasoning/thinking text for this round. */
+  thinkingText?: string;
+  /** When model reasoning/thinking started for this round. */
+  thinkingStartedAt?: number;
+  /** When model reasoning/thinking ended for this round. */
+  thinkingEndedAt?: number;
 }
 
 /** One user request and the assistant's streamed response, split into rounds. */
@@ -271,13 +277,6 @@ export interface Turn {
    *  than appending a duplicate, and ``endActiveTurn`` won't settle it while it
    *  has no rounds yet (so a premature ``idle`` can't split it in two). */
   optimistic?: boolean;
-  /** Accumulated model reasoning/thinking text for this turn. */
-  thinkingText?: string;
-  /** When model reasoning/thinking started (first ``thinking`` SSE event). */
-  thinkingStartedAt?: number;
-  /** When model reasoning/thinking ended (first non-thinking content arrived).
-   *  Used to freeze the timer text when the thinking panel auto-collapses. */
-  thinkingEndedAt?: number;
 }
 
 /** A previously-recorded model round loaded from chat history. */
