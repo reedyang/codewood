@@ -330,6 +330,131 @@ class ProviderContextWindowTests(unittest.TestCase):
         self.assertEqual(sent[1]["content"], "a1")
         self.assertEqual(sent[2]["content"], "u2")
 
+    def test_openai_provider_can_explicitly_include_thinking_in_history(self):
+        with patch("requests.post", return_value=_FakeResponse()) as mock_post:
+            out = call_ai_with_provider(
+                context=ProviderCallContext(
+                    provider="openai",
+                    model_name="gpt-oss-120b",
+                    model_params={"include_thinking_in_messages": True},
+                    openai_conf={
+                        "api_key": "k",
+                        "base_url": "https://example.com/v1",
+                        "include_thinking_in_messages": True,
+                    },
+                    messages=[
+                        {"role": "assistant", "content": "answer", "_thinking": "chain"},
+                        {"role": "user", "content": "follow up"},
+                    ],
+                    stream=False,
+                    return_message=False,
+                    image_data=None,
+                    image_user_idx=None,
+                    image_user_text="",
+                    session_summary_mode=False,
+                    memory_query_expansion_mode=False,
+                ),
+                append_history=lambda *_a, **_kw: None,
+                ollama_importer=lambda: None,
+            )
+        self.assertEqual(out, "ok")
+        sent = mock_post.call_args.kwargs.get("json", {}).get("messages", [])
+        self.assertEqual(sent[0]["reasoning_content"], "chain")
+        self.assertNotIn("_thinking", sent[0])
+
+    def test_deepseek_provider_config_can_enable_thinking_replay(self):
+        with patch("requests.post", return_value=_FakeResponse()) as mock_post:
+            out = call_ai_with_provider(
+                context=ProviderCallContext(
+                    provider="deepseek",
+                    model_name="deepseek-chat",
+                    model_params={"include_thinking_in_messages": True},
+                    openai_conf={
+                        "api_key": "k",
+                        "base_url": "https://api.deepseek.com",
+                        "include_thinking_in_messages": True,
+                    },
+                    messages=[
+                        {"role": "assistant", "content": "answer", "_thinking": "chain"},
+                        {"role": "user", "content": "follow up"},
+                    ],
+                    stream=False,
+                    return_message=False,
+                    image_data=None,
+                    image_user_idx=None,
+                    image_user_text="",
+                    session_summary_mode=False,
+                    memory_query_expansion_mode=False,
+                ),
+                append_history=lambda *_a, **_kw: None,
+                ollama_importer=lambda: None,
+            )
+        self.assertEqual(out, "ok")
+        sent = mock_post.call_args.kwargs.get("json", {}).get("messages", [])
+        self.assertEqual(sent[0]["reasoning_content"], "chain")
+
+    def test_deepseek_without_provider_config_does_not_replay_thinking(self):
+        with patch("requests.post", return_value=_FakeResponse()) as mock_post:
+            out = call_ai_with_provider(
+                context=ProviderCallContext(
+                    provider="deepseek",
+                    model_name="deepseek-chat",
+                    model_params={},
+                    openai_conf={
+                        "api_key": "k",
+                        "base_url": "https://api.deepseek.com",
+                    },
+                    messages=[
+                        {"role": "assistant", "content": "answer", "_thinking": "chain"},
+                        {"role": "user", "content": "follow up"},
+                    ],
+                    stream=False,
+                    return_message=False,
+                    image_data=None,
+                    image_user_idx=None,
+                    image_user_text="",
+                    session_summary_mode=False,
+                    memory_query_expansion_mode=False,
+                ),
+                append_history=lambda *_a, **_kw: None,
+                ollama_importer=lambda: None,
+            )
+        self.assertEqual(out, "ok")
+        sent = mock_post.call_args.kwargs.get("json", {}).get("messages", [])
+        self.assertNotIn("reasoning_content", sent[0])
+
+    def test_deepseek_provider_setting_can_disable_thinking_replay(self):
+        with patch("requests.post", return_value=_FakeResponse()) as mock_post:
+            out = call_ai_with_provider(
+                context=ProviderCallContext(
+                    provider="deepseek",
+                    model_name="deepseek-chat",
+                    model_params={"include_thinking_in_messages": False},
+                    openai_conf={
+                        "api_key": "k",
+                        "base_url": "https://api.deepseek.com",
+                        "include_thinking_in_messages": False,
+                    },
+                    messages=[
+                        {"role": "assistant", "content": "answer", "_thinking": "chain"},
+                        {"role": "user", "content": "follow up"},
+                    ],
+                    stream=False,
+                    return_message=False,
+                    image_data=None,
+                    image_user_idx=None,
+                    image_user_text="",
+                    session_summary_mode=False,
+                    memory_query_expansion_mode=False,
+                ),
+                append_history=lambda *_a, **_kw: None,
+                ollama_importer=lambda: None,
+            )
+        self.assertEqual(out, "ok")
+        sent = mock_post.call_args.kwargs.get("json", {}).get("messages", [])
+        self.assertNotIn("reasoning_content", sent[0])
+        self.assertNotIn("_thinking", sent[0])
+
     def test_openai_chat_mode_appends_chat_completions_suffix(self):
         with patch("requests.post", return_value=_FakeResponse()) as mock_post:
             out = call_ai_with_provider(

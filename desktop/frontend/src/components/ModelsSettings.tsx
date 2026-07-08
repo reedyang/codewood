@@ -3,6 +3,7 @@ import { useApp } from "../state/AppContext";
 import { Icon } from "./Icon";
 import {
   MODEL_PRESETS,
+  findPreset,
   toEditorProvider,
   toConfigProviders,
   type EditorProvider,
@@ -52,7 +53,21 @@ export function ModelsSettings({ onDirtyChange, saveSignal }: ModelsSettingsProp
     // Also load merged presets from backend.
     void getModelPresets().then((remote) => {
       if (!alive || !Array.isArray(remote) || remote.length === 0) return;
-      setPresets(remote as ModelPreset[]);
+      const remotePresets = remote as ModelPreset[];
+      const remoteById = new Map(
+        remotePresets
+          .filter((preset) => preset && typeof preset === "object")
+          .map((preset) => [preset.id, preset]),
+      );
+      const merged = MODEL_PRESETS.map((preset) => ({
+        ...preset,
+        ...(remoteById.get(preset.id) ?? {}),
+      }));
+      for (const preset of remotePresets) {
+        if (!preset?.id || merged.some((item) => item.id === preset.id)) continue;
+        merged.push(preset);
+      }
+      setPresets(merged);
     });
     return () => {
       alive = false;
@@ -91,6 +106,7 @@ export function ModelsSettings({ onDirtyChange, saveSignal }: ModelsSettingsProp
       presetId,
       api_mode: preset.api_mode,
       base_url: preset.kind === "openai" ? preset.base_url : "",
+      include_thinking_in_messages: preset.include_thinking_in_messages ?? false,
       provider: preset.kind === "custom" ? providers[idx]?.provider || "" : preset.provider,
     });
   };
@@ -105,6 +121,7 @@ export function ModelsSettings({ onDirtyChange, saveSignal }: ModelsSettingsProp
         api_key: "",
         base_url: preset.base_url,
         api_mode: preset.api_mode,
+        include_thinking_in_messages: preset.include_thinking_in_messages ?? false,
         models: [],
         auto_refresh: false,
         presetId: preset.id,
@@ -294,6 +311,12 @@ export function ModelsSettings({ onDirtyChange, saveSignal }: ModelsSettingsProp
       {providers.map((p, idx) => {
         const preset = presets.find((pr) => pr.id === p.presetId);
         const isOllama = preset?.kind === "ollama" || p.api_mode === "ollama";
+        const presetDefaultThinking =
+          (preset ?? findPreset(p.presetId))?.include_thinking_in_messages === true;
+        const showThinkingWarning =
+          !isOllama &&
+          presetDefaultThinking &&
+          p.include_thinking_in_messages === false;
         const isCollapsed = Boolean(collapsed[idx]);
         const collapsedLabel =
           p.display_name.trim() || p.provider.trim() || preset?.label || t("models.provider");
@@ -400,6 +423,29 @@ export function ModelsSettings({ onDirtyChange, saveSignal }: ModelsSettingsProp
                         <option value="chat">{t("models.apiModeChat")}</option>
                         <option value="responses">{t("models.apiModeResponses")}</option>
                       </select>
+                    </div>
+
+                    <div className="models-field">
+                      <label className="models-effort">
+                        <input
+                          type="checkbox"
+                          checked={p.include_thinking_in_messages === true}
+                          onChange={(e) =>
+                            update(idx, {
+                              include_thinking_in_messages: e.target.checked,
+                            })
+                          }
+                        />
+                        {t("models.includeThinkingInMessages")}
+                      </label>
+                      <div className="models-hint">
+                        {t("models.includeThinkingInMessagesHint")}
+                      </div>
+                      {showThinkingWarning && (
+                        <div className="models-warning">
+                          {t("models.includeThinkingInMessagesWarning")}
+                        </div>
+                      )}
                     </div>
                   </>
                 )}

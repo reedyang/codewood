@@ -4039,21 +4039,14 @@ class ServeApp:
             except Exception:
                 pass
             # Refresh the live agent params so the current model's
-            # reasoning_effort / extra_headers reflect the just-saved
-            # config without requiring a model switch.
+            # provider/model params reflect the just-saved config without
+            # requiring a model switch.
             try:
-                catalog = agent._get_configured_model_catalog()
                 current = agent._current_model_selector().lower()
-                for entry in catalog:
-                    if (entry.get("selector") or "").lower() == current:
-                        entry_params = entry.get("params", {})
-                        if isinstance(entry_params, dict):
-                            current_params = getattr(agent, "params", {}) or {}
-                            if isinstance(current_params, dict):
-                                current_params["reasoning_effort"] = list(
-                                    entry_params.get("reasoning_effort") or []
-                                )
-                        break
+                if current:
+                    choice = agent._find_configured_model_choice(current)
+                    if choice:
+                        agent._apply_runtime_model_choice(choice, validate=False)
             except Exception:
                 pass
         except Exception:
@@ -4068,7 +4061,9 @@ class ServeApp:
     def sync_model_presets(self, app_presets: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Merge app-level presets into ``model_presets.json`` and return the merged list.
 
-        Presets already in the file are kept unchanged; new presets (by ``id``)
+        Existing presets keep their current values, but newly-added fields from
+        bundled presets are backfilled when absent so the GUI can adopt new
+        default options without overwriting user edits. New presets (by ``id``)
         that exist in ``app_presets`` but not in the file are appended.
         """
         if not isinstance(app_presets, list):
@@ -4083,10 +4078,30 @@ class ServeApp:
                     existing = parsed
             except Exception:
                 pass
-        existing_ids = {str(p.get("id", "")) for p in existing if isinstance(p, dict)}
+        existing_by_id = {
+            str(p.get("id", "")): p for p in existing if isinstance(p, dict) and str(p.get("id", ""))
+        }
         merged = list(existing)
+        for idx, preset in enumerate(merged):
+            if not isinstance(preset, dict):
+                continue
+            preset_id = str(preset.get("id", ""))
+            if not preset_id:
+                continue
+            fallback = next(
+                (
+                    item for item in app_presets
+                    if isinstance(item, dict) and str(item.get("id", "")) == preset_id
+                ),
+                None,
+            )
+            if not isinstance(fallback, dict):
+                continue
+            for key, value in fallback.items():
+                if key not in preset:
+                    preset[key] = value
         for p in app_presets:
-            if isinstance(p, dict) and str(p.get("id", "")) not in existing_ids:
+            if isinstance(p, dict) and str(p.get("id", "")) not in existing_by_id:
                 merged.append(p)
         try:
             path.write_text(
