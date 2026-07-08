@@ -34,7 +34,7 @@
             // ``reasoning.effort`` (responses API), is selectable per chat in
             // the TUI (``/model reasoning <level>``) and GUI model menu, and is
             // saved per chat. Omit or leave empty to disable.
-            "reasoning_effort": ["low", "medium", "high"],
+            "reasoning_effort": ["none", "low", "medium", "high", "xhigh", "max"],
             "extra_headers": {
               "X-Model": "<YOUR MODEL NAME>" // optional, model-level custom headers
             }

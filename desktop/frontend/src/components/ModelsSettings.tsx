@@ -12,7 +12,7 @@ import {
   type ModelPreset,
 } from "./modelPresets";
 
-const FIXED_EFFORTS = ["low", "medium", "high", "max"] as const;
+const FIXED_EFFORTS = ["none", "low", "medium", "high", "xhigh", "max"] as const;
 
 interface ModelsSettingsProps {
   onDirtyChange?: (dirty: boolean) => void;
