@@ -642,33 +642,16 @@ def freedom_auto_confirm(agent: Any, command: Dict[str, Any]) -> bool:
         # If user selected "always" before, skip AI reversibility review entirely.
         load_confirm_allowlist(agent)
         if shell_command_in_allowlist(agent, s):
-            _print_with_auto_hide_tracking(
-                agent,
-                f"{mode_prefix} {_t(agent, 'execution_policy.review.skip_confirm_list_skip', fallback='matched skip-confirm list, skipped AI review and executed directly.')}",
-            )
             return True
 
         if re.search(
             r"(?i)(?:^|[\s;&|])(?:py(?:thon)?(?:\d(?:\.\d)?)?|pythonw)\s+-\s*c\s+", s
         ):
-            _print_with_auto_hide_tracking(
-                agent,
-                f"{mode_prefix} {_t(agent, 'execution_policy.review.inline_python_skip', fallback='inline Python (-c) in work directory, confirmation skipped.')}",
-            )
             agent._manual_confirm_required_shell_once = False
             return True
 
         sp = agent._parse_shell_invoked_script_path(s)
         if sp is not None:
-            sk = normalize_path_allowlist_key(sp)
-            expected = agent._allowlist_shell_paths.get(sk)
-            if expected:
-                actual = shell_script_hash(agent, sp)
-                if actual and actual == expected:
-                        _print_with_auto_hide_tracking(
-                            agent,
-                            f"{mode_prefix} {_t(agent, 'execution_policy.review.hash_skip', fallback='script hash matched skip-confirm entry, skipped AI review and executed directly.')}",
-                        )
             k = agent._ephemeral_path_key(sp)
             session_ephemeral = k in agent._ephemeral_script_paths
             combined_eligible = sp.is_file() and (
