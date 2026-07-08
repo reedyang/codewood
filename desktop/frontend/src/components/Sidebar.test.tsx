@@ -157,10 +157,11 @@ describe("Sidebar workspace routing", () => {
       },
     });
 
-    render(<Sidebar collapsed={false} onOpenSettings={() => {}} />);
+    const { container } = render(<Sidebar collapsed={false} onOpenSettings={() => {}} />);
 
     expect(screen.getByText("30s")).toBeInTheDocument();
     expect(screen.getByText("5m")).toBeInTheDocument();
     expect(screen.getAllByText("30s")).toHaveLength(1);
+    expect(container.querySelector(".chat-busy-dot")).toBeTruthy();
   });
 });

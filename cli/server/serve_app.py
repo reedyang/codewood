@@ -2012,6 +2012,10 @@ class ServeApp:
                 if self._chat_is_busy(rid):
                     with agent._chat_state_lock:
                         agent._chat_state["active"] = rid
+                        agent.active_chat_id = rid
+                        agent.active_chat_name = str(
+                            (target or {}).get("name") or "New Chat"
+                        )
                         agent._save_chat_state()
                 else:
                     try:

@@ -160,6 +160,36 @@ function HistoryReloadProbe() {
   );
 }
 
+function BusySwitchProbe() {
+  const {
+    activeWorkspaceId,
+    activeChatId,
+    busyByChat,
+    runningChatStartedAtByChat,
+    turns,
+    switchToChat,
+  } = useApp();
+  return (
+    <>
+      <button onClick={() => { void switchToChat("chat-2", "ws-1"); }}>
+        switch to chat 2
+      </button>
+      <button onClick={() => { void switchToChat("chat-1", "ws-1"); }}>
+        switch back to chat 1
+      </button>
+      <pre data-testid="busy-switch-view">
+        {JSON.stringify({
+          activeWorkspaceId,
+          activeChatId,
+          busyByChat,
+          runningChatStartedAtByChat,
+          turns,
+        })}
+      </pre>
+    </>
+  );
+}
+
 describe("AppContext thinking rounds", () => {
   beforeEach(() => {
     apiMock.reset();
@@ -434,6 +464,82 @@ describe("AppContext thinking rounds", () => {
 
     await waitFor(() => {
       expect(apiMock.getChatHistory).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  it("preserves the running chat timer source and optimistic selection while switching away and back", async () => {
+    apiMock.getState.mockResolvedValue(
+      buildState({
+        chats: [{
+          index: 0,
+          id: "chat-1",
+          name: "Chat 1",
+          messageCount: 1,
+          active: true,
+          running: true,
+          archived: false,
+          planMode: false,
+          model: "provider:model",
+        }, {
+          index: 1,
+          id: "chat-2",
+          name: "Chat 2",
+          messageCount: 0,
+          active: false,
+          running: false,
+          archived: false,
+          planMode: false,
+          model: "provider:model",
+        }],
+      }),
+    );
+
+    render(
+      <AppProvider>
+        <BusySwitchProbe />
+      </AppProvider>,
+    );
+
+    await waitFor(() => expect(apiMock.connectEvents).toHaveBeenCalled());
+
+    act(() => {
+      apiMock.emit({
+        event: "turn_start",
+        data: { text: "Working", chatId: "chat-1", workspaceId: "ws-1" },
+      });
+    });
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "switch to chat 2" }));
+    });
+
+    await waitFor(() => {
+      const view = JSON.parse(screen.getByTestId("busy-switch-view").textContent || "{}") as {
+        activeWorkspaceId: string;
+        activeChatId: string;
+        busyByChat: Record<string, boolean>;
+        runningChatStartedAtByChat: Record<string, number>;
+      };
+      expect(view.activeWorkspaceId).toBe("ws-1");
+      expect(view.activeChatId).toBe("chat-2");
+      expect(view.busyByChat["ws-1\u0000chat-1"]).toBe(true);
+      expect(view.runningChatStartedAtByChat["ws-1\u0000chat-1"]).toBeTypeOf("number");
+    });
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "switch back to chat 1" }));
+    });
+
+    await waitFor(() => {
+      const view = JSON.parse(screen.getByTestId("busy-switch-view").textContent || "{}") as {
+        activeWorkspaceId: string;
+        activeChatId: string;
+        turns: Turn[];
+      };
+      expect(view.activeWorkspaceId).toBe("ws-1");
+      expect(view.activeChatId).toBe("chat-1");
+      expect(view.turns).toHaveLength(1);
+      expect(view.turns[0]?.endedAt).toBeNull();
     });
   });
 });

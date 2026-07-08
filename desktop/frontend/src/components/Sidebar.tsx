@@ -361,15 +361,25 @@ export function Sidebar({ collapsed, onOpenSettings }: { collapsed: boolean; onO
             >
               <button className="tree-label" onClick={() => void switchChat(wsId, chat.id)}>
                 <span className="tree-name">{chat.name}</span>
-                {/* Running chats show their live elapsed task time; idle chats
-                    show time since last update; unread chats keep the steady
-                    dot so completion stands out at a glance. */}
+                {/* Running chats keep the pulsing busy dot and show their live
+                    elapsed task time; idle chats show time since last update;
+                    unread chats keep the steady dot so completion stands out
+                    at a glance. */}
                 {isUnread ? (
                   <span
                     className="chat-status-dot chat-unread-dot"
                     aria-label={t("chat.unread")}
                     title={t("chat.unread")}
                   />
+                ) : isBusy ? (
+                  <>
+                    <span
+                      className="chat-status-dot chat-busy-dot"
+                      aria-label={t("chat.running")}
+                      title={t("chat.running")}
+                    />
+                    {metaText && <span className="tree-meta">{metaText}</span>}
+                  </>
                 ) : (
                   metaText && <span className="tree-meta">{metaText}</span>
                 )}
