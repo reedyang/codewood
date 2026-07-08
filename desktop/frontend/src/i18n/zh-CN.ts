@@ -287,6 +287,9 @@ export const zhCN: Dict = {
   "models.contextWindowPlaceholder": "如 128000 或 128k",
   "models.multimodal": "多模态（支持图片输入）",
   "models.streaming": "流式响应",
+  "models.useCleanContent": "发送清理后的历史消息内容",
+  "models.useCleanContentHint":
+    "打开后，请求历史会优先发送清理后的消息内容，去掉思考标签等噪音。默认关闭。",
   "models.thinking": "启用深度思考/推理",
   "models.thinkingHint": "允许模型输出内部推理过程。",
   "thinking.show": "显示思考",

@@ -96,6 +96,15 @@ def _sanitize_assistant_text(text: Any) -> str:
     return text
 
 
+def _output_tokens_include_reasoning_for_url(url: str) -> bool:
+    """Whether the provider's output-token count is known to include reasoning.
+
+    This remains provider-family behavior, but it is independent from the
+    model-level ``use_clean_content`` setting.
+    """
+    return "api.deepseek.com" in str(url or "").strip().lower()
+
+
 class _StreamingSanitizer:
     """Stateful sanitizer that strips hidden ``<think>...</think>``,
     `` think... think`` (DeepSeek-R1), and
@@ -1588,7 +1597,7 @@ def _attach_output_usage(
     message["_output_tokens"] = output_tokens
     message["_reasoning_tokens"] = reasoning_tokens
     # DeepSeek: completion_tokens includes reasoning; OpenAI etc: excludes it.
-    message["_token_count_includes_reasoning"] = not adapter.use_clean_content()
+    message["_token_count_includes_reasoning"] = _output_tokens_include_reasoning_for_url(url)
 
 
 def _call_openai_once(
@@ -1951,8 +1960,10 @@ def _call_with_openai_compatible(
     if not api_key:
         return api_key_error_msg
 
-    adapter_manager = CacheAdapterManager()
-    use_clean = adapter_manager.should_use_clean_content(base_url)
+    use_clean = parse_bool_flag(
+        conf.get("use_clean_content"),
+        default_value=False,
+    )
     include_thinking = parse_bool_flag(
         conf.get("include_thinking_in_messages"),
         default_value=False,
@@ -2128,10 +2139,8 @@ def _call_with_ollama(
     port = parse_port(params_for_port.get("port"), default_value=DEFAULT_OLLAMA_PORT)
     url = f"http://127.0.0.1:{port}/api/chat"
 
-    # Apply _clean_content substitution for non-DeepSeek providers:
-    # avoid sending thinking tags and other noise to models that don't
-    # benefit from prompt-prefix caching.
-    use_clean = CacheAdapterManager().should_use_clean_content(url)
+    # Apply _clean_content substitution only when the selected model enables it.
+    use_clean = parse_bool_flag(params_for_port.get("use_clean_content"), default_value=False)
     if use_clean and any(isinstance(m, dict) and m.get("_clean_content") for m in provider_messages):
         if provider_messages is messages:
             provider_messages = [dict(m) for m in provider_messages]
