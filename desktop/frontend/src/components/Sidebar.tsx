@@ -134,6 +134,25 @@ export function Sidebar({ collapsed, onOpenSettings }: { collapsed: boolean; onO
     }
   }, [defaultWs?.id, refreshWorkspaceChats]);
 
+  // Fetch chats for workspaces referenced by pinned chat keys that haven't
+  // been loaded yet. Without this, the PINNED group stays empty when GUI
+  // opens on a workspace that doesn't own any pinned chat entries.
+  useEffect(() => {
+    const needed = new Set<string>();
+    for (const key of uiPrefs.pinnedChatIds) {
+      const sep = key.indexOf("\0");
+      if (sep > 0) {
+        const wsId = key.slice(0, sep);
+        if (chatsByWorkspace[wsId] === undefined) {
+          needed.add(wsId);
+        }
+      }
+    }
+    for (const wsId of needed) {
+      void refreshWorkspaceChats(wsId);
+    }
+  }, [uiPrefs.pinnedChatIds, chatsByWorkspace, refreshWorkspaceChats]);
+
   const chatsForWorkspace = (ws: WorkspaceSummary): ChatRow[] => {
     const list = chatsByWorkspace[ws.id] ?? [];
     return list.filter((c) => !c.archived && !isPinnedChat(ws.id, c.id));
