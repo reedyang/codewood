@@ -1498,8 +1498,23 @@ export function AppProvider({ children }: { children: ReactNode }) {
           const stateForFocused =
             !eventWsId || !activeWsId || eventWsId === activeWsId ||
             eventWsId === pendingFocusWsIdRef.current;
-          if (next && !isStreamingChat && stateForFocused) {
-            setState(next);
+          if (next && stateForFocused) {
+            if (isStreamingChat) {
+              // During streaming, only apply chat list updates (e.g. auto-
+              // generated name) from the incoming state to avoid disrupting
+              // turn content accumulation with a full state replacement.
+              setState((prev) => {
+                if (!prev) return prev;
+                if (!next.chats) return prev;
+                const chats = prev.chats.map((c) => {
+                  const updated = next.chats?.find((nc) => nc.id === c.id);
+                  return updated ? { ...c, ...updated } : c;
+                });
+                return { ...prev, chats };
+              });
+            } else {
+              setState(next);
+            }
           }
           break;
         }
