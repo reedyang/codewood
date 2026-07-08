@@ -28,6 +28,7 @@ _THINK_TAG_RE = re.compile(
 _CHANNEL_THOUGHT_RE = re.compile(
     r"<\|channel\>\s*thought[\s\S]*?<channel\|>", flags=re.IGNORECASE
 )
+_CHANNEL_MARKER_RE = re.compile(r"<\|channel\>|<channel\|>", flags=re.IGNORECASE)
 _ORPHAN_HIDDEN_MARKER_RE = re.compile(
     r"<\|channel\>\s*thought|<channel\|>|</?\s*think\s*>",
     flags=re.IGNORECASE,
@@ -41,6 +42,7 @@ def _strip_hidden_blocks(text: str) -> str:
         return ""
     text = _THINK_TAG_RE.sub("", text)
     text = _CHANNEL_THOUGHT_RE.sub("", text)
+    text = _CHANNEL_MARKER_RE.sub("", text)
     text = _ORPHAN_HIDDEN_MARKER_RE.sub("", text)
     return text
 

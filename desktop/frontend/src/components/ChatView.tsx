@@ -12,7 +12,7 @@ import { ConsolePanel } from "./ConsolePanel";
 import type { HistoryRound, HistoryTurn, Turn, TurnRound } from "../api/types";
 import { Icon, type IconName } from "./Icon";
 import { MarkdownText } from "./Markdown";
-import { StepsView } from "./Steps";
+import { StepsView, countToolCalls } from "./Steps";
 import { ChatTitleBar } from "./ChatTitleBar";
 import { AskMoreInfoPanel } from "./AskMoreInfoPanel";
 import { ConfirmDialog } from "./ConfirmDialog";
@@ -1194,52 +1194,48 @@ function ConsoleDock({ open }: { open: boolean }) {
   );
 }
 
-/** One model round laid out in natural order: the Thinking block (if any),
- *  then the tool/output shell, then the model's natural-language reply.
- *  `running` marks a live, in-flight round so the timer animates. `autoExpand`
- *  keeps tool output open while the current round is still active. The timer
- *  shows only for a tool group (or while live). */
+/** One model round laid out in natural order. The round can render either as
+ *  "answer first, then tools" (live streaming) or "collapsed details first,
+ *  then the final paragraph" (history / completed rounds). */
 function RoundShell({
   timerText,
   running,
   showTimer,
   autoExpand,
-  toolText,
+  detailsBeforeText = false,
+  detailsNode,
   textNode,
 }: {
   timerText: string;
   running: boolean;
   showTimer: boolean;
   autoExpand: boolean;
-  toolText: string;
+  detailsBeforeText?: boolean;
+  detailsNode: ReactNode;
   textNode: ReactNode;
 }) {
   const { t } = useApp();
-  const hasTools = toolText.trim().length > 0;
-  const [expanded, setExpanded] = useState(autoExpand);
+  const hasDetails = Boolean(detailsNode);
+  const [expanded, setExpanded] = useState(autoExpand && hasDetails);
   useEffect(() => {
-    setExpanded(autoExpand);
-  }, [autoExpand]);
+    setExpanded(autoExpand && hasDetails);
+  }, [autoExpand, hasDetails]);
 
-  // For a pure answer round (no tools) that is still live, the model has
-  // already produced this reply and is now thinking about the next step — so
-  // the running "Working" timer reads more naturally BELOW the answer text.
-  const timerBelow = running && !hasTools;
   const timer = showTimer ? (
     <div className="activity">
       <button
         className={`activity-header ${running ? "running" : ""}`}
-        onClick={() => hasTools && setExpanded((v) => !v)}
-        disabled={!hasTools}
+        onClick={() => hasDetails && setExpanded((v) => !v)}
+        disabled={!hasDetails}
       >
         <span className={`activity-text ${running ? "marquee" : ""}`}>{timerText}</span>
-        {hasTools && (
+        {hasDetails && (
           <Icon name="chevron" size={14} className={`chevron ${expanded ? "open" : ""}`} />
         )}
       </button>
-      {hasTools && expanded && (
+      {hasDetails && expanded && (
         <>
-          <StepsView text={toolText} />
+          {detailsNode}
           <button
             className="activity-collapse"
             onClick={() => setExpanded(false)}
@@ -1254,11 +1250,165 @@ function RoundShell({
   ) : null;
   return (
     <div className="turn-round">
-      {/* Answer text first (above tools), then the timer+tools block.
-          Only the live answer-only round puts the timer below the answer. */}
-      {textNode}
-      {!timerBelow && timer}
-      {timerBelow && timer}
+      {detailsBeforeText ? timer : textNode}
+      {!detailsBeforeText && timer}
+      {detailsBeforeText && textNode}
+    </div>
+  );
+}
+
+export function HistoryRoundDetailView({
+  round,
+  showText = true,
+}: {
+  round: HistoryRound;
+  showText?: boolean;
+}) {
+  const { t } = useApp();
+  const thinkingText = String(round.thinking || "");
+  const toolText = String(round.tools || "");
+  const toolCount = countToolCalls(toolText);
+  const hasToolShell = toolText.trim().length > 0;
+  const thinkingNode = thinkingText.trim().length > 0 ? (
+    <ThinkingPanel
+      thinkingText={thinkingText}
+      running={false}
+      timerText={`${t("activity.thoughtFor")} ${formatElapsed(round.waitSeconds * 1000)}`}
+    />
+  ) : null;
+  const textNode = String(round.text || "").trim().length > 0 ? (
+    <div className="answer">
+      <MarkdownText text={String(round.text || "")} />
+    </div>
+  ) : null;
+  const visibleTextNode = showText ? textNode : null;
+
+  if (hasToolShell) {
+    return (
+      <>
+        {thinkingNode}
+        <RoundShell
+          timerText={t("activity.toolCalls").replace("{count}", String(toolCount))}
+          running={false}
+          showTimer={true}
+          autoExpand={false}
+          detailsNode={<StepsView text={toolText} />}
+          textNode={null}
+        />
+        {visibleTextNode}
+      </>
+    );
+  }
+
+  if (!thinkingNode && !visibleTextNode) {
+    return null;
+  }
+
+  return (
+    <div className="worked-for-body worked-for-plain">
+      {thinkingNode}
+      {visibleTextNode}
+    </div>
+  );
+}
+
+export function splitCompletedTurn(turn: HistoryTurn): {
+  detailRounds: HistoryRound[];
+  finalAnswerText: string;
+  workedForSeconds: number;
+} {
+  const rounds = turn.rounds || [];
+  const lastRound = rounds.length > 0 ? rounds[rounds.length - 1] : null;
+  const lastRoundText = String(lastRound?.text || "").trim();
+  return {
+    detailRounds: rounds.slice(0),
+    finalAnswerText: lastRoundText,
+    workedForSeconds: rounds.reduce(
+      (sum, round) => sum + Math.max(0, Number(round.waitSeconds || 0)),
+      0,
+    ),
+  };
+}
+
+function CompletedTurnView({
+  turn,
+  negIndex,
+  handlers,
+}: {
+  turn: HistoryTurn;
+  negIndex: number;
+  handlers: MessageHandlers;
+}) {
+  const { t } = useApp();
+  const { detailRounds, finalAnswerText, workedForSeconds } = splitCompletedTurn(turn);
+  const detailNodes: ReactNode[] = [];
+  detailRounds.forEach((round, index) => {
+    if (round.selection && round.selection.trim().length > 0) {
+      detailNodes.push(
+        <div className="ask-selection" key={`selection-${index}`}>
+          <Icon name="check" size={13} className="ask-selection-icon" />
+          <span className="ask-selection-label">{t("askMoreInfo.selectedLabel")}</span>
+          <span className="ask-selection-text">{round.selection}</span>
+        </div>,
+      );
+      return;
+    }
+    const isFinalRoundWithAnswer = index === detailRounds.length - 1 && finalAnswerText.length > 0;
+    detailNodes.push(
+      <HistoryRoundDetailView
+        key={`round-${index}`}
+        round={round}
+        showText={!isFinalRoundWithAnswer}
+      />,
+    );
+  });
+  const hasDetails = detailNodes.length > 0;
+  const timerText = `${t("activity.workedFor")} ${formatElapsed(workedForSeconds * 1000)}`;
+  const finalAnswer = finalAnswerText.length > 0 ? (
+    <div className="answer">
+      <MarkdownText text={finalAnswerText} />
+    </div>
+  ) : null;
+  if (!hasDetails && !finalAnswer) {
+    return (
+      <div className="turn">
+        {turn.userText && (
+          <UserEntry
+            text={turn.userText}
+            timeMs={parseHistoryTime(turn.timestamp)}
+            index={negIndex}
+            handlers={handlers}
+          />
+        )}
+      </div>
+    );
+  }
+  return (
+    <div className="turn">
+      {turn.userText && (
+        <UserEntry
+          text={turn.userText}
+          timeMs={parseHistoryTime(turn.timestamp)}
+          index={negIndex}
+          handlers={handlers}
+        />
+      )}
+      {hasDetails ? (
+        <>
+          <RoundShell
+            timerText={timerText}
+            running={false}
+            showTimer={true}
+            autoExpand={false}
+            detailsBeforeText={true}
+            detailsNode={<div className="worked-for-body">{detailNodes}</div>}
+            textNode={null}
+          />
+          {finalAnswer}
+        </>
+      ) : (
+        finalAnswer
+      )}
     </div>
   );
 }
@@ -1328,36 +1478,6 @@ function ThinkingPanel({
   );
 }
 
-function HistoryRoundView({ round }: { round: HistoryRound }) {
-  const { t } = useApp();
-  if (round.selection && round.selection.trim().length > 0) {
-    return (
-      <div className="ask-selection">
-        <Icon name="check" size={13} className="ask-selection-icon" />
-        <span className="ask-selection-label">{t("askMoreInfo.selectedLabel")}</span>
-        <span className="ask-selection-text">{round.selection}</span>
-      </div>
-    );
-  }
-  const timerText = `${t("activity.workedFor")} ${formatElapsed(round.waitSeconds * 1000)}`;
-  return (
-    <RoundShell
-      timerText={timerText}
-      running={false}
-      showTimer={round.tools.trim().length > 0}
-      autoExpand={false}
-      toolText={round.tools}
-      textNode={
-        round.text.trim().length > 0 ? (
-          <div className="answer">
-            <MarkdownText text={round.text} />
-          </div>
-        ) : null
-      }
-    />
-  );
-}
-
 function HistoryTurnView({
   turn,
   negIndex,
@@ -1367,31 +1487,7 @@ function HistoryTurnView({
   negIndex: number;
   handlers: MessageHandlers;
 }) {
-  const { t } = useApp();
-  return (
-    <div className="turn">
-      {turn.userText && (
-        <UserEntry
-          text={turn.userText}
-          timeMs={parseHistoryTime(turn.timestamp)}
-          index={negIndex}
-          handlers={handlers}
-        />
-      )}
-      {turn.rounds.map((round, index) => (
-        <div key={index}>
-          {round.thinking && (
-            <ThinkingPanel
-              thinkingText={round.thinking}
-              running={false}
-              timerText={`${t("activity.thoughtFor")} ${formatElapsed(round.waitSeconds * 1000)}`}
-            />
-          )}
-          <HistoryRoundView round={round} />
-        </div>
-      ))}
-    </div>
-  );
+  return <CompletedTurnView turn={turn} negIndex={negIndex} handlers={handlers} />;
 }
 
 function Dropdown({
@@ -1693,9 +1789,6 @@ function LiveRoundView({
   const running = round.waitEndedAt === null;
   const elapsedMs = (round.waitEndedAt ?? now) - round.waitStartedAt;
   const elapsed = formatElapsed(elapsedMs);
-  const timerText = running
-    ? `${t("activity.working")} (${elapsed})`
-    : `${t("activity.workedFor")} ${elapsed}`;
   const answer = round.segments
     .filter((s) => s.kind === "answer")
     .map((s) => s.text)
@@ -1704,6 +1797,7 @@ function LiveRoundView({
     .filter((s) => s.kind === "step")
     .map((s) => s.text)
     .join("");
+  const toolCount = countToolCalls(toolText);
   const hasAnswer = answer.trim().length > 0;
   const hasTools = toolText.trim().length > 0;
   const autoExpandTools = running && toolText.trim().length > 0 && answer.trim().length === 0;
@@ -1714,6 +1808,21 @@ function LiveRoundView({
     hasAnswer,
     thinkingRunning,
   });
+  if (!running) {
+    return (
+      <HistoryRoundDetailView
+        round={{
+          waitSeconds: Math.max(0, Math.round(elapsedMs / 1000)),
+          text: answer,
+          tools: toolText,
+          thinking: String(round.thinkingText || ""),
+        }}
+      />
+    );
+  }
+  const timerText = hasTools
+    ? t("activity.toolCalls").replace("{count}", String(toolCount))
+    : `${t("activity.working")} (${elapsed})`;
   return (
     <>
       {round.thinkingText && (
@@ -1739,7 +1848,7 @@ function LiveRoundView({
         // in StepsView. Once the model starts replying or the round ends, fold
         // the outer group automatically.
         autoExpand={autoExpandTools}
-        toolText={toolText}
+        detailsNode={hasTools ? <StepsView text={toolText} /> : null}
         textNode={
           answer.trim().length > 0 ? (
             <div className="answer">

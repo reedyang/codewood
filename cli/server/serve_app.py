@@ -200,7 +200,13 @@ def _build_structured_turns(agent: Any) -> List[Dict[str, Any]]:
         return current
 
     def _new_round(turn: Dict[str, Any], wait_seconds: float) -> Dict[str, Any]:
-        rnd = {"waitSeconds": max(0, int(round(wait_seconds))), "text": "", "tools": "", "thinking": ""}
+        rnd = {
+            "waitSeconds": max(0, int(round(wait_seconds))),
+            "text": "",
+            "tools": "",
+            "thinking": "",
+            "_thinking_after_tool": False,
+        }
         turn["rounds"].append(rnd)
         return rnd
 
@@ -211,6 +217,8 @@ def _build_structured_turns(agent: Any) -> List[Dict[str, Any]]:
         thinking_text = str(msg.get("_thinking") or "").strip()
         if thinking_text and not rnd.get("thinking"):
             rnd["thinking"] = thinking_text
+        if thinking_text and (rnd.get("text") or rnd.get("tools") or rnd.get("selection")):
+            rnd["_thinking_after_tool"] = True
 
     def _render_step(idx: int, msg: Dict[str, Any]) -> str:
         buffer = io.StringIO()
@@ -383,9 +391,8 @@ def _build_structured_turns(agent: Any) -> List[Dict[str, Any]]:
             if (
                 current_round is None
                 or current_round.get("text")
-                or current_round.get("tools")
-                or current_round.get("thinking")
                 or current_round.get("selection")
+                or current_round.get("_thinking_after_tool")
             ):
                 current_round = _new_round(turn, wait)
             else:
@@ -395,12 +402,13 @@ def _build_structured_turns(agent: Any) -> List[Dict[str, Any]]:
             # the per-message renderer recognizes it (so it stays silent); for a
             # blob the strict parser misses, skip rendering entirely rather than
             # letting the raw JSON leak as text.
-            recognized_plan = False
+            tool_plan = None
             try:
-                recognized_plan = (
-                    agent._parse_model_tool_plan_history_content(content) is not None
-                )
+                tool_plan = agent._parse_model_tool_plan_history_content(content)
             except Exception:
+                tool_plan = None
+            recognized_plan = tool_plan is not None
+            if recognized_plan and str((tool_plan.get("tool") or "")).strip().lower() == "request_skill_prompt":
                 recognized_plan = False
             if recognized_plan:
                 rendered = _render_step(idx, msg)

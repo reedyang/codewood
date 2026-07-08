@@ -112,6 +112,21 @@ class AiOutputDisplayTests(unittest.TestCase):
         out = aoh.strip_tool_json_blocks_for_display(text)
         self.assertEqual(out, text.strip())
 
+    def test_format_assistant_display_response_plain_strips_channel_markers(self):
+        text = (
+            "前缀\n"
+            "<|channel>\n"
+            "这段自然语言应该保留\n"
+            "<channel|>\n"
+            "后缀"
+        )
+        out = aoh.format_assistant_display_response_plain(text)
+        self.assertIn("这段自然语言应该保留", out)
+        self.assertNotIn("<|channel>", out)
+        self.assertNotIn("<channel|>", out)
+        self.assertIn("前缀", out)
+        self.assertIn("后缀", out)
+
     def test_strip_multiple_chained_tool_call_blocks(self):
         # Reproduces the live bug: the model emitted an ``update_plan``
         # tool call followed by an ``request_user_input`` envelope inside a
@@ -1292,4 +1307,3 @@ class MarkdownRenderingTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

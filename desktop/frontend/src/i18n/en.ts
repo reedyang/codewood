@@ -16,6 +16,7 @@ export const en: Dict = {
 
   "activity.working": "Working ...",
   "activity.workedFor": "Worked for",
+  "activity.toolCalls": "Called {count} tools",
   "activity.steps": "Work steps",
   "activity.collapse": "Collapse",
   "activity.thinking": "Thinking",
