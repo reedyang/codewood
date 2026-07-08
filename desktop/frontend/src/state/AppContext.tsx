@@ -2112,15 +2112,25 @@ export function AppProvider({ children }: { children: ReactNode }) {
         return;
       }
       clearLiveTurns(chatKey(wsId, chatId));
-      if (wasActive && willBeEmpty) {
-        // Chat-less workspace: enter compose mode so the user can type to create
-        // a fresh chat instead of auto-creating one.
-        setDraftWorkspaceId(wsId);
-        setDraftMode(true);
-        historyChatRef.current = "\u0000";
-        setHistoryTurns([]);
-        setHistoryStart(0);
-        setHistoryTotal(0);
+      if (inActiveWs) {
+        if (wasActive && willBeEmpty) {
+          // Chat-less workspace: enter compose mode so the user can type
+          // to create a fresh chat instead of auto-creating one.
+          setDraftWorkspaceId(wsId);
+          setDraftMode(true);
+          historyChatRef.current = "\u0000";
+          setHistoryTurns([]);
+          setHistoryStart(0);
+          setHistoryTotal(0);
+        }
+      } else {
+        // Non-active workspace: optimistically remove the deleted chat from
+        // the workspaceChats cache so the sidebar updates immediately.
+        setWorkspaceChats((prev) => {
+          const list = prev[wsId];
+          if (!list) return prev;
+          return { ...prev, [wsId]: list.filter((c) => c.id !== chatId) };
+        });
       }
     },
     [client, clearLiveTurns],
