@@ -4139,17 +4139,24 @@ class ServeApp:
         """Fetch the model list from an OpenAI-compatible provider.
 
         Expects ``{base_url, api_key, api_mode}`` (api_key may be a ``${ENV}``
-        placeholder, which is resolved before the call). Returns
-        ``{ok, models:[name,...]}`` or ``{ok:false, error}``.
+        placeholder, which is resolved before the call).  When
+        ``context_length_attr_name`` is provided and non-empty, each returned
+        model dict may include a ``context_window`` integer.
+
+        Results are cached in ``config/cache/`` to reduce network requests
+        across page reloads.
         """
+        import json
+        import hashlib
+        from pathlib import Path
         from ..core.config.config_env import resolve_string_values_in_data
 
         base_url = str(params.get("base_url") or "").strip()
         api_key_raw = str(params.get("api_key") or "").strip()
         api_mode = str(params.get("api_mode") or "").strip().lower()
+        context_attr = str(params.get("context_length_attr_name") or "").strip()
 
-        # Ollama has no base_url/api_key in the UI: derive a localhost URL from
-        # the configured port (default 11434) and use its OpenAI-compatible API.
+        # ---- Ollama path (no context attribute support) ----
         if api_mode == "ollama":
             port_raw = params.get("port")
             try:
@@ -4161,7 +4168,9 @@ class ServeApp:
             try:
                 from ..ai.ai_provider_clients import fetch_openai_compatible_models
 
-                models = fetch_openai_compatible_models(base_url=base_url, api_key=api_key)
+                models = fetch_openai_compatible_models(
+                    base_url=base_url, api_key=api_key,
+                )
                 return {"ok": True, "models": models}
             except Exception as e:  # noqa: BLE001 - surface a clean message to UI
                 return {"ok": False, "error": str(e)[:300]}
@@ -4173,10 +4182,47 @@ class ServeApp:
             api_key = str((resolved or {}).get("api_key") or "").strip()
         except Exception:
             api_key = api_key_raw
+
+        # ---- Cache key derived from base_url + attribute name ----
+        cache_dir = Path(self.agent.config_dir) / "cache"
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        cache_key = hashlib.sha256(
+            f"{base_url}|{context_attr}".encode()
+        ).hexdigest()[:16]
+        cache_path = cache_dir / f"models_{cache_key}.json"
+
+        # Try reading from cache first (5-minute TTL).
+        import time
+
+        now = time.time()
+        if cache_path.exists():
+            try:
+                cached = json.loads(cache_path.read_text(encoding="utf-8"))
+                if isinstance(cached, dict):
+                    ts = cached.get("_ts", 0)
+                    if now - ts < 300 and isinstance(cached.get("models"), list):
+                        result = {"ok": True, "models": cached["models"]}
+                        return result
+            except Exception:  # noqa: BLE001 - stale cache, ignore
+                pass
+
+        # ---- Live fetch ----
         try:
             from ..ai.ai_provider_clients import fetch_openai_compatible_models
 
-            models = fetch_openai_compatible_models(base_url=base_url, api_key=api_key)
+            models = fetch_openai_compatible_models(
+                base_url=base_url,
+                api_key=api_key,
+                context_length_attr_name=context_attr,
+            )
+            # Write to cache.
+            try:
+                cache_path.write_text(
+                    json.dumps({"_ts": now, "models": models}, ensure_ascii=False),
+                    encoding="utf-8",
+                )
+            except Exception:  # noqa: BLE001 - cache write failure is non-fatal
+                pass
             return {"ok": True, "models": models}
         except Exception as e:  # noqa: BLE001 - surface a clean message to UI
             return {"ok": False, "error": str(e)[:300]}

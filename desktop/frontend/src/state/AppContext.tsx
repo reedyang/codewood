@@ -196,7 +196,12 @@ interface AppContextValue {
     api_key?: string;
     api_mode?: string;
     port?: number;
-  }) => Promise<{ ok: boolean; models?: string[]; error?: string }>;
+    context_length_attr_name?: string;
+  }) => Promise<{
+    ok: boolean;
+    models?: { name: string; context_window?: number }[];
+    error?: string;
+  }>;
   getModelPresets: () => Promise<unknown[]>;
   getGeneralConfig: () => Promise<GeneralConfig | null>;
   saveGeneralConfig: (general: Partial<GeneralConfig>) => Promise<boolean>;

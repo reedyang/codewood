@@ -1452,8 +1452,14 @@ def _truncate_error_body(raw: str, limit: int = 1200) -> str:
     return text[:limit] + "...(truncated)"
 
 
-def fetch_openai_compatible_models(*, base_url: str, api_key: str = "") -> List[str]:
+def fetch_openai_compatible_models(
+    *, base_url: str, api_key: str = "", context_length_attr_name: str = ""
+) -> List[Dict[str, Any]]:
     """Return the model ids advertised by an OpenAI-compatible ``/models`` API.
+
+    When *context_length_attr_name* is non-empty, the function attempts to
+    extract that attribute from each model object and includes it as
+    ``context_window`` in the returned dict.
 
     Raises on transport/HTTP errors so the caller can surface a message. The
     base URL is normalized to end at ``/v1`` style roots; both ``{base}/models``
@@ -1482,14 +1488,21 @@ def fetch_openai_compatible_models(*, base_url: str, api_key: str = "") -> List[
         except Exception as e:  # noqa: BLE001 - try next candidate
             last_error = e
             continue
-        return _extract_model_ids(data)
+        return _extract_models_with_context(data, context_length_attr_name)
     if last_error is not None:
         raise last_error
     return []
 
 
-def _extract_model_ids(data: Any) -> List[str]:
-    """Pull model ids from an OpenAI ``/models`` style response."""
+def _extract_models_with_context(
+    data: Any, context_length_attr_name: str = ""
+) -> List[Dict[str, Any]]:
+    """Pull model ids from an OpenAI ``/models`` style response.
+
+    Each returned dict has a ``name`` key.  When *context_length_attr_name* is
+    non-empty, the dict also includes ``context_window`` if the attribute
+    exists on the model object and is a positive integer.
+    """
     items: Any = None
     if isinstance(data, dict):
         items = data.get("data") if isinstance(data.get("data"), list) else None
@@ -1499,7 +1512,7 @@ def _extract_model_ids(data: Any) -> List[str]:
         items = data
     if not isinstance(items, list):
         return []
-    out: List[str] = []
+    out: List[Dict[str, Any]] = []
     seen = set()
     for item in items:
         name = ""
@@ -1510,7 +1523,23 @@ def _extract_model_ids(data: Any) -> List[str]:
         if not name or name in seen:
             continue
         seen.add(name)
-        out.append(name)
+        entry: Dict[str, Any] = {"name": name}
+        if context_length_attr_name and isinstance(item, dict):
+            raw = item.get(context_length_attr_name)
+            if isinstance(raw, bool):
+                pass
+            elif isinstance(raw, (int, float)):
+                if raw > 0:
+                    entry["context_window"] = int(raw)
+            elif isinstance(raw, str):
+                raw = raw.strip()
+                try:
+                    val = int(raw)
+                    if val > 0:
+                        entry["context_window"] = val
+                except (ValueError, TypeError):
+                    pass
+        out.append(entry)
     return out
 
 

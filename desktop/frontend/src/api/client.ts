@@ -824,14 +824,23 @@ export class ApiClient {
     api_key?: string;
     api_mode?: string;
     port?: number;
-  }): Promise<{ ok: boolean; models?: string[]; error?: string }> {
+    context_length_attr_name?: string;
+  }): Promise<{
+    ok: boolean;
+    models?: { name: string; context_window?: number }[];
+    error?: string;
+  }> {
     const res = await fetch(`${this.base}/fetch-models`, {
       method: "POST",
       headers: this.headers(),
       body: JSON.stringify(params),
     });
     try {
-      return (await res.json()) as { ok: boolean; models?: string[]; error?: string };
+      return (await res.json()) as {
+        ok: boolean;
+        models?: { name: string; context_window?: number }[];
+        error?: string;
+      };
     } catch {
       return { ok: false, error: "Bad response" };
     }
