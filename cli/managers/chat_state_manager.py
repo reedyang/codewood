@@ -460,6 +460,8 @@ class ChatStateManager:
         thinking = str(raw.get("_thinking") or "").strip()
         if thinking:
             out["_thinking"] = thinking
+        if raw.get("_thinking_from_content"):
+            out["_thinking_from_content"] = True
         api_content = str(raw.get("_api_content") or "").strip()
         if api_content:
             out["_api_content"] = api_content
@@ -1166,6 +1168,8 @@ class ChatStateManager:
                 thinking = str(m.get("_thinking") or "").strip()
                 if thinking:
                     entry["_thinking"] = thinking
+                if m.get("_thinking_from_content"):
+                    entry["_thinking_from_content"] = True
                 msgs.append(entry)
             chat["messages"] = msgs
             context_window = int(getattr(self._agent, "_last_context_window", 0) or 0)

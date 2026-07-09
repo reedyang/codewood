@@ -811,6 +811,7 @@ def _stream_openai_like_response(
             self.final_message: Optional[Dict[str, Any]] = None
             self.last_usage: Optional[Dict[str, Any]] = None
             self.thinking_text: str = ""
+            self._thinking_from_content: bool = False
             self._sanitizer: Optional[_StreamingSanitizer] = None
 
         def __iter__(self):
@@ -888,6 +889,7 @@ def _stream_openai_like_response(
                 new_thinking = sanitizer.get_thinking()
                 if new_thinking:
                     _accumulated_thinking.append(new_thinking)
+                    self._thinking_from_content = True
                     self.thinking_text = "".join(_accumulated_thinking)
                 # When reasoning-only chunks arrive (no visible text), yield an
                 # empty heartbeat so the consumer checks thinking_text.
@@ -903,6 +905,7 @@ def _stream_openai_like_response(
             sanitizer_thinking = sanitizer.get_thinking()
             if sanitizer_thinking:
                 _accumulated_thinking.append(sanitizer_thinking)
+                self._thinking_from_content = True
             self.thinking_text = "".join(_accumulated_thinking)
             if tail:
                 if first_chunk:
@@ -915,8 +918,16 @@ def _stream_openai_like_response(
             if snapshot_message:
                 raw_snapshot = snapshot_message.get("content", "") or ""
                 if raw_snapshot:
+                    prev_buffer = raw_buffer
                     if not raw_buffer or not raw_snapshot.startswith(raw_buffer):
                         raw_buffer = raw_snapshot
+                    elif len(raw_snapshot) > len(raw_buffer):
+                        # Snapshot has trailing content (e.g. newlines) beyond
+                        # the accumulated buffer — extend the buffer so that
+                        # raw_buffer stays in sync with the yielded text.
+                        raw_buffer = raw_snapshot
+                    if raw_buffer != prev_buffer and raw_buffer == _sanitize_assistant_text(raw_buffer):
+                        self._thinking_from_content = False
                 snapshot_text = _sanitize_assistant_text(raw_snapshot)
                 if snapshot_text:
                     if not yielded_text:
@@ -955,10 +966,16 @@ def _stream_openai_like_response(
                 _attach_output_usage(self.final_message, {"usage": last_usage}, url)
             if isinstance(self.final_message, dict):
                 clean_content = _sanitize_assistant_text(raw_buffer)
-                if clean_content and clean_content != raw_buffer:
+                if clean_content != raw_buffer:
                     self.final_message["_clean_content"] = clean_content
+                elif self.final_message.get("_clean_content"):
+                    # Stale _clean_content that duplicates raw content — remove it.
+                    if self.final_message["_clean_content"] == raw_buffer:
+                        del self.final_message["_clean_content"]
             if isinstance(self.final_message, dict) and self.thinking_text:
                 self.final_message["_thinking"] = self.thinking_text
+                if self._thinking_from_content:
+                    self.final_message["_thinking_from_content"] = True
             append_history(raw_buffer, self.final_message)
 
     return _OpenAIStreamResult()
@@ -1057,12 +1074,19 @@ def _normalize_openai_message_for_request(
     if use_clean_content and normalized.get("_clean_content"):
         normalized["content"] = normalized["_clean_content"]
     # Map stored _thinking to reasoning_content only when the active provider
-    # configuration explicitly enables it. This is provider-level policy now,
-    # not cache-adapter behavior.
+    # configuration explicitly enables it. This is provider-level policy now.
+    # When the thinking was extracted from content (via the streaming sanitizer)
+    # and the raw content (with <think> blocks) is still in use, adding
+    # reasoning_content would duplicate the text. Messages recorded before
+    # _thinking_from_content existed default to False (from API field).
     if role == "assistant" and normalized.get("_thinking"):
         if include_thinking:
-            if not normalized.get("reasoning_content"):
-                normalized["reasoning_content"] = normalized.pop("_thinking")
+            from_content = normalized.get("_thinking_from_content", False)
+            if not from_content or use_clean_content:
+                if not normalized.get("reasoning_content"):
+                    normalized["reasoning_content"] = normalized.pop("_thinking")
+                else:
+                    normalized.pop("_thinking", None)
             else:
                 normalized.pop("_thinking", None)
         else:
@@ -1692,7 +1716,7 @@ def _call_openai_once(
                            sorted(data.keys()), url)
     _attach_cache_stats(message_for_history, data, url)
     _attach_output_usage(message_for_history, data, url)
-    if display_text and display_text != raw_text:
+    if display_text != raw_text:
         message_for_history["_clean_content"] = display_text
     if not raw_text:
         _OPENAI_ROUTE_LOG.warning(
@@ -2260,6 +2284,7 @@ def _call_with_ollama(
             def __init__(self) -> None:
                 self.final_message: Optional[Dict[str, Any]] = None
                 self.thinking_text: str = ""
+                self._thinking_from_content: bool = False
                 self._response = response
 
             def close(self) -> None:
@@ -2304,6 +2329,7 @@ def _call_with_ollama(
                         new_thinking = sanitizer.get_thinking()
                         if new_thinking:
                             _accumulated_thinking.append(new_thinking)
+                            self._thinking_from_content = True
                             self.thinking_text = "".join(_accumulated_thinking)
                         if delta:
                             if first_chunk:
@@ -2320,6 +2346,7 @@ def _call_with_ollama(
                     sanitizer_thinking = sanitizer.get_thinking()
                     if sanitizer_thinking:
                         _accumulated_thinking.append(sanitizer_thinking)
+                        self._thinking_from_content = True
                     self.thinking_text = "".join(_accumulated_thinking)
                     if tail:
                         if first_chunk:
@@ -2336,10 +2363,12 @@ def _call_with_ollama(
                     if tool_calls:
                         self.final_message["tool_calls"] = tool_calls
                     clean_content = _sanitize_assistant_text(raw_buffer)
-                    if clean_content and clean_content != raw_buffer:
+                    if clean_content != raw_buffer:
                         self.final_message["_clean_content"] = clean_content
                     if self.thinking_text:
                         self.final_message["_thinking"] = self.thinking_text
+                        if self._thinking_from_content:
+                            self.final_message["_thinking_from_content"] = True
                     if completed:
                         append_history(raw_buffer, self.final_message)
                     self.close()
