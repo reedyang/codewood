@@ -1981,11 +1981,16 @@ def _update_latest_assistant_clean_content(agent: Any, clean_content: str) -> No
             continue
         if str(msg.get("role") or "").strip().lower() != "assistant":
             continue
-        if str(msg.get("_clean_content") or "") == clean_content:
+        # Remove any stale _clean_content that duplicates raw content.
+        if "_clean_content" in msg and str(msg["_clean_content"] or "") == str(msg.get("content") or ""):
+            del msg["_clean_content"]
+        existing_clean = str(msg.get("_clean_content") or "")
+        if existing_clean == clean_content:
             return
-        if str(msg.get("content") or "") == clean_content:
+        raw_content = str(msg.get("content") or "")
+        if raw_content == clean_content or raw_content.rstrip("\n") == clean_content.rstrip("\n"):
             msg.pop("_clean_content", None)
-        else:
+        elif clean_content:
             msg["_clean_content"] = clean_content
         try:
             agent._sync_active_chat_messages()
@@ -1994,7 +1999,7 @@ def _update_latest_assistant_clean_content(agent: Any, clean_content: str) -> No
         return
 
 
-def _ensure_thinking_in_latest_assistant_message(agent: Any, thinking: str) -> None:
+def _ensure_thinking_in_latest_assistant_message(agent: Any, thinking: str, thinking_from_content: bool = False) -> None:
     """Ensure the most recent assistant message in conversation history has
     ``_thinking`` set, so it persists to chat state and is available on reload."""
     if not isinstance(thinking, str) or not thinking:
@@ -2010,6 +2015,8 @@ def _ensure_thinking_in_latest_assistant_message(agent: Any, thinking: str) -> N
         if msg.get("_thinking"):
             return
         msg["_thinking"] = thinking
+        if thinking_from_content:
+            msg["_thinking_from_content"] = True
         try:
             agent._sync_active_chat_messages()
         except Exception:
@@ -4066,8 +4073,9 @@ def run_agent_loop(agent: Any):
                         # Ensure thinking content from the stream result is stored in
                         # the latest assistant message in conversation history.
                         _thinking = getattr(ai_result, "thinking_text", "") or ""
+                        _thinking_from_content = getattr(ai_result, "_thinking_from_content", False)
                         if _thinking:
-                            _ensure_thinking_in_latest_assistant_message(self, _thinking)
+                            _ensure_thinking_in_latest_assistant_message(self, _thinking, _thinking_from_content)
                 finally:
                     self._active_status_ticker_stopper = None
                 # The model has fully responded for this round; freeze its wait

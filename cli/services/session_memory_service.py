@@ -401,7 +401,7 @@ class SessionMemoryService:
         self._start_token_counter_warmup()
         return None
 
-    def append_chat_message(self, role: str, content: str, tool_calls: Any = None, _internal: bool = False, api_content: Optional[str] = None, context_suffix: Optional[str] = None, cache_stats: Optional[Dict[str, Any]] = None, clean_content: Optional[str] = None, output_tokens: Optional[int] = None, reasoning_tokens: Optional[int] = None, token_count_includes_reasoning: Optional[bool] = None, thinking: Optional[str] = None) -> None:
+    def append_chat_message(self, role: str, content: str, tool_calls: Any = None, _internal: bool = False, api_content: Optional[str] = None, context_suffix: Optional[str] = None, cache_stats: Optional[Dict[str, Any]] = None, clean_content: Optional[str] = None, output_tokens: Optional[int] = None, reasoning_tokens: Optional[int] = None, token_count_includes_reasoning: Optional[bool] = None, thinking: Optional[str] = None, thinking_from_content: Optional[bool] = None) -> None:
         r = str(role or "").strip().lower()
         if r not in ("user", "assistant"):
             return
@@ -431,12 +431,14 @@ class SessionMemoryService:
             message["_context_suffix"] = str(context_suffix)
         if _internal:
             message["_internal"] = True
-        if isinstance(clean_content, str) and clean_content and clean_content != str(content or ""):
+        if isinstance(clean_content, str) and clean_content != str(content or ""):
             message["_clean_content"] = clean_content
         if isinstance(api_content, str) and api_content:
             message["_api_content"] = api_content
         if isinstance(thinking, str) and thinking:
             message["_thinking"] = thinking
+        if thinking_from_content:
+            message["_thinking_from_content"] = True
         if isinstance(cache_stats, dict):
             message["_cache_stats"] = cache_stats
         if output_tokens is not None:
@@ -467,6 +469,9 @@ class SessionMemoryService:
                     pass
         if isinstance(tool_calls, list) and tool_calls:
             message["tool_calls"] = tool_calls
+        # Defensive cleanup: _clean_content should never duplicate raw content.
+        if "_clean_content" in message and str(message["_clean_content"] or "") == str(message.get("content") or ""):
+            del message["_clean_content"]
         self.agent.conversation_history.append(message)
         self.agent._sync_active_chat_messages()
         if r == "user":
