@@ -7,6 +7,8 @@ vi.mock("../state/AppContext", () => ({
       const translations: Record<string, string> = {
         "activity.toolCalls": "Called {count} tools",
         "activity.thoughtFor": "Thought for",
+        "activity.working": "Working...",
+        "activity.thinking": "Thinking",
         "activity.collapse": "Collapse",
         "thinking.show": "Thinking",
       };
@@ -15,7 +17,7 @@ vi.mock("../state/AppContext", () => ({
   }),
 }));
 
-import { HistoryRoundDetailView, RoundShell } from "./ChatView";
+import { HistoryRoundDetailView, LiveRoundView, RoundShell } from "./ChatView";
 
 describe("HistoryRoundDetailView", () => {
   it("renders thought before the completed tool summary when both are present", () => {
@@ -34,6 +36,25 @@ describe("HistoryRoundDetailView", () => {
 
     expect(
       thought.compareDocumentPosition(tools) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).not.toBe(0);
+  });
+
+  it("renders text before the completed tool summary when both are present", () => {
+    render(
+      <HistoryRoundDetailView
+        round={{
+          waitSeconds: 9,
+          text: "先给用户一段说明",
+          tools: "\uE004• Ran npx ccusage codex\uE005",
+        }}
+      />,
+    );
+
+    const text = screen.getByText("先给用户一段说明");
+    const tools = screen.getByText("Called 1 tools");
+
+    expect(
+      text.compareDocumentPosition(tools) & Node.DOCUMENT_POSITION_FOLLOWING,
     ).not.toBe(0);
   });
 });
@@ -58,5 +79,25 @@ describe("RoundShell", () => {
 
     expect(screen.getByText("Working...")).toBeTruthy();
     expect(screen.getByText("details")).toBeTruthy();
+  });
+});
+
+describe("LiveRoundView", () => {
+  it("renders an earlier answer-only live round as settled text", () => {
+    render(
+      <LiveRoundView
+        round={{
+          id: 1,
+          waitStartedAt: 0,
+          waitEndedAt: null,
+          segments: [{ id: 1, kind: "answer", text: "先给用户一段说明" }],
+        }}
+        now={4000}
+        forceSettled={true}
+      />,
+    );
+
+    expect(screen.getByText("先给用户一段说明")).toBeTruthy();
+    expect(screen.queryByText("Working... (4s)")).toBeNull();
   });
 });

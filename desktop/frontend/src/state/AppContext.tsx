@@ -1113,6 +1113,24 @@ export function AppProvider({ children }: { children: ReactNode }) {
             segments: [],
           };
           rounds.push(round);
+        } else if (
+          kind === "step" &&
+          round.segments.some((s) => s.kind === "answer" && s.text.trim().length > 0)
+        ) {
+          // If tool output starts after visible assistant text without an
+          // explicit ``round_start``, split the round so the answer doesn't
+          // remain in a second running "Working..." block beside the tools.
+          rounds[rounds.length - 1] = {
+            ...round,
+            waitEndedAt: round.waitEndedAt ?? Date.now(),
+          };
+          round = {
+            id: nextIdRef.current++,
+            waitStartedAt: Date.now(),
+            waitEndedAt: null,
+            segments: [],
+          };
+          rounds.push(round);
         }
         // Freeze the current round's thinking timer on the first visible
         // content so that later model passes can open their own Thinking block.
@@ -1289,8 +1307,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
         last.segments.length > 0 ||
         last.thinkingText
       ) {
+        if (last && last.waitEndedAt === null) {
+          rounds[rounds.length - 1] = {
+            ...last,
+            waitEndedAt: Date.now(),
+          };
+        }
         rounds = [
-          ...turn.rounds,
+          ...rounds,
           {
             id: nextIdRef.current++,
             waitStartedAt: Date.now(),
