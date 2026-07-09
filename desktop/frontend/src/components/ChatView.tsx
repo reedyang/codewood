@@ -1801,6 +1801,18 @@ function ModelMenu({
   const currentName = currentModel.includes(":")
     ? currentModel.slice(currentModel.indexOf(":") + 1)
     : currentModel;
+  const currentProvider = currentModel.includes(":")
+    ? currentModel.slice(0, currentModel.indexOf(":"))
+    : "";
+  const nameProviderCounts = new Map<string, Set<string>>();
+  for (const sel of models) {
+    const idx = sel.indexOf(":");
+    const name = idx > 0 ? sel.slice(idx + 1) : sel;
+    const provider = idx > 0 ? sel.slice(0, idx) : "";
+    if (!nameProviderCounts.has(name)) nameProviderCounts.set(name, new Set());
+    nameProviderCounts.get(name)!.add(provider);
+  }
+  const showProvider = !!(currentName && (nameProviderCounts.get(currentName)?.size ?? 0) > 1);
 
   const FLYOUT_WIDTH = 220;
   const FLYOUT_GAP = 4;
@@ -1827,7 +1839,12 @@ function ModelMenu({
   return (
     <div className="dropdown model-dropdown" ref={ref}>
       <button className="dropdown-trigger" onClick={() => setOpen((v) => !v)}>
-        <span>{currentName || t("model.label")}</span>
+        <span>
+          {currentName || t("model.label")}
+          {showProvider && currentProvider && (
+            <span className="model-provider-hint"> ({currentProvider})</span>
+          )}
+        </span>
         {reasoningEffort && (
           <span className="model-reasoning-level">{reasoningEffort}</span>
         )}
@@ -1886,7 +1903,12 @@ function ModelMenu({
             >
               <button className="dropdown-item model-submenu-entry">
                 <span className="dropdown-check" />
-                <span>{currentName || t("model.label")}</span>
+                <span className="model-submenu-label">
+                  <span>{currentName || t("model.label")}</span>
+                  {showProvider && currentProvider && (
+                    <span className="model-provider-sub">{currentProvider}</span>
+                  )}
+                </span>
                 <Icon name="arrow-right" size={13} className="model-submenu-arrow" />
               </button>
               {flyoutOpen && flyoutPos && (

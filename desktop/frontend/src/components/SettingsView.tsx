@@ -1,4 +1,4 @@
-import { useEffect, useState, type CSSProperties, type MouseEvent as ReactMouseEvent } from "react";
+import { useEffect, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent } from "react";
 import { useApp, type Theme } from "../state/AppContext";
 import { Icon, type IconName } from "./Icon";
 import { ModelsSettings } from "./ModelsSettings";
@@ -66,10 +66,9 @@ export function SettingsView() {
   const [modelsDirty, setModelsDirty] = useState(false);
   const [generalDirty, setGeneralDirty] = useState(false);
   const [saveSignal, setSaveSignal] = useState(0);
-  // A queued navigation that is waiting on the unsaved-changes prompt.
-  const [pendingLeave, setPendingLeave] = useState<PageId | "back" | null>(null);
-  // When true, the pending navigation runs once the page reports it's clean.
+  // When true, the navigation runs once the page reports it's clean after auto-save.
   const [leaveAfterSave, setLeaveAfterSave] = useState(false);
+  const pendingLeaveRef = useRef<PageId | "back" | null>(null);
 
   const performLeave = (target: PageId | "back") => {
     if (target === "back") {
@@ -80,8 +79,7 @@ export function SettingsView() {
   };
 
   // Pages that own their own dirty state. Whenever we try to leave one of
-  // these pages while it's dirty, we open the leave-confirmation prompt
-  // instead of navigating away immediately.
+  // these pages while it's dirty, we trigger an auto-save before navigating away.
   const pageIsDirty = (id: PageId): boolean => {
     if (id === "models") return modelsDirty;
     if (id === "general") return generalDirty;
@@ -90,39 +88,21 @@ export function SettingsView() {
 
   const requestLeave = (target: PageId | "back") => {
     if (pageIsDirty(page)) {
-      setPendingLeave(target);
+      pendingLeaveRef.current = target;
+      setLeaveAfterSave(true);
+      setSaveSignal((n) => n + 1);
       return;
     }
     performLeave(target);
   };
 
-  const onDialogSave = () => {
-    setLeaveAfterSave(true);
-    setSaveSignal((n) => n + 1);
-  };
-
-  const onDialogDiscard = () => {
-    const target = pendingLeave;
-    setPendingLeave(null);
-    // Drop dirty flags for any page that might have triggered the dialog so we
-    // don't reopen it immediately on the next navigation attempt.
-    setModelsDirty(false);
-    setGeneralDirty(false);
-    if (target) performLeave(target);
-  };
-
-  const onDialogCancel = () => {
-    setPendingLeave(null);
-    setLeaveAfterSave(false);
-  };
-
-  // Once a save triggered by the dialog clears the dirty flag, finish leaving.
+  // Once a save clears the dirty flag, finish leaving.
   const handleModelsDirtyChange = (d: boolean) => {
     setModelsDirty(d);
     if (!d && leaveAfterSave) {
       setLeaveAfterSave(false);
-      const target = pendingLeave;
-      setPendingLeave(null);
+      const target = pendingLeaveRef.current;
+      pendingLeaveRef.current = null;
       if (target) performLeave(target);
     }
   };
@@ -131,8 +111,8 @@ export function SettingsView() {
     setGeneralDirty(d);
     if (!d && leaveAfterSave) {
       setLeaveAfterSave(false);
-      const target = pendingLeave;
-      setPendingLeave(null);
+      const target = pendingLeaveRef.current;
+      pendingLeaveRef.current = null;
       if (target) performLeave(target);
     }
   };
@@ -305,25 +285,6 @@ export function SettingsView() {
         {page === "archivedChats" && <ArchivedChatsSettings />}
       </section>
 
-      {pendingLeave !== null && (
-        <div className="modal-backdrop" role="dialog" aria-modal="true">
-          <div className="modal">
-            <h3 className="modal-title">{t("models.leaveTitle")}</h3>
-            <p className="modal-body">{t("models.leavePrompt")}</p>
-            <div className="modal-actions">
-              <button className="btn" onClick={onDialogCancel}>
-                {t("models.leaveCancel")}
-              </button>
-              <button className="btn" onClick={onDialogDiscard}>
-                {t("models.leaveDiscard")}
-              </button>
-              <button className="btn btn-primary" onClick={onDialogSave}>
-                {t("models.leaveSave")}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }

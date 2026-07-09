@@ -24,7 +24,6 @@ export function ModelsSettings({ onDirtyChange, saveSignal }: ModelsSettingsProp
   const [providers, setProviders] = useState<EditorProvider[]>([]);
   const [presets, setPresets] = useState<ModelPreset[]>(MODEL_PRESETS);
   const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
   const [dirty, setDirty] = useState(false);
   const [busyIdx, setBusyIdx] = useState<number | null>(null);
   const [errorByIdx, setErrorByIdx] = useState<Record<number, string>>({});
@@ -34,7 +33,15 @@ export function ModelsSettings({ onDirtyChange, saveSignal }: ModelsSettingsProp
   const [confirmRemoveIdx, setConfirmRemoveIdx] = useState<number | null>(null);
   const lastSaveSignal = useRef<number | undefined>(saveSignal);
   const getModelsConfigRef = useRef(getModelsConfig);
+  const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const dirtyRef = useRef(dirty);
+  dirtyRef.current = dirty;
+  const providersRef = useRef<EditorProvider[]>([]);
+  providersRef.current = providers;
+  const saveRef = useRef<() => Promise<boolean>>(() => Promise.resolve(true));
   getModelsConfigRef.current = getModelsConfig;
+  const getModelPresetsRef = useRef(getModelPresets);
+  getModelPresetsRef.current = getModelPresets;
 
   useEffect(() => {
     let alive = true;
@@ -50,8 +57,8 @@ export function ModelsSettings({ onDirtyChange, saveSignal }: ModelsSettingsProp
       setCollapsed(allCollapsed);
       setLoading(false);
     });
-    // Also load merged presets from backend.
-    void getModelPresets().then((remote) => {
+// Also load merged presets from backend.
+    void getModelPresetsRef.current().then((remote) => {
       if (!alive || !Array.isArray(remote) || remote.length === 0) return;
       const remotePresets = remote as ModelPreset[];
       const remoteById = new Map(
@@ -72,7 +79,7 @@ export function ModelsSettings({ onDirtyChange, saveSignal }: ModelsSettingsProp
     return () => {
       alive = false;
     };
-  }, [getModelPresets]);
+  }, []);
 
   // A provider freshly added but otherwise untouched needs no delete confirm.
   const isPristineProvider = (p: EditorProvider): boolean => {
@@ -92,6 +99,11 @@ export function ModelsSettings({ onDirtyChange, saveSignal }: ModelsSettingsProp
       setDirty(true);
       onDirtyChange?.(true);
     }
+    // Debounced auto-save on every change.
+    if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+    saveTimerRef.current = setTimeout(() => {
+      void saveRef.current();
+    }, 500);
   };
 
   const update = (idx: number, patch: Partial<EditorProvider>) => {
@@ -280,9 +292,7 @@ export function ModelsSettings({ onDirtyChange, saveSignal }: ModelsSettingsProp
       window.alert(err);
       return false;
     }
-    setSaving(true);
     const ok = await saveModelsConfig(toConfigProviders(providers));
-    setSaving(false);
     if (!ok) {
       window.alert(t("models.saveFailed"));
       return false;
@@ -291,6 +301,7 @@ export function ModelsSettings({ onDirtyChange, saveSignal }: ModelsSettingsProp
     onDirtyChange?.(false);
     return true;
   };
+  saveRef.current = save;
 
   // Allow the parent (leave-page prompt) to trigger a save.
   useEffect(() => {
@@ -300,6 +311,17 @@ export function ModelsSettings({ onDirtyChange, saveSignal }: ModelsSettingsProp
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [saveSignal]);
+
+  // Cleanup: flush pending save on unmount (e.g. window close).
+  useEffect(() => {
+    return () => {
+      if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+      if (dirtyRef.current) {
+        void saveModelsConfig(toConfigProviders(providersRef.current));
+      }
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   if (loading) {
     return <div className="settings-page">{t("models.loading")}</div>;
@@ -674,13 +696,6 @@ export function ModelsSettings({ onDirtyChange, saveSignal }: ModelsSettingsProp
         <button className="btn" onClick={addProvider}>
           <Icon name="plus" size={14} />
           {t("models.add")}
-        </button>
-        <button
-          className="btn btn-primary"
-          disabled={saving || !dirty}
-          onClick={() => void save()}
-        >
-          {saving ? t("models.saving") : t("models.save")}
         </button>
       </div>
 
