@@ -1298,9 +1298,8 @@ export function HistoryRoundDetailView({
           showTimer={true}
           autoExpand={false}
           detailsNode={<StepsView text={toolText} />}
-          textNode={null}
+          textNode={visibleTextNode}
         />
-        {visibleTextNode}
       </>
     );
   }
@@ -1953,16 +1952,19 @@ function ModelMenu({
   );
 }
 
-function LiveRoundView({
+export function LiveRoundView({
   round,
   now,
+  forceSettled = false,
 }: {
   round: TurnRound;
   now: number;
+  forceSettled?: boolean;
 }) {
   const { t } = useApp();
-  const running = round.waitEndedAt === null;
-  const elapsedMs = (round.waitEndedAt ?? now) - round.waitStartedAt;
+  const running = !forceSettled && round.waitEndedAt === null;
+  const effectiveEndedAt = forceSettled ? round.waitEndedAt ?? now : round.waitEndedAt;
+  const elapsedMs = (effectiveEndedAt ?? now) - round.waitStartedAt;
   const elapsed = formatElapsed(elapsedMs);
   const answer = round.segments
     .filter((s) => s.kind === "answer")
@@ -2088,7 +2090,14 @@ function TurnView({
             />
           );
         }
-        return <LiveRoundView key={group.round.id} round={group.round} now={now} />;
+        return (
+          <LiveRoundView
+            key={group.round.id}
+            round={group.round}
+            now={now}
+            forceSettled={index < liveGroups.length - 1}
+          />
+        );
       })}
       {showPendingWorking && (
         <div className="activity">

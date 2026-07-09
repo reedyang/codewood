@@ -261,6 +261,84 @@ describe("AppContext thinking rounds", () => {
     });
   });
 
+  it("closes the previous visible round when a new round starts without an explicit round_end", async () => {
+    render(
+      <AppProvider>
+        <TurnsProbe />
+      </AppProvider>,
+    );
+
+    await waitFor(() => expect(apiMock.connectEvents).toHaveBeenCalled());
+
+    act(() => {
+      apiMock.emit({
+        event: "turn_start",
+        data: { text: "Investigate", chatId: "chat-1", workspaceId: "ws-1" },
+      });
+      apiMock.emit({
+        event: "assistant",
+        data: { text: "first visible reply", chatId: "chat-1", workspaceId: "ws-1" },
+      });
+      apiMock.emit({
+        event: "round_start",
+        data: { chatId: "chat-1", workspaceId: "ws-1" },
+      });
+      apiMock.emit({
+        event: "output",
+        data: { text: "tool output", chatId: "chat-1", workspaceId: "ws-1" },
+      });
+    });
+
+    await waitFor(() => {
+      const turns = JSON.parse(screen.getByTestId("turns").textContent || "[]") as Turn[];
+      expect(turns).toHaveLength(1);
+      expect(turns[0].rounds).toHaveLength(2);
+      expect(turns[0].rounds[0].waitEndedAt).toBeTypeOf("number");
+      expect(turns[0].rounds[1].waitEndedAt).toBeNull();
+      expect(turns[0].rounds[0].segments.map((segment) => segment.text).join("")).toContain("first visible reply");
+      expect(turns[0].rounds[1].segments.map((segment) => segment.text).join("")).toContain("tool output");
+    });
+  });
+
+  it("splits visible answer text from subsequent tool output without an explicit round_start", async () => {
+    render(
+      <AppProvider>
+        <TurnsProbe />
+      </AppProvider>,
+    );
+
+    await waitFor(() => expect(apiMock.connectEvents).toHaveBeenCalled());
+
+    act(() => {
+      apiMock.emit({
+        event: "turn_start",
+        data: { text: "Investigate", chatId: "chat-1", workspaceId: "ws-1" },
+      });
+      apiMock.emit({
+        event: "assistant",
+        data: { text: "先给用户一段说明", chatId: "chat-1", workspaceId: "ws-1" },
+      });
+      apiMock.emit({
+        event: "output",
+        data: { text: "tool output", chatId: "chat-1", workspaceId: "ws-1" },
+      });
+    });
+
+    await waitFor(() => {
+      const turns = JSON.parse(screen.getByTestId("turns").textContent || "[]") as Turn[];
+      expect(turns).toHaveLength(1);
+      expect(turns[0].rounds).toHaveLength(2);
+      expect(turns[0].rounds[0].waitEndedAt).toBeTypeOf("number");
+      expect(turns[0].rounds[1].waitEndedAt).toBeNull();
+      expect(turns[0].rounds[0].segments).toEqual([
+        expect.objectContaining({ kind: "answer", text: "先给用户一段说明" }),
+      ]);
+      expect(turns[0].rounds[1].segments).toEqual([
+        expect.objectContaining({ kind: "step", text: "tool output" }),
+      ]);
+    });
+  });
+
   it("exposes an optimistic active workspace/chat without mutating the raw backend state", async () => {
     render(
       <AppProvider>
