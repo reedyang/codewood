@@ -306,9 +306,9 @@ export const en: Dict = {
   "models.addHeader": "Add header",
   "models.removeHeader": "Remove header",
   "models.dupNeedDisplayName":
-    "Multiple providers share the same name. Each must have a Display name.",
+    "Multiple providers share the same base URL. Each must have a unique Provider name (letters, digits, \"-\" only).",
   "models.dupDisplayNameUnique":
-    "Providers with the same name must have different Display names.",
+    "Providers with the same base URL must have different Provider names.",
   "models.save": "Save",
   "models.saving": "Saving…",
   "models.saveFailed": "Failed to save model settings.",

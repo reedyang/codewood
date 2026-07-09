@@ -126,7 +126,16 @@ export function findPreset(id: string): ModelPreset | undefined {
   return MODEL_PRESETS.find((p) => p.id === id);
 }
 
-/** Pick the best-matching preset id for a loaded provider (by api_mode/base_url). */
+/** Extract hostname from a URL for hostname-level matching. */
+export function extractHostname(url: string): string {
+  try {
+    return new URL(url).hostname.replace(/^www\./, "");
+  } catch {
+    return "";
+  }
+}
+
+/** Pick the best-matching preset id for a loaded provider (by base_url hostname). */
 export function presetIdForProvider(p: {
   api_mode: string;
   base_url: string;
@@ -134,11 +143,19 @@ export function presetIdForProvider(p: {
   if ((p.api_mode || "").toLowerCase() === "ollama") {
     return "ollama";
   }
-  const base = (p.base_url || "").replace(/\/+$/, "");
-  const match = MODEL_PRESETS.find(
-    (preset) => preset.kind === "openai" && preset.base_url.replace(/\/+$/, "") === base,
-  );
-  return match ? match.id : "custom";
+  const base = (p.base_url || "").replace(/\/+$/, "").toLowerCase();
+  if (!base) return "custom";
+  const providerHost = extractHostname(base);
+  if (providerHost) {
+    for (const preset of MODEL_PRESETS) {
+      if (!preset.base_url || preset.kind !== "openai") continue;
+      const presetHost = extractHostname(preset.base_url);
+      if (presetHost && providerHost === presetHost) {
+        return preset.id;
+      }
+    }
+  }
+  return "custom";
 }
 
 export interface EditorHeader {
@@ -228,16 +245,25 @@ export function toEditorProvider(raw: unknown): EditorProvider {
   });
   const api_mode = String(params.api_mode ?? "chat");
   const base_url = String(params.base_url ?? "");
+  const providerFromConfig = String(obj.provider ?? "");
+
   const presetId = presetIdForProvider({ api_mode, base_url });
   const preset = findPreset(presetId);
+  const presetProviderVal = preset?.provider ?? providerFromConfig;
+  const isPresetProvider =
+    providerFromConfig === presetProviderVal ||
+    (presetProviderVal !== "" && providerFromConfig.startsWith(presetProviderVal + "-"));
+  const provider = presetProviderVal;
+  const display_name = isPresetProvider ? "" : providerFromConfig;
+
   const includeThinkingRaw = params.include_thinking_in_messages;
   const include_thinking_in_messages =
     typeof includeThinkingRaw === "boolean"
       ? includeThinkingRaw
       : preset?.include_thinking_in_messages ?? false;
   return {
-    provider: String(obj.provider ?? ""),
-    display_name: String(obj.display_name ?? ""),
+    provider,
+    display_name,
     api_key: String(params.api_key ?? ""),
     base_url,
     api_mode,
@@ -249,9 +275,35 @@ export function toEditorProvider(raw: unknown): EditorProvider {
   };
 }
 
-/** Serialize editor providers back into the raw config_providers shape. */
+/** Serialize editor providers back into the raw config_providers shape.
+ *
+ *  `provider` — user-configured Provider name, or the preset's provider value
+ *     (auto-suffixed -N when duplicate and no Provider name).
+ *  `display_name` is **not** written (absorbed into `provider`).
+ */
 export function toConfigProviders(editors: EditorProvider[]): unknown[] {
-  return editors.map((e) => {
+  // Resolve the base provider value for each entry.
+  const rawProviders: string[] = editors.map((e) => {
+    const display = e.display_name?.trim();
+    return display || e.provider.trim() || "Custom";
+  });
+
+  // Deduplicate provider values.
+  const counts = new Map<string, number>();
+  for (const r of rawProviders) {
+    counts.set(r, (counts.get(r) ?? 0) + 1);
+  }
+  const seen = new Map<string, number>();
+  const finalProviders: string[] = rawProviders.map((r) => {
+    const total = counts.get(r) ?? 1;
+    const n = (seen.get(r) ?? 0) + 1;
+    seen.set(r, n);
+    if (total > 1 && n > 1) return `${r}-${n}`;
+    return r;
+  });
+
+  // Build the config entries.
+  return editors.map((e, i) => {
     const params: Record<string, unknown> = {
       api_mode: e.api_mode || "chat",
     };
@@ -284,8 +336,6 @@ export function toConfigProviders(editors: EditorProvider[]): unknown[] {
         if (m.thinking !== undefined) {
           model.thinking = m.thinking;
         }
-        // Ollama doesn't support reasoning effort or custom headers; only
-        // serialize them for OpenAI-compatible providers.
         if ((e.api_mode || "").toLowerCase() !== "ollama") {
           const re = (m.reasoning_effort || [])
             .map((x) => String(x).trim().toLowerCase())
@@ -304,10 +354,6 @@ export function toConfigProviders(editors: EditorProvider[]): unknown[] {
         }
         return model;
       });
-    const entry: Record<string, unknown> = { provider: e.provider, params };
-    if (e.display_name && e.display_name.trim()) {
-      entry.display_name = e.display_name.trim();
-    }
-    return entry;
+    return { provider: finalProviders[i], params };
   });
 }

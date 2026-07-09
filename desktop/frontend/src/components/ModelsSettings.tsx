@@ -6,6 +6,7 @@ import {
   findPreset,
   toEditorProvider,
   toConfigProviders,
+  extractHostname,
   type EditorProvider,
   type EditorModel,
   type EditorHeader,
@@ -32,6 +33,7 @@ export function ModelsSettings({ onDirtyChange, saveSignal }: ModelsSettingsProp
   const [expandModel, setExpandModel] = useState<Record<string, boolean>>({});
   const [confirmRemoveIdx, setConfirmRemoveIdx] = useState<number | null>(null);
   const [fetchContextAttr, setFetchContextAttr] = useState<Record<string, number | undefined>>({});
+  const [displayNameErrors, setDisplayNameErrors] = useState<Set<number>>(new Set());
   const lastSaveSignal = useRef<number | undefined>(saveSignal);
   const getModelsConfigRef = useRef(getModelsConfig);
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -39,17 +41,27 @@ export function ModelsSettings({ onDirtyChange, saveSignal }: ModelsSettingsProp
   dirtyRef.current = dirty;
   const providersRef = useRef<EditorProvider[]>([]);
   providersRef.current = providers;
-  const saveRef = useRef<() => Promise<boolean>>(() => Promise.resolve(true));
+  const saveRef = useRef<(final?: boolean) => Promise<boolean>>(() => Promise.resolve(true));
+  const validateRef = useRef<() => string>(() => "");
   getModelsConfigRef.current = getModelsConfig;
   const getModelPresetsRef = useRef(getModelPresets);
   getModelPresetsRef.current = getModelPresets;
+  const initialProviderCountRef = useRef(0);
+  const presetsLoadedRef = useRef(false);
+  const presetsRef = useRef<ModelPreset[]>(presets);
+  presetsRef.current = presets;
 
   useEffect(() => {
     let alive = true;
     void getModelsConfigRef.current().then((raw) => {
       if (!alive) return;
       const loaded = raw.map(toEditorProvider);
+      initialProviderCountRef.current = loaded.length;
       setProviders(loaded);
+      // If presets were already loaded, re-map "custom" providers now.
+      if (presetsLoadedRef.current) {
+        remapCustomProviders(presetsRef.current);
+      }
       // Default to all providers collapsed when the page opens.
       const allCollapsed: Record<number, boolean> = {};
       loaded.forEach((_, i) => {
@@ -90,21 +102,31 @@ export function ModelsSettings({ onDirtyChange, saveSignal }: ModelsSettingsProp
       const builtinOnly = merged.filter((p) => !addedIds.has(p.id));
       const reordered = [...remoteOrder, ...builtinOnly];
       setPresets(reordered);
+      presetsLoadedRef.current = true;
       // Re-map providers whose presetId is "custom" but match a newly loaded preset.
-      setProviders((prev) => prev.map((p) => {
-        if (p.presetId !== "custom") return p;
-        const base = p.base_url.replace(/\/+$/, "");
-        const match = reordered.find(
-          (pre) => pre.kind === "openai" && pre.base_url.replace(/\/+$/, "") === base,
-        );
-        if (!match) return p;
-        return { ...p, presetId: match.id, provider: match.provider };
-      }));
+      remapCustomProviders(reordered);
     });
     return () => {
       alive = false;
     };
   }, []);
+
+  // Re-map any provider with presetId "custom" to a matching preset by base_url hostname.
+  const remapCustomProviders = (presetList: ModelPreset[]) => {
+    setProviders((prev) => prev.map((p) => {
+      if (p.presetId !== "custom") return p;
+      const base = p.base_url.replace(/\/+$/, "").toLowerCase();
+      if (!base) return p;
+      const providerHost = extractHostname(base);
+      if (!providerHost) return p;
+      const match = presetList.find((pre) => {
+        if (!pre.base_url || pre.kind !== "openai") return false;
+        return extractHostname(pre.base_url) === providerHost;
+      });
+      if (!match) return p;
+      return { ...p, presetId: match.id, provider: match.provider };
+    }));
+  };
 
   // A provider freshly added but otherwise untouched needs no delete confirm.
   const isPristineProvider = (p: EditorProvider): boolean => {
@@ -130,6 +152,15 @@ export function ModelsSettings({ onDirtyChange, saveSignal }: ModelsSettingsProp
       void saveRef.current();
     }, 500);
   };
+
+  // Validate display names on every providers change so inline errors are always up to date.
+  const validateTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    if (validateTimerRef.current) clearTimeout(validateTimerRef.current);
+    validateTimerRef.current = setTimeout(() => {
+      void validateRef.current();
+    }, 200);
+  }, [providers]);
 
   const update = (idx: number, patch: Partial<EditorProvider>) => {
     setProviders((prev) => prev.map((p, i) => (i === idx ? { ...p, ...patch } : p)));
@@ -328,33 +359,83 @@ export function ModelsSettings({ onDirtyChange, saveSignal }: ModelsSettingsProp
 
   /** Returns a validation error message, or "" when valid. */
   const validate = (): string => {
-    // Group providers by their provider id; when 2+ share one, every member
-    // must have a non-empty, unique display name.
+    // Group by baseURL hostname; when 2+ share one, each subsequent provider
+    // must have a non-empty, unique Provider name.
     const groups = new Map<string, number[]>();
     providers.forEach((p, i) => {
-      const key = p.provider.trim();
+      let key = "";
+      const base = p.base_url.replace(/\/+$/, "").toLowerCase();
+      if (base) {
+        key = extractHostname(base);
+      }
       const arr = groups.get(key) ?? [];
       arr.push(i);
       groups.set(key, arr);
+    });
+    const errs = new Set<number>();
+    // Format check: Provider name may only contain a-zA-Z0-9 and -.
+    providers.forEach((p, i) => {
+      const name = p.display_name.trim();
+      if (name && !/^[a-zA-Z0-9-]+$/.test(name)) {
+        errs.add(i);
+      }
     });
     for (const [, idxs] of groups) {
       if (idxs.length < 2) continue;
       const names = idxs.map((i) => providers[i].display_name.trim());
       if (names.some((n) => !n)) {
-        return t("models.dupNeedDisplayName");
+        for (const i of idxs.slice(1)) {
+          if (!providers[i].display_name.trim()) errs.add(i);
+        }
       }
       if (new Set(names).size !== names.length) {
         return t("models.dupDisplayNameUnique");
       }
     }
-    return "";
+    setDisplayNameErrors(errs);
+    return errs.size > 0 ? t("models.dupNeedDisplayName") : "";
   };
+  validateRef.current = validate;
 
-  const save = async (): Promise<boolean> => {
-    const err = validate();
-    if (err) {
-      window.alert(err);
-      return false;
+  const save = async (final?: boolean): Promise<boolean> => {
+    if (final) {
+      // Auto-fill empty display names for duplicate providers before saving.
+      const groups = new Map<string, number[]>();
+      providers.forEach((p, i) => {
+        const key = p.provider.trim();
+        const arr = groups.get(key) ?? [];
+        arr.push(i);
+        groups.set(key, arr);
+      });
+      const patches: Record<number, string> = {};
+      for (const [, idxs] of groups) {
+        if (idxs.length < 2) continue;
+        let counter = 2;
+        // Skip the first provider; auto-fill all subsequent duplicates.
+        for (const i of idxs.slice(1)) {
+          if (!providers[i].display_name.trim()) {
+            const preset = presets.find((pr) => pr.id === providers[i].presetId);
+            patches[i] = `${preset?.label || providers[i].provider}-${counter++}`;
+          }
+        }
+      }
+      if (Object.keys(patches).length > 0) {
+        setProviders((prev) => prev.map((p, i) =>
+          patches[i] ? { ...p, display_name: patches[i] } : p,
+        ));
+        setDirty(false);
+        onDirtyChange?.(false);
+        const ok = await saveModelsConfig(
+          toConfigProviders(providers.map((p, i) =>
+            patches[i] ? { ...p, display_name: patches[i] } : p,
+          )),
+        );
+        if (!ok) {
+          window.alert(t("models.saveFailed"));
+          return false;
+        }
+        return true;
+      }
     }
     const ok = await saveModelsConfig(toConfigProviders(providers));
     if (!ok) {
@@ -371,7 +452,7 @@ export function ModelsSettings({ onDirtyChange, saveSignal }: ModelsSettingsProp
   useEffect(() => {
     if (saveSignal !== undefined && saveSignal !== lastSaveSignal.current) {
       lastSaveSignal.current = saveSignal;
-      void save();
+      void save(true);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [saveSignal]);
@@ -380,8 +461,9 @@ export function ModelsSettings({ onDirtyChange, saveSignal }: ModelsSettingsProp
   useEffect(() => {
     return () => {
       if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+      if (validateTimerRef.current) clearTimeout(validateTimerRef.current);
       if (dirtyRef.current) {
-        void saveModelsConfig(toConfigProviders(providersRef.current));
+        void saveRef.current(true);
       }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -405,8 +487,21 @@ export function ModelsSettings({ onDirtyChange, saveSignal }: ModelsSettingsProp
           presetDefaultThinking &&
           p.include_thinking_in_messages === false;
         const isCollapsed = Boolean(collapsed[idx]);
-        const collapsedLabel =
-          p.display_name.trim() || p.provider.trim() || preset?.label || t("models.provider");
+        // Compute the effective label: use display_name, or simulate auto-suffix logic.
+        const effectiveLabel = (): string => {
+          const d = p.display_name.trim();
+          if (d) return d;
+          const raw = p.provider.trim() || "Custom";
+          const same = providers.filter((o) => {
+            const od = o.display_name.trim();
+            return (od || o.provider.trim() || "Custom") === raw;
+          });
+          if (same.length < 2) return raw;
+          // Count how many up to and including current index.
+          const n = same.filter((o) => providers.indexOf(o) <= idx).length;
+          return n > 1 ? `${raw}-${n}` : raw;
+        };
+        const collapsedLabel = effectiveLabel() || preset?.label || t("models.provider");
         return (
           <div className={`models-provider ${isCollapsed ? "collapsed" : ""}`} key={idx}>
             <div className="models-provider-head">
@@ -414,7 +509,7 @@ export function ModelsSettings({ onDirtyChange, saveSignal }: ModelsSettingsProp
                 className="models-collapse"
                 aria-expanded={!isCollapsed}
                 aria-label={t("models.toggleProvider")}
-                onClick={() => setCollapsed((c) => ({ ...c, [idx]: !c[idx] }))}
+                onClick={() => { setCollapsed((c) => ({ ...c, [idx]: !c[idx] })); markDirty(); }}
               >
                 <Icon
                   name="chevron"
@@ -452,14 +547,24 @@ export function ModelsSettings({ onDirtyChange, saveSignal }: ModelsSettingsProp
               <>
                 {!isOllama && (
                   <div className="models-field">
-                    <label>{t("models.displayName")}</label>
+                    <label>{t("models.providerName")}</label>
                     <input
                       className="text-input"
-                      aria-label={t("models.displayName")}
-                      placeholder={t("models.displayNamePlaceholder")}
+                      aria-label={t("models.providerName")}
+                      placeholder={t("models.providerName")}
                       value={p.display_name}
-                      onChange={(e) => update(idx, { display_name: e.target.value })}
+                      onChange={(e) => {
+                        update(idx, { display_name: e.target.value });
+                        setDisplayNameErrors((prev) => {
+                          const next = new Set(prev);
+                          next.delete(idx);
+                          return next;
+                        });
+                      }}
                     />
+                    {displayNameErrors.has(idx) && (
+                      <div className="models-field-error">{t("models.dupNeedDisplayName")}</div>
+                    )}
                   </div>
                 )}
 

@@ -785,6 +785,12 @@ body.resizing-x .browser-frame {
   line-height: 1.45;
 }
 
+.models-field-error {
+  color: #d9534f;
+  font-size: 12px;
+  margin-top: 2px;
+}
+
 .models-warning {
   color: #a45a00;
   background: rgba(244, 179, 80, 0.14);
