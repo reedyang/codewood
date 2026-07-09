@@ -265,7 +265,6 @@
   "execution_policy.mode_label.unlimited": "Unlimited mode",
   "execution_policy.review.asking_safety": "asking AI to classify whether the operation is safe...",
   "execution_policy.review.classified_safe": "classified as safe, auto-skipping confirmation - {reason}",
-  "execution_policy.review.classified_unsafe": "classified as unsafe or uncertain, manual confirmation is still required - {reason}",
   "execution_policy.review.no_cache_reason": "(no cache reason provided)",
   "execution_policy.cache.read_failed": "⚠️ Failed to read freedom_script_review_cache.json: {error}",
   "execution_policy.cache.write_failed": "⚠️ Failed to write freedom_script_review_cache.json: {error}",

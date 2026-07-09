@@ -683,10 +683,6 @@ def freedom_auto_confirm(agent: Any, command: Dict[str, Any]) -> bool:
                     if reversible:
                         agent._manual_confirm_required_shell_once = False
                     else:
-                        _print_with_auto_hide_tracking(
-                            agent,
-                            f"{mode_prefix} {_t(agent, 'execution_policy.review.classified_unsafe', fallback='classified as unsafe or uncertain, manual confirmation is still required - {reason}', reason=reason)}",
-                        )
                         agent._manual_confirm_required_shell_once = True
                     return reversible
                 use_cache = not session_ephemeral
@@ -759,18 +755,9 @@ def freedom_auto_confirm(agent: Any, command: Dict[str, Any]) -> bool:
         if reversible:
             agent._manual_confirm_required_shell_once = False
         else:
-            _print_with_auto_hide_tracking(
-                agent,
-                f"{mode_prefix} {_t(agent, 'execution_policy.review.classified_unsafe', fallback='classified as unsafe or uncertain, manual confirmation is still required - {reason}', reason=reason)}"
-            )
             agent._manual_confirm_required_shell_once = True
         return reversible
 
-    reversible, reason = ai_assess_reversible(agent, command)
-    if not reversible:
-        _print_with_auto_hide_tracking(
-            agent,
-            f"{mode_prefix} {_t(agent, 'execution_policy.review.classified_unsafe', fallback='classified as unsafe or uncertain, manual confirmation is still required - {reason}', reason=reason)}"
-        )
+    reversible, _ = ai_assess_reversible(agent, command)
     return reversible
 
