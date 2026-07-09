@@ -265,7 +265,6 @@
   "execution_policy.mode_label.unlimited": "无限模式",
   "execution_policy.review.asking_safety": "正在请求 AI 判断操作是否安全...",
   "execution_policy.review.classified_safe": "已判定为安全，自动跳过确认 - {reason}",
-  "execution_policy.review.classified_unsafe": "已判定为不安全或不确定，仍需手动确认 - {reason}",
   "execution_policy.review.no_cache_reason": "（未提供缓存原因）",
   "execution_policy.cache.read_failed": "⚠️ 读取 freedom_script_review_cache.json 失败：{error}",
   "execution_policy.cache.write_failed": "⚠️ 写入 freedom_script_review_cache.json 失败：{error}",
