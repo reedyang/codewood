@@ -1,29 +1,29 @@
-"""Tests for cli.ai.cache_adapter — provider-specific cache hit statistics extraction."""
+"""Tests for cli.ai.model_api_adapter — provider-specific cache hit statistics extraction."""
 
 import unittest
 
-from cli.ai.cache_adapter import CacheAdapterManager
-from cli.ai.adapters.deepseek_cache_adapter import DeepSeekCacheAdapter
-from cli.ai.adapters.openai_cache_adapter import OpenAICacheAdapter
-from cli.ai.adapters.fallback_cache_adapter import FallbackCacheAdapter
+from cli.ai.model_api_adapter import ModelApiAdapterManager
+from cli.ai.adapters.deepseek_model_api_adapter import DeepSeekModelApiAdapter
+from cli.ai.adapters.openai_model_api_adapter import OpenAIModelApiAdapter
+from cli.ai.adapters.fallback_model_api_adapter import FallbackModelApiAdapter
 
 
-class TestDeepSeekCacheAdapter(unittest.TestCase):
+class TestDeepSeekModelApiAdapter(unittest.TestCase):
     def setUp(self):
-        self.adapter = DeepSeekCacheAdapter()
+        self.adapter = DeepSeekModelApiAdapter()
 
     def test_supports_cache_stats(self):
         self.assertTrue(self.adapter.supports_cache_stats())
 
     def test_matches_deepseek_url(self):
-        self.assertTrue(DeepSeekCacheAdapter.matches("https://api.deepseek.com/v1"))
-        self.assertTrue(DeepSeekCacheAdapter.matches("https://api.deepseek.com"))
-        self.assertTrue(DeepSeekCacheAdapter.matches("http://api.deepseek.com/"))
+        self.assertTrue(DeepSeekModelApiAdapter.matches("https://api.deepseek.com/v1"))
+        self.assertTrue(DeepSeekModelApiAdapter.matches("https://api.deepseek.com"))
+        self.assertTrue(DeepSeekModelApiAdapter.matches("http://api.deepseek.com/"))
 
     def test_does_not_match_other_urls(self):
-        self.assertFalse(DeepSeekCacheAdapter.matches("https://api.openai.com/v1"))
-        self.assertFalse(DeepSeekCacheAdapter.matches("https://api.anthropic.com"))
-        self.assertFalse(DeepSeekCacheAdapter.matches(""))
+        self.assertFalse(DeepSeekModelApiAdapter.matches("https://api.openai.com/v1"))
+        self.assertFalse(DeepSeekModelApiAdapter.matches("https://api.anthropic.com"))
+        self.assertFalse(DeepSeekModelApiAdapter.matches(""))
 
     def test_extract_cache_stats_with_valid_usage(self):
         data = {
@@ -79,22 +79,22 @@ class TestDeepSeekCacheAdapter(unittest.TestCase):
         self.assertEqual(stats["prompt_cache_miss_tokens"], 0)
 
 
-class TestOpenAICacheAdapter(unittest.TestCase):
+class TestOpenAIModelApiAdapter(unittest.TestCase):
     def setUp(self):
-        self.adapter = OpenAICacheAdapter()
+        self.adapter = OpenAIModelApiAdapter()
 
     def test_supports_cache_stats(self):
         self.assertTrue(self.adapter.supports_cache_stats())
 
     def test_matches_openai_url(self):
-        self.assertTrue(OpenAICacheAdapter.matches("https://api.openai.com/v1"))
-        self.assertTrue(OpenAICacheAdapter.matches("https://api.openai.com"))
-        self.assertTrue(OpenAICacheAdapter.matches("http://api.openai.com/"))
+        self.assertTrue(OpenAIModelApiAdapter.matches("https://api.openai.com/v1"))
+        self.assertTrue(OpenAIModelApiAdapter.matches("https://api.openai.com"))
+        self.assertTrue(OpenAIModelApiAdapter.matches("http://api.openai.com/"))
 
     def test_does_not_match_other_urls(self):
-        self.assertFalse(OpenAICacheAdapter.matches("https://api.deepseek.com/v1"))
-        self.assertFalse(OpenAICacheAdapter.matches("https://api.anthropic.com"))
-        self.assertFalse(OpenAICacheAdapter.matches(""))
+        self.assertFalse(OpenAIModelApiAdapter.matches("https://api.deepseek.com/v1"))
+        self.assertFalse(OpenAIModelApiAdapter.matches("https://api.anthropic.com"))
+        self.assertFalse(OpenAIModelApiAdapter.matches(""))
 
     # -- Chat Completions API usage --
 
@@ -218,15 +218,15 @@ class TestOpenAICacheAdapter(unittest.TestCase):
         self.assertEqual(stats["input_tokens"], 100)
 
 
-class TestFallbackCacheAdapter(unittest.TestCase):
+class TestFallbackModelApiAdapter(unittest.TestCase):
     def setUp(self):
-        self.adapter = FallbackCacheAdapter()
+        self.adapter = FallbackModelApiAdapter()
 
     def test_matches_everything(self):
-        self.assertTrue(FallbackCacheAdapter.matches("https://api.openai.com/v1"))
-        self.assertTrue(FallbackCacheAdapter.matches("https://api.deepseek.com/v1"))
-        self.assertTrue(FallbackCacheAdapter.matches("https://api.anthropic.com"))
-        self.assertTrue(FallbackCacheAdapter.matches(""))
+        self.assertTrue(FallbackModelApiAdapter.matches("https://api.openai.com/v1"))
+        self.assertTrue(FallbackModelApiAdapter.matches("https://api.deepseek.com/v1"))
+        self.assertTrue(FallbackModelApiAdapter.matches("https://api.anthropic.com"))
+        self.assertTrue(FallbackModelApiAdapter.matches(""))
 
     def test_supports_cache_stats_initial(self):
         self.assertTrue(self.adapter.supports_cache_stats())
@@ -328,24 +328,24 @@ class TestFallbackCacheAdapter(unittest.TestCase):
         self.assertIsNone(stats)
 
 
-class TestCacheAdapterManager(unittest.TestCase):
+class TestModelApiAdapterManager(unittest.TestCase):
     def setUp(self):
-        self.manager = CacheAdapterManager()
+        self.manager = ModelApiAdapterManager()
 
     def test_resolve_deepseek(self):
         adapter = self.manager.resolve("https://api.deepseek.com/v1")
-        self.assertIsInstance(adapter, DeepSeekCacheAdapter)
+        self.assertIsInstance(adapter, DeepSeekModelApiAdapter)
 
     def test_resolve_openai(self):
         adapter = self.manager.resolve("https://api.openai.com/v1")
-        self.assertIsInstance(adapter, OpenAICacheAdapter)
+        self.assertIsInstance(adapter, OpenAIModelApiAdapter)
 
     def test_resolve_fallback_for_unknown(self):
         adapter = self.manager.resolve("https://api.anthropic.com")
-        self.assertIsInstance(adapter, FallbackCacheAdapter)
+        self.assertIsInstance(adapter, FallbackModelApiAdapter)
 
     def test_register_adapter(self):
-        manager = CacheAdapterManager()
-        manager.register(DeepSeekCacheAdapter())
+        manager = ModelApiAdapterManager()
+        manager.register(DeepSeekModelApiAdapter())
         adapter = manager.resolve("https://api.deepseek.com/v1")
-        self.assertIsInstance(adapter, DeepSeekCacheAdapter)
+        self.assertIsInstance(adapter, DeepSeekModelApiAdapter)

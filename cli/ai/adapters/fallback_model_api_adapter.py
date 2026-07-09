@@ -1,4 +1,4 @@
-"""Fallback cache adapter that probes unknown APIs using known usage structures.
+"""Fallback model API adapter that probes unknown APIs using known usage structures.
 
 Attempts to extract cache stats by trying the Chat Completions format first,
 then the Responses API format.  ``supports_cache_stats()`` returns based on
@@ -10,10 +10,10 @@ from __future__ import annotations
 
 from typing import Any, Dict, Optional
 
-from cli.ai.cache_adapter import BaseCacheAdapter
+from cli.ai.model_api_adapter import BaseModelApiAdapter
 
 
-class FallbackCacheAdapter(BaseCacheAdapter):
+class FallbackModelApiAdapter(BaseModelApiAdapter):
     """Use known OpenAI usage structures to extract cache stats from any API.
 
     Extraction is attempted in order:

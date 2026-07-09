@@ -16,7 +16,7 @@ from ..core.config.model_providers import (
 )
 from ..config.i18n import translate
 from ..core.logging.app_logging import get_logger
-from .cache_adapter import CacheAdapterManager
+from .model_api_adapter import ModelApiAdapterManager
 
 
 _OPENAI_API_ROUTE_CACHE_FILE = "openai_api_route_cache.json"
@@ -1575,9 +1575,9 @@ def _post_openai_request(
 
 def _attach_cache_stats(message: Dict[str, Any], response_data: Dict[str, Any], url: str = "") -> None:
     """Extract cache-hit stats from the API response and attach to message."""
-    from .cache_adapter import CacheAdapterManager
+    from .model_api_adapter import ModelApiAdapterManager
 
-    mgr = CacheAdapterManager()
+    mgr = ModelApiAdapterManager()
     adapter = mgr.resolve(url)
     if adapter is None:
         _OPENAI_ROUTE_LOG.warning("cache-stats no-adapter url=%s", url)
@@ -1614,7 +1614,7 @@ def _attach_output_usage(
     providers; raw output_tokens for DeepSeek where thinking tags are
     retained in the content).
     """
-    mgr = CacheAdapterManager()
+    mgr = ModelApiAdapterManager()
     adapter = mgr.resolve(url)
     if adapter is None:
         return
