@@ -4686,6 +4686,10 @@ h6.md-h {
   overflow-y: auto;
 }
 
+.model-dropdown > .dropdown-menu {
+  max-height: 420px;
+}
+
 .dropdown-menu.align-right {
   left: auto;
   right: 0;
@@ -4704,6 +4708,7 @@ h6.md-h {
   border-radius: 7px;
   cursor: pointer;
   font-size: 13px;
+  white-space: nowrap;
 }
 
 .dropdown-item:hover {
@@ -4735,6 +4740,25 @@ h6.md-h {
 .model-submenu-arrow {
   margin-left: auto;
   opacity: 0.7;
+}
+
+.model-provider-hint {
+  color: var(--text-muted);
+  font-style: italic;
+  font-weight: normal;
+}
+
+.model-submenu-label {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.model-provider-sub {
+  color: var(--text-muted);
+  font-style: italic;
+  font-size: 11px;
 }
 
 .model-flyout-anchor {

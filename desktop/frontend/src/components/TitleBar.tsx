@@ -32,7 +32,7 @@ type MenuEntry =
   | { label: string; shortcut?: string; checked?: boolean; onSelect: () => void };
 
 export function TitleBar({ collapsed, onTogglePanel }: { collapsed: boolean; onTogglePanel: () => void }) {
-  const { t, pickAndOpenFolder, newChat, openSettings, openAbout, showBrowserTab, hideBrowserTab, showConsole, hideConsole, consoleOpen, browserOpen } = useApp();
+  const { t, pickAndOpenFolder, newChat, openSettings, openAbout, showBrowserTab, hideBrowserTab, showConsole, hideConsole, consoleOpen, browserOpen, closeSettings, settingsOpen } = useApp();
 
   const [openMenu, setOpenMenu] = useState<string | null>(null);
   const [native, setNative] = useState<boolean>(() => Boolean(hostApi()));
@@ -93,7 +93,13 @@ export function TitleBar({ collapsed, onTogglePanel }: { collapsed: boolean; onT
     return () => window.removeEventListener("mousedown", onPointer);
   }, [openMenu]);
 
-  const closeWindow = () => hostApi()?.close_window?.();
+  const closeWindow = () => {
+    // If settings are open, close them first so pending auto-saves can fire.
+    if (settingsOpen) {
+      closeSettings();
+    }
+    hostApi()?.close_window?.();
+  };
 
   const openFolder = () => void pickAndOpenFolder();
   const menus: { id: string; label: string; entries: MenuEntry[] }[] = [
