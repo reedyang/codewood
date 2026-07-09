@@ -1838,8 +1838,8 @@ function ModelMenu({
   return (
     <div className="dropdown model-dropdown" ref={ref}>
       <button className="dropdown-trigger" onClick={() => setOpen((v) => !v)}>
-        <span>
-          {currentName || t("model.label")}
+        <span className="model-trigger-label">
+          <span className="model-trigger-name">{currentName || t("model.label")}</span>
           {showProvider && currentProvider && (
             <span className="model-provider-hint"> ({currentProvider})</span>
           )}
