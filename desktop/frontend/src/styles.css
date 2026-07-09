@@ -3317,6 +3317,7 @@ html[data-has-bg] .select {
   border-radius: 4px;
   letter-spacing: 0.04em;
   text-transform: uppercase;
+  white-space: nowrap;
 }
 
 .mode-badge-plan {
@@ -4622,6 +4623,10 @@ h6.md-h {
   gap: 8px;
 }
 
+.composer-right {
+  min-width: 0;
+}
+
 .send-btn {
   width: 26px;
   height: 26px;
@@ -4702,6 +4707,20 @@ h6.md-h {
   max-height: 420px;
 }
 
+.composer-right .model-dropdown {
+  min-width: 0;
+  flex: 0 1 auto;
+}
+
+.model-dropdown > .dropdown-trigger {
+  display: grid;
+  grid-template-columns: minmax(0, auto) auto auto;
+  align-items: center;
+  justify-content: start;
+  column-gap: 8px;
+  max-width: min(100%, 300px);
+}
+
 .dropdown-menu.align-right {
   left: auto;
   right: 0;
@@ -4742,6 +4761,7 @@ h6.md-h {
   margin-left: 4px;
   font-style: italic;
   opacity: 0.8;
+  white-space: nowrap;
 }
 
 .model-submenu-entry {
@@ -4758,6 +4778,23 @@ h6.md-h {
   color: var(--text-muted);
   font-style: italic;
   font-weight: normal;
+}
+
+.model-trigger-label {
+  min-width: 0;
+  max-width: 28ch;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-height: 1.15;
+  text-align: center;
+  white-space: normal;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+
+.model-trigger-name {
+  overflow-wrap: anywhere;
 }
 
 .model-submenu-label {
