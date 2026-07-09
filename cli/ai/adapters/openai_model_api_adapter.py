@@ -1,4 +1,4 @@
-"""Cache adapter for OpenAI API cache-hit statistics.
+"""Model API adapter for OpenAI API cache-hit statistics.
 
 Supports both the Chat Completions API and the Responses API — the two APIs
 use different ``usage`` field structures.
@@ -8,10 +8,10 @@ from __future__ import annotations
 
 from typing import Any, Dict, Optional, Tuple
 
-from cli.ai.cache_adapter import BaseCacheAdapter
+from cli.ai.model_api_adapter import BaseModelApiAdapter
 
 
-class OpenAICacheAdapter(BaseCacheAdapter):
+class OpenAIModelApiAdapter(BaseModelApiAdapter):
     """Extract cache stats from OpenAI API responses.
 
     **Chat Completions API**::

@@ -1,4 +1,4 @@
-"""Provider-specific cache-hit statistics extraction via Adapter pattern.
+"""Provider-specific model API adapter pattern.
 
 DeepSeek API (identified by base_url containing ``api.deepseek.com``) reports
 prompt-cache hit/miss tokens in the ``usage`` section of the response body.
@@ -24,7 +24,7 @@ def _safe_int(value: Any) -> int:
         return 0
 
 
-class BaseCacheAdapter(ABC):
+class BaseModelApiAdapter(ABC):
     """Extract cache-hit statistics from a provider's API response."""
 
     @abstractmethod
@@ -86,24 +86,24 @@ class BaseCacheAdapter(ABC):
         return {"output_tokens": output_tokens, "reasoning_tokens": reasoning_tokens}
 
 
-class CacheAdapterManager:
-    """Registry of cache adapters resolved by base URL."""
+class ModelApiAdapterManager:
+    """Registry of model API adapters resolved by base URL."""
 
     def __init__(self) -> None:
-        from cli.ai.adapters.deepseek_cache_adapter import DeepSeekCacheAdapter
-        from cli.ai.adapters.openai_cache_adapter import OpenAICacheAdapter
-        from cli.ai.adapters.fallback_cache_adapter import FallbackCacheAdapter
+        from cli.ai.adapters.deepseek_model_api_adapter import DeepSeekModelApiAdapter
+        from cli.ai.adapters.openai_model_api_adapter import OpenAIModelApiAdapter
+        from cli.ai.adapters.fallback_model_api_adapter import FallbackModelApiAdapter
 
-        self._adapters: List[BaseCacheAdapter] = [
-            DeepSeekCacheAdapter(),
-            OpenAICacheAdapter(),
-            FallbackCacheAdapter(),
+        self._adapters: List[BaseModelApiAdapter] = [
+            DeepSeekModelApiAdapter(),
+            OpenAIModelApiAdapter(),
+            FallbackModelApiAdapter(),
         ]
 
-    def register(self, adapter: BaseCacheAdapter) -> None:
+    def register(self, adapter: BaseModelApiAdapter) -> None:
         self._adapters.append(adapter)
 
-    def resolve(self, base_url: str) -> Optional[BaseCacheAdapter]:
+    def resolve(self, base_url: str) -> Optional[BaseModelApiAdapter]:
         for adapter in self._adapters:
             if adapter.matches(base_url):
                 if adapter.supports_cache_stats():

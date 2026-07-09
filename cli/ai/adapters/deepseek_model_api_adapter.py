@@ -1,4 +1,4 @@
-"""Cache adapter for DeepSeek API cache-hit statistics.
+"""Model API adapter for DeepSeek API cache-hit statistics.
 
 DeepSeek API (identified by base_url containing ``api.deepseek.com``) reports
 prompt-cache hit/miss tokens in the ``usage`` section of the response body.
@@ -8,10 +8,10 @@ from __future__ import annotations
 
 from typing import Any, Dict, Optional
 
-from cli.ai.cache_adapter import BaseCacheAdapter
+from cli.ai.model_api_adapter import BaseModelApiAdapter
 
 
-class DeepSeekCacheAdapter(BaseCacheAdapter):
+class DeepSeekModelApiAdapter(BaseModelApiAdapter):
     """Extract cache stats from DeepSeek API responses.
 
     DeepSeek returns these fields in ``response["usage"]``:
