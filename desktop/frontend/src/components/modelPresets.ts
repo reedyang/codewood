@@ -14,6 +14,9 @@ export interface ModelPreset {
   include_thinking_in_messages?: boolean;
   /** Distinguishes connection shape: OpenAI-compatible, Ollama, or custom. */
   kind: PresetKind;
+  /** Attribute name on the model object from the /models API that carries the
+   *  context window length. When empty, context window is not fetched. */
+  context_length_attr_name?: string;
 }
 
 export const MODEL_PRESETS: ModelPreset[] = [
@@ -90,13 +93,14 @@ export const MODEL_PRESETS: ModelPreset[] = [
     kind: "openai",
   },
   {
-    id: "sensenova",
+id: "sensenova",
     label: "SenseNova (商汤日日新)",
     provider: "SenseNova",
     base_url: "https://token.sensenova.cn/v1",
     api_mode: "chat",
     include_thinking_in_messages: false,
     kind: "openai",
+    context_length_attr_name: "context_length",
   },
   {
     id: "ollama",
@@ -140,6 +144,12 @@ export function presetIdForProvider(p: {
 export interface EditorHeader {
   key: string;
   value: string;
+}
+
+/** A model entry returned from the API fetch, possibly with context_length. */
+export interface FetchedModel {
+  name: string;
+  context_window?: number;
 }
 
 // Editor-side representation of a configured provider.

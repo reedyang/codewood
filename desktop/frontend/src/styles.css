@@ -753,6 +753,12 @@ body.resizing-x .browser-frame {
   color: var(--text-muted);
 }
 
+.models-input-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
 .models-row {
   display: flex;
   align-items: center;

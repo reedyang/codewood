@@ -290,6 +290,7 @@ export const en: Dict = {
   "models.modelOptions": "Model options",
   "models.contextWindow": "Context window",
   "models.contextWindowPlaceholder": "e.g. 128000 or 128k",
+  "models.resetContextWindow": "Reset to API value",
   "models.multimodal": "Multimodal (accepts images)",
   "models.streaming": "Streaming",
   "models.useCleanContent": "Send cleaned history content",
