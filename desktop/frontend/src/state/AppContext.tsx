@@ -2594,7 +2594,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
       client.setSubAgentEnabled(name, enabled),
     setPlanMode: (enabled: boolean) => client.setPlanMode(enabled),
     searchWorkspaceFiles: (query: string, limit = 10) =>
-      client.searchWorkspaceFiles(query, activeWorkspaceIdRef.current, limit),
+      client.searchWorkspaceFiles(
+        query,
+        draftWorkspaceIdRef.current || activeWorkspaceIdRef.current,
+        limit,
+      ),
     setExecutionPolicy,
     toggleWorkspaceExpanded,
     refreshWorkspaceChats,
