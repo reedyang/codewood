@@ -13,6 +13,7 @@ export const zhCN: Dict = {
   "sidebar.archived": "已归档",
   "sidebar.noChats": "暂无对话",
   "sidebar.noWorkspaces": "暂无工作区",
+  "sidebar.loadMore": "加载更多",
 
   "activity.working": "处理中...",
   "activity.workedFor": "用时",

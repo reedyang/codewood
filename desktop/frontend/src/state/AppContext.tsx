@@ -545,12 +545,17 @@ export function AppProvider({ children }: { children: ReactNode }) {
       selectedWorkspaceId === (state.workspace.id ?? "")
         ? state.chats
         : (workspaceChats[selectedWorkspaceId] ?? []);
+    const sortedChats = [...baseChats].sort((a, b) => {
+      const aTime = a.updatedAt ? new Date(a.updatedAt).getTime() : 0;
+      const bTime = b.updatedAt ? new Date(b.updatedAt).getTime() : 0;
+      return bTime - aTime;
+    });
     const targetName =
       optimisticChatFocus?.chatId === selectedChatId
         ? optimisticChatFocus.name
         : t("chat.new");
     let foundTarget = false;
-    const chats: ChatSummary[] = baseChats.map((chat, index) => {
+    const chats: ChatSummary[] = sortedChats.map((chat, index) => {
       const summary = chat as Partial<ChatSummary>;
       const isTarget = chat.id === selectedChatId;
       if (isTarget) {
