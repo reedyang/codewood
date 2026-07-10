@@ -681,7 +681,7 @@ class ProjectContextIndex:
         # Caller controls synchronization. A fresh connection per operation
         # keeps the index thread-safe under the class-level RLock without
         # juggling SQLite's per-connection thread affinity.
-        conn = sqlite3.connect(str(self.index_path))
+        conn = sqlite3.connect(str(self.index_path), timeout=10.0)
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA synchronous=NORMAL")
         return conn
