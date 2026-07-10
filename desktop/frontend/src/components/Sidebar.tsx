@@ -94,6 +94,7 @@ export function Sidebar({ collapsed, onOpenSettings }: { collapsed: boolean; onO
     toggleWorkspaceExpanded,
     refreshWorkspaceChats,
     client,
+    draftMode,
   } = useApp();
 
   const [menu, setMenu] = useState<MenuState | null>(null);
@@ -339,7 +340,7 @@ export function Sidebar({ collapsed, onOpenSettings }: { collapsed: boolean; onO
     rename?.kind === "chat" && rename.wsId === wsId && rename.id === id;
 
   const renderChatRow = (chat: ChatRow, wsId: string) => {
-    const isActive = wsId === activeWsId && chat.id === activeChatId;
+    const isActive = !draftMode && wsId === activeWsId && chat.id === activeChatId;
     const isPinned = isPinnedChat(wsId, chat.id);
     // Chat ids are only unique within a workspace, so the transient
     // ``busyByChat`` / ``unreadChatIds`` maps are keyed by a
