@@ -37,7 +37,7 @@ export interface ChatSummary {
   messageCount: number;
   updatedAt?: string;
   active: boolean;
-  /** Per-chat model selector ("provider:name"); empty if unset. */
+  /** Per-chat model selector ("provider/model"); empty if unset. */
   model?: string;
   /** True while this chat's agent loop is actively streaming a turn. Lets the
    *  sidebar busy dot persist across focus changes and reloads. */
@@ -303,7 +303,7 @@ export interface SubAgentConfig {
   name: string;
   description: string;
   instructions: string;
-  /** ``provider:model`` selector; empty = reuse the main model. */
+  /** ``provider/model`` selector; empty = reuse the main model. */
   model: string;
   tools: string[];
   toolsSpecified: boolean;

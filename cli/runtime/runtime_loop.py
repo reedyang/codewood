@@ -306,6 +306,74 @@ def _parse_tool_plan_from_model_message(
     return plans[0] if plans else None
 
 
+def _recover_latest_history_tool_plans(agent: Any) -> List[Tuple[str, Dict[str, Any]]]:
+    """Recover the latest stored assistant tool plan from history.
+
+    This is primarily a fallback for basic-chat / non-standard-tool rounds where
+    the provider still returned real ``tool_calls`` on the wire, but the host
+    asked ``call_ai(..., return_message=False)`` and therefore only received an
+    empty string result. In that case AIOrchestrator has already persisted the
+    assistant plan payload to history, so the runtime can recover and execute it
+    instead of ending the loop prematurely.
+    """
+    history = list(getattr(agent, "conversation_history", None) or [])
+    if not history:
+        return []
+    parser = getattr(agent, "_parse_model_tool_plan_history_content", None)
+    if not callable(parser):
+        return []
+    for item in reversed(history):
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("role") or "").strip().lower() != "assistant":
+            continue
+        plans = _parse_tool_plans_from_tool_calls_node(item.get("tool_calls"))
+        if plans:
+            return plans
+        content = str(item.get("content") or "")
+        if not content.strip():
+            continue
+        try:
+            parsed = parser(content)
+        except Exception:
+            parsed = None
+        if not isinstance(parsed, dict):
+            continue
+        tool_name = str(parsed.get("tool") or "").strip()
+        if not tool_name:
+            continue
+        args = parsed.get("args")
+        return [(tool_name, args if isinstance(args, dict) else {})]
+    return []
+
+
+def _extract_nonstandard_tool_plans(
+    agent: Any,
+    ai_result: Any,
+    ai_response: Any,
+) -> List[Tuple[str, Dict[str, Any]]]:
+    """Extract executable tool plans for non-standard-tool rounds.
+
+    Even when a turn opted out of ``return_message=True``, some providers still
+    return a message object with real API-level ``tool_calls``. Others only
+    persist that plan to history and return an empty string. Support both.
+    """
+    message: Optional[Dict[str, Any]] = None
+    if isinstance(ai_result, dict):
+        message = ai_result
+    else:
+        final_message = getattr(ai_result, "final_message", None)
+        if isinstance(final_message, dict):
+            message = final_message
+    if isinstance(message, dict):
+        direct_plans = _parse_tool_plans_from_tool_calls_node(message.get("tool_calls"))
+        if direct_plans:
+            return direct_plans
+    if ai_response:
+        return []
+    return _recover_latest_history_tool_plans(agent)
+
+
 def _split_trailing_pseudo_tool_calls_text(
     text: Any,
 ) -> Tuple[str, List[Tuple[str, Dict[str, Any]]]]:
@@ -4054,6 +4122,12 @@ def run_agent_loop(agent: Any):
                             if task_uses_standard_openai_tools
                             else []
                         )
+                        if not task_uses_standard_openai_tools and not message_tool_plans:
+                            message_tool_plans = _extract_nonstandard_tool_plans(
+                                self,
+                                ai_result,
+                                ai_response,
+                            )
                     else:
                         ai_response, streamed_assistant_output = _consume_streaming_ai_response(
                             self,
@@ -4069,6 +4143,18 @@ def run_agent_loop(agent: Any):
                                 _parse_tool_plans_from_model_message(stream_final_message)
                                 if task_uses_standard_openai_tools
                                 else []
+                            )
+                        if not task_uses_standard_openai_tools and not message_tool_plans:
+                            # Some "basic chat" rounds still come back with real
+                            # API-level tool_calls even though this turn opted
+                            # out of ``return_message=True``. Others only persist
+                            # the plan to history and return an empty visible
+                            # string. Support both without dropping the tool
+                            # call on the floor.
+                            message_tool_plans = _extract_nonstandard_tool_plans(
+                                self,
+                                ai_result,
+                                ai_response,
                             )
                         # Ensure thinking content from the stream result is stored in
                         # the latest assistant message in conversation history.

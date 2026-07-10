@@ -51,6 +51,18 @@ class ModelToolResultHistoryTests(unittest.TestCase):
         self.assertEqual(payload.get("message"), "Operation cancelled by user")
         self.assertEqual(payload.get("output"), "Operation cancelled by user")
 
+    def test_compact_result_keeps_subagent_output_for_follow_up_round(self):
+        compact = self.agent._compact_result_for_next_input(
+            {
+                "success": True,
+                "subagent": "image-analyzer",
+                "output": "Detected a chart with two labeled axes.",
+            }
+        )
+        payload = json.loads(compact)
+        self.assertEqual(payload.get("subagent"), "image-analyzer")
+        self.assertEqual(payload.get("output"), "Detected a chart with two labeled axes.")
+
 
 if __name__ == "__main__":
     unittest.main()

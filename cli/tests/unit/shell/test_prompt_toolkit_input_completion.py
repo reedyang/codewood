@@ -626,7 +626,7 @@ class PromptToolkitInputCompletionTests(unittest.TestCase):
                 "/workspace create <path> [--name <name>]",
             ),
             ("/lang", "/language", "/language [language code]"),
-            ("/mod", "/model", "/model [model_provider:name]"),
+            ("/mod", "/model", "/model [model_provider/model]"),
         ]
         with tempfile.TemporaryDirectory() as td:
             completer = FileCompleter(Path(td))

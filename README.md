@@ -208,7 +208,7 @@ Frontmatter keys (the Markdown body is the sub-agent's independent system instru
 
 - `name` (required) — sub-agent id
 - `description` (required) — when-to-use text that drives the main model's auto-selection
-- `model` (optional) — a `provider:name` selector referencing `model_providers`; defaults to the main model
+- `model` (optional) — a `provider/model` selector referencing `model_providers`; defaults to the main model
 - `tools` (optional) — allowlist of tool names; defaults to a core coding set (`shell`, `apply_patch`, `read`, `project_context_search`, `update_plan`, `request_skill_prompt`). An explicit empty list (`tools: []`) grants no tools. `run_subagent` is always excluded, so sub-agents cannot nest.
 - `max_rounds` (optional) — maximum tool-use rounds before the sub-agent must return (default 20)
 
@@ -220,7 +220,7 @@ Example `~/.codewood/subagents/code-reviewer.md`:
 ---
 name: code-reviewer
 description: Use to review a diff, file, or change for bugs, security issues, and style problems. Returns a concise findings list.
-model: openai:gpt-4o
+model: openai/gpt-4o
 tools: [shell, project_context_search, read]
 max_rounds: 15
 ---
@@ -309,7 +309,7 @@ Create `.codewood/config.jsonc` in your user directory:
 ### Configuration Notes
 
 - `model_providers`: ordered list of model providers; Code Wood uses the first provider by default
-- `model_providers[i].provider`: free-form label used only as the model selector prefix (e.g. `openai:gpt-4o`, `ollama:qwen2.5vl:3b`); it does NOT participate in API-call dispatch — that is decided by `api_mode`
+- `model_providers[i].provider`: free-form label used only as the model selector prefix (e.g. `openai/gpt-4o`, `ollama/qwen2.5vl:3b`); it does NOT participate in API-call dispatch — that is decided by `api_mode`
 - `model_providers[i].params.api_mode`: selects the API call method
   - `auto` (default): OpenAI-compatible HTTP API; auto-probes `/chat/completions` and `/responses` based on `base_url` suffix
   - `chat`: OpenAI-compatible HTTP API; forces `/chat/completions`

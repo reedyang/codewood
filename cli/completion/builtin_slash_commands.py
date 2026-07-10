@@ -90,7 +90,7 @@ SLASH_BUILTIN_DISPLAY_OVERRIDES = {
     # /language
     "/language": "/language [language code]",
     # /model
-    "/model": "/model [model_provider:name]",
+    "/model": "/model [model_provider/model]",
     # plan / agent mode toggle
     "/plan": "/plan (enable Plan mode)",
     "/plan off": "/plan off (disable Plan mode)",

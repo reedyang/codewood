@@ -33,7 +33,7 @@ class SubAgentsConfigCrudTests(unittest.TestCase):
             name="Reviewer",
             description="Reviews diffs.",
             instructions="You are a careful code reviewer.",
-            model="openai:gpt-4o",
+            model="openai/gpt-4o",
             tools=["shell", "apply_patch"],
             tools_specified=True,
             max_rounds=15,
@@ -44,7 +44,7 @@ class SubAgentsConfigCrudTests(unittest.TestCase):
         self.assertEqual(len(items), 1)
         rec = items[0]
         self.assertEqual(rec["name"], "Reviewer")
-        self.assertEqual(rec["model"], "openai:gpt-4o")
+        self.assertEqual(rec["model"], "openai/gpt-4o")
         self.assertEqual(rec["tools"], ["shell", "apply_patch"])
         self.assertTrue(rec["toolsSpecified"])
         self.assertEqual(rec["maxRounds"], 15)

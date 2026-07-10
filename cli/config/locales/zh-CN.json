@@ -345,7 +345,7 @@
   "subagents.error.bad_response": "❌ 子智能体返回了非预期的响应",
   "subagents.error.max_rounds": "子智能体达到最大轮数 {rounds}，仍未给出最终答案",
   "subagents.error.image_not_found": "❌ 图片文件不存在或格式不受支持：{path}",
-  "subagents.error.model_not_found": "❌ 子智能体 '{subagent}' 配置的模型 '{selector}' 在 model_providers 中不存在。请修正子智能体文件中的 'model' 字段（必须与配置中的 provider:name 完全一致）。可用模型：{available}",
+  "subagents.error.model_not_found": "❌ 子智能体 '{subagent}' 配置的模型 '{selector}' 在 model_providers 中不存在。请修正子智能体文件中的 'model' 字段（必须与配置中的 provider/model 完全一致）。可用模型：{available}",
   "tool.shell.missing_command": "❌ shell 命令缺少 command 参数",
   "tool.apply_patch.missing_path_patch": "❌ apply_patch 命令缺少 path/patch 参数",
   "tool.read.result_header": "\n📖 读取结果（{file}）：",

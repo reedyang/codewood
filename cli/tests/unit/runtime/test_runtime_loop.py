@@ -35,10 +35,12 @@ from cli.runtime.runtime_loop import (
     _looks_like_pseudo_tool_call_text,
     _split_trailing_pseudo_tool_calls_text,
     _split_trailing_pseudo_tool_calls_text_details,
+    _extract_nonstandard_tool_plans,
     _replace_latest_assistant_history_content,
     _build_pseudo_tool_call_retry_prompt,
     _PSEUDO_TOOL_CALL_RETRY_EXAMPLE_JSON,
     _build_plan_finalize_nudge_prompt,
+    _recover_latest_history_tool_plans,
     _should_fire_plan_finalize_nudge,
     _warn_loop_ended_with_pending_plan,
 )
@@ -1306,6 +1308,100 @@ class RuntimeLoopTests(unittest.TestCase):
         self.assertEqual(
             _parse_tool_plan_from_model_message(message),
             ("read_file", {"path": "README.md"}),
+        )
+
+    def test_recover_latest_history_tool_plans_reads_latest_assistant_plan(self):
+        class _Agent:
+            conversation_history = [
+                {"role": "user", "content": "hi"},
+                {
+                    "role": "assistant",
+                    "content": "{\"tool_calls\":[{\"function\":{\"name\":\"run_subagent\",\"arguments\":\"{\\\"subagent\\\":\\\"image-analyzer\\\"}\"}}]}",
+                },
+            ]
+
+            def _parse_model_tool_plan_history_content(self, content):
+                if not content.startswith("{"):
+                    return None
+                return {
+                    "tool": "run_subagent",
+                    "args": {"subagent": "image-analyzer"},
+                }
+
+        self.assertEqual(
+            _recover_latest_history_tool_plans(_Agent()),
+            [("run_subagent", {"subagent": "image-analyzer"})],
+        )
+
+    def test_recover_latest_history_tool_plans_skips_non_plan_assistant_tail(self):
+        class _Agent:
+            conversation_history = [
+                {"role": "user", "content": "hi"},
+                {
+                    "role": "assistant",
+                    "content": "{\"tool_calls\":[{\"function\":{\"name\":\"run_subagent\",\"arguments\":\"{\\\"subagent\\\":\\\"image-analyzer\\\"}\"}}]}",
+                },
+                {"role": "assistant", "content": "Working on it"},
+            ]
+
+            def _parse_model_tool_plan_history_content(self, content):
+                if "\"tool_calls\"" not in str(content):
+                    return None
+                return {
+                    "tool": "run_subagent",
+                    "args": {"subagent": "image-analyzer"},
+                }
+
+        self.assertEqual(
+            _recover_latest_history_tool_plans(_Agent()),
+            [("run_subagent", {"subagent": "image-analyzer"})],
+        )
+
+    def test_extract_nonstandard_tool_plans_reads_direct_tool_calls_from_dict(self):
+        class _Agent:
+            conversation_history = []
+
+        ai_result = {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {
+                        "name": "run_subagent",
+                        "arguments": "{\"subagent\":\"image-analyzer\"}",
+                    },
+                }
+            ],
+        }
+
+        self.assertEqual(
+            _extract_nonstandard_tool_plans(_Agent(), ai_result, ""),
+            [("run_subagent", {"subagent": "image-analyzer"})],
+        )
+
+    def test_extract_nonstandard_tool_plans_falls_back_to_history_on_empty_string(self):
+        class _Agent:
+            conversation_history = [
+                {"role": "user", "content": "hi"},
+                {
+                    "role": "assistant",
+                    "content": "{\"tool_calls\":[{\"function\":{\"name\":\"run_subagent\",\"arguments\":\"{\\\"subagent\\\":\\\"image-analyzer\\\"}\"}}]}",
+                },
+            ]
+
+            def _parse_model_tool_plan_history_content(self, content):
+                if "\"tool_calls\"" not in str(content):
+                    return None
+                return {
+                    "tool": "run_subagent",
+                    "args": {"subagent": "image-analyzer"},
+                }
+
+        self.assertEqual(
+            _extract_nonstandard_tool_plans(_Agent(), "", ""),
+            [("run_subagent", {"subagent": "image-analyzer"})],
         )
 
     def test_parse_tool_plans_from_model_message_ignores_non_suffix_pseudo_tool_calls(self):

@@ -78,7 +78,7 @@ def _format_startup_help(executable_name: str = "python cli/main.py") -> str:
         "\n"
         "Options:\n"
         "  -w, --workspace <WORKSPACE>  Workspace name or path to enter on startup\n"
-        "  -m, --model <MODEL>          Select startup model (for example: openai:gpt-4o-mini)\n"
+        "  -m, --model <MODEL>          Select startup model (for example: openai/gpt-4o-mini)\n"
         "      --host <HOST>            Bind host for serve mode (default: 127.0.0.1)\n"
         "      --port <PORT>            Bind port for serve mode (default: 0 = ephemeral)\n"
         f"  -h, --help                   Print help for {get_app_name()} and exit\n"
@@ -364,8 +364,8 @@ def _extract_model_runtime_config(config: dict, requested_model: str | None = No
             "params_raw": first_provider["params_raw"],
             "provider_models": first_provider["models"],
         }
-    elif ":" in requested:
-        req_provider, req_name = requested.split(":", 1)
+    elif "/" in requested:
+        req_provider, req_name = requested.split("/", 1)
         req_provider = req_provider.strip().casefold()
         req_name = req_name.strip().casefold()
         for item in catalog:
@@ -384,14 +384,14 @@ def _extract_model_runtime_config(config: dict, requested_model: str | None = No
                 selected = matches[0]
             elif len(matches) > 1:
                 selectors = ", ".join(
-                    sorted({f"{m.get('provider')}:{m.get('name')}" for m in matches})
+                    sorted({f"{m.get('provider')}/{m.get('name')}" for m in matches})
                 )
                 return (
                     None,
                     None,
                     None,
                     "❌ Configuration error: model name is ambiguous. "
-                    f"Please use provider:model, candidates: {selectors}",
+                    f"Please use provider/model, candidates: {selectors}",
                 )
             else:
                 return (
@@ -416,14 +416,14 @@ def _extract_model_runtime_config(config: dict, requested_model: str | None = No
             )
         if len(matches) > 1:
             selectors = ", ".join(
-                sorted({f"{m.get('provider')}:{m.get('name')}" for m in matches})
+                sorted({f"{m.get('provider')}/{m.get('name')}" for m in matches})
             )
             return (
                 None,
                 None,
                 None,
                 "❌ Configuration error: model name is ambiguous. "
-                f"Please use provider:model, candidates: {selectors}",
+                f"Please use provider/model, candidates: {selectors}",
             )
         selected = matches[0]
 

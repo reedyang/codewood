@@ -736,7 +736,7 @@ class Agent:
                 use_clean_content = bool(model_item.get("use_clean_content", False))
                 multimodal = bool(model_item.get("multimodal", True))
                 thinking = bool(model_item.get("thinking", True))
-                selector = f"{provider}:{model_name}"
+                selector = f"{provider}/{model_name}"
                 key = selector.lower()
                 if key in seen:
                     continue
@@ -770,7 +770,7 @@ class Agent:
         model_name = str(getattr(self, "model_name", "") or "").strip()
         if not provider or not model_name:
             return ""
-        return f"{provider}:{model_name}"
+        return f"{provider}/{model_name}"
 
     def _current_model_reasoning_efforts(self) -> List[str]:
         """Reasoning efforts the active model supports (empty if none)."""
@@ -1063,7 +1063,7 @@ class Agent:
             return False
 
         current = self._current_model_selector().lower()
-        selector = f"{provider}:{model_name}".lower()
+        selector = f"{provider}/{model_name}".lower()
         if selector == current:
             # Same model, but the live ``self.params`` may have been seeded
             # directly from config at boot (without the parsed per-model
@@ -1071,7 +1071,7 @@ class Agent:
             # choice so the supported reasoning levels are populated before we
             # normalize the stored level; otherwise normalization sees no
             # levels and silently drops this chat's saved selection.
-            choice = self._find_configured_model_choice(f"{provider}:{model_name}")
+            choice = self._find_configured_model_choice(f"{provider}/{model_name}")
             if choice:
                 self._apply_runtime_model_choice(choice, validate=False)
             self._refresh_model_dependent_caches()
@@ -1079,7 +1079,7 @@ class Agent:
             self._pin_session_model()
             return False
 
-        choice = self._find_configured_model_choice(f"{provider}:{model_name}")
+        choice = self._find_configured_model_choice(f"{provider}/{model_name}")
         if choice:
             self._apply_runtime_model_choice(choice, validate=False)
         else:
@@ -1092,7 +1092,7 @@ class Agent:
                     "provider": provider,
                     "name": model_name,
                     "params": fallback_params,
-                    "selector": f"{provider}:{model_name}",
+                    "selector": f"{provider}/{model_name}",
                 },
                 validate=False,
             )
@@ -7130,6 +7130,8 @@ class Agent:
             compact["error"] = str(result.get("error", "") or "")[:200]
         if "message" in result:
             compact["message"] = str(result.get("message", "") or "")[:200]
+        if "subagent" in result:
+            compact["subagent"] = str(result.get("subagent", "") or "")
         # Keep batch_results structure but strip output from each entry
         if "batch_results" in result:
             entries = []
@@ -7147,7 +7149,7 @@ class Agent:
                     entries.append(str(e)[:200])
             compact["batch_results"] = entries
         # Sub-agent final answer must survive; keep it untruncated.
-        if "subagent" in compact and "output" in result:
+        if "subagent" in result and "output" in result:
             compact["output"] = str(result.get("output", "") or "")
         s = json.dumps(compact, ensure_ascii=False, default=str)
         if len(s) > max_chars:
