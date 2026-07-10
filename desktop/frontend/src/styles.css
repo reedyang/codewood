@@ -4063,6 +4063,7 @@ html[data-has-bg] .select {
   display: inline-block;
   min-width: max-content;
   white-space: nowrap;
+  overflow: hidden;
   background: linear-gradient(
     90deg,
     var(--text-muted) 0%,
