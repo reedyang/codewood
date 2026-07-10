@@ -4492,6 +4492,22 @@ def run_agent_loop(agent: Any):
                             recorder(tool_name, args, result if isinstance(result, dict) else {})
                         except Exception:
                             pass
+                    # Real-time context tracking: after each tool result is
+                    # appended to history, refresh usage and auto-compact if
+                    # the trigger threshold is exceeded.
+                    try:
+                        check_fn = getattr(
+                            getattr(self, "session_memory_service", None),
+                            "check_and_compact_if_needed",
+                            None,
+                        )
+                        if callable(check_fn):
+                            check_fn(
+                                user_input_hint=str(original_user_task or ""),
+                                context_hint=f"after tool: {tool_name}",
+                            )
+                    except Exception:
+                        pass
                     if tool_name == "shell" and aborted_tool_result:
                         _reload_chat_history_after_aborted_command(self)
                     last_result = result
