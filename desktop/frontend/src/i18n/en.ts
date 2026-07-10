@@ -13,6 +13,7 @@ export const en: Dict = {
   "sidebar.archived": "Archived",
   "sidebar.noChats": "No chats yet",
   "sidebar.noWorkspaces": "No workspaces",
+  "sidebar.loadMore": "Load more",
 
   "activity.working": "Working...",
   "activity.workedFor": "Worked for",

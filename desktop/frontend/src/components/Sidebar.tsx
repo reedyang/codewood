@@ -99,6 +99,17 @@ export function Sidebar({ collapsed, onOpenSettings }: { collapsed: boolean; onO
   const [menu, setMenu] = useState<MenuState | null>(null);
   const [rename, setRename] = useState<RenameTarget | null>(null);
   const [chatToDelete, setChatToDelete] = useState<{ id: string; wsId: string } | null>(null);
+  const [chatLoadCounts, setChatLoadCounts] = useState<Record<string, number>>({});
+  const CHAT_PAGE_SIZE = 5;
+
+  const loadMoreChats = (wsId: string) => {
+    setChatLoadCounts((prev) => ({
+      ...prev,
+      [wsId]: (prev[wsId] ?? CHAT_PAGE_SIZE) + CHAT_PAGE_SIZE,
+    }));
+  };
+
+  const getVisibleCount = (wsId: string) => chatLoadCounts[wsId] ?? CHAT_PAGE_SIZE;
 
   const workspaces = state?.workspaces ?? [];
   const activeWsId = activeWorkspaceId;
@@ -120,9 +131,20 @@ export function Sidebar({ collapsed, onOpenSettings }: { collapsed: boolean; onO
 
   // Chats per workspace (active workspace sourced from live state).
   const chatsByWorkspace = useMemo(() => {
-    const map: Record<string, ChatRow[]> = { ...workspaceChats };
+    const map: Record<string, ChatRow[]> = {};
+    for (const [wsId, list] of Object.entries(workspaceChats)) {
+      map[wsId] = [...list].sort((a, b) => {
+        const aTime = a.updatedAt ? new Date(a.updatedAt).getTime() : 0;
+        const bTime = b.updatedAt ? new Date(b.updatedAt).getTime() : 0;
+        return bTime - aTime;
+      });
+    }
     if (activeWsId) {
-      map[activeWsId] = activeChats;
+      map[activeWsId] = [...activeChats].sort((a, b) => {
+        const aTime = a.updatedAt ? new Date(a.updatedAt).getTime() : 0;
+        const bTime = b.updatedAt ? new Date(b.updatedAt).getTime() : 0;
+        return bTime - aTime;
+      });
     }
     return map;
   }, [activeChats, workspaceChats, activeWsId]);
@@ -411,7 +433,10 @@ export function Sidebar({ collapsed, onOpenSettings }: { collapsed: boolean; onO
 
   const renderWorkspaceGroup = (ws: WorkspaceSummary) => {
     const open = expanded.has(ws.id);
-    const chats = chatsForWorkspace(ws);
+    const allChats = chatsForWorkspace(ws);
+    const visibleCount = getVisibleCount(ws.id);
+    const visibleChats = allChats.slice(0, visibleCount);
+    const hasMore = allChats.length > visibleCount;
     return (
       <li key={ws.id} className="tree-group">
         <div className="tree-row ws-row" onContextMenu={(e) => openWorkspaceMenu(e, ws)}>
@@ -453,10 +478,22 @@ export function Sidebar({ collapsed, onOpenSettings }: { collapsed: boolean; onO
 
         {open && (
           <ul className="tree-list tree-children">
-            {chats.length === 0 ? (
+            {allChats.length === 0 ? (
               <li className="tree-empty">{t("sidebar.noChats")}</li>
             ) : (
-              chats.map((chat) => renderChatRow(chat, ws.id))
+              <>
+                {visibleChats.map((chat) => renderChatRow(chat, ws.id))}
+                {hasMore && (
+                  <li>
+                    <button
+                      className="tree-subtitle as-button"
+                      onClick={() => loadMoreChats(ws.id)}
+                    >
+                      {t("sidebar.loadMore")}
+                    </button>
+                  </li>
+                )}
+              </>
             )}
           </ul>
         )}
@@ -542,7 +579,19 @@ export function Sidebar({ collapsed, onOpenSettings }: { collapsed: boolean; onO
                 {regularDefaultChats.length === 0 ? (
                   <li className="tree-empty">{t("sidebar.noChats")}</li>
                 ) : (
-                  regularDefaultChats.map((chat) => renderChatRow(chat, defaultWs.id))
+                  <>
+                    {regularDefaultChats.slice(0, getVisibleCount(defaultWs.id)).map((chat) => renderChatRow(chat, defaultWs.id))}
+                    {regularDefaultChats.length > getVisibleCount(defaultWs.id) && (
+                      <li>
+                        <button
+                          className="tree-subtitle as-button"
+                          onClick={() => loadMoreChats(defaultWs.id)}
+                        >
+                          {t("sidebar.loadMore")}
+                        </button>
+                      </li>
+                    )}
+                  </>
                 )}
               </ul>
             )}
