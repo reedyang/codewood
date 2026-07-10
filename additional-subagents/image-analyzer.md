@@ -2,7 +2,7 @@
 name: image-analyzer
 description: Use to analyze an image (UI mockup, screenshot, design, diagram, chart, photo, or error screenshot) and return a precise, structured text description. Delegate here whenever a coding task references an image and the main model cannot see images itself. Always pass the image file path via the run_subagent `image` argument. Returns structured Markdown that a non-multimodal coding model can act on.
 # REQUIRED: point this at a multimodal (vision-capable) model from your
-# model_providers in config.jsonc, e.g. openai:gpt-4o. The image is analyzed by
+# model_providers in config.jsonc, e.g. openai/gpt-4o. The image is analyzed by
 # THIS model, not the main model, so a non-multimodal main model can still
 # "see" the image through this sub-agent.
 model: openai/gpt-4o

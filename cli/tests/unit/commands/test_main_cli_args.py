@@ -49,16 +49,16 @@ class MainCliArgsTests(unittest.TestCase):
 
     def test_model_and_exec(self):
         parsed, err = _parse_startup_cli_args(
-            ["exec", "do something", "--model", "openai:gpt-4o-mini"]
+            ["exec", "do something", "--model", "openai/gpt-4o-mini"]
         )
         self.assertIsNone(err)
         self.assertEqual(parsed.get("exec_task"), "do something")
-        self.assertEqual(parsed.get("model_selector"), "openai:gpt-4o-mini")
+        self.assertEqual(parsed.get("model_selector"), "openai/gpt-4o-mini")
 
     def test_model_short_option(self):
-        parsed, err = _parse_startup_cli_args(["-m", "qwen2.5-coder:7b"])
+        parsed, err = _parse_startup_cli_args(["-m", "ollama/qwen2.5-coder:7b"])
         self.assertIsNone(err)
-        self.assertEqual(parsed.get("model_selector"), "qwen2.5-coder:7b")
+        self.assertEqual(parsed.get("model_selector"), "ollama/qwen2.5-coder:7b")
 
     def test_exec_missing_task(self):
         parsed, err = _parse_startup_cli_args(["exec"])

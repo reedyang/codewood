@@ -71,6 +71,19 @@ class AgentCallAiStreamingTests(unittest.TestCase):
         self.agent.params = {}
         self.assertTrue(self.agent._use_standard_openai_tools_call())
 
+    def test_find_configured_model_choice_uses_slash_selector(self):
+        choice = {
+            "provider": "openai",
+            "name": "gpt-4o",
+            "selector": "openai/gpt-4o",
+            "params": {"model": "gpt-4o"},
+        }
+        self.agent._get_configured_model_catalog = lambda: [choice]
+        self.assertEqual(
+            self.agent._find_configured_model_choice("openai/gpt-4o"),
+            choice,
+        )
+
     def test_standard_tools_mode_is_enabled_regardless_of_provider_label(self):
         # ``provider`` is now a free-form selector-prefix label, so
         # the standard-tool-calls capability check must NOT depend
@@ -93,13 +106,13 @@ class AgentCallAiStreamingTests(unittest.TestCase):
         agent._find_configured_model_choice = lambda selector: {
             "provider": "openai",
             "name": "tiny",
-            "selector": "openai:tiny",
+            "selector": "openai/tiny",
             "params": {
                 "model": "tiny",
                 "context_window": 32000,
             },
         }
-        agent._current_model_selector = lambda: "openai:large"
+        agent._current_model_selector = lambda: "openai/large"
         agent._set_active_chat_model = lambda *_args, **_kwargs: None
         agent._refresh_status_context_usage_snapshot = lambda: None
 
@@ -111,9 +124,9 @@ class AgentCallAiStreamingTests(unittest.TestCase):
 
         agent._apply_runtime_model_choice = _apply_choice
 
-        out = agent._switch_model_by_selector("openai:tiny")
+        out = agent._switch_model_by_selector("openai/tiny")
 
-        self.assertIn("✅ Switched model: openai:tiny", out)
+        self.assertIn("✅ Switched model: openai/tiny", out)
 
     def test_model_switch_applies_and_clears_model_level_extra_headers(self):
         agent = Agent.__new__(Agent)
@@ -149,9 +162,9 @@ class AgentCallAiStreamingTests(unittest.TestCase):
             ]
         }
 
-        out = agent._switch_model_by_selector("openai:needs-header")
+        out = agent._switch_model_by_selector("openai/needs-header")
 
-        self.assertIn("Switched model: openai:needs-header", out)
+        self.assertIn("Switched model: openai/needs-header", out)
         self.assertEqual(agent.params.get("model"), "needs-header")
         self.assertEqual(agent.params.get("extra_headers"), {"X-Model": "needs-header"})
         self.assertIs(agent.openai_conf, agent.params)
@@ -160,7 +173,7 @@ class AgentCallAiStreamingTests(unittest.TestCase):
             {"X-Model": "needs-header"},
         )
 
-        agent._switch_model_by_selector("openai:plain")
+        agent._switch_model_by_selector("openai/plain")
 
         self.assertEqual(agent.params.get("model"), "plain")
         self.assertEqual(agent.params.get("extra_headers"), {})

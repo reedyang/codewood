@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { countToolCalls, getLastToolPromptBody } from "./Steps";
 import {
+  groupModelsByProvider,
   groupLiveRounds,
   hasPendingInvisibleRound,
   shouldShowPendingWorking,
@@ -90,6 +91,25 @@ describe("groupLiveRounds", () => {
     if (groups[0]?.kind === "tool") {
       expect(groups[0].rounds).toHaveLength(2);
     }
+  });
+});
+
+describe("groupModelsByProvider", () => {
+  it("splits on the first slash and keeps later slashes in the model name", () => {
+    const groups = groupModelsByProvider([
+      "openai/gpt-4o",
+      "vendor/family/model/v2",
+    ]);
+
+    expect(groups).toHaveLength(2);
+    expect(groups[0]).toEqual({
+      provider: "openai",
+      items: [{ selector: "openai/gpt-4o", name: "gpt-4o" }],
+    });
+    expect(groups[1]).toEqual({
+      provider: "vendor",
+      items: [{ selector: "vendor/family/model/v2", name: "family/model/v2" }],
+    });
   });
 });
 

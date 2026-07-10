@@ -107,10 +107,11 @@ def _build_orchestrator(
             model_name=model_name,
             model_params=params,
             openai_conf=openai_conf,
-            work_directory=str(getattr(agent, "work_directory", "")),
             history_writer=_noop_history_writer,
             regular_message_builder=_unused_message_builder,
             ollama_importer=lambda: None,
+            workspace_root=str(getattr(agent, "workspace_root", "") or ""),
+            self_repo_root=str(getattr(agent, "_self_repo_root", "") or ""),
             display_language=get_display_language(agent),
         )
     )

@@ -44,7 +44,7 @@ class SubAgentRecord:
     name: str
     description: str
     instructions: str
-    # Optional ``provider/name`` selector referencing ``model_providers``;
+    # Optional ``provider/model`` selector referencing ``model_providers``;
     # empty means "reuse the main agent's current model".
     model_selector: str = ""
     # Optional allowlist of tool names. When ``tools_specified`` is False the

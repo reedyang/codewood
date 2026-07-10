@@ -314,7 +314,7 @@ class MainConfigFormatTests(unittest.TestCase):
                     },
                 ]
             },
-            requested_model="openai:gpt-4o-mini",
+            requested_model="openai/gpt-4o-mini",
         )
         self.assertIsNone(error)
         self.assertEqual(provider, "openai")

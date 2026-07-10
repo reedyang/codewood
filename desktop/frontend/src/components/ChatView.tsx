@@ -230,7 +230,7 @@ export function groupModelsByProvider(selectors: string[]): ModelGroup[] {
   const groups: ModelGroup[] = [];
   const byProvider = new Map<string, ModelGroup>();
   for (const sel of selectors) {
-    const idx = sel.indexOf(":");
+    const idx = sel.indexOf("/");
     const provider = idx > 0 ? sel.slice(0, idx) : "Other";
     const name = idx > 0 ? sel.slice(idx + 1) : sel;
     let group = byProvider.get(provider);
