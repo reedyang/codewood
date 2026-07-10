@@ -1431,8 +1431,6 @@ def _build_openai_payload(
                 payload["tool_choice"] = tool_choice_payload
         if session_summary_mode or memory_query_expansion_mode:
             payload["max_output_tokens"] = 512
-        if memory_query_expansion_mode:
-            payload["temperature"] = 0.2
         if force_disable_thinking:
             payload["thinking"] = {"type": "disabled"}
         if reasoning_effort and not (session_summary_mode or memory_query_expansion_mode):
@@ -1453,8 +1451,6 @@ def _build_openai_payload(
             payload["tool_choice"] = tool_choice_payload
     if session_summary_mode or memory_query_expansion_mode:
         payload["max_tokens"] = 512
-    if memory_query_expansion_mode:
-        payload["temperature"] = 0.2
     if force_disable_thinking:
         payload["thinking"] = {"type": "disabled"}
     if reasoning_effort and not (session_summary_mode or memory_query_expansion_mode):
@@ -2205,9 +2201,9 @@ def _call_with_ollama(
     ollama_tools = _normalize_openai_tool_schemas(tool_schemas, api_kind="chat")
     ollama_tool_choice = _normalize_openai_tool_choice(tool_choice, api_kind="chat")
     if session_summary_mode:
-        ollama_options.update({"num_predict": 512, "temperature": 0.3})
+        ollama_options.update({"num_predict": 512})
     elif memory_query_expansion_mode:
-        ollama_options.update({"num_predict": 512, "temperature": 0.2})
+        ollama_options.update({"num_predict": 512})
 
     payload: Dict[str, Any] = {
         "model": model_name,
