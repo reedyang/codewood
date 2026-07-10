@@ -951,7 +951,7 @@ def _build_state_inner(agent: Any) -> Dict[str, Any]:
                 continue
             prov = str(c.get("model_provider") or "").strip()
             name = str(c.get("model_name") or "").strip()
-            chat_model = f"{prov}:{name}" if prov and name else ""
+            chat_model = f"{prov}/{name}" if prov and name else ""
             cid = str(c.get("id") or "")
             if cid == active_chat_id:
                 active_chat_model = chat_model
@@ -2294,7 +2294,57 @@ class ServeApp:
     _PASTE_IMAGE_MAX_BYTES = 10 * 1024 * 1024
     _MCP_ICON_MAX_BYTES = 2 * 1024 * 1024
 
-    def save_pasted_image(self, chat_id: str, data_url: str) -> Dict[str, Any]:
+    def _chat_data_dir_for(self, chat_id: str, workspace_id: str = "") -> Optional[Path]:
+        """Resolve a chat side-data dir without relying on the focused workspace.
+
+        ``chat_id`` values repeat across workspaces, so endpoints that persist
+        per-chat artifacts must qualify the lookup with ``workspace_id`` when
+        the target chat may live outside the currently focused workspace.
+        """
+        cid = str(chat_id or "").strip()
+        if not cid:
+            return None
+        mgr = getattr(self.agent, "_chat_state_manager", None)
+        if mgr is None:
+            return None
+        wsid = str(workspace_id or "").strip()
+        focused_wsid = str(getattr(self.agent, "workspace_id", "") or "").strip()
+        if not wsid or wsid == focused_wsid:
+            return mgr.chat_data_dir_for_chat(cid)
+        ctx = self._persist_ctx_for_workspace(wsid)
+        if not isinstance(ctx, dict):
+            return None
+        cfg = ctx.get("config_dir")
+        state = ctx.get("chat_state")
+        chats = state.get("chats") if isinstance(state, dict) else None
+        if cfg is None or not isinstance(chats, list):
+            return None
+        chat = next(
+            (
+                item
+                for item in chats
+                if isinstance(item, dict)
+                and str(item.get("id") or "").strip() == cid
+            ),
+            None,
+        )
+        if not isinstance(chat, dict):
+            return None
+        record_file = str(chat.get("_record_file") or "").strip()
+        rel = Path(record_file)
+        if (
+            not record_file
+            or rel.is_absolute()
+            or rel.name != record_file
+            or record_file == "chats.json"
+        ):
+            return None
+        stem = record_file[:-len(".json")] if record_file.endswith(".json") else record_file
+        return Path(cfg) / "chats" / "data" / stem
+
+    def save_pasted_image(
+        self, chat_id: str, data_url: str, workspace_id: str = ""
+    ) -> Dict[str, Any]:
         """Validate and persist a clipboard bitmap (``data:image/...;base64,``)
         under the active chat's side-data dir. Returns ``{ok, path, name}`` or
         ``{ok: False, error}``. Deny-by-default on bad mime / oversize."""
@@ -2324,10 +2374,7 @@ class ServeApp:
         if len(raw) > self._PASTE_IMAGE_MAX_BYTES:
             return {"ok": False, "error": "image too large"}
         try:
-            mgr = getattr(self.agent, "_chat_state_manager", None)
-            if mgr is None:
-                return {"ok": False, "error": "no chat"}
-            data_dir = mgr.chat_data_dir_for_chat(cid)
+            data_dir = self._chat_data_dir_for(cid, workspace_id)
             if data_dir is None:
                 return {"ok": False, "error": "unknown chat"}
             import secrets
@@ -5126,13 +5173,14 @@ def _make_handler(app: ServeApp):
                 return
             if path == "/paste-image":
                 chat_id = str(body.get("chatId") or "")[:256]
+                workspace_id = str(body.get("workspaceId") or "")[:256]
                 data_url = str(body.get("dataUrl") or "")
                 # ``data:`` URLs can be large; bound to the decoded cap * ~1.4
                 # to account for base64 inflation plus a small header margin.
                 if len(data_url) > (ServeApp._PASTE_IMAGE_MAX_BYTES * 2):
                     self._send_json(413, {"error": "image too large"})
                     return
-                result = app.save_pasted_image(chat_id, data_url)
+                result = app.save_pasted_image(chat_id, data_url, workspace_id)
                 self._send_json(200 if result.get("ok") else 400, result)
                 return
             if path == "/browser-result":

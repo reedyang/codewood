@@ -683,9 +683,53 @@ export function AppProvider({ children }: { children: ReactNode }) {
     [client],
   );
 
+  const materializeDraftChat = useCallback(async () => {
+    if (!draftModeRef.current) {
+      return {
+        chatId: activeChatIdRef.current,
+        workspaceId: activeWorkspaceIdRef.current,
+      };
+    }
+    const wsId = draftWorkspaceIdRef.current;
+    const switchWs = Boolean(wsId && wsId !== activeWorkspaceIdRef.current);
+    if (switchWs) {
+      pendingFocusWsIdRef.current = wsId;
+    }
+    const newId = await client.newChat(switchWs ? wsId : "");
+    if (!newId) {
+      if (switchWs && pendingFocusWsIdRef.current === wsId) {
+        pendingFocusWsIdRef.current = "";
+      }
+      return null;
+    }
+    const targetWsId = switchWs ? wsId : wsId || activeWorkspaceIdRef.current;
+    historyChatRef.current = chatKey(targetWsId, newId);
+    const optimisticName = translate(
+      normalizeLang(stateRef.current?.language),
+      "chat.new",
+    );
+    activeChatIdRef.current = newId;
+    activeWorkspaceIdRef.current = targetWsId;
+    setFocusOverride({ chatId: newId, wsId: targetWsId });
+    setOptimisticChatFocus({
+      chatId: newId,
+      wsId: targetWsId,
+      name: optimisticName,
+    });
+    setDraftMode(false);
+    setDraftWorkspaceId("");
+    return { chatId: newId, workspaceId: targetWsId };
+  }, [client]);
+
   const pasteImage = useCallback(
-    (dataUrl: string) => client.pasteImage(activeChatIdRef.current, dataUrl),
-    [client],
+    async (dataUrl: string) => {
+      const target = await materializeDraftChat();
+      if (!target?.chatId) {
+        return null;
+      }
+      return client.pasteImage(target.chatId, dataUrl, target.workspaceId);
+    },
+    [client, materializeDraftChat],
   );
 
   const chatImageUrl = useCallback(
@@ -1721,50 +1765,24 @@ export function AppProvider({ children }: { children: ReactNode }) {
       // calls previously left an extra empty chat behind in the target
       // workspace, so we let ``newChat`` take the workspace id directly.
       let targetChatId = activeChatIdRef.current;
+      let targetWsId = activeWorkspaceIdRef.current;
       if (draftModeRef.current) {
-        const wsId = draftWorkspaceIdRef.current;
-        const switchWs = Boolean(wsId && wsId !== activeWorkspaceIdRef.current);
-        if (switchWs) {
-          pendingFocusWsIdRef.current = wsId;
+        const target = await materializeDraftChat();
+        if (!target?.chatId) {
+          return;
         }
-        const newId = await client.newChat(switchWs ? wsId : "");
-        if (newId) {
-          targetChatId = newId;
-          // Optimistically focus the new chat AND echo the user's message right
-          // away instead of waiting for the backend's ``idle`` / ``turn_start``
-          // SSE round-trip. Without the optimistic focus the view keeps
-          // rendering the old/empty chat's bucket (looks like it "stays on the
-          // welcome screen"); without the optimistic echo the message vanishes
-          // until ``turn_start`` lands. ``startTurn`` reconciles the echo in
-          // place when the authoritative event arrives, so there is no
-          // duplicate. The optimistic bucket uses the SAME workspace id the
-          // backend will tag the events with (the one we just switched to, or
-          // the current one), so the keys match and reconciliation works.
-          const echoWsId = switchWs
-            ? wsId
-            : wsId || activeWorkspaceIdRef.current;
-          historyChatRef.current = chatKey(echoWsId, newId);
-          const optimisticName = translate(
-            normalizeLang(stateRef.current?.language),
-            "chat.new",
-          );
-          activeChatIdRef.current = newId;
-          activeWorkspaceIdRef.current = echoWsId;
-          // Force the view onto the new chat via the focus override (survives
-          // any racing SSE ``setState``), then echo the message into its bucket.
-          setFocusOverride({ chatId: newId, wsId: echoWsId });
-          setOptimisticChatFocus({
-            chatId: newId,
-            wsId: echoWsId,
-            name: optimisticName,
-          });
-          startOptimisticTurn(trimmed, chatKey(echoWsId, newId));
-          setBusyForChat(chatKey(echoWsId, newId), true);
-        } else if (switchWs && pendingFocusWsIdRef.current === wsId) {
-          pendingFocusWsIdRef.current = "";
-        }
-        setDraftMode(false);
-        setDraftWorkspaceId("");
+        targetChatId = target.chatId;
+        targetWsId = target.workspaceId;
+        // Optimistically focus the new chat AND echo the user's message right
+        // away instead of waiting for the backend's ``idle`` / ``turn_start``
+        // SSE round-trip. Without the optimistic focus the view keeps
+        // rendering the old/empty chat's bucket (looks like it "stays on the
+        // welcome screen"); without the optimistic echo the message vanishes
+        // until ``turn_start`` lands. ``startTurn`` reconciles the echo in
+        // place when the authoritative event arrives, so there is no
+        // duplicate.
+        startOptimisticTurn(trimmed, chatKey(targetWsId, targetChatId));
+        setBusyForChat(chatKey(targetWsId, targetChatId), true);
       }
       // Composer input is always a model prompt; the GUI never executes
       // built-in commands or "!" direct shell typed by the user. Route it to
@@ -1772,7 +1790,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       // another chat is mid-task.
       await client.sendInput(trimmed, true, targetChatId);
     },
-    [client, startOptimisticTurn, setBusyForChat],
+    [client, materializeDraftChat, startOptimisticTurn, setBusyForChat],
   );
 
   const runCommand = useCallback(
@@ -2304,11 +2322,30 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const setModel = useCallback(
     async (selector: string) => {
       const value = selector.trim();
-      if (value) {
-        await client.sendInput(`/model ${value}`, false, activeChatIdRef.current);
+      if (!value) {
+        return;
       }
+      let targetChatId = activeChatIdRef.current;
+      if (draftModeRef.current) {
+        const target = await materializeDraftChat();
+        if (!target?.chatId) {
+          return;
+        }
+        targetChatId = target.chatId;
+      }
+      setState((prev) => {
+        if (!prev) return prev;
+        return {
+          ...prev,
+          model: {
+            ...prev.model,
+            current: value,
+          },
+        };
+      });
+      await client.sendInput(`/model ${value}`, false, targetChatId);
     },
-    [client],
+    [client, materializeDraftChat],
   );
 
   const setReasoning = useCallback(

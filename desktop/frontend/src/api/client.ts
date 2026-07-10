@@ -279,12 +279,13 @@ export class ApiClient {
   async pasteImage(
     chatId: string,
     dataUrl: string,
+    workspaceId = "",
   ): Promise<{ path: string; name: string } | null> {
     try {
       const res = await fetch(`${this.base}/paste-image`, {
         method: "POST",
         headers: this.headers(),
-        body: JSON.stringify({ chatId, dataUrl }),
+        body: JSON.stringify({ chatId, dataUrl, workspaceId }),
       });
       if (!res.ok) return null;
       const data = (await res.json()) as {

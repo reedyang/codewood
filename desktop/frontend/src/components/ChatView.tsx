@@ -1797,21 +1797,14 @@ function ModelMenu({
 
   const supported = new Set(reasoningEfforts.map((l) => l.toLowerCase()));
   const selectedLower = reasoningEffort.toLowerCase();
-  const currentName = currentModel.includes(":")
-    ? currentModel.slice(currentModel.indexOf(":") + 1)
+  const currentSeparator = currentModel.indexOf("/");
+  const currentName = currentSeparator > 0
+    ? currentModel.slice(currentSeparator + 1)
     : currentModel;
-  const currentProvider = currentModel.includes(":")
-    ? currentModel.slice(0, currentModel.indexOf(":"))
+  const currentProvider = currentSeparator > 0
+    ? currentModel.slice(0, currentSeparator)
     : "";
-  const nameProviderCounts = new Map<string, Set<string>>();
-  for (const sel of models) {
-    const idx = sel.indexOf(":");
-    const name = idx > 0 ? sel.slice(idx + 1) : sel;
-    const provider = idx > 0 ? sel.slice(0, idx) : "";
-    if (!nameProviderCounts.has(name)) nameProviderCounts.set(name, new Set());
-    nameProviderCounts.get(name)!.add(provider);
-  }
-  const showProvider = !!(currentName && (nameProviderCounts.get(currentName)?.size ?? 0) > 1);
+  const currentLabel = currentName || t("model.label");
 
   const FLYOUT_WIDTH = 220;
   const FLYOUT_GAP = 4;
@@ -1839,8 +1832,8 @@ function ModelMenu({
     <div className="dropdown model-dropdown" ref={ref}>
       <button className="dropdown-trigger" onClick={() => setOpen((v) => !v)}>
         <span className="model-trigger-label">
-          <span className="model-trigger-name">{currentName || t("model.label")}</span>
-          {showProvider && currentProvider && (
+          <span className="model-trigger-name">{currentLabel}</span>
+          {currentProvider && (
             <span className="model-provider-hint"> ({currentProvider})</span>
           )}
         </span>
@@ -1903,8 +1896,8 @@ function ModelMenu({
               <button className="dropdown-item model-submenu-entry">
                 <span className="dropdown-check" />
                 <span className="model-submenu-label">
-                  <span>{currentName || t("model.label")}</span>
-                  {showProvider && currentProvider && (
+                  <span>{currentLabel}</span>
+                  {currentProvider && (
                     <span className="model-provider-sub">{currentProvider}</span>
                   )}
                 </span>
