@@ -519,6 +519,13 @@ class LLMContextManager:
             # anchor response exactly once, preferring provider usage data.
             total += _message_cost(anchor)
             start_idx = last_cache_idx + 1
+        else:
+            # No cache-stats anchor from the API — use the most recent
+            # compaction summary as the starting point so compacted messages
+            # before it are not counted a second time.
+            for i, m in enumerate(messages):
+                if self.is_context_compaction_summary_message(m):
+                    start_idx = i
 
         for i, m in enumerate(messages):
             if _is_internal_assistant(m):
