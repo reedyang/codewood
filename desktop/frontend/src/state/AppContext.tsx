@@ -2118,7 +2118,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       setHistoryTotal(0);
       setState((prev) => {
         if (!prev) return prev;
-        return { ...prev, contextUsage: undefined };
+        return { ...prev, contextUsage: undefined, plan: undefined, cacheStats: undefined };
       });
     },
     [state?.workspace.id],
