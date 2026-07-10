@@ -872,6 +872,43 @@ class LLMContextManager:
         self._print_compaction_banner(self._default_context_compaction_notice_message(mode))
         return True
 
+    def check_and_compact_if_needed(
+        self,
+        user_input_hint: str = "",
+        context_hint: str = "",
+    ) -> bool:
+        """
+        Check current context usage and auto-compact if usage exceeds the
+        trigger threshold.  Intended to be called **during** task execution
+        (e.g. after a tool-call result is appended to history) so the context
+        never silently grows past the trigger limit mid-turn.
+
+        Returns ``True`` if compaction was triggered, ``False`` otherwise.
+        This method is a no-op (and returns ``False``) when compaction is
+        already running on another thread.
+        """
+        try:
+            self.refresh_context_usage_snapshot(
+                user_input_hint=str(user_input_hint or ""),
+                context_hint=str(context_hint or ""),
+            )
+            usage_pct = int(getattr(self.agent, "_last_context_usage_percent", 0) or 0)
+            try:
+                trigger_pct = int(
+                    getattr(self.agent, "auto_compact_trigger_percent", AUTO_COMPACT_TRIGGER_PCT)
+                    or AUTO_COMPACT_TRIGGER_PCT
+                )
+            except Exception:
+                trigger_pct = AUTO_COMPACT_TRIGGER_PCT
+            trigger_pct = max(1, min(100, trigger_pct))
+            if usage_pct < trigger_pct:
+                return False
+            if not self._compaction_candidate_rows("auto"):
+                return False
+            return self.compact_context("auto")
+        except Exception:
+            return False
+
     def maybe_auto_compact_before_user_message(self, user_input: str) -> bool:
         if not self._context_compaction_lock.acquire(blocking=False):
             return False

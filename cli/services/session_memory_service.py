@@ -1430,6 +1430,11 @@ class SessionMemoryService:
     def compact_context(self, mode: str = "manual") -> bool:
         return self.llm_context_manager.compact_context(mode)
 
+    def check_and_compact_if_needed(self, user_input_hint: str = "", context_hint: str = "") -> bool:
+        return self.llm_context_manager.check_and_compact_if_needed(
+            user_input_hint=user_input_hint, context_hint=context_hint
+        )
+
     def maybe_auto_compact_before_user_message(self, user_input: str) -> bool:
         return self.llm_context_manager.maybe_auto_compact_before_user_message(user_input)
 
