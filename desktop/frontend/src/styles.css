@@ -4038,6 +4038,7 @@ html[data-has-bg] .select {
 .activity-header.has-details {
   display: inline-flex;
   width: auto;
+  max-width: 100%;
   justify-content: flex-start;
   text-align: left;
 }
@@ -4048,6 +4049,8 @@ html[data-has-bg] .select {
 
 .activity-text {
   font-weight: 600;
+  word-break: break-word;
+  overflow-wrap: break-word;
 }
 
 .activity-header.has-details .activity-text {
