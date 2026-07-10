@@ -101,6 +101,11 @@ export function ModelsSettings({ onDirtyChange, saveSignal }: ModelsSettingsProp
       }
       const builtinOnly = merged.filter((p) => !addedIds.has(p.id));
       const reordered = [...remoteOrder, ...builtinOnly];
+      // Inject Custom API as the first entry; never persisted to model_presets.json.
+      const customPreset = MODEL_PRESETS.find((p) => p.id === "custom");
+      if (customPreset) {
+        reordered.unshift(customPreset);
+      }
       setPresets(reordered);
       presetsLoadedRef.current = true;
       // Re-map providers whose presetId is "custom" but match a newly loaded preset.
@@ -380,8 +385,8 @@ export function ModelsSettings({ onDirtyChange, saveSignal }: ModelsSettingsProp
         errs.add(i);
       }
     });
-    for (const [, idxs] of groups) {
-      if (idxs.length < 2) continue;
+    for (const [key, idxs] of groups) {
+      if (!key || idxs.length < 2) continue;
       const names = idxs.map((i) => providers[i].display_name.trim());
       if (names.some((n) => !n)) {
         for (const i of idxs.slice(1)) {

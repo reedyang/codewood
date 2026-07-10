@@ -1700,7 +1700,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         setState(value);
         setConnected(true);
         // Sync model presets to backend on startup (fire-and-forget).
-        client.syncModelPresets(MODEL_PRESETS).catch(() => {});
+        client.syncModelPresets(MODEL_PRESETS.filter((p) => p.id !== "custom")).catch(() => {});
       })
       .catch(() => setConnected(false));
 
