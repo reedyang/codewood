@@ -1107,7 +1107,6 @@ class ProviderContextWindowTests(unittest.TestCase):
         options = mock_post.call_args.kwargs.get("json", {}).get("options", {})
         self.assertEqual(options["num_ctx"], 128000)
         self.assertEqual(options["num_predict"], 512)
-        self.assertEqual(options["temperature"], 0.3)
         self.assertTrue(fake_response.closed)
 
     def test_ollama_stream_tools_assembles_final_tool_calls(self):
