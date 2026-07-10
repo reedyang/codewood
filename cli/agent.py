@@ -7046,7 +7046,7 @@ class Agent:
         print("  /compact")
         print("  /help")
         print(t("help.command.language"))
-        print("  /model [<model_provider>:<name>]")
+        print("  /model [<model_provider/model_name>]")
         print(t("help.section.chat_commands"))
         print(t("help.command.chat"))
         print(t("help.section.workspace_commands"))

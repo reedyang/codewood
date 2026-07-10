@@ -1046,9 +1046,6 @@ def main(argv: list[str] | None = None):
     model_selector = ""
     if isinstance(cli_args, dict):
         model_selector = str(cli_args.get("model_selector") or "").strip()
-    model_override_selector = ""
-    if model_selector:
-        model_override_selector = f"{provider}:{model_name}" if False else ""
     provider, model_name, model_config, config_error = _extract_model_runtime_config(
         config,
         requested_model=model_selector or None,
@@ -1074,7 +1071,7 @@ def main(argv: list[str] | None = None):
     params = model_config.get("params", {})
     model_override_selector = ""
     if model_selector:
-        model_override_selector = f"{provider}:{model_name}"
+        model_override_selector = f"{provider}/{model_name}"
 
     # Load the heavy agent module only after configuration is ready to reduce the wait between startup and model info.
     from cli.agent import Agent

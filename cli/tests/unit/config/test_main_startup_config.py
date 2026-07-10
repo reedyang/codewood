@@ -224,13 +224,13 @@ class MainStartupConfigTests(unittest.TestCase):
             with patch.object(main_module, "project_root", Path(td_project)), patch.object(
                 main_module, "get_app_global_config_dir", return_value=user_cfg_dir
             ), patch("cli.agent.Agent", FakeAgent):
-                code = main_module.main(["-m", "openai:Gemma-4-31B"])
+                code = main_module.main(["-m", "openai/Gemma-4-31B"])
 
             self.assertEqual(code, 0)
             self.assertIsNotNone(FakeAgent.last_instance)
             self.assertEqual(
                 FakeAgent.last_instance.switch_calls,
-                ["openai:Gemma-4-31B"],
+                ["openai/Gemma-4-31B"],
             )
 
     def test_startup_warns_when_selected_model_context_window_is_below_64k(self):

@@ -33,6 +33,7 @@ class _FakeChatStateManager:
 class _FakeAgent:
     def __init__(self, cfg_dir: Path) -> None:
         self._chat_state_manager = _FakeChatStateManager(cfg_dir)
+        self.workspace_id = "ws-1"
 
 
 def _app(cfg_dir: Path) -> ServeApp:
@@ -44,7 +45,8 @@ def _app(cfg_dir: Path) -> ServeApp:
 
     stub = _Stub()
     stub.agent = _FakeAgent(cfg_dir)
-    for name in ("save_pasted_image", "read_chat_image"):
+    stub._persist_ctx_for_workspace = lambda workspace_id: None
+    for name in ("_chat_data_dir_for", "save_pasted_image", "read_chat_image"):
         setattr(stub, name, getattr(ServeApp, name).__get__(stub, _Stub))
     # Class attributes consulted by the methods.
     stub._PASTE_IMAGE_EXT = ServeApp._PASTE_IMAGE_EXT
@@ -77,6 +79,28 @@ class PasteImageTests(unittest.TestCase):
             app = _app(Path(d))
             res = app.save_pasted_image("", _data_url("image/png", _PNG_1x1))
             self.assertFalse(res.get("ok"))
+
+    def test_saves_under_explicit_workspace_when_chat_ids_repeat(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg = Path(d)
+            app = _app(cfg)
+            ws2_cfg = cfg / "workspace-b-config"
+            app._persist_ctx_for_workspace = lambda workspace_id: {
+                "config_dir": ws2_cfg,
+                "chat_state": {
+                    "chats": [
+                        {"id": "c1", "_record_file": "other-record.json"},
+                    ]
+                },
+            } if workspace_id == "ws-2" else None
+            res = app.save_pasted_image("c1", _data_url("image/png", _PNG_1x1), "ws-2")
+            self.assertTrue(res.get("ok"), res)
+            saved = Path(res["path"])
+            self.assertEqual(
+                saved.parent,
+                (ws2_cfg / "chats" / "data" / "other-record").resolve(),
+            )
+            self.assertEqual(saved.read_bytes(), _PNG_1x1)
 
     def test_rejects_non_image_mime(self):
         with tempfile.TemporaryDirectory() as d:

@@ -12,6 +12,7 @@ const apiMock = vi.hoisted(() => {
   const getChatHistory = vi.fn(async () => ({ turns: [], start: 0, total: 0 }));
   const listWorkspaceChats = vi.fn(async () => []);
   const newChat = vi.fn(async () => "chat-2");
+  const pasteImage = vi.fn(async () => ({ path: "D:/workspace-b/.codewood/chats/data/record-chat-2/img.png", name: "img.png" }));
   const selectChat = vi.fn(async () => true);
   const sendInput = vi.fn(async () => undefined);
   const syncModelPresets = vi.fn(async () => undefined);
@@ -21,6 +22,7 @@ const apiMock = vi.hoisted(() => {
     getChatHistory,
     listWorkspaceChats,
     newChat,
+    pasteImage,
     selectChat,
     sendInput,
     syncModelPresets,
@@ -37,6 +39,7 @@ const apiMock = vi.hoisted(() => {
       getChatHistory.mockClear();
       listWorkspaceChats.mockClear();
       newChat.mockClear();
+      pasteImage.mockClear();
       selectChat.mockClear();
       sendInput.mockClear();
       syncModelPresets.mockClear();
@@ -51,6 +54,7 @@ vi.mock("../api/client", () => ({
     getChatHistory = apiMock.getChatHistory;
     listWorkspaceChats = apiMock.listWorkspaceChats;
     newChat = apiMock.newChat;
+    pasteImage = apiMock.pasteImage;
     selectChat = apiMock.selectChat;
     sendInput = apiMock.sendInput;
     syncModelPresets = apiMock.syncModelPresets;
@@ -122,7 +126,9 @@ function DraftCreateProbe() {
     activeChats,
     turns,
     newChat,
+    pasteImage,
     sendInput,
+    setModel,
   } = useApp();
   return (
     <>
@@ -135,10 +141,24 @@ function DraftCreateProbe() {
       </button>
       <button
         onClick={() => {
+          void pasteImage("data:image/png;base64,AAAA");
+        }}
+      >
+        paste draft image
+      </button>
+      <button
+        onClick={() => {
           void sendInput("hello from draft");
         }}
       >
         send draft
+      </button>
+      <button
+        onClick={() => {
+          void setModel("openai/family/model/v2");
+        }}
+      >
+        select draft model
       </button>
       <pre data-testid="app-state">{JSON.stringify(state)}</pre>
       <pre
@@ -405,6 +425,62 @@ describe("AppContext thinking rounds", () => {
       expect(view.activeChatId).toBe("chat-1");
       expect(view.turns).toHaveLength(1);
       expect(view.turns[0]?.userText).toContain("hello from draft");
+    });
+  });
+
+  it("materializes the target workspace chat before uploading a pasted image in draft mode", async () => {
+    render(
+      <AppProvider>
+        <DraftCreateProbe />
+      </AppProvider>,
+    );
+
+    await waitFor(() => expect(apiMock.connectEvents).toHaveBeenCalled());
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "enter draft" }));
+    });
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "paste draft image" }));
+    });
+
+    await waitFor(() => {
+      expect(apiMock.newChat).toHaveBeenCalledWith("ws-2");
+      expect(apiMock.pasteImage).toHaveBeenCalledWith(
+        "chat-2",
+        "data:image/png;base64,AAAA",
+        "ws-2",
+      );
+    });
+  });
+
+  it("materializes the target workspace chat before switching model in draft mode", async () => {
+    render(
+      <AppProvider>
+        <DraftCreateProbe />
+      </AppProvider>,
+    );
+
+    await waitFor(() => expect(apiMock.connectEvents).toHaveBeenCalled());
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "enter draft" }));
+    });
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "select draft model" }));
+    });
+
+    await waitFor(() => {
+      const state = JSON.parse(screen.getByTestId("app-state").textContent || "{}") as AppState;
+      expect(apiMock.newChat).toHaveBeenCalledWith("ws-2");
+      expect(apiMock.sendInput).toHaveBeenCalledWith(
+        "/model openai/family/model/v2",
+        false,
+        "chat-2",
+      );
+      expect(state.model.current).toBe("openai/family/model/v2");
     });
   });
 

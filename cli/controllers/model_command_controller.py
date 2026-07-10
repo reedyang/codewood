@@ -14,8 +14,8 @@ def model_usage(agent: Any) -> str:
     return (
         f"{_t(agent, 'common.usage')}\n"
         f"  /model\n"
-        f"  /model <model_provider>:<name>\n"
-        f"  /model <model_provider>:<name> <reasoning_effort>\n"
+        f"  /model <model_provider/model_name>\n"
+        f"  /model <model_provider/model_name> <reasoning_effort>\n"
         f"  /reasoning <reasoning_effort>\n"
     )
 
@@ -55,16 +55,16 @@ def handle_model_builtin_command(agent: Any, builtin_line: str) -> bool:
         print(agent._set_reasoning_effort(level))
         return True
 
-    # ``/model <provider>:<name> [reasoning_level]``
+    # ``/model <provider/model_name> [reasoning_level]``
     selector = str(parts[1]).strip()
     if not selector:
         print(_t(agent, "model.name_missing_with_usage", usage=model_usage(agent)))
         return True
-    if ":" not in selector:
+    if "/" not in selector:
         # Allow selectors with spaces (e.g. names containing spaces) by treating
         # everything as the selector when no trailing level is recognized.
         selector = " ".join(parts[1:]).strip()
-        if ":" not in selector:
+        if "/" not in selector:
             print(_t(agent, "model.invalid_format_with_usage", usage=model_usage(agent)))
             return True
         print(agent._switch_model_by_selector(selector))
