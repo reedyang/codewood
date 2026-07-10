@@ -1,6 +1,6 @@
 import json
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 from ..config.app_info import get_app_logger_root
 from ..core.logging.app_logging import get_logger
@@ -178,6 +178,31 @@ class AIOrchestrator:
                 token_count_includes_reasoning: Optional[bool] = None
                 if isinstance(message, dict):
                     tool_calls_data = message.get("tool_calls")
+                    # Deduplicate tool_calls with identical function content
+                    if isinstance(tool_calls_data, list) and len(tool_calls_data) > 1:
+                        _seen_tc: Set[str] = set()
+                        _deduped_tc: List[Dict[str, Any]] = []
+                        for _tc in tool_calls_data:
+                            if not isinstance(_tc, dict):
+                                _deduped_tc.append(_tc)
+                                continue
+                            _fn = _tc.get("function", {})
+                            _key = json.dumps(
+                                {"name": _fn.get("name"), "arguments": _fn.get("arguments")},
+                                sort_keys=True,
+                                ensure_ascii=False,
+                            )
+                            if _key not in _seen_tc:
+                                _seen_tc.add(_key)
+                                _deduped_tc.append(_tc)
+                        if len(_deduped_tc) != len(tool_calls_data):
+                            _AI_HISTORY_LOG.debug(
+                                "Deduplicated tool_calls: original=%d -> kept=%d",
+                                len(tool_calls_data),
+                                len(_deduped_tc),
+                            )
+                            tool_calls_data = _deduped_tc
+                            message["tool_calls"] = _deduped_tc
                     cache_stats = message.get("_cache_stats")
                     clean_content = message.get("_clean_content")
                     output_tokens = message.get("_output_tokens")

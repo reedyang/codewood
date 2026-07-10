@@ -4124,6 +4124,26 @@ def run_agent_loop(agent: Any):
 
                 _update_latest_assistant_clean_content(self, ai_response)
                 fallback_plans = list(message_tool_plans)
+                if fallback_plans:
+                    _raw_tool_plans = list(fallback_plans)
+                    _seen = set()
+                    _deduped = []
+                    for _tn, _ta in _raw_tool_plans:
+                        _key = f"{_tn}::{json.dumps(_ta, sort_keys=True, ensure_ascii=False) if isinstance(_ta, dict) else str(_ta)}"
+                        if _key not in _seen:
+                            _seen.add(_key)
+                            _deduped.append((_tn, _ta))
+                    if len(_deduped) != len(_raw_tool_plans):
+                        get_logger(f"{get_app_logger_root()}.runtime.flow").debug(
+                            "Deduplicated tool calls: original=%d -> kept=%d, plans=%s",
+                            len(_raw_tool_plans),
+                            len(_deduped),
+                            json.dumps(
+                                [{"tool": t, "args": a} for t, a in _raw_tool_plans],
+                                ensure_ascii=False,
+                            ),
+                        )
+                        fallback_plans = _deduped
                 ai_response_looks_like_pseudo_tool = _looks_like_pseudo_tool_call_text(ai_response)
                 if (
                     task_uses_standard_openai_tools
