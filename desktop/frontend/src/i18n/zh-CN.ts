@@ -165,6 +165,8 @@ export const zhCN: Dict = {
   "console.tab.close": "关闭终端窗口",
   "console.show": "显示终端",
   "console.hide": "隐藏终端",
+  "console.copy": "复制",
+  "console.clear": "清屏",
   "console.empty": "尚未打开终端窗口。点击 + 按钮新建一个。",
   "subagents.emptyHint": "尚未配置任何子智能体。点击“添加”来创建一个。",
   "subagents.enabled": "启用",

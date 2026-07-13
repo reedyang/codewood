@@ -167,6 +167,8 @@ export const en: Dict = {
   "console.tab.close": "Close terminal",
   "console.hide": "Hide terminal",
   "console.show": "Show terminal",
+  "console.copy": "Copy",
+  "console.clear": "Clear",
   "console.empty": "No console open. Use the + button to start one.",
   "subagents.emptyHint": "No sub-agents configured yet. Click Add to create one.",
   "subagents.enabled": "Enabled",
