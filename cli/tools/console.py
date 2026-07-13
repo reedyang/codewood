@@ -30,7 +30,7 @@ def _dispatch(agent: Any, action: str, payload: Optional[Dict[str, Any]] = None)
 
 class ConsoleExecTool(BaseTool):
     name = "console_exec"
-    description = "Run a command in the active embedded console tab. Use console_read to get the output."
+    description = "Run a command in the active embedded console tab. If no console tab is open, a default one is auto-opened. Use console_read to get the output."
     requires_gui = True
     parameters: Dict[str, Any] = {
         "type": "object",

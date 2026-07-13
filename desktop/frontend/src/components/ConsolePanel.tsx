@@ -423,6 +423,7 @@ export function ConsolePanel({ dockOpen }: { dockOpen: boolean }) {
     activateConsole,
     hideConsole,
     openSettings,
+    consumePendingAutoConsole,
   } = useApp();
   const [tabState, setTabState] = useState<ConsoleTabState>({
     tabs: [],
@@ -433,6 +434,9 @@ export function ConsolePanel({ dockOpen }: { dockOpen: boolean }) {
   const addBtnRef = useRef<HTMLButtonElement | null>(null);
   // Open one console automatically the first time the dock is shown.
   const bootstrappedRef = useRef(false);
+  // Set to true when a backend auto-open (console_exec) already added a tab,
+  // so the bootstrap effect doesn't create a second, duplicate terminal.
+  const autoOpenedRef = useRef(false);
   // Windows exposes three shells; other platforms a single generic terminal.
   const [isWindows, setIsWindows] = useState<boolean | null>(null);
 
@@ -470,7 +474,7 @@ export function ConsolePanel({ dockOpen }: { dockOpen: boolean }) {
     [openConsole],
   );
 
-  useEffect(() => {
+useEffect(() => {
     // Wait until the platform is known so the first auto-opened tab uses the
     // right shell kind (PowerShell on Windows, the default shell elsewhere).
     // Only bootstrap after the dock is actually visible; opening xterm inside
@@ -479,8 +483,33 @@ export function ConsolePanel({ dockOpen }: { dockOpen: boolean }) {
       return;
     }
     bootstrappedRef.current = true;
-    void addTab(defaultKind);
-  }, [addTab, isWindows, defaultKind, dockOpen]);
+    // If the backend auto-opened a console before the dock was open, consume
+    // the pending info and add the tab without creating a new session.
+    const pending = consumePendingAutoConsole();
+    if (pending) {
+      autoOpenedRef.current = true;
+      const tab: ConsoleTab = { id: pending.id, title: pending.title, kind: pending.kind };
+      setTabState((prev) => addTabState(prev, tab));
+    } else if (!autoOpenedRef.current) {
+      void addTab(defaultKind);
+    }
+}, [addTab, isWindows, defaultKind, dockOpen, consumePendingAutoConsole]);
+
+  // Listen for codewood:console-open custom event (fired when the backend
+  // auto-opens a console while the dock is already open). Consume the pending
+  // info and add the tab without creating a duplicate session.
+  useEffect(() => {
+    const handler = () => {
+      const pending = consumePendingAutoConsole();
+      if (pending) {
+        autoOpenedRef.current = true;
+        const tab: ConsoleTab = { id: pending.id, title: pending.title, kind: pending.kind };
+        setTabState((prev) => addTabState(prev, tab));
+      }
+    };
+    window.addEventListener("codewood:console-open", handler);
+    return () => window.removeEventListener("codewood:console-open", handler);
+  }, [consumePendingAutoConsole]);
 
   const selectTab = useCallback(
     (id: string) => {

@@ -1,4 +1,6 @@
+import os
 import unittest
+from typing import Any, Dict, Optional
 
 from cli.server.serve_app import ServeApp
 from cli.server.console_manager import ConsoleSession
@@ -101,27 +103,58 @@ class _FakeConsole:
     def __init__(self) -> None:
         self._active = None
         self.written = []
+        self.open_called_with = None
 
     def active(self):
         return self._active
 
+    def open(self, kind: str) -> Dict[str, Any]:
+        self.open_called_with = kind
+        session = ConsoleSession("auto", kind, kind, "/tmp", 100)
+        self._active = session
+        return {"success": True, **session.info()}
+
 
 class ConsoleDispatchTests(unittest.TestCase):
     def _stub(self):
+        class _BroadcasterMock:
+            published: list = None
+
+            def __init__(self):
+                self.published = []
+
+            def publish(self, event, data=None):
+                self.published.append((event, data))
+
         class _Stub:
-            pass
+            def open_console(self_, kind: str) -> Dict[str, Any]:
+                return self_._console.open(kind)
 
         stub = _Stub()
         stub._console = _FakeConsole()
+        stub.broadcaster = _BroadcasterMock()
         stub.dispatch_console_command = ServeApp.dispatch_console_command.__get__(
             stub, _Stub
         )
         return stub
 
-    def test_no_active_console_errors(self):
+    def test_no_active_console_errors_on_info(self):
         stub = self._stub()
         res = stub.dispatch_console_command("info")
         self.assertFalse(res.get("success"))
+
+    def test_no_active_console_errors_on_read(self):
+        stub = self._stub()
+        res = stub.dispatch_console_command("read", {"start": 0})
+        self.assertFalse(res.get("success"))
+
+    def test_exec_auto_opens_console(self):
+        stub = self._stub()
+        stub._console._active = None
+        res = stub.dispatch_console_command("exec", {"command": "echo hi"})
+        self.assertTrue(res.get("success"))
+        self.assertEqual(stub._console.open_called_with, "powershell" if os.name == "nt" else "shell")
+        self.assertEqual(stub.broadcaster.published[-1][0], "console_open")
 
     def test_exec_writes_command_with_newline(self):
         stub = self._stub()
