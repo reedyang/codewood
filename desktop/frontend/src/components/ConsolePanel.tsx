@@ -1,4 +1,10 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type MouseEvent,
+} from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
@@ -66,6 +72,24 @@ const ANSI_DARK = {
   brightWhite: "#eeeeec",
 };
 
+/** Copy text to the clipboard via a hidden textarea + execCommand. Used as a
+ *  fallback when the async Clipboard API is unavailable or denied. */
+function legacyCopy(text: string) {
+  try {
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    ta.style.position = "fixed";
+    ta.style.opacity = "0";
+    document.body.appendChild(ta);
+    ta.focus();
+    ta.select();
+    document.execCommand("copy");
+    document.body.removeChild(ta);
+  } catch {
+    // ignore: nothing else we can do without a clipboard API
+  }
+}
+
 /** Read the terminal colour scheme from the active theme. The xterm internal
  *  background is overridden by CSS (`.xterm-viewport` uses `var(--console-bg)`)
  *  so the JS theme handles the foreground, cursor, selection, and ANSI palette. */
@@ -108,12 +132,38 @@ function ConsoleTerminal({
   fontFamily: string;
   bufferLines: number;
 }) {
-  const { subscribeConsoleOutput, attachConsole, consoleInput, consoleResize } =
+  const { t, subscribeConsoleOutput, attachConsole, consoleInput, consoleResize } =
     useApp();
   const hostRef = useRef<HTMLDivElement | null>(null);
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
   const decoderRef = useRef<TextDecoder>(new TextDecoder());
+  const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number } | null>(null);
+
+  // Copy the current xterm selection to the system clipboard. Falls back to the
+  // legacy execCommand path because pywebview's WebView2 may deny the async
+  // Clipboard API without focused-document permission.
+  const copySelection = useCallback(() => {
+    const term = termRef.current;
+    if (!term) {
+      return;
+    }
+    const text = term.getSelection();
+    if (!text) {
+      return;
+    }
+    if (navigator.clipboard?.writeText) {
+      void navigator.clipboard.writeText(text).catch(() => {
+        legacyCopy(text);
+      });
+    } else {
+      legacyCopy(text);
+    }
+  }, []);
+
+  const clearTerminal = useCallback(() => {
+    termRef.current?.clear();
+  }, []);
 
   // Create the terminal and wire it to the backend session. Console I/O rides
   // the SSE event stream (output) and plain HTTP POSTs (input/resize) because
@@ -135,6 +185,9 @@ function ConsoleTerminal({
     const fit = new FitAddon();
     term.loadAddon(fit);
     term.open(host);
+    // Don't let a right-click clobber an existing selection; the custom
+    // context menu handles selection-based actions instead.
+    term.options.rightClickSelectsWord = false;
     termRef.current = term;
     fitRef.current = fit;
     try {
@@ -212,6 +265,26 @@ function ConsoleTerminal({
     });
     ro.observe(host);
 
+    // Intercept copy in the capture phase, BEFORE xterm processes the key.
+    // xterm clears the selection as soon as a key is typed, so by the time
+    // onData fires the selection is already gone; checking there would always
+    // miss. With a capture listener on the host we can read the live selection
+    // and stop the event from reaching xterm, so Ctrl/Cmd+C copies instead of
+    // being forwarded to the shell as SIGINT.
+    const onCopyKey = (e: KeyboardEvent) => {
+      if (disposed) return;
+      const isCopy =
+        (e.ctrlKey || e.metaKey) &&
+        !e.altKey &&
+        (e.key === "c" || e.key === "C");
+      if (isCopy && term.hasSelection()) {
+        e.preventDefault();
+        e.stopPropagation();
+        copySelection();
+      }
+    };
+    host.addEventListener("keydown", onCopyKey, true);
+
     // Keep terminal colours in sync with CSS variables (theme + background
     // image transparency). The MutationObserver catches attribute/style
     // changes on <html> that affect the computed --console-bg / --console-fg.
@@ -236,6 +309,7 @@ function ConsoleTerminal({
       dataDisp.dispose();
       resizeDisp.dispose();
       ro.disconnect();
+      host.removeEventListener("keydown", onCopyKey, true);
       term.dispose();
       termRef.current = null;
       fitRef.current = null;
@@ -295,12 +369,48 @@ function ConsoleTerminal({
     };
   }, [active, visible]);
 
+  const openCtxMenu = useCallback(
+    (e: MouseEvent) => {
+      e.preventDefault();
+      setCtxMenu({ x: e.clientX, y: e.clientY });
+    },
+    [],
+  );
+
+  const ctxItems: MenuItem[] = (() => {
+    const hasSel = !!termRef.current?.hasSelection();
+    const items: MenuItem[] = [];
+    if (hasSel) {
+      items.push({
+        id: "copy",
+        label: t("console.copy"),
+        onSelect: copySelection,
+      });
+    }
+    items.push({
+      id: "clear",
+      label: t("console.clear"),
+      onSelect: clearTerminal,
+    });
+    return items;
+  })();
+
   return (
     <div
       className="console-term"
       ref={hostRef}
+      onContextMenu={openCtxMenu}
       style={{ display: active && visible ? "block" : "none" }}
-    />
+    >
+      {ctxMenu && (
+        <ContextMenu
+          x={ctxMenu.x}
+          y={ctxMenu.y}
+          items={ctxItems}
+          onClose={() => setCtxMenu(null)}
+        />
+      )}
+    </div>
   );
 }
 
