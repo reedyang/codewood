@@ -625,6 +625,10 @@ def run_subagent(
         "prompt": prompt_text,
     })
 
+    # Print the session marker early so the GUI can show the ">" button
+    # to enter the session viewer while the sub-agent is still running.
+    print(f"{GUI_SUBAGENT_SESSION_BEGIN}{session_id}{GUI_SUBAGENT_SESSION_END}", flush=True)
+
     # Store the initial messages (system + user)
     store.append_message(agent, chat_id, session_id, {
         "role": "system",
@@ -778,11 +782,15 @@ def run_subagent(
                     "tool_result": tool_result,
                 })
 
-                # Emit tool output event
+                # Emit tool output event with rendered tool round
+                tool_round = _render_subagent_tool_round(
+                    agent, str(tool_name), args if isinstance(args, dict) else {}, tool_result,
+                )
                 _emit_subagent_event(agent, "sub_agent_output", {
                     "sessionId": session_id,
                     "text": result_text[:5000],  # Truncate very long outputs for SSE
                     "toolName": str(tool_name),
+                    "toolRound": tool_round,
                 })
 
             # Render the collected tool calls via the main-chat display envelope

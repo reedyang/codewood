@@ -1854,21 +1854,27 @@ export function AppProvider({ children }: { children: ReactNode }) {
           break;
         }
         case "sub_agent_output": {
-          const d = event.data as { sessionId: string; text: string; toolName: string };
+          const d = event.data as { sessionId: string; text: string; toolName: string; toolRound?: string };
           const sessionId = String(d.sessionId || "");
           const current = activeSubAgentSessionRef.current;
           if (current && current.id === sessionId) {
-            const updated: SubAgentSession = {
-              ...current,
-              messages: [
-                ...current.messages,
-                {
-                  role: "tool",
-                  name: String(d.toolName || ""),
-                  content: String(d.text || ""),
-                },
-              ],
-            };
+            const msgs = [...current.messages];
+            // If toolRound is provided, attach it to the last assistant message
+            if (d.toolRound) {
+              for (let i = msgs.length - 1; i >= 0; i--) {
+                if (msgs[i].role === "assistant") {
+                  const existing = msgs[i].tool_rounds || [];
+                  msgs[i] = { ...msgs[i], tool_rounds: [...existing, d.toolRound] };
+                  break;
+                }
+              }
+            }
+            msgs.push({
+              role: "tool" as const,
+              name: String(d.toolName || ""),
+              content: String(d.text || ""),
+            });
+            const updated: SubAgentSession = { ...current, messages: msgs };
             setActiveSubAgentSession(updated);
             activeSubAgentSessionRef.current = updated;
           }
