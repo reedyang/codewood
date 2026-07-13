@@ -513,28 +513,43 @@ function SubAgentSessionView({ session }: { session: import("../api/types").SubA
   })();
   const formatTok = (n: number) => (n >= 1000 ? `${(n / 1000).toFixed(1)}K` : String(n));
 
-  // Merge consecutive tool-only assistant messages into single "Called N tools" groups
+  // Merge consecutive tool-only assistant messages into single "Called N tools" groups.
+  // Handles both persisted messages (with tool_rounds) and live SSE messages (with
+  // only tool_calls, no tool_rounds). Tool role results are appended as output.
   const mergedMessages = (() => {
     const result: SubAgentMessage[] = [];
     let i = 0;
     while (i < session.messages.length) {
       const msg = session.messages[i];
-      // Pass through non-assistant or assistant-with-content messages as-is
-      if (msg.role !== "assistant" || msg.content || !msg.tool_rounds?.length) {
+      const isToolOnlyAssistant =
+        msg.role === "assistant" && !msg.content && (!!msg.tool_rounds?.length || !!msg.tool_calls?.length);
+      if (!isToolOnlyAssistant) {
         result.push(msg);
         i++;
         continue;
       }
-      // Start a merge group: collect tool_rounds from consecutive tool-only assistants
-      const allRounds = [...msg.tool_rounds];
+      const allRounds: string[] = [];
+      const addRound = (
+        rounds: string[] | undefined,
+        calls: { name: string; args?: Record<string, unknown> }[] | undefined,
+      ) => {
+        if (rounds?.length) {
+          allRounds.push(...rounds);
+        } else if (calls?.length) {
+          for (const tc of calls) {
+            allRounds.push(`\uE000\u2022 ${tc.name}\uE001`);
+          }
+        }
+      };
+      addRound(msg.tool_rounds, msg.tool_calls);
       let j = i + 1;
       while (j < session.messages.length) {
         const next = session.messages[j];
-        if (next.role === "assistant" && !next.content && next.tool_rounds?.length) {
-          allRounds.push(...next.tool_rounds);
+        if (next.role === "assistant" && !next.content && (!!next.tool_rounds?.length || !!next.tool_calls?.length)) {
+          addRound(next.tool_rounds, next.tool_calls);
           j++;
         } else if (next.role === "tool") {
-          j++; // skip tool results between assistant calls
+          j++; // skip tool results — the raw JSON is too verbose for inline display
         } else {
           break;
         }
@@ -598,6 +613,15 @@ function SubAgentSessionView({ session }: { session: import("../api/types").SubA
 
         return null;
       })}
+
+      {/* Session in-progress indicator */}
+      {!session.endedAt && (
+        <div style={{ marginTop: -12, marginBottom: 0, padding: 0, lineHeight: 1 }}>
+          <span className="activity-header running" style={{ display: "inline-flex", alignItems: "center", gap: 8, fontSize: 13, opacity: 0.7 }}>
+            <span className="activity-text marquee">{t("activity.working")}</span>
+          </span>
+        </div>
+      )}
 
       {/* Final output — shown always (live and after session ends) */}
       {session.output && (
