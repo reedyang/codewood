@@ -28,7 +28,7 @@ logger = get_logger()
 
 from ..ai.ai_orchestrator import AIOrchestrator, AgentAIContext
 from ..ai.ai_provider_clients import AICallContext, resolve_api_mode
-from ..core.config.subagents_loader import SubAgentRecord
+from ..core.config.subagents_loader import DEFAULT_SUBAGENT_MAX_ROUNDS, SubAgentRecord
 from ..core.localization import get_display_language, translate
 from ..core.console_utils import (
     GUI_CMD_OUTPUT_BEGIN,
@@ -644,12 +644,18 @@ def run_subagent(
         {"role": "user", "content": prompt_text},
     ]
 
-    max_rounds = int(getattr(record, "max_rounds", 20) or 20)
+    # Priority: sub-agent's own max_rounds → main session's max_tool_rounds → unlimited
+    record_rounds = record.max_rounds if isinstance(getattr(record, "max_rounds", None), int) else None
+    agent_rounds = getattr(agent, "max_tool_rounds", None)
+    agent_rounds = int(agent_rounds) if isinstance(agent_rounds, int) and agent_rounds > 0 else None
+    max_rounds = record_rounds if record_rounds is not None else agent_rounds
     last_assistant_text = ""
 
     agent._subagent_depth = int(getattr(agent, "_subagent_depth", 0) or 0) + 1
     try:
-        for _round in range(max_rounds):
+        _round = 0
+        while max_rounds is None or _round < max_rounds:
+            _round += 1
             call_ctx = AICallContext(
                 user_input="",
                 messages_override=list(messages),

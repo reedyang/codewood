@@ -52,7 +52,7 @@ class SubAgentRecord:
     # (an explicit empty list means "no tools").
     tools: List[str] = field(default_factory=list)
     tools_specified: bool = False
-    max_rounds: int = DEFAULT_SUBAGENT_MAX_ROUNDS
+    max_rounds: Optional[int] = None
     source_path: str = ""
     # When False the sub-agent is parsed and surfaced in config UIs but is NOT
     # offered to the model (filtered out of the runtime ``agent.subagents``).
@@ -98,13 +98,13 @@ def _coerce_enabled(value: object) -> bool:
     return True
 
 
-def _coerce_max_rounds(value: object) -> int:
+def _coerce_max_rounds(value: object) -> Optional[int]:
     try:
         parsed = int(value)
     except Exception:
-        return DEFAULT_SUBAGENT_MAX_ROUNDS
+        return None
     if parsed <= 0:
-        return DEFAULT_SUBAGENT_MAX_ROUNDS
+        return None
     return parsed
 
 
@@ -282,7 +282,7 @@ def subagent_to_dict(rec: SubAgentRecord) -> Dict[str, object]:
         "model": rec.model_selector,
         "tools": list(rec.tools),
         "toolsSpecified": bool(rec.tools_specified),
-        "maxRounds": int(rec.max_rounds),
+        "maxRounds": int(rec.max_rounds) if rec.max_rounds is not None else None,
         "enabled": bool(rec.enabled),
         "sourcePath": rec.source_path,
         # A workspace override lives outside the global root we manage; the UI
@@ -336,7 +336,7 @@ def write_subagent(
     model: str = "",
     tools: Optional[List[str]] = None,
     tools_specified: bool = False,
-    max_rounds: int = DEFAULT_SUBAGENT_MAX_ROUNDS,
+    max_rounds: Optional[int] = None,
     enabled: bool = True,
 ) -> Dict[str, object]:
     """Create or update a global sub-agent file. Returns ``{ok, error}``."""
