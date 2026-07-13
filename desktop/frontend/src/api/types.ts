@@ -332,6 +332,10 @@ export interface SubAgentMessage {
   role: "system" | "user" | "assistant" | "tool";
   content: string;
   tool_calls?: { name: string; args: Record<string, unknown> }[];
+  /** Rendered tool-round display text (main-chat envelope) attached to an
+   *  assistant message that issued tool calls. When present it is rendered
+   *  through StepsView instead of the raw tool_calls + tool messages. */
+  tool_rounds?: string[];
   name?: string;
   tool_call_id?: string;
 }
