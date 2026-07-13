@@ -205,6 +205,7 @@ export interface DiffRow {
 export interface ConfirmRequest {
   id: string;
   prompt: string;
+  chatId?: string;
   /** The command/script to run, surfaced on its own syntax-highlighted line
    *  so it stands out from the surrounding confirmation prompt text. */
   command?: string;
@@ -238,6 +239,11 @@ export type ServerEvent =
   | { event: "thinking"; data: { text: string } }
   | { event: "confirm"; data: ConfirmRequest }
   | { event: "request_user_input"; data: AskMoreInfoRequest }
+  | { event: "sub_agent_start"; data: { sessionId: string; name: string; description: string; prompt: string } }
+  | { event: "sub_agent_assistant"; data: { sessionId: string; text: string } }
+  | { event: "sub_agent_tool_call"; data: { sessionId: string; toolName: string; args: Record<string, unknown> } }
+  | { event: "sub_agent_output"; data: { sessionId: string; text: string; toolName: string } }
+  | { event: "sub_agent_end"; data: { sessionId: string; output: string; success: boolean; max_rounds_reached?: boolean } }
   | { event: string; data: Record<string, unknown> };
 
 /** A streamed segment within a round: model text ("answer") or tool output ("step"). */
@@ -319,6 +325,29 @@ export interface SubAgentsOverview {
   subagents: SubAgentConfig[];
   models: string[];
   tools: string[];
+}
+
+/** A message within a sub-agent session. */
+export interface SubAgentMessage {
+  role: "system" | "user" | "assistant" | "tool";
+  content: string;
+  tool_calls?: { name: string; args: Record<string, unknown> }[];
+  name?: string;
+  tool_call_id?: string;
+}
+
+/** A sub-agent session with full conversation history. */
+export interface SubAgentSession {
+  id: string;
+  name: string;
+  description: string;
+  prompt: string;
+  startedAt: string;
+  endedAt: string | null;
+  messages: SubAgentMessage[];
+  output: string | null;
+  success: boolean | null;
+  maxRoundsReached: boolean;
 }
 
 /** Paginated chat history response from GET /chat-history. */

@@ -72,6 +72,8 @@ from .core.console_utils import (
     GUI_CMD_PROMPT_END,
     GUI_DIFF_BEGIN,
     GUI_DIFF_END,
+    GUI_SUBAGENT_SESSION_BEGIN,
+    GUI_SUBAGENT_SESSION_END,
     _WorkingStatusTicker,
     _ansi_blue,
     _ansi_gray,
@@ -2126,6 +2128,10 @@ class Agent:
                 # restart (the live stream printed it once; on reload the result
                 # message is the source of truth).
                 self._replay_apply_patch_gui_diff_block(model_tool_result)
+            elif model_tool == "run_subagent":
+                gui_marker = str(model_tool_result.get("guiSessionMarker") or "")
+                if gui_marker:
+                    print(gui_marker)
             return
         display_response = format_assistant_display_response(content)
         if display_response:
@@ -3328,6 +3334,9 @@ class Agent:
         }
         if full_output_path:
             payload["full_output_path"] = full_output_path
+        gui_marker = str(r.get("_guiSessionMarker") or "")
+        if gui_marker:
+            payload["guiSessionMarker"] = gui_marker
         return f"{MODEL_TOOL_RESULT_HISTORY_PREFIX}{json.dumps(payload, ensure_ascii=False)}"
 
     def _parse_model_tool_result_history_content(self, content: str) -> Optional[Dict[str, Any]]:

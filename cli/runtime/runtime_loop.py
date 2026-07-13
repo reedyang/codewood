@@ -25,6 +25,7 @@ from ..config.startup_tips import (
     get_random_startup_tip_entry,
 )
 from ..core.config.config_jsonc import CONFIG_JSONC_FILENAME
+from ..core.console_utils import GUI_SUBAGENT_SESSION_BEGIN, GUI_SUBAGENT_SESSION_END
 from ..core.text_output_renderer import (
     format_assistant_display_response,
 )
@@ -4601,6 +4602,10 @@ def run_agent_loop(agent: Any):
                     last_tool_args = args if isinstance(args, dict) else {}
                     last_tool_result = result if isinstance(result, dict) else {}
                     is_first_round = False
+                    if tool_name == "run_subagent" and isinstance(result, dict):
+                        marker = result.get("_guiSessionMarker")
+                        if marker:
+                            print(marker)
                     if tool_name == "apply_patch" and (not bool(result.get("success", False))):
                         err = str(result.get("error") or result.get("message") or "unknown error").strip()
                         print(t("runtime.apply_patch_failed", error=err))

@@ -9,6 +9,7 @@ import type {
   McpServerSummary,
   ServerEvent,
   SubAgentConfig,
+  SubAgentSession,
   SubAgentsOverview,
   WorkspaceChatSummary,
 } from "./types";
@@ -766,6 +767,24 @@ export class ApiClient {
       return (await res.json()) as { ok: boolean; error?: string };
     } catch {
       return { ok: false, error: "network" };
+    }
+  }
+
+  async getSubAgentSessionHistory(
+    sessionId: string,
+    chatId: string,
+  ): Promise<SubAgentSession | null> {
+    try {
+      const res = await fetch(`${this.base}/subagent-session-history`, {
+        method: "POST",
+        headers: this.headers(),
+        body: JSON.stringify({ sessionId, chatId }),
+      });
+      if (!res.ok) return null;
+      const data = (await res.json()) as { ok: boolean; session?: SubAgentSession };
+      return data.ok && data.session ? data.session : null;
+    } catch {
+      return null;
     }
   }
 

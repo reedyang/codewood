@@ -33,6 +33,14 @@ GUI_CMD_PROMPT_END = "\ue005"
 GUI_DIFF_BEGIN = "\ue006"
 GUI_DIFF_END = "\ue007"
 
+# Private-use sentinels wrapping a sub-agent session ID in GUI mode. The desktop
+# GUI uses this to associate a tool call with its sub-agent session for the
+# session viewer. The session ID is embedded in the tool output so the GUI can
+# extract it and provide a ">" button to enter the session viewer.
+# Keep in sync with the frontend (desktop/frontend/src/components/Steps.tsx).
+GUI_SUBAGENT_SESSION_BEGIN = "\ue008"
+GUI_SUBAGENT_SESSION_END = "\ue009"
+
 # Private-use sentinel prepended to composer input by the desktop GUI to force
 # the runtime loop to treat the line as a model prompt, never as a built-in
 # slash command or "!" direct-shell execution. The GUI does not allow users to

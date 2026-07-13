@@ -3,6 +3,7 @@ import { AnsiText } from "./Ansi";
 import { hostApi } from "../utils/hostApi";
 import { DiffPreview, langFromPath } from "./DiffPreview";
 import { Icon } from "./Icon";
+import { useApp } from "../state/AppContext";
 import type { DiffRow } from "../api/types";
 
 // Private-use sentinels wrapping raw command output, emitted by the backend in
@@ -20,9 +21,14 @@ const CMD_PROMPT_END = "\uE005";
 // syntax-highlighted diff block instead of raw JSON.
 const DIFF_BEGIN = "\uE006";
 const DIFF_END = "\uE007";
+// Sentinels wrapping a sub-agent session ID (kept in sync with
+// cli/core/console_utils.py). Used to associate a tool call with its
+// sub-agent session for the GUI's session viewer.
+const SUBAGENT_SESSION_BEGIN = "\uE008";
+const SUBAGENT_SESSION_END = "\uE009";
 const ANSI_SGR_RE = /\x1b\[[0-9;]*m/g;
 
-type SegKind = "text" | "cmd" | "prompt" | "diff";
+type SegKind = "text" | "cmd" | "prompt" | "diff" | "subagent_session";
 type Segment = { kind: SegKind; text: string };
 
 function splitSteps(text: string): Segment[] {
@@ -66,6 +72,16 @@ function splitSteps(text: string): Segment[] {
       mode = "text";
       continue;
     }
+    if (mode === "text" && ch === SUBAGENT_SESSION_BEGIN) {
+      flush();
+      mode = "subagent_session";
+      continue;
+    }
+    if (mode === "subagent_session" && ch === SUBAGENT_SESSION_END) {
+      flush();
+      mode = "text";
+      continue;
+    }
     buf += ch;
   }
   flush();
@@ -99,6 +115,17 @@ export function countToolCalls(text: string): number {
     }
     return trimBlankEdges(seg.text) ? count + 1 : count;
   }, 0);
+}
+
+/** Whether a rendered tool block contains a sub-agent session with the given ID. */
+export function textContainsSubAgentSession(text: string, id: string): boolean {
+  if (!id) return false;
+  for (const seg of splitSteps(text)) {
+    if (seg.kind === "subagent_session" && trimBlankEdges(seg.text) === id) {
+      return true;
+    }
+  }
+  return false;
 }
 
 /** Return the last rendered tool-call description from a tool block, stripped
@@ -159,11 +186,12 @@ export function StepsView({ text }: { text: string }) {
         }
         if (seg.kind === "prompt") {
           const { bullet, body } = splitPromptBullet(value);
-          // Find the next non-blank segment; if it is a command-output or diff
-          // block, fuse it into the command row and render it collapsibly.
+          // Find the next non-blank segment; if it is a command-output, diff,
+          // or subagent_session block, fuse it into the command row.
           let cmdIdx = -1;
           let cmdPayload = "";
           let diffIdx = -1;
+          let subagentSessionId = "";
           for (let j = index + 1; j < segments.length; j += 1) {
             if (!trimBlankEdges(segments[j].text)) {
               continue;
@@ -173,6 +201,9 @@ export function StepsView({ text }: { text: string }) {
               cmdPayload = trimBlankEdges(segments[j].text);
             } else if (segments[j].kind === "diff") {
               diffIdx = j;
+            } else if (segments[j].kind === "subagent_session") {
+              subagentSessionId = trimBlankEdges(segments[j].text);
+              consumed.add(j);
             }
             break;
           }
@@ -191,6 +222,7 @@ export function StepsView({ text }: { text: string }) {
               body={body}
               cmdPayload={cmdPayload}
               diffPayload={diffPayload}
+              subagentSessionId={subagentSessionId}
               defaultExpanded={diffIdx === lastContentIdx}
               onPathPreview={isBrowserPreview ? onPathPreview : undefined}
             />
@@ -204,6 +236,11 @@ export function StepsView({ text }: { text: string }) {
         if (seg.kind === "cmd") {
           return <CmdOutputBlock key={index} text={value} />;
         }
+        if (seg.kind === "subagent_session") {
+          // This segment contains the session ID for a sub-agent call.
+          // It's consumed by the prompt segment that precedes it.
+          return null;
+        }
         return (
           <div className="step-text" key={index}>
             <AnsiText text={value} />
@@ -216,12 +253,14 @@ export function StepsView({ text }: { text: string }) {
 
 /** A "• Ran ..." prompt line. When it carries command output or an apply_patch
  *  diff, the expand/collapse chevron is appended to the end of the line and
- *  the payload renders below when open. Command output defaults to collapsed. */
+ *  the payload renders below when open. Command output defaults to collapsed.
+ *  For sub-agent calls, a ">" button is shown to enter the session viewer. */
 function PromptWithAttachment({
   bullet,
   body,
   cmdPayload,
   diffPayload,
+  subagentSessionId,
   defaultExpanded,
   onPathPreview,
 }: {
@@ -229,9 +268,11 @@ function PromptWithAttachment({
   body: string;
   cmdPayload: string;
   diffPayload: string;
+  subagentSessionId: string;
   defaultExpanded: boolean;
   onPathPreview?: (path: string) => void;
 }) {
+  const { enterSubAgentSession, pendingExpandSubAgentId } = useApp();
   const hasCmd = !!cmdPayload;
   let parsed: DiffPayload | null = null;
   if (diffPayload) {
@@ -244,8 +285,16 @@ function PromptWithAttachment({
   const rows = parsed?.diffRows ?? [];
   const hasDiff = rows.length > 0;
   const hasAttachment = hasCmd || hasDiff;
-  const [expanded, setExpanded] = useState(hasDiff ? defaultExpanded : false);
-  if (!hasAttachment) {
+  const isSubAgent = !!subagentSessionId;
+  const shouldAutoExpand = isSubAgent && subagentSessionId === pendingExpandSubAgentId;
+  const [expanded, setExpanded] = useState(hasDiff ? defaultExpanded : shouldAutoExpand);
+
+  const handleSubAgentClick = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    void enterSubAgentSession(subagentSessionId);
+  };
+
+  if (!hasAttachment && !isSubAgent) {
     return (
       <div className="cmd-prompt">
         <span className="cmd-prompt-bullet">
@@ -257,18 +306,51 @@ function PromptWithAttachment({
       </div>
     );
   }
+
+  if (isSubAgent && !hasAttachment) {
+    return (
+      <div
+        className="cmd-prompt has-attachment"
+        role="button"
+        tabIndex={0}
+        title="View sub-agent session"
+        onClick={handleSubAgentClick}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            handleSubAgentClick(e as unknown as React.MouseEvent);
+          }
+        }}
+      >
+        <span className="cmd-prompt-bullet">
+          <AnsiText text={bullet} />
+        </span>
+        <span className="cmd-prompt-body">
+          <AnsiText text={body} onPathPreview={onPathPreview} />
+          <span className="cmd-prompt-diff-toggle subagent-view-btn">
+            <Icon name="chevron" size={14} className="chevron" />
+          </span>
+        </span>
+      </div>
+    );
+  }
+
   return (
     <>
       <div
         className="cmd-prompt has-attachment"
         role="button"
         tabIndex={0}
-        title={expanded ? "Collapse output" : "Expand output"}
-        onClick={() => setExpanded((v) => !v)}
+        title={isSubAgent ? "View sub-agent session" : expanded ? "Collapse output" : "Expand output"}
+        onClick={isSubAgent ? handleSubAgentClick : () => setExpanded((v) => !v)}
         onKeyDown={(e) => {
           if (e.key === "Enter" || e.key === " ") {
             e.preventDefault();
-            setExpanded((v) => !v);
+            if (isSubAgent) {
+              handleSubAgentClick(e as unknown as React.MouseEvent);
+            } else {
+              setExpanded((v) => !v);
+            }
           }
         }}
         {...{ "aria-expanded": expanded }}
@@ -278,17 +360,22 @@ function PromptWithAttachment({
         </span>
         <span className="cmd-prompt-body">
           <AnsiText text={body} onPathPreview={onPathPreview} />
+          {isSubAgent && (
+            <span className="cmd-prompt-diff-toggle subagent-view-btn">
+              <Icon name="chevron" size={14} className="chevron" />
+            </span>
+          )}
           <span className="cmd-prompt-diff-toggle">
             <Icon name="chevron" size={14} className={`chevron ${expanded ? "open" : ""}`} />
           </span>
         </span>
       </div>
-      {expanded && hasCmd && (
+      {!isSubAgent && expanded && hasCmd && (
         <div className="cmd-output">
           <AnsiText text={cmdPayload} />
         </div>
       )}
-      {expanded && hasDiff && <DiffPreview rows={rows} lang={langFromPath(parsed?.file)} />}
+      {!isSubAgent && expanded && hasDiff && <DiffPreview rows={rows} lang={langFromPath(parsed?.file)} />}
     </>
   );
 }

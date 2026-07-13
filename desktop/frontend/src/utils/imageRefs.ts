@@ -43,7 +43,13 @@ export function appendImageRefs(
   }
   const head = tokens.join("\n");
   const trimmed = body ?? "";
-  return trimmed ? `${trimmed}\n${head}` : head;
+  if (!trimmed) {
+    return head;
+  }
+  // Avoid stacking separator newlines when the body already ends with one
+  // (e.g. after an edit round-trip), which would otherwise grow a blank line
+  // on every re-send.
+  return trimmed.endsWith("\n") ? `${trimmed}${head}` : `${trimmed}\n${head}`;
 }
 
 export type ImageRefSegment =

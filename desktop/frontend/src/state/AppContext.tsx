@@ -23,6 +23,7 @@ import type {
   SegmentKind,
   ServerEvent,
   SubAgentConfig,
+  SubAgentSession,
   SubAgentsOverview,
   Turn,
   WorkspaceChatSummary,
@@ -254,6 +255,16 @@ interface AppContextValue {
   pickFolder: () => Promise<string>;
   pickAndOpenFolder: () => Promise<void>;
   pickFiles: () => Promise<string[]>;
+  /** The currently viewed sub-agent session (null = viewing main chat). */
+  activeSubAgentSession: SubAgentSession | null;
+  /** Whether a sub-agent session is being loaded. */
+  subAgentSessionLoading: boolean;
+  /** Enter a sub-agent session view. */
+  enterSubAgentSession: (sessionId: string) => Promise<void>;
+  /** Exit the sub-agent session view and return to main chat. */
+  exitSubAgentSession: () => void;
+  /** Sub-agent session ID pending auto-expand when returning to the main chat ("" = none). */
+  pendingExpandSubAgentId: string;
 }
 
 interface HostApiBridge {
@@ -342,7 +353,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
   );
   const [connected, setConnected] = useState(false);
   const [now, setNow] = useState(() => Date.now());
-  const [confirmRequest, setConfirmRequest] = useState<ConfirmRequest | null>(null);
+  const [confirmRequestByChat, setConfirmRequestByChat] = useState<
+    Record<string, ConfirmRequest>
+  >({});
   // Keyed per chat so a clarifying prompt fired in one chat stays visible
   // there even if the user temporarily switches away; the panel for the
   // active chat is derived in the value below.
@@ -402,6 +415,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [draftWorkspaceId, setDraftWorkspaceId] = useState<string>("");
   const draftModeRef = useRef(false);
   const draftWorkspaceIdRef = useRef<string>("");
+  // Sub-agent session viewer state
+  const [activeSubAgentSession, setActiveSubAgentSession] = useState<SubAgentSession | null>(null);
+  const [subAgentSessionLoading, setSubAgentSessionLoading] = useState(false);
+  const activeSubAgentSessionRef = useRef<SubAgentSession | null>(null);
+  const [pendingExpandSubAgentId, setPendingExpandSubAgentId] = useState<string>("");
   useEffect(() => {
     draftModeRef.current = draftMode;
   }, [draftMode]);
@@ -1481,12 +1499,19 @@ export function AppProvider({ children }: { children: ReactNode }) {
       const activeWsId = String(stateRef.current?.workspace?.id || "");
       const eventWsId = String(data.workspaceId || "") || activeWsId;
       const eventKey = chatKey(eventWsId, chatId);
+      // When a workspace switch is pending, only accept events from the
+      // target workspace — old-workspace events must NOT pass, otherwise
+      // their setState() would clobber the new workspace's state before
+      // React flushes the focus override.
+      const pendingWs = pendingFocusWsIdRef.current;
       switch (event.event) {
         case "idle": {
           const next = data.state;
           const idleForFocused =
-            !eventWsId || !activeWsId || eventWsId === activeWsId ||
-            eventWsId === pendingFocusWsIdRef.current;
+            !eventWsId || !activeWsId ||
+            (pendingWs
+              ? eventWsId === pendingWs
+              : eventWsId === activeWsId);
           // Check whether this idle's chat is still running on the backend
           // BEFORE we apply setState (which can trigger side effects). When
           // the running chat is the same one that is currently streaming in
@@ -1574,8 +1599,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
           const isStreamingChat = !!streamingKeyRef.current &&
             eventKey === streamingKeyRef.current;
           const stateForFocused =
-            !eventWsId || !activeWsId || eventWsId === activeWsId ||
-            eventWsId === pendingFocusWsIdRef.current;
+            !eventWsId || !activeWsId ||
+            (pendingWs
+              ? eventWsId === pendingWs
+              : eventWsId === activeWsId);
           if (next && stateForFocused) {
             if (isStreamingChat) {
               // During streaming, only apply chat list updates (e.g. auto-
@@ -1642,7 +1669,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
           break;
         }
         case "confirm": {
-          setConfirmRequest(event.data as ConfirmRequest);
+          const req = event.data as ConfirmRequest;
+          const ownerChat = String(req.chatId || chatId || "");
+          if (!ownerChat) break;
+          const ownerKey = chatKey(eventWsId, ownerChat);
+          setConfirmRequestByChat((prev) => ({
+            ...prev,
+            [ownerKey]: { ...req, chatId: ownerChat },
+          }));
           break;
         }
         case "console_output": {
@@ -1729,6 +1763,100 @@ export function AppProvider({ children }: { children: ReactNode }) {
           }));
           break;
         }
+        case "sub_agent_start": {
+          const d = event.data as { sessionId: string; name: string; description: string; prompt: string };
+          const sessionId = String(d.sessionId || "");
+          if (!sessionId) break;
+          // If we're already viewing this session, update it
+          const current = activeSubAgentSessionRef.current;
+          if (current && current.id === sessionId) {
+            const updated: SubAgentSession = {
+              ...current,
+              name: String(d.name || current.name),
+              description: String(d.description || current.description),
+              prompt: String(d.prompt || current.prompt),
+            };
+            setActiveSubAgentSession(updated);
+            activeSubAgentSessionRef.current = updated;
+          }
+          break;
+        }
+        case "sub_agent_assistant": {
+          const d = event.data as { sessionId: string; text: string };
+          const sessionId = String(d.sessionId || "");
+          const current = activeSubAgentSessionRef.current;
+          if (current && current.id === sessionId) {
+            const updated: SubAgentSession = {
+              ...current,
+              messages: [
+                ...current.messages,
+                { role: "assistant", content: String(d.text || "") },
+              ],
+            };
+            setActiveSubAgentSession(updated);
+            activeSubAgentSessionRef.current = updated;
+          }
+          break;
+        }
+        case "sub_agent_tool_call": {
+          const d = event.data as { sessionId: string; toolName: string; args: Record<string, unknown> };
+          const sessionId = String(d.sessionId || "");
+          const current = activeSubAgentSessionRef.current;
+          if (current && current.id === sessionId) {
+            const updated: SubAgentSession = {
+              ...current,
+              messages: [
+                ...current.messages,
+                {
+                  role: "assistant",
+                  content: "",
+                  tool_calls: [{ name: String(d.toolName || ""), args: d.args || {} }],
+                },
+              ],
+            };
+            setActiveSubAgentSession(updated);
+            activeSubAgentSessionRef.current = updated;
+          }
+          break;
+        }
+        case "sub_agent_output": {
+          const d = event.data as { sessionId: string; text: string; toolName: string };
+          const sessionId = String(d.sessionId || "");
+          const current = activeSubAgentSessionRef.current;
+          if (current && current.id === sessionId) {
+            const updated: SubAgentSession = {
+              ...current,
+              messages: [
+                ...current.messages,
+                {
+                  role: "tool",
+                  name: String(d.toolName || ""),
+                  content: String(d.text || ""),
+                },
+              ],
+            };
+            setActiveSubAgentSession(updated);
+            activeSubAgentSessionRef.current = updated;
+          }
+          break;
+        }
+        case "sub_agent_end": {
+          const d = event.data as { sessionId: string; output: string; success: boolean; max_rounds_reached?: boolean };
+          const sessionId = String(d.sessionId || "");
+          const current = activeSubAgentSessionRef.current;
+          if (current && current.id === sessionId) {
+            const updated: SubAgentSession = {
+              ...current,
+              output: String(d.output || ""),
+              success: Boolean(d.success),
+              maxRoundsReached: Boolean(d.max_rounds_reached),
+              endedAt: new Date().toISOString(),
+            };
+            setActiveSubAgentSession(updated);
+            activeSubAgentSessionRef.current = updated;
+          }
+          break;
+        }
         default:
           break;
       }
@@ -1810,13 +1938,18 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const answerConfirm = useCallback(
     async (answer: string) => {
-      const current = confirmRequest;
-      setConfirmRequest(null);
+      const key = chatKey(activeWorkspaceIdRef.current, activeChatIdRef.current);
+      const current = confirmRequestByChat[key];
       if (current) {
+        setConfirmRequestByChat((prev) => {
+          const next = { ...prev };
+          delete next[key];
+          return next;
+        });
         await client.confirm(current.id, answer);
       }
     },
-    [client, confirmRequest],
+    [client, confirmRequestByChat],
   );
 
   const answerAskMoreInfo = useCallback(
@@ -2069,6 +2202,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const switchToChat = useCallback(
     async (chatId: string, workspaceId = "") => {
+      // If we're viewing a sub-agent session, return to the main chat first.
+      if (activeSubAgentSessionRef.current) {
+        setActiveSubAgentSession(null);
+        activeSubAgentSessionRef.current = null;
+      }
       const prevKey = chatKey(activeWorkspaceIdRef.current, activeChatIdRef.current);
       const targetWsId = workspaceId || activeWorkspaceIdRef.current;
       setFocusOverride(null);
@@ -2103,6 +2241,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const selectWorkspace = useCallback(
     async (workspaceId: string) => {
+      if (activeSubAgentSessionRef.current) {
+        setActiveSubAgentSession(null);
+        activeSubAgentSessionRef.current = null;
+      }
       setFocusOverride(null);
       setOptimisticChatFocus(null);
       pendingFocusWsIdRef.current = workspaceId;
@@ -2465,6 +2607,37 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
+  const enterSubAgentSession = useCallback(async (sessionId: string) => {
+    setSubAgentSessionLoading(true);
+    try {
+      const chatId = stateRef.current?.activeChatId || "";
+      const session = await client.getSubAgentSessionHistory(sessionId, chatId);
+      if (session) {
+        setActiveSubAgentSession(session);
+        activeSubAgentSessionRef.current = session;
+      }
+    } catch {
+      // Session load failure is non-fatal
+    } finally {
+      setSubAgentSessionLoading(false);
+    }
+  }, [client]);
+
+  const exitSubAgentSession = useCallback(() => {
+    const sessionId = activeSubAgentSessionRef.current?.id || "";
+    setPendingExpandSubAgentId(sessionId);
+    setActiveSubAgentSession(null);
+    activeSubAgentSessionRef.current = null;
+  }, []);
+
+  // Clear the pending auto-expand target shortly after returning to main chat,
+  // once the transcript has had a chance to read it and expand the relevant rows.
+  useEffect(() => {
+    if (!pendingExpandSubAgentId) return;
+    const timer = setTimeout(() => setPendingExpandSubAgentId(""), 1200);
+    return () => clearTimeout(timer);
+  }, [pendingExpandSubAgentId]);
+
   // Bridge native-menu actions (gui.py -> window.__codewoodMenu) to app state.
   useEffect(() => {
     const handler = (action: string, payload?: string) => {
@@ -2533,7 +2706,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     unreadChatIds,
     connected,
     now,
-    confirmRequest,
+    confirmRequest: activeKey ? (confirmRequestByChat[activeKey] ?? null) : null,
     askMoreInfo: activeKey ? (askMoreInfoByChat[activeKey] ?? null) : null,
     theme,
     lang,
@@ -2651,6 +2824,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
     pickFolder,
     pickAndOpenFolder,
     pickFiles,
+    activeSubAgentSession,
+    subAgentSessionLoading,
+    enterSubAgentSession,
+    exitSubAgentSession,
+    pendingExpandSubAgentId,
   };
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;

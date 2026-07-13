@@ -5,18 +5,203 @@ instructions (the markdown body), and a configurable tool allowlist. Its
 message history is fully isolated: it never touches ``agent.conversation_history``
 or ``agent.operation_results``. The final text answer is returned to the caller,
 which feeds it back into the main loop's context.
+
+Sub-agent sessions are persisted to disk under the chat's data directory so
+they can be reviewed later via the GUI's sub-agent session viewer.
 """
 
 from __future__ import annotations
 
 import json
+import logging
+import os
+import threading
+import time
+import uuid
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+from ..core.logging.app_logging import get_logger
+
+logger = get_logger()
 
 from ..ai.ai_orchestrator import AIOrchestrator, AgentAIContext
 from ..ai.ai_provider_clients import AICallContext, resolve_api_mode
 from ..core.config.subagents_loader import SubAgentRecord
 from ..core.localization import get_display_language, translate
+from ..core.console_utils import GUI_SUBAGENT_SESSION_BEGIN, GUI_SUBAGENT_SESSION_END
+
+
+class SubAgentSessionStore:
+    """Manages persistence of sub-agent sessions to disk.
+
+    Sessions are stored as JSON files under the chat's data directory:
+    ``chats/data/<chat-id>/subagent-sessions/<session-id>.json``
+    """
+
+    _SUBAGENT_SESSIONS_DIRNAME = "subagent-sessions"
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._cache: Dict[str, Dict[str, Any]] = {}
+
+    def _session_dir(self, agent: Any, chat_id: str) -> Optional[Path]:
+        """Resolve the subagent-sessions directory for a chat."""
+        try:
+            mgr = getattr(agent, "_chat_state_manager", None)
+            if mgr is None:
+                logger.debug("_session_dir: no _chat_state_manager")
+                return None
+            data_dir = mgr.chat_data_dir_for_chat(chat_id)
+            if data_dir is None:
+                logger.debug("_session_dir: chat_data_dir_for_chat(%r) returned None", chat_id)
+                return None
+            session_dir = data_dir / self._SUBAGENT_SESSIONS_DIRNAME
+            session_dir.mkdir(parents=True, exist_ok=True)
+            logger.debug("_session_dir: resolved %s (exists=%s)", session_dir, session_dir.exists())
+            return session_dir
+        except Exception as exc:
+            logger.debug("_session_dir: exception: %s", exc)
+            return None
+
+    def create_session(
+        self,
+        agent: Any,
+        chat_id: str,
+        name: str,
+        description: str,
+        prompt: str,
+    ) -> Dict[str, Any]:
+        """Create a new sub-agent session and persist it to disk."""
+        session_id = f"sa_{uuid.uuid4().hex[:12]}"
+        now = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+        session: Dict[str, Any] = {
+            "id": session_id,
+            "name": name,
+            "description": description,
+            "prompt": prompt,
+            "startedAt": now,
+            "endedAt": None,
+            "messages": [],
+            "output": None,
+            "success": None,
+            "max_rounds_reached": False,
+        }
+        logger.info("create_session: id=%s, chat_id=%r, name=%s", session_id, chat_id, name)
+        with self._lock:
+            self._cache[session_id] = session
+        self._persist(agent, chat_id, session)
+        return session
+
+    def append_message(
+        self,
+        agent: Any,
+        chat_id: str,
+        session_id: str,
+        message: Dict[str, Any],
+    ) -> None:
+        """Append a message to an existing session."""
+        with self._lock:
+            session = self._cache.get(session_id)
+            if session is None:
+                return
+            session["messages"].append(message)
+        self._persist(agent, chat_id, session)
+
+    def finish_session(
+        self,
+        agent: Any,
+        chat_id: str,
+        session_id: str,
+        output: str,
+        success: bool,
+        max_rounds_reached: bool = False,
+    ) -> None:
+        """Mark a session as finished and persist the final state."""
+        now = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+        with self._lock:
+            session = self._cache.get(session_id)
+            if session is None:
+                logger.warning("finish_session: session %s not in cache", session_id)
+                return
+            session["endedAt"] = now
+            session["output"] = output
+            session["success"] = success
+            session["max_rounds_reached"] = max_rounds_reached
+        logger.info("finish_session: id=%s, chat_id=%r, success=%s", session_id, chat_id, success)
+        self._persist(agent, chat_id, session)
+
+    def get_session(self, session_id: str) -> Optional[Dict[str, Any]]:
+        """Retrieve a session from the in-memory cache."""
+        with self._lock:
+            return self._cache.get(session_id)
+
+    def load_session_from_disk(self, agent: Any, chat_id: str, session_id: str) -> Optional[Dict[str, Any]]:
+        """Load a session from disk if not in cache."""
+        with self._lock:
+            if session_id in self._cache:
+                return self._cache[session_id]
+        session_dir = self._session_dir(agent, chat_id)
+        if session_dir is None:
+            return None
+        session_file = session_dir / f"{session_id}.json"
+        if not session_file.exists():
+            return None
+        try:
+            with open(session_file, "r", encoding="utf-8") as f:
+                session = json.load(f)
+            with self._lock:
+                self._cache[session_id] = session
+            return session
+        except Exception:
+            return None
+
+    def list_sessions(self, agent: Any, chat_id: str) -> List[Dict[str, Any]]:
+        """List all sessions for a chat from disk."""
+        session_dir = self._session_dir(agent, chat_id)
+        if session_dir is None:
+            return []
+        sessions = []
+        try:
+            for f in sorted(session_dir.glob("sa_*.json"), key=lambda p: p.stat().st_mtime, reverse=True):
+                try:
+                    with open(f, "r", encoding="utf-8") as fh:
+                        session = json.load(fh)
+                    sessions.append(session)
+                    with self._lock:
+                        self._cache[session["id"]] = session
+                except Exception:
+                    continue
+        except Exception:
+            pass
+        return sessions
+
+    def _persist(self, agent: Any, chat_id: str, session: Dict[str, Any]) -> None:
+        """Write a session to disk."""
+        session_dir = self._session_dir(agent, chat_id)
+        if session_dir is None:
+            logger.warning("_persist: session_dir is None for chat_id=%r, skipping disk write", chat_id)
+            return
+        session_file = session_dir / f"{session['id']}.json"
+        try:
+            tmp = session_file.with_suffix(".tmp")
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(session, f, ensure_ascii=False, indent=2)
+            os.replace(str(tmp), str(session_file))
+            logger.debug("_persist: wrote %s (%d bytes)", session_file, session_file.stat().st_size)
+        except Exception as exc:
+            logger.warning("_persist: failed to write %s: %s", session_file, exc)
+
+
+# Module-level session store singleton
+_session_store = SubAgentSessionStore()
+
+
+def get_session_store() -> SubAgentSessionStore:
+    """Return the module-level session store singleton."""
+    return _session_store
+
 
 # Default core tool set granted to a sub-agent when its frontmatter omits
 # ``tools``. ``run_subagent`` is always excluded to prevent recursion.
@@ -221,6 +406,35 @@ def _extract_tool_call_id(message: Dict[str, Any], index: int) -> str:
     return f"call_{index}"
 
 
+def _emit_subagent_event(agent: Any, event: str, data: Dict[str, Any]) -> None:
+    """Emit a sub-agent SSE event via the agent's broadcaster hook.
+
+    The serve_app sets up ``_gui_subagent_event`` as a callable that publishes
+    to the SSE broadcaster with the correct chat/workspace routing.
+    """
+    hook = getattr(agent, "_gui_subagent_event", None)
+    if callable(hook):
+        try:
+            hook(event, data)
+        except Exception:
+            pass
+
+
+def _get_active_chat_id(agent: Any) -> str:
+    """Get the current active chat ID from the agent."""
+    try:
+        state = getattr(agent, "_chat_state", None)
+        if isinstance(state, dict):
+            chat_id = str(state.get("active") or "")
+            logger.debug("_get_active_chat_id: _chat_state keys=%s, active=%s", list(state.keys()), chat_id)
+            return chat_id
+        else:
+            logger.debug("_get_active_chat_id: _chat_state is %s, not dict", type(state))
+    except Exception as exc:
+        logger.debug("_get_active_chat_id: exception: %s", exc)
+    return ""
+
+
 def run_subagent(
     agent: Any,
     subagent_name: str,
@@ -232,6 +446,9 @@ def run_subagent(
     When ``image`` is provided, it is attached to the sub-agent's own model
     calls so a multimodal sub-agent can analyze it directly (independent of the
     main agent's model).
+
+    The sub-agent session is persisted to disk and SSE events are emitted
+    for real-time viewing in the GUI.
     """
     # Recursion guard: forbid nesting.
     if int(getattr(agent, "_subagent_depth", 0) or 0) > 0:
@@ -275,6 +492,36 @@ def run_subagent(
     orchestrator = _build_orchestrator(agent, provider, model_name, model_params)
     tool_schemas = _resolve_allowed_tool_schemas(agent, record)
 
+    # Create a session for tracking and persistence
+    chat_id = _get_active_chat_id(agent)
+    store = get_session_store()
+    session = store.create_session(
+        agent=agent,
+        chat_id=chat_id,
+        name=record.name,
+        description=str(record.description or ""),
+        prompt=prompt_text,
+    )
+    session_id = session["id"]
+
+    # Emit session start event
+    _emit_subagent_event(agent, "sub_agent_start", {
+        "sessionId": session_id,
+        "name": record.name,
+        "description": str(record.description or ""),
+        "prompt": prompt_text,
+    })
+
+    # Store the initial messages (system + user)
+    store.append_message(agent, chat_id, session_id, {
+        "role": "system",
+        "content": str(record.instructions or ""),
+    })
+    store.append_message(agent, chat_id, session_id, {
+        "role": "user",
+        "content": prompt_text,
+    })
+
     messages: List[Dict[str, Any]] = [
         {"role": "system", "content": str(record.instructions or "")},
         {"role": "user", "content": prompt_text},
@@ -304,12 +551,33 @@ def run_subagent(
 
             if isinstance(message, str):
                 # Provider returned an error string (no message dict).
-                return {"success": False, "error": message, "subagent": record.name}
-            if not isinstance(message, dict):
+                store.finish_session(agent, chat_id, session_id, message, False)
+                _emit_subagent_event(agent, "sub_agent_end", {
+                    "sessionId": session_id,
+                    "output": message,
+                    "success": False,
+                })
                 return {
                     "success": False,
-                    "error": _t(agent, "subagents.error.bad_response"),
+                    "error": message,
                     "subagent": record.name,
+                    "sessionId": session_id,
+                    "_guiSessionMarker": f"{GUI_SUBAGENT_SESSION_BEGIN}{session_id}{GUI_SUBAGENT_SESSION_END}",
+                }
+            if not isinstance(message, dict):
+                error_msg = _t(agent, "subagents.error.bad_response")
+                store.finish_session(agent, chat_id, session_id, error_msg, False)
+                _emit_subagent_event(agent, "sub_agent_end", {
+                    "sessionId": session_id,
+                    "output": error_msg,
+                    "success": False,
+                })
+                return {
+                    "success": False,
+                    "error": error_msg,
+                    "subagent": record.name,
+                    "sessionId": session_id,
+                    "_guiSessionMarker": f"{GUI_SUBAGENT_SESSION_BEGIN}{session_id}{GUI_SUBAGENT_SESSION_END}",
                 }
 
             content_text = str(message.get("content") or "").strip()
@@ -319,18 +587,44 @@ def run_subagent(
             plans = _parse_tool_plans_from_model_message(message)
             if not plans:
                 # No tool calls -> final answer.
+                output = content_text or last_assistant_text
+                store.finish_session(agent, chat_id, session_id, output, True)
+                _emit_subagent_event(agent, "sub_agent_end", {
+                    "sessionId": session_id,
+                    "output": output,
+                    "success": True,
+                })
                 return {
                     "success": True,
-                    "output": content_text or last_assistant_text,
+                    "output": output,
                     "subagent": record.name,
+                    "sessionId": session_id,
+                    "_guiSessionMarker": f"{GUI_SUBAGENT_SESSION_BEGIN}{session_id}{GUI_SUBAGENT_SESSION_END}",
                 }
 
             # Record the assistant turn (with its tool_calls) so the follow-up
             # tool messages are valid in the next request.
-            messages.append(dict(message))
+            assistant_msg = dict(message)
+            messages.append(assistant_msg)
+            store.append_message(agent, chat_id, session_id, assistant_msg)
+
+            # Emit assistant content event if there's text
+            if content_text:
+                _emit_subagent_event(agent, "sub_agent_assistant", {
+                    "sessionId": session_id,
+                    "text": content_text,
+                })
 
             for idx, (tool_name, args) in enumerate(plans):
                 call_id = _extract_tool_call_id(message, idx)
+
+                # Emit tool call event
+                _emit_subagent_event(agent, "sub_agent_tool_call", {
+                    "sessionId": session_id,
+                    "toolName": str(tool_name),
+                    "args": args if isinstance(args, dict) else {},
+                })
+
                 if str(tool_name).strip().lower() in _EXCLUDED_SUBAGENT_TOOLS:
                     tool_result: Dict[str, Any] = {
                         "success": False,
@@ -345,21 +639,39 @@ def run_subagent(
                     result_text = json.dumps(tool_result, ensure_ascii=False)
                 except Exception:
                     result_text = str(tool_result)
-                messages.append(
-                    {
-                        "role": "tool",
-                        "tool_call_id": call_id,
-                        "name": str(tool_name),
-                        "content": result_text,
-                    }
-                )
+
+                tool_msg = {
+                    "role": "tool",
+                    "tool_call_id": call_id,
+                    "name": str(tool_name),
+                    "content": result_text,
+                }
+                messages.append(tool_msg)
+                store.append_message(agent, chat_id, session_id, tool_msg)
+
+                # Emit tool output event
+                _emit_subagent_event(agent, "sub_agent_output", {
+                    "sessionId": session_id,
+                    "text": result_text[:5000],  # Truncate very long outputs for SSE
+                    "toolName": str(tool_name),
+                })
 
         # max_rounds exhausted: return the last text we have.
+        output = last_assistant_text or _t(agent, "subagents.error.max_rounds", rounds=max_rounds)
+        store.finish_session(agent, chat_id, session_id, output, True, max_rounds_reached=True)
+        _emit_subagent_event(agent, "sub_agent_end", {
+            "sessionId": session_id,
+            "output": output,
+            "success": True,
+            "max_rounds_reached": True,
+        })
         return {
             "success": True,
-            "output": last_assistant_text or _t(agent, "subagents.error.max_rounds", rounds=max_rounds),
+            "output": output,
             "subagent": record.name,
             "max_rounds_reached": True,
+            "sessionId": session_id,
+            "_guiSessionMarker": f"{GUI_SUBAGENT_SESSION_BEGIN}{session_id}{GUI_SUBAGENT_SESSION_END}",
         }
     finally:
         agent._subagent_depth = max(0, int(getattr(agent, "_subagent_depth", 1) or 1) - 1)
