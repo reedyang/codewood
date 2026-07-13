@@ -33,6 +33,8 @@ export function ChatTitleBar() {
     showConsole,
     hideConsole,
     client,
+    activeSubAgentSession,
+    exitSubAgentSession,
   } = useApp();
   const [menu, setMenu] = useState<MenuState | null>(null);
   const [renaming, setRenaming] = useState(false);
@@ -104,6 +106,28 @@ export function ChatTitleBar() {
           }}
           onBlur={() => void commitRename()}
         />
+      ) : activeSubAgentSession ? (
+        <div className="chat-titlebar-breadcrumb">
+          <span
+            className="chat-titlebar-name chat-titlebar-breadcrumb-link"
+            role="button"
+            tabIndex={0}
+            title={`Back to ${activeChat.name}`}
+            onClick={() => exitSubAgentSession()}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                exitSubAgentSession();
+              }
+            }}
+          >
+            {activeChat.name}
+          </span>
+          <span className="chat-titlebar-breadcrumb-sep">&gt;</span>
+          <span className="chat-titlebar-name chat-titlebar-breadcrumb-current" title={activeSubAgentSession.name}>
+            {activeSubAgentSession.name}
+          </span>
+        </div>
       ) : (
         <span className="chat-titlebar-name" title={activeChat.name}>
           {activeChat.name}

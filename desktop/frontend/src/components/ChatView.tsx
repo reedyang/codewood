@@ -12,7 +12,7 @@ import { ConsolePanel } from "./ConsolePanel";
 import type { HistoryRound, HistoryTurn, Turn, TurnRound } from "../api/types";
 import { Icon, type IconName } from "./Icon";
 import { MarkdownText } from "./Markdown";
-import { StepsView, countToolCalls, getLastToolPromptBody } from "./Steps";
+import { StepsView, countToolCalls, getLastToolPromptBody, textContainsSubAgentSession } from "./Steps";
 import { ChatTitleBar } from "./ChatTitleBar";
 import { AskMoreInfoPanel } from "./AskMoreInfoPanel";
 import { ConfirmDialog } from "./ConfirmDialog";
@@ -472,6 +472,129 @@ function useOutsideClose(open: boolean, onClose: () => void) {
   return ref;
 }
 
+/** A read-only view of a sub-agent session's conversation history,
+ *  styled to match the main chat transcript. */
+function SubAgentSessionView({ session }: { session: import("../api/types").SubAgentSession }) {
+  const { t } = useApp();
+  const scrollRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (scrollRef.current) {
+      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+    }
+  }, [session.messages.length, session.output]);
+
+  return (
+    <div className="transcript" ref={scrollRef}>
+      {/* Assistant messages + tool calls */}
+      {session.messages.map((msg, index) => {
+        if (msg.role === "system") return null;
+
+        if (msg.role === "user") {
+          return (
+            <div key={index} className="turn">
+              <div className="user-message">
+                <div className="entry-input">
+                  <span className="entry-label">{t("chat.you")}</span>
+                  <div className="entry-text">{msg.content}</div>
+                </div>
+                {index === 1 && session.startedAt && (
+                  <div className="entry-actions" style={{ visibility: "visible" }}>
+                    <span className="entry-time">
+                      {new Date(session.startedAt).toLocaleTimeString()}
+                    </span>
+                  </div>
+                )}
+              </div>
+            </div>
+          );
+        }
+
+        if (msg.role === "assistant") {
+          return (
+            <div key={index} className="turn">
+              {msg.content && (
+                <div className="answer">
+                  <MarkdownText text={msg.content} />
+                </div>
+              )}
+              {msg.tool_calls && msg.tool_calls.map((tc, tcIdx) => (
+                <div key={tcIdx} className="turn-round">
+                  <div className="activity">
+                    <div className="activity-header">
+                      <Icon name="chevron" size={14} className="chevron open" />
+                      <span className="activity-text">
+                        {tc.name}({Object.entries(tc.args).map(([k, v]) => `${k}=${typeof v === "string" ? v.slice(0, 50) : "..."}`).join(", ")})
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          );
+        }
+
+        if (msg.role === "tool") {
+          return (
+            <div key={index} className="turn">
+              <div className="turn-round">
+                <div className="activity">
+                  <div className="activity-header">
+                    <Icon name="chevron" size={14} className="chevron open" />
+                    <span className="activity-text">
+                      {msg.name || "tool"}
+                    </span>
+                  </div>
+                </div>
+                <div className="activity-steps">
+                  <StepsView text={msg.content} />
+                </div>
+              </div>
+            </div>
+          );
+        }
+
+        return null;
+      })}
+
+      {/* Final output — shown always (live and after session ends) */}
+      {session.output && (
+        <div className="turn">
+          <div className="answer">
+            <MarkdownText text={session.output} />
+          </div>
+        </div>
+      )}
+
+      {/* Session footer: duration + status */}
+      {session.endedAt && session.startedAt && (
+        <div className="turn" style={{ opacity: 0.5, fontSize: 12, textAlign: "center" }}>
+          {formatDuration(new Date(session.endedAt).getTime() - new Date(session.startedAt).getTime())}
+          {session.success !== null && (
+            <span style={{ marginLeft: 8 }}>
+              {session.success ? "✓" : "✗"}
+            </span>
+          )}
+        </div>
+      )}
+
+      {session.maxRoundsReached && (
+        <div className="turn" style={{ color: "var(--warning)", fontSize: 13, textAlign: "center" }}>
+          {t("subagents.error.max_rounds") || "Maximum rounds reached"}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function formatDuration(ms: number): string {
+  const seconds = Math.floor(ms / 1000);
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  const remainingSeconds = seconds % 60;
+  return `${minutes}m ${remainingSeconds}s`;
+}
+
 export function ChatView() {
   const {
     state,
@@ -502,6 +625,8 @@ export function ChatView() {
     askMoreInfo,
     answerAskMoreInfo,
     consoleOpen,
+    activeSubAgentSession,
+    subAgentSessionLoading,
     t,
   } = useApp();
   // Drafts (in-progress composer segments) are kept per chat so switching
@@ -628,7 +753,8 @@ export function ChatView() {
       const rest = parts
         .filter((p): p is { kind: "text"; text: string } => p.kind === "text")
         .map((p) => p.text)
-        .join("");
+        .join("")
+        .replace(/\s+$/, "");
       // Restore the original segment list (sans image refs) so the composer
       // re-renders the same attachment chips and prose that the user sent.
       setSegments(parseMessageToSegments(rest));
@@ -1004,9 +1130,16 @@ export function ChatView() {
 
   return (
     <div className="chat-view">
-      {showEmpty ? emptyContent : (
+      <ChatTitleBar />
+      {activeSubAgentSession ? (
+        <SubAgentSessionView session={activeSubAgentSession} />
+      ) : subAgentSessionLoading ? (
+        <div className="subagent-session-loading">
+          <div className="subagent-session-loading-spinner" />
+          <span>Loading sub-agent session...</span>
+        </div>
+      ) : showEmpty ? emptyContent : (
         <>
-          <ChatTitleBar />
           <div className="transcript" ref={scrollRef} onScroll={onScroll}>
             {historyStart > 0 && (
               <div className="history-more">
@@ -1219,8 +1352,11 @@ export function RoundShell({
   const { t } = useApp();
   const hasDetails = Boolean(detailsNode);
   const [expanded, setExpanded] = useState(autoExpand && hasDetails);
+  // Expand (but never auto-collapse) when autoExpand is requested.
   useEffect(() => {
-    setExpanded(autoExpand && hasDetails);
+    if (autoExpand && hasDetails) {
+      setExpanded(true);
+    }
   }, [autoExpand, hasDetails]);
 
   const timer = showTimer ? (
@@ -1268,11 +1404,13 @@ export function HistoryRoundDetailView({
   round: HistoryRound;
   showText?: boolean;
 }) {
-  const { t } = useApp();
+  const { t, pendingExpandSubAgentId } = useApp();
   const thinkingText = String(round.thinking || "");
   const toolText = String(round.tools || "");
   const toolCount = countToolCalls(toolText);
   const hasToolShell = toolText.trim().length > 0;
+  const autoExpandThisRound =
+    hasToolShell && textContainsSubAgentSession(toolText, pendingExpandSubAgentId);
   const thinkingNode = thinkingText.trim().length > 0 ? (
     <ThinkingPanel
       thinkingText={thinkingText}
@@ -1293,10 +1431,9 @@ export function HistoryRoundDetailView({
         {thinkingNode}
         <RoundShell
           timerText={t("activity.toolCalls").replace("{count}", String(toolCount))}
-          expandedTimerText={`${t("activity.working")} (${formatElapsed(round.waitSeconds * 1000)})`}
           running={false}
           showTimer={true}
-          autoExpand={false}
+          autoExpand={autoExpandThisRound}
           detailsNode={<StepsView text={toolText} />}
           textNode={visibleTextNode}
         />
@@ -1343,8 +1480,10 @@ function CompletedTurnView({
   negIndex: number;
   handlers: MessageHandlers;
 }) {
-  const { t } = useApp();
+  const { t, pendingExpandSubAgentId } = useApp();
   const { detailRounds, finalAnswerText, workedForSeconds } = splitCompletedTurn(turn);
+  const turnHasTarget = pendingExpandSubAgentId !== "" &&
+    detailRounds.some((r) => textContainsSubAgentSession(String(r.tools || ""), pendingExpandSubAgentId));
   const detailNodes: ReactNode[] = [];
   detailRounds.forEach((round, index) => {
     if (round.selection && round.selection.trim().length > 0) {
@@ -1384,9 +1523,10 @@ function CompletedTurnView({
             handlers={handlers}
           />
         )}
-      </div>
-    );
-  }
+    </div>
+  );
+}
+
   return (
     <div className="turn">
       {turn.userText && (
@@ -1403,7 +1543,7 @@ function CompletedTurnView({
             timerText={timerText}
             running={false}
             showTimer={true}
-            autoExpand={false}
+            autoExpand={turnHasTarget}
             detailsBeforeText={true}
             detailsNode={<div className="worked-for-body">{detailNodes}</div>}
             textNode={null}
@@ -1574,7 +1714,7 @@ function LiveToolGroupView({
   waitingForContinuation: boolean;
   continuationElapsedMs: number;
 }) {
-  const { t } = useApp();
+  const { t, pendingExpandSubAgentId } = useApp();
   const thinkingNodes = rounds.flatMap((round, index) => {
     const thinkingText = String(round.thinkingText || "");
     if (!thinkingText.trim()) {
@@ -1614,6 +1754,7 @@ function LiveToolGroupView({
     0,
   );
   const completedText = t("activity.toolCalls").replace("{count}", String(toolCount));
+  const autoExpandThisGroup = textContainsSubAgentSession(toolText, pendingExpandSubAgentId);
   const waitingText = `${t("activity.working")} (${formatElapsed(
     waitingForContinuation ? continuationElapsedMs : elapsedMs,
   )})`;
@@ -1631,10 +1772,9 @@ function LiveToolGroupView({
       {thinkingNodes}
       <RoundShell
         timerText={timerText}
-        expandedTimerText={waitingText}
         running={running}
         showTimer={true}
-        autoExpand={false}
+        autoExpand={autoExpandThisGroup}
         detailsNode={<StepsView text={toolText} />}
         textNode={null}
       />

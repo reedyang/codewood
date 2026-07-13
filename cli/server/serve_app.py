@@ -1512,6 +1512,7 @@ class ServeApp:
                 "id": cid,
                 "prompt": strip_ansi(str(prompt or "")),
                 "chatId": self._active_chat_id(),
+                "workspaceId": self._active_chat_workspace_id(),
             },
         )
         try:
@@ -1574,6 +1575,7 @@ class ServeApp:
                 "offerAlways": bool(offer_always),
                 "diffRows": diff_rows,
                 "chatId": self._active_chat_id(),
+                "workspaceId": self._active_chat_workspace_id(),
             },
         )
         try:
@@ -1658,6 +1660,7 @@ class ServeApp:
                 "options": safe_options,
                 "multiSelect": bool(multi_select),
                 "chatId": self._active_chat_id(),
+                "workspaceId": self._active_chat_workspace_id(),
             },
         )
         try:
@@ -4817,6 +4820,11 @@ class ServeApp:
         self.agent._gui_context_usage_changed = lambda: self.broadcaster.publish(  # type: ignore[attr-defined]
             "state", self._route(state=_build_state(self.agent))
         )
+        # Hook for sub-agent session events: lets the sub-agent executor emit
+        # SSE events for real-time viewing in the GUI.
+        self.agent._gui_subagent_event = lambda event_name, data: self.broadcaster.publish(  # type: ignore[attr-defined]
+            event_name, self._route(**data)
+        )
         # The GUI renders its own layout, so disable terminal hard-wrapping and
         # force SGR color emission (stdout is not a TTY here). The bridge keeps
         # the SGR runs so the GUI can color step output like the terminal.
@@ -5451,6 +5459,28 @@ def _make_handler(app: ServeApp):
                 enabled = bool(body.get("enabled", True))
                 result = app.set_subagent_enabled(nm, enabled)
                 self._send_json(200 if result.get("ok") else 400, result)
+                return
+            if path == "/subagent-session-history":
+                import logging as _sa_logging
+                _sa_log = _sa_logging.getLogger("codewood.server")
+                session_id = str(body.get("sessionId") or "")[:128]
+                chat_id = str(body.get("chatId") or "")[:128]
+                _sa_log.info("subagent-session-history: session_id=%s, chat_id=%s", session_id, chat_id)
+                if not session_id:
+                    self._send_json(400, {"ok": False, "error": "sessionId required"})
+                    return
+                from ..subagents.executor import get_session_store
+                store = get_session_store()
+                session = store.get_session(session_id)
+                _sa_log.info("subagent-session-history: cache hit=%s", session is not None)
+                if session is None and chat_id:
+                    session = store.load_session_from_disk(app.agent, chat_id, session_id)
+                    _sa_log.info("subagent-session-history: disk load=%s", session is not None)
+                if session is None:
+                    _sa_log.warning("subagent-session-history: session %s not found (chat_id=%s)", session_id, chat_id)
+                    self._send_json(404, {"ok": False, "error": "session not found"})
+                    return
+                self._send_json(200, {"ok": True, "session": session})
                 return
             if path == "/fetch-models":
                 result = app.fetch_provider_models(body if isinstance(body, dict) else {})

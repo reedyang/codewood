@@ -73,3 +73,19 @@ describe("hasImageRef / stripImageRefs", () => {
     expect(stripImageRefs(`hi\n${tok("/a.png")}`)).toBe("hi");
   });
 });
+
+describe("edit round-trip (parse -> trim -> append)", () => {
+  it("does not accumulate a trailing blank line on re-send", () => {
+    const firstSend = appendImageRefs("hello", ["/a.png"]);
+    expect(firstSend).toBe(`hello\n${tok("/a.png")}`);
+    // Simulate the edit flow: pull inline image refs out, keep prose.
+    const parts = parseImageRefs(firstSend);
+    const rest = parts
+      .filter((p): p is { kind: "text"; text: string } => p.kind === "text")
+      .map((p) => p.text)
+      .join("")
+      .replace(/\s+$/, "");
+    const secondSend = appendImageRefs(rest, ["/a.png"]);
+    expect(secondSend).toBe(firstSend);
+  });
+});
