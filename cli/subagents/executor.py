@@ -214,6 +214,20 @@ class SubAgentSessionStore:
             pass
         return sessions
 
+    def delete_session(self, agent: Any, chat_id: str, session_id: str) -> None:
+        """Delete a sub-agent session file and remove it from the in-memory cache."""
+        session_dir = self._session_dir(agent, chat_id)
+        if session_dir is None:
+            return
+        session_file = session_dir / f"{session_id}.json"
+        try:
+            if session_file.exists():
+                session_file.unlink()
+        except Exception:
+            pass
+        with self._lock:
+            self._cache.pop(session_id, None)
+
     def _persist(self, agent: Any, chat_id: str, session: Dict[str, Any]) -> None:
         """Write a session to disk."""
         session_dir = self._session_dir(agent, chat_id)

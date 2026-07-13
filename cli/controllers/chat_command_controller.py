@@ -400,6 +400,13 @@ def handle_chat_edit_command(agent: Any, raw_index: str) -> None:
                 pruner()
         except Exception:
             pass
+        # Drop sub-agent session files orphaned by the truncation.
+        try:
+            pruner = getattr(agent, "_prune_subagent_session_files", None)
+            if callable(pruner):
+                pruner()
+        except Exception:
+            pass
 
     current_chat_id = str(getattr(agent, "active_chat_id", "") or "").strip()
     if current_chat_id:

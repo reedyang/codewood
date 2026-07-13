@@ -6975,6 +6975,52 @@ class Agent:
         except Exception:
             pass
 
+    def _prune_subagent_session_files(self) -> None:
+        """Delete orphaned sub-agent session JSON files whose tool result no
+        longer exists in the active chat history. Called after editing a message
+        truncates the conversation so orphaned session files don't linger."""
+        try:
+            mgr = getattr(self, "_chat_state_manager", None)
+            if mgr is None:
+                return
+            chat_id = str(getattr(self, "active_chat_id", "") or "")
+            if not chat_id:
+                return
+            data_dir = mgr.chat_data_dir_for_chat(chat_id)
+            if data_dir is None or not data_dir.exists():
+                return
+            session_dir = data_dir / "subagent-sessions"
+            if not session_dir.exists():
+                return
+            live_ids: set[str] = set()
+            for msg in self.conversation_history:
+                if not isinstance(msg, dict):
+                    continue
+                content = str(msg.get("content") or "")
+                if "[MODEL_TOOL_RESULT]" not in content:
+                    continue
+                try:
+                    payload = json.loads(content.split("[MODEL_TOOL_RESULT]", 1)[1])
+                except Exception:
+                    continue
+                if not isinstance(payload, dict):
+                    continue
+                marker = str(payload.get("guiSessionMarker") or "")
+                if marker:
+                    sid = marker.replace("\ue008", "").replace("\ue009", "").strip()
+                    if sid:
+                        live_ids.add(sid)
+            from cli.subagents.executor import get_session_store
+            store = get_session_store()
+            for child in list(session_dir.iterdir()):
+                if not child.is_file() or not child.name.endswith(".json"):
+                    continue
+                session_id = child.stem
+                if session_id not in live_ids:
+                    store.delete_session(self, chat_id, session_id)
+        except Exception:
+            pass
+
     def _persist_apply_patch_preview_sidecar(
         self, args: Dict[str, Any], result: Dict[str, Any], created_at: str
     ) -> None:
