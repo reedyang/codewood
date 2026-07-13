@@ -480,3 +480,60 @@ def set_subagent_enabled(config_dir: Path, name: str, enabled: bool) -> Dict[str
         max_rounds=target.max_rounds,
         enabled=bool(enabled),
     )
+
+
+def build_builtin_explore_subagent(
+    variables: Optional[Dict[str, str]] = None,
+) -> Optional[SubAgentRecord]:
+    """Build a ``SubAgentRecord`` for the built-in ``explore`` sub-agent.
+
+    Reads ``cli/subagents/explore.md``, resolves ``[[if …]]``
+    directives with *variables*, and returns a record that is **always
+    enabled** and **never shown in the config UI**.  Call this from
+    :func:`bootstrap.setup_subagents` so the main model can delegate
+    codebase-exploration tasks to the ``run_subagent`` tool.
+    """
+    bundled_root = (
+        Path(sys._MEIPASS) / "subagents"
+        if getattr(sys, "frozen", False)
+        else Path(__file__).resolve().parent.parent.parent / "subagents"
+    )
+    explore_path = bundled_root / "explore.md"
+    if not explore_path.is_file():
+        return None
+    try:
+        raw = explore_path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    meta, body = _split_frontmatter(raw)
+    if meta is None:
+        return None
+    description = str(meta.get("description") or "").strip()
+    tools = _coerce_tools_list(meta.get("tools"))
+    tools_specified = "tools" in meta
+    max_rounds = _coerce_max_rounds(meta.get("max_rounds"))
+    instructions = body.strip()
+    if not description or not instructions:
+        return None
+
+    # Resolve conditional directives in the prompt body.
+    from ...runtime.prompt_preprocessor import preprocess_prompt
+
+    resolved_vars: Dict[str, str] = dict(variables or {})
+    instructions = preprocess_prompt(instructions, resolved_vars)
+
+    # Conditionally exclude memory_search when memory is disabled.
+    if resolved_vars.get("memory_enabled") != "true":
+        tools = [t for t in tools if t != "memory_search"]
+        tools_specified = bool(tools)
+
+    return SubAgentRecord(
+        name="explore",
+        description=description,
+        instructions=instructions,
+        tools=tools,
+        tools_specified=tools_specified,
+        max_rounds=max_rounds,
+        source_path=str(explore_path.resolve()),
+        enabled=True,
+    )

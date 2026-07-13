@@ -9,7 +9,7 @@ import {
 } from "react";
 import { useApp } from "../state/AppContext";
 import { ConsolePanel } from "./ConsolePanel";
-import type { HistoryRound, HistoryTurn, Turn, TurnRound } from "../api/types";
+import type { HistoryRound, HistoryTurn, SubAgentMessage, Turn, TurnRound } from "../api/types";
 import { Icon, type IconName } from "./Icon";
 import { MarkdownText } from "./Markdown";
 import { StepsView, countToolCalls, getLastToolPromptBody, textContainsSubAgentSession } from "./Steps";
@@ -473,7 +473,15 @@ function useOutsideClose(open: boolean, onClose: () => void) {
 }
 
 /** A read-only view of a sub-agent session's conversation history,
- *  styled to match the main chat transcript. */
+ *  styled to match the main chat transcript.
+ *
+ *  Tool display is driven entirely by ``tool_rounds`` — backend-rendered text
+ *  already wrapped in the main chat's ``StepsView`` / ``PromptWithAttachment``
+ *  sentinels with ANSI-colored bullets and full paths.  Raw ``role: "tool"``
+ *  and ``[MODEL_TOOL_RESULT]`` messages are skipped in the transcript; they
+ *  exist solely as a faithful archive of the sub-agent's real interaction
+ *  protocol and token statistics.
+ */
 function SubAgentSessionView({ session }: { session: import("../api/types").SubAgentSession }) {
   const { t } = useApp();
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -484,10 +492,62 @@ function SubAgentSessionView({ session }: { session: import("../api/types").SubA
     }
   }, [session.messages.length, session.output]);
 
+  const toolTitleFor = (count: number) =>
+    t("activity.toolCalls").replace("{count}", String(count));
+
+  // Compute total tokens from stored statistics (mirrors the main chat).
+  const { totalOutputTokens, totalEstTokens, cacheTokens } = (() => {
+    let out = 0;
+    let est = 0;
+    let cache = 0;
+    for (const msg of session.messages) {
+      const raw = msg as unknown as Record<string, unknown>;
+      out += Number(raw._output_tokens) || 0;
+      est += Number(raw._token_count) || 0;
+      const cs = raw._cache_stats as Record<string, number> | undefined;
+      if (cs) {
+        cache += (cs.prompt_cache_hit_tokens || 0) + (cs.prompt_cache_miss_tokens || 0) + (cs.input_tokens || 0);
+      }
+    }
+    return { totalOutputTokens: out, totalEstTokens: est, cacheTokens: cache };
+  })();
+  const formatTok = (n: number) => (n >= 1000 ? `${(n / 1000).toFixed(1)}K` : String(n));
+
+  // Merge consecutive tool-only assistant messages into single "Called N tools" groups
+  const mergedMessages = (() => {
+    const result: SubAgentMessage[] = [];
+    let i = 0;
+    while (i < session.messages.length) {
+      const msg = session.messages[i];
+      // Pass through non-assistant or assistant-with-content messages as-is
+      if (msg.role !== "assistant" || msg.content || !msg.tool_rounds?.length) {
+        result.push(msg);
+        i++;
+        continue;
+      }
+      // Start a merge group: collect tool_rounds from consecutive tool-only assistants
+      const allRounds = [...msg.tool_rounds];
+      let j = i + 1;
+      while (j < session.messages.length) {
+        const next = session.messages[j];
+        if (next.role === "assistant" && !next.content && next.tool_rounds?.length) {
+          allRounds.push(...next.tool_rounds);
+          j++;
+        } else if (next.role === "tool") {
+          j++; // skip tool results between assistant calls
+        } else {
+          break;
+        }
+      }
+      result.push({ role: "assistant", content: "", tool_rounds: allRounds });
+      i = j;
+    }
+    return result;
+  })();
+
   return (
     <div className="transcript" ref={scrollRef}>
-      {/* Assistant messages + tool calls */}
-      {session.messages.map((msg, index) => {
+      {mergedMessages.map((msg, index) => {
         if (msg.role === "system") return null;
 
         if (msg.role === "user") {
@@ -511,45 +571,27 @@ function SubAgentSessionView({ session }: { session: import("../api/types").SubA
         }
 
         if (msg.role === "assistant") {
-          return (
-            <div key={index} className="turn">
-              {msg.content && (
-                <div className="answer">
-                  <MarkdownText text={msg.content} />
-                </div>
-              )}
-              {msg.tool_calls && msg.tool_calls.map((tc, tcIdx) => (
-                <div key={tcIdx} className="turn-round">
-                  <div className="activity">
-                    <div className="activity-header">
-                      <Icon name="chevron" size={14} className="chevron open" />
-                      <span className="activity-text">
-                        {tc.name}({Object.entries(tc.args).map(([k, v]) => `${k}=${typeof v === "string" ? v.slice(0, 50) : "..."}`).join(", ")})
-                      </span>
-                    </div>
-                  </div>
-                </div>
-              ))}
+          const answer = msg.content ? (
+            <div className="answer">
+              <MarkdownText text={msg.content} />
             </div>
-          );
-        }
+          ) : null;
+          const toolRounds = msg.tool_rounds;
+          if (!answer && !toolRounds?.length) return null;
 
-        if (msg.role === "tool") {
           return (
             <div key={index} className="turn">
-              <div className="turn-round">
-                <div className="activity">
-                  <div className="activity-header">
-                    <Icon name="chevron" size={14} className="chevron open" />
-                    <span className="activity-text">
-                      {msg.name || "tool"}
-                    </span>
-                  </div>
-                </div>
-                <div className="activity-steps">
-                  <StepsView text={msg.content} />
-                </div>
-              </div>
+              {answer}
+              {toolRounds && toolRounds.length > 0 && (
+                <RoundShell
+                  timerText={toolTitleFor(toolRounds.length)}
+                  running={false}
+                  showTimer={true}
+                  autoExpand={index === 0}
+                  detailsNode={<StepsView text={toolRounds.join("\n\n")} />}
+                  textNode={null}
+                />
+              )}
             </div>
           );
         }
@@ -566,13 +608,21 @@ function SubAgentSessionView({ session }: { session: import("../api/types").SubA
         </div>
       )}
 
-      {/* Session footer: duration + status */}
+      {/* Session footer: duration + token stats */}
       {session.endedAt && session.startedAt && (
         <div className="turn" style={{ opacity: 0.5, fontSize: 12, textAlign: "center" }}>
           {formatDuration(new Date(session.endedAt).getTime() - new Date(session.startedAt).getTime())}
           {session.success !== null && (
             <span style={{ marginLeft: 8 }}>
               {session.success ? "✓" : "✗"}
+            </span>
+          )}
+          {(totalOutputTokens > 0 || totalEstTokens > 0) && (
+            <span style={{ marginLeft: 8 }}>
+              {"· "}
+              {totalOutputTokens > 0 ? `${formatTok(totalOutputTokens)} tokens` : ""}
+              {totalEstTokens > 0 && totalOutputTokens === 0 ? `${formatTok(totalEstTokens)} tokens` : ""}
+              {cacheTokens > 0 ? ` · ${formatTok(cacheTokens)} prompt` : ""}
             </span>
           )}
         </div>

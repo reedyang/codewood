@@ -2671,16 +2671,23 @@ class Agent:
             return (label, detail)
         if name == "read":
             p = str(a.get("path") or "").strip()
-            off = int(a.get("offset", 0) or 0)
-            lim = int(a.get("limit", 2000) or 2000)
             try:
                 rel = Path(p).relative_to(self.workspace_root)
             except Exception:
                 rel = p
             label = translate("tool.label.read", self._ui_language())
             _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp", ".tiff", ".tif", ".svg", ".ico"}
-            is_image = Path(p).suffix.lower() in _IMAGE_EXTS
-            detail = f"{rel}" if is_image else f"{rel} [offset={off}, limit={lim}]"
+            if Path(p).suffix.lower() in _IMAGE_EXTS:
+                detail = f"{rel}"
+            else:
+                off = a.get("offset")
+                lim = a.get("limit")
+                suffix_parts = []
+                if off is not None:
+                    suffix_parts.append(f"offset={off}")
+                if lim is not None:
+                    suffix_parts.append(f"limit={lim}")
+                detail = f"{rel}" + (f" [{', '.join(suffix_parts)}]" if suffix_parts else "")
             return (label, detail)
         if name == "project_context_search":
             q = str(a.get("query") or "").strip()

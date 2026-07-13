@@ -357,7 +357,7 @@ class AiOutputDisplayTests(unittest.TestCase):
         ):
             line = self.agent._format_tool_call_feedback_line("read", {"path": "a.txt"}, failed=False)
         self.assertTrue(line.startswith("<RGB:19,161,14>•</RGB> Read "))
-        self.assertIn("<H>a.txt [offset=0, limit=2000]</H>", line)
+        self.assertIn("<H>a.txt</H>", line)
 
     def test_format_tool_call_feedback_line_shell_uses_language_specific_prefix(self):
         # Shell keeps the localized "Ran <command>" phrasing.
@@ -425,7 +425,7 @@ class AiOutputDisplayTests(unittest.TestCase):
         ):
             line = self.agent._format_tool_call_feedback_line("read", {"path": "a.txt"}, failed=True)
         self.assertTrue(line.startswith("<RGB:197,15,31>•</RGB> Read "))
-        self.assertIn("<H>a.txt [offset=0, limit=2000]</H>", line)
+        self.assertIn("<H>a.txt</H>", line)
 
     def test_format_direct_shell_command_feedback_line_uses_shared_highlighter(self):
         with patch("cli.agent._ansi_rgb", side_effect=lambda text, r, g, b: f"<RGB:{r},{g},{b}>{text}</RGB>"), patch(

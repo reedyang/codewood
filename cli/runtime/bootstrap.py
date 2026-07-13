@@ -387,6 +387,22 @@ def setup_subagents(agent: Any) -> None:
     # Only enabled sub-agents are offered to the model; disabled ones remain
     # editable through the config UI but are filtered out of the runtime set.
     agent.subagents = [r for r in merged if getattr(r, "enabled", True)]
+
+    # Inject the built-in "explore" sub-agent that is always available but
+    # never shown in the config UI.  A user-defined sub-agent with the same
+    # name takes precedence.
+    from ..core.config.subagents_loader import build_builtin_explore_subagent
+
+    existing_names = {str(getattr(r, "name", "")).strip().lower() for r in agent.subagents}
+    if "explore" not in existing_names:
+        builtin = build_builtin_explore_subagent(
+            variables={
+                "memory_enabled": "true" if agent.memory_enabled else "false",
+            }
+        )
+        if builtin is not None:
+            agent.subagents.append(builtin)
+
     agent._subagents_dirs_fingerprint = calc_subagents_dirs_fingerprint(
         agent.config_dir,
         agent.workspace_config_dir,

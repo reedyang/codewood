@@ -30,7 +30,12 @@ from ..ai.ai_orchestrator import AIOrchestrator, AgentAIContext
 from ..ai.ai_provider_clients import AICallContext, resolve_api_mode
 from ..core.config.subagents_loader import SubAgentRecord
 from ..core.localization import get_display_language, translate
-from ..core.console_utils import GUI_SUBAGENT_SESSION_BEGIN, GUI_SUBAGENT_SESSION_END
+from ..core.console_utils import (
+    GUI_CMD_OUTPUT_BEGIN,
+    GUI_CMD_OUTPUT_END,
+    GUI_SUBAGENT_SESSION_BEGIN,
+    GUI_SUBAGENT_SESSION_END,
+)
 
 
 class SubAgentSessionStore:
@@ -87,6 +92,9 @@ class SubAgentSessionStore:
             "output": None,
             "success": None,
             "max_rounds_reached": False,
+            # Internal bookkeeping so later mutations (e.g. attaching
+            # tool_rounds) can re-persist without re-passing chat_id.
+            "_chat_id": chat_id,
         }
         logger.info("create_session: id=%s, chat_id=%r, name=%s", session_id, chat_id, name)
         with self._lock:
@@ -108,6 +116,35 @@ class SubAgentSessionStore:
                 return
             session["messages"].append(message)
         self._persist(agent, chat_id, session)
+
+    def set_assistant_tool_rounds(
+        self,
+        session_id: str,
+        tool_rounds: List[str],
+    ) -> None:
+        """Attach the rendered ``tool_rounds`` display text to the most recent
+        assistant message in an existing session.
+
+        Sub-agent tool calls are rendered into the same display envelope the
+        main chat uses (a "• Ran <tool> <args>" prompt + output, wrapped in the
+        GUI sentinels) and stored as a single list on the assistant message,
+        rather than as separate raw tool messages. This lets the GUI session
+        viewer render them through the identical ``StepsView`` path.
+        """
+        if not tool_rounds:
+            return
+        with self._lock:
+            session = self._cache.get(session_id)
+            if session is None:
+                return
+            # The last appended message is the assistant turn we just stored.
+            for msg in reversed(session["messages"]):
+                if msg.get("role") == "assistant":
+                    msg["tool_rounds"] = list(tool_rounds)
+                    break
+            chat_id = session.get("_chat_id")
+        if chat_id is not None:
+            self._persist(None, chat_id, session)
 
     def finish_session(
         self,
@@ -186,8 +223,11 @@ class SubAgentSessionStore:
         session_file = session_dir / f"{session['id']}.json"
         try:
             tmp = session_file.with_suffix(".tmp")
+            # Strip internal bookkeeping keys (session-level only) before
+            # writing so the persisted JSON exposes only the public schema.
+            clean = {k: v for k, v in session.items() if not k.startswith("_chat")}
             with open(tmp, "w", encoding="utf-8") as f:
-                json.dump(session, f, ensure_ascii=False, indent=2)
+                json.dump(clean, f, ensure_ascii=False, indent=2)
             os.replace(str(tmp), str(session_file))
             logger.debug("_persist: wrote %s (%d bytes)", session_file, session_file.stat().st_size)
         except Exception as exc:
@@ -196,6 +236,65 @@ class SubAgentSessionStore:
 
 # Module-level session store singleton
 _session_store = SubAgentSessionStore()
+
+
+def _render_subagent_tool_round(
+    agent: Any,
+    tool_name: str,
+    args: Dict[str, Any],
+    tool_result: Dict[str, Any],
+) -> str:
+    """Render one sub-agent tool call into the exact same display envelope the
+    main chat uses, so the GUI session viewer can show it through the identical
+    ``StepsView`` / ``PromptWithAttachment`` path.
+
+    Produces a "• <label> <detail>" prompt line (with the main chat's
+    ANSI-colored bullet and full relative paths / brackets) wrapped in the
+    ``GUI_CMD_PROMPT_*`` sentinels, followed by the human-readable result
+    wrapped in the ``GUI_CMD_OUTPUT_*`` sentinels.
+    """
+    failed = not bool((tool_result or {}).get("success", True))
+    prompt = ""
+    formatter = getattr(agent, "_format_tool_call_feedback_line", None)
+    if callable(formatter):
+        try:
+            prompt = formatter(str(tool_name or ""), args if isinstance(args, dict) else {}, failed=failed)
+        except Exception:
+            prompt = ""
+    if not prompt:
+        # Fallback if the agent helper is unavailable.
+        bullet = "\u2022"
+        prompt = f"{GUI_CMD_PROMPT_BEGIN}{bullet} {str(tool_name or 'tool')}{GUI_CMD_PROMPT_END}"
+
+    # Extract the human-readable result payload (mirrors the main chat's
+    # _build_model_tool_result_history_content).
+    r = tool_result if isinstance(tool_result, dict) else {}
+    content = r.get("content")
+    output_text = str(content) if isinstance(content, str) and content else ""
+    if not output_text:
+        output_text = str(r.get("output") or "")
+    if not output_text:
+        if not bool(r.get("success", True)):
+            output_text = str(r.get("error") or r.get("message") or "")
+        else:
+            data = {k: v for k, v in r.items() if k not in _META_KEYS}
+            if data:
+                try:
+                    output_text = json.dumps(data, ensure_ascii=False, default=str)
+                except Exception:
+                    output_text = ""
+    return f"{prompt}\n{GUI_CMD_OUTPUT_BEGIN}{output_text}{GUI_CMD_OUTPUT_END}"
+
+
+# Keys that carry metadata rather than user-facing tool output; mirrored from
+# agent._build_model_tool_result_history_content so non-success tool results
+# with tool-specific data keys still surface their payload.
+_META_KEYS = {
+    "success", "error", "message", "return_code", "output", "content",
+    "file", "call", "server", "tool", "prompt", "uri", "arguments",
+    "from_cache", "count", "total_count", "ok_count",
+    "error_count", "has_error", "calls",
+}
 
 
 def get_session_store() -> SubAgentSessionStore:
@@ -615,6 +714,11 @@ def run_subagent(
                     "text": content_text,
                 })
 
+            # Collect each tool call + result so we can render them into the
+            # same display envelope the main chat uses (a single collapsible
+            # "Tool calls: N" block), stored on the assistant message instead
+            # of as separate raw tool messages.
+            round_tools: List[Dict[str, Any]] = []
             for idx, (tool_name, args) in enumerate(plans):
                 call_id = _extract_tool_call_id(message, idx)
 
@@ -640,6 +744,8 @@ def run_subagent(
                 except Exception:
                     result_text = str(tool_result)
 
+                # Keep the raw tool message in the in-memory loop context so the
+                # follow-up request stays valid; do NOT persist it separately.
                 tool_msg = {
                     "role": "tool",
                     "tool_call_id": call_id,
@@ -647,7 +753,16 @@ def run_subagent(
                     "content": result_text,
                 }
                 messages.append(tool_msg)
+
+                # Also persist the raw tool message so the session record is a
+                # faithful archive of the sub-agent's real interaction protocol.
                 store.append_message(agent, chat_id, session_id, tool_msg)
+
+                round_tools.append({
+                    "tool_name": str(tool_name),
+                    "args": args if isinstance(args, dict) else {},
+                    "tool_result": tool_result,
+                })
 
                 # Emit tool output event
                 _emit_subagent_event(agent, "sub_agent_output", {
@@ -655,6 +770,21 @@ def run_subagent(
                     "text": result_text[:5000],  # Truncate very long outputs for SSE
                     "toolName": str(tool_name),
                 })
+
+            # Render the collected tool calls via the main-chat display envelope
+            # and attach them to the persisted assistant message so the GUI
+            # session viewer matches the main transcript exactly.
+            if round_tools:
+                tool_rounds = [
+                    _render_subagent_tool_round(
+                        agent,
+                        rt["tool_name"],
+                        rt["args"],
+                        rt["tool_result"],
+                    )
+                    for rt in round_tools
+                ]
+                store.set_assistant_tool_rounds(session_id, tool_rounds)
 
         # max_rounds exhausted: return the last text we have.
         output = last_assistant_text or _t(agent, "subagents.error.max_rounds", rounds=max_rounds)
