@@ -381,19 +381,26 @@ def _build_structured_turns(agent: Any) -> List[Dict[str, Any]]:
                 prev_ts = ts
             continue
 
+        # New-format role:tool messages — same treatment as old-format
+        # [MODEL_TOOL_RESULT] tool results.
+        if role == "tool":
+            turn = _ensure_turn()
+            if current_round is None:
+                current_round = _new_round(turn, 0)
+            if ts is not None and prev_ts is not None:
+                current_round["waitSeconds"] += max(0, int(round(ts - prev_ts)))
+            if ts is not None:
+                prev_ts = ts
+            continue
+
         # A pure tool-call model message (no natural-language reply) still
-        # represents a distinct model pass. Keep it in its own round whenever
-        # the previous round already produced visible tool/thinking content, so
-        # later reasoning blocks do not overwrite the first Thinking panel.
+        # represents a distinct model pass. Merge it into the previous tool
+        # round when that round already has tools, so the GUI shows one
+        # collapsible "Called N tools" group instead of separate groups.
         if _is_tool_plan(content):
             turn = _ensure_turn()
             wait = (ts - prev_ts) if (ts is not None and prev_ts is not None) else 0
-            if (
-                current_round is None
-                or current_round.get("text")
-                or current_round.get("selection")
-                or current_round.get("_thinking_after_tool")
-            ):
+            if current_round is None or not current_round.get("tools", "").strip():
                 current_round = _new_round(turn, wait)
             else:
                 current_round["waitSeconds"] += max(0, int(round(wait)))
@@ -414,6 +421,10 @@ def _build_structured_turns(agent: Any) -> List[Dict[str, Any]]:
                 rendered = _render_step(idx, msg)
                 if rendered.strip():
                     current_round["tools"] = current_round["tools"] + rendered + "\n"
+            # Emit tool_rounds for new-format assistant messages (pre-rendered)
+            tool_rounds = msg.get("tool_rounds") if isinstance(msg, dict) else None
+            if isinstance(tool_rounds, list) and tool_rounds:
+                current_round["tools"] = current_round["tools"] + "\n".join(tool_rounds) + "\n"
             # Extract _thinking even when the assistant message is a pure
             # tool-call plan (no natural-language reply). The thinking panel
             # must survive a chat reload.
@@ -461,13 +472,21 @@ def _build_structured_turns(agent: Any) -> List[Dict[str, Any]]:
             thinking_text = str(msg.get("_thinking") or "").strip()
             if thinking_text:
                 current_round["thinking"] = thinking_text
+            # Emit tool_rounds when the assistant message carries both text and tools
+            tool_rounds = msg.get("tool_rounds") if isinstance(msg, dict) else None
+            if isinstance(tool_rounds, list) and tool_rounds:
+                current_round["tools"] = "\n".join(tool_rounds) + "\n"
         else:
             rendered = _render_step(idx, msg)
             if current_round is None or current_round.get("text"):
                 current_round = _new_round(turn, wait)
             else:
                 current_round["waitSeconds"] += max(0, int(round(wait)))
-            if rendered.strip():
+            # Emit tool_rounds for new-format assistant messages
+            tool_rounds = msg.get("tool_rounds") if isinstance(msg, dict) else None
+            if isinstance(tool_rounds, list) and tool_rounds:
+                current_round["tools"] = current_round["tools"] + "\n".join(tool_rounds) + "\n"
+            elif rendered.strip():
                 current_round["tools"] = current_round["tools"] + rendered + "\n"
             _extract_thinking(msg, current_round)
         if ts is not None:

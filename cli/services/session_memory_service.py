@@ -403,7 +403,7 @@ class SessionMemoryService:
 
     def append_chat_message(self, role: str, content: str, tool_calls: Any = None, _internal: bool = False, api_content: Optional[str] = None, context_suffix: Optional[str] = None, cache_stats: Optional[Dict[str, Any]] = None, clean_content: Optional[str] = None, output_tokens: Optional[int] = None, reasoning_tokens: Optional[int] = None, token_count_includes_reasoning: Optional[bool] = None, thinking: Optional[str] = None, thinking_from_content: Optional[bool] = None) -> None:
         r = str(role or "").strip().lower()
-        if r not in ("user", "assistant"):
+        if r not in ("user", "assistant", "tool"):
             return
         should_attach_suffix = False
         if r == "user" and isinstance(context_suffix, str) and context_suffix.strip():
@@ -710,7 +710,7 @@ class SessionMemoryService:
                 if not isinstance(item, dict):
                     continue
                 role = str(item.get("role") or "").strip().lower()
-                if role not in ("user", "assistant"):
+                if role not in ("user", "assistant", "tool"):
                     continue
                 if role == "user" and self._is_excluded_user_message_for_model_context(item):
                     continue

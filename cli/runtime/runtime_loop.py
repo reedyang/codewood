@@ -4733,21 +4733,6 @@ def run_agent_loop(agent: Any):
                     )
                     break
 
-                result_for_next_input: Dict[str, Any]
-                if len(executed_batch_results) == 1:
-                    result_for_next_input = last_tool_result
-                else:
-                    batch_success = True
-                    for entry in executed_batch_results:
-                        entry_result = entry.get("result")
-                        if isinstance(entry_result, dict) and (entry_result.get("success", True) is False):
-                            batch_success = False
-                            break
-                    result_for_next_input = {
-                        "success": batch_success,
-                        "batch_results": executed_batch_results,
-                    }
-                last_result = result_for_next_input
                 step_progress = self._build_step_progress_context()
                 post_result_synthesis_rule = self._build_post_result_synthesis_rule(
                     tool_name=last_tool_name,
@@ -4760,9 +4745,12 @@ def run_agent_loop(agent: Any):
                     if active_plan_summary
                     else ""
                 )
+                # Flush accumulated tool_rounds onto the preceding assistant message
+                flusher = getattr(self, "_flush_tool_rounds", None)
+                if callable(flusher):
+                    flusher()
                 next_input = (
-                    f"[Previous batch tool results (compact)]\n{self._compact_result_for_next_input(result_for_next_input)}\n\n"
-                    + "Continue with standard tools when more tool work is needed; you may call one or more tools at once. "
+                    "Continue with standard tools when more tool work is needed; you may call one or more tools at once. "
                     "When no further tool action is required, reply in natural language with no tool_calls and the host will return to the command prompt. "
                     "If the previous batch result already satisfies the original request, finish in the next assistant message with a natural-language reply only."
                     + (f"\n{post_result_synthesis_rule}" if post_result_synthesis_rule else "")

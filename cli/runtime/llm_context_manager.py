@@ -323,7 +323,7 @@ class LLMContextManager:
         parse_worked_summary = getattr(self.agent, "_parse_task_worked_summary_history_content", None)
         for idx, msg in enumerate(hist):
             role = str(msg.get("role") or "").strip().lower()
-            if role not in ("user", "assistant"):
+            if role not in ("user", "assistant", "tool"):
                 continue
             raw_content = str(msg.get("content") or "")
             # When the message carries ``_api_content`` (the exact text that was
@@ -369,6 +369,13 @@ class LLMContextManager:
                 if content != before:
                     assistant_trimmed += 1
             entry: Dict[str, Any] = {"role": role, "content": content}
+            if role == "tool":
+                tid = str(msg.get("tool_call_id") or "").strip()
+                if tid:
+                    entry["tool_call_id"] = tid
+                tname = str(msg.get("name") or "").strip()
+                if tname:
+                    entry["name"] = tname
             if role == "assistant":
                 msg_model = str(msg.get("_model") or "").strip()
                 if msg_model:
