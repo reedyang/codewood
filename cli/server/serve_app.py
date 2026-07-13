@@ -2772,7 +2772,30 @@ class ServeApp:
         data = payload or {}
         session = self._console.active()
         if session is None:
-            return {"success": False, "error": "no active console (open one in the GUI)"}
+            if act == "exec":
+                default_kind = "powershell" if os.name == "nt" else "shell"
+                result = self.open_console(default_kind)
+                if not result.get("success"):
+                    return {
+                        "success": False,
+                        "error": f"could not auto-open console: {result.get('error', 'unknown error')}",
+                    }
+                session = self._console.active()
+                if session is None:
+                    return {
+                        "success": False,
+                        "error": "no active console (auto-open failed)",
+                    }
+                self.broadcaster.publish(
+                    "console_open",
+                    {
+                        "id": session.id,
+                        "title": session.title,
+                        "kind": session.kind,
+                    },
+                )
+            else:
+                return {"success": False, "error": "no active console (open one in the GUI)"}
         if act == "exec":
             command = str(data.get("command") or "")
             if not command.strip():

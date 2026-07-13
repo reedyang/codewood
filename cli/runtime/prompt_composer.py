@@ -96,8 +96,7 @@ def build_console_system_append(agent: Any) -> str:
         "directory and terminal size.\n\n"
         "After running a command with `console_exec`, give it a moment then "
         "call `console_read` (e.g. from the previous `totalLines`) to see its "
-        "output. If no console tab is open the tools return an error — ask the "
-        "user to open one, or use the `shell` tool for one-off commands."
+        "output. If no console tab is open, console_exec will auto-open a default one for you."
     )
 
 

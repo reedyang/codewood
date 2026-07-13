@@ -143,6 +143,9 @@ interface AppContextValue {
     id: string,
     handler: (b64: string, end: boolean) => void,
   ) => () => void;
+  /** Consume and clear the pending auto-opened console info (from
+   *  console_open SSE). Returns null if none pending. */
+  consumePendingAutoConsole: () => { id: string; title: string; kind: string } | null;
   /** Fetch a console session's retained output (base64) for repaint. */
   attachConsole: (id: string) => Promise<string>;
   /** Send input to a console session (HTTP POST; output arrives via SSE). */
@@ -408,6 +411,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const consoleOutputHandlersRef = useRef<
     Map<string, Set<(b64: string, end: boolean) => void>>
   >(new Map());
+  // Holds the last auto-opened console info from a backend console_open SSE
+  // event. The ConsolePanel checks and consumes this when the dock opens.
+  const pendingAutoConsoleRef = useRef<{
+    id: string;
+    title: string;
+    kind: string;
+  } | null>(null);
   // Draft (compose) mode: "New Chat" shows the empty composer without creating
   // a chat yet; the chat is materialized only when the first message is sent.
   // ``draftWorkspaceId`` is the workspace the new chat will be created in.
@@ -802,6 +812,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
     },
     [],
   );
+
+  const consumePendingAutoConsole = useCallback(() => {
+    const info = pendingAutoConsoleRef.current;
+    pendingAutoConsoleRef.current = null;
+    return info;
+  }, []);
 
   const previewHtml = useCallback(
     (html: string) => client.previewHtml(activeChatIdRef.current, html),
@@ -1693,6 +1709,24 @@ export function AppProvider({ children }: { children: ReactNode }) {
                 // A misbehaving handler must not break event dispatch.
               }
             }
+          }
+          break;
+        }
+        case "console_open": {
+          const d = event.data as Record<string, unknown>;
+          const id = String(d.id || "");
+          if (!id) break;
+          pendingAutoConsoleRef.current = {
+            id,
+            title: String(d.title || ""),
+            kind: String(d.kind || ""),
+          };
+          setConsoleOpen(true);
+          try {
+            window.dispatchEvent(new CustomEvent("codewood:console-open"));
+          } catch {
+            // Custom event may not be supported; the bootstrap fallback
+            // in ConsolePanel will pick it up on next dock open.
           }
           break;
         }
@@ -2740,6 +2774,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     hideConsole,
     consoleOptions,
     subscribeConsoleOutput,
+    consumePendingAutoConsole,
     attachConsole,
     consoleInput,
     consoleResize,
