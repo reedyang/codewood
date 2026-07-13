@@ -3444,25 +3444,121 @@ class Agent:
         t = str(tool_name or "").strip().lower()
         if t in self._MODEL_TOOL_RESULT_HISTORY_SKIP_TOOLS:
             return
-        created_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        r = result if isinstance(result, dict) else {}
+        success = bool(r.get("success", True))
+        output_text = str(r.get("output") or "")
+        error_text = str(r.get("error") or "")
+        message_text = str(r.get("message") or "")
+
         # Persist the apply_patch change preview rows to an out-of-context
-        # sidecar BEFORE building the history content. The rows must never enter
-        # the model context (conversation history), so they are keyed by the
-        # tool-result's stable fields (chat id + file + created_at) and looked up
-        # on reload instead of being embedded in the message payload.
+        # sidecar BEFORE recording the history. The rows must never enter
+        # the model context (conversation history), so they are keyed by
+        # the tool-result's stable fields and looked up on reload.
         if t == "apply_patch":
+            created_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             self._persist_apply_patch_preview_sidecar(
                 args if isinstance(args, dict) else {},
-                result if isinstance(result, dict) else {},
+                r,
                 created_at,
             )
-        content = self._build_model_tool_result_history_content(
-            tool_name=str(tool_name or "").strip(),
-            args=args if isinstance(args, dict) else {},
-            result=result if isinstance(result, dict) else {},
-            created_at=created_at,
+
+        # Build the result payload for the tool message
+        payload: Dict[str, Any] = {"success": success}
+        if output_text:
+            payload["output"] = output_text
+        if error_text:
+            payload["error"] = error_text
+        if message_text:
+            payload["message"] = message_text
+        rc = r.get("return_code")
+        if rc is not None:
+            payload["return_code"] = rc
+        full_output_path = str(r.get("full_output_path") or "")
+        if full_output_path:
+            payload["full_output_path"] = full_output_path
+        gui_marker = str(r.get("_guiSessionMarker") or "")
+        if gui_marker:
+            payload["guiSessionMarker"] = gui_marker
+        payload["created_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        tool_content = json.dumps(payload, ensure_ascii=False)
+
+        # Store as a role:tool message in conversation_history with a
+        # matching tool_call_id from the preceding assistant message.
+        tool_call_id = self._next_tool_call_id()
+        self.conversation_history.append({
+            "role": "tool",
+            "name": str(tool_name or "").strip(),
+            "content": tool_content,
+            "tool_call_id": tool_call_id,
+            "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        })
+        self._sync_active_chat_messages()
+
+        # Render the display text and accumulate for the assistant message.
+        # Include the guiSessionMarker in the tool round so the frontend can
+        # associate sub-agent tool calls with their session viewer.
+        tool_round = self._format_tool_call_feedback_line(
+            str(tool_name or ""),
+            args if isinstance(args, dict) else {},
+            failed=not success,
         )
-        self._append_chat_message("assistant", content)
+        gui_marker = str(r.get("_guiSessionMarker") or "")
+        if gui_marker:
+            tool_round = tool_round + "\n" + gui_marker
+        pending = list(getattr(self, "_accumulated_tool_rounds", None) or [])
+        pending.append(tool_round)
+        self._accumulated_tool_rounds = pending
+
+    def _next_tool_call_id(self) -> str:
+        """Return the next unused tool_call_id from the last assistant
+        message with tool_calls, or a placeholder if none available."""
+        for msg in reversed(self.conversation_history):
+            if not isinstance(msg, dict):
+                continue
+            if str(msg.get("role") or "").strip().lower() != "assistant":
+                continue
+            tcs = msg.get("tool_calls")
+            if not isinstance(tcs, list) or not tcs:
+                continue
+            # Count existing tool messages that follow this assistant
+            paired = 0
+            found_assistant = False
+            for earlier in reversed(self.conversation_history):
+                if earlier is msg:
+                    found_assistant = True
+                    break
+                if not isinstance(earlier, dict):
+                    continue
+                if str(earlier.get("role") or "").strip().lower() == "tool":
+                    paired += 1
+            if not found_assistant:
+                continue
+            idx = paired
+            if idx < len(tcs):
+                call = tcs[idx]
+                if isinstance(call, dict):
+                    cid = str(call.get("id") or "")
+                    if cid.strip():
+                        return cid.strip()
+            return f"call_{idx}"
+        return "call_0"
+
+    def _flush_tool_rounds(self) -> None:
+        """Attach accumulated tool_rounds to the last assistant message that
+        has tool_calls, then clear the accumulator."""
+        rounds = list(getattr(self, "_accumulated_tool_rounds", None) or [])
+        if not rounds:
+            return
+        for msg in reversed(self.conversation_history):
+            if not isinstance(msg, dict):
+                continue
+            if str(msg.get("role") or "").strip().lower() != "assistant":
+                continue
+            if not msg.get("tool_calls"):
+                continue
+            msg["tool_rounds"] = rounds
+            break
+        self._accumulated_tool_rounds = []
 
     def _build_conversation_interrupted_history_content(
         self,
@@ -6897,16 +6993,15 @@ class Agent:
             for msg in messages:
                 if not isinstance(msg, dict):
                     continue
-                content = str(msg.get("content") or "")
-                if "[MODEL_TOOL_RESULT]" not in content or "apply_patch" not in content:
+                if str(msg.get("role") or "").strip().lower() != "tool":
+                    continue
+                if str(msg.get("name") or "").strip().lower() != "apply_patch":
                     continue
                 try:
-                    payload = json.loads(content.split("[MODEL_TOOL_RESULT]", 1)[1])
+                    payload = json.loads(str(msg.get("content") or "{}"))
                 except Exception:
                     continue
                 if not isinstance(payload, dict):
-                    continue
-                if payload.get("tool") != "apply_patch":
                     continue
                 ca = str(payload.get("created_at") or "")
                 if ca:
@@ -6950,11 +7045,10 @@ class Agent:
             for msg in messages:
                 if not isinstance(msg, dict):
                     continue
-                content = str(msg.get("content") or "")
-                if "[MODEL_TOOL_RESULT]" not in content:
+                if str(msg.get("role") or "").strip().lower() != "tool":
                     continue
                 try:
-                    payload = json.loads(content.split("[MODEL_TOOL_RESULT]", 1)[1])
+                    payload = json.loads(str(msg.get("content") or "{}"))
                 except Exception:
                     continue
                 if not isinstance(payload, dict):

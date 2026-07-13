@@ -435,7 +435,7 @@ class ChatStateManager:
         raw: Dict[str, Any],
     ) -> Dict[str, Any]:
         role = str(raw.get("role") or "").strip().lower()
-        if role not in ("user", "assistant"):
+        if role not in ("user", "assistant", "tool"):
             raise ValueError("invalid role")
         content = str(raw.get("content") or "")
         created_at = str(raw.get("created_at") or "").strip() or self._now_text()
@@ -444,6 +444,13 @@ class ChatStateManager:
             "content": content,
             "created_at": created_at,
         }
+        if role == "tool":
+            tcid = str(raw.get("tool_call_id") or "").strip()
+            if tcid:
+                out["tool_call_id"] = tcid
+            tname = str(raw.get("name") or "").strip()
+            if tname:
+                out["name"] = tname
         if role == "assistant":
             plan_items = _normalize_plan_items(raw.get("plan"))
             if plan_items:
@@ -486,6 +493,9 @@ class ChatStateManager:
         tool_calls = raw.get("tool_calls")
         if isinstance(tool_calls, list) and tool_calls:
             out["tool_calls"] = tool_calls
+        tool_rounds = raw.get("tool_rounds")
+        if isinstance(tool_rounds, list) and tool_rounds:
+            out["tool_rounds"] = tool_rounds
         pseudo_tool_call_text = str(raw.get("pseudo_tool_call_text") or "").strip()
         if pseudo_tool_call_text:
             out["pseudo_tool_call_text"] = pseudo_tool_call_text
@@ -887,7 +897,11 @@ class ChatStateManager:
                     raise ValueError("chat record root must be object")
                 if str(chat_raw.get("id") or "").strip() != cid:
                     raise ValueError("chat record id mismatch")
-                chat = self._validate_chat_entry(chat_raw)
+                try:
+                    chat = self._validate_chat_entry(chat_raw)
+                except Exception as ve:
+                    logger.warning("load_chat_state: skipping chat %s: %s", cid, ve)
+                    continue
                 chat["_record_file"] = record_file
                 # archived is stored only in the index (chats.json), not in the
                 # record file; merge it into the in-memory entry so toggles are
@@ -1106,7 +1120,7 @@ class ChatStateManager:
                 if bool(m.get("persist_to_chat_state", True)) is False:
                     continue
                 role = str(m.get("role") or "").strip().lower()
-                if role not in ("user", "assistant"):
+                if role not in ("user", "assistant", "tool"):
                     continue
                 entry = {
                     "role": role,
@@ -1150,6 +1164,16 @@ class ChatStateManager:
                 tool_calls = m.get("tool_calls")
                 if isinstance(tool_calls, list) and tool_calls:
                     entry["tool_calls"] = tool_calls
+                tool_rounds = m.get("tool_rounds")
+                if isinstance(tool_rounds, list) and tool_rounds:
+                    entry["tool_rounds"] = tool_rounds
+                if role == "tool":
+                    tool_call_id = str(m.get("tool_call_id") or "").strip()
+                    if tool_call_id:
+                        entry["tool_call_id"] = tool_call_id
+                    tool_name = str(m.get("name") or "").strip()
+                    if tool_name:
+                        entry["name"] = tool_name
                 pseudo_tool_call_text = str(m.get("pseudo_tool_call_text") or "").strip()
                 if pseudo_tool_call_text:
                     entry["pseudo_tool_call_text"] = pseudo_tool_call_text

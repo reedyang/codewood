@@ -503,8 +503,9 @@ class ApplyPatchPreviewSidecarTests(unittest.TestCase):
             agent._find_chat_by_id = lambda _cid: {
                 "messages": [
                     {
-                        "role": "assistant",
-                        "content": '[MODEL_TOOL_RESULT]{"tool": "apply_patch", "created_at": "2026-06-24 10:00:00"}',
+                        "role": "tool",
+                        "name": "apply_patch",
+                        "content": '{"success": true, "created_at": "2026-06-24 10:00:00"}',
                     }
                 ]
             }
