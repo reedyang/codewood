@@ -120,4 +120,21 @@ describe("StepsView", () => {
     expect(screen.getByText("Explored for 41.3s")).toBeTruthy();
     expect(screen.getByTitle("View sub-agent session")).toBeTruthy();
   });
+
+  it("replaces a topic-bearing explore running row with the completed row", () => {
+    render(
+      <StepsView
+        text={[
+          "\uE004• Exploring sub-agent architecture...\uE005",
+          "\uE008sa_123\uE009",
+          "\r\u001b[2K",
+          "\uE004• Explored sub-agent architecture for 41.3s\uE005",
+        ].join("\n")}
+      />,
+    );
+
+    expect(screen.queryByText("Exploring sub-agent architecture...")).toBeNull();
+    expect(screen.getByText("Explored sub-agent architecture for 41.3s")).toBeTruthy();
+    expect(screen.getByTitle("View sub-agent session")).toBeTruthy();
+  });
 });
