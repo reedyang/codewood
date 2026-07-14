@@ -648,63 +648,17 @@ class LLMContextManager:
         return candidates
 
     # --- Compaction ----------------------------------------------------------
-    def build_compaction_messages(
-        self,
-        mode: str,
-        source_history: List[Dict[str, Any]],
-        compact_until_index: int,
-    ) -> List[Dict[str, Any]]:
-        import os
-
-        _ = compact_until_index
-        self.agent._reload_skills()
-        try:
-            system_prompt = self.agent._compose_system_prompt_snapshot(include_tools=True)
-        except Exception:
-            system_prompt = str(getattr(self.agent, "system_prompt", "") or "")
-        budgets = self._context_token_budgets()
-        history_budget = max(160, int(int(budgets.get("input_budget") or 1024) * 0.72))
-        summary_budget = max(80, int(history_budget * 0.10))
-        assistant_clip = max(120, int(budgets.get("assistant_clip_tokens") or 260))
-        history_messages, _stats = self._build_history_messages_by_budget(
-            history_budget,
-            summary_budget,
-            assistant_clip,
-            source_history=source_history,
-        )
-        os_info = os.uname() if hasattr(os, "uname") else os.name
-        workspace_root_text = self._model_visible_workspace_directory_text()
-        workspace_data_dir_text = self._model_visible_path_text(
-            getattr(self.agent, "workspace_config_dir", None)
-        )
-        workspace_skills_dir = (Path(self.agent.workspace_config_dir) / "skills").resolve()
-        default_install_skills_dir = (get_app_global_config_dir() / "skills").resolve()
-        runtime_tail_raw = (
-            f"Current OS info: {os_info}\n"
-            f"Current workspace name: {self.agent.workspace_name}\n"
-            f"Current chat name (weak hint, session label only, not this turn's task goal): {self.agent.active_chat_name}\n"
-            f"Current workspace root (absolute path): {workspace_root_text}\n"
-            f"Current workspace data directory (absolute path): {workspace_data_dir_text}\n"
-            f"Default skill install path (absolute path): {default_install_skills_dir}\n"
-            f"Current workspace skills directory (absolute path): {workspace_skills_dir}\n"
-            "When installing a third-party skill: if the user does not specify an install location, you must use the Default skill install path (absolute path); "
-            "use the Current workspace skills directory (absolute path) only when the user explicitly asks to install into the workspace.\n"
-        )
+    def build_compaction_user_input(self, mode: str) -> str:
         prompt_path = Path(__file__).resolve().parents[1] / "prompts" / "compact_prompt.md"
         raw = prompt_path.read_text(encoding="utf-8").strip()
         compact_prompt_text = preprocess_prompt(raw, {"os": platform.system()})
-        sys_content = (
-            f"{str(getattr(self.agent, '_skills_routing_prefix', '') or '')}"
-            f"{system_prompt}\n"
-            f"{self._software_development_prompt_append()}"
-            f"{runtime_tail_raw}"
-            f"{compact_prompt_text}\n"
+        normalized_mode = str(mode or "").strip().lower() or "manual"
+        return (
+            f"compact_mode={normalized_mode}\n"
+            "You are compacting the active conversation context using the normal main-session history.\n\n"
+            f"{compact_prompt_text}\n\n"
+            "Generate a concise checkpoint handoff summary that can replace the already-covered context."
         )
-        user_content = (
-            f"compact_mode={str(mode or '').strip().lower() or 'manual'}\n"
-            "Based on the history above, generate a concise checkpoint handoff summary that can replace those messages."
-        )
-        return [{"role": "system", "content": sys_content}] + history_messages + [{"role": "user", "content": user_content}]
 
     def _format_compaction_banner_line(self, text: str) -> str:
         label = f" {str(text or '').strip()} "
@@ -899,18 +853,17 @@ class LLMContextManager:
         start_banner_lines = self._print_compaction_notice(start_text)
         source_history = [m for _idx, m in candidates_with_idx]
         insert_after_idx = int(candidates_with_idx[-1][0])
-        messages = self.build_compaction_messages(mode, source_history, insert_after_idx)
+        compaction_user_input = self.build_compaction_user_input(mode)
         stream_summary = True
         gui_notice_enabled = callable(getattr(self.agent, "_gui_compaction_notice", None))
         stream_to_terminal = not gui_notice_enabled
         streamed_summary_parts: List[str] = []
         try:
             raw = self.agent.call_ai(
-                "Generate context compaction summary.",
+                compaction_user_input,
                 context="",
                 stream=stream_summary,
                 return_message=False,
-                messages_override=messages,
                 record_history_override=False,
             )
         except Exception as e:

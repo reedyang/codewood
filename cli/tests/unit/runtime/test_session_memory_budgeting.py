@@ -274,7 +274,7 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
         self.assertNotIn("The old request should not enter the context directly", joined)
         self.assertNotIn("The old reply should not enter the context directly", joined)
 
-    def test_manual_compact_inserts_summary_after_covered_tail_and_uses_override_messages(self):
+    def test_manual_compact_inserts_summary_after_covered_tail_and_uses_regular_call_path(self):
         agent = _FakeAgent()
         agent.params = {"context_window": 16000}
         agent._compose_system_prompt_snapshot = lambda include_tools=True: "SYSTEM"
@@ -293,6 +293,7 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
         captured = {}
 
         def _fake_call_ai(*args, **kwargs):
+            captured["user_input"] = args[0] if args else kwargs.get("user_input")
             captured["messages_override"] = kwargs.get("messages_override")
             captured["record_history_override"] = kwargs.get("record_history_override")
             return "New merged summary"
@@ -304,11 +305,11 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
 
         self.assertTrue(ok)
         self.assertEqual(captured.get("record_history_override"), False)
-        override_joined = "\n".join(str(m.get("content") or "") for m in captured["messages_override"])
-        self.assertIn("Previous summary", override_joined)
-        self.assertNotIn("Subsequent user message", override_joined)
-        self.assertNotIn("Subsequent assistant message", override_joined)
-        self.assertNotIn("Older message", override_joined)
+        self.assertIsNone(captured.get("messages_override"))
+        user_input = str(captured.get("user_input") or "")
+        self.assertIn("compact_mode=manual", user_input)
+        self.assertIn("CONTEXT CHECKPOINT COMPACTION", user_input)
+        self.assertIn("Generate a concise checkpoint handoff summary", user_input)
         inserted = agent.conversation_history[2]
         payload = svc.parse_context_compaction_summary_content(str(inserted.get("content") or ""))
         self.assertIsInstance(payload, dict)
@@ -1057,23 +1058,21 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
         self.assertIn("Tools, commands, files, paths", SESSION_SUMMARY_SYSTEM_PROMPT)
         self.assertIn("one-off details that could change future behavior or retrieval results", SESSION_SUMMARY_SYSTEM_PROMPT)
 
-    def test_compaction_system_prompt_requests_concrete_experience_details(self):
+    def test_compaction_user_input_requests_concrete_experience_details(self):
         agent = _FakeAgent()
-        agent._compose_system_prompt_snapshot = lambda include_tools=True: "SYSTEM"
         svc = SessionMemoryService(agent)
 
-        messages = svc.build_compaction_messages("manual", [{"role": "user", "content": "Hello"}], 0)
-        system_content = str(messages[0].get("content") or "")
-        user_content = str(messages[-1].get("content") or "")
+        user_content = svc.build_compaction_user_input("manual")
 
-        self.assertIn("CONTEXT CHECKPOINT COMPACTION", system_content)
-        self.assertIn("Create a handoff summary for another LLM", system_content)
-        self.assertIn("Current progress and key decisions made", system_content)
+        self.assertIn("compact_mode=manual", user_content)
+        self.assertIn("CONTEXT CHECKPOINT COMPACTION", user_content)
+        self.assertIn("Create a handoff summary for another LLM", user_content)
+        self.assertIn("Current progress and key decisions made", user_content)
         self.assertIn(
             "What remains to be done (clear next steps)",
-            system_content,
+            user_content,
         )
-        self.assertIn("generate a concise checkpoint handoff summary", user_content)
+        self.assertIn("generate a concise checkpoint handoff summary", user_content.lower())
         self.assertNotIn("six-field format", user_content)
 
     def test_rolling_session_summary_uses_fixed_fields_and_preserves_details(self):
