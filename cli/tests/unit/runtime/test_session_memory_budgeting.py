@@ -274,7 +274,7 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
         self.assertNotIn("The old request should not enter the context directly", joined)
         self.assertNotIn("The old reply should not enter the context directly", joined)
 
-    def test_manual_compact_inserts_summary_after_covered_tail_and_uses_regular_call_path(self):
+    def test_manual_compact_appends_summary_and_uses_regular_call_path(self):
         agent = _FakeAgent()
         agent.params = {"context_window": 16000}
         agent._compose_system_prompt_snapshot = lambda include_tools=True: "SYSTEM"
@@ -310,13 +310,13 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
         self.assertIn("compact_mode=manual", user_input)
         self.assertIn("CONTEXT CHECKPOINT COMPACTION", user_input)
         self.assertIn("Generate a concise checkpoint handoff summary", user_input)
-        inserted = agent.conversation_history[2]
+        inserted = agent.conversation_history[-2]
         payload = svc.parse_context_compaction_summary_content(str(inserted.get("content") or ""))
         self.assertIsInstance(payload, dict)
         self.assertEqual(payload.get("summary"), "New merged summary")
         self.assertEqual(payload.get("mode"), "manual")
-        self.assertEqual(str(agent.conversation_history[3].get("content") or ""), "Subsequent user message")
-        self.assertEqual(str(agent.conversation_history[4].get("content") or ""), "Subsequent assistant message")
+        self.assertEqual(str(agent.conversation_history[2].get("content") or ""), "Subsequent user message")
+        self.assertEqual(str(agent.conversation_history[3].get("content") or ""), "Subsequent assistant message")
         notice_payload = svc.parse_context_compaction_notice_content(
             str(agent.conversation_history[-1].get("content") or "")
         )
@@ -356,8 +356,8 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
         joined = "\n".join(str(m.get("content") or "") for m in messages)
         self.assertIn("Summary body", joined)
         self.assertNotIn("Context compacted", joined)
-        self.assertIn("Message needing summarization", joined)
-        self.assertIn("Answer needing summarization", joined)
+        self.assertNotIn("Message needing summarization", joined)
+        self.assertNotIn("Answer needing summarization", joined)
 
     def test_gui_compact_streams_summary_chunks_into_compact_notice(self):
         agent = _FakeAgent()
@@ -463,7 +463,7 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
         mock_consume.assert_called_once()
         self.assertEqual(reloads, ["tail", ("reload", False)])
 
-    def test_auto_compact_candidate_selection_preserves_recent_tail_within_five_percent(self):
+    def test_auto_compact_candidate_selection_includes_recent_tail(self):
         agent = _FakeAgent()
         agent.params = {"context_window": 1000}
         agent._compose_system_prompt_snapshot = lambda include_tools=True: "SYSTEM"
@@ -488,10 +488,10 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
         self.assertIn("Previous summary", candidate_text)
         self.assertIn("Earlier user message to be summarized", candidate_text)
         self.assertIn("Earlier assistant message to be summarized", candidate_text)
-        self.assertNotIn("Short tail", candidate_text)
-        self.assertNotIn("Short reply", candidate_text)
+        self.assertIn("Short tail", candidate_text)
+        self.assertIn("Short reply", candidate_text)
 
-    def test_manual_compact_candidate_selection_preserves_recent_tail_like_auto(self):
+    def test_manual_compact_candidate_selection_includes_recent_tail(self):
         agent = _FakeAgent()
         agent.params = {"context_window": 1000}
         agent._compose_system_prompt_snapshot = lambda include_tools=True: "SYSTEM"
@@ -516,8 +516,8 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
         self.assertIn("Previous summary", candidate_text)
         self.assertIn("Earlier user message to be summarized", candidate_text)
         self.assertIn("Earlier assistant message to be summarized", candidate_text)
-        self.assertNotIn("Short tail", candidate_text)
-        self.assertNotIn("Short reply", candidate_text)
+        self.assertIn("Short tail", candidate_text)
+        self.assertIn("Short reply", candidate_text)
 
     def test_compaction_banner_line_is_centered_and_full_width(self):
         agent = _FakeAgent()
