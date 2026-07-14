@@ -485,6 +485,16 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
 
         self.assertEqual(msg, "上下文已自动压缩")
 
+    def test_format_context_compaction_notice_message_localizes_serialized_notice_content(self):
+        agent = _FakeAgent()
+        agent.display_language = "zh-CN"
+        svc = SessionMemoryService(agent)
+
+        content = svc.build_context_compaction_notice_content(mode="manual")
+        msg = svc.format_context_compaction_notice_message(content)
+
+        self.assertEqual(msg, "上下文已压缩")
+
     def test_refresh_context_usage_snapshot_persists_chat_state_immediately(self):
         agent = _FakeAgent()
         agent.conversation_history = [

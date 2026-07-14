@@ -103,6 +103,20 @@ export class ApiClient {
     }
   }
 
+  async compactContext(): Promise<{ ok: boolean; text?: string }> {
+    try {
+      const res = await fetch(`${this.base}/compact`, {
+        method: "POST",
+        headers: this.headers(),
+        body: "{}",
+      });
+      const data = (await res.json()) as { ok: boolean; text?: string };
+      return { ok: data.ok === true, text: data.text };
+    } catch {
+      return { ok: false };
+    }
+  }
+
   /** List chats for any workspace by id (without switching to it). */
   async listWorkspaceChats(id: string): Promise<WorkspaceChatSummary[]> {
     const res = await fetch(

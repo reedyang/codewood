@@ -13,6 +13,7 @@ import type {
   AppState,
   AskMoreInfoRequest,
   ChatSummary,
+  CompactNoticeData,
   CompletionCatalog,
   ConfirmRequest,
   GeneralConfig,
@@ -166,6 +167,8 @@ interface AppContextValue {
   sendInput: (text: string) => Promise<void>;
   runCommand: (command: string) => Promise<void>;
   interrupt: () => Promise<void>;
+  compactContext: () => Promise<{ ok: boolean; text?: string }>;
+  compactNotice: CompactNoticeData | null;
   answerConfirm: (answer: string) => Promise<void>;
   /** Resolve the active ``request_user_input`` prompt with the user's answer. */
   answerAskMoreInfo: (answer: string) => Promise<void>;
@@ -300,6 +303,22 @@ function loadInitialTheme(): Theme {
 
 function systemPrefersDark(): boolean {
   return Boolean(window.matchMedia?.("(prefers-color-scheme: dark)").matches);
+}
+
+function buildCompactNoticeData(
+  titleOrText: string,
+  body = "",
+  extras?: Pick<CompactNoticeData, "stage" | "mode">,
+): CompactNoticeData {
+  const title = String(titleOrText || "").trim();
+  const detail = String(body || "").trim();
+  return {
+    title,
+    body: detail,
+    text: detail ? `${title}\n\n${detail}` : title,
+    stage: extras?.stage,
+    mode: extras?.mode,
+  };
 }
 
 function resolveTheme(theme: Theme): "light" | "dark" {
@@ -469,6 +488,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
   } | null>(null);
   const [optimisticChatFocus, setOptimisticChatFocus] =
     useState<OptimisticChatFocus | null>(null);
+  const [compactNoticeState, setCompactNoticeState] = useState<{
+    chatKey: string;
+    notice: CompactNoticeData | null;
+    version: number;
+  }>({ chatKey: "", notice: null, version: 0 });
   useEffect(() => {
     const wsReady = (state?.workspace.id ?? "") === (focusOverride?.wsId ?? "");
     const chatReady =
@@ -544,6 +568,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
   // / legacy behavior unchanged).
   const activeWorkspaceId = selectedWorkspaceId;
   const activeKey = chatKey(activeWorkspaceId, activeChatId);
+  const compactNotice =
+    activeKey && compactNoticeState.chatKey === activeKey
+      ? compactNoticeState.notice
+      : null;
   // The active chat's live turns / busy flag are what the chat view renders.
   const turns = turnsByChat[activeKey] ?? EMPTY_TURNS;
   const busy = busyByChat[activeKey] ?? false;
@@ -1691,6 +1719,24 @@ export function AppProvider({ children }: { children: ReactNode }) {
           }
           break;
         }
+        case "compact_notice": {
+          const compactData = event.data as Extract<ServerEvent, { event: "compact_notice" }>["data"];
+          const text = String(compactData.text ?? "");
+          const title = String(compactData.title ?? "") || text;
+          const body = String(compactData.body ?? "");
+          if (!eventKey || !title) {
+            break;
+          }
+          setCompactNoticeState((state) => ({
+            chatKey: eventKey,
+            notice: buildCompactNoticeData(title, body, {
+              stage: String(compactData.stage ?? "") || undefined,
+              mode: String(compactData.mode ?? "") || undefined,
+            }),
+            version: state.version + 1,
+          }));
+          break;
+        }
         case "output": {
           appendSegment("step", String(data.text ?? ""), eventKey);
           break;
@@ -2291,6 +2337,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
       const targetWsId = workspaceId || activeWorkspaceIdRef.current;
       setFocusOverride(null);
       setOptimisticChatFocus(null);
+      setCompactNoticeState((state) =>
+        state.notice
+          ? { chatKey: "", notice: null, version: state.version + 1 }
+          : state,
+      );
       // When switching to a different workspace, record the target so the
       // subsequent idle/state SSE event from that workspace can bypass the
       // background-event guard (stateRef still has the old workspace ID).
@@ -2327,6 +2378,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
       }
       setFocusOverride(null);
       setOptimisticChatFocus(null);
+      setCompactNoticeState((state) =>
+        state.notice
+          ? { chatKey: "", notice: null, version: state.version + 1 }
+          : state,
+      );
       pendingFocusWsIdRef.current = workspaceId;
       const ok = await client.selectChat("", workspaceId);
       if (!ok) {
@@ -2350,6 +2406,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
         workspaceId ?? state?.workspace.id ?? draftWorkspaceIdRef.current ?? "";
       setFocusOverride(null);
       setOptimisticChatFocus(null);
+      setCompactNoticeState((state) =>
+        state.notice
+          ? { chatKey: "", notice: null, version: state.version + 1 }
+          : state,
+      );
       setDraftWorkspaceId(wsId);
       setDraftMode(true);
       historyChatRef.current = "\u0000";
@@ -2837,6 +2898,23 @@ export function AppProvider({ children }: { children: ReactNode }) {
     sendInput,
     runCommand,
     interrupt,
+    compactContext: async () => {
+      setCompactNoticeState((state) =>
+        state.notice
+          ? { chatKey: "", notice: null, version: state.version + 1 }
+          : state,
+      );
+      const result = await client.compactContext();
+      if (!result.ok && result.text && activeKey) {
+        setCompactNoticeState((state) => ({
+          chatKey: activeKey,
+          notice: buildCompactNoticeData(result.text ?? ""),
+          version: state.version + 1,
+        }));
+      }
+      return result;
+    },
+    compactNotice,
     answerConfirm,
     answerAskMoreInfo,
     clearTurns,
