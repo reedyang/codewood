@@ -1742,7 +1742,10 @@ class Agent:
                     except Exception:
                         print(compact_display["title"])
                     if compact_display["body"]:
-                        print(compact_display["body"])
+                        display_response = format_assistant_display_response(compact_display["body"])
+                        if display_response:
+                            self._ensure_terminal_line_start()
+                            print(self._format_assistant_chat_display_message(display_response))
                         print("")
                     pending_compaction_summary = None
                     continue

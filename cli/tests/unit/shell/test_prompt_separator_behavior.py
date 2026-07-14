@@ -190,6 +190,33 @@ class PromptSeparatorBehaviorTests(unittest.TestCase):
 
         mock_banner.assert_called_once_with("上下文已自动压缩")
 
+    def test_chat_history_replays_context_compaction_body_via_markdown_renderer(self):
+        agent = self._build_agent()
+        agent.session_memory_service = SessionMemoryService(agent)
+        summary = agent.session_memory_service.build_context_compaction_summary_content(
+            summary="## Heading\n\n- item",
+            mode="manual",
+            covered_message_count=2,
+        )
+        notice = agent.session_memory_service.build_context_compaction_notice_content(mode="manual")
+        agent.conversation_history = [
+            {"role": "assistant", "content": summary},
+            {"role": "assistant", "content": notice},
+        ]
+
+        with (
+            patch.object(agent.session_memory_service, "_print_compaction_banner"),
+            patch("cli.agent.format_assistant_display_response", return_value="RENDERED BODY") as mock_format,
+            patch.object(agent, "_format_assistant_chat_display_message", side_effect=lambda text: f"FMT:{text}") as mock_wrap,
+            patch("builtins.print") as mock_print,
+        ):
+            agent._print_chat_history()
+
+        mock_format.assert_called_once_with("## Heading\n\n- item")
+        mock_wrap.assert_called_once_with("RENDERED BODY")
+        rendered = "\n".join(str(call.args[0]) for call in mock_print.call_args_list if call.args)
+        self.assertIn("FMT:RENDERED BODY", rendered)
+
     def test_manual_compaction_notice_replays_at_history_tail(self):
         agent = self._build_agent()
         agent.session_memory_service = SessionMemoryService(agent)

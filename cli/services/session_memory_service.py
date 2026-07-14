@@ -1444,13 +1444,8 @@ class SessionMemoryService:
     def _compaction_candidate_rows(self, mode: str) -> List[Tuple[int, Dict[str, Any]]]:
         return self.llm_context_manager._compaction_candidate_rows(mode)
 
-    def build_compaction_messages(
-        self,
-        mode: str,
-        source_history: List[Dict[str, Any]],
-        compact_until_index: int,
-    ) -> List[Dict[str, Any]]:
-        return self.llm_context_manager.build_compaction_messages(mode, source_history, compact_until_index)
+    def build_compaction_user_input(self, mode: str) -> str:
+        return self.llm_context_manager.build_compaction_user_input(mode)
 
     def compact_context(self, mode: str = "manual") -> bool:
         return self.llm_context_manager.compact_context(mode)
