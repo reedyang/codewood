@@ -38,6 +38,7 @@ class _FakeChatAgent:
         announce: bool = True,
         clear_screen: bool = False,
         print_history: bool = False,
+        persist: bool = True,
     ):
         self.activate_calls.append(
             {
@@ -45,6 +46,7 @@ class _FakeChatAgent:
                 "announce": announce,
                 "clear_screen": clear_screen,
                 "print_history": print_history,
+                "persist": persist,
             }
         )
         return self.activate_result
@@ -94,6 +96,9 @@ class _FakeEditAgent:
     def _sync_active_chat_messages(self):
         self.sync_calls += 1
 
+    def _save_chat_state(self):
+        self.save_calls = getattr(self, "save_calls", 0) + 1
+
     def _clear_pending_request_user_input(self):
         self.clear_pending_calls += 1
 
@@ -142,6 +147,7 @@ class ChatCommandControllerTests(unittest.TestCase):
                     "announce": False,
                     "clear_screen": False,
                     "print_history": False,
+                    "persist": False,
                 }
             ],
         )
@@ -188,6 +194,7 @@ class ChatCommandControllerTests(unittest.TestCase):
                     "announce": False,
                     "clear_screen": False,
                     "print_history": False,
+                    "persist": False,
                 }
             ],
         )

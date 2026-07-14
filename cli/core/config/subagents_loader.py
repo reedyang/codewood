@@ -306,7 +306,7 @@ def _render_subagent_markdown(
     model: str,
     tools: List[str],
     tools_specified: bool,
-    max_rounds: int,
+    max_rounds: Optional[int],
     enabled: bool,
 ) -> str:
     meta: Dict[str, object] = {
@@ -317,7 +317,7 @@ def _render_subagent_markdown(
         meta["model"] = str(model).strip()
     if tools_specified:
         meta["tools"] = [str(t).strip() for t in (tools or []) if str(t).strip()]
-    if int(max_rounds) != DEFAULT_SUBAGENT_MAX_ROUNDS:
+    if max_rounds is not None:
         meta["max_rounds"] = int(max_rounds)
     if not enabled:
         meta["enabled"] = False
@@ -376,7 +376,7 @@ def write_subagent(
         model=model,
         tools=list(tools or []),
         tools_specified=bool(tools_specified),
-        max_rounds=int(max_rounds),
+        max_rounds=max_rounds,
         enabled=bool(enabled),
     )
     try:

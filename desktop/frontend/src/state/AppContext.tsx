@@ -425,6 +425,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [draftWorkspaceId, setDraftWorkspaceId] = useState<string>("");
   const draftModeRef = useRef(false);
   const draftWorkspaceIdRef = useRef<string>("");
+  // Model the user chose while in draft (compose) mode, applied when the chat
+  // is materialized on first send. ``""`` means "inherit from last chat".
+  const draftModelRef = useRef<string>("");
   // Sub-agent session viewer state
   const [activeSubAgentSession, setActiveSubAgentSession] = useState<SubAgentSession | null>(null);
   const [subAgentSessionLoading, setSubAgentSessionLoading] = useState(false);
@@ -738,6 +741,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
     );
     activeChatIdRef.current = newId;
     activeWorkspaceIdRef.current = targetWsId;
+    // Clear stale history that may have been populated by a stray SSE event
+    // during draft mode so the new chat doesn't display another chat's turns.
+    setHistoryTurns([]);
+    setHistoryStart(0);
+    setHistoryTotal(0);
     setFocusOverride({ chatId: newId, wsId: targetWsId });
     setOptimisticChatFocus({
       chatId: newId,
@@ -746,6 +754,17 @@ export function AppProvider({ children }: { children: ReactNode }) {
     });
     setDraftMode(false);
     setDraftWorkspaceId("");
+    // Apply the model the user chose while in draft mode, if any.
+    const pendingModel = draftModelRef.current;
+    if (pendingModel) {
+      draftModelRef.current = "";
+      setState((prev) => {
+        if (!prev) return prev;
+        return { ...prev, model: { ...prev.model, current: pendingModel } };
+      });
+      // Fire-and-forget: the backend processes it asynchronously.
+      client.sendInput(`/model ${pendingModel}`, false, newId).catch(() => {});
+    }
     return { chatId: newId, workspaceId: targetWsId };
   }, [client]);
 
@@ -2092,9 +2111,19 @@ export function AppProvider({ children }: { children: ReactNode }) {
       // live-turn bucket to reconcile is the focused workspace's composite
       // key for ``cid``.
       const key = chatKey(wsId, cid);
+      // Capture the expected composite key at start; if it has changed by the
+      // time the async response arrives the user switched chats and we must
+      // discard the stale result (e.g. a slow response for an intermediate
+      // workspace-switch state event can race past a fast empty-chat response
+      // from the new-chat idle event and overwrite the correct history).
+      const expectedKey = historyChatRef.current;
       setHistoryLoading(true);
       try {
         const page = await client.getChatHistory(undefined, INITIAL_HISTORY);
+        // The user switched to a different chat while we were fetching.
+        if (historyChatRef.current !== expectedKey) {
+          return;
+        }
         // If the chat we're loading is still streaming a turn, that same
         // in-progress turn also appears as the trailing persisted history entry
         // (its user message, no final answer yet). Drop that trailing entry and
@@ -2221,6 +2250,16 @@ export function AppProvider({ children }: { children: ReactNode }) {
     const wsId = state?.workspace.id ?? "";
     const nextKey = chatKey(wsId, cid);
     if (!cid || !nextKey || nextKey === historyChatRef.current) {
+      return;
+    }
+    // If the user has an explicit focus override (e.g. from a just-created
+    // draft chat), only accept SSE events whose activeChatId matches the
+    // user's intended focus.  Stale/delayed events (e.g. a workspace-switch
+    // state event that arrives after the task already completed on the new
+    // chat) are silently dropped so the correct history is preserved.
+    const focusedId = activeChatIdRef.current;
+    const focusedWs = activeWorkspaceIdRef.current;
+    if (focusedId && (cid !== focusedId || wsId !== focusedWs)) {
       return;
     }
     // If the previously active chat still has a turn that hasn't finished
@@ -2507,13 +2546,16 @@ export function AppProvider({ children }: { children: ReactNode }) {
       if (!value) {
         return;
       }
-      let targetChatId = activeChatIdRef.current;
       if (draftModeRef.current) {
-        const target = await materializeDraftChat();
-        if (!target?.chatId) {
-          return;
-        }
-        targetChatId = target.chatId;
+        // In draft mode just record the preference — don't materialize the
+        // chat yet.  The selected model will be applied when the user sends
+        // their first message (materializeDraftChat applies it afterwards).
+        draftModelRef.current = value;
+        setState((prev) => {
+          if (!prev) return prev;
+          return { ...prev, model: { ...prev.model, current: value } };
+        });
+        return;
       }
       setState((prev) => {
         if (!prev) return prev;
@@ -2525,9 +2567,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
           },
         };
       });
-      await client.sendInput(`/model ${value}`, false, targetChatId);
+      await client.sendInput(
+        `/model ${value}`, false, activeChatIdRef.current,
+      );
     },
-    [client, materializeDraftChat],
+    [client],
   );
 
   const setReasoning = useCallback(
