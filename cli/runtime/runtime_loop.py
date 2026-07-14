@@ -4309,25 +4309,29 @@ def run_agent_loop(agent: Any):
                     explore_ticker = None
                     for tool_name, args in fallback_plans:
                         if tool_name == "run_subagent" and str(args.get("subagent") or "").strip().lower() == "explore":
-                            ticker = _WorkingStatusTicker(
-                                sys.stdout,
-                                fps=_WORKING_STATUS_MARQUEE_FPS,
-                                language=getattr(self, "display_language", None),
-                            )
-                            def _explore_render(elapsed_seconds, frame, _t=ticker, _self=self):
-                                lang = getattr(_self, "display_language", None)
-                                line = _render_working_status_line(
-                                    elapsed_seconds=elapsed_seconds, frame=frame,
-                                    label="Exploring...", language=lang,
+                            if bool(getattr(self, "_gui_plain_stream", False)):
+                                explore_ticker = _NullStatusTicker()
+                                self._print_tool_call_feedback(tool_name, args, failed=False)
+                            else:
+                                ticker = _WorkingStatusTicker(
+                                    sys.stdout,
+                                    fps=_WORKING_STATUS_MARQUEE_FPS,
+                                    language=getattr(self, "display_language", None),
                                 )
-                                try:
-                                    sys.stdout.write(f"\r\x1b[2K{line}")
-                                    sys.stdout.flush()
-                                except Exception:
-                                    pass
-                            ticker._render_frame = _explore_render
-                            ticker.start()
-                            explore_ticker = ticker
+                                def _explore_render(elapsed_seconds, frame, _t=ticker, _self=self):
+                                    lang = getattr(_self, "display_language", None)
+                                    line = _render_working_status_line(
+                                        elapsed_seconds=elapsed_seconds, frame=frame,
+                                        label="Exploring...", language=lang,
+                                    )
+                                    try:
+                                        sys.stdout.write(f"\r\x1b[2K{line}")
+                                        sys.stdout.flush()
+                                    except Exception:
+                                        pass
+                                ticker._render_frame = _explore_render
+                                ticker.start()
+                                explore_ticker = ticker
                         else:
                             self._print_tool_call_feedback(tool_name, args, failed=False)
                 else:
