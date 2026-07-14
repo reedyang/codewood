@@ -78,6 +78,7 @@ class SubAgentSessionStore:
         name: str,
         description: str,
         prompt: str,
+        topic: str = "",
     ) -> Dict[str, Any]:
         """Create a new sub-agent session and persist it to disk."""
         session_id = f"sa_{uuid.uuid4().hex[:12]}"
@@ -86,6 +87,7 @@ class SubAgentSessionStore:
             "id": session_id,
             "name": name,
             "description": description,
+            "topic": topic,
             "prompt": prompt,
             "startedAt": now,
             "endedAt": None,
@@ -554,6 +556,7 @@ def run_subagent(
     subagent_name: str,
     prompt: str,
     image: Optional[str] = None,
+    topic: str = "",
 ) -> Dict[str, Any]:
     """Execute a sub-agent and return ``{success, output}`` (or error).
 
@@ -615,6 +618,7 @@ def run_subagent(
         name=record.name,
         description=str(record.description or ""),
         prompt=prompt_text,
+        topic=topic,
     )
     session_id = session["id"]
 
@@ -622,6 +626,7 @@ def run_subagent(
     _emit_subagent_event(agent, "sub_agent_start", {
         "sessionId": session_id,
         "name": record.name,
+        "topic": topic,
         "description": str(record.description or ""),
         "prompt": prompt_text,
     })

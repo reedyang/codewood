@@ -239,7 +239,7 @@ export type ServerEvent =
   | { event: "thinking"; data: { text: string } }
   | { event: "confirm"; data: ConfirmRequest }
   | { event: "request_user_input"; data: AskMoreInfoRequest }
-  | { event: "sub_agent_start"; data: { sessionId: string; name: string; description: string; prompt: string } }
+  | { event: "sub_agent_start"; data: { sessionId: string; name: string; topic: string; description: string; prompt: string } }
   | { event: "sub_agent_assistant"; data: { sessionId: string; text: string } }
   | { event: "sub_agent_tool_call"; data: { sessionId: string; toolName: string; args: Record<string, unknown> } }
   | { event: "sub_agent_output"; data: { sessionId: string; text: string; toolName: string } }
@@ -344,6 +344,7 @@ export interface SubAgentMessage {
 export interface SubAgentSession {
   id: string;
   name: string;
+  topic: string;
   description: string;
   prompt: string;
   startedAt: string;

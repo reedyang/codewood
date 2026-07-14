@@ -340,6 +340,7 @@
   "subagents_loader.missing_instructions": "⚠️ 子智能体文件 {path} 正文（指令）为空；已跳过",
   "subagents.error.not_found": "❌ 未找到子智能体 '{name}'。可用的子智能体：{available}",
   "subagents.error.missing_subagent": "❌ run_subagent 缺少 'subagent' 参数",
+  "subagents.error.missing_topic": "❌ run_subagent 缺少 'topic' 参数",
   "subagents.error.empty_prompt": "❌ run_subagent 需要非空的 'prompt'",
   "subagents.error.nesting_forbidden": "❌ 子智能体不能调用 run_subagent（不允许嵌套）",
   "subagents.error.bad_response": "❌ 子智能体返回了非预期的响应",

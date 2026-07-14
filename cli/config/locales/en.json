@@ -340,6 +340,7 @@
   "subagents_loader.missing_instructions": "⚠️ Sub-agent file {path} has an empty body (instructions); skipped",
   "subagents.error.not_found": "❌ Sub-agent '{name}' not found. Available sub-agents: {available}",
   "subagents.error.missing_subagent": "❌ run_subagent is missing the 'subagent' parameter",
+  "subagents.error.missing_topic": "❌ run_subagent is missing the 'topic' parameter",
   "subagents.error.empty_prompt": "❌ run_subagent requires a non-empty 'prompt'",
   "subagents.error.nesting_forbidden": "❌ Sub-agents cannot invoke run_subagent (nesting is not allowed)",
   "subagents.error.bad_response": "❌ Sub-agent returned an unexpected response",

@@ -124,8 +124,8 @@ export function ChatTitleBar() {
             {activeChat.name}
           </span>
           <span className="chat-titlebar-breadcrumb-sep">&gt;</span>
-          <span className="chat-titlebar-name chat-titlebar-breadcrumb-current" title={activeSubAgentSession.name}>
-            {activeSubAgentSession.name}
+          <span className="chat-titlebar-name chat-titlebar-breadcrumb-current" title={activeSubAgentSession.topic || activeSubAgentSession.name}>
+            {activeSubAgentSession.topic || activeSubAgentSession.name}
           </span>
         </div>
       ) : (
