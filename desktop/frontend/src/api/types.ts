@@ -229,11 +229,20 @@ export interface AskMoreInfoRequest {
   chatId: string;
 }
 
+export interface CompactNoticeData {
+  title: string;
+  body: string;
+  text: string;
+  stage?: string;
+  mode?: string;
+}
+
 export type ServerEvent =
   | { event: "idle"; data: { state: AppState } }
   | { event: "turn_start"; data: { text: string } }
   | { event: "round_start"; data: { chatId?: string } }
   | { event: "round_end"; data: { chatId?: string } }
+  | { event: "compact_notice"; data: { title?: string; body?: string; text: string; stage?: string; mode?: string; chatId?: string; workspaceId?: string } }
   | { event: "output"; data: { text: string } }
   | { event: "assistant"; data: { text: string } }
   | { event: "thinking"; data: { text: string } }
@@ -290,6 +299,10 @@ export interface HistoryRound {
   waitSeconds: number;
   text: string;
   tools: string;
+  /** Compact notice banner title rendered between turns. */
+  compactNoticeTitle?: string;
+  /** Persisted compaction summary body shown below the compact notice banner. */
+  compactNoticeBody?: string;
   /** A recorded request_user_input selection, rendered as a left-side bubble
    *  (a reply to the agent's question, not a user-initiated turn). */
   selection?: string;

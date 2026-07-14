@@ -182,6 +182,7 @@ def _build_structured_turns(agent: Any) -> List[Dict[str, Any]]:
     current_round: Optional[Dict[str, Any]] = None
     prev_ts: Optional[float] = None
     sms = getattr(agent, "session_memory_service", None)
+    pending_compaction_summary: Optional[Dict[str, Any]] = None
 
     def _parse_ts(value: Any) -> Optional[float]:
         text = str(value or "").strip()
@@ -341,6 +342,59 @@ def _build_structured_turns(agent: Any) -> List[Dict[str, Any]]:
                 if ts is not None:
                     prev_ts = ts
                 continue
+            compact_notice = None
+            try:
+                if sms is not None:
+                    compact_notice = sms.parse_context_compaction_notice_content(content)
+            except Exception:
+                compact_notice = None
+            if compact_notice is not None:
+                compact_display = None
+                try:
+                    formatter = getattr(sms, "build_context_compaction_display_payload", None)
+                    if callable(formatter):
+                        compact_display = formatter(compact_notice, pending_compaction_summary)
+                except Exception:
+                    compact_display = None
+                if not isinstance(compact_display, dict):
+                    title = ""
+                    body = ""
+                    try:
+                        title = str(
+                            getattr(sms, "format_context_compaction_notice_message")(compact_notice)
+                        ).strip()
+                    except Exception:
+                        title = str(compact_notice.get("message") or "").strip()
+                    if isinstance(pending_compaction_summary, dict):
+                        body = str(pending_compaction_summary.get("summary") or "").strip()
+                    compact_display = {
+                        "title": title,
+                        "body": body,
+                        "text": title if not body else f"{title}\n\n{body}",
+                    }
+                turns.append(
+                    {
+                        "userText": "",
+                        "timestamp": str(msg.get("created_at") or ""),
+                        "rounds": [
+                            {
+                                "waitSeconds": 0,
+                                "text": "",
+                                "tools": "",
+                                "selection": "",
+                                "thinking": "",
+                                "compactNoticeTitle": str(compact_display.get("title") or ""),
+                                "compactNoticeBody": str(compact_display.get("body") or ""),
+                            }
+                        ],
+                    }
+                )
+                current = None
+                current_round = None
+                pending_compaction_summary = None
+                if ts is not None:
+                    prev_ts = ts
+                continue
             # Drop slash-command outputs and durable compaction summaries.
             try:
                 if agent._parse_internal_slash_result_history_content(content) is not None:
@@ -355,8 +409,11 @@ def _build_structured_turns(agent: Any) -> List[Dict[str, Any]]:
             except Exception:
                 pass
             try:
-                if sms is not None and sms.parse_context_compaction_summary_content(content) is not None:
-                    continue
+                if sms is not None:
+                    compact_summary = sms.parse_context_compaction_summary_content(content)
+                    if compact_summary is not None:
+                        pending_compaction_summary = compact_summary
+                        continue
             except Exception:
                 pass
             # The per-turn worked summary is superseded by per-round timers.
@@ -521,6 +578,8 @@ def _build_structured_turns(agent: Any) -> List[Dict[str, Any]]:
                 "tools": str(r.get("tools") or "").rstrip("\n"),
                 "selection": str(r.get("selection") or "").strip(),
                 "thinking": str(r.get("thinking") or "").strip(),
+                "compactNoticeTitle": str(r.get("compactNoticeTitle") or "").strip(),
+                "compactNoticeBody": str(r.get("compactNoticeBody") or "").strip(),
             }
             for r in turn.get("rounds", [])
         ]
@@ -530,7 +589,14 @@ def _build_structured_turns(agent: Any) -> List[Dict[str, Any]]:
         turn["rounds"] = [
             r
             for r in rounds
-            if r["text"].strip() or r["tools"].strip() or r["selection"].strip() or r["thinking"].strip()
+            if (
+                r["text"].strip()
+                or r["tools"].strip()
+                or r["selection"].strip()
+                or r["thinking"].strip()
+                or r["compactNoticeTitle"].strip()
+                or r["compactNoticeBody"].strip()
+            )
         ]
     return turns
 
@@ -1826,6 +1892,47 @@ class ServeApp:
                     fn()
             except Exception:
                 pass
+
+    def compact_context(self) -> Dict[str, Any]:
+        """Trigger manual context compaction via the session memory service.
+
+        Bridge output on the HTTP thread is suppressed so the compaction's
+        TUI-oriented printed banners do not create spurious SSE ``output`` events.
+        The localized ``compaction.no_context`` message is returned in the response
+        so the frontend can render it as a sidebar-style notification (no turn
+        lifecycle, no history interference).
+        """
+        from ..core.localization import get_display_language, translate
+
+        agent = self.agent
+        svc = getattr(agent, "session_memory_service", None)
+        compact_fn = getattr(svc, "compact_context", None) if svc else None
+        focus_chat = _primary_active_chat_id(agent)
+        if callable(compact_fn):
+            bridge = getattr(self, "_bridge", None)
+            prev_suppressed = getattr(bridge, "suppressed", False) if bridge is not None else False
+            if bridge is not None:
+                bridge.suppressed = True
+            try:
+                if focus_chat:
+                    with agent._session_scope(focus_chat):
+                        ok = compact_fn(mode="manual")
+                else:
+                    ok = compact_fn(mode="manual")
+            finally:
+                if bridge is not None:
+                    bridge.suppressed = prev_suppressed
+            if not ok:
+                if focus_chat:
+                    with agent._session_scope(focus_chat):
+                        lang = get_display_language(agent)
+                        msg = translate("compaction.no_context", lang)
+                else:
+                    lang = get_display_language(agent)
+                    msg = translate("compaction.no_context", lang)
+                return {"ok": False, "text": msg}
+            return {"ok": True}
+        return {"ok": False, "error": "compaction unavailable"}
 
     def state(self) -> Dict[str, Any]:
         return _build_state(self.agent)
@@ -4844,6 +4951,18 @@ class ServeApp:
         self.agent._gui_thinking_chunk = lambda delta: (  # type: ignore[attr-defined]
             bridge.write_tagged("thinking", str(delta or "")),
         )
+        # Forward context-compaction status banners to the GUI so it can mirror
+        # the TUI's "Compacting context" / "Context compacted" feedback.
+        self.agent._gui_compaction_notice = lambda phase, mode, title, body, text: self.broadcaster.publish(  # type: ignore[attr-defined]
+            "compact_notice",
+            self._route(
+                stage=str(phase or ""),
+                mode=str(mode or ""),
+                title=str(title or ""),
+                body=str(body or ""),
+                text=str(text or ""),
+            ),
+        )
         # Each model round (one request->response within a turn) is bracketed so
         # the GUI can show a per-round "Working/Worked" wait timer and lay out
         # model text + tool output for that round in natural order. Scoped to the
@@ -5299,6 +5418,10 @@ def _make_handler(app: ServeApp):
             if path == "/interrupt":
                 app.interrupt()
                 self._send_json(200, {"ok": True})
+                return
+            if path == "/compact":
+                result = app.compact_context()
+                self._send_json(200 if result.get("ok") else 400, result)
                 return
             if path == "/export-chat":
                 cid = str(body.get("id") or "")[:256]

@@ -798,6 +798,34 @@ class LLMContextManager:
             pass
         return 3
 
+    def _print_compaction_notice(self, title: str, body: str = "") -> int:
+        rendered_lines = self._print_compaction_banner(title)
+        body_text = str(body or "").strip()
+        if body_text:
+            self._write_compaction_raw(body_text + "\n\n")
+            rendered_lines += body_text.count("\n") + 2
+            try:
+                self.agent._terminal_cursor_at_line_start = True
+            except Exception:
+                pass
+        return rendered_lines
+
+    def _emit_gui_compaction_notice(self, phase: str, mode: str, title: str, body: str = "") -> None:
+        try:
+            cb = getattr(self.agent, "_gui_compaction_notice", None)
+            if callable(cb):
+                clean_title = str(title or "").strip()
+                clean_body = str(body or "").strip()
+                cb(
+                    str(phase or ""),
+                    str(mode or ""),
+                    clean_title,
+                    clean_body,
+                    clean_title if not clean_body else f"{clean_title}\n\n{clean_body}",
+                )
+        except Exception:
+            pass
+
     def _clear_compaction_banner(self, rendered_lines: int) -> None:
         rows = max(0, int(rendered_lines or 0))
         if rows <= 0:
@@ -835,7 +863,8 @@ class LLMContextManager:
                 print(self._t("compaction.no_context"))
             return False
         start_text = self._t("compaction.start.auto") if mode == "auto" else self._t("compaction.start.manual")
-        start_banner_lines = self._print_compaction_banner(start_text)
+        self._emit_gui_compaction_notice("start", mode, start_text)
+        start_banner_lines = self._print_compaction_notice(start_text)
         source_history = [m for _idx, m in candidates_with_idx]
         insert_after_idx = int(candidates_with_idx[-1][0])
         messages = self.build_compaction_messages(mode, source_history, insert_after_idx)
@@ -886,7 +915,9 @@ class LLMContextManager:
                 print(self._t("compaction.failed_saving_summary"))
             return False
         self._clear_compaction_banner(start_banner_lines)
-        self._print_compaction_banner(self._default_context_compaction_notice_message(mode))
+        compact_display = self.build_context_compaction_display_payload(notice_msg["content"], content)
+        self._print_compaction_notice(compact_display["title"], compact_display["body"])
+        self._emit_gui_compaction_notice("done", mode, compact_display["title"], compact_display["body"])
         return True
 
     def check_and_compact_if_needed(

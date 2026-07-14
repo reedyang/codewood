@@ -42,10 +42,12 @@ export interface RichComposerProps {
    *  the paste carries image items, those items are consumed here instead of
    *  being inserted as text. */
   onPasteImages?: (dataUrls: string[]) => void;
+  /** Called when the user selects the "/compact" slash suggestion. */
+  onCompact?: () => void;
 }
 
 interface SlashItem {
-  kind: TokenKind;
+  kind: TokenKind | "compact";
   /** What we insert as the pill payload. */
   payload: string;
   /** Visible label in both the popup and the inserted pill. */
@@ -91,6 +93,20 @@ function buildSlashPool(catalog: CompletionCatalog): SlashItem[] {
       search: `${p.server} ${p.name}\n${p.description}`.toLowerCase(),
     });
   }
+  return pool;
+}
+
+/** Build the full suggestion pool including the built-in "/compact" item.
+ *  The compact item is always prepended so it appears first in the list. */
+function buildFullSlashPool(catalog: CompletionCatalog): SlashItem[] {
+  const pool = buildSlashPool(catalog);
+  pool.unshift({
+    kind: "compact",
+    payload: "",
+    label: "Compact",
+    description: "Compact conversation context",
+    search: "compact",
+  });
   return pool;
 }
 
@@ -499,7 +515,7 @@ function isPreviousSiblingPill(node: Node): boolean {
   return (prev as HTMLElement).hasAttribute("data-token-kind");
 }
 
-function kindIconName(kind: TokenKind): string {
+function kindIconName(kind: TokenKind | "compact"): string {
   switch (kind) {
     case "attach":
       return "paperclip";
@@ -509,6 +525,8 @@ function kindIconName(kind: TokenKind): string {
       return "wrench";
     case "mcp-prompt":
       return "message-square";
+    case "compact":
+      return "archive";
   }
 }
 
@@ -586,6 +604,7 @@ export function RichComposer({
   placeholder,
   rows = 3,
   onPasteImages,
+  onCompact,
 }: RichComposerProps) {
   const { getCompletionCatalog, searchWorkspaceFiles, t } = useApp();
   const rootRef = useRef<HTMLDivElement | null>(null);
@@ -663,7 +682,7 @@ export function RichComposer({
   // user opens the slash menu so newly-added skills / reconnected MCP servers
   // become available without a manual refresh.
   useEffect(() => {
-    void getCompletionCatalog().then((c) => setPool(buildSlashPool(c)));
+    void getCompletionCatalog().then((c) => setPool(buildFullSlashPool(c)));
   }, [getCompletionCatalog]);
 
   // Track the incoming model and feed the undo history. When ``segments``
@@ -974,6 +993,45 @@ export function RichComposer({
 
   const insertSelectedSlashItem = useCallback(
     (item: SlashItem) => {
+      if (item.kind === "compact") {
+        // "/compact" is a built-in action, not a pill. Clear the slash text
+        // when possible, but ALWAYS invoke the callback even if the current
+        // DOM selection is no longer in the expected shape (for example after
+        // a chat switch / refocus changed the caret node).
+        const root = rootRef.current;
+        if (root) {
+          const sel = window.getSelection();
+          if (sel && sel.rangeCount > 0) {
+            const range = sel.getRangeAt(0);
+            const node = range.startContainer;
+            if (node.nodeType === Node.TEXT_NODE && root.contains(node)) {
+              const text = node.textContent ?? "";
+              const before = text.slice(0, range.startOffset);
+              let slashAt = -1;
+              for (let i = before.length - 1; i >= 0; i -= 1) {
+                if (before[i] === "/") {
+                  slashAt = i;
+                  break;
+                }
+                if (/\s/.test(before[i]) || before[i] === "\u200B") break;
+              }
+              if (slashAt >= 0) {
+                const head = before.slice(0, slashAt);
+                const after = text.slice(range.startOffset);
+                node.textContent = head + after;
+                const next = readSegmentsFromDom(root);
+                lastRenderedRef.current = next
+                  .map((s) => (s.kind === "text" ? `T:${s.value}` : `${s.kind}:${s.value}`))
+                  .join("\x1e");
+                onChange(next);
+              }
+            }
+          }
+        }
+        setSlash({ open: false, query: "", selected: 0 });
+        onCompact?.();
+        return;
+      }
       const root = rootRef.current;
       if (!root) return;
       const sel = window.getSelection();
@@ -1028,7 +1086,7 @@ export function RichComposer({
         .join("\x1e");
       onChange(next);
     },
-    [onChange],
+    [onChange, onCompact],
   );
 
   const insertSelectedAtItem = useCallback(

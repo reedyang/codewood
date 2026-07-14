@@ -1685,6 +1685,7 @@ class Agent:
                 last_plan_index = -1
                 last_plan_emitted_feedback = False
 
+        pending_compaction_summary = None
         for idx, msg in enumerate(hist):
             _reset_plan_tracker_if_stale(idx)
             role = str(msg.get("role") or "").strip().lower()
@@ -1732,11 +1733,18 @@ class Agent:
                 except Exception:
                     compact_notice = None
                 if compact_notice is not None:
-                    msg_text = self.session_memory_service.format_context_compaction_notice_message(compact_notice)
+                    compact_display = self.session_memory_service.build_context_compaction_display_payload(
+                        compact_notice,
+                        pending_compaction_summary,
+                    )
                     try:
-                        self.session_memory_service._print_compaction_banner(msg_text)
+                        self.session_memory_service._print_compaction_banner(compact_display["title"])
                     except Exception:
-                        print(msg_text)
+                        print(compact_display["title"])
+                    if compact_display["body"]:
+                        print(compact_display["body"])
+                        print("")
+                    pending_compaction_summary = None
                     continue
                 compact_payload = None
                 try:
@@ -1744,8 +1752,7 @@ class Agent:
                 except Exception:
                     compact_payload = None
                 if compact_payload is not None:
-                    # Compact summaries are durable state for the model context,
-                    # not user-visible chat transcript content.
+                    pending_compaction_summary = compact_payload
                     continue
                 interrupted_event = self._parse_conversation_interrupted_history_content(content)
                 if interrupted_event is not None:

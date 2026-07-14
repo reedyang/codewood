@@ -151,9 +151,12 @@ class SessionMemoryService:
     def format_context_compaction_notice_message(self, payload_or_message: Any) -> str:
         raw_message = ""
         mode = ""
-        if isinstance(payload_or_message, dict):
-            raw_message = str(payload_or_message.get("message") or "").strip()
-            mode = self._normalize_context_compaction_notice_mode(payload_or_message.get("mode"))
+        payload = payload_or_message if isinstance(payload_or_message, dict) else None
+        if payload is None:
+            payload = self.parse_context_compaction_notice_content(str(payload_or_message or ""))
+        if isinstance(payload, dict):
+            raw_message = str(payload.get("message") or "").strip()
+            mode = self._normalize_context_compaction_notice_mode(payload.get("mode"))
         else:
             raw_message = str(payload_or_message or "").strip()
         if not mode:
@@ -161,6 +164,28 @@ class SessionMemoryService:
         if mode:
             return self._default_context_compaction_notice_message(mode)
         return raw_message or self._default_context_compaction_notice_message("auto")
+
+    def format_context_compaction_summary_message(self, payload_or_content: Any) -> str:
+        payload = payload_or_content if isinstance(payload_or_content, dict) else None
+        if payload is None:
+            payload = self.parse_context_compaction_summary_content(str(payload_or_content or ""))
+        if not isinstance(payload, dict):
+            return ""
+        return str(payload.get("summary") or "").strip()
+
+    def build_context_compaction_display_payload(
+        self,
+        notice_payload_or_message: Any,
+        summary_payload_or_content: Any = None,
+    ) -> Dict[str, str]:
+        title = self.format_context_compaction_notice_message(notice_payload_or_message).strip()
+        body = self.format_context_compaction_summary_message(summary_payload_or_content).strip()
+        text = title if not body else f"{title}\n\n{body}"
+        return {
+            "title": title,
+            "body": body,
+            "text": text,
+        }
 
     def _model_visible_path_text(self, raw_path: Any) -> str:
         fallback = "(hidden internal runtime directory)"

@@ -4086,6 +4086,72 @@ html[data-has-bg] .select {
   }
 }
 
+.activity-centered {
+  text-align: center;
+  margin: 4px 0;
+  color: var(--text-muted);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.activity-centered .activity-steps {
+  display: inline-block;
+  text-align: center;
+}
+
+.compact-notice-turn {
+  display: flex;
+  justify-content: center;
+}
+
+.compact-notice-block {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 10px;
+  width: min(100%, 760px);
+}
+
+.compact-notice-banner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  color: var(--text-muted);
+  font-size: 13px;
+  font-weight: 600;
+  text-align: center;
+}
+
+.compact-notice-banner::before,
+.compact-notice-banner::after {
+  content: "";
+  flex: 1 1 auto;
+  min-width: 28px;
+  border-top: 1px solid color-mix(in srgb, var(--text-muted) 35%, transparent);
+}
+
+.compact-notice-text {
+  min-width: 0;
+  white-space: pre-wrap;
+}
+
+.compact-notice-body {
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--surface-alt, #f0f0f0) 82%, transparent);
+  color: var(--text);
+}
+
+.compact-notice-body > :first-child {
+  margin-top: 0;
+}
+
+.compact-notice-body > :last-child {
+  margin-bottom: 0;
+}
+
 .activity-collapse {
   display: flex;
   align-items: center;

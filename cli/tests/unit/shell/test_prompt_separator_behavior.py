@@ -163,7 +163,7 @@ class PromptSeparatorBehaviorTests(unittest.TestCase):
         rendered = "\n".join(str(call.args[0]) for call in mock_print.call_args_list if call.args)
         self.assertIn("normal message before reload", rendered)
         self.assertIn("normal reply after reload", rendered)
-        self.assertNotIn("This summary is for model context only", rendered)
+        self.assertIn("This summary is for model context only", rendered)
 
     def test_chat_history_replays_context_compaction_notice_banner_in_current_language(self):
         agent = self._build_agent()

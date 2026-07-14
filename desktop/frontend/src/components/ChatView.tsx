@@ -220,6 +220,34 @@ function MessageBody({ text }: { text: string }) {
   );
 }
 
+function CompactNoticeView({
+  title,
+  body = "",
+}: {
+  title: string;
+  body?: string;
+}) {
+  const noticeTitle = String(title || "").trim();
+  const noticeBody = String(body || "").trim();
+  if (!noticeTitle && !noticeBody) {
+    return null;
+  }
+  return (
+    <div className="compact-notice-block">
+      {noticeTitle && (
+        <div className="compact-notice-banner">
+          <span className="compact-notice-text">{noticeTitle}</span>
+        </div>
+      )}
+      {noticeBody && (
+        <div className="compact-notice-body">
+          <MarkdownText text={noticeBody} />
+        </div>
+      )}
+    </div>
+  );
+}
+
 interface ModelGroup {
   provider: string;
   items: { selector: string; name: string }[];
@@ -686,6 +714,8 @@ export function ChatView() {
     pasteImage,
     chatImageUrl,
     interrupt,
+    compactContext,
+    compactNotice,
     setExecutionPolicy,
     setModel,
     setReasoning,
@@ -856,7 +886,7 @@ export function ChatView() {
     if (el && stickToBottomRef.current) {
       el.scrollTop = el.scrollHeight;
     }
-  }, [turns, now]);
+  }, [turns, now, compactNotice]);
 
   // When history turns change: a prepend (older page) preserves the viewport;
   // a replacement (initial load / switch) jumps to the bottom.
@@ -1088,6 +1118,7 @@ export function ChatView() {
         placeholder={t("chat.inputPlaceholder")}
         rows={3}
         onPasteImages={onPasteImages}
+        onCompact={() => void compactContext()}
       />
       <div className="composer-toolbar">
         <div className="composer-left">
@@ -1333,6 +1364,14 @@ export function ChatView() {
                 </div>
               );
             })()}
+            {compactNotice && (
+              <div className="turn compact-notice-turn" role="alert" aria-live="polite">
+                <CompactNoticeView
+                  title={compactNotice.title}
+                  body={compactNotice.body}
+                />
+              </div>
+            )}
           </div>
           <div className="composer-dock">{composer}</div>
         </>
@@ -1479,6 +1518,15 @@ export function HistoryRoundDetailView({
   showText?: boolean;
 }) {
   const { t, pendingExpandSubAgentId } = useApp();
+  const compactNoticeTitle = String(round.compactNoticeTitle || "");
+  const compactNoticeBody = String(round.compactNoticeBody || "");
+  if (compactNoticeTitle.trim().length > 0 || compactNoticeBody.trim().length > 0) {
+    return (
+      <div className="turn compact-notice-turn">
+        <CompactNoticeView title={compactNoticeTitle} body={compactNoticeBody} />
+      </div>
+    );
+  }
   const thinkingText = String(round.thinking || "");
   const toolText = String(round.tools || "");
   const toolCount = countToolCalls(toolText);
@@ -1500,6 +1548,18 @@ export function HistoryRoundDetailView({
   const visibleTextNode = showText ? textNode : null;
 
   if (hasToolShell) {
+    if (toolCount === 0) {
+      return (
+        <>
+          {thinkingNode}
+          <div className="turn-round">
+            <div className="activity-centered">
+              <StepsView text={toolText} />
+            </div>
+          </div>
+        </>
+      );
+    }
     return (
       <>
         {thinkingNode}
@@ -1559,7 +1619,18 @@ function CompletedTurnView({
   const turnHasTarget = pendingExpandSubAgentId !== "" &&
     detailRounds.some((r) => textContainsSubAgentSession(String(r.tools || ""), pendingExpandSubAgentId));
   const detailNodes: ReactNode[] = [];
+  const compactNoticeNodes: ReactNode[] = [];
   detailRounds.forEach((round, index) => {
+    const compactNoticeTitle = String(round.compactNoticeTitle || "").trim();
+    const compactNoticeBody = String(round.compactNoticeBody || "").trim();
+    if (compactNoticeTitle.length > 0 || compactNoticeBody.length > 0) {
+      compactNoticeNodes.push(
+        <div className="turn compact-notice-turn" key={`compact-notice-${index}`}>
+          <CompactNoticeView title={compactNoticeTitle} body={compactNoticeBody} />
+        </div>,
+      );
+      return;
+    }
     if (round.selection && round.selection.trim().length > 0) {
       detailNodes.push(
         <div className="ask-selection" key={`selection-${index}`}>
@@ -1580,13 +1651,14 @@ function CompletedTurnView({
     );
   });
   const hasDetails = detailNodes.length > 0;
+  const hasCompactNotices = compactNoticeNodes.length > 0;
   const timerText = `${t("activity.workedFor")} ${formatElapsed(workedForSeconds * 1000)}`;
   const finalAnswer = finalAnswerText.length > 0 ? (
     <div className="answer">
       <MarkdownText text={finalAnswerText} />
     </div>
   ) : null;
-  if (!hasDetails && !finalAnswer) {
+  if (!hasDetails && !finalAnswer && !hasCompactNotices) {
     return (
       <div className="turn">
         {turn.userText && (
@@ -1611,6 +1683,7 @@ function CompletedTurnView({
           handlers={handlers}
         />
       )}
+      {compactNoticeNodes}
       {hasDetails ? (
         <>
           <RoundShell
@@ -1840,6 +1913,19 @@ function LiveToolGroupView({
         : completedText
     : completedText;
   const running = isLatestGroup && (lastRunning || waitingForContinuation);
+
+  if (toolCount === 0 && toolText.trim().length > 0) {
+    return (
+      <>
+        {thinkingNodes}
+        <div className="turn-round">
+          <div className="activity-centered">
+            <StepsView text={toolText} />
+          </div>
+        </div>
+      </>
+    );
+  }
 
   return (
     <>
@@ -2204,7 +2290,7 @@ export function LiveRoundView({
       />
     );
   }
-  const timerText = hasTools
+  const timerText = hasTools && toolCount > 0
     ? toolTitle ?? t("activity.toolCalls").replace("{count}", String(toolCount))
     : `${t("activity.working")} (${elapsed})`;
   return (
