@@ -4789,6 +4789,9 @@ def run_agent_loop(agent: Any):
                                 if isinstance(m, dict) and m.get("_tool_rounds_raw"):
                                     rendered = _rerender(m["_tool_rounds_raw"])
                                     if rendered:
+                                        if bool(getattr(self, "_gui_plain_stream", False)):
+                                            print(str(rendered[0]).rstrip("\n"))
+                                            break
                                         clean = rendered[0].split("\ue008")[0].rstrip("\n").replace("\ue004", "").replace("\ue005", "").replace("\ue002", "").replace("\ue003", "")
                                         if sys.stdout.isatty():
                                             sys.stdout.write("\033[1A\033[K")
