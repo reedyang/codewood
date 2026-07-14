@@ -358,6 +358,110 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
         self.assertIn("Message needing summarization", joined)
         self.assertIn("Answer needing summarization", joined)
 
+    def test_gui_compact_streams_summary_chunks_into_compact_notice(self):
+        agent = _FakeAgent()
+        agent.params = {"context_window": 16000}
+        agent._compose_system_prompt_snapshot = lambda include_tools=True: "SYSTEM"
+        svc = SessionMemoryService(agent)
+        agent.conversation_history = [
+            {"role": "user", "content": "Older message"},
+            {
+                "role": "assistant",
+                "content": svc.build_context_compaction_summary_content(
+                    summary="Previous summary",
+                    mode="auto",
+                    covered_message_count=2,
+                ),
+            },
+            {"role": "user", "content": "Message needing summarization"},
+            {"role": "assistant", "content": "Answer needing summarization"},
+        ]
+        notices = []
+
+        def _notice(phase, mode, title, body, text):
+            notices.append((phase, mode, title, body, text))
+
+        class _FakeStream:
+            def __iter__(self):
+                yield "Summary "
+                yield "body"
+
+            def close(self):
+                return None
+
+        def _fake_call_ai(*args, **kwargs):
+            self.assertTrue(kwargs.get("stream"))
+            return _FakeStream()
+
+        agent._gui_compaction_notice = _notice
+        agent.call_ai = _fake_call_ai  # type: ignore[attr-defined]
+
+        with redirect_stdout(io.StringIO()):
+            ok = svc.compact_context("manual")
+
+        self.assertTrue(ok)
+        self.assertGreaterEqual(len(notices), 4)
+        self.assertEqual(notices[0][:4], ("start", "manual", "Compacting context", ""))
+        self.assertEqual(notices[1][:4], ("stream", "manual", "Compacting context", "Summary"))
+        self.assertEqual(notices[2][:4], ("stream", "manual", "Compacting context", "Summary body"))
+        self.assertEqual(notices[-1][:4], ("done", "manual", "Context compacted", "Summary body"))
+
+    def test_tui_compact_streams_summary_to_terminal_before_final_notice(self):
+        agent = _FakeAgent()
+        agent.params = {"context_window": 16000}
+        agent._compose_system_prompt_snapshot = lambda include_tools=True: "SYSTEM"
+        svc = SessionMemoryService(agent)
+        agent.conversation_history = [
+            {"role": "user", "content": "Older message"},
+            {
+                "role": "assistant",
+                "content": svc.build_context_compaction_summary_content(
+                    summary="Previous summary",
+                    mode="auto",
+                    covered_message_count=2,
+                ),
+            },
+            {"role": "user", "content": "Message needing summarization"},
+            {"role": "assistant", "content": "Answer needing summarization"},
+        ]
+        reloads = []
+        notices = []
+
+        class _FakeStream:
+            def __iter__(self):
+                yield "Summary "
+                yield "body"
+
+            def close(self):
+                return None
+
+        def _fake_call_ai(*args, **kwargs):
+            self.assertTrue(kwargs.get("stream"))
+            return _FakeStream()
+
+        def _fake_print_notice(title, body=""):
+            notices.append((str(title), str(body)))
+            return 3
+
+        agent._remember_active_chat_history_tail_anchor = lambda: reloads.append("tail")  # type: ignore[attr-defined]
+        agent._reload_chat_history_from_anchor_on_resize = lambda include_startup_overview=False: reloads.append(  # type: ignore[attr-defined]
+            ("reload", bool(include_startup_overview))
+        )
+
+        agent.call_ai = _fake_call_ai  # type: ignore[attr-defined]
+
+        with (
+            patch.object(svc.llm_context_manager, "_print_compaction_notice", side_effect=_fake_print_notice),
+            patch("cli.runtime.runtime_loop._consume_streaming_ai_response", return_value=("Summary body", True)) as mock_consume,
+        ):
+            ok = svc.compact_context("manual")
+
+        self.assertTrue(ok)
+        self.assertEqual(notices[0], ("Compacting context", ""))
+        self.assertEqual(len(notices), 1)
+        mock_consume.assert_called_once()
+        self.assertEqual(reloads, ["tail", ("reload", False)])
+
     def test_auto_compact_candidate_selection_preserves_recent_tail_within_five_percent(self):
         agent = _FakeAgent()
         agent.params = {"context_window": 1000}
