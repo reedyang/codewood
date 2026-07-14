@@ -37,31 +37,22 @@ def _tool_result(tool: str, args: dict, output: str = "") -> str:
 
 
 class _FakeSessionMemoryService:
-    def parse_context_compaction_notice_content(self, content):
-        return None
-
     def parse_context_compaction_summary_content(self, content):
         return None
 
-    def format_context_compaction_notice_message(self, payload_or_message):
-        if isinstance(payload_or_message, dict):
-            return str(payload_or_message.get("message") or "")
-        return str(payload_or_message or "")
+    def format_context_compaction_title(self, payload_or_content):
+        _ = payload_or_content
+        return "Context compacted"
 
 
 class _FakeCompactionSessionMemoryService(_FakeSessionMemoryService):
-    def parse_context_compaction_notice_content(self, content):
-        if content == "NOTICE":
-            return {"message": "Context compacted", "mode": "manual"}
-        return None
-
     def parse_context_compaction_summary_content(self, content):
         if content == "SUMMARY":
             return {"summary": "Compacted summary body", "mode": "manual"}
         return None
 
-    def build_context_compaction_display_payload(self, notice_payload_or_message, summary_payload_or_content=None):
-        title = self.format_context_compaction_notice_message(notice_payload_or_message)
+    def build_context_compaction_display_payload(self, summary_payload_or_content):
+        title = "Context compacted"
         body = ""
         if isinstance(summary_payload_or_content, dict):
             body = str(summary_payload_or_content.get("summary") or "")
@@ -203,7 +194,7 @@ class StructuredTurnGroupingTests(unittest.TestCase):
         second_round = turn["rounds"][1]
         self.assertEqual(second_round["text"], "最终答案")
 
-    def test_emits_compaction_notice_turn_with_summary_body(self):
+    def test_emits_compaction_turn_from_summary_without_notice(self):
         agent = _FakeAgent()
         agent.session_memory_service = _FakeCompactionSessionMemoryService()
         agent.conversation_history = [
@@ -216,11 +207,6 @@ class StructuredTurnGroupingTests(unittest.TestCase):
                 "role": "assistant",
                 "content": "SUMMARY",
                 "created_at": "2026-07-08 18:21:41",
-            },
-            {
-                "role": "assistant",
-                "content": "NOTICE",
-                "created_at": "2026-07-08 18:21:42",
             },
         ]
 

@@ -310,20 +310,15 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
         self.assertIn("compact_mode=manual", user_input)
         self.assertIn("CONTEXT CHECKPOINT COMPACTION", user_input)
         self.assertIn("Generate a concise checkpoint handoff summary", user_input)
-        inserted = agent.conversation_history[-2]
+        inserted = agent.conversation_history[-1]
         payload = svc.parse_context_compaction_summary_content(str(inserted.get("content") or ""))
         self.assertIsInstance(payload, dict)
         self.assertEqual(payload.get("summary"), "New merged summary")
         self.assertEqual(payload.get("mode"), "manual")
         self.assertEqual(str(agent.conversation_history[2].get("content") or ""), "Subsequent user message")
         self.assertEqual(str(agent.conversation_history[3].get("content") or ""), "Subsequent assistant message")
-        notice_payload = svc.parse_context_compaction_notice_content(
-            str(agent.conversation_history[-1].get("content") or "")
-        )
-        self.assertIsInstance(notice_payload, dict)
-        self.assertEqual(notice_payload.get("mode"), "manual")
 
-    def test_compact_inserts_completed_notice_but_excludes_notice_from_model_context(self):
+    def test_compact_appends_summary_and_excludes_compaction_meta_from_model_context(self):
         agent = _FakeAgent()
         agent.params = {"context_window": 16000}
         agent._compose_system_prompt_snapshot = lambda include_tools=True: "SYSTEM"
@@ -347,10 +342,10 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
             ok = svc.compact_context("manual")
 
         self.assertTrue(ok)
-        notice_payload = svc.parse_context_compaction_notice_content(str(agent.conversation_history[-1].get("content") or ""))
-        self.assertIsInstance(notice_payload, dict)
-        self.assertEqual(notice_payload.get("message"), "Context compacted")
-        self.assertEqual(notice_payload.get("mode"), "manual")
+        summary_payload = svc.parse_context_compaction_summary_content(str(agent.conversation_history[-1].get("content") or ""))
+        self.assertIsInstance(summary_payload, dict)
+        self.assertEqual(summary_payload.get("summary"), "Summary body")
+        self.assertEqual(summary_payload.get("mode"), "manual")
 
         messages, _ = svc.build_regular_task_messages("Continue")
         joined = "\n".join(str(m.get("content") or "") for m in messages)
@@ -579,26 +574,31 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
         self.assertIn("<gray>", out.getvalue())
         self.assertIn(" Automatically compacting context ", out.getvalue())
 
-    def test_format_context_compaction_notice_message_localizes_legacy_english_payload(self):
+    def test_format_context_compaction_title_localizes_summary_mode(self):
         agent = _FakeAgent()
         agent.display_language = "zh-CN"
         svc = SessionMemoryService(agent)
 
-        msg = svc.format_context_compaction_notice_message(
-            {"message": "Context automatically compacted"}
+        msg = svc.format_context_compaction_title(
+            {"summary": "Summary body", "mode": "auto"}
         )
 
         self.assertEqual(msg, "上下文已自动压缩")
 
-    def test_format_context_compaction_notice_message_localizes_serialized_notice_content(self):
+    def test_build_context_compaction_display_payload_uses_summary_mode_title(self):
         agent = _FakeAgent()
         agent.display_language = "zh-CN"
         svc = SessionMemoryService(agent)
 
-        content = svc.build_context_compaction_notice_content(mode="manual")
-        msg = svc.format_context_compaction_notice_message(content)
+        content = svc.build_context_compaction_summary_content(
+            summary="Summary body",
+            mode="manual",
+            covered_message_count=2,
+        )
+        payload = svc.build_context_compaction_display_payload(content)
 
-        self.assertEqual(msg, "上下文已压缩")
+        self.assertEqual(payload["title"], "上下文已压缩")
+        self.assertEqual(payload["body"], "Summary body")
 
     def test_refresh_context_usage_snapshot_persists_chat_state_immediately(self):
         agent = _FakeAgent()

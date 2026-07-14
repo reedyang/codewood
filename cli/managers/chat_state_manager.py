@@ -120,7 +120,7 @@ def _history_context_input_tokens(messages: List[Dict[str, Any]]) -> int:
         raw = str(msg.get("content") or "")
         if not raw:
             return False
-        return raw.startswith("[CONTEXT_COMPACTION_NOTICE]") or raw.startswith("[TASK_WORKED_SUMMARY]") or raw.startswith("[INTERNAL_SLASH_RESULT]")
+        return raw.startswith("[TASK_WORKED_SUMMARY]") or raw.startswith("[INTERNAL_SLASH_RESULT]")
 
     total = 0
     start_idx = 0

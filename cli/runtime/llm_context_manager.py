@@ -347,8 +347,6 @@ class LLMContextManager:
                 continue
             if role == "user" and self._is_builtin_slash_user_message(role, raw_content):
                 continue
-            if role == "assistant" and self.parse_context_compaction_notice_content(raw_content) is not None:
-                continue
             if role == "assistant" and callable(parse_slash_result):
                 try:
                     slash_payload = parse_slash_result(raw_content)
@@ -485,8 +483,6 @@ class LLMContextManager:
             raw = str(msg.get("content") or "")
             if not raw:
                 return False
-            if self.parse_context_compaction_notice_content(raw) is not None:
-                return True
             if callable(parse_slash_result):
                 try:
                     if isinstance(parse_slash_result(raw), dict):
@@ -599,7 +595,6 @@ class LLMContextManager:
         candidates = list(rows)
         has_new_dialogue = any(
             not self.is_context_compaction_summary_message(m)
-            and not self.is_context_compaction_notice_message(m)
             for _idx, m in candidates
         )
         if not has_new_dialogue:
@@ -883,14 +878,8 @@ class LLMContextManager:
             "content": content,
             "created_at": created_at,
         }
-        notice_msg = {
-            "role": "assistant",
-            "content": self.build_context_compaction_notice_content(mode=mode),
-            "created_at": created_at,
-        }
         try:
             self.agent.conversation_history.append(msg)
-            self.agent.conversation_history.append(notice_msg)
             self.agent._sync_active_chat_messages()
             self.refresh_context_usage_snapshot(context_hint="context compacted")
         except Exception:
@@ -902,7 +891,7 @@ class LLMContextManager:
             if self._compaction_tui_finalize_via_reload():
                 return True
         self._clear_compaction_banner(start_banner_lines)
-        compact_display = self.build_context_compaction_display_payload(notice_msg["content"], content)
+        compact_display = self.build_context_compaction_display_payload(content)
         self._print_compaction_notice(compact_display["title"], compact_display["body"])
         self._emit_gui_compaction_notice("done", mode, compact_display["title"], compact_display["body"])
         return True
