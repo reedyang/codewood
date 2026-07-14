@@ -135,7 +135,7 @@ class PromptSeparatorBehaviorTests(unittest.TestCase):
         )
         self.assertEqual(getattr(agent, "_pending_prompt_warning_line", ""), "")
 
-    def test_chat_history_replays_context_compaction_notice_banner(self):
+    def test_chat_history_replays_context_compaction_summary_banner(self):
         agent = self._build_agent()
         agent.session_memory_service = SessionMemoryService(agent)
         summary = agent.session_memory_service.build_context_compaction_summary_content(
@@ -143,13 +143,9 @@ class PromptSeparatorBehaviorTests(unittest.TestCase):
             mode="manual",
             covered_message_count=2,
         )
-        notice = agent.session_memory_service.build_context_compaction_notice_content(
-            "Context automatically compacted"
-        )
         agent.conversation_history = [
             {"role": "user", "content": "normal message before reload"},
             {"role": "assistant", "content": summary},
-            {"role": "assistant", "content": notice},
             {"role": "assistant", "content": "normal reply after reload"},
         ]
 
@@ -159,13 +155,13 @@ class PromptSeparatorBehaviorTests(unittest.TestCase):
         ):
             agent._print_chat_history()
 
-        mock_banner.assert_called_once_with("Context automatically compacted")
+        mock_banner.assert_called_once_with("Context compacted")
         rendered = "\n".join(str(call.args[0]) for call in mock_print.call_args_list if call.args)
         self.assertIn("normal message before reload", rendered)
         self.assertIn("normal reply after reload", rendered)
         self.assertIn("This summary is for model context only", rendered)
 
-    def test_chat_history_replays_context_compaction_notice_banner_in_current_language(self):
+    def test_chat_history_replays_context_compaction_summary_banner_in_current_language(self):
         agent = self._build_agent()
         agent.display_language = "zh-CN"
         agent.session_memory_service = SessionMemoryService(agent)
@@ -174,12 +170,8 @@ class PromptSeparatorBehaviorTests(unittest.TestCase):
             mode="manual",
             covered_message_count=2,
         )
-        notice = agent.session_memory_service.build_context_compaction_notice_content(
-            "Context automatically compacted"
-        )
         agent.conversation_history = [
             {"role": "assistant", "content": summary},
-            {"role": "assistant", "content": notice},
         ]
 
         with (
@@ -188,7 +180,7 @@ class PromptSeparatorBehaviorTests(unittest.TestCase):
         ):
             agent._print_chat_history()
 
-        mock_banner.assert_called_once_with("上下文已自动压缩")
+        mock_banner.assert_called_once_with("上下文已压缩")
 
     def test_chat_history_replays_context_compaction_body_via_markdown_renderer(self):
         agent = self._build_agent()
@@ -198,10 +190,8 @@ class PromptSeparatorBehaviorTests(unittest.TestCase):
             mode="manual",
             covered_message_count=2,
         )
-        notice = agent.session_memory_service.build_context_compaction_notice_content(mode="manual")
         agent.conversation_history = [
             {"role": "assistant", "content": summary},
-            {"role": "assistant", "content": notice},
         ]
 
         with (
@@ -217,7 +207,7 @@ class PromptSeparatorBehaviorTests(unittest.TestCase):
         rendered = "\n".join(str(call.args[0]) for call in mock_print.call_args_list if call.args)
         self.assertIn("FMT:RENDERED BODY", rendered)
 
-    def test_manual_compaction_notice_replays_at_history_tail(self):
+    def test_manual_compaction_summary_replays_at_history_tail(self):
         agent = self._build_agent()
         agent.session_memory_service = SessionMemoryService(agent)
         summary = agent.session_memory_service.build_context_compaction_summary_content(
@@ -225,12 +215,10 @@ class PromptSeparatorBehaviorTests(unittest.TestCase):
             mode="manual",
             covered_message_count=2,
         )
-        notice = agent.session_memory_service.build_context_compaction_notice_content(mode="manual")
         agent.conversation_history = [
             {"role": "user", "content": "old message"},
-            {"role": "assistant", "content": summary},
             {"role": "assistant", "content": "reply after compact"},
-            {"role": "assistant", "content": notice},
+            {"role": "assistant", "content": summary},
         ]
 
         events = []
@@ -270,16 +258,12 @@ class PromptSeparatorBehaviorTests(unittest.TestCase):
             mode="manual",
             covered_message_count=2,
         )
-        notice = agent.session_memory_service.build_context_compaction_notice_content(
-            "Context automatically compacted"
-        )
         agent.conversation_history = [
             {"role": "assistant", "content": summary},
-            {"role": "assistant", "content": notice},
         ]
 
         agent._record_internal_slash_execution_history("/compact", "No context available to compact.\n")
-        self.assertEqual(len(agent.conversation_history), 2)
+        self.assertEqual(len(agent.conversation_history), 1)
 
     def test_separator_has_blank_line_above_and_below(self):
         agent = self._build_agent()

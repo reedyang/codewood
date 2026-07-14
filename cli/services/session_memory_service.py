@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 from ..config.app_info import get_app_global_config_dir, get_app_logger_root, get_app_runtime_attr_name
-from ..core.localization import DEFAULT_DISPLAY_LANGUAGE, get_display_language, text, translate
+from ..core.localization import get_display_language, text
 from ..core.config.model_providers import (
     DEFAULT_CONTEXT_WINDOW,
     SIMPLE_CHAT_SYSTEM_PROMPT_MIN_CONTEXT_WINDOW,
@@ -50,7 +50,6 @@ AGGRESSIVE_COMPRESS_TARGET_PCT = 20
 AUTO_COMPACT_TRIGGER_PCT = 60
 AUTO_COMPACT_TAIL_WINDOW_RATIO = 0.05
 CONTEXT_COMPACTION_SUMMARY_PREFIX = "[CONTEXT_COMPACTION_SUMMARY]"
-CONTEXT_COMPACTION_NOTICE_PREFIX = "[CONTEXT_COMPACTION_NOTICE]"
 
 
 def _message_effective_token_count(msg: Dict[str, Any]) -> Optional[int]:
@@ -124,46 +123,25 @@ class SessionMemoryService:
         return "".join(out)
 
     @staticmethod
-    def _normalize_context_compaction_notice_mode(mode: Any) -> str:
+    def _normalize_context_compaction_mode(mode: Any) -> str:
         normalized = str(mode or "").strip().lower()
         return normalized if normalized in {"auto", "manual"} else ""
 
     @staticmethod
-    def _context_compaction_notice_key(mode: str) -> str:
+    def _context_compaction_title_key(mode: str) -> str:
         return "compaction.notice.auto" if mode == "auto" else "compaction.notice.manual"
 
-    def _default_context_compaction_notice_message(self, mode: str) -> str:
-        return self._t(self._context_compaction_notice_key(mode))
+    def _default_context_compaction_title(self, mode: str) -> str:
+        return self._t(self._context_compaction_title_key(mode))
 
-    def _infer_context_compaction_notice_mode(self, message: Any) -> str:
-        raw = str(message or "").strip()
-        normalized = re.sub(r"\s+", " ", raw.lower())
-        if normalized == re.sub(r"\s+", " ", translate(self._context_compaction_notice_key("manual"), DEFAULT_DISPLAY_LANGUAGE).lower()):
-            return "manual"
-        if normalized == re.sub(r"\s+", " ", translate(self._context_compaction_notice_key("auto"), DEFAULT_DISPLAY_LANGUAGE).lower()):
-            return "auto"
-        if translate(self._context_compaction_notice_key("auto"), "zh-CN") in raw:
-            return "auto"
-        if translate(self._context_compaction_notice_key("manual"), "zh-CN") in raw:
-            return "manual"
-        return ""
-
-    def format_context_compaction_notice_message(self, payload_or_message: Any) -> str:
-        raw_message = ""
-        mode = ""
-        payload = payload_or_message if isinstance(payload_or_message, dict) else None
+    def format_context_compaction_title(self, payload_or_content: Any) -> str:
+        payload = payload_or_content if isinstance(payload_or_content, dict) else None
         if payload is None:
-            payload = self.parse_context_compaction_notice_content(str(payload_or_message or ""))
-        if isinstance(payload, dict):
-            raw_message = str(payload.get("message") or "").strip()
-            mode = self._normalize_context_compaction_notice_mode(payload.get("mode"))
-        else:
-            raw_message = str(payload_or_message or "").strip()
-        if not mode:
-            mode = self._infer_context_compaction_notice_mode(raw_message)
-        if mode:
-            return self._default_context_compaction_notice_message(mode)
-        return raw_message or self._default_context_compaction_notice_message("auto")
+            payload = self.parse_context_compaction_summary_content(str(payload_or_content or ""))
+        if not isinstance(payload, dict):
+            return self._default_context_compaction_title("auto")
+        mode = self._normalize_context_compaction_mode(payload.get("mode")) or "auto"
+        return self._default_context_compaction_title(mode)
 
     def format_context_compaction_summary_message(self, payload_or_content: Any) -> str:
         payload = payload_or_content if isinstance(payload_or_content, dict) else None
@@ -175,10 +153,9 @@ class SessionMemoryService:
 
     def build_context_compaction_display_payload(
         self,
-        notice_payload_or_message: Any,
-        summary_payload_or_content: Any = None,
+        summary_payload_or_content: Any,
     ) -> Dict[str, str]:
-        title = self.format_context_compaction_notice_message(notice_payload_or_message).strip()
+        title = self.format_context_compaction_title(summary_payload_or_content).strip()
         body = self.format_context_compaction_summary_message(summary_payload_or_content).strip()
         text = title if not body else f"{title}\n\n{body}"
         return {
@@ -545,51 +522,6 @@ class SessionMemoryService:
             dict,
         )
 
-    def build_context_compaction_notice_content(
-        self,
-        message: Optional[str] = None,
-        mode: str = "auto",
-    ) -> str:
-        normalized_mode = self._normalize_context_compaction_notice_mode(mode) or "auto"
-        resolved_message = str(message or "").strip() or translate(
-            self._context_compaction_notice_key(normalized_mode),
-            DEFAULT_DISPLAY_LANGUAGE,
-        )
-        payload = {
-            "kind": "context_compaction_notice",
-            "message": resolved_message,
-            "mode": normalized_mode,
-            "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        }
-        return CONTEXT_COMPACTION_NOTICE_PREFIX + json.dumps(payload, ensure_ascii=False)
-
-    def parse_context_compaction_notice_content(self, content: str) -> Optional[Dict[str, Any]]:
-        text = str(content or "")
-        if not text.startswith(CONTEXT_COMPACTION_NOTICE_PREFIX):
-            return None
-        body = text[len(CONTEXT_COMPACTION_NOTICE_PREFIX):].strip()
-        if not body:
-            return None
-        try:
-            payload = json.loads(body)
-        except Exception:
-            return None
-        if not isinstance(payload, dict):
-            return None
-        if str(payload.get("kind") or "").strip() != "context_compaction_notice":
-            return None
-        return payload
-
-    def is_context_compaction_notice_message(self, msg: Any) -> bool:
-        if not isinstance(msg, dict):
-            return False
-        if str(msg.get("role") or "").strip().lower() != "assistant":
-            return False
-        return isinstance(
-            self.parse_context_compaction_notice_content(str(msg.get("content") or "")),
-            dict,
-        )
-
     def _context_compaction_summary_for_model(self, content: str) -> str:
         payload = self.parse_context_compaction_summary_content(content)
         if not isinstance(payload, dict):
@@ -621,8 +553,6 @@ class SessionMemoryService:
         raw = str(content or "")
         if not raw:
             return False
-        if self.parse_context_compaction_notice_content(raw) is not None:
-            return True
         if self.parse_context_compaction_summary_content(raw) is not None:
             return True
         parse_slash_result = getattr(self.agent, "_parse_internal_slash_result_history_content", None)
@@ -895,8 +825,6 @@ class SessionMemoryService:
                     return False
             return False
         if norm_role == "assistant":
-            if self.parse_context_compaction_notice_content(text) is not None:
-                return True
             if self.parse_context_compaction_summary_content(text) is not None:
                 return True
             parse_slash_result = getattr(self.agent, "_parse_internal_slash_result_history_content", None)

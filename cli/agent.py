@@ -1685,7 +1685,6 @@ class Agent:
                 last_plan_index = -1
                 last_plan_emitted_feedback = False
 
-        pending_compaction_summary = None
         for idx, msg in enumerate(hist):
             _reset_plan_tracker_if_stale(idx)
             role = str(msg.get("role") or "").strip().lower()
@@ -1727,15 +1726,14 @@ class Agent:
                     if ami_answer:
                         self._print_request_user_input_answer_replay(ami_answer)
                     continue
-                compact_notice = None
+                compact_payload = None
                 try:
-                    compact_notice = self.session_memory_service.parse_context_compaction_notice_content(content)
+                    compact_payload = self.session_memory_service.parse_context_compaction_summary_content(content)
                 except Exception:
-                    compact_notice = None
-                if compact_notice is not None:
+                    compact_payload = None
+                if compact_payload is not None:
                     compact_display = self.session_memory_service.build_context_compaction_display_payload(
-                        compact_notice,
-                        pending_compaction_summary,
+                        compact_payload
                     )
                     try:
                         self.session_memory_service._print_compaction_banner(compact_display["title"])
@@ -1747,15 +1745,6 @@ class Agent:
                             self._ensure_terminal_line_start()
                             print(self._format_assistant_chat_display_message(display_response))
                         print("")
-                    pending_compaction_summary = None
-                    continue
-                compact_payload = None
-                try:
-                    compact_payload = self.session_memory_service.parse_context_compaction_summary_content(content)
-                except Exception:
-                    compact_payload = None
-                if compact_payload is not None:
-                    pending_compaction_summary = compact_payload
                     continue
                 interrupted_event = self._parse_conversation_interrupted_history_content(content)
                 if interrupted_event is not None:
@@ -2091,15 +2080,16 @@ class Agent:
 
         # Assistant message: skip durable/context-only payloads, render the rest.
         try:
-            if (
-                self.session_memory_service.parse_context_compaction_notice_content(content)
-                is not None
-            ):
-                return
-            if (
-                self.session_memory_service.parse_context_compaction_summary_content(content)
-                is not None
-            ):
+            compact_summary = self.session_memory_service.parse_context_compaction_summary_content(content)
+            if compact_summary is not None:
+                compact_display = self.session_memory_service.build_context_compaction_display_payload(
+                    compact_summary
+                )
+                self.session_memory_service._print_compaction_banner(compact_display["title"])
+                if compact_display["body"]:
+                    display_response = format_assistant_display_response(compact_display["body"])
+                    if display_response:
+                        print(self._format_assistant_chat_display_message(display_response))
                 return
         except Exception:
             pass
@@ -4005,16 +3995,14 @@ class Agent:
             return None
         svc = getattr(self, "session_memory_service", None)
         is_summary = getattr(svc, "is_context_compaction_summary_message", None)
-        is_notice = getattr(svc, "is_context_compaction_notice_message", None)
-        if not callable(is_summary) or not callable(is_notice):
+        if not callable(is_summary):
             return None
         hist = self.conversation_history
-        if not isinstance(hist, list) or len(hist) < 2:
+        if not isinstance(hist, list) or not hist:
             return None
-        for notice_idx in range(len(hist) - 1, 0, -1):
-            summary_idx = notice_idx - 1
+        for summary_idx in range(len(hist) - 1, -1, -1):
             try:
-                if is_notice(hist[notice_idx]) and is_summary(hist[summary_idx]):
+                if is_summary(hist[summary_idx]):
                     return summary_idx
             except Exception:
                 continue

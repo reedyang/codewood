@@ -182,8 +182,6 @@ def _build_structured_turns(agent: Any) -> List[Dict[str, Any]]:
     current_round: Optional[Dict[str, Any]] = None
     prev_ts: Optional[float] = None
     sms = getattr(agent, "session_memory_service", None)
-    pending_compaction_summary: Optional[Dict[str, Any]] = None
-
     def _parse_ts(value: Any) -> Optional[float]:
         text = str(value or "").strip()
         if not text:
@@ -239,8 +237,6 @@ def _build_structured_turns(agent: Any) -> List[Dict[str, Any]]:
         """A plain final reply, not a bookkeeping/tool/compaction payload."""
         try:
             if sms is not None:
-                if sms.parse_context_compaction_notice_content(content) is not None:
-                    return False
                 if sms.parse_context_compaction_summary_content(content) is not None:
                     return False
             if agent._parse_conversation_interrupted_history_content(content) is not None:
@@ -342,59 +338,6 @@ def _build_structured_turns(agent: Any) -> List[Dict[str, Any]]:
                 if ts is not None:
                     prev_ts = ts
                 continue
-            compact_notice = None
-            try:
-                if sms is not None:
-                    compact_notice = sms.parse_context_compaction_notice_content(content)
-            except Exception:
-                compact_notice = None
-            if compact_notice is not None:
-                compact_display = None
-                try:
-                    formatter = getattr(sms, "build_context_compaction_display_payload", None)
-                    if callable(formatter):
-                        compact_display = formatter(compact_notice, pending_compaction_summary)
-                except Exception:
-                    compact_display = None
-                if not isinstance(compact_display, dict):
-                    title = ""
-                    body = ""
-                    try:
-                        title = str(
-                            getattr(sms, "format_context_compaction_notice_message")(compact_notice)
-                        ).strip()
-                    except Exception:
-                        title = str(compact_notice.get("message") or "").strip()
-                    if isinstance(pending_compaction_summary, dict):
-                        body = str(pending_compaction_summary.get("summary") or "").strip()
-                    compact_display = {
-                        "title": title,
-                        "body": body,
-                        "text": title if not body else f"{title}\n\n{body}",
-                    }
-                turns.append(
-                    {
-                        "userText": "",
-                        "timestamp": str(msg.get("created_at") or ""),
-                        "rounds": [
-                            {
-                                "waitSeconds": 0,
-                                "text": "",
-                                "tools": "",
-                                "selection": "",
-                                "thinking": "",
-                                "compactNoticeTitle": str(compact_display.get("title") or ""),
-                                "compactNoticeBody": str(compact_display.get("body") or ""),
-                            }
-                        ],
-                    }
-                )
-                current = None
-                current_round = None
-                pending_compaction_summary = None
-                if ts is not None:
-                    prev_ts = ts
-                continue
             # Drop slash-command outputs and durable compaction summaries.
             try:
                 if agent._parse_internal_slash_result_history_content(content) is not None:
@@ -412,7 +355,40 @@ def _build_structured_turns(agent: Any) -> List[Dict[str, Any]]:
                 if sms is not None:
                     compact_summary = sms.parse_context_compaction_summary_content(content)
                     if compact_summary is not None:
-                        pending_compaction_summary = compact_summary
+                        compact_display = None
+                        try:
+                            formatter = getattr(sms, "build_context_compaction_display_payload", None)
+                            if callable(formatter):
+                                compact_display = formatter(compact_summary)
+                        except Exception:
+                            compact_display = None
+                        if not isinstance(compact_display, dict):
+                            body = str(compact_summary.get("summary") or "").strip()
+                            title = "Context compacted"
+                            compact_display = {
+                                "title": title,
+                                "body": body,
+                                "text": title if not body else f"{title}\n\n{body}",
+                            }
+                        turns.append(
+                            {
+                                "userText": "",
+                                "timestamp": str(msg.get("created_at") or ""),
+                                "rounds": [
+                                    {
+                                        "waitSeconds": 0,
+                                        "text": "",
+                                        "tools": "",
+                                        "selection": "",
+                                        "thinking": "",
+                                        "compactNoticeTitle": str(compact_display.get("title") or ""),
+                                        "compactNoticeBody": str(compact_display.get("body") or ""),
+                                    }
+                                ],
+                            }
+                        )
+                        current = None
+                        current_round = None
                         continue
             except Exception:
                 pass
