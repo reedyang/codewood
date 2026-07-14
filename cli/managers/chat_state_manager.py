@@ -890,14 +890,14 @@ class ChatStateManager:
                 record_file = str(index_entry.get("record_file") or "").strip()
                 if not record_file:
                     raise ValueError("chat record_file required")
-                record_path = self._resolve_chat_record_path(record_file)
-                with open(record_path, "r", encoding="utf-8") as f:
-                    chat_raw = json.load(f)
-                if not isinstance(chat_raw, dict):
-                    raise ValueError("chat record root must be object")
-                if str(chat_raw.get("id") or "").strip() != cid:
-                    raise ValueError("chat record id mismatch")
                 try:
+                    record_path = self._resolve_chat_record_path(record_file)
+                    with open(record_path, "r", encoding="utf-8") as f:
+                        chat_raw = json.load(f)
+                    if not isinstance(chat_raw, dict):
+                        raise ValueError("chat record root must be object")
+                    if str(chat_raw.get("id") or "").strip() != cid:
+                        raise ValueError("chat record id mismatch")
                     chat = self._validate_chat_entry(chat_raw)
                 except Exception as ve:
                     logger.warning("load_chat_state: skipping chat %s: %s", cid, ve)
@@ -934,7 +934,16 @@ class ChatStateManager:
                 pass
             active = str(loaded.get("active") or "").strip()
             if not active or not any(str(c.get("id") or "") == active for c in chats):
-                raise ValueError("active chat invalid")
+                # The active chat from the index could not be loaded (its record
+                # file was deleted, corrupted, or skipped by validation). Pick
+                # the first available chat so we don't raise and trigger a full
+                # state reset that deletes all other records via the stale sweep.
+                logger.warning(
+                    "load_chat_state: active=%r not in loaded chats (total=%d); "
+                    "falling back to first available chat",
+                    active, len(chats),
+                )
+                active = str(chats[0].get("id") or "")
             self._agent._chat_state = {"version": CHAT_STATE_VERSION, "active": active, "chats": chats}
             # Drop any orphan chat side-data directories whose chat record is
             # gone (e.g. a chat deleted by a peer process) so pasted images and

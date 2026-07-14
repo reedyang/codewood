@@ -455,7 +455,7 @@ describe("AppContext thinking rounds", () => {
     });
   });
 
-  it("materializes the target workspace chat before switching model in draft mode", async () => {
+  it("defers model change to materialization when switching model in draft mode", async () => {
     render(
       <AppProvider>
         <DraftCreateProbe />
@@ -468,18 +468,16 @@ describe("AppContext thinking rounds", () => {
       fireEvent.click(screen.getByRole("button", { name: "enter draft" }));
     });
 
+    // Select model in draft mode — should NOT materialize the chat yet.
     await act(async () => {
       fireEvent.click(screen.getByRole("button", { name: "select draft model" }));
     });
 
     await waitFor(() => {
       const state = JSON.parse(screen.getByTestId("app-state").textContent || "{}") as AppState;
-      expect(apiMock.newChat).toHaveBeenCalledWith("ws-2");
-      expect(apiMock.sendInput).toHaveBeenCalledWith(
-        "/model openai/family/model/v2",
-        false,
-        "chat-2",
-      );
+      expect(apiMock.newChat).not.toHaveBeenCalled();
+      expect(apiMock.sendInput).not.toHaveBeenCalled();
+      // Local state is updated optimistically.
       expect(state.model.current).toBe("openai/family/model/v2");
     });
   });

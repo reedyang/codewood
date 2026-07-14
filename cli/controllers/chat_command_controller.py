@@ -104,6 +104,7 @@ def _reload_chat_from_top(agent: Any, chat_id: str) -> None:
         announce=False,
         clear_screen=False,
         print_history=False,
+        persist=False,
     )
     if reload_result:
         print(reload_result)
@@ -382,6 +383,12 @@ def handle_chat_edit_command(agent: Any, raw_index: str) -> None:
             pass
         try:
             agent._sync_active_chat_messages()
+        except Exception:
+            pass
+        # Persist the truncated chat to disk so _reload_chat_from_top (which
+        # reloads from disk) sees the post-edit state instead of discarding it.
+        try:
+            agent._save_chat_state()
         except Exception:
             pass
         # Drop apply_patch diff previews whose tool result was just truncated
