@@ -4318,11 +4318,16 @@ def run_agent_loop(agent: Any):
                                     fps=_WORKING_STATUS_MARQUEE_FPS,
                                     language=getattr(self, "display_language", None),
                                 )
-                                def _explore_render(elapsed_seconds, frame, _t=ticker, _self=self):
+                                def _explore_render(elapsed_seconds, frame, _t=ticker, _self=self, _args=args):
                                     lang = getattr(_self, "display_language", None)
+                                    label_fn = getattr(_self, "_explore_running_label", None)
+                                    if callable(label_fn):
+                                        label = label_fn(_args if isinstance(_args, dict) else {})
+                                    else:
+                                        label = "Exploring..."
                                     line = _render_working_status_line(
                                         elapsed_seconds=elapsed_seconds, frame=frame,
-                                        label="Exploring...", language=lang,
+                                        label=label, language=lang,
                                     )
                                     try:
                                         sys.stdout.write(f"\r\x1b[2K{line}")

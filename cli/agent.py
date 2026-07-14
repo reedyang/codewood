@@ -2749,7 +2749,7 @@ class Agent:
                 detail = ""
             return (label, detail)
         if name == "run_subagent" and str(a.get("subagent") or "").strip().lower() == "explore":
-            return (translate("subagent.explore.running", self._ui_language()), "")
+            return (self._explore_running_label(a), "")
         if name.startswith("mcp__"):
             parts = name.split("__", 2)
             if len(parts) == 3:
@@ -2856,6 +2856,36 @@ class Agent:
             keys = ",".join(sorted([str(k) for k in a.keys()])[:5])
             return f"(args: {keys})"
         return ""
+
+    def _explore_topic_label(self, args: Dict[str, Any], max_chars: int = 80) -> str:
+        topic = str((args if isinstance(args, dict) else {}).get("topic") or "").strip()
+        if not topic:
+            return ""
+        topic = re.sub(r"\s+", " ", topic)
+        limit = max(8, int(max_chars or 80))
+        if len(topic) > limit:
+            topic = topic[: max(0, limit - 3)].rstrip() + "..."
+        return topic
+
+    def _explore_running_label(self, args: Dict[str, Any]) -> str:
+        topic = self._explore_topic_label(args)
+        lang = self._ui_language()
+        if topic:
+            return translate("subagent.explore.running_topic", lang, topic=topic)
+        return translate("subagent.explore.running", lang)
+
+    def _explore_completed_label(self, args: Dict[str, Any], elapsed: Any = None) -> str:
+        elapsed_text = "" if elapsed is None else f"{elapsed}"
+        topic = self._explore_topic_label(args)
+        lang = self._ui_language()
+        if topic:
+            return translate(
+                "subagent.explore.completed_topic",
+                lang,
+                topic=topic,
+                elapsed=elapsed_text,
+            )
+        return translate("subagent.explore.completed", lang, elapsed=elapsed_text)
 
     @staticmethod
     def _feedback_char_display_width(ch: str) -> int:
@@ -3564,13 +3594,7 @@ class Agent:
         )
         if t == "run_subagent" and str(args.get("subagent") or "").strip().lower() == "explore":
             elapsed = r.get("_elapsed_seconds")
-            if elapsed is not None:
-                explore_text = translate(
-                    "subagent.explore.completed", self._ui_language(),
-                    elapsed=f"{elapsed}",
-                )
-            else:
-                explore_text = translate("subagent.explore.completed", self._ui_language(), elapsed="")
+            explore_text = self._explore_completed_label(args, elapsed)
             tool_round = f"{GUI_CMD_PROMPT_BEGIN}{_ansi_rgb('•', 19, 161, 14)} {explore_text}{GUI_CMD_PROMPT_END}"
         gui_marker = str(r.get("_guiSessionMarker") or "")
         if gui_marker:
@@ -3673,13 +3697,7 @@ class Agent:
             tool_round = self._format_tool_call_feedback_line(tool, args, failed=failed)
             if tool == "run_subagent" and str(args.get("subagent") or "").strip().lower() == "explore":
                 elapsed = item.get("elapsed")
-                if elapsed is not None:
-                    explore_text = translate(
-                        "subagent.explore.completed", self._ui_language(),
-                        elapsed=f"{elapsed}",
-                    )
-                else:
-                    explore_text = translate("subagent.explore.completed", self._ui_language(), elapsed="")
+                explore_text = self._explore_completed_label(args, elapsed)
                 tool_round = f"{GUI_CMD_PROMPT_BEGIN}{_ansi_rgb('•', 19, 161, 14)} {explore_text}{GUI_CMD_PROMPT_END}"
             read_payload = item.get("read_payload")
             if tool == "read" and read_payload:

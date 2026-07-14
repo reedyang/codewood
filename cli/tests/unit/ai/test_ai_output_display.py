@@ -381,6 +381,28 @@ class AiOutputDisplayTests(unittest.TestCase):
         self.assertTrue(line.startswith("<RGB:19,161,14>•</RGB> 运行子代理 "))
         self.assertIn("<H>(subagent=coder)</H>", line)
 
+    def test_format_tool_call_feedback_line_includes_explore_topic(self):
+        with patch("cli.agent._ansi_rgb", side_effect=lambda text, r, g, b: f"<RGB:{r},{g},{b}>{text}</RGB>"), patch(
+            "cli.agent.highlight_assistant_display_line", side_effect=lambda s: f"<H>{s}</H>"
+        ):
+            line = self.agent._format_tool_call_feedback_line(
+                "run_subagent",
+                {"subagent": "explore", "topic": "sub-agent architecture"},
+                failed=False,
+            )
+        self.assertIn("Exploring sub-agent architecture...", line)
+        self.assertNotIn("(subagent=explore", line)
+
+    def test_explore_completed_label_includes_truncated_topic(self):
+        long_topic = "x" * 90
+
+        label = self.agent._explore_completed_label(
+            {"subagent": "explore", "topic": long_topic},
+            elapsed=12.3,
+        )
+
+        self.assertEqual(label, f"Explored {'x' * 77}... for 12.3s")
+
     def test_format_tool_call_feedback_line_apply_patch_localized(self):
         self.agent.display_language = "zh-CN"
         with patch("cli.agent._ansi_rgb", side_effect=lambda text, r, g, b: f"<RGB:{r},{g},{b}>{text}</RGB>"), patch(

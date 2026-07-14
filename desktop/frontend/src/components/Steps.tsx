@@ -129,10 +129,18 @@ function getExplorePromptState(text: string): ExplorePromptState | null {
   if (!plain) {
     return null;
   }
-  if (plain === "exploring..." || plain === "探索中...") {
+  if (
+    plain === "探索中..." ||
+    /^exploring(?: .+)?\.\.\.$/.test(plain) ||
+    /^正在探索：.+\.\.\.$/.test(plain)
+  ) {
     return "running";
   }
-  if (plain.startsWith("explored for ") || plain.startsWith("探索完成（")) {
+  if (
+    plain.startsWith("探索完成（") ||
+    plain.startsWith("探索完成：") ||
+    /^explored(?: .+)? for .*s$/.test(plain)
+  ) {
     return "completed";
   }
   return null;
