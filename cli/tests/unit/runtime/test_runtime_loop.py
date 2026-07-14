@@ -37,11 +37,13 @@ from cli.runtime.runtime_loop import (
     _split_trailing_pseudo_tool_calls_text_details,
     _extract_nonstandard_tool_plans,
     _replace_latest_assistant_history_content,
+    _reload_chat_history_after_streamed_assistant_output,
     _build_pseudo_tool_call_retry_prompt,
     _PSEUDO_TOOL_CALL_RETRY_EXAMPLE_JSON,
     _build_plan_finalize_nudge_prompt,
     _recover_latest_history_tool_plans,
     _should_fire_plan_finalize_nudge,
+    _take_pending_stream_history_reload_request,
     _warn_loop_ended_with_pending_plan,
 )
 
@@ -1115,6 +1117,79 @@ class RuntimeLoopTests(unittest.TestCase):
         clean_after = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", after_clear)
         self.assertIn("E = mc\u00b2", clean_after)
         self.assertNotIn("$$", clean_after)
+
+    def test_consume_streaming_ai_response_marks_reload_when_output_exceeds_screen(self):
+        class _FakeTtyStream:
+            def __init__(self):
+                self.writes = []
+
+            def write(self, text):
+                s = str(text or "")
+                self.writes.append(s)
+                return len(s)
+
+            def flush(self):
+                return None
+
+            def isatty(self):
+                return True
+
+        class _AppendStream:
+            def __init__(self, base):
+                self._base = base
+                self._line_start = True
+                self._visual_col = 0
+
+            def write(self, text):
+                return self._base.write(text)
+
+            def flush(self):
+                return self._base.flush()
+
+        class _Agent:
+            def _hide_previous_shell_output_if_needed(self):
+                return None
+
+            def _ensure_terminal_line_start(self):
+                return None
+
+            def _build_internal_slash_output_stream(self, base_stream, terminal_columns=None):
+                _ = terminal_columns
+                return _AppendStream(base_stream)
+
+            def _terminal_columns_for_line_estimate(self):
+                return 80
+
+            def _terminal_rows(self):
+                return 4
+
+            def _format_assistant_chat_display_message(self, text):
+                return str(text or "")
+
+        chunks = ["line 1\n", "line 2\n", "line 3\n", "line 4\n", "line 5"]
+        fake_out = _FakeTtyStream()
+        agent = _Agent()
+        with patch("cli.runtime.runtime_loop.sys.stdout", fake_out):
+            ai_response, streamed_any = _consume_streaming_ai_response(agent, chunks)
+
+        merged = "".join(fake_out.writes)
+        self.assertEqual(ai_response, "line 1\nline 2\nline 3\nline 4\nline 5")
+        self.assertTrue(streamed_any)
+        self.assertTrue(_take_pending_stream_history_reload_request(agent))
+        self.assertNotIn("\x1b[1A\r\x1b[2K", merged)
+
+    def test_reload_chat_history_after_streamed_assistant_output_reanchors_tail(self):
+        calls = []
+
+        class _Agent:
+            def _remember_active_chat_history_tail_anchor(self):
+                calls.append("anchor")
+
+            def _reload_chat_history_from_anchor_on_resize(self):
+                calls.append("reload")
+
+        _reload_chat_history_after_streamed_assistant_output(_Agent())
+        self.assertEqual(calls, ["anchor", "reload"])
 
     def test_consume_streaming_ai_response_does_not_duplicate_text_before_plain_tool_json(self):
         class _FakeStdout:

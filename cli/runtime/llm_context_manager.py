@@ -875,9 +875,13 @@ class LLMContextManager:
         if isinstance(raw, str):
             summary = raw.strip()
         elif raw is not None and stream_to_terminal:
-            from .runtime_loop import _consume_streaming_ai_response
+            from .runtime_loop import (
+                _consume_streaming_ai_response,
+                _take_pending_stream_history_reload_request,
+            )
 
             consumed, _streamed = _consume_streaming_ai_response(self.agent, raw)
+            _take_pending_stream_history_reload_request(self.agent)
             summary = str(consumed or "").strip()
         elif raw is not None:
             close_fn = getattr(raw, "close", None)
