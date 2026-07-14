@@ -377,6 +377,9 @@ class LLMContextManager:
                 if tname:
                     entry["name"] = tname
             if role == "assistant":
+                tcs = msg.get("tool_calls")
+                if isinstance(tcs, list) and tcs:
+                    entry["tool_calls"] = tcs
                 msg_model = str(msg.get("_model") or "").strip()
                 if msg_model:
                     entry["_model"] = msg_model
