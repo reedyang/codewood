@@ -18,6 +18,7 @@ import json
 import platform
 import sys
 import threading
+from contextlib import redirect_stderr, redirect_stdout
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
@@ -826,6 +827,37 @@ class LLMContextManager:
         except Exception:
             pass
 
+    def _compaction_tui_finalize_via_reload(self) -> bool:
+        remember_tail = getattr(self.agent, "_remember_active_chat_history_tail_anchor", None)
+        if callable(remember_tail):
+            try:
+                remember_tail()
+            except Exception:
+                pass
+        reload_fn = getattr(self.agent, "_reload_chat_history_from_anchor_on_resize", None)
+        if not callable(reload_fn):
+            return False
+        real_stdout = self._compaction_output_stream()
+        real_stderr = sys.stderr
+        seen: Set[int] = set()
+        while real_stderr is not None:
+            sid = id(real_stderr)
+            if sid in seen:
+                break
+            seen.add(sid)
+            nxt = getattr(real_stderr, "_primary", None)
+            if nxt is None:
+                nxt = getattr(real_stderr, "_base_stream", None)
+            if nxt is None:
+                break
+            real_stderr = nxt
+        try:
+            with redirect_stdout(real_stdout), redirect_stderr(real_stderr or sys.stderr):
+                reload_fn(include_startup_overview=False)
+            return True
+        except Exception:
+            return False
+
     def _clear_compaction_banner(self, rendered_lines: int) -> None:
         rows = max(0, int(rendered_lines or 0))
         if rows <= 0:
@@ -868,11 +900,15 @@ class LLMContextManager:
         source_history = [m for _idx, m in candidates_with_idx]
         insert_after_idx = int(candidates_with_idx[-1][0])
         messages = self.build_compaction_messages(mode, source_history, insert_after_idx)
+        stream_summary = True
+        gui_notice_enabled = callable(getattr(self.agent, "_gui_compaction_notice", None))
+        stream_to_terminal = not gui_notice_enabled
+        streamed_summary_parts: List[str] = []
         try:
             raw = self.agent.call_ai(
                 "Generate context compaction summary.",
                 context="",
-                stream=False,
+                stream=stream_summary,
                 return_message=False,
                 messages_override=messages,
                 record_history_override=False,
@@ -882,7 +918,40 @@ class LLMContextManager:
             if mode == "manual":
                 print(self._t("compaction.failed", error=e))
             return False
-        summary = str(raw or "").strip() if isinstance(raw, str) else ""
+        summary = ""
+        if isinstance(raw, str):
+            summary = raw.strip()
+        elif raw is not None and stream_to_terminal:
+            from .runtime_loop import _consume_streaming_ai_response
+
+            consumed, _streamed = _consume_streaming_ai_response(self.agent, raw)
+            summary = str(consumed or "").strip()
+        elif raw is not None:
+            close_fn = getattr(raw, "close", None)
+            try:
+                for chunk in raw:
+                    piece = str(chunk or "")
+                    if not piece:
+                        continue
+                    streamed_summary_parts.append(piece)
+                    current_stream_text = "".join(streamed_summary_parts)
+                    if gui_notice_enabled:
+                        self._emit_gui_compaction_notice(
+                            "stream",
+                            mode,
+                            start_text,
+                            current_stream_text,
+                        )
+                    if stream_to_terminal:
+                        self._write_compaction_raw(piece)
+            finally:
+                if callable(close_fn):
+                    try:
+                        close_fn()
+                    except Exception:
+                        pass
+            streamed_raw_text = "".join(streamed_summary_parts)
+            summary = streamed_raw_text.strip()
         if summary.startswith("❌") or summary.startswith("Error calling LLM API") or not summary:
             if mode == "manual":
                 print(summary or self._t("compaction.failed_empty_summary"))
@@ -914,6 +983,9 @@ class LLMContextManager:
             if mode == "manual":
                 print(self._t("compaction.failed_saving_summary"))
             return False
+        if stream_to_terminal:
+            if self._compaction_tui_finalize_via_reload():
+                return True
         self._clear_compaction_banner(start_banner_lines)
         compact_display = self.build_context_compaction_display_payload(notice_msg["content"], content)
         self._print_compaction_notice(compact_display["title"], compact_display["body"])
