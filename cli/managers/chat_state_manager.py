@@ -496,6 +496,9 @@ class ChatStateManager:
         tool_rounds = raw.get("tool_rounds")
         if isinstance(tool_rounds, list) and tool_rounds:
             out["tool_rounds"] = tool_rounds
+        raw_rounds = raw.get("_tool_rounds_raw")
+        if isinstance(raw_rounds, list) and raw_rounds:
+            out["_tool_rounds_raw"] = raw_rounds
         pseudo_tool_call_text = str(raw.get("pseudo_tool_call_text") or "").strip()
         if pseudo_tool_call_text:
             out["pseudo_tool_call_text"] = pseudo_tool_call_text
@@ -717,7 +720,9 @@ class ChatStateManager:
                         if cleaned and cleaned != raw:
                             msg["_clean_content"] = cleaned
                 record_payload = {
-                    k: v for k, v in chat.items() if not str(k).startswith("_") and k != "archived"
+                    k: v for k, v in chat.items()
+                    if (not str(k).startswith("_") or k == "_tool_rounds_raw")
+                    and k != "archived"
                 }
                 tmp_path = record_path.with_name(record_path.name + ".tmp")
                 with open(tmp_path, "w", encoding="utf-8") as f:
@@ -1176,6 +1181,9 @@ class ChatStateManager:
                 tool_rounds = m.get("tool_rounds")
                 if isinstance(tool_rounds, list) and tool_rounds:
                     entry["tool_rounds"] = tool_rounds
+                raw_rounds = m.get("_tool_rounds_raw")
+                if isinstance(raw_rounds, list) and raw_rounds:
+                    entry["_tool_rounds_raw"] = raw_rounds
                 if role == "tool":
                     tool_call_id = str(m.get("tool_call_id") or "").strip()
                     if tool_call_id:

@@ -1838,7 +1838,19 @@ class Agent:
                         next_payload is not None
                         and self._model_tool_result_matches_plan(model_tool, model_args, next_payload)
                     )
-                    if has_result:
+                    raw_rounds = msg.get("_tool_rounds_raw") if isinstance(msg, dict) else None
+                    if isinstance(raw_rounds, list) and raw_rounds:
+                        try:
+                            rendered = self._rerender_tool_rounds(raw_rounds)
+                            for r in rendered:
+                                # Strip GUI prompt/output sentinels for TUI display
+                                clean = r.split("\ue008")[0].rstrip("\n").replace("\ue004", "").replace("\ue005", "").replace("\ue002", "").replace("\ue003", "")
+                                self._ensure_terminal_line_start()
+                                print(clean)
+                            last_plan_emitted_feedback = True
+                        except Exception:
+                            pass
+                    elif has_result:
                         failed = not bool(result.get("success", True))
                         self._print_tool_call_feedback(model_tool, model_args, failed=failed)
                         last_plan_emitted_feedback = True
@@ -1924,6 +1936,19 @@ class Agent:
                         ):
                             self._print_conversation_interrupted_banner()
                     continue
+                # Render tool_rounds_raw for assistant messages that carry tool
+                # call data in a separate field rather than JSON-encoded content.
+                if isinstance(msg, dict):
+                    raw_rounds = msg.get("_tool_rounds_raw")
+                    if isinstance(raw_rounds, list) and raw_rounds:
+                        try:
+                            rendered = self._rerender_tool_rounds(raw_rounds)
+                            for r in rendered:
+                                clean = r.split("\ue008")[0].rstrip("\n").replace("\ue004", "").replace("\ue005", "").replace("\ue002", "").replace("\ue003", "")
+                                self._ensure_terminal_line_start()
+                                print(clean)
+                        except Exception:
+                            pass
                 display_response = format_assistant_display_response(content)
                 if display_response:
                     self._ensure_terminal_line_start()
@@ -1936,6 +1961,8 @@ class Agent:
                         pass
                     self._last_terminal_block_kind = "assistant"
                     self._terminal_cursor_at_line_start = True
+            elif role == "tool":
+                continue
             else:
                 print(content)
         self._show_separator_next_prompt = False
@@ -2046,6 +2073,8 @@ class Agent:
                 return
             print(self._format_user_chat_display_message(content))
             return
+        if role == "tool":
+            return
         if role != "assistant":
             print(content)
             return
@@ -2104,6 +2133,16 @@ class Agent:
         if tool_plan is not None:
             if tool_plan.get("tool") == "request_skill_prompt":
                 self._print_tool_call_feedback("request_skill_prompt", tool_plan.get("args", {}))
+            elif isinstance(msg, dict):
+                raw_rounds = msg.get("_tool_rounds_raw")
+                if isinstance(raw_rounds, list) and raw_rounds:
+                    try:
+                        rendered = self._rerender_tool_rounds(raw_rounds)
+                        for r in rendered:
+                            clean = r.split("\ue008")[0].rstrip("\n").replace("\ue004", "").replace("\ue005", "").replace("\ue002", "").replace("\ue003", "")
+                            print(clean)
+                    except Exception:
+                        pass
             return
         model_tool_result = self._parse_model_tool_result_history_content(content)
         if model_tool_result is not None:
@@ -2133,6 +2172,18 @@ class Agent:
                 if gui_marker:
                     print(gui_marker)
             return
+        # Render tool_rounds_raw for assistant messages that carry tool
+        # call data in a separate field rather than JSON-encoded content.
+        if isinstance(msg, dict):
+            raw_rounds = msg.get("_tool_rounds_raw")
+            if isinstance(raw_rounds, list) and raw_rounds:
+                try:
+                    rendered = self._rerender_tool_rounds(raw_rounds)
+                    for r in rendered:
+                        clean = r.split("\ue008")[0].rstrip("\n").replace("\ue004", "").replace("\ue005", "").replace("\ue002", "").replace("\ue003", "")
+                        print(clean)
+                except Exception:
+                    pass
         display_response = format_assistant_display_response(content)
         if display_response:
             print(self._format_assistant_chat_display_message(display_response))
@@ -2697,6 +2748,8 @@ class Agent:
             else:
                 detail = ""
             return (label, detail)
+        if name == "run_subagent" and str(a.get("subagent") or "").strip().lower() == "explore":
+            return (translate("subagent.explore.running", self._ui_language()), "")
         if name.startswith("mcp__"):
             parts = name.split("__", 2)
             if len(parts) == 3:
@@ -3506,6 +3559,16 @@ class Agent:
             args if isinstance(args, dict) else {},
             failed=not success,
         )
+        if t == "run_subagent" and str(args.get("subagent") or "").strip().lower() == "explore":
+            elapsed = r.get("_elapsed_seconds")
+            if elapsed is not None:
+                explore_text = translate(
+                    "subagent.explore.completed", self._ui_language(),
+                    elapsed=f"{elapsed}",
+                )
+            else:
+                explore_text = translate("subagent.explore.completed", self._ui_language(), elapsed="")
+            tool_round = f"{GUI_CMD_PROMPT_BEGIN}{_ansi_rgb('•', 19, 161, 14)} {explore_text}{GUI_CMD_PROMPT_END}"
         gui_marker = str(r.get("_guiSessionMarker") or "")
         if gui_marker:
             tool_round = tool_round + "\n" + gui_marker
@@ -3526,6 +3589,24 @@ class Agent:
         pending = list(getattr(self, "_accumulated_tool_rounds", None) or [])
         pending.append(tool_round)
         self._accumulated_tool_rounds = pending
+        # Store raw data for later re-rendering on language change
+        pending_raw = list(getattr(self, "_accumulated_tool_rounds_raw", None) or [])
+        raw_entry = {
+            "tool": t,
+            "args": dict(args) if isinstance(args, dict) else {},
+            "failed": not success,
+            "elapsed": r.get("_elapsed_seconds"),
+        }
+        gui_marker = str(r.get("_guiSessionMarker") or "")
+        if gui_marker:
+            raw_entry["marker"] = gui_marker
+        if t == "read":
+            read_content = str(r.get("content") or "")
+            if not read_content:
+                read_content = str(r.get("output") or "")
+            raw_entry["read_payload"] = read_content or None
+        pending_raw.append(raw_entry)
+        self._accumulated_tool_rounds_raw = pending_raw
 
     def _next_tool_call_id(self) -> str:
         """Return the next unused tool_call_id from the last assistant
@@ -3562,10 +3643,10 @@ class Agent:
         return "call_0"
 
     def _flush_tool_rounds(self) -> None:
-        """Attach accumulated tool_rounds to the last assistant message that
-        has tool_calls, then clear the accumulator."""
-        rounds = list(getattr(self, "_accumulated_tool_rounds", None) or [])
-        if not rounds:
+        """Attach accumulated tool_rounds raw data to the last assistant message
+        that has tool_calls, then clear the accumulator."""
+        raw_rounds = list(getattr(self, "_accumulated_tool_rounds_raw", None) or [])
+        if not raw_rounds:
             return
         for msg in reversed(self.conversation_history):
             if not isinstance(msg, dict):
@@ -3574,9 +3655,40 @@ class Agent:
                 continue
             if not msg.get("tool_calls"):
                 continue
-            msg["tool_rounds"] = rounds
+            msg["_tool_rounds_raw"] = raw_rounds
             break
         self._accumulated_tool_rounds = []
+        self._accumulated_tool_rounds_raw = []
+
+    def _rerender_tool_rounds(self, raw_list: List[Dict[str, Any]]) -> List[str]:
+        """Re-render tool_rounds from raw data using the current language."""
+        result = []
+        for item in raw_list:
+            tool = str(item.get("tool") or "").strip().lower()
+            args = item.get("args", {}) if isinstance(item.get("args"), dict) else {}
+            failed = bool(item.get("failed", False))
+            tool_round = self._format_tool_call_feedback_line(tool, args, failed=failed)
+            if tool == "run_subagent" and str(args.get("subagent") or "").strip().lower() == "explore":
+                elapsed = item.get("elapsed")
+                if elapsed is not None:
+                    explore_text = translate(
+                        "subagent.explore.completed", self._ui_language(),
+                        elapsed=f"{elapsed}",
+                    )
+                else:
+                    explore_text = translate("subagent.explore.completed", self._ui_language(), elapsed="")
+                tool_round = f"{GUI_CMD_PROMPT_BEGIN}{_ansi_rgb('•', 19, 161, 14)} {explore_text}{GUI_CMD_PROMPT_END}"
+            read_payload = item.get("read_payload")
+            if tool == "read" and read_payload:
+                tool_round = (
+                    f"{tool_round}\n{GUI_CMD_OUTPUT_BEGIN}"
+                    f"{read_payload}{GUI_CMD_OUTPUT_END}"
+                )
+            marker = item.get("marker")
+            if marker:
+                tool_round = f"{tool_round}\n{marker}"
+            result.append(tool_round)
+        return result
 
     def _build_conversation_interrupted_history_content(
         self,

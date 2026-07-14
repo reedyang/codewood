@@ -421,8 +421,15 @@ def _build_structured_turns(agent: Any) -> List[Dict[str, Any]]:
                 rendered = _render_step(idx, msg)
                 if rendered.strip():
                     current_round["tools"] = current_round["tools"] + rendered + "\n"
-            # Emit tool_rounds for new-format assistant messages (pre-rendered)
-            tool_rounds = msg.get("tool_rounds") if isinstance(msg, dict) else None
+# Emit tool_rounds for new-format assistant messages (pre-rendered)
+            raw_rounds = msg.get("_tool_rounds_raw") if isinstance(msg, dict) else None
+            if isinstance(raw_rounds, list) and raw_rounds:
+                try:
+                    tool_rounds = agent._rerender_tool_rounds(raw_rounds)
+                except Exception:
+                    tool_rounds = msg.get("tool_rounds") if isinstance(msg, dict) else None
+            else:
+                tool_rounds = msg.get("tool_rounds") if isinstance(msg, dict) else None
             if isinstance(tool_rounds, list) and tool_rounds:
                 current_round["tools"] = current_round["tools"] + "\n".join(tool_rounds) + "\n"
             # Extract _thinking even when the assistant message is a pure
@@ -473,7 +480,14 @@ def _build_structured_turns(agent: Any) -> List[Dict[str, Any]]:
             if thinking_text:
                 current_round["thinking"] = thinking_text
             # Emit tool_rounds when the assistant message carries both text and tools
-            tool_rounds = msg.get("tool_rounds") if isinstance(msg, dict) else None
+            raw_rounds = msg.get("_tool_rounds_raw") if isinstance(msg, dict) else None
+            if isinstance(raw_rounds, list) and raw_rounds:
+                try:
+                    tool_rounds = agent._rerender_tool_rounds(raw_rounds)
+                except Exception:
+                    tool_rounds = msg.get("tool_rounds") if isinstance(msg, dict) else None
+            else:
+                tool_rounds = msg.get("tool_rounds") if isinstance(msg, dict) else None
             if isinstance(tool_rounds, list) and tool_rounds:
                 current_round["tools"] = "\n".join(tool_rounds) + "\n"
         else:
@@ -483,7 +497,14 @@ def _build_structured_turns(agent: Any) -> List[Dict[str, Any]]:
             else:
                 current_round["waitSeconds"] += max(0, int(round(wait)))
             # Emit tool_rounds for new-format assistant messages
-            tool_rounds = msg.get("tool_rounds") if isinstance(msg, dict) else None
+            raw_rounds = msg.get("_tool_rounds_raw") if isinstance(msg, dict) else None
+            if isinstance(raw_rounds, list) and raw_rounds:
+                try:
+                    tool_rounds = agent._rerender_tool_rounds(raw_rounds)
+                except Exception:
+                    tool_rounds = msg.get("tool_rounds") if isinstance(msg, dict) else None
+            else:
+                tool_rounds = msg.get("tool_rounds") if isinstance(msg, dict) else None
             if isinstance(tool_rounds, list) and tool_rounds:
                 current_round["tools"] = current_round["tools"] + "\n".join(tool_rounds) + "\n"
             elif rendered.strip():
