@@ -4390,6 +4390,51 @@ h6.md-h {
   padding: 0;
   color: inherit;
 }
+
+/* Syntax-highlighted tool output (read / shell file reads) inside the
+   transcript. Keeps the 2ch indent of a normal command-output block. */
+.activity-steps .cmd-output .syn-output {
+  white-space: normal;
+  padding-left: 2ch;
+  font-family: var(--mono-font, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
+  font-size: 12px;
+  line-height: 1.55;
+}
+.activity-steps .cmd-output .syn-output pre.hljs {
+  margin: 0;
+  padding: 0;
+  background: none;
+  color: inherit;
+}
+.activity-steps .cmd-output .syn-output-linenums {
+  display: block;
+}
+.activity-steps .cmd-output .syn-output-linenums .syn-line {
+  display: flex;
+  align-items: stretch;
+}
+/* Uniform gray background spanning the whole line-number column (each row's
+   gutter stretches to the row height and rows stack flush, so the tint reads
+   as one continuous column). The number itself is tinted so it stands out
+   against both light and dark themes. */
+.activity-steps .cmd-output .syn-gutter {
+  flex: 0 0 auto;
+  min-width: 4ch;
+  margin-right: 1ch;
+  padding: 0 0.6ch;
+  text-align: right;
+  white-space: nowrap;
+  user-select: none;
+  color: rgba(150, 160, 175, 0.95);
+  background: rgba(140, 150, 165, 0.16);
+  border-right: 1px solid rgba(140, 150, 165, 0.25);
+}
+.activity-steps .cmd-output .syn-code {
+  flex: 1 1 auto;
+  min-width: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
 /* Small language tag in the top-right corner of a highlighted block. */
 .md-pre-lang {
   position: absolute;
