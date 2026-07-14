@@ -2,6 +2,7 @@ import { useState, useCallback } from "react";
 import { AnsiText } from "./Ansi";
 import { hostApi } from "../utils/hostApi";
 import { DiffPreview, langFromPath } from "./DiffPreview";
+import { SyntaxOutput, resolveToolOutputLang } from "./SyntaxOutput";
 import { Icon } from "./Icon";
 import { useApp } from "../state/AppContext";
 import type { DiffRow } from "../api/types";
@@ -289,6 +290,13 @@ function PromptWithAttachment({
   const shouldAutoExpand = isSubAgent && subagentSessionId === pendingExpandSubAgentId;
   const [expanded, setExpanded] = useState(hasDiff ? defaultExpanded : shouldAutoExpand);
 
+  // Syntax-highlight file content (read tool output, or a shell command that
+  // dumped a file) when we can resolve a language from the tool-call prompt.
+  const { lang, lineNumbers } = resolveToolOutputLang(body, cmdPayload);
+  const syntaxNode = lang
+    ? SyntaxOutput({ text: cmdPayload, lang, lineNumbers })
+    : null;
+
   const handleSubAgentClick = (e: React.MouseEvent) => {
     e.stopPropagation();
     void enterSubAgentSession(subagentSessionId);
@@ -372,7 +380,7 @@ function PromptWithAttachment({
       </div>
       {!isSubAgent && expanded && hasCmd && (
         <div className="cmd-output">
-          <AnsiText text={cmdPayload} />
+          {syntaxNode ?? <AnsiText text={cmdPayload} />}
         </div>
       )}
       {!isSubAgent && expanded && hasDiff && <DiffPreview rows={rows} lang={langFromPath(parsed?.file)} />}
