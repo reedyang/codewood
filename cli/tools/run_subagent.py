@@ -18,6 +18,10 @@ class RunSubagentTool(BaseTool):
                 "type": "string",
                 "description": "The name of the sub-agent to invoke (must match one of the available sub-agents).",
             },
+            "topic": {
+                "type": "string",
+                "description": "A short, concise topic describing what this sub-agent call is about. Displayed in the GUI chat title bar while viewing the sub-session.",
+            },
             "prompt": {
                 "type": "string",
                 "description": "A complete, self-contained task description for the sub-agent, including all context it needs.",
@@ -29,6 +33,7 @@ class RunSubagentTool(BaseTool):
         },
         "required": [
             "subagent",
+            "topic",
             "prompt",
         ],
     }
@@ -41,13 +46,16 @@ class RunSubagentTool(BaseTool):
 
         args = params if isinstance(params, dict) else {}
         subagent = str(args.get("subagent") or "").strip()
+        topic = str(args.get("topic") or "").strip()
         prompt = str(args.get("prompt") or "").strip()
         image = str(args.get("image") or "").strip() or None
         if not subagent:
             return {"success": False, "error": _t("subagents.error.missing_subagent")}
+        if not topic:
+            return {"success": False, "error": _t("subagents.error.missing_topic")}
         if not prompt:
             return {"success": False, "error": _t("subagents.error.empty_prompt")}
 
         from ..subagents.executor import run_subagent
 
-        return run_subagent(agent, subagent, prompt, image=image)
+        return run_subagent(agent, subagent, prompt, image=image, topic=topic)

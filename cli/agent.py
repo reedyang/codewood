@@ -2790,6 +2790,9 @@ class Agent:
         name = str(tool_name).strip().lower()
         if name == "run_subagent":
             sn = str(a.get("subagent") or "").strip() or "-"
+            tp = str(a.get("topic") or "").strip()
+            if tp:
+                return f"(subagent={sn}, topic={tp})"
             return f"(subagent={sn})"
 
         if name.startswith("mcp__"):

@@ -1817,7 +1817,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
           break;
         }
         case "sub_agent_start": {
-          const d = event.data as { sessionId: string; name: string; description: string; prompt: string };
+          const d = event.data as { sessionId: string; name: string; topic: string; description: string; prompt: string };
           const sessionId = String(d.sessionId || "");
           if (!sessionId) break;
           // If we're already viewing this session, update it
@@ -1826,6 +1826,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
             const updated: SubAgentSession = {
               ...current,
               name: String(d.name || current.name),
+              topic: String(d.topic || current.topic || ""),
               description: String(d.description || current.description),
               prompt: String(d.prompt || current.prompt),
             };
