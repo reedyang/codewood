@@ -18,6 +18,7 @@ vi.mock("../state/AppContext", () => ({
 }));
 
 import { HistoryRoundDetailView, LiveRoundView, RoundShell } from "./ChatView";
+import { StepsView } from "./Steps";
 
 describe("HistoryRoundDetailView", () => {
   it("renders thought before the completed tool summary when both are present", () => {
@@ -99,5 +100,24 @@ describe("LiveRoundView", () => {
 
     expect(screen.getByText("先给用户一段说明")).toBeTruthy();
     expect(screen.queryByText("Working... (4s)")).toBeNull();
+  });
+});
+
+describe("StepsView", () => {
+  it("keeps the sub-agent session affordance when control text separates the two states", () => {
+    render(
+      <StepsView
+        text={[
+          "\uE004• Exploring...\uE005",
+          "\uE008sa_123\uE009",
+          "\r\u001b[2K",
+          "\uE004• Explored for 41.3s\uE005",
+        ].join("\n")}
+      />,
+    );
+
+    expect(screen.queryByText("Exploring...")).toBeNull();
+    expect(screen.getByText("Explored for 41.3s")).toBeTruthy();
+    expect(screen.getByTitle("View sub-agent session")).toBeTruthy();
   });
 });

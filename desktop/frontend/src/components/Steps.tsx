@@ -28,6 +28,7 @@ const DIFF_END = "\uE007";
 const SUBAGENT_SESSION_BEGIN = "\uE008";
 const SUBAGENT_SESSION_END = "\uE009";
 const ANSI_SGR_RE = /\x1b\[[0-9;]*m/g;
+const ANSI_CSI_RE = /\x1b\[[0-?]*[ -/]*[@-~]/g;
 
 type SegKind = "text" | "cmd" | "prompt" | "diff" | "subagent_session";
 type Segment = { kind: SegKind; text: string };
@@ -108,9 +109,149 @@ function stripAnsi(text: string): string {
   return text.replace(ANSI_SGR_RE, "");
 }
 
+type ExplorePromptState = "running" | "completed";
+type SegmentUnit =
+  | { kind: "prompt"; segments: Segment[]; exploreState: ExplorePromptState | null }
+  | { kind: "other"; segments: Segment[] };
+
+function normalizeEllipsis(text: string): string {
+  return text.replace(/\u2026/g, "...");
+}
+
+function stripInvisibleText(text: string): string {
+  return text.replace(ANSI_CSI_RE, "").replace(/\r/g, "");
+}
+
+function getExplorePromptState(text: string): ExplorePromptState | null {
+  const plain = normalizeEllipsis(
+    stripAnsi(splitPromptBullet(trimBlankEdges(text)).body).trim(),
+  ).toLowerCase();
+  if (!plain) {
+    return null;
+  }
+  if (plain === "exploring..." || plain === "探索中...") {
+    return "running";
+  }
+  if (plain.startsWith("explored for ") || plain.startsWith("探索完成（")) {
+    return "completed";
+  }
+  return null;
+}
+
+function isBlankTextSegment(seg: Segment): boolean {
+  return seg.kind === "text" && !trimBlankEdges(stripInvisibleText(seg.text));
+}
+
+function getUnitSessionId(unit: Extract<SegmentUnit, { kind: "prompt" }>): string {
+  for (const seg of unit.segments) {
+    if (seg.kind === "subagent_session") {
+      return trimBlankEdges(seg.text);
+    }
+  }
+  return "";
+}
+
+function withSessionMarker(
+  unit: Extract<SegmentUnit, { kind: "prompt" }>,
+  sessionId: string,
+): Segment[] {
+  if (!sessionId || getUnitSessionId(unit)) {
+    return unit.segments;
+  }
+  const out = [...unit.segments];
+  let insertAt = out.length;
+  while (insertAt > 0 && isBlankTextSegment(out[insertAt - 1])) {
+    insertAt -= 1;
+  }
+  out.splice(insertAt, 0, { kind: "subagent_session", text: sessionId });
+  return out;
+}
+
+function isInvisibleUnit(unit: SegmentUnit): boolean {
+  return (
+    unit.kind === "other" &&
+    unit.segments.every((seg) => isBlankTextSegment(seg))
+  );
+}
+
+function buildSegmentUnits(segments: Segment[]): SegmentUnit[] {
+  const units: SegmentUnit[] = [];
+  for (let i = 0; i < segments.length; i += 1) {
+    const seg = segments[i];
+    if (seg.kind !== "prompt") {
+      units.push({ kind: "other", segments: [seg] });
+      continue;
+    }
+    const promptSegments: Segment[] = [seg];
+    let j = i + 1;
+    while (j < segments.length && isBlankTextSegment(segments[j])) {
+      promptSegments.push(segments[j]);
+      j += 1;
+    }
+    if (j < segments.length && segments[j].kind === "subagent_session") {
+      promptSegments.push(segments[j]);
+      j += 1;
+      while (j < segments.length && isBlankTextSegment(segments[j])) {
+        promptSegments.push(segments[j]);
+        j += 1;
+      }
+    }
+    units.push({
+      kind: "prompt",
+      segments: promptSegments,
+      exploreState: getExplorePromptState(seg.text),
+    });
+    i = j - 1;
+  }
+  return units;
+}
+
+function normalizeToolSegments(text: string): Segment[] {
+  const units = buildSegmentUnits(splitSteps(text));
+  const normalized: Segment[] = [];
+  for (let i = 0; i < units.length; i += 1) {
+    const unit = units[i];
+    if (unit.kind !== "prompt" || !unit.exploreState) {
+      normalized.push(...unit.segments);
+      continue;
+    }
+    let j = i;
+    const run: Extract<SegmentUnit, { kind: "prompt" }>[] = [];
+    while (j < units.length) {
+      const candidate = units[j];
+      if (candidate.kind === "prompt" && candidate.exploreState) {
+        run.push(candidate);
+        j += 1;
+        continue;
+      }
+      if (isInvisibleUnit(candidate)) {
+        j += 1;
+        continue;
+      }
+      if (candidate.kind !== "prompt" || !candidate.exploreState) {
+        break;
+      }
+    }
+    const hasRunning = run.some((item) => item.exploreState === "running");
+    const hasCompleted = run.some((item) => item.exploreState === "completed");
+    if (hasRunning && hasCompleted) {
+      const settled =
+        [...run].reverse().find((item) => item.exploreState === "completed") ??
+        run[run.length - 1];
+      const sessionId =
+        run.map((item) => getUnitSessionId(item)).find(Boolean) ?? "";
+      normalized.push(...withSessionMarker(settled, sessionId));
+      i = j - 1;
+      continue;
+    }
+    normalized.push(...unit.segments);
+  }
+  return normalized;
+}
+
 /** Count how many tool-call prompt rows are present in a rendered tool block. */
 export function countToolCalls(text: string): number {
-  return splitSteps(text).reduce((count, seg) => {
+  return normalizeToolSegments(text).reduce((count, seg) => {
     if (seg.kind !== "prompt") {
       return count;
     }
@@ -121,7 +262,7 @@ export function countToolCalls(text: string): number {
 /** Whether a rendered tool block contains a sub-agent session with the given ID. */
 export function textContainsSubAgentSession(text: string, id: string): boolean {
   if (!id) return false;
-  for (const seg of splitSteps(text)) {
+  for (const seg of normalizeToolSegments(text)) {
     if (seg.kind === "subagent_session" && trimBlankEdges(seg.text) === id) {
       return true;
     }
@@ -133,7 +274,7 @@ export function textContainsSubAgentSession(text: string, id: string): boolean {
  *  of ANSI color codes so it can be reused as a plain-text activity title. */
 export function getLastToolPromptBody(text: string): string | null {
   let lastBody: string | null = null;
-  for (const seg of splitSteps(text)) {
+  for (const seg of normalizeToolSegments(text)) {
     if (seg.kind !== "prompt") {
       continue;
     }
@@ -152,7 +293,7 @@ export function getLastToolPromptBody(text: string): string | null {
 
 /** Render collapsible execution steps, isolating command output blocks. */
 export function StepsView({ text }: { text: string }) {
-  const segments = splitSteps(text);
+  const segments = normalizeToolSegments(text);
 
   const onPathPreview = useCallback(async (path: string) => {
     const api = hostApi();
