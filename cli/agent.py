@@ -3462,8 +3462,12 @@ class Agent:
                 created_at,
             )
 
-        # Build the result payload for the tool message
-        payload: Dict[str, Any] = {"success": success}
+        # Build the result payload for the tool message.
+        # Start with all fields from the tool result so the model sees every
+        # detail (e.g. file content from read, command output from bash).
+        payload: Dict[str, Any] = dict(r)
+        payload["success"] = success
+        # Ensure output/error/message are present even if not in raw result.
         if output_text:
             payload["output"] = output_text
         if error_text:
@@ -3505,6 +3509,20 @@ class Agent:
         gui_marker = str(r.get("_guiSessionMarker") or "")
         if gui_marker:
             tool_round = tool_round + "\n" + gui_marker
+        # Surface the read tool's payload (file/dir/image content) as a
+        # collapsible block in the GUI transcript by wrapping it in the same
+        # CMD_OUTPUT sentinels the sub-agent session viewer uses. This lets the
+        # main session expand the read output on demand instead of never
+        # showing it (the raw role:tool result is skipped by the GUI).
+        if t == "read":
+            read_payload = str(r.get("content") or "")
+            if not read_payload:
+                read_payload = str(r.get("output") or "")
+            if read_payload:
+                tool_round = (
+                    f"{tool_round}\n{GUI_CMD_OUTPUT_BEGIN}"
+                    f"{read_payload}{GUI_CMD_OUTPUT_END}"
+                )
         pending = list(getattr(self, "_accumulated_tool_rounds", None) or [])
         pending.append(tool_round)
         self._accumulated_tool_rounds = pending
