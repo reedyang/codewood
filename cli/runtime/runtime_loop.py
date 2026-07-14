@@ -4637,6 +4637,8 @@ def run_agent_loop(agent: Any):
                         ):
                             print(f"  - {hint}")
                     if self._result_indicates_user_cancelled(result):
+                        if explore_ticker is not None:
+                            explore_ticker.stop()
                         self._force_current_input_as_requirement_once = True
                         self._last_cancelled_task = str(original_user_task or "").strip()
                         self._mark_cancelled_unanswered_user_message()
@@ -4736,6 +4738,8 @@ def run_agent_loop(agent: Any):
                 _gui_round_mark(self, False)
 
                 if break_after_batch:
+                    if explore_ticker is not None:
+                        explore_ticker.stop()
                     _warn_loop_ended_with_pending_plan(
                         self,
                         plan_finalize_nudged=plan_finalize_nudged,
@@ -4850,6 +4854,12 @@ def run_agent_loop(agent: Any):
                     pass
                 active_status_ticker = None
                 self._clear_last_thinking_line()
+            if explore_ticker is not None:
+                try:
+                    explore_ticker.stop()
+                except Exception:
+                    pass
+                explore_ticker = None
             if in_task_execution:
                 in_task_execution = False
                 self._in_task_execution = False
@@ -4925,6 +4935,12 @@ def run_agent_loop(agent: Any):
                     pass
                 active_status_ticker = None
                 self._clear_last_thinking_line()
+            if explore_ticker is not None:
+                try:
+                    explore_ticker.stop()
+                except Exception:
+                    pass
+                explore_ticker = None
             self._in_task_execution = False
             self._stop_interrupt_monitor(cancel_task_on_interrupt=True)
             print(t("runtime.error_occurred", error=str(e)))
