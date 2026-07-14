@@ -122,6 +122,40 @@ def _estimate_visible_lines(agent: Any, text: str) -> int:
     return max(0, len(parts))
 
 
+def _terminal_rows_for_stream_reload(agent: Any) -> int:
+    fn = getattr(agent, "_terminal_rows", None)
+    if callable(fn):
+        try:
+            rows = int(fn() or 0)
+            if rows > 0:
+                return rows
+        except Exception:
+            pass
+    try:
+        rows = int(shutil.get_terminal_size(fallback=(80, 24)).lines or 24)
+        if rows > 0:
+            return rows
+    except Exception:
+        pass
+    return 24
+
+
+def _mark_pending_stream_history_reload(agent: Any, pending: bool) -> None:
+    try:
+        agent._pending_stream_history_reload_after_output = bool(pending)
+    except Exception:
+        pass
+
+
+def _take_pending_stream_history_reload_request(agent: Any) -> bool:
+    pending = bool(getattr(agent, "_pending_stream_history_reload_after_output", False))
+    try:
+        agent._pending_stream_history_reload_after_output = False
+    except Exception:
+        pass
+    return pending
+
+
 def _thinking_tui_char_display_width(ch: str) -> int:
     if not ch or unicodedata.combining(ch):
         return 0
@@ -1447,6 +1481,7 @@ def _consume_streaming_ai_response(
 ) -> Tuple[Optional[str], bool]:
     from ..core.localization import translate as _translate
 
+    _mark_pending_stream_history_reload(agent, False)
     if isinstance(ai_result, str):
         return ai_result, False
     if ai_result is None:
@@ -1954,11 +1989,22 @@ def _consume_streaming_ai_response(
     # re-render it once through the full Markdown path: clear the exact rows the
     # append stream occupied (counted from the tee mirror) and reprint the
     # formatted block so the final terminal output matches a ``/chat reload``.
+    should_reload_after_stream = False
+    mirror_text = ""
+    if can_append_stream and streamed_any and append_mirror is not None:
+        mirror_text = append_mirror.getvalue()
+        streamed_rows = mirror_text.count("\n") + (
+            0 if mirror_text.endswith("\n") else 1
+        )
+        term_rows = _terminal_rows_for_stream_reload(agent)
+        should_reload_after_stream = streamed_rows >= max(1, term_rows - 1)
+        _mark_pending_stream_history_reload(agent, should_reload_after_stream)
     if (
         can_append_stream
         and streamed_any
         and append_mirror is not None
         and _text_has_renderable_markdown(visible_final)
+        and not should_reload_after_stream
     ):
         try:
             display_final_md = format_assistant_display_response(visible_final)
@@ -1970,7 +2016,6 @@ def _consume_streaming_ai_response(
         except Exception:
             rendered_block = ""
         if rendered_block:
-            mirror_text = append_mirror.getvalue()
             streamed_rows = mirror_text.count("\n") + (
                 0 if mirror_text.endswith("\n") else 1
             )
@@ -2186,6 +2231,27 @@ def _reload_chat_history_after_aborted_command(agent: Any) -> None:
         reload_fn(include_startup_overview=True)
     except TypeError:
         reload_fn()
+    except Exception:
+        pass
+
+
+def _reload_chat_history_after_streamed_assistant_output(agent: Any) -> None:
+    try:
+        remember = getattr(agent, "_remember_active_chat_history_tail_anchor", None)
+        if callable(remember):
+            remember()
+    except Exception:
+        pass
+    reload_fn = getattr(agent, "_reload_chat_history_from_anchor_on_resize", None)
+    if not callable(reload_fn):
+        return
+    try:
+        reload_fn()
+    except TypeError:
+        try:
+            reload_fn(include_startup_overview=True)
+        except Exception:
+            pass
     except Exception:
         pass
 
@@ -4096,6 +4162,7 @@ def run_agent_loop(agent: Any):
                     if self._consume_task_interrupt_requested():
                         raise KeyboardInterrupt
                     message_tool_plans: List[Tuple[str, Dict[str, Any]]] = []
+                    pending_stream_history_reload = False
                     if isinstance(ai_result, dict):
                         if not status_ticker_stopped:
                             _stop_status_ticker_before_first_output()
@@ -4136,6 +4203,7 @@ def run_agent_loop(agent: Any):
                             ai_result,
                             before_first_visible_output=_stop_status_ticker_before_first_output,
                         )
+                        pending_stream_history_reload = _take_pending_stream_history_reload_request(self)
                         stream_final_message = getattr(ai_result, "final_message", None)
                         if isinstance(stream_final_message, dict):
                             if not ai_response:
@@ -4248,6 +4316,9 @@ def run_agent_loop(agent: Any):
                     if cleaned_for_history and cleaned_for_history != ai_response:
                         ai_response = cleaned_for_history
                         _update_latest_assistant_clean_content(self, ai_response)
+                    if pending_stream_history_reload:
+                        _reload_chat_history_after_streamed_assistant_output(self)
+                        pending_stream_history_reload = False
                     no_tool_rounds += 1
                     if no_tool_rounds >= max_no_tool_rounds:
                         print(
@@ -4270,6 +4341,9 @@ def run_agent_loop(agent: Any):
                     )
                     is_first_round = False
                     continue
+                if pending_stream_history_reload:
+                    _reload_chat_history_after_streamed_assistant_output(self)
+                    pending_stream_history_reload = False
                 if ai_response and not streamed_assistant_output and not ai_response_looks_like_pseudo_tool:
                     # When a model-call error trail was just printed via the
                     # ephemeral notice channel, the orchestrator returns a
