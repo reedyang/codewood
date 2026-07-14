@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import sys
 import threading
 import time
 import uuid
@@ -627,7 +628,9 @@ def run_subagent(
 
     # Print the session marker early so the GUI can show the ">" button
     # to enter the session viewer while the sub-agent is still running.
-    print(f"{GUI_SUBAGENT_SESSION_BEGIN}{session_id}{GUI_SUBAGENT_SESSION_END}", flush=True)
+    # Skip when stdout is a TTY (TUI mode) — the marker is meaningless there.
+    if not sys.stdout.isatty():
+        print(f"{GUI_SUBAGENT_SESSION_BEGIN}{session_id}{GUI_SUBAGENT_SESSION_END}", flush=True)
 
     # Store the initial messages (system + user)
     store.append_message(agent, chat_id, session_id, {
@@ -652,6 +655,7 @@ def run_subagent(
     last_assistant_text = ""
 
     agent._subagent_depth = int(getattr(agent, "_subagent_depth", 0) or 0) + 1
+    _started_at = time.monotonic()
     try:
         _round = 0
         while max_rounds is None or _round < max_rounds:
@@ -686,6 +690,7 @@ def run_subagent(
                     "subagent": record.name,
                     "sessionId": session_id,
                     "_guiSessionMarker": f"{GUI_SUBAGENT_SESSION_BEGIN}{session_id}{GUI_SUBAGENT_SESSION_END}",
+                    "_elapsed_seconds": round(time.monotonic() - _started_at, 1),
                 }
             if not isinstance(message, dict):
                 error_msg = _t(agent, "subagents.error.bad_response")
@@ -701,6 +706,7 @@ def run_subagent(
                     "subagent": record.name,
                     "sessionId": session_id,
                     "_guiSessionMarker": f"{GUI_SUBAGENT_SESSION_BEGIN}{session_id}{GUI_SUBAGENT_SESSION_END}",
+                    "_elapsed_seconds": round(time.monotonic() - _started_at, 1),
                 }
 
             content_text = str(message.get("content") or "").strip()
@@ -723,6 +729,7 @@ def run_subagent(
                     "subagent": record.name,
                     "sessionId": session_id,
                     "_guiSessionMarker": f"{GUI_SUBAGENT_SESSION_BEGIN}{session_id}{GUI_SUBAGENT_SESSION_END}",
+                    "_elapsed_seconds": round(time.monotonic() - _started_at, 1),
                 }
 
             # Record the assistant turn (with its tool_calls) so the follow-up
@@ -830,6 +837,7 @@ def run_subagent(
             "max_rounds_reached": True,
             "sessionId": session_id,
             "_guiSessionMarker": f"{GUI_SUBAGENT_SESSION_BEGIN}{session_id}{GUI_SUBAGENT_SESSION_END}",
+            "_elapsed_seconds": round(time.monotonic() - _started_at, 1),
         }
     finally:
         agent._subagent_depth = max(0, int(getattr(agent, "_subagent_depth", 1) or 1) - 1)

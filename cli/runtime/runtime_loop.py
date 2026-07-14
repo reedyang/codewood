@@ -54,6 +54,7 @@ from ..core.console_utils import (
     _ansi_gray,
     _ansi_cyan,
     _WorkingStatusTicker,
+    _render_working_status_line,
     _ansi_yellow,
 )
 
@@ -4298,14 +4299,37 @@ def run_agent_loop(agent: Any):
                             self._last_terminal_block_kind = "assistant"
                             self._terminal_cursor_at_line_start = True
 
+                explore_ticker = None
                 if fallback_plans:
                     # Open a tool-execution round so the GUI shows
                     # "Working…" during long-running tools like
                     # run_subagent, instead of going dark after the
                     # model round ends.
                     _gui_round_mark(self, True)
+                    explore_ticker = None
                     for tool_name, args in fallback_plans:
-                        self._print_tool_call_feedback(tool_name, args, failed=False)
+                        if tool_name == "run_subagent" and str(args.get("subagent") or "").strip().lower() == "explore":
+                            ticker = _WorkingStatusTicker(
+                                sys.stdout,
+                                fps=_WORKING_STATUS_MARQUEE_FPS,
+                                language=getattr(self, "display_language", None),
+                            )
+                            def _explore_render(elapsed_seconds, frame, _t=ticker, _self=self):
+                                lang = getattr(_self, "display_language", None)
+                                line = _render_working_status_line(
+                                    elapsed_seconds=elapsed_seconds, frame=frame,
+                                    label="Exploring...", language=lang,
+                                )
+                                try:
+                                    sys.stdout.write(f"\r\x1b[2K{line}")
+                                    sys.stdout.flush()
+                                except Exception:
+                                    pass
+                            ticker._render_frame = _explore_render
+                            ticker.start()
+                            explore_ticker = ticker
+                        else:
+                            self._print_tool_call_feedback(tool_name, args, failed=False)
                 else:
                     tool_name, args = "", {}
 
@@ -4602,10 +4626,6 @@ def run_agent_loop(agent: Any):
                     last_tool_args = args if isinstance(args, dict) else {}
                     last_tool_result = result if isinstance(result, dict) else {}
                     is_first_round = False
-                    if tool_name == "run_subagent" and isinstance(result, dict):
-                        marker = result.get("_guiSessionMarker")
-                        if marker:
-                            print(marker)
                     if tool_name == "apply_patch" and (not bool(result.get("success", False))):
                         err = str(result.get("error") or result.get("message") or "unknown error").strip()
                         print(t("runtime.apply_patch_failed", error=err))
@@ -4749,6 +4769,26 @@ def run_agent_loop(agent: Any):
                 flusher = getattr(self, "_flush_tool_rounds", None)
                 if callable(flusher):
                     flusher()
+                # Re-print explore completion text, overwriting the "Exploring..." line
+                if last_tool_name == "run_subagent" and str(last_tool_args.get("subagent") or "").strip().lower() == "explore":
+                    if explore_ticker is not None:
+                        explore_ticker.stop()
+                    try:
+                        _rerender = getattr(self, "_rerender_tool_rounds", None)
+                        if callable(_rerender):
+                            msgs = list(getattr(self, "conversation_history", None) or [])
+                            for m in reversed(msgs):
+                                if isinstance(m, dict) and m.get("_tool_rounds_raw"):
+                                    rendered = _rerender(m["_tool_rounds_raw"])
+                                    if rendered:
+                                        clean = rendered[0].split("\ue008")[0].rstrip("\n").replace("\ue004", "").replace("\ue005", "").replace("\ue002", "").replace("\ue003", "")
+                                        if sys.stdout.isatty():
+                                            sys.stdout.write("\033[1A\033[K")
+                                            sys.stdout.flush()
+                                        print(clean)
+                                    break
+                    except Exception:
+                        pass
                 next_input = (
                     "Continue with standard tools when more tool work is needed; you may call one or more tools at once. "
                     "When no further tool action is required, reply in natural language with no tool_calls and the host will return to the command prompt. "
