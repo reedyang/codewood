@@ -101,11 +101,17 @@ def _normalize_plan_items(raw_plan: Any) -> List[Dict[str, str]]:
 
 
 def _history_context_input_tokens(messages: List[Dict[str, Any]]) -> int:
-    """Compute persisted history-only context tokens from chat messages.
+    """Compute history-only context tokens from chat messages.
 
-    Mirrors the cumulative `_cache_stats` anchor rules used by runtime
-    context assembly so chat record snapshots don't get overwritten by a
-    transient "current request total" value from in-memory agent fields.
+    Used as the last-resort fallback when the agent's in-memory usage snapshot
+    (``_last_context_*``) is unavailable. Mirrors the cumulative ``_cache_stats``
+    anchor rules used by runtime context assembly, and (like the runtime path)
+    starts from the most recent compaction summary so compacted history is not
+    double-counted.
+
+    Note: this is history-only — it omits the system prompt and tool schemas
+    that the runtime snapshot includes. The caller is responsible for adding
+    those when a precise total is needed.
     """
     from ..services.session_memory_service import (
         CONTEXT_COMPACTION_SUMMARY_PREFIX,
@@ -139,12 +145,9 @@ def _history_context_input_tokens(messages: List[Dict[str, Any]]) -> int:
         return raw.startswith("[TASK_WORKED_SUMMARY]") or raw.startswith("[INTERNAL_SLASH_RESULT]")
 
     # Trust the cache anchor only when it sits at/after the latest compaction
-    # summary. A compaction after the last cache anchor means that anchor still
-    # describes the *pre-compaction* context, so using it would double-count.
-    use_cache_anchor = (
-        0 <= last_cache_idx < len(messages)
-        and last_cache_idx >= latest_compaction_idx
-    )
+    # summary (see ``_cache_anchor_valid_after_compaction`` for the rationale:
+    # a stale pre-compaction anchor would double-count).
+    use_cache_anchor = _cache_anchor_valid_after_compaction(messages)
 
     total = 0
     start_idx = 0
@@ -462,14 +465,15 @@ class ChatStateManager:
         if not provider or not model_name:
             provider = str(getattr(self._agent, "provider", "") or "").strip()
             model_name = str(getattr(self._agent, "model_name", "") or "").strip()
-        usage_pct = int(getattr(self._agent, "_last_context_usage_percent", 0) or 0)
-        usage_tokens = int(getattr(self._agent, "_last_context_input_tokens", 0) or 0)
-        usage_window = int(getattr(self._agent, "_last_context_window", 0) or 0)
         # Seed the mode from the live sticky flag so a chat created while Plan
         # mode is active (e.g. the GUI's draft compose toggled to Plan before
         # the first send creates the record) persists Plan rather than the bare
         # Agent default — otherwise the choice is lost on reload.
         mode = CHAT_MODE_PLAN if bool(getattr(self._agent, "_plan_mode_sticky", False)) else CHAT_MODE_AGENT
+        # Context usage (percent/input tokens/window) is no longer persisted on
+        # the chat record. The in-memory snapshot (``_last_context_*``) rebuilt
+        # from the message history on activate is authoritative, so a new chat
+        # starts with no usage fields and the GUI falls back to that snapshot.
         return {
             "id": chat_id,
             "name": name,
@@ -479,11 +483,8 @@ class ChatStateManager:
             "model_provider": provider,
             "model_name": model_name,
             "reasoning_level": "",
-            "messages": [],
-            "context_usage_percent": usage_pct,
-            "context_input_tokens": usage_tokens,
-            "context_window": usage_window,
             "mode": mode,
+            "messages": [],
             "archived": False,
         }
 
@@ -597,14 +598,11 @@ class ChatStateManager:
             "model_provider": str(raw.get("model_provider") or "").strip(),
             "model_name": str(raw.get("model_name") or "").strip(),
             "reasoning_level": str(raw.get("reasoning_level") or "").strip(),
-            "messages": messages,
-            "context_usage_percent": int(raw.get("context_usage_percent") or 0),
-            "context_input_tokens": int(raw.get("context_input_tokens") or 0),
-            "context_window": int(raw.get("context_window") or 0),
             # Interaction mode ("plan" or "agent") recorded on the chat record
             # root so reloading the chat (TUI or GUI) restores the sticky mode
             # the user last left it in. Missing/unknown values default to Agent.
             "mode": _read_chat_mode(raw),
+            "messages": messages,
             "archived": bool(raw.get("archived", False)),
         }
         # Preserve cross-process clarifying-prompt state. Another codewood
@@ -622,18 +620,19 @@ class ChatStateManager:
         return {"version": CHAT_STATE_VERSION, "active": "chat-1", "chats": [default_chat]}
 
     def _apply_chat_usage_snapshot(self, chat: Dict[str, Any]) -> None:
+        # Context usage is no longer persisted on the chat record, so there is
+        # nothing to restore from disk. Instead rebuild the in-memory snapshot
+        # from the restored message history plus the active model's system
+        # prompt and tool schemas. The runtime refresh invoked from
+        # ``activate_chat`` performs the actual recompute; this helper exists to
+        # keep call sites stable and to avoid reading a stale/zero value that
+        # would otherwise clobber the live snapshot during reload.
         try:
-            self._agent._last_context_usage_percent = int(chat.get("context_usage_percent") or 0)
+            refresh = getattr(self._agent, "_refresh_status_context_usage_snapshot", None)
+            if callable(refresh):
+                refresh()
         except Exception:
-            self._agent._last_context_usage_percent = 0
-        try:
-            self._agent._last_context_input_tokens = int(chat.get("context_input_tokens") or 0)
-        except Exception:
-            self._agent._last_context_input_tokens = 0
-        try:
-            self._agent._last_context_window = int(chat.get("context_window") or 0)
-        except Exception:
-            self._agent._last_context_window = 0
+            pass
 
     def _notify_gui_context_usage_changed(self) -> None:
         try:
@@ -1181,9 +1180,6 @@ class ChatStateManager:
             if not chat:
                 return
             prev_messages = list(chat.get("messages") or [])
-            prev_context_input_tokens = int(chat.get("context_input_tokens") or 0)
-            prev_context_window = int(chat.get("context_window") or 0)
-            prev_context_usage_percent = int(chat.get("context_usage_percent") or 0)
             msgs = []
             for m in list(self._agent.conversation_history):
                 if not isinstance(m, dict):
@@ -1270,39 +1266,7 @@ class ChatStateManager:
                     entry["_thinking_from_content"] = True
                 msgs.append(entry)
             chat["messages"] = msgs
-            context_window = int(getattr(self._agent, "_last_context_window", 0) or 0)
-            # A cache anchor at/after the latest compaction summary makes
-            # ``_history_context_input_tokens`` accurate: the anchor's
-            # input_tokens already include the system prompt and tool schemas.
-            # A stale anchor *before* compaction would describe the pre-compaction
-            # context, so treat it like "no valid anchor" and fall back to the
-            # agent's rich runtime total (which adds system prompt + tool schemas).
-            has_valid_cache_anchor = _cache_anchor_valid_after_compaction(msgs)
-            if has_valid_cache_anchor:
-                context_input_tokens = _history_context_input_tokens(msgs)
-            else:
-                context_input_tokens = int(
-                    getattr(self._agent, "_last_context_input_tokens", 0) or 0
-                )
-                if context_input_tokens <= 0:
-                    context_input_tokens = _history_context_input_tokens(msgs)
-            chat["context_input_tokens"] = context_input_tokens
-            chat["context_window"] = context_window
-            if context_window > 0:
-                chat["context_usage_percent"] = max(
-                    0,
-                    min(999, int(round((context_input_tokens * 100.0) / max(1, context_window)))),
-                )
-            else:
-                chat["context_usage_percent"] = int(
-                    getattr(self._agent, "_last_context_usage_percent", 0) or 0
-                )
-            if (
-                prev_messages == msgs
-                and prev_context_input_tokens == int(chat.get("context_input_tokens") or 0)
-                and prev_context_window == int(chat.get("context_window") or 0)
-                and prev_context_usage_percent == int(chat.get("context_usage_percent") or 0)
-            ):
+            if prev_messages == msgs:
                 return
             if msgs:
                 chat["updated_at"] = str(msgs[-1].get("created_at") or "").strip() or self._now_text()
@@ -1310,42 +1274,11 @@ class ChatStateManager:
             self._notify_gui_context_usage_changed()
 
     def persist_active_chat_usage_snapshot(self) -> None:
-        with self._active_chat_state_lock():
-            chat = self.find_chat_by_id(self._agent.active_chat_id)
-            if not chat:
-                return
-            prev_context_usage_percent = int(chat.get("context_usage_percent") or 0)
-            prev_context_input_tokens = int(chat.get("context_input_tokens") or 0)
-            prev_context_window = int(chat.get("context_window") or 0)
-            msgs = list(chat.get("messages") or [])
-            has_valid_cache_anchor = _cache_anchor_valid_after_compaction(msgs)
-            if has_valid_cache_anchor:
-                context_input_tokens = _history_context_input_tokens(msgs)
-            else:
-                context_input_tokens = int(
-                    getattr(self._agent, "_last_context_input_tokens", 0) or 0
-                )
-                if context_input_tokens <= 0:
-                    context_input_tokens = _history_context_input_tokens(msgs)
-            context_window = int(
-                getattr(self._agent, "_last_context_window", 0) or 0
-            )
-            context_usage_percent = (
-                max(0, min(999, int(round((context_input_tokens * 100.0) / max(1, context_window)))))
-                if context_window > 0
-                else int(getattr(self._agent, "_last_context_usage_percent", 0) or 0)
-            )
-            chat["context_usage_percent"] = context_usage_percent
-            chat["context_input_tokens"] = context_input_tokens
-            chat["context_window"] = context_window
-            if (
-                prev_context_usage_percent == context_usage_percent
-                and prev_context_input_tokens == context_input_tokens
-                and prev_context_window == context_window
-            ):
-                return
-            self.save_chat_state()
-            self._notify_gui_context_usage_changed()
+        # Context usage is no longer persisted on the chat record. The runtime
+        # refresh (``_refresh_context_usage_snapshot_impl``) keeps the in-memory
+        # ``_last_context_*`` snapshot current and calls this helper after each
+        # update; its only remaining job is to surface the new value to the GUI.
+        self._notify_gui_context_usage_changed()
 
     def clear_chat_context(self, chat_id: str) -> bool:
         cid = str(chat_id or "").strip()
@@ -1356,16 +1289,16 @@ class ChatStateManager:
             if not chat:
                 return False
             chat["messages"] = []
-            chat["context_usage_percent"] = 0
-            chat["context_input_tokens"] = 0
-            chat["context_window"] = int(
-                getattr(self._agent, "_last_context_window", 0) or 0
-            )
             chat["updated_at"] = self._now_text()
             if cid == str(getattr(self._agent, "active_chat_id", "") or "").strip():
                 self._agent._active_chat_plan = None
                 self._agent._active_chat_plan_pending = False
+                # Reset the in-memory usage snapshot so the GUI shows 0 until the
+                # next runtime refresh recomputes it from the (now empty) history.
+                self._agent._last_context_usage_percent = 0
+                self._agent._last_context_input_tokens = 0
             self.save_chat_state()
+            self._notify_gui_context_usage_changed()
             return True
 
     @staticmethod
@@ -1628,12 +1561,6 @@ class ChatStateManager:
                 pass
             self._apply_chat_usage_snapshot(chat)
             self._notify_gui_context_usage_changed()
-            try:
-                sync_refresh = getattr(self._agent, "_refresh_status_context_usage_snapshot", None)
-                if callable(sync_refresh):
-                    sync_refresh()
-            except Exception:
-                pass
             try:
                 svc = getattr(self._agent, "session_memory_service", None)
                 schedule_refresh = getattr(svc, "schedule_context_usage_refresh_async", None)

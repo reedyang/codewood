@@ -159,9 +159,6 @@ class ChatStateModelPersistenceTests(unittest.TestCase):
                         "created_at": "",
                         "updated_at": "",
                         "messages": [],
-                        "context_usage_percent": 44,
-                        "context_input_tokens": 1234,
-                        "context_window": 64000,
                     }
                 ],
             }
@@ -172,9 +169,12 @@ class ChatStateModelPersistenceTests(unittest.TestCase):
             self.assertEqual(len(schedule_calls), 1)
             self.assertEqual(schedule_calls[0]["context_hint"], "chat activated")
             self.assertEqual(len(gui_usage_notifications), 1)
-            self.assertEqual(agent._last_context_usage_percent, 44)
-            self.assertEqual(agent._last_context_input_tokens, 1234)
-            self.assertEqual(agent._last_context_window, 64000)
+            # Usage is no longer restored from the (removed) disk fields; it is
+            # rebuilt by the runtime refresh triggered on activate. The fake
+            # refresh is a no-op, so the snapshot stays at its default 0.
+            self.assertEqual(agent._last_context_usage_percent, 0)
+            self.assertEqual(agent._last_context_input_tokens, 0)
+            self.assertEqual(agent._last_context_window, 0)
             chat = manager.find_chat_by_id("chat-1")
             self.assertIsNotNone(chat)
             self.assertEqual(chat.get("model_provider"), "openai")
@@ -406,9 +406,6 @@ class ChatStateModelPersistenceTests(unittest.TestCase):
                         "messages": [
                             {"role": "user", "content": "hello", "created_at": ""}
                         ],
-                        "context_usage_percent": 52,
-                        "context_input_tokens": 123,
-                        "context_window": 64000,
                     }
                 ],
             }
@@ -420,11 +417,16 @@ class ChatStateModelPersistenceTests(unittest.TestCase):
             self.assertTrue(ok)
             chat = manager.find_chat_by_id("chat-1")
             self.assertEqual(chat.get("messages"), [])
-            self.assertEqual(chat.get("context_usage_percent"), 0)
-            self.assertEqual(chat.get("context_input_tokens"), 0)
+            # Usage is no longer persisted on the chat record; clearing resets
+            # the in-memory snapshot instead, so the fields are absent here.
+            self.assertNotIn("context_usage_percent", chat)
+            self.assertNotIn("context_input_tokens", chat)
+            self.assertNotIn("context_window", chat)
+            self.assertEqual(agent._last_context_usage_percent, 0)
+            self.assertEqual(agent._last_context_input_tokens, 0)
             self.assertEqual(save_calls, ["saved"])
 
-    def test_persist_active_chat_usage_snapshot_writes_usage_to_file_immediately(self):
+    def test_persist_active_chat_usage_snapshot_notifies_gui_without_persisting_usage(self):
         with tempfile.TemporaryDirectory() as td:
             workspace = Path(td)
             agent = _FakeAgent(workspace)
@@ -444,9 +446,6 @@ class ChatStateModelPersistenceTests(unittest.TestCase):
                         "model_provider": "openai",
                         "model_name": "gpt-4.1",
                         "messages": [],
-                        "context_usage_percent": 0,
-                        "context_input_tokens": 0,
-                        "context_window": 0,
                     }
                 ],
             }
@@ -459,17 +458,52 @@ class ChatStateModelPersistenceTests(unittest.TestCase):
 
             chat = manager.find_chat_by_id("chat-1")
             self.assertIsNotNone(chat)
-            self.assertEqual(chat.get("context_usage_percent"), 3)
-            self.assertEqual(chat.get("context_input_tokens"), 4321)
-            self.assertEqual(chat.get("context_window"), 128000)
-
-            payload = _read_chat_index(workspace)
-            _assert_hash_record_file(self, payload["chats"][0].get("record_file"))
-            saved_chat = _read_first_chat_record(workspace)
-            self.assertEqual(saved_chat.get("context_usage_percent"), 3)
-            self.assertEqual(saved_chat.get("context_input_tokens"), 4321)
-            self.assertEqual(saved_chat.get("context_window"), 128000)
+            # Usage is no longer written to the chat record; the in-memory
+            # snapshot (set by the runtime refresh) is authoritative, and
+            # ``persist`` only surfaces it to the GUI.
+            self.assertNotIn("context_usage_percent", chat)
+            self.assertNotIn("context_input_tokens", chat)
+            self.assertNotIn("context_window", chat)
             self.assertEqual(len(gui_usage_notifications), 1)
+
+    def test_persist_active_chat_usage_snapshot_record_lacks_usage_after_sync(self):
+        with tempfile.TemporaryDirectory() as td:
+            workspace = Path(td)
+            agent = _FakeAgent(workspace)
+            manager = ChatStateManager(agent, "chats.json")
+            agent._chat_state = {
+                "version": 2,
+                "active": "chat-1",
+                "chats": [
+                    {
+                        "id": "chat-1",
+                        "name": "Demo",
+                        "name_source": "manual",
+                        "created_at": "",
+                        "updated_at": "",
+                        "model_provider": "openai",
+                        "model_name": "gpt-4.1",
+                        "messages": [],
+                    }
+                ],
+            }
+            agent.active_chat_id = "chat-1"
+            agent._last_context_usage_percent = 3
+            agent._last_context_input_tokens = 4321
+            agent._last_context_window = 128000
+            agent.conversation_history = [
+                {"role": "user", "content": "hello", "created_at": "2026-07-08 15:10:00"}
+            ]
+
+            # The usage snapshot is only surfaced to the GUI; a subsequent sync
+            # (which does persist the record) must not reintroduce the fields.
+            manager.persist_active_chat_usage_snapshot()
+            manager.sync_active_chat_messages()
+
+            saved_chat = _read_first_chat_record(workspace)
+            self.assertNotIn("context_usage_percent", saved_chat)
+            self.assertNotIn("context_input_tokens", saved_chat)
+            self.assertNotIn("context_window", saved_chat)
 
     def test_persist_active_chat_usage_snapshot_does_not_touch_updated_at_when_usage_is_unchanged(self):
         with tempfile.TemporaryDirectory() as td:
@@ -511,7 +545,7 @@ class ChatStateModelPersistenceTests(unittest.TestCase):
             self.assertEqual(chat.get("updated_at"), original_updated_at)
             self.assertEqual(save_calls, [])
 
-    def test_persist_active_chat_usage_snapshot_keeps_updated_at_when_usage_changes(self):
+    def test_persist_active_chat_usage_snapshot_does_not_persist_usage_when_changed(self):
         with tempfile.TemporaryDirectory() as td:
             workspace = Path(td)
             agent = _FakeAgent(workspace)
@@ -530,9 +564,6 @@ class ChatStateModelPersistenceTests(unittest.TestCase):
                         "model_provider": "openai",
                         "model_name": "gpt-4.1",
                         "messages": [],
-                        "context_usage_percent": 1,
-                        "context_input_tokens": 100,
-                        "context_window": 64000,
                     }
                 ],
             }
@@ -545,9 +576,10 @@ class ChatStateModelPersistenceTests(unittest.TestCase):
 
             chat = manager.find_chat_by_id("chat-1")
             self.assertIsNotNone(chat)
-            self.assertEqual(chat.get("context_usage_percent"), 3)
-            self.assertEqual(chat.get("context_input_tokens"), 4321)
-            self.assertEqual(chat.get("context_window"), 128000)
+            # Changing usage must not write it to the chat record.
+            self.assertNotIn("context_usage_percent", chat)
+            self.assertNotIn("context_input_tokens", chat)
+            self.assertNotIn("context_window", chat)
             self.assertEqual(chat.get("updated_at"), original_updated_at)
 
     def test_sync_active_chat_messages_persists_exclude_from_model_context_flag(self):
@@ -650,7 +682,7 @@ class ChatStateModelPersistenceTests(unittest.TestCase):
             self.assertEqual(saved_msgs[0].get("pseudo_tool_call_text"), pseudo_text)
             self.assertEqual(saved_msgs[0].get("pseudo_tool_call_tools"), ["shell", "shell"])
 
-    def test_sync_active_chat_messages_recomputes_history_context_usage_from_cache_anchor(self):
+    def test_sync_active_chat_messages_persists_messages_without_usage_fields(self):
         with tempfile.TemporaryDirectory() as td:
             workspace = Path(td)
             agent = _FakeAgent(workspace)
@@ -668,9 +700,6 @@ class ChatStateModelPersistenceTests(unittest.TestCase):
                         "model_provider": "openai",
                         "model_name": "gpt-4.1",
                         "messages": [],
-                        "context_usage_percent": 0,
-                        "context_input_tokens": 0,
-                        "context_window": 131072,
                     }
                 ],
             }
@@ -712,14 +741,22 @@ class ChatStateModelPersistenceTests(unittest.TestCase):
 
             chat = manager.find_chat_by_id("chat-1")
             self.assertIsNotNone(chat)
-            # With a _cache_stats anchor, _history_context_input_tokens is used
-            # which correctly computes from the cache anchor + response tokens.
-            self.assertEqual(chat.get("context_input_tokens"), 16060 + 253)
-            self.assertEqual(chat.get("context_usage_percent"), 12)
+            # Messages are persisted (including the internal flag and cache
+            # stats needed for later usage recompute).
+            msgs = list(chat.get("messages") or [])
+            self.assertEqual(len(msgs), 4)
+            self.assertTrue(bool(msgs[2].get("_internal", False)))
+            self.assertIsInstance(msgs[1].get("_cache_stats"), dict)
+            # Usage is no longer written to the chat record; the in-memory
+            # snapshot (rebuilt from history by the runtime refresh) is used.
+            self.assertNotIn("context_usage_percent", chat)
+            self.assertNotIn("context_input_tokens", chat)
+            self.assertNotIn("context_window", chat)
 
             saved_chat = _read_first_chat_record(workspace)
-            self.assertEqual(saved_chat.get("context_input_tokens"), 16060 + 253)
-            self.assertEqual(saved_chat.get("context_usage_percent"), 12)
+            self.assertNotIn("context_usage_percent", saved_chat)
+            self.assertNotIn("context_input_tokens", saved_chat)
+            self.assertNotIn("context_window", saved_chat)
 
     def test_sync_active_chat_messages_skips_memory_only_messages(self):
         with tempfile.TemporaryDirectory() as td:
