@@ -177,7 +177,94 @@ class _FakeAgent:
             print(content)
 
 
+class _FakeAgentWithReadRender(_FakeAgent):
+    """A fake agent whose per-message renderer actually emits the "Ran read"
+    feedback line (like the real renderer), so a duplicate would be visible."""
+
+    def _rerender_tool_rounds(self, raw_list):
+        out = []
+        for item in raw_list:
+            tool = str(item.get("tool") or "").strip().lower()
+            args = item.get("args") or {}
+            line = f"• Ran {tool} {args.get('path', '')}"
+            payload = item.get("read_payload")
+            if tool == "read" and payload:
+                line = f"{line}\uE000{payload}\uE001"
+            out.append(line)
+        return out
+
+    def _render_transcript_single_message(self, idx, msg, hist):
+        plan = self._parse_model_tool_plan_history_content(msg.get("content"))
+        if plan is not None:
+            tool = str(plan.get("tool") or "")
+            if tool == "read":
+                print(f"• Ran read {plan.get('args', {}).get('path', '')}")
+            return
+        result = self._parse_model_tool_result_history_content(msg.get("content"))
+        if result is not None and str(result.get("tool") or "") == "read":
+            return
+        content = str(msg.get("content") or "").strip()
+        if content:
+            print(content)
+
+
 class StructuredTurnGroupingTests(unittest.TestCase):
+    def test_no_duplicate_render_when_tool_rounds_raw_present(self):
+        # Regression: an assistant message carrying both a recognized tool plan
+        # and a pre-rendered ``_tool_rounds_raw`` must render the call ONCE.
+        # Before the fix, ``_render_step`` emitted the bare "Ran read" prompt
+        # AND ``_rerender_tool_rounds`` emitted the full call with payload,
+        # producing two blocks (the first without syntax highlighting).
+        agent = _FakeAgentWithReadRender()
+        read_payload = "1: def main():\n2:     print('hello world')\n"
+        agent.conversation_history = [
+            {
+                "role": "user",
+                "content": "看一下 helloworld.py",
+                "created_at": "2026-07-15 15:02:07",
+            },
+            {
+                "role": "assistant",
+                "content": _tool_plan("read", {"path": "helloworld.py"}),
+                "tool_calls": [
+                    {
+                        "id": "c1",
+                        "type": "function",
+                        "function": {
+                            "name": "read",
+                            "arguments": json.dumps({"path": "helloworld.py"}),
+                        },
+                    }
+                ],
+                "_tool_rounds_raw": [
+                    {
+                        "tool": "read",
+                        "args": {"path": "helloworld.py"},
+                        "failed": False,
+                        "read_payload": read_payload,
+                    }
+                ],
+                "created_at": "2026-07-15 15:02:25",
+            },
+            {
+                "role": "assistant",
+                "content": "这是 helloworld.py 的内容",
+                "created_at": "2026-07-15 15:02:27",
+            },
+        ]
+
+        turns = _build_structured_turns(agent)
+
+        self.assertEqual(len(turns), 1)
+        turn = turns[0]
+        tool_rounds = [r for r in turn["rounds"] if r["tools"].strip()]
+        self.assertEqual(len(tool_rounds), 1)
+        tools = tool_rounds[0]["tools"]
+        # The read call appears exactly once, and with its payload so the GUI
+        # can syntax-highlight it.
+        self.assertEqual(tools.count("Ran read helloworld.py"), 1)
+        self.assertIn("def main()", tools)
+
     def test_groups_consecutive_tool_calls_and_deduplicates_skill_prompt(self):
         turns = _build_structured_turns(_FakeAgent())
 
