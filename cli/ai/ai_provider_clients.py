@@ -1307,6 +1307,39 @@ def _build_openai_responses_input_messages(
             continue
         role = str(message.get("role") or "user")
         content = message.get("content", "")
+        # Tool-result messages become ``function_call_output`` items in the
+        # Responses API; a bare ``role: "tool"`` message is not a valid ``input``
+        # item for /responses and is rejected by strict gateways.
+        if role in ("tool", "function"):
+            call_id = str(message.get("tool_call_id") or message.get("call_id") or "")
+            if isinstance(content, (str, list)):
+                output = _extract_text_from_response_content(content)
+            else:
+                output = str(content or "")
+            out.append({"type": "function_call_output", "call_id": call_id, "output": output})
+            continue
+        # Assistant turns that invoked tools become ``function_call`` items so the
+        # following ``function_call_output`` results stay correlated by call_id.
+        if role == "assistant":
+            tool_calls = message.get("tool_calls")
+            if isinstance(tool_calls, list) and tool_calls:
+                for tc in tool_calls:
+                    if not isinstance(tc, dict):
+                        continue
+                    func = tc.get("function") if isinstance(tc.get("function"), dict) else {}
+                    out.append({
+                        "type": "function_call",
+                        "call_id": str(tc.get("id") or ""),
+                        "name": str(func.get("name") or ""),
+                        "arguments": _normalize_tool_call_arguments(func.get("arguments")),
+                    })
+                if isinstance(content, (str, list)):
+                    text = _extract_text_from_response_content(content)
+                else:
+                    text = ""
+                if text:
+                    out.append({"type": "message", "role": "assistant", "content": [{"type": "input_text", "text": text}]})
+                continue
         if image_data is not None and image_user_idx is not None and idx == image_user_idx:
             parts = [
                 {"type": "input_text", "text": str(image_user_text or "")},
