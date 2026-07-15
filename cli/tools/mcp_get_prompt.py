@@ -46,6 +46,21 @@ class McpGetPromptTool(BaseTool):
             return {"success": False, "error": "missing prompt"}
         if not isinstance(arguments, dict):
             return {"success": False, "error": "arguments must be object"}
+        prompt_key = f"{server}/{prompt_name}"
+        # Avoid duplicate injection: if the same MCP prompt was already injected
+        # (e.g. via a prior forced ``/mcp/<server>/<prompt>`` reference or an
+        # earlier ``mcp_get_prompt`` call), don't fetch/embed its content again.
+        session_injected = getattr(agent, "_session_injected_mcp_prompts", None)
+        if session_injected is not None and prompt_key in session_injected:
+            return {
+                "success": True,
+                "server": server,
+                "prompt": prompt_name,
+                "already_injected": True,
+                "message": f"MCP prompt already injected ({server}/{prompt_name})",
+                # Marker for history reconciliation scanner.
+                "_mcp_marker": f"----- BEGIN MCP PROMPT (server={server}, name={prompt_name}) -----",
+            }
         try:
             result = agent.mcp_manager.get_prompt(
                 str(server),
@@ -55,9 +70,8 @@ class McpGetPromptTool(BaseTool):
             )
             # Track in session-level set so future forced MCP references
             # don't re-inject the prompt content.
-            session_injected = getattr(agent, "_session_injected_mcp_prompts", None)
             if session_injected is not None:
-                session_injected.add(f"{server}/{prompt_name}")
+                session_injected.add(prompt_key)
             return {
                 "success": True,
                 "server": server,
