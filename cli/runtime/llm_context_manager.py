@@ -514,7 +514,25 @@ class LLMContextManager:
 
         total = 0
         start_idx = 0
-        if 0 <= last_cache_idx < len(messages):
+        # Locate the most recent compaction summary. It marks a hard restart of
+        # the model context: everything before it is replaced by the summary
+        # and must never be counted again (neither via a stale cache anchor nor
+        # directly). This is the authoritative lower bound for the real context.
+        latest_compaction_idx = -1
+        for i, m in enumerate(messages):
+            if self.is_context_compaction_summary_message(m):
+                latest_compaction_idx = i
+
+        # Use the cache anchor only when it sits at/after the latest compaction
+        # summary. If a compaction happened after the last cache anchor, that
+        # anchor's input_tokens still describe the *pre-compaction* context, so
+        # trusting it would double-count everything. In that case we start from
+        # the compaction summary and count forward instead.
+        use_cache_anchor = (
+            0 <= last_cache_idx < len(messages)
+            and last_cache_idx >= latest_compaction_idx
+        )
+        if use_cache_anchor:
             anchor = messages[last_cache_idx]
             cs = anchor["_cache_stats"]
             if "input_tokens" in cs:
@@ -526,13 +544,11 @@ class LLMContextManager:
             # anchor response exactly once, preferring provider usage data.
             total += _message_cost(anchor)
             start_idx = last_cache_idx + 1
-        else:
-            # No cache-stats anchor from the API — use the most recent
-            # compaction summary as the starting point so compacted messages
-            # before it are not counted a second time.
-            for i, m in enumerate(messages):
-                if self.is_context_compaction_summary_message(m):
-                    start_idx = i
+        elif latest_compaction_idx >= 0:
+            # No (valid) cache anchor — or the anchor predates compaction.
+            # Start from the most recent compaction summary so compacted
+            # messages before it are not counted a second time.
+            start_idx = latest_compaction_idx
 
         for i, m in enumerate(messages):
             if _is_internal_assistant(m):

@@ -1344,6 +1344,37 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
 
         self.assertEqual(total, 2000 + estimated_anchor + 33)
 
+    def test_history_tokens_cumulative_skips_precompaction_anchor_after_compaction(self):
+        agent = _FakeAgent()
+        svc = SessionMemoryService(agent)
+
+        summary_content = svc.build_context_compaction_summary_content(
+            summary="过去几十轮对话的摘要", mode="manual", covered_message_count=10
+        )
+        summary_est = svc.llm_context_manager._estimate_message_tokens(
+            "assistant", svc._normalize_history_content_for_model("assistant", summary_content)
+        )
+        messages = [
+            {"role": "user", "content": "compaction 之前的历史", "_token_count": 500},
+            {
+                "role": "assistant",
+                "content": '{"tool_calls": []}',
+                "_cache_stats": {"input_tokens": 30000},
+                "_output_tokens": 100,
+                "_token_count_includes_reasoning": False,
+            },
+            {"role": "assistant", "content": summary_content},
+            {"role": "user", "content": "compaction 之后的问题", "_token_count": 20},
+            {"role": "assistant", "content": "回答", "_token_count": 30},
+        ]
+
+        total = svc.llm_context_manager._history_tokens_cumulative(messages)
+
+        # The pre-compaction cache anchor (input_tokens=30000) must be ignored
+        # because the compaction summary after it restarts the context.
+        self.assertEqual(total, summary_est + 20 + 30)
+        self.assertLess(total, 30000)
+
     def test_build_regular_task_messages_snapshot_uses_history_only_when_cache_anchor_exists(self):
         agent = _FakeAgent()
         agent.params = {"context_window": 131072}
