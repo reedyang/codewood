@@ -4138,6 +4138,32 @@ html[data-has-bg] .select {
   white-space: pre-wrap;
 }
 
+/* While compaction is in progress, sweep a gradient across the banner text
+   (the same "Working..." shimmer used by the activity header). */
+.compact-notice-text.shimmer-text {
+  display: inline-block;
+  min-width: max-content;
+  white-space: nowrap;
+  background: linear-gradient(
+    90deg,
+    var(--text-muted) 0%,
+    var(--accent) 50%,
+    var(--text-muted) 100%
+  );
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: shimmer 1.4s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .compact-notice-text.shimmer-text {
+    animation: none;
+    -webkit-text-fill-color: var(--text-muted);
+  }
+}
+
 .compact-notice-body {
   padding: 14px 16px;
   border: 1px solid var(--border);

@@ -223,20 +223,27 @@ function MessageBody({ text }: { text: string }) {
 function CompactNoticeView({
   title,
   body = "",
+  stage = "",
 }: {
   title: string;
   body?: string;
+  stage?: string;
 }) {
   const noticeTitle = String(title || "").trim();
   const noticeBody = String(body || "").trim();
   if (!noticeTitle && !noticeBody) {
     return null;
   }
+  const inProgress = stage === "start" || stage === "stream";
   return (
     <div className="compact-notice-block">
       {noticeTitle && (
         <div className="compact-notice-banner">
-          <span className="compact-notice-text">{noticeTitle}</span>
+          <span
+            className={`compact-notice-text${inProgress ? " shimmer-text" : ""}`}
+          >
+            {noticeTitle}
+          </span>
         </div>
       )}
       {noticeBody && (
@@ -1369,6 +1376,7 @@ export function ChatView() {
                 <CompactNoticeView
                   title={compactNotice.title}
                   body={compactNotice.body}
+                  stage={compactNotice.stage}
                 />
               </div>
             )}
