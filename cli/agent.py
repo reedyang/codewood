@@ -1,4 +1,4 @@
-﻿import os
+import os
 import sys
 import io
 import json
@@ -1840,7 +1840,7 @@ class Agent:
                     raw_rounds = msg.get("_tool_rounds_raw") if isinstance(msg, dict) else None
                     if isinstance(raw_rounds, list) and raw_rounds:
                         try:
-                            rendered = self._rerender_tool_rounds(raw_rounds)
+                            rendered = self._rerender_tool_rounds(raw_rounds, suppress_read_output=True)
                             for r in rendered:
                                 # Strip GUI prompt/output sentinels for TUI display
                                 clean = r.split("\ue008")[0].rstrip("\n").replace("\ue004", "").replace("\ue005", "").replace("\ue002", "").replace("\ue003", "")
@@ -1941,7 +1941,7 @@ class Agent:
                     raw_rounds = msg.get("_tool_rounds_raw")
                     if isinstance(raw_rounds, list) and raw_rounds:
                         try:
-                            rendered = self._rerender_tool_rounds(raw_rounds)
+                            rendered = self._rerender_tool_rounds(raw_rounds, suppress_read_output=True)
                             for r in rendered:
                                 clean = r.split("\ue008")[0].rstrip("\n").replace("\ue004", "").replace("\ue005", "").replace("\ue002", "").replace("\ue003", "")
                                 self._ensure_terminal_line_start()
@@ -2137,7 +2137,7 @@ class Agent:
                 raw_rounds = msg.get("_tool_rounds_raw")
                 if isinstance(raw_rounds, list) and raw_rounds:
                     try:
-                        rendered = self._rerender_tool_rounds(raw_rounds)
+                        rendered = self._rerender_tool_rounds(raw_rounds, suppress_read_output=True)
                         for r in rendered:
                             clean = r.split("\ue008")[0].rstrip("\n").replace("\ue004", "").replace("\ue005", "").replace("\ue002", "").replace("\ue003", "")
                             print(clean)
@@ -2178,7 +2178,7 @@ class Agent:
             raw_rounds = msg.get("_tool_rounds_raw")
             if isinstance(raw_rounds, list) and raw_rounds:
                 try:
-                    rendered = self._rerender_tool_rounds(raw_rounds)
+                    rendered = self._rerender_tool_rounds(raw_rounds, suppress_read_output=True)
                     for r in rendered:
                         clean = r.split("\ue008")[0].rstrip("\n").replace("\ue004", "").replace("\ue005", "").replace("\ue002", "").replace("\ue003", "")
                         print(clean)
@@ -3778,8 +3778,17 @@ class Agent:
                 has_injected_user = True
         return not (has_role_tool or has_injected_user)
 
-    def _rerender_tool_rounds(self, raw_list: List[Dict[str, Any]]) -> List[str]:
-        """Re-render tool_rounds from raw data using the current language."""
+    def _rerender_tool_rounds(
+        self,
+        raw_list: List[Dict[str, Any]],
+        suppress_read_output: bool = False,
+    ) -> List[str]:
+        """Re-render tool_rounds from raw data using the current language.
+
+        When ``suppress_read_output`` is True (TUI history/transcript reload),
+        the ``read`` tool's file content is omitted so the terminal mirrors live
+        task execution, where only the read feedback line is shown.
+        """
         result = []
         for item in raw_list:
             tool = str(item.get("tool") or "").strip().lower()
@@ -3793,7 +3802,7 @@ class Agent:
             # Expand the tool output (generic ``output`` field) as a collapsible
             # block so reloaded history can show every tool's result on demand.
             output = item.get("output")
-            if output:
+            if output and not (suppress_read_output and tool == "read"):
                 tool_round = (
                     f"{tool_round}\n{GUI_CMD_OUTPUT_BEGIN}"
                     f"{output}{GUI_CMD_OUTPUT_END}"
@@ -8024,5 +8033,6 @@ class Agent:
         except Exception as e:
             print(translate("warning.execution_failed", self._ui_language(), error=e))
             return False
+
 
 
