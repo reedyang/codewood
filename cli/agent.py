@@ -3626,7 +3626,13 @@ class Agent:
         # transcript by wrapping it in the same CMD_OUTPUT sentinels the
         # sub-agent session viewer uses. This lets the main session expand the
         # output on demand when a chat is reloaded.
-        round_output = self._extract_tool_result_output(t, r)
+        # A sub-agent call keeps a separate, fully-persisted transcript (see
+        # cli/subagents/executor.py); recording its potentially large final
+        # output inline would bloat the main chat history. We deliberately skip
+        # the output block here — the guiSessionMarker recorded below still lets
+        # the GUI navigate into that sub-session on history reload.
+        is_subagent_call = t == "run_subagent"
+        round_output = "" if is_subagent_call else self._extract_tool_result_output(t, r)
         if round_output:
             tool_round = (
                 f"{tool_round}\n{GUI_CMD_OUTPUT_BEGIN}"
