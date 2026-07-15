@@ -22,7 +22,6 @@ def _payload(reasoning_effort):
         image_user_text="",
         session_summary_mode=False,
         memory_query_expansion_mode=False,
-        additional_drop_params=[],
         tool_schemas=None,
         tool_choice=None,
         force_disable_thinking=False,
@@ -227,7 +226,6 @@ class OpenAIRouteFallbackTests(unittest.TestCase):
                         image_user_text="",
                         session_summary_mode=False,
                         memory_query_expansion_mode=False,
-                        additional_drop_params=[],
                         tool_schemas=None,
                         tool_choice=None,
                         append_history=lambda *_args, **_kwargs: None,
@@ -240,50 +238,44 @@ class OpenAIRouteFallbackTests(unittest.TestCase):
             "chat with-suffix",
         )
 
-    def test_route_404_still_probes_alternate_suffix_url(self):
+    def test_route_chat_never_probes_bare_base(self):
         calls = []
 
         def _fake_call_once(**kwargs):
             url = str(kwargs.get("url") or "")
             calls.append(url)
-            if len(calls) == 1:
-                raise OpenAIRequestError(
-                    "404 Not Found",
-                    status_code=404,
-                    response_body='{"error":"not found"}',
-                    url=url,
-                )
-            return "ok"
+            raise OpenAIRequestError(
+                "404 Not Found",
+                status_code=404,
+                response_body='{"error":"not found"}',
+                url=url,
+            )
 
         with patch("cli.ai.ai_provider_clients._openai_get_prefer_no_suffix", return_value=False):
             with patch("cli.ai.ai_provider_clients._call_openai_once", _fake_call_once):
-                result = _call_openai_with_suffix_strategy(
-                    model_name="m",
-                    api_kind="chat",
-                    base_url="https://token.sensenova.cn/v1",
-                    headers={},
-                    messages=[{"role": "user", "content": "hi"}],
-                    stream=False,
-                    return_message=False,
-                    image_data=None,
-                    image_user_idx=None,
-                    image_user_text="",
-                    session_summary_mode=False,
-                    memory_query_expansion_mode=False,
-                    additional_drop_params=[],
-                    tool_schemas=None,
-                    tool_choice=None,
-                    append_history=lambda *_args, **_kwargs: None,
-                )
+                with self.assertRaises(ModelCallError):
+                    _call_openai_with_suffix_strategy(
+                        model_name="m",
+                        api_kind="chat",
+                        base_url="https://token.sensenova.cn/v1",
+                        headers={},
+                        messages=[{"role": "user", "content": "hi"}],
+                        stream=False,
+                        return_message=False,
+                        image_data=None,
+                        image_user_idx=None,
+                        image_user_text="",
+                        session_summary_mode=False,
+                        memory_query_expansion_mode=False,
+                        tool_schemas=None,
+                        tool_choice=None,
+                        append_history=lambda *_args, **_kwargs: None,
+                    )
 
-        self.assertEqual(result, "ok")
-        self.assertEqual(
-            calls,
-            [
-                "https://token.sensenova.cn/v1/chat/completions",
-                "https://token.sensenova.cn/v1",
-            ],
-        )
+        # chat/completions is always appended, so the bare base is never probed
+        # (it would 404). The secondary fallback collapses to the same URL and is
+        # skipped, leaving a single attempted endpoint.
+        self.assertEqual(calls, ["https://token.sensenova.cn/v1/chat/completions"])
 
 
 if __name__ == "__main__":
