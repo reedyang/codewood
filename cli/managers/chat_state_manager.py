@@ -1486,6 +1486,14 @@ class ChatStateManager:
         try:
             agent = self._agent
             history = list(getattr(agent, "conversation_history", None) or [])
+            # Rebuild from scratch so the sets reflect *only* what the current
+            # (possibly edited/truncated) history actually contains. On a
+            # same-chat reload (e.g. after ``/edit`` rewinds history), the stale
+            # in-memory set would otherwise retain skills that were injected by
+            # the now-removed tail, preventing their prompt from being
+            # re-injected when the edited message is re-sent.
+            agent._session_injected_skills = set()
+            agent._session_injected_mcp_prompts = set()
             if not history:
                 return
             skill_pattern = re.compile(
