@@ -677,6 +677,16 @@ export function RichComposer({
   // Monotonic token so a slow file-search response can't overwrite the
   // results of a newer query.
   const atQuerySeq = useRef<number>(0);
+  // Refs that mirror popup state, so handleKeyDown always reads the latest
+  // values even when its useCallback closure is a render behind (avoiding the
+  // "stale closure" problem where ArrowDown fires before the re-render
+  // triggered by handleInput commits).
+  const slashRef = useRef(slash);
+  slashRef.current = slash;
+  const atRef = useRef(at);
+  atRef.current = at;
+  const atFilesRef = useRef(atFiles);
+  atFilesRef.current = atFiles;
 
   // Load catalog once when the composer mounts and refresh it whenever the
   // user opens the slash menu so newly-added skills / reconnected MCP servers
@@ -954,6 +964,8 @@ export function RichComposer({
     () => filterSlashItems(pool, slash.query),
     [pool, slash.query],
   );
+  const filteredItemsRef = useRef(filteredItems);
+  filteredItemsRef.current = filteredItems;
 
   const handleInput = useCallback(() => {
     const root = rootRef.current;
@@ -978,6 +990,18 @@ export function RichComposer({
       if (prev.query === sq.query && prev.open) return prev;
       return { open: true, query: sq.query, selected: 0 };
     });
+    // Sync refs immediately so handleKeyDown reads the latest popup state
+    // before React's re-render commits (avoids stale-closure window between
+    // handleInput and the next keydown event).
+    {
+      const cur = slashRef.current;
+      const next = sq.open
+        ? { open: true, query: sq.query, selected: 0 }
+        : { open: false, query: "", selected: 0 };
+      if (next.open !== cur.open || next.query !== cur.query) {
+        slashRef.current = next;
+      }
+    }
     // The slash popup takes precedence; only evaluate '@' when '/' isn't
     // active so the two popups never overlap.
     const aq = sq.open ? { open: false, query: "" } : computeAtQuery();
@@ -989,6 +1013,15 @@ export function RichComposer({
       if (prev.query === aq.query && prev.open) return prev;
       return { open: true, query: aq.query, selected: 0 };
     });
+    {
+      const cur = atRef.current;
+      const next = aq.open
+        ? { open: true, query: aq.query, selected: 0 }
+        : { open: false, query: "", selected: 0 };
+      if (next.open !== cur.open || next.query !== cur.query) {
+        atRef.current = next;
+      }
+    }
   }, [computeAtQuery, computeSlashQuery, onChange]);
 
   const insertSelectedSlashItem = useCallback(
@@ -1584,17 +1617,26 @@ export function RichComposer({
           }
         }
       }
-      if (at.open && atFiles.length > 0) {
+      // Read popup state from refs so the keyboard handler always sees the
+      // latest values even when the useCallback closure is a render behind
+      // (the "stale closure" problem with synchronous ArrowDown right after
+      // handleInput opens the popup).
+      const curAt = atRef.current;
+      const curAtFiles = atFilesRef.current;
+      const curSlash = slashRef.current;
+      const curFiltered = filteredItemsRef.current;
+
+      if (curAt.open && curAtFiles.length > 0) {
         if (e.key === "ArrowDown") {
           e.preventDefault();
-          setAt((p) => ({ ...p, selected: (p.selected + 1) % atFiles.length }));
+          setAt((p) => ({ ...p, selected: (p.selected + 1) % curAtFiles.length }));
           return;
         }
         if (e.key === "ArrowUp") {
           e.preventDefault();
           setAt((p) => ({
             ...p,
-            selected: (p.selected - 1 + atFiles.length) % atFiles.length,
+            selected: (p.selected - 1 + curAtFiles.length) % curAtFiles.length,
           }));
           return;
         }
@@ -1605,21 +1647,21 @@ export function RichComposer({
         }
         if (e.key === "Enter" || e.key === "Tab") {
           e.preventDefault();
-          insertSelectedAtItem(atFiles[at.selected]);
+          insertSelectedAtItem(curAtFiles[curAt.selected]);
           return;
         }
       }
-      if (slash.open && filteredItems.length > 0) {
+      if (curSlash.open && curFiltered.length > 0) {
         if (e.key === "ArrowDown") {
           e.preventDefault();
-          setSlash((p) => ({ ...p, selected: (p.selected + 1) % filteredItems.length }));
+          setSlash((p) => ({ ...p, selected: (p.selected + 1) % curFiltered.length }));
           return;
         }
         if (e.key === "ArrowUp") {
           e.preventDefault();
           setSlash((p) => ({
             ...p,
-            selected: (p.selected - 1 + filteredItems.length) % filteredItems.length,
+            selected: (p.selected - 1 + curFiltered.length) % curFiltered.length,
           }));
           return;
         }
@@ -1630,7 +1672,7 @@ export function RichComposer({
         }
         if (e.key === "Enter" || e.key === "Tab") {
           e.preventDefault();
-          insertSelectedSlashItem(filteredItems[slash.selected]);
+          insertSelectedSlashItem(curFiltered[curSlash.selected]);
           return;
         }
       }
@@ -1641,18 +1683,12 @@ export function RichComposer({
       }
     },
     [
-      at.open,
-      at.selected,
-      atFiles,
       deleteSelectionViaModel,
-      filteredItems,
       insertSelectedAtItem,
       insertSelectedSlashItem,
       onSubmit,
       redo,
       selectAllContent,
-      slash.open,
-      slash.selected,
       undo,
     ],
   );
