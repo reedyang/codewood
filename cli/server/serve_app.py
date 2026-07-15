@@ -853,24 +853,31 @@ def _compute_chat_cache_stats(agent: Any) -> Dict[str, Any]:
 
 
 def _compute_context_usage_fresh_from_messages(agent: Any, chat_record: Dict[str, Any]) -> "tuple[int, int, int]":
-    """Last-resort context usage from message history when no in-memory snapshot.
+    """Last-resort context usage when the in-memory snapshot is unavailable.
 
-    History tokens come from ``_history_context_input_tokens``; the context
-    window comes from the agent's model (in-memory ``_last_context_window`` or
-    the model params), since usage is no longer persisted on the chat record.
+    Usage is the single source of truth maintained by the runtime refresh in
+    ``llm_context_manager`` (it accumulates system prompt + tool schemas +
+    history from the latest compaction summary). When ``_last_context_*`` is not
+    yet populated, we trigger that refresh synchronously to recompute it, then
+    read the now-populated snapshot. This keeps exactly one token-accounting
+    implementation instead of a duplicate history-only fallback.
     """
-    from ..core.config.model_providers import DEFAULT_CONTEXT_WINDOW, parse_context_window
-    from ..managers.chat_state_manager import _history_context_input_tokens
-
-    msgs = list(chat_record.get("messages") or [])
-    total = _history_context_input_tokens(msgs)
+    refresh = getattr(agent, "_refresh_status_context_usage_snapshot", None)
+    if callable(refresh):
+        try:
+            refresh()
+        except Exception:
+            pass
+    total = int(getattr(agent, "_last_context_input_tokens", 0) or 0)
     window = int(getattr(agent, "_last_context_window", 0) or 0)
+    pct = int(getattr(agent, "_last_context_usage_percent", 0) or 0)
     if window <= 0:
+        from ..core.config.model_providers import DEFAULT_CONTEXT_WINDOW, parse_context_window
+
         window = parse_context_window(
             (getattr(agent, "params", None) or {}).get("context_window"),
             default_value=DEFAULT_CONTEXT_WINDOW,
         )
-    pct = max(0, min(999, int(round(total * 100.0 / max(1, window)))))
     return window, total, pct
 
 

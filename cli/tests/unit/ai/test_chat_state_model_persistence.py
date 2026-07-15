@@ -1305,90 +1305,17 @@ class CrossProcessSaveMergeTests(unittest.TestCase):
             self.assertTrue((workspace / "chats" / peer_record).exists())
 
 
-    def test_history_context_input_tokens_skips_precompaction_anchor_after_compaction(self):
-        from cli.managers.chat_state_manager import _history_context_input_tokens
-        from cli.services.session_memory_service import (
-            SessionMemoryService,
-            CONTEXT_COMPACTION_SUMMARY_PREFIX,
-        )
+    def test_history_context_usage_not_persisted_on_record(self):
+        import tempfile
+        from pathlib import Path
 
-        class _SvcOnly:
-            def build_context_compaction_summary_content(self, **kw):
-                return SessionMemoryService.build_context_compaction_summary_content(None, **kw)
-
-        summary_content = CONTEXT_COMPACTION_SUMMARY_PREFIX + json.dumps(
-            {
-                "kind": "context_compaction_summary",
-                "summary": "过去几十轮对话的摘要",
-                "mode": "manual",
-                "created_at": "2026-07-08 15:00:00",
-                "covered_message_count": 10,
-            },
-            ensure_ascii=False,
-        )
-        messages = [
-            {"role": "user", "content": "compaction 之前的历史", "_token_count": 500},
-            {
-                "role": "assistant",
-                "content": '{"tool_calls": []}',
-                "_cache_stats": {"input_tokens": 30000},
-                "_output_tokens": 100,
-                "_token_count_includes_reasoning": False,
-            },
-            {"role": "assistant", "content": summary_content},
-            {"role": "user", "content": "compaction 之后的问题", "_token_count": 20},
-            {"role": "assistant", "content": "回答", "_token_count": 30},
-        ]
-
-        total = _history_context_input_tokens(messages)
-
-        # The pre-compaction cache anchor (input_tokens=30000) must be ignored
-        # because the compaction summary after it restarts the context.
-        # (The summary message itself carries no _token_count, so it adds 0 —
-        # this matches the pre-existing behaviour of this helper.)
-        self.assertEqual(total, 20 + 30)
-        self.assertLess(total, 30000)
-
-
-    def test_cache_anchor_valid_after_compaction(self):
-        from cli.managers.chat_state_manager import (
-            _cache_anchor_valid_after_compaction,
-        )
-        from cli.services.session_memory_service import (
-            CONTEXT_COMPACTION_SUMMARY_PREFIX,
-        )
-
-        summary = CONTEXT_COMPACTION_SUMMARY_PREFIX + json.dumps(
-            {"kind": "context_compaction_summary", "summary": "x", "mode": "manual"},
-            ensure_ascii=False,
-        )
-        # Anchor before the compaction summary -> stale, must be treated as invalid.
-        stale = [
-            {"role": "user", "content": "old"},
-            {"role": "assistant", "content": "a", "_cache_stats": {"input_tokens": 30000}},
-            {"role": "assistant", "content": summary},
-            {"role": "user", "content": "new"},
-        ]
-        self.assertFalse(_cache_anchor_valid_after_compaction(stale))
-
-        # Anchor after the compaction summary -> valid.
-        valid = [
-            {"role": "user", "content": "old"},
-            {"role": "assistant", "content": summary},
-            {"role": "user", "content": "new"},
-            {"role": "assistant", "content": "a", "_cache_stats": {"input_tokens": 300}},
-        ]
-        self.assertTrue(_cache_anchor_valid_after_compaction(valid))
-
-        # No compaction summary at all -> any anchor is valid.
-        no_compaction = [
-            {"role": "user", "content": "hi"},
-            {"role": "assistant", "content": "a", "_cache_stats": {"input_tokens": 300}},
-        ]
-        self.assertTrue(_cache_anchor_valid_after_compaction(no_compaction))
-
-        # No anchor at all -> invalid.
-        self.assertFalse(_cache_anchor_valid_after_compaction([{"role": "user", "content": "hi"}]))
+        with tempfile.TemporaryDirectory() as td:
+            agent = _FakeAgent(Path(td))
+            manager = ChatStateManager(agent, "chats.json")
+            entry = manager.new_chat_entry("chat-x")
+            self.assertNotIn("context_usage_percent", entry)
+            self.assertNotIn("context_input_tokens", entry)
+            self.assertNotIn("context_window", entry)
 
 
 if __name__ == "__main__":
