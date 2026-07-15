@@ -125,21 +125,24 @@ class SubAgentSessionStore:
             session["messages"].append(message)
         self._persist(agent, chat_id, session)
 
-    def set_assistant_tool_rounds(
+    def set_assistant_tool_rounds_raw(
         self,
         session_id: str,
-        tool_rounds: List[str],
+        tool_rounds_raw: List[Dict[str, Any]],
+        tool_rounds: Optional[List[str]] = None,
     ) -> None:
-        """Attach the rendered ``tool_rounds`` display text to the most recent
-        assistant message in an existing session.
+        """Attach the structured ``_tool_rounds_raw`` entries (and the rendered
+        ``tool_rounds`` display strings) to the most recent assistant message.
 
-        Sub-agent tool calls are rendered into the same display envelope the
-        main chat uses (a "• Ran <tool> <args>" prompt + output, wrapped in the
-        GUI sentinels) and stored as a single list on the assistant message,
-        rather than as separate raw tool messages. This lets the GUI session
-        viewer render them through the identical ``StepsView`` path.
+        Sub-agent tool calls are recorded with the same shape the main chat
+        uses (``{"tool", "args", "failed", "elapsed", "output", ["marker"]}``),
+        so the GUI/TUI renderers are shared and descriptions can be re-rendered
+        in any language. The rendered ``tool_rounds`` is persisted too (not just
+        re-derived on reload) because the reload path may run with a different
+        agent instance than the one that executed the sub-agent, and some
+        formatters (e.g. ``read``'s relative-path logic) depend on agent state.
         """
-        if not tool_rounds:
+        if not tool_rounds_raw:
             return
         with self._lock:
             session = self._cache.get(session_id)
@@ -148,7 +151,9 @@ class SubAgentSessionStore:
             # The last appended message is the assistant turn we just stored.
             for msg in reversed(session["messages"]):
                 if msg.get("role") == "assistant":
-                    msg["tool_rounds"] = list(tool_rounds)
+                    msg["_tool_rounds_raw"] = list(tool_rounds_raw)
+                    if tool_rounds:
+                        msg["tool_rounds"] = list(tool_rounds)
                     break
             chat_id = session.get("_chat_id")
         if chat_id is not None:
@@ -817,13 +822,14 @@ def run_subagent(
             store.append_message(agent, chat_id, session_id, assistant_msg)
             messages.append(assistant_msg)
 
-            # Collect each tool call + result so we can render them into the
-            # same display envelope the main chat uses (a single collapsible
-            # "Tool calls: N" block), stored on the assistant message instead
-            # of as separate raw tool messages.
-            round_tools: List[Dict[str, Any]] = []
+            # Collect each tool call + result as a structured ``_tool_rounds_raw``
+            # entry (identical shape to the main session) so the GUI/TUI can
+            # re-render the descriptions in any language and expand tool outputs
+            # on reload — exactly like the main chat's tool-round history.
+            round_raw: List[Dict[str, Any]] = []
             for idx, (tool_name, args) in enumerate(plans):
                 call_id = _extract_tool_call_id(message, idx)
+                t = str(tool_name).strip().lower()
 
                 # Emit tool call event
                 _emit_subagent_event(agent, "sub_agent_tool_call", {
@@ -832,7 +838,7 @@ def run_subagent(
                     "args": args if isinstance(args, dict) else {},
                 })
 
-                if str(tool_name).strip().lower() in _EXCLUDED_SUBAGENT_TOOLS:
+                if t in _EXCLUDED_SUBAGENT_TOOLS:
                     tool_result: Dict[str, Any] = {
                         "success": False,
                         "error": _t(agent, "subagents.error.nesting_forbidden"),
@@ -861,16 +867,53 @@ def run_subagent(
                 # faithful archive of the sub-agent's real interaction protocol.
                 store.append_message(agent, chat_id, session_id, tool_msg)
 
-                round_tools.append({
-                    "tool_name": str(tool_name),
-                    "args": args if isinstance(args, dict) else {},
-                    "tool_result": tool_result,
-                })
+                # TUI: mirror the main session's live tool-feedback line so a
+                # terminal user sees the same "Ran <tool> ..." descriptions.
+                if sys.stdout.isatty():
+                    try:
+                        _feedback = agent._format_tool_call_feedback_line(
+                            str(tool_name),
+                            args if isinstance(args, dict) else {},
+                            failed=not bool((tool_result or {}).get("success", True)),
+                        )
+                        if _feedback:
+                            print(_feedback, flush=True)
+                    except Exception:
+                        pass
 
-                # Emit tool output event with rendered tool round
-                tool_round = _render_subagent_tool_round(
-                    agent, str(tool_name), args if isinstance(args, dict) else {}, tool_result,
-                )
+                # Structured raw entry — same keys/shape as the main session's
+                # ``_tool_rounds_raw`` so the GUI and TUI renderers are shared.
+                r = tool_result if isinstance(tool_result, dict) else {}
+                _round_output = ""
+                try:
+                    _extract = getattr(agent, "_extract_tool_result_output", None)
+                    if callable(_extract):
+                        _round_output = _extract(t, r)
+                except Exception:
+                    _round_output = ""
+                raw_entry = {
+                    "tool": t,
+                    "args": dict(args) if isinstance(args, dict) else {},
+                    "failed": not bool(r.get("success", True)),
+                    "elapsed": r.get("_elapsed_seconds"),
+                    "output": _round_output or "",
+                }
+                _marker = str(r.get("_guiSessionMarker") or "")
+                if _marker:
+                    raw_entry["marker"] = _marker
+                round_raw.append(raw_entry)
+
+                # Pre-render the tool round via the SAME pipeline the main
+                # session's GUI renderer uses (agent._rerender_tool_rounds), so
+                # live and reloaded views match. Fall back to the legacy
+                # renderer if that call is unavailable.
+                tool_round = _render_subagent_tool_round(agent, str(tool_name), args, tool_result)
+                try:
+                    _rendered = agent._rerender_tool_rounds([raw_entry])
+                    if _rendered:
+                        tool_round = _rendered[0]
+                except Exception:
+                    pass
                 _emit_subagent_event(agent, "sub_agent_output", {
                     "sessionId": session_id,
                     "text": result_text[:5000],  # Truncate very long outputs for SSE
@@ -878,20 +921,31 @@ def run_subagent(
                     "toolRound": tool_round,
                 })
 
-            # Render the collected tool calls via the main-chat display envelope
-            # and attach them to the persisted assistant message so the GUI
-            # session viewer matches the main transcript exactly.
-            if round_tools:
-                tool_rounds = [
-                    _render_subagent_tool_round(
-                        agent,
-                        rt["tool_name"],
-                        rt["args"],
-                        rt["tool_result"],
-                    )
-                    for rt in round_tools
-                ]
-                store.set_assistant_tool_rounds(session_id, tool_rounds)
+            # Attach the structured raw rounds AND the pre-rendered tool_rounds
+            # to the persisted assistant message. ``_tool_rounds_raw`` mirrors the
+            # main session's storage (re-renderable, outputs expandable on
+            # reload); ``tool_rounds`` is the rendered form the GUI consumes
+            # directly, persisted so reload never depends on re-rendering with a
+            # potentially different agent instance.
+            if round_raw:
+                tool_rounds: List[str] = []
+                try:
+                    tool_rounds = list(agent._rerender_tool_rounds(round_raw))
+                except Exception:
+                    tool_rounds = [
+                        _render_subagent_tool_round(
+                            agent,
+                            str(rt.get("tool") or ""),
+                            rt.get("args", {}) if isinstance(rt.get("args"), dict) else {},
+                            {
+                                "success": not bool(rt.get("failed", False)),
+                                "output": rt.get("output") or "",
+                                "content": rt.get("output") or "",
+                            },
+                        )
+                        for rt in round_raw
+                    ]
+                store.set_assistant_tool_rounds_raw(session_id, round_raw, tool_rounds)
 
         # max_rounds exhausted: return the last text we have.
         output = last_assistant_text or _t(agent, "subagents.error.max_rounds", rounds=max_rounds)

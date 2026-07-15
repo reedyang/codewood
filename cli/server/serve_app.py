@@ -5666,7 +5666,36 @@ def _make_handler(app: ServeApp):
                     _sa_log.warning("subagent-session-history: session %s not found (chat_id=%s)", session_id, chat_id)
                     self._send_json(404, {"ok": False, "error": "session not found"})
                     return
-                self._send_json(200, {"ok": True, "session": session})
+                # Render structured ``_tool_rounds_raw`` into the pre-rendered
+                # ``tool_rounds`` the GUI session viewer expects, via the SAME
+                # pipeline the main chat uses for history reload. This keeps the
+                # reloaded view identical to the live one and lets tool outputs
+                # expand on demand. Render on a copy so the shared/cached
+                # session dict (and the on-disk file) stay structured.
+                try:
+                    _session_out = json.loads(json.dumps(session))
+                    for _m in _session_out.get("messages", []) or []:
+                        if not isinstance(_m, dict):
+                            continue
+                        _raw = _m.get("_tool_rounds_raw")
+                        if isinstance(_raw, list) and _raw and not _m.get("tool_rounds"):
+                            try:
+                                _m["tool_rounds"] = self.agent._rerender_tool_rounds(_raw)
+                            except Exception:
+                                # Fallback: render a minimal description straight
+                                # from the raw entry (no agent-dependent
+                                # formatting) so older sessions still display
+                                # instead of a blank "• undefined" row.
+                                try:
+                                    _m["tool_rounds"] = [
+                                        f"\u2022 {str(item.get('tool') or 'tool')} {json.dumps(item.get('args', {}), ensure_ascii=False)}"
+                                        for item in _raw
+                                    ]
+                                except Exception:
+                                    pass
+                except Exception:
+                    _session_out = session
+                self._send_json(200, {"ok": True, "session": _session_out})
                 return
             if path == "/fetch-models":
                 result = app.fetch_provider_models(body if isinstance(body, dict) else {})
