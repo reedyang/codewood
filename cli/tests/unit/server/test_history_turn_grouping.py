@@ -187,7 +187,7 @@ class _FakeAgentWithReadRender(_FakeAgent):
             tool = str(item.get("tool") or "").strip().lower()
             args = item.get("args") or {}
             line = f"• Ran {tool} {args.get('path', '')}"
-            payload = item.get("read_payload")
+            payload = item.get("output")
             if tool == "read" and payload:
                 line = f"{line}\uE000{payload}\uE001"
             out.append(line)
@@ -241,7 +241,7 @@ class StructuredTurnGroupingTests(unittest.TestCase):
                         "tool": "read",
                         "args": {"path": "helloworld.py"},
                         "failed": False,
-                        "read_payload": read_payload,
+                        "output": read_payload,
                     }
                 ],
                 "created_at": "2026-07-15 15:02:25",

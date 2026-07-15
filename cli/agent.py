@@ -3521,6 +3521,28 @@ class Agent:
         "request_skill_prompt",
     })
 
+    @staticmethod
+    def _extract_tool_result_output(tool_name: str, result: Dict[str, Any]) -> str:
+        """Return the display/output text of a tool result for history reload.
+
+        Used to populate the generic ``output`` field of ``_tool_rounds_raw`` so
+        every tool call (not just ``read``) can expand its output when a chat is
+        reloaded.
+        """
+        t = str(tool_name or "").strip().lower()
+        r = result if isinstance(result, dict) else {}
+        if t == "read":
+            content = str(r.get("content") or "")
+            if not content:
+                content = str(r.get("output") or "")
+            return content
+        out = str(r.get("output") or "")
+        if not out:
+            out = str(r.get("content") or "")
+        if not out:
+            out = str(r.get("message") or "")
+        return out
+
     def _record_model_tool_execution_history(
         self,
         tool_name: str,
@@ -3599,45 +3621,73 @@ class Agent:
         gui_marker = str(r.get("_guiSessionMarker") or "")
         if gui_marker:
             tool_round = tool_round + "\n" + gui_marker
-        # Surface the read tool's payload (file/dir/image content) as a
-        # collapsible block in the GUI transcript by wrapping it in the same
-        # CMD_OUTPUT sentinels the sub-agent session viewer uses. This lets the
-        # main session expand the read output on demand instead of never
-        # showing it (the raw role:tool result is skipped by the GUI).
-        if t == "read":
-            read_payload = str(r.get("content") or "")
-            if not read_payload:
-                read_payload = str(r.get("output") or "")
-            if read_payload:
-                tool_round = (
-                    f"{tool_round}\n{GUI_CMD_OUTPUT_BEGIN}"
-                    f"{read_payload}{GUI_CMD_OUTPUT_END}"
-                )
+        # Surface the tool's output (file/dir/image content for ``read``,
+        # command output for ``shell``, etc.) as a collapsible block in the GUI
+        # transcript by wrapping it in the same CMD_OUTPUT sentinels the
+        # sub-agent session viewer uses. This lets the main session expand the
+        # output on demand when a chat is reloaded.
+        round_output = self._extract_tool_result_output(t, r)
+        if round_output:
+            tool_round = (
+                f"{tool_round}\n{GUI_CMD_OUTPUT_BEGIN}"
+                f"{round_output}{GUI_CMD_OUTPUT_END}"
+            )
         pending = list(getattr(self, "_accumulated_tool_rounds", None) or [])
         pending.append(tool_round)
         self._accumulated_tool_rounds = pending
-        # Store raw data for later re-rendering on language change
+        # Store raw data for later re-rendering on language change. Every tool
+        # call records a generic ``output`` field (not just ``read``) so history
+        # reload can expand the tool output regardless of tool type.
         pending_raw = list(getattr(self, "_accumulated_tool_rounds_raw", None) or [])
         raw_entry = {
             "tool": t,
             "args": dict(args) if isinstance(args, dict) else {},
             "failed": not success,
             "elapsed": r.get("_elapsed_seconds"),
+            "output": round_output or "",
         }
         gui_marker = str(r.get("_guiSessionMarker") or "")
         if gui_marker:
             raw_entry["marker"] = gui_marker
-        if t == "read":
-            read_content = str(r.get("content") or "")
-            if not read_content:
-                read_content = str(r.get("output") or "")
-            raw_entry["read_payload"] = read_content or None
         pending_raw.append(raw_entry)
         self._accumulated_tool_rounds_raw = pending_raw
 
     def _next_tool_call_id(self) -> str:
-        """Return the next unused tool_call_id from the last assistant
-        message with tool_calls, or a placeholder if none available."""
+        """Return the next tool_call_id for a tool result.
+
+        Prefers the assistant message that issued the current tool batch
+        (``_last_tool_issuing_assistant``) so results pair with the correct call
+        even when an earlier assistant message also carried ``tool_calls`` (e.g. a
+        previously-intercepted ``request_skill_prompt``). Falls back to scanning
+        history for the last assistant message with ``tool_calls``.
+        """
+        issuing = getattr(self, "_last_tool_issuing_assistant", None)
+        if isinstance(issuing, dict) and str(issuing.get("role") or "").strip().lower() == "assistant":
+            tcs = issuing.get("tool_calls")
+            if isinstance(tcs, list) and tcs:
+                paired = 0
+                found_assistant = False
+                for earlier in reversed(self.conversation_history):
+                    if earlier is issuing:
+                        found_assistant = True
+                        break
+                    if not isinstance(earlier, dict):
+                        continue
+                    if str(earlier.get("role") or "").strip().lower() == "tool":
+                        paired += 1
+                if not found_assistant:
+                    return "call_0"
+                idx = paired
+                if idx < len(tcs):
+                    call = tcs[idx]
+                    if isinstance(call, dict):
+                        cid = str(call.get("id") or "")
+                        if cid.strip():
+                            return cid.strip()
+                return f"call_{idx}"
+            # Issuing assistant has no tool_calls on record: walk past it to the
+            # nearest earlier assistant that does (defensive; normally the
+            # issuing message is retrofitted with tool_calls before results run).
         for msg in reversed(self.conversation_history):
             if not isinstance(msg, dict):
                 continue
@@ -3670,22 +3720,63 @@ class Agent:
         return "call_0"
 
     def _flush_tool_rounds(self) -> None:
-        """Attach accumulated tool_rounds raw data to the last assistant message
-        that has tool_calls, then clear the accumulator."""
+        """Attach accumulated tool_rounds raw data to the assistant message that
+        issued the current tool batch (``_last_tool_issuing_assistant`` when
+        available, otherwise the last assistant message with ``tool_calls``),
+        then clear the accumulator."""
         raw_rounds = list(getattr(self, "_accumulated_tool_rounds_raw", None) or [])
         if not raw_rounds:
             return
-        for msg in reversed(self.conversation_history):
-            if not isinstance(msg, dict):
-                continue
-            if str(msg.get("role") or "").strip().lower() != "assistant":
-                continue
-            if not msg.get("tool_calls"):
-                continue
-            msg["_tool_rounds_raw"] = raw_rounds
-            break
+        target = None
+        issuing = getattr(self, "_last_tool_issuing_assistant", None)
+        if isinstance(issuing, dict) and str(issuing.get("role") or "").strip().lower() == "assistant":
+            target = issuing
+        if target is None:
+            for msg in reversed(self.conversation_history):
+                if not isinstance(msg, dict):
+                    continue
+                if str(msg.get("role") or "").strip().lower() != "assistant":
+                    continue
+                if not msg.get("tool_calls"):
+                    continue
+                target = msg
+                break
+        if target is not None:
+            target["_tool_rounds_raw"] = raw_rounds
         self._accumulated_tool_rounds = []
         self._accumulated_tool_rounds_raw = []
+
+    def _skill_prompt_recovery_needed(self, sid: str) -> bool:
+        """Return True when the model context since the last compaction no longer
+        contains ``sid``'s skill prompt (its ``role: tool`` result was compacted
+        away) and no "injected above" user message for it exists yet, so the
+        runtime must re-inject it to recover context.
+
+        Used by the ``request_skill_prompt`` interceptor: a repeat of an
+        already-active skill only re-injects when this returns True, avoiding
+        duplicate prompts in the common (not-yet-compacted) case.
+        """
+        hist = list(getattr(self, "conversation_history", None) or [])
+        svc = getattr(self, "session_memory_service", None)
+        compact_idx = -1
+        if callable(getattr(svc, "latest_compaction_summary_index", None)):
+            try:
+                compact_idx = svc.latest_compaction_summary_index(hist)
+            except Exception:
+                compact_idx = -1
+        needle = f"skill_id={sid}"
+        has_role_tool = False
+        has_injected_user = False
+        for m in hist[compact_idx + 1:]:
+            if not isinstance(m, dict):
+                continue
+            role = str(m.get("role") or "").strip().lower()
+            content = str(m.get("content") or "")
+            if role == "tool" and "request_skill_prompt" in content and needle in content:
+                has_role_tool = True
+            if role == "user" and "injected above" in content and needle in content:
+                has_injected_user = True
+        return not (has_role_tool or has_injected_user)
 
     def _rerender_tool_rounds(self, raw_list: List[Dict[str, Any]]) -> List[str]:
         """Re-render tool_rounds from raw data using the current language."""
@@ -3699,11 +3790,13 @@ class Agent:
                 elapsed = item.get("elapsed")
                 explore_text = self._explore_completed_label(args, elapsed)
                 tool_round = f"{GUI_CMD_PROMPT_BEGIN}{_ansi_rgb('•', 19, 161, 14)} {explore_text}{GUI_CMD_PROMPT_END}"
-            read_payload = item.get("read_payload")
-            if tool == "read" and read_payload:
+            # Expand the tool output (generic ``output`` field) as a collapsible
+            # block so reloaded history can show every tool's result on demand.
+            output = item.get("output")
+            if output:
                 tool_round = (
                     f"{tool_round}\n{GUI_CMD_OUTPUT_BEGIN}"
-                    f"{read_payload}{GUI_CMD_OUTPUT_END}"
+                    f"{output}{GUI_CMD_OUTPUT_END}"
                 )
             marker = item.get("marker")
             if marker:
