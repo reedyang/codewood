@@ -93,7 +93,7 @@ export const MODEL_PRESETS: ModelPreset[] = [
     kind: "openai",
   },
   {
-id: "sensenova",
+    id: "sensenova",
     label: "SenseNova (商汤日日新)",
     provider: "SenseNova",
     base_url: "https://token.sensenova.cn/v1",
@@ -101,6 +101,24 @@ id: "sensenova",
     include_thinking_in_messages: false,
     kind: "openai",
     context_length_attr_name: "context_length",
+  },
+  {
+    id: "google",
+    label: "Google",
+    provider: "Google",
+    base_url: "https://generativelanguage.googleapis.com/v1beta/openai",
+    api_mode: "chat",
+    include_thinking_in_messages: false,
+    kind: "openai"
+  },
+  {
+    id: "agnes-ai",
+    label: "Agnes AI",
+    provider: "Agnes AI",
+    base_url: "https://apihub.agnes-ai.com/v1",
+    api_mode: "chat",
+    include_thinking_in_messages: false,
+    kind: "openai"
   },
   {
     id: "ollama",

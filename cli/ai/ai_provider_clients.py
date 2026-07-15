@@ -1167,24 +1167,6 @@ def resolve_api_mode(*, params: Any, provider: Any = "") -> str:
     return "auto"
 
 
-def _normalize_additional_drop_params(raw: Any) -> List[str]:
-    values: List[str] = []
-    if isinstance(raw, str):
-        values = [part.strip() for part in raw.split(",")]
-    elif isinstance(raw, (list, tuple, set)):
-        values = [str(item).strip() for item in raw]
-    else:
-        return []
-    out: List[str] = []
-    seen = set()
-    for value in values:
-        if not value or value in seen:
-            continue
-        seen.add(value)
-        out.append(value)
-    return out
-
-
 def _normalize_openai_tool_schemas(raw_tools: Any, api_kind: str) -> List[Dict[str, Any]]:
     if not isinstance(raw_tools, list):
         return []
@@ -1260,27 +1242,6 @@ def _normalize_openai_tool_choice(raw_tool_choice: Any, api_kind: str) -> Any:
     return None
 
 
-def _merge_default_drop_params(
-    payload: Dict[str, Any], configured_drop_params: List[str]
-) -> List[str]:
-    out: List[str] = []
-    seen = set()
-    tools_value = payload.get("tools")
-    has_non_empty_tools = isinstance(tools_value, list) and len(tools_value) > 0
-
-    for item in configured_drop_params:
-        key = str(item).strip()
-        if not key or key in seen:
-            continue
-        if has_non_empty_tools and key == "tools":
-            continue
-        seen.add(key)
-        out.append(key)
-    if not has_non_empty_tools and "tools" not in seen:
-        out.append("tools")
-    return out
-
-
 def _base_url_suffix_hint(base_url: str) -> str:
     normalized = str(base_url or "").strip().rstrip("/").casefold()
     if normalized.endswith("/responses"):
@@ -1314,11 +1275,15 @@ def _openai_url_suffix_for_kind(api_kind: str) -> str:
 
 def _build_openai_request_url(base_url: str, api_kind: str, append_suffix: bool) -> str:
     base = str(base_url or "").strip().rstrip("/")
-    if not append_suffix:
-        return base
     suffix = _openai_url_suffix_for_kind(api_kind)
     base_low = base.casefold()
     if base_low.endswith(suffix):
+        return base
+    # ``chat/completions`` must always carry its suffix: a bare base (e.g.
+    # ``.../v1beta/openai``) is not a valid chat endpoint and returns 404.
+    # Only the responses surface may be addressed bare when ``append_suffix``
+    # is False (some gateways expose ``/responses`` directly).
+    if not append_suffix and api_kind != "chat":
         return base
     return base + suffix
 
@@ -1398,7 +1363,6 @@ def _build_openai_payload(
     image_user_text: str,
     session_summary_mode: bool,
     memory_query_expansion_mode: bool,
-    additional_drop_params: List[str],
     tool_schemas: Optional[List[Dict[str, Any]]],
     tool_choice: Any,
     force_disable_thinking: bool,
@@ -1437,11 +1401,6 @@ def _build_openai_payload(
             payload["reasoning"] = {"effort": reasoning_effort.lower()}
         if isinstance(payload.get("tools"), list) and not payload.get("tools"):
             payload.pop("tools", None)
-        effective_drop_params = _merge_default_drop_params(
-            payload=payload, configured_drop_params=additional_drop_params
-        )
-        if effective_drop_params:
-            payload["additional_drop_params"] = effective_drop_params
         return payload
 
     payload = {"model": model_name, "messages": messages, "stream": stream}
@@ -1457,11 +1416,6 @@ def _build_openai_payload(
         payload["reasoning_effort"] = reasoning_effort.lower()
     if isinstance(payload.get("tools"), list) and not payload.get("tools"):
         payload.pop("tools", None)
-    effective_drop_params = _merge_default_drop_params(
-        payload=payload, configured_drop_params=additional_drop_params
-    )
-    if effective_drop_params:
-        payload["additional_drop_params"] = effective_drop_params
     return payload
 
 
@@ -1663,7 +1617,6 @@ def _call_openai_once(
     image_user_text: str,
     session_summary_mode: bool,
     memory_query_expansion_mode: bool,
-    additional_drop_params: List[str],
     tool_schemas: Optional[List[Dict[str, Any]]],
     tool_choice: Any,
     force_disable_thinking: bool,
@@ -1680,7 +1633,6 @@ def _call_openai_once(
         image_user_text=image_user_text,
         session_summary_mode=session_summary_mode,
         memory_query_expansion_mode=memory_query_expansion_mode,
-        additional_drop_params=additional_drop_params,
         tool_schemas=tool_schemas,
         tool_choice=tool_choice,
         force_disable_thinking=force_disable_thinking,
@@ -1740,7 +1692,6 @@ def _call_openai_with_suffix_strategy(
     image_user_text: str,
     session_summary_mode: bool,
     memory_query_expansion_mode: bool,
-    additional_drop_params: List[str],
     tool_schemas: Optional[List[Dict[str, Any]]],
     tool_choice: Any,
     reasoning_effort: str = "",
@@ -1785,7 +1736,6 @@ def _call_openai_with_suffix_strategy(
             image_user_text=image_user_text,
             session_summary_mode=session_summary_mode,
             memory_query_expansion_mode=memory_query_expansion_mode,
-            additional_drop_params=additional_drop_params,
             tool_schemas=tool_schemas,
             tool_choice=tool_choice,
             force_disable_thinking=force_disable_thinking,
@@ -1849,7 +1799,6 @@ def _call_openai_with_suffix_strategy(
             image_user_text=image_user_text,
             session_summary_mode=session_summary_mode,
             memory_query_expansion_mode=memory_query_expansion_mode,
-            additional_drop_params=additional_drop_params,
             tool_schemas=tool_schemas,
             tool_choice=tool_choice,
             force_disable_thinking=force_disable_thinking,
@@ -2031,9 +1980,6 @@ def _call_with_openai_compatible(
         }
 
     api_mode = _normalize_openai_api_mode(conf.get("api_mode"))
-    additional_drop_params = _normalize_additional_drop_params(
-        conf.get("additional_drop_params")
-    )
     # ``reasoning_effort`` in the model catalog is a LIST of the levels a model
     # supports (e.g. ``['low','high']``), used to populate the picker. The wire
     # API only accepts a single level string ('low'/'medium'/'high'). When the
@@ -2097,7 +2043,6 @@ def _call_with_openai_compatible(
                 image_user_text=image_user_text,
                 session_summary_mode=session_summary_mode,
                 memory_query_expansion_mode=memory_query_expansion_mode,
-                additional_drop_params=additional_drop_params,
                 tool_schemas=tool_schemas,
                 tool_choice=tool_choice,
                 reasoning_effort=reasoning_effort,

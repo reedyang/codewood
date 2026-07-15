@@ -586,7 +586,7 @@ class ProviderContextWindowTests(unittest.TestCase):
         self.assertIn("input", payload)
         self.assertNotIn("messages", payload)
 
-    def test_openai_responses_mode_defaults_additional_drop_params_tools(self):
+    def test_openai_responses_mode_omits_additional_drop_params(self):
         with patch("requests.post", return_value=_FakeResponsesApiResponse()) as mock_post:
             out = call_ai_with_provider(
                 context=ProviderCallContext(
@@ -612,10 +612,10 @@ class ProviderContextWindowTests(unittest.TestCase):
             )
         self.assertEqual(out, "hello from responses api")
         payload = mock_post.call_args.kwargs.get("json", {})
-        self.assertEqual(payload.get("additional_drop_params"), ["tools"])
+        self.assertNotIn("additional_drop_params", payload)
         self.assertNotIn("tools", payload)
 
-    def test_openai_responses_mode_merges_configured_additional_drop_params(self):
+    def test_openai_responses_mode_ignores_configured_additional_drop_params(self):
         with patch("requests.post", return_value=_FakeResponsesApiResponse()) as mock_post:
             out = call_ai_with_provider(
                 context=ProviderCallContext(
@@ -642,7 +642,7 @@ class ProviderContextWindowTests(unittest.TestCase):
             )
         self.assertEqual(out, "hello from responses api")
         payload = mock_post.call_args.kwargs.get("json", {})
-        self.assertEqual(payload.get("additional_drop_params"), ["tools"])
+        self.assertNotIn("additional_drop_params", payload)
         self.assertNotIn("tools", payload)
 
     def test_openai_chat_mode_supports_standard_tools_call(self):
@@ -722,14 +722,10 @@ class ProviderContextWindowTests(unittest.TestCase):
         self.assertIn("tools", payload)
         self.assertEqual(payload.get("tool_choice"), "required")
         self.assertEqual(payload.get("tools", [{}])[0].get("name"), "read_file")
-        self.assertNotIn(
-            "tools",
-            payload.get("additional_drop_params", []),
-        )
-        self.assertIn("stop", payload.get("additional_drop_params", []))
+        self.assertNotIn("additional_drop_params", payload)
 
-    def test_openai_append_fail_then_no_suffix_success_records_override(self):
-        responses = [_FakeHttpErrorResponse(), _FakeResponse()]
+    def test_openai_chat_fallback_never_probes_bare_base(self):
+        responses = [_FakeHttpErrorResponse()]
 
         def _fake_post(*args, **kwargs):
             return responses.pop(0)
@@ -738,45 +734,41 @@ class ProviderContextWindowTests(unittest.TestCase):
             ai_provider_clients,
             "_openai_get_prefer_no_suffix",
             return_value=False,
-        ), patch.object(ai_provider_clients, "_openai_set_prefer_no_suffix") as set_mock:
-            out = call_ai_with_provider(
-                context=ProviderCallContext(
-                    provider="openai",
-                    model_name="gpt-oss-120b",
-                    model_params={},
-                    openai_conf={
-                        "api_key": "k",
-                        "base_url": "https://example.com/v1",
-                        "api_mode": "chat",
-                    },
-                    messages=[{"role": "user", "content": "ping"}],
-                    stream=False,
-                    return_message=False,
-                    image_data=None,
-                    image_user_idx=None,
-                    image_user_text="",
-                    session_summary_mode=False,
-                    memory_query_expansion_mode=False,
-                ),
-                append_history=lambda *_a, **_kw: None,
-                ollama_importer=lambda: None,
-            )
-        self.assertEqual(out, "ok")
-        self.assertEqual(mock_post.call_count, 2)
+        ):
+            with self.assertRaises(ai_provider_clients.ModelCallError):
+                call_ai_with_provider(
+                    context=ProviderCallContext(
+                        provider="openai",
+                        model_name="gpt-oss-120b",
+                        model_params={},
+                        openai_conf={
+                            "api_key": "k",
+                            "base_url": "https://example.com/v1",
+                            "api_mode": "chat",
+                        },
+                        messages=[{"role": "user", "content": "ping"}],
+                        stream=False,
+                        return_message=False,
+                        image_data=None,
+                        image_user_idx=None,
+                        image_user_text="",
+                        session_summary_mode=False,
+                        memory_query_expansion_mode=False,
+                    ),
+                    append_history=lambda *_a, **_kw: None,
+                    ollama_importer=lambda: None,
+                )
+        # chat/completions is always appended, so the bare base is never probed
+        # (it would 404). The secondary fallback collapses to the same URL and is
+        # skipped, leaving a single attempted endpoint.
+        self.assertEqual(mock_post.call_count, 1)
         self.assertEqual(
             mock_post.call_args_list[0].args[0],
             "https://example.com/v1/chat/completions",
         )
-        self.assertEqual(mock_post.call_args_list[1].args[0], "https://example.com/v1")
-        set_mock.assert_called_once_with(
-            base_url="https://example.com/v1",
-            model_name="gpt-oss-120b",
-            api_kind="chat",
-            prefer_no_suffix=True,
-        )
 
-    def test_openai_no_suffix_fail_then_suffix_success_clears_override(self):
-        responses = [_FakeHttpErrorResponse(), _FakeResponse()]
+    def test_openai_chat_prefer_no_suffix_still_uses_suffix_endpoint(self):
+        responses = [_FakeHttpErrorResponse()]
 
         def _fake_post(*args, **kwargs):
             return responses.pop(0)
@@ -786,41 +778,38 @@ class ProviderContextWindowTests(unittest.TestCase):
             "_openai_get_prefer_no_suffix",
             return_value=True,
         ), patch.object(ai_provider_clients, "_openai_set_prefer_no_suffix") as set_mock:
-            out = call_ai_with_provider(
-                context=ProviderCallContext(
-                    provider="openai",
-                    model_name="gpt-oss-120b",
-                    model_params={},
-                    openai_conf={
-                        "api_key": "k",
-                        "base_url": "https://example.com/v1",
-                        "api_mode": "chat",
-                    },
-                    messages=[{"role": "user", "content": "ping"}],
-                    stream=False,
-                    return_message=False,
-                    image_data=None,
-                    image_user_idx=None,
-                    image_user_text="",
-                    session_summary_mode=False,
-                    memory_query_expansion_mode=False,
-                ),
-                append_history=lambda *_a, **_kw: None,
-                ollama_importer=lambda: None,
-            )
-        self.assertEqual(out, "ok")
-        self.assertEqual(mock_post.call_count, 2)
-        self.assertEqual(mock_post.call_args_list[0].args[0], "https://example.com/v1")
+            with self.assertRaises(ai_provider_clients.ModelCallError):
+                call_ai_with_provider(
+                    context=ProviderCallContext(
+                        provider="openai",
+                        model_name="gpt-oss-120b",
+                        model_params={},
+                        openai_conf={
+                            "api_key": "k",
+                            "base_url": "https://example.com/v1",
+                            "api_mode": "chat",
+                        },
+                        messages=[{"role": "user", "content": "ping"}],
+                        stream=False,
+                        return_message=False,
+                        image_data=None,
+                        image_user_idx=None,
+                        image_user_text="",
+                        session_summary_mode=False,
+                        memory_query_expansion_mode=False,
+                    ),
+                    append_history=lambda *_a, **_kw: None,
+                    ollama_importer=lambda: None,
+                )
+        # A no-suffix preference never makes chat probe the bare base; the
+        # suffix is always applied.
+        self.assertEqual(mock_post.call_count, 1)
         self.assertEqual(
-            mock_post.call_args_list[1].args[0],
+            mock_post.call_args_list[0].args[0],
             "https://example.com/v1/chat/completions",
         )
-        set_mock.assert_called_once_with(
-            base_url="https://example.com/v1",
-            model_name="gpt-oss-120b",
-            api_kind="chat",
-            prefer_no_suffix=False,
-        )
+        # chat never records a no-suffix override.
+        set_mock.assert_not_called()
 
     def test_openai_auto_prefers_responses_when_base_url_has_responses_suffix(self):
         responses = [_FakeHttpErrorResponse(), _FakeResponse()]
