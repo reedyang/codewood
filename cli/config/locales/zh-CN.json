@@ -1,13 +1,4 @@
 {
-  "AI context and recorded tasks cleared.": "AI 上下文和已记录的任务已清除。",
-  "Current language:": "当前语言：",
-  "English": "English",
-  "New Chat": "新聊天",
-  "Working...": "工作中...",
-  "Usage:": "用法：",
-  "Use /workspace to manage workspaces.": "使用 /workspace 来管理工作区。",
-  "Worked for": "已运行",
-  "esc to interrupt": "按 Esc 中断",
   "common.error": "错误：{error}",
   "error.openai_api_key_missing": "❌ 错误：OpenAI API 密钥未配置。请在 `config.jsonc` 中设置 api_key。",
   "error.cannot_dispatch_model_call": "❌ 错误：无法调度模型调用 (provider='{provider}', api_mode='{api_mode}')；请将 api_mode 设置为 'chat'/'responses'/'ollama' 并确保模型参数已配置。",

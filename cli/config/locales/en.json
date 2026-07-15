@@ -1,13 +1,4 @@
 {
-  "AI context and recorded tasks cleared.": "AI context and recorded tasks cleared.",
-  "Current language:": "Current language:",
-  "English": "English",
-  "New Chat": "New Chat",
-  "Working...": "Working...",
-  "Usage:": "Usage:",
-  "Use /workspace to manage workspaces.": "Use /workspace to manage workspaces.",
-  "Worked for": "Worked for",
-  "esc to interrupt": "esc to interrupt",
   "common.error": "Error: {error}",
   "error.openai_api_key_missing": "❌ Error: OpenAI API key is not configured. Please set api_key in `config.jsonc`.",
   "error.cannot_dispatch_model_call": "❌ Error: cannot dispatch model call (provider='{provider}', api_mode='{api_mode}'); set api_mode to 'chat'/'responses'/'ollama' and ensure the model params are configured.",
