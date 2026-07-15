@@ -107,12 +107,28 @@ def _history_context_input_tokens(messages: List[Dict[str, Any]]) -> int:
     context assembly so chat record snapshots don't get overwritten by a
     transient "current request total" value from in-memory agent fields.
     """
-    from ..services.session_memory_service import _message_effective_token_count
+    from ..services.session_memory_service import (
+        CONTEXT_COMPACTION_SUMMARY_PREFIX,
+        _message_effective_token_count,
+    )
 
     last_cache_idx = -1
     for i, msg in enumerate(messages):
         if isinstance(msg, dict) and isinstance(msg.get("_cache_stats"), dict):
             last_cache_idx = i
+
+    # The most recent compaction summary marks a hard restart of the model
+    # context: everything before it is replaced by the summary and must never
+    # be counted again. It is the authoritative lower bound for the real
+    # context (mirrors the runtime ``_history_tokens_cumulative`` logic).
+    latest_compaction_idx = -1
+    for i, msg in enumerate(messages):
+        if not isinstance(msg, dict):
+            continue
+        if str(msg.get("role") or "").strip().lower() != "assistant":
+            continue
+        if str(msg.get("content") or "").startswith(CONTEXT_COMPACTION_SUMMARY_PREFIX):
+            latest_compaction_idx = i
 
     def _is_internal_assistant(msg: Dict[str, Any]) -> bool:
         if str(msg.get("role") or "").strip().lower() != "assistant":
@@ -122,9 +138,17 @@ def _history_context_input_tokens(messages: List[Dict[str, Any]]) -> int:
             return False
         return raw.startswith("[TASK_WORKED_SUMMARY]") or raw.startswith("[INTERNAL_SLASH_RESULT]")
 
+    # Trust the cache anchor only when it sits at/after the latest compaction
+    # summary. A compaction after the last cache anchor means that anchor still
+    # describes the *pre-compaction* context, so using it would double-count.
+    use_cache_anchor = (
+        0 <= last_cache_idx < len(messages)
+        and last_cache_idx >= latest_compaction_idx
+    )
+
     total = 0
     start_idx = 0
-    if 0 <= last_cache_idx < len(messages):
+    if use_cache_anchor:
         anchor = messages[last_cache_idx]
         cs = anchor["_cache_stats"]
         if "input_tokens" in cs:
@@ -139,6 +163,8 @@ def _history_context_input_tokens(messages: List[Dict[str, Any]]) -> int:
             content = str(anchor.get("content") or "")
             total += max(1, int(len(content) / 4) + 4 + (1 if role else 0))
         start_idx = last_cache_idx + 1
+    elif latest_compaction_idx >= 0:
+        start_idx = latest_compaction_idx
 
     for i, msg in enumerate(messages):
         if not isinstance(msg, dict):
@@ -155,6 +181,37 @@ def _history_context_input_tokens(messages: List[Dict[str, Any]]) -> int:
         if isinstance(token_count, (int, float)) and int(token_count) > 0:
             total += int(token_count)
     return max(0, int(total))
+
+
+def _cache_anchor_valid_after_compaction(messages: List[Dict[str, Any]]) -> bool:
+    """Whether a ``_cache_stats`` anchor can represent the current context.
+
+    A cache anchor is only trustworthy when it sits at/after the most recent
+    ``CONTEXT_COMPACTION_SUMMARY``. Its ``input_tokens`` (which already include
+    the system prompt and tool schemas) describe that API call's full input,
+    so using it yields an accurate total — *unless* a compaction happened
+    afterwards, in which case the anchor still describes the *pre-compaction*
+    context and must not be trusted as the current usage. When there is no
+    valid anchor the caller should fall back to the agent's rich runtime total
+    (which accounts for system prompt + tool schemas separately).
+    """
+    from ..services.session_memory_service import CONTEXT_COMPACTION_SUMMARY_PREFIX
+
+    last_cache_idx = -1
+    for i, msg in enumerate(messages):
+        if isinstance(msg, dict) and isinstance(msg.get("_cache_stats"), dict):
+            last_cache_idx = i
+    if not (0 <= last_cache_idx < len(messages)):
+        return False
+    latest_compaction_idx = -1
+    for i, msg in enumerate(messages):
+        if not isinstance(msg, dict):
+            continue
+        if str(msg.get("role") or "").strip().lower() != "assistant":
+            continue
+        if str(msg.get("content") or "").startswith(CONTEXT_COMPACTION_SUMMARY_PREFIX):
+            latest_compaction_idx = i
+    return last_cache_idx >= latest_compaction_idx
 
 
 class ChatStateManager:
@@ -1214,15 +1271,14 @@ class ChatStateManager:
                 msgs.append(entry)
             chat["messages"] = msgs
             context_window = int(getattr(self._agent, "_last_context_window", 0) or 0)
-            # When messages carry _cache_stats, _history_context_input_tokens
-            # correctly accounts for the system prompt (already counted in the
-            # cache anchor's input_tokens).  Without a cache anchor the message
-            # content alone omits system prompt and tool schemas, so fall back
-            # to the agent's last known total.
-            has_cache_anchor = any(
-                isinstance(m.get("_cache_stats"), dict) for m in msgs
-            )
-            if has_cache_anchor:
+            # A cache anchor at/after the latest compaction summary makes
+            # ``_history_context_input_tokens`` accurate: the anchor's
+            # input_tokens already include the system prompt and tool schemas.
+            # A stale anchor *before* compaction would describe the pre-compaction
+            # context, so treat it like "no valid anchor" and fall back to the
+            # agent's rich runtime total (which adds system prompt + tool schemas).
+            has_valid_cache_anchor = _cache_anchor_valid_after_compaction(msgs)
+            if has_valid_cache_anchor:
                 context_input_tokens = _history_context_input_tokens(msgs)
             else:
                 context_input_tokens = int(
@@ -1262,10 +1318,8 @@ class ChatStateManager:
             prev_context_input_tokens = int(chat.get("context_input_tokens") or 0)
             prev_context_window = int(chat.get("context_window") or 0)
             msgs = list(chat.get("messages") or [])
-            has_cache_anchor = any(
-                isinstance(m.get("_cache_stats"), dict) for m in msgs
-            )
-            if has_cache_anchor:
+            has_valid_cache_anchor = _cache_anchor_valid_after_compaction(msgs)
+            if has_valid_cache_anchor:
                 context_input_tokens = _history_context_input_tokens(msgs)
             else:
                 context_input_tokens = int(
