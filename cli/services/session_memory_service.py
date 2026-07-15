@@ -485,6 +485,8 @@ class SessionMemoryService:
         summary: str,
         mode: str,
         covered_message_count: int,
+        output_tokens: Optional[int] = None,
+        reasoning_tokens: Optional[int] = None,
     ) -> str:
         payload = {
             "kind": "context_compaction_summary",
@@ -493,6 +495,15 @@ class SessionMemoryService:
             "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "covered_message_count": max(0, int(covered_message_count or 0)),
         }
+        # Output-token accounting of the compaction model call. Recording it on
+        # the summary lets post-compaction context-usage math count the summary
+        # precisely (instead of estimating from its character length), since the
+        # cache anchor that normally anchors the cumulative total is stale across
+        # a compaction boundary.
+        if isinstance(output_tokens, (int, float)) and int(output_tokens) > 0:
+            payload["output_tokens"] = int(output_tokens)
+        if isinstance(reasoning_tokens, (int, float)) and int(reasoning_tokens) > 0:
+            payload["reasoning_tokens"] = int(reasoning_tokens)
         return CONTEXT_COMPACTION_SUMMARY_PREFIX + json.dumps(payload, ensure_ascii=False)
 
     def parse_context_compaction_summary_content(self, content: str) -> Optional[Dict[str, Any]]:
