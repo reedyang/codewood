@@ -121,6 +121,31 @@ class ChatStateModelPersistenceTests(unittest.TestCase):
 
             self.assertEqual(agent._session_injected_skills, {"my-skill"})
 
+    def test_reconcile_session_injected_drops_skills_absent_from_history(self):
+        with tempfile.TemporaryDirectory() as td:
+            agent = _FakeAgent(Path(td))
+            agent._canonical_skill_id = Agent._canonical_skill_id.__get__(agent, _FakeAgent)
+            agent._session_injected_skills = {"stale-skill", "my-skill"}
+            agent._session_injected_mcp_prompts = set()
+            agent.conversation_history = [
+                {
+                    "role": "user",
+                    "content": (
+                        "----- BEGIN SKILL PROMPT (skill_id=My-Skill) -----\n"
+                        "body\n"
+                        "----- END SKILL PROMPT -----"
+                    ),
+                }
+            ]
+            manager = ChatStateManager(agent, "chats.json")
+
+            manager._reconcile_session_injected_from_history()
+
+            # The stale skill (injected live before an edit rewound history) must
+            # be dropped so its prompt can be re-injected when the message is
+            # re-sent. Only skills whose marker survives in history remain.
+            self.assertEqual(agent._session_injected_skills, {"my-skill"})
+
     def test_new_chat_entry_inherits_current_model(self):
         with tempfile.TemporaryDirectory() as td:
             agent = _FakeAgent(Path(td))
