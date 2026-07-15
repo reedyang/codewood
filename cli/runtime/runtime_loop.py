@@ -410,6 +410,53 @@ def _extract_nonstandard_tool_plans(
     return _recover_latest_history_tool_plans(agent)
 
 
+def _build_tool_calls_from_plans(
+    assistant_msg: Dict[str, Any],
+    plans: List[Tuple[str, Dict[str, Any]]],
+) -> List[Dict[str, Any]]:
+    """Reconstruct the OpenAI ``tool_calls`` field from parsed tool plans.
+
+    Some providers/models emit the tool call as raw JSON text instead of a
+    structured ``tool_calls`` node on the message. Recover the per-call ``id``
+    from the message content so the upcoming ``role: tool`` results keep
+    pairing with the correct call.
+    """
+    content = str((assistant_msg or {}).get("content") or "")
+    parsed_ids: Dict[str, str] = {}
+    try:
+        payload = json.loads(content)
+        raw_calls = payload.get("tool_calls") if isinstance(payload, dict) else None
+        if isinstance(raw_calls, list):
+            for c in raw_calls:
+                if not isinstance(c, dict):
+                    continue
+                fn = c.get("function") or {}
+                name = str(fn.get("name") or "").strip()
+                cid = str(c.get("id") or "").strip()
+                if name and cid:
+                    parsed_ids[name] = cid
+    except Exception:
+        parsed_ids = {}
+    out: List[Dict[str, Any]] = []
+    for idx, (tool_name, args) in enumerate(plans):
+        cid = parsed_ids.get(str(tool_name or ""), "").strip() or f"call_{idx}"
+        try:
+            arguments = json.dumps(args if isinstance(args, dict) else {}, ensure_ascii=False)
+        except Exception:
+            arguments = "{}"
+        out.append(
+            {
+                "id": cid,
+                "type": "function",
+                "function": {
+                    "name": str(tool_name or ""),
+                    "arguments": arguments,
+                },
+            }
+        )
+    return out
+
+
 def _split_trailing_pseudo_tool_calls_text(
     text: Any,
 ) -> Tuple[str, List[Tuple[str, Dict[str, Any]]]]:
@@ -3888,7 +3935,8 @@ def run_agent_loop(agent: Any):
                             self,
                             pre_task_status_ticker,
                         )
-                        print(t("runtime.skill_enabled", skill=sname))
+                        if not callable(getattr(self, "_confirm_choice_provider", None)):
+                            print(t("runtime.skill_enabled", skill=sname))
                         full_prompts.append((sid, full_prompt))
                         preloaded_skill_ids.add(canon_sid)
                         if canon_sid:
@@ -3913,7 +3961,7 @@ def run_agent_loop(agent: Any):
                             f"{fp}\n"
                             f"----- END SKILL PROMPT -----"
                         )
-                        self._append_chat_message("user", skill_msg, _internal=False)
+                        self._append_chat_message("user", skill_msg, _internal=True)
             memory_runtime_enabled = bool(getattr(self, "memory_enabled", True))
             base_rules: List[str] = [
                 "For tasks that require two or more steps, briefly state what will be done, then list Step 1..N with status (pending/in_progress/completed/failed).",
@@ -4300,6 +4348,28 @@ def run_agent_loop(agent: Any):
                             ),
                         )
                         fallback_plans = _deduped
+                # Track which assistant message issued the current tool batch and
+                # make sure its structured ``tool_calls`` field is populated even
+                # when the model returned the call as raw JSON text. This keeps
+                # tool results and ``_tool_rounds_raw`` correctly paired with the
+                # issuing assistant message (instead of an earlier assistant that
+                # also carried tool_calls, e.g. a prior ``request_skill_prompt``).
+                _issuing = None
+                _hist = getattr(self, "conversation_history", None) or []
+                for _m in reversed(_hist):
+                    if isinstance(_m, dict) and str(_m.get("role") or "").strip().lower() == "assistant":
+                        _issuing = _m
+                        break
+                if _issuing is not None:
+                    self._last_tool_issuing_assistant = _issuing
+                    if fallback_plans and not _issuing.get("tool_calls"):
+                        _rebuilt = _build_tool_calls_from_plans(_issuing, fallback_plans)
+                        if _rebuilt:
+                            _issuing["tool_calls"] = _rebuilt
+                            try:
+                                self._sync_active_chat_messages()
+                            except Exception:
+                                pass
                 ai_response_looks_like_pseudo_tool = _looks_like_pseudo_tool_call_text(ai_response)
                 if (
                     task_uses_standard_openai_tools
@@ -4525,14 +4595,14 @@ def run_agent_loop(agent: Any):
                             requested_section = None
                         force_full = bool(args.get("full", False))
                         request_is_expansion = force_full or (requested_section is not None and requested_section > 1)
+                        # Decide whether the skill prompt must be (re-)injected into
+                        # the model context. A normal first-time request injects it.
+                        # A repeat of an already-active skill only re-injects when the
+                        # post-compaction context lost the previous role:tool result
+                        # (compaction-recovery), to avoid duplicate prompts.
+                        inject_prompt = True
                         if canon_sid and canon_sid in preloaded_skill_ids and not request_is_expansion:
-                            next_input = (
-                                f"skill_id=`{sid}` was explicitly pre-injected this turn through `/skills/<skill-name>`. "
-                                "Do not call request_skill_prompt again. Continue directly with standard tools."
-                            )
-                            no_tool_rounds = 0
-                            continue_after_batch = True
-                            break
+                            inject_prompt = False
                         if (
                             active_sid
                             and canon_sid
@@ -4541,13 +4611,7 @@ def run_agent_loop(agent: Any):
                             and not self._active_skill_chunked
                             and not request_is_expansion
                         ):
-                            next_input = (
-                                f"skill_id=`{sid}` has already been injected in this session. "
-                                "Do not call request_skill_prompt repeatedly. Continue directly with standard tools."
-                            )
-                            no_tool_rounds = 0
-                            continue_after_batch = True
-                            break
+                            inject_prompt = self._skill_prompt_recovery_needed(canon_sid or sid)
                         if (
                             active_sid
                             and canon_sid
@@ -4559,6 +4623,14 @@ def run_agent_loop(agent: Any):
                             and self._active_skill_section < self._active_skill_total_sections
                         ):
                             requested_section = self._active_skill_section + 1
+                        if not inject_prompt:
+                            next_input = (
+                                f"skill_id=`{sid}` has already been injected in this session. "
+                                "Do not call request_skill_prompt repeatedly. Continue directly with standard tools."
+                            )
+                            no_tool_rounds = 0
+                            continue_after_batch = True
+                            break
                         full_prompt, meta = self._build_single_skill_prompt(
                             sid,
                             requested_section=requested_section,
@@ -4585,30 +4657,62 @@ def run_agent_loop(agent: Any):
                         session_injected = getattr(self, "_session_injected_skills", set())
                         if canon_sid:
                             session_injected.add(canon_sid)
-                        # Record the skill prompt as a tool result (assistant message
-                        # with [MODEL_TOOL_RESULT] prefix), so the GUI renders it as
-                        # a tool call output rather than a user-sent message.
-                        tool_result_payload = {
+                        # Record the skill prompt as a real ``role: tool`` result
+                        # paired with the model's ``request_skill_prompt`` tool call
+                        # (matching ``tool_call_id``). This replaces the deprecated
+                        # ``[MODEL_TOOL_RESULT]`` assistant message and the extra
+                        # "injected above" user message.
+                        skill_tool_call_id = "call_0"
+                        _issuing = getattr(self, "_last_tool_issuing_assistant", None)
+                        if isinstance(_issuing, dict):
+                            for _tc in (_issuing.get("tool_calls") or []):
+                                if isinstance(_tc, dict) and str(_tc.get("function", {}).get("name") or "").strip() == "request_skill_prompt":
+                                    _cid = str(_tc.get("id") or "").strip()
+                                    if _cid:
+                                        skill_tool_call_id = _cid
+                                    break
+                        result_payload = {
                             "kind": "model_tool_result",
                             "tool": "request_skill_prompt",
                             "args": {"skill_id": sid},
                             "success": True,
-                            "output": (
-                                f"----- BEGIN SKILL PROMPT (skill_id={sid}) -----\n"
-                                f"{full_prompt}\n"
-                                f"----- END SKILL PROMPT -----"
-                            ),
+                            "output": full_prompt,
                             "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                         }
-                        tool_result_content = (
-                            f"{_MODEL_TOOL_RESULT_HISTORY_PREFIX}"
-                            f"{json.dumps(tool_result_payload, ensure_ascii=False)}"
-                        )
-                        self._append_chat_message("assistant", tool_result_content)
+                        self.conversation_history.append({
+                            "role": "tool",
+                            "name": "request_skill_prompt",
+                            "content": json.dumps(result_payload, ensure_ascii=False),
+                            "tool_call_id": skill_tool_call_id,
+                            "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        })
+                        self._sync_active_chat_messages()
+                        # Record a ``_tool_rounds_raw`` entry on the issuing
+                        # assistant message (the ``request_skill_prompt`` tool
+                        # call) so history reload can expand its output, exactly
+                        # like every other tool call.
+                        _skill_raw = {
+                            "tool": "request_skill_prompt",
+                            "args": {"skill_id": sid},
+                            "failed": False,
+                            "elapsed": None,
+                            "output": full_prompt,
+                        }
+                        _issuing_msg = getattr(self, "_last_tool_issuing_assistant", None)
+                        if not (isinstance(_issuing_msg, dict) and str(_issuing_msg.get("role") or "").strip().lower() == "assistant"):
+                            for _m in reversed(getattr(self, "conversation_history", None) or []):
+                                if isinstance(_m, dict) and str(_m.get("role") or "").strip().lower() == "assistant" and _m.get("tool_calls"):
+                                    _issuing_msg = _m
+                                    break
+                        if isinstance(_issuing_msg, dict):
+                            _issuing_msg.setdefault("_tool_rounds_raw", []).append(_skill_raw)
+                            try:
+                                self._sync_active_chat_messages()
+                            except Exception:
+                                pass
                         next_input = (
-                            f"[Skill prompt for `{sid}` injected above] "
-                            f"Current section progress: {self._active_skill_section}/{self._active_skill_total_sections if self._active_skill_total_sections else 1}。"
-                            "Continue with standard tools; you may call one or more tools at once."
+                            "Continue with standard tools when more tool work is needed; you may call one or more tools at once. "
+                            "When no further tool action is required, reply in natural language with no tool_calls and the host will return to the command prompt."
                         )
                         no_tool_rounds = 0
                         continue_after_batch = True
