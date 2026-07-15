@@ -437,24 +437,13 @@ def _build_structured_turns(agent: Any) -> List[Dict[str, Any]]:
                 current_round = _new_round(turn, wait)
             else:
                 current_round["waitSeconds"] += max(0, int(round(wait)))
-            # Tool-call plans are bookkeeping: the matching tool-result message
-            # renders the "Ran <tool>" feedback line. Render the plan only when
-            # the per-message renderer recognizes it (so it stays silent); for a
-            # blob the strict parser misses, skip rendering entirely rather than
-            # letting the raw JSON leak as text.
-            tool_plan = None
-            try:
-                tool_plan = agent._parse_model_tool_plan_history_content(content)
-            except Exception:
-                tool_plan = None
-            recognized_plan = tool_plan is not None
-            if recognized_plan and str((tool_plan.get("tool") or "")).strip().lower() == "request_skill_prompt":
-                recognized_plan = False
-            if recognized_plan:
-                rendered = _render_step(idx, msg)
-                if rendered.strip():
-                    current_round["tools"] = current_round["tools"] + rendered + "\n"
-# Emit tool_rounds for new-format assistant messages (pre-rendered)
+            # Prefer the pre-rendered tool rounds (which already include the
+            # full call plus any payload, e.g. a read's file content, so the GUI
+            # can syntax-highlight it). Only fall back to re-rendering the plan
+            # directly when no pre-rendered rounds exist. Rendering BOTH would
+            # duplicate the call: the direct render shows only the prompt line
+            # (no payload, no highlight) while the pre-rendered one shows the
+            # complete call.
             raw_rounds = msg.get("_tool_rounds_raw") if isinstance(msg, dict) else None
             if isinstance(raw_rounds, list) and raw_rounds:
                 try:
@@ -463,6 +452,25 @@ def _build_structured_turns(agent: Any) -> List[Dict[str, Any]]:
                     tool_rounds = msg.get("tool_rounds") if isinstance(msg, dict) else None
             else:
                 tool_rounds = msg.get("tool_rounds") if isinstance(msg, dict) else None
+            if not (isinstance(tool_rounds, list) and tool_rounds):
+                # No pre-rendered rounds: render the plan directly. The matching
+                # tool-result message normally renders the "Ran <tool>" feedback
+                # line, so only render here when the per-message renderer
+                # recognizes the plan (stays silent otherwise); for a blob the
+                # strict parser misses, skip rendering entirely rather than
+                # letting the raw JSON leak as text.
+                tool_plan = None
+                try:
+                    tool_plan = agent._parse_model_tool_plan_history_content(content)
+                except Exception:
+                    tool_plan = None
+                recognized_plan = tool_plan is not None
+                if recognized_plan and str((tool_plan.get("tool") or "")).strip().lower() == "request_skill_prompt":
+                    recognized_plan = False
+                if recognized_plan:
+                    rendered = _render_step(idx, msg)
+                    if rendered.strip():
+                        current_round["tools"] = current_round["tools"] + rendered + "\n"
             if isinstance(tool_rounds, list) and tool_rounds:
                 current_round["tools"] = current_round["tools"] + "\n".join(tool_rounds) + "\n"
             # Extract _thinking even when the assistant message is a pure
