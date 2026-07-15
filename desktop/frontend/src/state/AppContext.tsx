@@ -24,6 +24,7 @@ import type {
   SegmentKind,
   ServerEvent,
   SubAgentConfig,
+  SubAgentMessage,
   SubAgentSession,
   SubAgentsOverview,
   Turn,
@@ -1886,13 +1887,26 @@ export function AppProvider({ children }: { children: ReactNode }) {
           const sessionId = String(d.sessionId || "");
           const current = activeSubAgentSessionRef.current;
           if (current && current.id === sessionId) {
-            const updated: SubAgentSession = {
-              ...current,
-              messages: [
-                ...current.messages,
-                { role: "assistant", content: String(d.text || "") },
-              ],
-            };
+            const msgs = [...current.messages];
+            const text = String(d.text || "");
+            const last = msgs[msgs.length - 1] as SubAgentMessage | undefined;
+            if (
+              last &&
+              last.role === "assistant" &&
+              !(last.tool_calls && last.tool_calls.length > 0)
+            ) {
+              // Streaming update: append the delta to the in-progress
+              // assistant text message rather than starting a new one.
+              msgs[msgs.length - 1] = {
+                ...last,
+                content: (last.content || "") + text,
+              };
+            } else {
+              // A fresh assistant turn (first delta of a round, or a round that
+              // had no prior text-only assistant message).
+              msgs.push({ role: "assistant", content: text });
+            }
+            const updated: SubAgentSession = { ...current, messages: msgs };
             setActiveSubAgentSession(updated);
             activeSubAgentSessionRef.current = updated;
           }

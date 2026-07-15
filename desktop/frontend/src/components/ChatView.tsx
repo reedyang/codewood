@@ -525,7 +525,7 @@ function SubAgentSessionView({ session }: { session: import("../api/types").SubA
     if (scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
-  }, [session.messages.length, session.output]);
+  }, [session.messages.length, session.output, session.messages[session.messages.length - 1]?.content]);
 
   const toolTitleFor = (count: number) =>
     t("activity.toolCalls").replace("{count}", String(count));
