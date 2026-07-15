@@ -5,6 +5,7 @@
   /* Light theme (per design image 4). */
   --bg: #ffffff;
   --bg-elevated: #ffffff;
+  --bg-hover: rgba(0, 0, 0, 0.05);
   --bg-sidebar: #f3f4f6;
   /* Solid (always-opaque) mirrors of the surface tokens. These never become
      translucent, so the background-image override can derive translucent
@@ -49,6 +50,7 @@
   /* Dark theme (per design image 1). */
   --bg: #181818;
   --bg-elevated: #181818;
+  --bg-hover: rgba(255, 255, 255, 0.06);
   --bg-sidebar: #141414;
   --bg-solid: #181818;
   --bg-elevated-solid: #181818;
