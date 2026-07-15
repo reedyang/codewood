@@ -3909,12 +3909,59 @@ def run_agent_loop(agent: Any):
                     self,
                     pre_task_status_ticker,
                 )
+                mcp_items = []
+                # Mirror the forced-skill path: inject each MCP prompt body as a
+                # separate internal user message (not embedded in the task text)
+                # and track it in ``_session_injected_mcp_prompts`` so the same
+                # prompt is never injected twice — across turns, edits/reloads,
+                # or a later ``mcp_get_prompt`` tool call.
+                session_injected_mcp = getattr(self, "_session_injected_mcp_prompts", set())
+                gui_mode = callable(getattr(self, "_confirm_choice_provider", None))
                 for e in forced_mcp_entries:
                     srv = str(e.get("server", "")).strip()
                     name = str(e.get("name", "")).strip()
                     kind = str(e.get("kind", "")).strip() or "unknown"
-                    print(t("runtime.mcp_reference_enabled", server=srv, name=name, kind=kind))
-                forced_mcp_prefix = self._build_forced_mcp_prefix(forced_mcp_entries)
+                    mcp_items.append(f"`/mcp/{srv}/{name}`({kind})")
+                    if not gui_mode:
+                        print(t("runtime.mcp_reference_enabled", server=srv, name=name, kind=kind))
+                    if kind != "prompt":
+                        continue
+                    prompt_key = f"{srv}/{name}"
+                    if prompt_key in session_injected_mcp:
+                        continue
+                    pobj = None
+                    try:
+                        pobj = self.mcp_manager.get_prompt(srv, name, {}, timeout_s=20.0)
+                    except Exception:
+                        pobj = None
+                    if not isinstance(pobj, dict):
+                        continue
+                    body_lines = []
+                    desc = str(pobj.get("description", "")).strip()
+                    if desc:
+                        body_lines.append(f"prompt.description: {desc}")
+                    msgs = pobj.get("messages", [])
+                    if isinstance(msgs, list):
+                        for msg in msgs:
+                            if not isinstance(msg, dict):
+                                continue
+                            role = str(msg.get("role", "")).strip()
+                            content = msg.get("content", {})
+                            if isinstance(content, dict) and content.get("type") == "text":
+                                text = str(content.get("text", "")).strip()
+                                if text:
+                                    body_lines.append(f"prompt.{role}: {text}")
+                    if not body_lines:
+                        continue
+                    mcp_msg = (
+                        f"----- BEGIN MCP PROMPT (server={srv}, name={name}) -----\n"
+                        + "\n".join(body_lines)
+                        + "\n----- END MCP PROMPT -----"
+                    )
+                    self._append_chat_message("user", mcp_msg, _internal=True)
+                    session_injected_mcp.add(prompt_key)
+                if mcp_items:
+                    forced_mcp_prefix = self._build_forced_mcp_prefix(forced_mcp_entries)
             preloaded_skill_ids: Set[str] = set()
             if forced_skills:
                 skill_items = []
