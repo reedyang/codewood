@@ -670,7 +670,7 @@ def run_subagent(
                 messages_override=list(messages),
                 record_history_override=False,
                 return_message=True,
-                stream=False,
+                stream=True,
                 tool_schemas=tool_schemas or None,
                 tool_choice="auto" if tool_schemas else None,
                 # Re-attach the image on every round: ``prepare_image_input``
@@ -679,7 +679,29 @@ def run_subagent(
                 # visible to the sub-agent's multimodal model.
                 image_path=image_path,
             )
-            message = orchestrator.call(call_ctx=call_ctx)
+            # In stream mode ``orchestrator.call`` returns a generator-like
+            # result object. Errors may still be returned as a plain string.
+            stream_result = orchestrator.call(call_ctx=call_ctx)
+            if isinstance(stream_result, str):
+                message = stream_result
+            else:
+                message = None
+                _streamed_text: List[str] = []
+                try:
+                    for _delta in stream_result:
+                        if isinstance(_delta, str) and _delta:
+                            _streamed_text.append(_delta)
+                            # Stream the assistant's visible text token-by-token
+                            # so the GUI sub-agent session viewer updates live.
+                            _emit_subagent_event(agent, "sub_agent_assistant", {
+                                "sessionId": session_id,
+                                "text": _delta,
+                            })
+                except Exception as _stream_exc:
+                    logger.warning("run_subagent: stream iteration error: %s", _stream_exc)
+                message = getattr(stream_result, "final_message", None)
+                if not isinstance(message, dict):
+                    message = {"role": "assistant", "content": "".join(_streamed_text)}
 
             if isinstance(message, str):
                 # Provider returned an error string (no message dict).
@@ -742,13 +764,6 @@ def run_subagent(
             assistant_msg = dict(message)
             messages.append(assistant_msg)
             store.append_message(agent, chat_id, session_id, assistant_msg)
-
-            # Emit assistant content event if there's text
-            if content_text:
-                _emit_subagent_event(agent, "sub_agent_assistant", {
-                    "sessionId": session_id,
-                    "text": content_text,
-                })
 
             # Collect each tool call + result so we can render them into the
             # same display envelope the main chat uses (a single collapsible
