@@ -852,16 +852,24 @@ def _compute_chat_cache_stats(agent: Any) -> Dict[str, Any]:
     return result
 
 
-def _compute_context_usage_fresh_from_messages(chat_record: Dict[str, Any]) -> "tuple[int, int, int]":
-    """Compute context usage (history tokens only) from chat record messages."""
+def _compute_context_usage_fresh_from_messages(agent: Any, chat_record: Dict[str, Any]) -> "tuple[int, int, int]":
+    """Last-resort context usage from message history when no in-memory snapshot.
+
+    History tokens come from ``_history_context_input_tokens``; the context
+    window comes from the agent's model (in-memory ``_last_context_window`` or
+    the model params), since usage is no longer persisted on the chat record.
+    """
     from ..core.config.model_providers import DEFAULT_CONTEXT_WINDOW, parse_context_window
     from ..managers.chat_state_manager import _history_context_input_tokens
 
     msgs = list(chat_record.get("messages") or [])
     total = _history_context_input_tokens(msgs)
-    window = parse_context_window(
-        chat_record.get("context_window"), default_value=DEFAULT_CONTEXT_WINDOW
-    )
+    window = int(getattr(agent, "_last_context_window", 0) or 0)
+    if window <= 0:
+        window = parse_context_window(
+            (getattr(agent, "params", None) or {}).get("context_window"),
+            default_value=DEFAULT_CONTEXT_WINDOW,
+        )
     pct = max(0, min(999, int(round(total * 100.0 / max(1, window)))))
     return window, total, pct
 
@@ -1042,28 +1050,25 @@ def _build_state_inner(agent: Any) -> Dict[str, Any]:
                 # request-per-tick. These numbers are kept in sync by the
                 # session manager every time the model returns input-token
                 # accounting.
+                # Context usage is no longer persisted on the chat record; the
+                # authoritative value is the in-memory snapshot rebuilt from the
+                # message history on every activate/refresh. Read it directly,
+                # and fall back to a fresh history-based recompute only when the
+                # snapshot is not yet available.
                 try:
-                    active_context_percent = int(c.get("context_usage_percent") or 0)
+                    active_context_percent = int(getattr(agent, "_last_context_usage_percent", 0) or 0)
                 except Exception:
                     active_context_percent = 0
                 try:
-                    active_context_tokens = int(c.get("context_input_tokens") or 0)
+                    active_context_tokens = int(getattr(agent, "_last_context_input_tokens", 0) or 0)
                 except Exception:
                     active_context_tokens = 0
                 try:
-                    active_context_window = int(c.get("context_window") or 0)
+                    active_context_window = int(getattr(agent, "_last_context_window", 0) or 0)
                 except Exception:
                     active_context_window = 0
-                # Fall back to in-memory agent attributes when file cache is
-                # not yet persisted (e.g. first state event after chat activation
-                # where the async refresh hasn't finished writing to disk).
                 if active_context_tokens <= 0 and active_context_percent <= 0:
-                    active_context_tokens = int(getattr(agent, "_last_context_input_tokens", 0) or 0)
-                    active_context_percent = int(getattr(agent, "_last_context_usage_percent", 0) or 0)
-                    if active_context_window <= 0:
-                        active_context_window = int(getattr(agent, "_last_context_window", 0) or 0)
-                    if active_context_tokens <= 0:
-                        active_context_window, active_context_tokens, active_context_percent = _compute_context_usage_fresh_from_messages(c)
+                    active_context_window, active_context_tokens, active_context_percent = _compute_context_usage_fresh_from_messages(agent, c)
             chats.append(
                 {
                     "index": i,
