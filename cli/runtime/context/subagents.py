@@ -27,6 +27,12 @@ class SubagentsPart(ModelContextPart):
             "When a subtask matches a sub-agent's description, call the `run_subagent` tool with that "
             "sub-agent's `name` and a complete, self-contained `prompt`. Then use the returned output to "
             "continue the main task. Sub-agents cannot invoke `run_subagent` themselves.",
+            # Language requirement for the delegated prompt: the model must match
+            # the language the user is actually writing in (auto-detected from the
+            # user's message), so the sub-agent receives and answers the subtask in
+            # the same tongue as the conversation.
+            "Language: write the `prompt` (and `topic`) arguments in the SAME language the user is using "
+            "in their message. Do not translate or switch languages when delegating a subtask.",
             "Available sub-agents:",
         ]
         for rec in subagents:
