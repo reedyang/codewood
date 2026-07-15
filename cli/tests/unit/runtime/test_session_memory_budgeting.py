@@ -16,7 +16,10 @@ from cli.config.app_info import (
 )
 from cli.agent import Agent
 from cli.ai.ai_special_mode_prompts import SESSION_SUMMARY_SYSTEM_PROMPT
-from cli.services.session_memory_service import SessionMemoryService
+from cli.services.session_memory_service import (
+    SessionMemoryService,
+    _message_effective_token_count,
+)
 
 DIRECT_SHELL_USER_HISTORY_PREFIX = "[DIRECT_SHELL_USER_COMMAND]"
 DIRECT_SHELL_RESULT_HISTORY_PREFIX = "[DIRECT_SHELL_RESULT]"
@@ -1374,6 +1377,108 @@ class SessionMemoryBudgetingTests(unittest.TestCase):
         # because the compaction summary after it restarts the context.
         self.assertEqual(total, summary_est + 20 + 30)
         self.assertLess(total, 30000)
+
+    def test_history_tokens_cumulative_uses_summary_output_tokens_after_compaction(self):
+        agent = _FakeAgent()
+        svc = SessionMemoryService(agent)
+
+        summary_content = svc.build_context_compaction_summary_content(
+            summary="过去几十轮对话的摘要", mode="manual", covered_message_count=10
+        )
+        messages = [
+            {"role": "user", "content": "compaction 之前的历史", "_token_count": 500},
+            {
+                "role": "assistant",
+                "content": '{"tool_calls": []}',
+                "_cache_stats": {"input_tokens": 30000},
+                "_output_tokens": 100,
+                "_token_count_includes_reasoning": False,
+            },
+            # The summary now carries the compaction call's output-token count,
+            # so it is counted precisely instead of estimated from characters.
+            {"role": "assistant", "content": summary_content, "_output_tokens": 42},
+            {"role": "user", "content": "compaction 之后的问题", "_token_count": 20},
+            {"role": "assistant", "content": "回答", "_token_count": 30},
+        ]
+
+        total = svc.llm_context_manager._history_tokens_cumulative(messages)
+
+        self.assertEqual(total, 42 + 20 + 30)
+        self.assertLess(total, 30000)
+
+    def test_build_context_compaction_summary_content_records_output_tokens(self):
+        agent = _FakeAgent()
+        svc = SessionMemoryService(agent)
+        content = svc.build_context_compaction_summary_content(
+            summary="摘要内容",
+            mode="manual",
+            covered_message_count=7,
+            output_tokens=123,
+            reasoning_tokens=12,
+        )
+        payload = svc.parse_context_compaction_summary_content(content)
+        self.assertIsInstance(payload, dict)
+        self.assertEqual(payload.get("output_tokens"), 123)
+        self.assertEqual(payload.get("reasoning_tokens"), 12)
+        # Omitting the stats leaves the payload free of those fields.
+        plain = svc.build_context_compaction_summary_content(
+            summary="摘要内容", mode="manual", covered_message_count=7
+        )
+        plain_payload = svc.parse_context_compaction_summary_content(plain)
+        self.assertNotIn("output_tokens", plain_payload)
+        self.assertNotIn("reasoning_tokens", plain_payload)
+
+    def test_compact_context_records_output_tokens_on_summary(self):
+        agent = _FakeAgent()
+        agent.params = {"context_window": 16000}
+        agent._compose_system_prompt_snapshot = lambda include_tools=True: "SYSTEM"
+        svc = SessionMemoryService(agent)
+        previous = svc.build_context_compaction_summary_content(
+            summary="Previous summary", mode="auto", covered_message_count=4
+        )
+        agent.conversation_history = [
+            {"role": "user", "content": "Older message"},
+            {"role": "assistant", "content": previous},
+            {"role": "user", "content": "Subsequent user message"},
+            {"role": "assistant", "content": "Subsequent assistant message"},
+        ]
+
+        def _fake_call_ai(*args, **kwargs):
+            # return_message=True makes the compaction call return the assistant
+            # message dict (with output-token stats) rather than a plain string.
+            self.assertTrue(kwargs.get("return_message"))
+            return {
+                "role": "assistant",
+                "content": "New merged summary",
+                "_output_tokens": 77,
+                "_reasoning_tokens": 5,
+                "_token_count_includes_reasoning": True,
+            }
+
+        agent.call_ai = _fake_call_ai  # type: ignore[attr-defined]
+
+        with redirect_stdout(io.StringIO()):
+            ok = svc.compact_context("manual")
+
+        self.assertTrue(ok)
+        inserted = agent.conversation_history[-1]
+        # The compaction call's output-token accounting is recorded on the
+        # summary message, and the provider's ``_token_count_includes_reasoning``
+        # flag is mirrored verbatim. Here the fake provider reports reasoning
+        # folded into output, so ``_message_effective_token_count`` returns the
+        # raw output (77) rather than subtracting it again.
+        self.assertEqual(inserted.get("_output_tokens"), 77)
+        self.assertEqual(inserted.get("_reasoning_tokens"), 5)
+        self.assertTrue(inserted.get("_token_count_includes_reasoning"))
+        self.assertEqual(_message_effective_token_count(inserted), 77)
+        payload = svc.parse_context_compaction_summary_content(
+            str(inserted.get("content") or "")
+        )
+        self.assertEqual(payload.get("output_tokens"), 77)
+        self.assertEqual(payload.get("reasoning_tokens"), 5)
+        # _cache_stats is deliberately NOT copied, so the stale pre-compaction
+        # input-token anchor cannot leak into the cumulative total.
+        self.assertNotIn("_cache_stats", inserted)
 
     def test_build_regular_task_messages_snapshot_uses_history_only_when_cache_anchor_exists(self):
         agent = _FakeAgent()

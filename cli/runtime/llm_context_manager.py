@@ -832,7 +832,7 @@ class LLMContextManager:
                 compaction_user_input,
                 context="",
                 stream=stream_summary,
-                return_message=False,
+                return_message=True,
                 record_history_override=False,
             )
         except Exception as e:
@@ -841,7 +841,12 @@ class LLMContextManager:
                 print(self._t("compaction.failed", error=e))
             return False
         summary = ""
-        if isinstance(raw, str):
+        compaction_reply_message = None
+        if isinstance(raw, dict):
+            # Non-stream path (return_message=True returns the assistant message).
+            summary = str(raw.get("content") or "").strip()
+            compaction_reply_message = raw
+        elif isinstance(raw, str):
             summary = raw.strip()
         elif raw is not None and stream_to_terminal:
             from .runtime_loop import (
@@ -852,6 +857,7 @@ class LLMContextManager:
             consumed, _streamed = _consume_streaming_ai_response(self.agent, raw)
             _take_pending_stream_history_reload_request(self.agent)
             summary = str(consumed or "").strip()
+            compaction_reply_message = getattr(raw, "final_message", None)
         elif raw is not None:
             close_fn = getattr(raw, "close", None)
             try:
@@ -878,15 +884,27 @@ class LLMContextManager:
                         pass
             streamed_raw_text = "".join(streamed_summary_parts)
             summary = streamed_raw_text.strip()
+            compaction_reply_message = getattr(raw, "final_message", None)
         if summary.startswith("❌") or summary.startswith("Error calling LLM API") or not summary:
             if mode == "manual":
                 print(summary or self._t("compaction.failed_empty_summary"))
             return False
         summary = summary.replace("```", "").strip()
+        compaction_output_tokens = None
+        compaction_reasoning_tokens = None
+        compaction_token_count_includes_reasoning = None
+        if isinstance(compaction_reply_message, dict):
+            compaction_output_tokens = compaction_reply_message.get("_output_tokens")
+            compaction_reasoning_tokens = compaction_reply_message.get("_reasoning_tokens")
+            compaction_token_count_includes_reasoning = compaction_reply_message.get(
+                "_token_count_includes_reasoning"
+            )
         content = self.build_context_compaction_summary_content(
             summary=summary,
             mode=mode,
             covered_message_count=len(source_history),
+            output_tokens=compaction_output_tokens,
+            reasoning_tokens=compaction_reasoning_tokens,
         )
         created_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         msg = {
@@ -894,6 +912,24 @@ class LLMContextManager:
             "content": content,
             "created_at": created_at,
         }
+        # Record the compaction call's output-token accounting on the summary
+        # message so post-compaction context-usage math counts the summary
+        # precisely. We deliberately do NOT copy ``_cache_stats`` here (that
+        # anchor carries the *pre-compaction* input tokens). We mirror the
+        # provider's ``_token_count_includes_reasoning`` flag verbatim so
+        # ``_message_effective_token_count`` keeps applying the right formula
+        # per provider: ``_output_tokens`` (DeepSeek-style, reasoning folded
+        # in) vs ``_output_tokens - _reasoning_tokens`` (others). Recording
+        # ``_reasoning_tokens`` even when zero is what makes the latter
+        # computable for providers that fold reasoning into ``_output_tokens``.
+        if isinstance(compaction_output_tokens, (int, float)) and int(compaction_output_tokens) > 0:
+            msg["_output_tokens"] = int(compaction_output_tokens)
+        if isinstance(compaction_reasoning_tokens, (int, float)):
+            msg["_reasoning_tokens"] = int(compaction_reasoning_tokens)
+        if compaction_token_count_includes_reasoning is True:
+            msg["_token_count_includes_reasoning"] = True
+        elif compaction_token_count_includes_reasoning is False:
+            msg["_token_count_includes_reasoning"] = False
         try:
             self.agent.conversation_history.append(msg)
             self.agent._sync_active_chat_messages()
