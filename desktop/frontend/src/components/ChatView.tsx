@@ -527,26 +527,11 @@ function SubAgentSessionView({ session }: { session: import("../api/types").SubA
     }
   }, [session.messages.length, session.output, session.messages[session.messages.length - 1]?.content]);
 
-  const toolTitleFor = (count: number) =>
+    const toolTitleFor = (count: number) =>
     t("activity.toolCalls").replace("{count}", String(count));
 
-  // Compute total tokens from stored statistics (mirrors the main chat).
-  const { totalOutputTokens, totalEstTokens, cacheTokens } = (() => {
-    let out = 0;
-    let est = 0;
-    let cache = 0;
-    for (const msg of session.messages) {
-      const raw = msg as unknown as Record<string, unknown>;
-      out += Number(raw._output_tokens) || 0;
-      est += Number(raw._token_count) || 0;
-      const cs = raw._cache_stats as Record<string, number> | undefined;
-      if (cs) {
-        cache += (cs.prompt_cache_hit_tokens || 0) + (cs.prompt_cache_miss_tokens || 0) + (cs.input_tokens || 0);
-      }
-    }
-    return { totalOutputTokens: out, totalEstTokens: est, cacheTokens: cache };
-  })();
-  const formatTok = (n: number) => (n >= 1000 ? `${(n / 1000).toFixed(1)}K` : String(n));
+
+
 
   // Merge consecutive tool-only assistant messages into single "Called N tools" groups.
   // Handles both persisted messages (with tool_rounds) and live SSE messages (with
@@ -566,13 +551,15 @@ function SubAgentSessionView({ session }: { session: import("../api/types").SubA
       const allRounds: string[] = [];
       const addRound = (
         rounds: string[] | undefined,
-        calls: { name: string; args?: Record<string, unknown> }[] | undefined,
+        calls: { name?: string; function?: { name?: string } }[] | undefined,
       ) => {
         if (rounds?.length) {
           allRounds.push(...rounds);
         } else if (calls?.length) {
           for (const tc of calls) {
-            allRounds.push(`\uE000\u2022 ${tc.name}\uE001`);
+            // OpenAI-format tool_calls nest the name under ``function.name``.
+            const callName = tc.function?.name || tc.name || "";
+            allRounds.push(`\uE000\u2022 ${callName}\uE001`);
           }
         }
       };
@@ -673,21 +660,13 @@ function SubAgentSessionView({ session }: { session: import("../api/types").SubA
         </div>
       )}
 
-      {/* Session footer: duration + token stats */}
+      {/* Session footer: duration + success */}
       {session.endedAt && session.startedAt && (
         <div className="turn" style={{ opacity: 0.5, fontSize: 12, textAlign: "center" }}>
           {formatDuration(new Date(session.endedAt).getTime() - new Date(session.startedAt).getTime())}
           {session.success !== null && (
             <span style={{ marginLeft: 8 }}>
               {session.success ? "✓" : "✗"}
-            </span>
-          )}
-          {(totalOutputTokens > 0 || totalEstTokens > 0) && (
-            <span style={{ marginLeft: 8 }}>
-              {"· "}
-              {totalOutputTokens > 0 ? `${formatTok(totalOutputTokens)} tokens` : ""}
-              {totalEstTokens > 0 && totalOutputTokens === 0 ? `${formatTok(totalEstTokens)} tokens` : ""}
-              {cacheTokens > 0 ? ` · ${formatTok(cacheTokens)} prompt` : ""}
             </span>
           )}
         </div>
