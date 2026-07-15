@@ -637,10 +637,24 @@ def run_subagent(
     if not sys.stdout.isatty():
         print(f"{GUI_SUBAGENT_SESSION_BEGIN}{session_id}{GUI_SUBAGENT_SESSION_END}", flush=True)
 
+    # Require the sub-agent to reply in the same language the user is using.
+    # The caller is instructed (see SubagentsPart / run_subagent tool schema) to
+    # write the delegated ``prompt`` in the user's language, so anchoring the
+    # response language to the caller's request keeps the whole subtask in the
+    # user's tongue end-to-end. The language is auto-detected from the caller's
+    # request rather than pinned to any UI display setting.
+    language_directive = (
+        "\n\n"
+        "## Response language\n"
+        "Respond in the SAME language the caller used in their request for this subtask. "
+        "Do not switch languages when answering."
+    )
+    system_content = (str(record.instructions or "") + language_directive)
+
     # Store the initial messages (system + user)
     store.append_message(agent, chat_id, session_id, {
         "role": "system",
-        "content": str(record.instructions or ""),
+        "content": system_content,
     })
     store.append_message(agent, chat_id, session_id, {
         "role": "user",
@@ -648,7 +662,7 @@ def run_subagent(
     })
 
     messages: List[Dict[str, Any]] = [
-        {"role": "system", "content": str(record.instructions or "")},
+        {"role": "system", "content": system_content},
         {"role": "user", "content": prompt_text},
     ]
 

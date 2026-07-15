@@ -24,7 +24,7 @@ class RunSubagentTool(BaseTool):
             },
             "prompt": {
                 "type": "string",
-                "description": "A complete, self-contained task description for the sub-agent, including all context it needs.",
+                "description": "A complete, self-contained task description for the sub-agent, including all context it needs. Write it in the SAME language the user is using in their message (do not translate or switch languages when delegating).",
             },
             "image": {
                 "type": "string",
