@@ -28,7 +28,12 @@ from ..core.logging.app_logging import get_logger
 logger = get_logger()
 
 from ..ai.ai_orchestrator import AIOrchestrator, AgentAIContext
-from ..ai.ai_provider_clients import AICallContext, resolve_api_mode
+from ..ai.ai_provider_clients import (
+    AICallContext,
+    resolve_api_mode,
+    _sanitize_assistant_text,
+    _StreamingSanitizer,
+)
 from ..core.config.subagents_loader import DEFAULT_SUBAGENT_MAX_ROUNDS, SubAgentRecord
 from ..core.localization import get_display_language, translate
 from ..core.console_utils import (
@@ -701,18 +706,33 @@ def run_subagent(
             else:
                 message = None
                 _streamed_text: List[str] = []
+                # Sanitize the streamed text on the fly so hidden markers
+                # (e.g. <|channel>thought ... <channel|>) never reach the GUI.
+                # Mirrors the main session's streaming sanitizer; the cleaned
+                # text is also accumulated so the fallback message stays
+                # marker-free.
+                _sanitizer = _StreamingSanitizer()
                 try:
                     for _delta in stream_result:
                         if isinstance(_delta, str) and _delta:
-                            _streamed_text.append(_delta)
-                            # Stream the assistant's visible text token-by-token
-                            # so the GUI sub-agent session viewer updates live.
-                            _emit_subagent_event(agent, "sub_agent_assistant", {
-                                "sessionId": session_id,
-                                "text": _delta,
-                            })
+                            _clean_delta = _sanitizer.feed(_delta)
+                            if _clean_delta:
+                                _streamed_text.append(_clean_delta)
+                                _emit_subagent_event(agent, "sub_agent_assistant", {
+                                    "sessionId": session_id,
+                                    "text": _clean_delta,
+                                })
                 except Exception as _stream_exc:
                     logger.warning("run_subagent: stream iteration error: %s", _stream_exc)
+                # Flush any trailing visible text (drops incomplete marker
+                # suffixes that can never complete at end-of-stream).
+                _tail = _sanitizer.flush()
+                if _tail:
+                    _streamed_text.append(_tail)
+                    _emit_subagent_event(agent, "sub_agent_assistant", {
+                        "sessionId": session_id,
+                        "text": _tail,
+                    })
                 message = getattr(stream_result, "final_message", None)
                 if not isinstance(message, dict):
                     message = {"role": "assistant", "content": "".join(_streamed_text)}
@@ -750,7 +770,15 @@ def run_subagent(
                     "_elapsed_seconds": round(time.monotonic() - _started_at, 1),
                 }
 
-            content_text = str(message.get("content") or "").strip()
+            raw_content = str(message.get("content") or "")
+            # Mirror the main session: the provider's final_message already
+            # carries a sanitized "_clean_content" (set only when it differs
+            # from the raw text). Fall back to sanitizing here so the sub-agent
+            # never leaks hidden markers into its answer or stored history.
+            clean_content = str(message.get("_clean_content") or "").strip()
+            if not clean_content:
+                clean_content = _sanitize_assistant_text(raw_content).strip()
+            content_text = clean_content if clean_content else raw_content
             if content_text:
                 last_assistant_text = content_text
 
@@ -776,8 +804,18 @@ def run_subagent(
             # Record the assistant turn (with its tool_calls) so the follow-up
             # tool messages are valid in the next request.
             assistant_msg = dict(message)
-            messages.append(assistant_msg)
+            # Persist the SANITIZED text as the message content so the session
+            # viewer can never render hidden markers (e.g. <|channel>thought ...
+            # <channel|>), even on an older frontend build that does not yet
+            # prefer "_clean_content". The sub-agent's own next-round history
+            # also uses the cleaned text — it never needs to re-feed hidden
+            # markers to itself. Keep the cleaned form under "_clean_content"
+            # for parity with the main chat's content / _clean_content split.
+            assistant_msg["content"] = clean_content if clean_content else raw_content
+            if clean_content and clean_content != raw_content:
+                assistant_msg["_clean_content"] = clean_content
             store.append_message(agent, chat_id, session_id, assistant_msg)
+            messages.append(assistant_msg)
 
             # Collect each tool call + result so we can render them into the
             # same display envelope the main chat uses (a single collapsible

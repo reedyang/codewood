@@ -621,9 +621,15 @@ function SubAgentSessionView({ session }: { session: import("../api/types").SubA
         }
 
         if (msg.role === "assistant") {
-          const answer = msg.content ? (
+          // Prefer the sanitized form when present (mirrors the main chat),
+          // so persisted sessions never render hidden <|channel> markers.
+          const displayContent =
+            ((msg as unknown as Record<string, unknown>)._clean_content as string) ||
+            msg.content ||
+            "";
+          const answer = displayContent ? (
             <div className="answer">
-              <MarkdownText text={msg.content} />
+              <MarkdownText text={displayContent} />
             </div>
           ) : null;
           const toolRounds = msg.tool_rounds;
