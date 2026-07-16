@@ -4691,6 +4691,8 @@ class ServeApp:
                 rt = self._runtimes.get(rkey)
                 if rt is not None and rt.busy.is_set():
                     return False
+            was_active = False
+            remaining: list = []
             with agent._chat_state_lock:
                 chats = agent._chat_entries()
                 was_active = rid == str(getattr(agent, "active_chat_id", "") or "")
@@ -4704,7 +4706,9 @@ class ServeApp:
                     # Chat-less workspace: clear the active marker; the GUI shows
                     # its compose (draft) state and creates a chat on next send.
                     agent._chat_state["active"] = ""
-                agent._save_chat_state()
+            # Persist outside the lock so a concurrent _save_chat_state (held
+            # by an in-progress task loop) does not block the HTTP handler.
+            agent._save_chat_state()
             # Drop the deleted chat's runtime (if any) and its session, keyed by
             # the workspace-qualified composite.
             skey = agent._session_registry_key_for(rid, wsid) if wsid else agent._session_registry_key(rid)
