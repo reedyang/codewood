@@ -287,6 +287,20 @@ def _make_stream_sanitizer() -> _StreamingSanitizer:
     return _StreamingSanitizer()
 
 
+def _extract_thinking_from_text(text: Any) -> str:
+    """Extract the reasoning carried inside hidden blocks of ``text``
+    (``<think>...</think>``, ``<|channel>thought ... <channel|>``). Returns the
+    concatenated thinking with protocol labels stripped, or "" when the text
+    contains no hidden blocks.
+    """
+    if not isinstance(text, str) or not text:
+        return ""
+    sanitizer = _StreamingSanitizer()
+    sanitizer.feed(text)
+    sanitizer.flush()
+    return sanitizer.get_thinking().strip()
+
+
 @dataclass(frozen=True)
 class AICallContext:
     user_input: str
@@ -641,10 +655,13 @@ def _extract_stream_snapshot_message(payload: Any) -> Optional[Dict[str, Any]]:
         return None
 
     def _text_from_part(value: Any) -> str:
+        # Return raw text (hidden reasoning markers included). The stream
+        # finalizer keeps raw content in the recorded message and derives
+        # _clean_content/_thinking from it, matching chat/completions.
         if isinstance(value, str):
-            return _sanitize_assistant_text(value)
+            return value
         if isinstance(value, list):
-            return _extract_text_from_response_content(value)
+            return _extract_text_from_response_content(value, sanitize=False)
         if not isinstance(value, dict):
             return ""
         item_type = str(value.get("type") or "").strip().lower()
@@ -653,9 +670,9 @@ def _extract_stream_snapshot_message(payload: Any) -> Optional[Dict[str, Any]]:
         for key in ("text", "output_text", "content"):
             text = value.get(key)
             if isinstance(text, str) and text:
-                return _sanitize_assistant_text(text)
+                return text
             if isinstance(text, list):
-                extracted = _extract_text_from_response_content(text)
+                extracted = _extract_text_from_response_content(text, sanitize=False)
                 if extracted:
                     return extracted
         return ""
@@ -733,7 +750,7 @@ def _extract_stream_snapshot_message(payload: Any) -> Optional[Dict[str, Any]]:
         for key in ("text", "output_text"):
             text = payload.get(key)
             if isinstance(text, str) and text:
-                return {"role": "assistant", "content": _sanitize_assistant_text(text)}
+                return {"role": "assistant", "content": text}
 
     content_text = _text_from_part(payload.get("content"))
     if content_text:
@@ -1008,6 +1025,15 @@ def _stream_openai_like_response(
                     # "_clean_content" signals "no visible text", so the renderer
                     # can rely on it instead of falling back to the raw markers.
                     self.final_message["_clean_content"] = clean_content
+                    # The recorded content carries hidden reasoning blocks. If
+                    # the sanitizer never saw them (e.g. the raw buffer came
+                    # from a snapshot instead of streamed deltas), extract the
+                    # thinking now so it is not lost.
+                    if not self.thinking_text:
+                        content_thinking = _extract_thinking_from_text(raw_buffer)
+                        if content_thinking:
+                            self.thinking_text = content_thinking
+                            self._thinking_from_content = True
                 elif self.final_message.get("_clean_content"):
                     # Stale _clean_content that duplicates raw content — remove it.
                     if self.final_message["_clean_content"] == raw_buffer:
@@ -1021,7 +1047,7 @@ def _stream_openai_like_response(
     return _OpenAIStreamResult()
 
 
-def _extract_text_from_response_content(content: Any) -> str:
+def _extract_text_from_response_content(content: Any, sanitize: bool = True) -> str:
     if isinstance(content, str):
         return content
     if not isinstance(content, list):
@@ -1034,7 +1060,7 @@ def _extract_text_from_response_content(content: Any) -> str:
         if item_type in ("output_text", "input_text", "text"):
             text = item.get("text")
             if isinstance(text, str) and text:
-                parts.append(_sanitize_assistant_text(text))
+                parts.append(_sanitize_assistant_text(text) if sanitize else text)
     return "".join(parts)
 
 
@@ -1725,7 +1751,7 @@ def _call_openai_once(
     message = _extract_message_from_openai_response_data(data)
     raw_content = message.get("content", "")
     if isinstance(raw_content, list):
-        raw_text = _extract_text_from_response_content(raw_content)
+        raw_text = _extract_text_from_response_content(raw_content, sanitize=False)
     else:
         raw_text = str(raw_content or "")
     display_text = _sanitize_assistant_text(raw_text)
@@ -1739,6 +1765,17 @@ def _call_openai_once(
     _attach_output_usage(message_for_history, data, url)
     if display_text != raw_text:
         message_for_history["_clean_content"] = display_text
+        message_for_return["_clean_content"] = display_text
+        # The raw content carried hidden reasoning blocks; surface them as
+        # _thinking and mark the origin so history replay can decide whether
+        # re-sending would duplicate the text.
+        if not message_for_history.get("_thinking"):
+            content_thinking = _extract_thinking_from_text(raw_text)
+            if content_thinking:
+                message_for_history["_thinking"] = content_thinking
+                message_for_history["_thinking_from_content"] = True
+                message_for_return["_thinking"] = content_thinking
+                message_for_return["_thinking_from_content"] = True
     if not raw_text:
         _OPENAI_ROUTE_LOG.warning(
             "openai-response empty-output api_kind=%s data_keys=%s message_keys=%s has_tool_calls=%s",
@@ -1954,7 +1991,10 @@ def _extract_message_from_openai_response_data(data: Any) -> Dict[str, Any]:
             item_type = str(item.get("type") or "").strip().lower()
             if item_type == "message":
                 role = str(item.get("role") or role)
-                piece = _extract_text_from_response_content(item.get("content"))
+                # Keep raw text (hidden reasoning markers included): callers
+                # store raw content and derive _clean_content/_thinking, the
+                # same contract as the chat/completions surface.
+                piece = _extract_text_from_response_content(item.get("content"), sanitize=False)
                 if piece:
                     if content_text:
                         content_text += "\n"

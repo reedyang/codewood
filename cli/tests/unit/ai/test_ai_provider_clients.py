@@ -1,3 +1,4 @@
+import json
 import os
 import unittest
 from unittest.mock import patch
@@ -6,7 +7,9 @@ from cli.ai.ai_provider_clients import (
     ModelCallError,
     OpenAIRequestError,
     _build_openai_payload,
+    _call_openai_once,
     _call_openai_with_suffix_strategy,
+    _stream_openai_like_response,
 )
 from cli.core.config.config_env import resolve_env_placeholder, resolve_string_values_in_data
 
@@ -276,6 +279,150 @@ class OpenAIRouteFallbackTests(unittest.TestCase):
         # (it would 404). The secondary fallback collapses to the same URL and is
         # skipped, leaving a single attempted endpoint.
         self.assertEqual(calls, ["https://token.sensenova.cn/v1/chat/completions"])
+
+
+_RAW_CHANNEL_CONTENT = "<|channel>thought\ntest message<channel|>visible"
+
+
+class _FakeJsonResponse:
+    def __init__(self, data):
+        self._data = data
+
+    def json(self):
+        return self._data
+
+
+class _FakeStreamResponse:
+    def __init__(self, lines):
+        self._lines = lines
+
+    def iter_lines(self):
+        return iter(self._lines)
+
+
+class ResponsesApiContentContractTests(unittest.TestCase):
+    """Responses API must follow the same storage contract as chat/completions:
+    ``content`` keeps the raw text, ``_clean_content`` keeps the sanitized
+    text, and thinking extracted from content sets ``_thinking_from_content``.
+    """
+
+    def test_nonstream_responses_keeps_raw_content_and_extracts_thinking(self):
+        data = {
+            "output": [
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": _RAW_CHANNEL_CONTENT}],
+                }
+            ]
+        }
+        recorded = []
+
+        with patch(
+            "cli.ai.ai_provider_clients._post_openai_request",
+            return_value=_FakeJsonResponse(data),
+        ):
+            message = _call_openai_once(
+                model_name="m",
+                api_kind="responses",
+                url="https://example.com/v1/responses",
+                headers={},
+                messages=[{"role": "user", "content": "hi"}],
+                stream=False,
+                return_message=True,
+                image_data=None,
+                image_user_idx=None,
+                image_user_text="",
+                session_summary_mode=False,
+                memory_query_expansion_mode=False,
+                tool_schemas=None,
+                tool_choice=None,
+                force_disable_thinking=False,
+                append_history=lambda text, msg: recorded.append((text, msg)),
+            )
+
+        self.assertEqual(len(recorded), 1)
+        raw_text, history_msg = recorded[0]
+        self.assertEqual(raw_text, _RAW_CHANNEL_CONTENT)
+        self.assertEqual(history_msg["content"], _RAW_CHANNEL_CONTENT)
+        self.assertEqual(history_msg["_clean_content"], "visible")
+        self.assertEqual(history_msg["_thinking"], "test message")
+        self.assertTrue(history_msg["_thinking_from_content"])
+        self.assertEqual(message["content"], "visible")
+        self.assertEqual(message["_thinking"], "test message")
+        self.assertTrue(message["_thinking_from_content"])
+
+    def _run_stream(self, events):
+        lines = [b"data: " + json.dumps(evt).encode("utf-8") for evt in events]
+        lines.append(b"data: [DONE]")
+        recorded = []
+        result = _stream_openai_like_response(
+            resp=_FakeStreamResponse(lines),
+            append_history=lambda text, msg: recorded.append((text, msg)),
+            url="https://example.com/v1/responses",
+        )
+        visible = "".join(list(result))
+        return result, visible, recorded
+
+    def test_stream_responses_keeps_raw_content_and_flags_thinking(self):
+        snapshot = {
+            "type": "response.completed",
+            "response": {
+                "output": [
+                    {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [
+                            {"type": "output_text", "text": _RAW_CHANNEL_CONTENT}
+                        ],
+                    }
+                ]
+            },
+        }
+        events = [
+            {"type": "response.output_text.delta", "delta": "<|channel>"},
+            {"type": "response.output_text.delta", "delta": "thought\ntest message"},
+            {"type": "response.output_text.delta", "delta": "<channel|>visible"},
+            snapshot,
+        ]
+        result, visible, recorded = self._run_stream(events)
+        self.assertEqual(visible, "visible")
+        self.assertEqual(len(recorded), 1)
+        raw_text, history_msg = recorded[0]
+        self.assertEqual(raw_text, _RAW_CHANNEL_CONTENT)
+        self.assertEqual(history_msg["content"], _RAW_CHANNEL_CONTENT)
+        self.assertEqual(history_msg["_clean_content"], "visible")
+        self.assertEqual(history_msg["_thinking"], "test message")
+        self.assertTrue(history_msg["_thinking_from_content"])
+
+    def test_stream_snapshot_only_extracts_thinking_from_raw_content(self):
+        # No text deltas at all: the raw content (markers included) arrives
+        # only in the final snapshot. Thinking must still be extracted and
+        # flagged as coming from content.
+        events = [
+            {
+                "type": "response.completed",
+                "response": {
+                    "output": [
+                        {
+                            "type": "message",
+                            "role": "assistant",
+                            "content": [
+                                {"type": "output_text", "text": _RAW_CHANNEL_CONTENT}
+                            ],
+                        }
+                    ]
+                },
+            }
+        ]
+        result, visible, recorded = self._run_stream(events)
+        self.assertEqual(visible, "visible")
+        raw_text, history_msg = recorded[0]
+        self.assertEqual(raw_text, _RAW_CHANNEL_CONTENT)
+        self.assertEqual(history_msg["content"], _RAW_CHANNEL_CONTENT)
+        self.assertEqual(history_msg["_clean_content"], "visible")
+        self.assertEqual(history_msg["_thinking"], "test message")
+        self.assertTrue(history_msg["_thinking_from_content"])
 
 
 if __name__ == "__main__":
