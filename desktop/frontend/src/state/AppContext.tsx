@@ -1949,20 +1949,31 @@ export function AppProvider({ children }: { children: ReactNode }) {
             break;
           }
         case "sub_agent_tool_call": {
-          const d = event.data as { sessionId: string; toolName: string; args: Record<string, unknown> };
+          const d = event.data as { sessionId: string; toolName: string; args: Record<string, unknown>; thinkingElapsedSeconds?: number };
           const sessionId = String(d.sessionId || "");
           const current = activeSubAgentSessionRef.current;
           if (current && current.id === sessionId) {
+            const msgs = current.messages ? [...current.messages] : [];
+            // Backfill the thinking elapsed time on the previous assistant
+            // message that has _thinking but no timing yet. The backend sends
+            // this once per round on the first tool call.
+            if (typeof d.thinkingElapsedSeconds === "number" && d.thinkingElapsedSeconds > 0) {
+              for (let i = msgs.length - 1; i >= 0; i--) {
+                const m = msgs[i] as SubAgentMessage;
+                if (m.role === "assistant" && (m as any)._thinking && !(m as any)._thinking_elapsed_seconds) {
+                  msgs[i] = { ...m, _thinking_elapsed_seconds: d.thinkingElapsedSeconds };
+                  break;
+                }
+              }
+            }
+            msgs.push({
+              role: "assistant",
+              content: "",
+              tool_calls: [{ name: String(d.toolName || ""), args: d.args || {} }],
+            });
             const updated: SubAgentSession = {
               ...current,
-              messages: [
-                ...current.messages,
-                {
-                  role: "assistant",
-                  content: "",
-                  tool_calls: [{ name: String(d.toolName || ""), args: d.args || {} }],
-                },
-              ],
+              messages: msgs,
             };
             setActiveSubAgentSession(updated);
             activeSubAgentSessionRef.current = updated;

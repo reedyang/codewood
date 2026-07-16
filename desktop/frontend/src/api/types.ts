@@ -251,7 +251,7 @@ export type ServerEvent =
   | { event: "sub_agent_start"; data: { sessionId: string; name: string; topic: string; description: string; prompt: string } }
   | { event: "sub_agent_assistant"; data: { sessionId: string; text: string } }
   | { event: "sub_agent_thinking"; data: { sessionId: string; text: string } }
-  | { event: "sub_agent_tool_call"; data: { sessionId: string; toolName: string; args: Record<string, unknown> } }
+  | { event: "sub_agent_tool_call"; data: { sessionId: string; toolName: string; args: Record<string, unknown>; thinkingElapsedSeconds?: number } }
   | { event: "sub_agent_output"; data: { sessionId: string; text: string; toolName: string } }
   | { event: "sub_agent_end"; data: { sessionId: string; output: string; success: boolean; max_rounds_reached?: boolean } }
   | { event: string; data: Record<string, unknown> };
@@ -367,6 +367,9 @@ export interface SubAgentMessage {
    *  (mirrors the main chat's ``_thinking`` field), surfaced in a collapsible
    *  Thinking block. */
   _thinking?: string;
+  /** Wall-clock seconds the model spent reasoning for this message,
+   *  persisted by the backend. Used for the "Thought for Xs" label. */
+  _thinking_elapsed_seconds?: number;
   tool_calls?: SubAgentToolCall[];
   /** Rendered tool-round display text (main-chat envelope) attached to an
    *  assistant message that issued tool calls. When present it is rendered

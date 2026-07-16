@@ -762,6 +762,8 @@ def run_subagent(
             # In stream mode ``orchestrator.call`` returns a generator-like
             # result object. Errors may still be returned as a plain string.
             stream_result = orchestrator.call(call_ctx=call_ctx)
+            _thinking_started_at_sub: Optional[float] = None
+            _thinking_ended_at_sub: Optional[float] = None
             if isinstance(stream_result, str):
                 message = stream_result
             else:
@@ -794,6 +796,8 @@ def run_subagent(
                             _thinking_delta = _full_thinking[_emitted_thinking_len:]
                             _emitted_thinking_len = len(_full_thinking)
                             if _thinking_delta:
+                                if _thinking_started_at_sub is None:
+                                    _thinking_started_at_sub = time.monotonic()
                                 logger.debug("run_subagent: emitting sub_agent_thinking (len=%s, total=%s)", len(_thinking_delta), _emitted_thinking_len)
                                 _emit_subagent_event(agent, "sub_agent_thinking", {
                                     "sessionId": session_id,
@@ -821,6 +825,7 @@ def run_subagent(
                             "sessionId": session_id,
                             "text": _thinking_tail,
                         })
+                _thinking_ended_at_sub = time.monotonic()
                 message = getattr(stream_result, "final_message", None)
                 if not isinstance(message, dict):
                     message = {"role": "assistant", "content": "".join(_streamed_text)}
@@ -957,11 +962,18 @@ def run_subagent(
                 # there is no visible text (raw was entirely hidden markers)
                 # rather than falling back to the raw marker string.
                 assistant_msg["_clean_content"] = clean_content
+            _thinking_sent_elapsed: Optional[float] = None
             if thinking_text:
                 # Persist under ``_thinking`` (not a separate ``thinking`` key)
                 # so the session viewer and history reload render the reasoning
                 # block exactly like the main chat, with no duplicate field.
                 assistant_msg["_thinking"] = thinking_text
+                if _thinking_started_at_sub is not None and _thinking_ended_at_sub is not None:
+                    _thinking_elapsed = _thinking_ended_at_sub - _thinking_started_at_sub
+                    if _thinking_elapsed > 0:
+                        _thinking_elapsed_rounded = round(_thinking_elapsed, 1)
+                        assistant_msg["_thinking_elapsed_seconds"] = _thinking_elapsed_rounded
+                        _thinking_sent_elapsed = _thinking_elapsed_rounded
             store.append_message(agent, chat_id, session_id, assistant_msg)
             messages.append(assistant_msg)
 
@@ -992,12 +1004,17 @@ def run_subagent(
                 call_id = _extract_tool_call_id(message, idx)
                 t = str(tool_name).strip().lower()
 
-                # Emit tool call event
-                _emit_subagent_event(agent, "sub_agent_tool_call", {
+                # Emit tool call event; surface the thinking elapsed time on the
+                # first tool call so the GUI can backfill "Thought for Xs" live.
+                _tc_data: Dict[str, Any] = {
                     "sessionId": session_id,
                     "toolName": str(tool_name),
                     "args": args if isinstance(args, dict) else {},
-                })
+                }
+                if _thinking_sent_elapsed is not None and idx == 0:
+                    _tc_data["thinkingElapsedSeconds"] = _thinking_sent_elapsed
+                    _thinking_sent_elapsed = None  # only send once
+                _emit_subagent_event(agent, "sub_agent_tool_call", _tc_data)
 
                 if t in _EXCLUDED_SUBAGENT_TOOLS:
                     tool_result: Dict[str, Any] = {
