@@ -755,6 +755,7 @@ def run_subagent(
                 # text is also accumulated so the fallback message stays
                 # marker-free.
                 _sanitizer = _StreamingSanitizer()
+                _emitted_thinking_len = 0
                 try:
                     for _delta in stream_result:
                         if isinstance(_delta, str) and _delta:
@@ -764,6 +765,21 @@ def run_subagent(
                                 _emit_subagent_event(agent, "sub_agent_assistant", {
                                     "sessionId": session_id,
                                     "text": _clean_delta,
+                                })
+                        # Surface accumulated reasoning (all providers: reasoning
+                        # deltas, <|channel>thought markers, ollama thinking) so
+                        # the GUI renders a live, collapsible thinking block like
+                        # the main session. ``thinking_text`` is updated live by
+                        # the stream generator; emit only the newly-appended tail.
+                        _full_thinking = str(getattr(stream_result, "thinking_text", "") or "")
+                        if _full_thinking and len(_full_thinking) > _emitted_thinking_len:
+                            _thinking_delta = _full_thinking[_emitted_thinking_len:]
+                            _emitted_thinking_len = len(_full_thinking)
+                            if _thinking_delta:
+                                logger.debug("run_subagent: emitting sub_agent_thinking (len=%s, total=%s)", len(_thinking_delta), _emitted_thinking_len)
+                                _emit_subagent_event(agent, "sub_agent_thinking", {
+                                    "sessionId": session_id,
+                                    "text": _thinking_delta,
                                 })
                 except Exception as _stream_exc:
                     logger.warning("run_subagent: stream iteration error: %s", _stream_exc)
@@ -776,6 +792,17 @@ def run_subagent(
                         "sessionId": session_id,
                         "text": _tail,
                     })
+                # Flush any final reasoning accumulated after the loop (e.g.
+                # reasoning delivered only in the final snapshot/usage payload).
+                _full_thinking = str(getattr(stream_result, "thinking_text", "") or "")
+                if _full_thinking and len(_full_thinking) > _emitted_thinking_len:
+                    _thinking_tail = _full_thinking[_emitted_thinking_len:]
+                    _emitted_thinking_len = len(_full_thinking)
+                    if _thinking_tail:
+                        _emit_subagent_event(agent, "sub_agent_thinking", {
+                            "sessionId": session_id,
+                            "text": _thinking_tail,
+                        })
                 message = getattr(stream_result, "final_message", None)
                 if not isinstance(message, dict):
                     message = {"role": "assistant", "content": "".join(_streamed_text)}
@@ -850,6 +877,14 @@ def run_subagent(
             if content_text:
                 last_assistant_text = content_text
 
+            # Persist the model's reasoning so the session viewer can render a
+            # thinking block on reload, mirroring the main chat's ``_thinking``.
+            # Prefer the stream generator's live thinking (all providers), then
+            # the final message's ``_thinking`` field.
+            thinking_text = str(getattr(stream_result, "thinking_text", "") or "").strip()
+            if not thinking_text:
+                thinking_text = str(message.get("_thinking") or "").strip()
+
             plans = _parse_tool_plans_from_model_message(message)
             if not plans:
                 # No tool calls -> final answer.
@@ -885,6 +920,11 @@ def run_subagent(
                 # there is no visible text (raw was entirely hidden markers)
                 # rather than falling back to the raw marker string.
                 assistant_msg["_clean_content"] = clean_content
+            if thinking_text:
+                # Persist under ``_thinking`` (not a separate ``thinking`` key)
+                # so the session viewer and history reload render the reasoning
+                # block exactly like the main chat, with no duplicate field.
+                assistant_msg["_thinking"] = thinking_text
             store.append_message(agent, chat_id, session_id, assistant_msg)
             messages.append(assistant_msg)
 
