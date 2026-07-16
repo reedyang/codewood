@@ -21,7 +21,7 @@ import time
 import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional
 
 from ..core.logging.app_logging import get_logger
 
@@ -809,27 +809,6 @@ def run_subagent(
             # Record the assistant turn (with its tool_calls) so the follow-up
             # tool messages are valid in the next request.
             assistant_msg = dict(message)
-            # Mirror the main session: deduplicate tool_calls that are identical
-            # apart from their id (models sometimes emit the same call repeatedly).
-            _raw_tcs = assistant_msg.get("tool_calls")
-            if isinstance(_raw_tcs, list) and len(_raw_tcs) > 1:
-                _seen_tc: Set[str] = set()
-                _deduped_tc: List[Dict[str, Any]] = []
-                for _tc in _raw_tcs:
-                    if not isinstance(_tc, dict):
-                        _deduped_tc.append(_tc)
-                        continue
-                    _fn = _tc.get("function", {})
-                    _key = json.dumps(
-                        {"name": _fn.get("name"), "arguments": _fn.get("arguments")},
-                        sort_keys=True,
-                        ensure_ascii=False,
-                    )
-                    if _key not in _seen_tc:
-                        _seen_tc.add(_key)
-                        _deduped_tc.append(_tc)
-                if len(_deduped_tc) != len(_raw_tcs):
-                    assistant_msg["tool_calls"] = _deduped_tc
             # Persist the SANITIZED text as the message content so the session
             # viewer can never render hidden markers (e.g. <|channel>thought ...
             # <channel|>), even on an older frontend build that does not yet
