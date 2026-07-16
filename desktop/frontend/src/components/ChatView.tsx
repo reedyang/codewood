@@ -1820,7 +1820,11 @@ type LiveRoundGroup =
 function isLiveToolRound(round: TurnRound): boolean {
   const hasSteps = round.segments.some((segment) => segment.kind === "step" && segment.text.trim());
   const hasAnswer = round.segments.some((segment) => segment.kind === "answer" && segment.text.trim());
-  return hasSteps && !hasAnswer;
+  const hasThinking = Boolean(String(round.thinkingText || "").trim());
+  // Only pure tool calls (no thinking, no visible answer) merge into tool groups.
+  // Rounds with their own thinking stay separate so each "Thought for" block
+  // matches its corresponding tool calls.
+  return hasSteps && !hasAnswer && !hasThinking;
 }
 
 export function groupLiveRounds(rounds: TurnRound[]): LiveRoundGroup[] {
