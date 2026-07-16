@@ -458,7 +458,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const activeSubAgentSessionRef = useRef<SubAgentSession | null>(null);
   const subAgentViewingRef = useRef(false);
   const subAgentCacheRef = useRef<Record<string, SubAgentSession>>({});
-  const subAgentThinkingStartedAt = useRef<Record<string, number>>({});
+  const subAgentThinkingStartRef = useRef<Record<string, number>>({});
   const [pendingExpandSubAgentId, setPendingExpandSubAgentId] = useState<string>("");
 
   // Helper: apply a sub-agent session update from SSE handlers. Always updates
@@ -1911,20 +1911,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
               last.role === "assistant" &&
               !(last.tool_calls && last.tool_calls.length > 0)
             ) {
-              // Streaming update: append the delta to the in-progress
-              // assistant text message rather than starting a new one.
               const hadOnlyThinking = !!(last as unknown as { _thinking?: string })._thinking && !(last.content || "");
               msgs[msgs.length - 1] = {
                 ...last,
                 content: (last.content || "") + text,
               };
-              // When visible text first arrives after thinking, the thinking
-              // phase has ended — finalize the elapsed time on the message.
               if (hadOnlyThinking && !(msgs[msgs.length - 1] as any)._thinking_elapsed_seconds) {
-                const startedAt = subAgentThinkingStartedAt.current[sessionId];
+                const startedAt = subAgentThinkingStartRef.current[sessionId];
                 if (typeof startedAt === "number") {
-                  (msgs[msgs.length - 1] as any)._thinking_elapsed_seconds = Math.max(0.1, Math.round((Date.now() - startedAt) / 100) / 10);
-                  delete subAgentThinkingStartedAt.current[sessionId];
+                  (msgs[msgs.length - 1] as any)._thinking_elapsed_seconds = Math.round((Date.now() - startedAt) / 100) / 10;
                 }
               }
             } else {
@@ -1959,11 +1954,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
               } else {
                 msgs.push({ role: "assistant", content: "", _thinking: text });
               }
-              // Record the start time when thinking begins for a message that
-              // did not have thinking before. Used to compute elapsed client-side
-              // once the thinking phase ends (visible text or tool calls arrive).
-              if (!hadThinking && !subAgentThinkingStartedAt.current[sessionId]) {
-                subAgentThinkingStartedAt.current[sessionId] = Date.now();
+              if (!hadThinking && !subAgentThinkingStartRef.current[sessionId]) {
+                subAgentThinkingStartRef.current[sessionId] = Date.now();
               }
               const updated: SubAgentSession = { ...current, messages: msgs };
               applySubAgentSession(updated);
@@ -1978,11 +1970,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
             const msgs = current.messages ? [...current.messages] : [];
             for (let i = msgs.length - 1; i >= 0; i--) {
               const m = msgs[i] as SubAgentMessage;
-              if (m.role === "assistant" && (m as any)._thinking && !(m as any)._thinking_elapsed_seconds) {
+              if (m.role === "assistant" && (m as any)._thinking) {
                 msgs[i] = { ...m, _thinking_elapsed_seconds: d.thinkingElapsedSeconds };
                 break;
               }
             }
+            delete subAgentThinkingStartRef.current[sessionId];
             const updated: SubAgentSession = { ...current, messages: msgs };
             applySubAgentSession(updated);
           }
@@ -1994,33 +1987,19 @@ export function AppProvider({ children }: { children: ReactNode }) {
           const current = activeSubAgentSessionRef.current;
           if (current && current.id === sessionId) {
             const msgs = current.messages ? [...current.messages] : [];
-            // Finalize thinking elapsed on the previous assistant message that
-            // has _thinking but no timing yet. Prefer the backend-supplied value
-            // if present; otherwise compute client-side from the start time.
-            let elapsedSet = false;
+            // Backfill the backend-computed thinking elapsed on the previous
+            // assistant message that has _thinking. Overwrites any client-side
+            // estimate with the authoritative server measurement.
             if (typeof d.thinkingElapsedSeconds === "number" && d.thinkingElapsedSeconds > 0) {
               for (let i = msgs.length - 1; i >= 0; i--) {
                 const m = msgs[i] as SubAgentMessage;
-                if (m.role === "assistant" && (m as any)._thinking && !(m as any)._thinking_elapsed_seconds) {
+                if (m.role === "assistant" && (m as any)._thinking) {
                   msgs[i] = { ...m, _thinking_elapsed_seconds: d.thinkingElapsedSeconds };
-                  elapsedSet = true;
                   break;
                 }
               }
             }
-            if (!elapsedSet) {
-              const startedAt = subAgentThinkingStartedAt.current[sessionId];
-              if (typeof startedAt === "number") {
-                for (let i = msgs.length - 1; i >= 0; i--) {
-                  const m = msgs[i] as SubAgentMessage;
-                  if (m.role === "assistant" && (m as any)._thinking && !(m as any)._thinking_elapsed_seconds) {
-                    (msgs[i] as any)._thinking_elapsed_seconds = Math.max(0.1, Math.round((Date.now() - startedAt) / 100) / 10);
-                    break;
-                  }
-                }
-              }
-            }
-            delete subAgentThinkingStartedAt.current[sessionId];
+            delete subAgentThinkingStartRef.current[sessionId];
             msgs.push({
               role: "assistant",
               content: "",

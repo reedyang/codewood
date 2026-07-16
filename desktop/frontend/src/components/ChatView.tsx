@@ -543,11 +543,6 @@ function SubAgentSessionView({ session, now }: { session: import("../api/types")
   const mergedMessages = (() => {
     const result: SubAgentMessage[] = [];
     let i = 0;
-    // Visible text of an assistant message: when "_clean_content" is present it
-    // is authoritative (empty string means the raw content was entirely hidden
-    // markers, e.g. "<|channel>..."), otherwise fall back to stripping markers
-    // from the raw content. Used to decide whether a message is content-less and
-    // therefore mergeable into a "Called N tools" group.
     const visibleTextOf = (m: SubAgentMessage): string => {
       const mAny = m as unknown as Record<string, unknown>;
       if (Object.prototype.hasOwnProperty.call(mAny, "_clean_content")) {
@@ -557,39 +552,18 @@ function SubAgentSessionView({ session, now }: { session: import("../api/types")
     };
     while (i < session.messages.length) {
       const msg = session.messages[i];
-      // A persisted assistant message with no visible text (either its raw
-      // content is entirely hidden markers like "<|channel>thought...<channel|>",
-      // or it carries an empty "_clean_content") is content-less and should be
-      // merged into the surrounding "Called N tools" group.
-      const msgContent = visibleTextOf(msg).trim();
       const msgRounds = getSubAgentMessageToolRounds(msg, { lang });
-      const msgThinking = String((msg as unknown as { _thinking?: string })._thinking || "").trim();
-      // A persisted assistant message with no visible text (either its raw
-      // content is entirely hidden markers like "<|channel>thought...<channel|>",
-      // or it carries an empty "_clean_content") is content-less and should be
-      // merged into the surrounding "Called N tools" group. Messages that carry
-      // reasoning (``_thinking``) are kept separate so each round's thinking
-      // block renders on its own, matching the live session view.
-      const isToolOnlyAssistant =
-        msg.role === "assistant" && !msgContent && !msgThinking && msgRounds.length > 0;
-      if (!isToolOnlyAssistant) {
+      // Non-assistant or no tool rounds: push as-is.
+      if (msg.role !== "assistant" || msgRounds.length === 0) {
         result.push(msg);
         i++;
         continue;
       }
-      const allRounds: string[] = [];
-      const allThinking: string[] = [];
-      const addRound = (message: SubAgentMessage) => {
-        const rounds = getSubAgentMessageToolRounds(message, { lang });
-        if (rounds.length > 0) {
-          allRounds.push(...rounds);
-        }
-        const t = String((message as unknown as { _thinking?: string })._thinking || "").trim();
-        if (t) {
-          allThinking.push(t);
-        }
-      };
-      addRound(msg);
+      // This message has tool rounds (may also have thinking / visible text).
+      // Absorb subsequent pure tool-call messages (no thinking, no visible text)
+      // into this message's tool_rounds group. Stop when the next message has
+      // its own thinking — that message starts a new group on the next iteration.
+      const allRounds: string[] = [...msgRounds];
       let j = i + 1;
       while (j < session.messages.length) {
         const next = session.messages[j];
@@ -598,19 +572,24 @@ function SubAgentSessionView({ session, now }: { session: import("../api/types")
           !visibleTextOf(next).trim() &&
           getSubAgentMessageToolRounds(next, { lang }).length > 0
         ) {
-          addRound(next);
+          const nt = String((next as unknown as { _thinking?: string })._thinking || "").trim();
+          if (nt) {
+            // This adjacent message has its own thinking — it starts a new
+            // group. Stop merging here so the next iteration creates a
+            // separate group for it (absorbing subsequent pure tool calls).
+            break;
+          }
+          allRounds.push(...getSubAgentMessageToolRounds(next, { lang }));
           j++;
         } else if (next.role === "tool") {
-          j++; // skip tool results — the raw JSON is too verbose for inline display
+          j++;
         } else {
           break;
         }
       }
-      const merged: SubAgentMessage = { role: "assistant", content: "", tool_rounds: allRounds };
-      const mergedThinking = allThinking.join("\n\n").trim();
-      if (mergedThinking) {
-        (merged as unknown as { _thinking?: string })._thinking = mergedThinking;
-      }
+      // Keep the anchor message intact (preserving _thinking_elapsed_seconds
+      // and any other metadata) but replace its tool_rounds with the merged set.
+      const merged: SubAgentMessage = { ...msg, tool_rounds: allRounds };
       result.push(merged);
       i = j;
     }
