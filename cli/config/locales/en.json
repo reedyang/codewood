@@ -223,6 +223,7 @@
   "subagents.error.max_rounds": "Sub-agent reached the maximum of {rounds} rounds without a final answer",
   "subagents.error.image_not_found": "❌ Image file not found or unsupported format: {path}",
   "subagents.error.model_not_found": "❌ Sub-agent '{subagent}' is configured with model '{selector}', which is not found in model_providers. Fix the 'model' field in the sub-agent file (it must exactly match a configured provider/model). Available models: {available}",
+  "subagents.error.cancelled": "❌ Sub-agent cancelled by user",
   "subagent.explore.running": "Exploring...",
   "subagent.explore.running_topic": "Exploring {topic}...",
   "subagent.explore.completed": "Explored for {elapsed}s",

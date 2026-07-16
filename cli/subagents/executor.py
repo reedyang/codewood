@@ -727,6 +727,24 @@ def run_subagent(
         _round = 0
         while max_rounds is None or _round < max_rounds:
             _round += 1
+            if getattr(agent, "_task_interrupt_requested", False):
+                cancelled_msg = _t(agent, "subagents.error.cancelled")
+                store.finish_session(agent, chat_id, session_id, cancelled_msg, False)
+                _emit_subagent_event(agent, "sub_agent_end", {
+                    "sessionId": session_id,
+                    "output": cancelled_msg,
+                    "success": False,
+                })
+                return {
+                    "success": False,
+                    "cancelled": True,
+                    "cancelled_by_user": True,
+                    "output": cancelled_msg,
+                    "subagent": record.name,
+                    "sessionId": session_id,
+                    "_guiSessionMarker": f"{GUI_SUBAGENT_SESSION_BEGIN}{session_id}{GUI_SUBAGENT_SESSION_END}",
+                    "_elapsed_seconds": round(time.monotonic() - _started_at, 1),
+                }
             call_ctx = AICallContext(
                 user_input="",
                 messages_override=list(messages),
@@ -806,6 +824,25 @@ def run_subagent(
                 message = getattr(stream_result, "final_message", None)
                 if not isinstance(message, dict):
                     message = {"role": "assistant", "content": "".join(_streamed_text)}
+
+            if getattr(agent, "_task_interrupt_requested", False):
+                cancelled_msg = _t(agent, "subagents.error.cancelled")
+                store.finish_session(agent, chat_id, session_id, cancelled_msg, False)
+                _emit_subagent_event(agent, "sub_agent_end", {
+                    "sessionId": session_id,
+                    "output": cancelled_msg,
+                    "success": False,
+                })
+                return {
+                    "success": False,
+                    "cancelled": True,
+                    "cancelled_by_user": True,
+                    "output": cancelled_msg,
+                    "subagent": record.name,
+                    "sessionId": session_id,
+                    "_guiSessionMarker": f"{GUI_SUBAGENT_SESSION_BEGIN}{session_id}{GUI_SUBAGENT_SESSION_END}",
+                    "_elapsed_seconds": round(time.monotonic() - _started_at, 1),
+                }
 
             if isinstance(message, str):
                 # Provider returned an error string (no message dict).
@@ -934,6 +971,24 @@ def run_subagent(
             # on reload — exactly like the main chat's tool-round history.
             round_raw: List[Dict[str, Any]] = []
             for idx, (tool_name, args) in enumerate(plans):
+                if getattr(agent, "_task_interrupt_requested", False):
+                    cancelled_msg = _t(agent, "subagents.error.cancelled")
+                    store.finish_session(agent, chat_id, session_id, cancelled_msg, False)
+                    _emit_subagent_event(agent, "sub_agent_end", {
+                        "sessionId": session_id,
+                        "output": cancelled_msg,
+                        "success": False,
+                    })
+                    return {
+                        "success": False,
+                        "cancelled": True,
+                        "cancelled_by_user": True,
+                        "output": cancelled_msg,
+                        "subagent": record.name,
+                        "sessionId": session_id,
+                        "_guiSessionMarker": f"{GUI_SUBAGENT_SESSION_BEGIN}{session_id}{GUI_SUBAGENT_SESSION_END}",
+                        "_elapsed_seconds": round(time.monotonic() - _started_at, 1),
+                    }
                 call_id = _extract_tool_call_id(message, idx)
                 t = str(tool_name).strip().lower()
 
