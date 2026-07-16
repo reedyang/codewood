@@ -3632,7 +3632,8 @@ class Agent:
         # the output block here — the guiSessionMarker recorded below still lets
         # the GUI navigate into that sub-session on history reload.
         is_subagent_call = t == "run_subagent"
-        round_output = "" if is_subagent_call else self._extract_tool_result_output(t, r)
+        is_project_context_search = t == "project_context_search"
+        round_output = "" if (is_subagent_call or is_project_context_search) else self._extract_tool_result_output(t, r)
         if round_output:
             tool_round = (
                 f"{tool_round}\n{GUI_CMD_OUTPUT_BEGIN}"
