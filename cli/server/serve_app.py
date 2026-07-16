@@ -204,7 +204,6 @@ def _build_structured_turns(agent: Any) -> List[Dict[str, Any]]:
             "text": "",
             "tools": "",
             "thinking": "",
-            "_thinking_after_tool": False,
         }
         turn["rounds"].append(rnd)
         return rnd
@@ -216,8 +215,6 @@ def _build_structured_turns(agent: Any) -> List[Dict[str, Any]]:
         thinking_text = str(msg.get("_thinking") or "").strip()
         if thinking_text and not rnd.get("thinking"):
             rnd["thinking"] = thinking_text
-        if thinking_text and (rnd.get("text") or rnd.get("tools") or rnd.get("selection")):
-            rnd["_thinking_after_tool"] = True
 
     def _render_step(idx: int, msg: Dict[str, Any]) -> str:
         buffer = io.StringIO()
