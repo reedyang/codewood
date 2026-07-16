@@ -1440,6 +1440,28 @@ def _stream_visible_text_with_json_pause(text: str, *, final: bool) -> str:
     return s[: min(starts)].rstrip()
 
 
+def _strip_channel_thought_markers(text: str) -> str:
+    """Remove ``<|channel>thought`` / ``<channel|>`` reasoning markers,
+    keeping only the visible text after the closing tag. When the content
+    consists entirely of markers the result is an empty string."""
+    s = str(text or "")
+    # Find the last ``<channel|>`` closing tag: everything before it (including
+    # any ``<|channel>thought`` opener and the reasoning body) is hidden.
+    close_idx = s.rfind("<channel|>")
+    if close_idx >= 0:
+        s = s[close_idx + len("<channel|>"):]
+    # Strip any remaining opener without a matching closer.
+    open_idx = s.find("<|channel>thought")
+    if open_idx >= 0:
+        # Find the next ``<channel|>`` after the opener.
+        next_close = s.find("<channel|>", open_idx + len("<|channel>thought"))
+        if next_close >= 0:
+            s = s[:open_idx] + s[next_close + len("<channel|>"):]
+        else:
+            s = s[:open_idx]
+    return s.strip()
+
+
 def _format_stream_visible_text(text: str) -> str:
     """Apply display-time transforms to a streamed visible-text snapshot.
 
@@ -2133,7 +2155,7 @@ def _replace_latest_assistant_history_content(
 
 
 def _update_latest_assistant_clean_content(agent: Any, clean_content: str) -> None:
-    if not isinstance(clean_content, str) or not clean_content:
+    if not isinstance(clean_content, str):
         return
     hist = getattr(agent, "conversation_history", None)
     if not isinstance(hist, list):
@@ -2146,17 +2168,19 @@ def _update_latest_assistant_clean_content(agent: Any, clean_content: str) -> No
         # Remove any stale _clean_content that duplicates raw content.
         if "_clean_content" in msg and str(msg["_clean_content"] or "") == str(msg.get("content") or ""):
             del msg["_clean_content"]
-        existing_clean = str(msg.get("_clean_content") or "")
-        if existing_clean == clean_content:
-            return
         raw_content = str(msg.get("content") or "")
-        # Record the sanitized form even when empty: an explicit "" _clean_content
-        # signals "no visible text" (raw was entirely hidden markers), so the
-        # renderer can rely on it instead of falling back to the raw markers.
-        if raw_content == clean_content or raw_content.rstrip("\n") == clean_content.rstrip("\n"):
+        # Strip ``<|channel>thought`` / ``<channel|>`` reasoning markers so
+        # they don't cause ``_clean_content`` to be treated as identical to
+        # the raw text (which would prevent recording it).
+        clean_visible = _strip_channel_thought_markers(clean_content)
+        raw_visible = _strip_channel_thought_markers(raw_content)
+        existing_clean = str(msg.get("_clean_content") or "")
+        if existing_clean == clean_visible:
+            return
+        if raw_visible == clean_visible:
             msg.pop("_clean_content", None)
         else:
-            msg["_clean_content"] = clean_content
+            msg["_clean_content"] = clean_visible
         try:
             agent._sync_active_chat_messages()
         except Exception:

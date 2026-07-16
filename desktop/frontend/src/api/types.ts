@@ -279,6 +279,10 @@ export interface TurnRound {
   thinkingStartedAt?: number;
   /** When model reasoning/thinking ended for this round. */
   thinkingEndedAt?: number;
+  /** Backend-computed elapsed milliseconds for this round (from round_end SSE).
+   *  When present, overrides the client-side thinking timer for consistency
+   *  with the history-view ``waitSeconds``. */
+  backendElapsedMs?: number;
 }
 
 /** One user request and the assistant's streamed response, split into rounds. */
