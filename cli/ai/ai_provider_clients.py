@@ -37,7 +37,7 @@ _CHANNEL_THOUGHT_RE = re.compile(
 # legitimate use in user-facing assistant text — so it is safe to remove them
 # unconditionally after the paired-block regexes have run.
 _ORPHAN_HIDDEN_MARKER_RE = re.compile(
-    r"<\|?channel\|?\s*thought|<\|?channel\|?>|</?\s*think\s*>",
+    r"<\|channel\>\s*thought|<\|channel\>|<\|?channel\|?>|</?\s*think\s*>",
     flags=re.IGNORECASE,
 )
 
