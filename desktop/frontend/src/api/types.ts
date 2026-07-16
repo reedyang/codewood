@@ -250,6 +250,7 @@ export type ServerEvent =
   | { event: "request_user_input"; data: AskMoreInfoRequest }
   | { event: "sub_agent_start"; data: { sessionId: string; name: string; topic: string; description: string; prompt: string } }
   | { event: "sub_agent_assistant"; data: { sessionId: string; text: string } }
+  | { event: "sub_agent_thinking"; data: { sessionId: string; text: string } }
   | { event: "sub_agent_tool_call"; data: { sessionId: string; toolName: string; args: Record<string, unknown> } }
   | { event: "sub_agent_output"; data: { sessionId: string; text: string; toolName: string } }
   | { event: "sub_agent_end"; data: { sessionId: string; output: string; success: boolean; max_rounds_reached?: boolean } }
@@ -362,6 +363,10 @@ export interface SubAgentToolRoundRaw {
 export interface SubAgentMessage {
   role: "system" | "user" | "assistant" | "tool";
   content: string;
+  /** Accumulated model reasoning/thinking text for this assistant message
+   *  (mirrors the main chat's ``_thinking`` field), surfaced in a collapsible
+   *  Thinking block. */
+  _thinking?: string;
   tool_calls?: SubAgentToolCall[];
   /** Rendered tool-round display text (main-chat envelope) attached to an
    *  assistant message that issued tool calls. When present it is rendered

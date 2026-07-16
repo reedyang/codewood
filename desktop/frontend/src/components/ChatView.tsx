@@ -563,18 +563,30 @@ function SubAgentSessionView({ session }: { session: import("../api/types").SubA
       // merged into the surrounding "Called N tools" group.
       const msgContent = visibleTextOf(msg).trim();
       const msgRounds = getSubAgentMessageToolRounds(msg, { lang });
+      const msgThinking = String((msg as unknown as { _thinking?: string })._thinking || "").trim();
+      // A persisted assistant message with no visible text (either its raw
+      // content is entirely hidden markers like "<|channel>thought...<channel|>",
+      // or it carries an empty "_clean_content") is content-less and should be
+      // merged into the surrounding "Called N tools" group. Messages that carry
+      // reasoning (``_thinking``) are kept separate so each round's thinking
+      // block renders on its own, matching the live session view.
       const isToolOnlyAssistant =
-        msg.role === "assistant" && !msgContent && msgRounds.length > 0;
+        msg.role === "assistant" && !msgContent && !msgThinking && msgRounds.length > 0;
       if (!isToolOnlyAssistant) {
         result.push(msg);
         i++;
         continue;
       }
       const allRounds: string[] = [];
+      const allThinking: string[] = [];
       const addRound = (message: SubAgentMessage) => {
         const rounds = getSubAgentMessageToolRounds(message, { lang });
         if (rounds.length > 0) {
           allRounds.push(...rounds);
+        }
+        const t = String((message as unknown as { _thinking?: string })._thinking || "").trim();
+        if (t) {
+          allThinking.push(t);
         }
       };
       addRound(msg);
@@ -594,7 +606,12 @@ function SubAgentSessionView({ session }: { session: import("../api/types").SubA
           break;
         }
       }
-      result.push({ role: "assistant", content: "", tool_rounds: allRounds });
+      const merged: SubAgentMessage = { role: "assistant", content: "", tool_rounds: allRounds };
+      const mergedThinking = allThinking.join("\n\n").trim();
+      if (mergedThinking) {
+        (merged as unknown as { _thinking?: string })._thinking = mergedThinking;
+      }
+      result.push(merged);
       i = j;
     }
     return result;
@@ -643,10 +660,31 @@ function SubAgentSessionView({ session }: { session: import("../api/types").SubA
             </div>
           ) : null;
           const toolRounds = getSubAgentMessageToolRounds(msg, { lang });
-          if (!answer && !toolRounds?.length) return null;
+          const thinkingText = String((msg as unknown as { _thinking?: string })._thinking || "").trim();
+          console.debug("[subagent-debug] render assistant", { index, hasAnswer: !!answer, toolRounds: toolRounds?.length, thinkingLen: thinkingText.length });
+          if (!answer && !toolRounds?.length && !thinkingText) return null;
+
+          // A thinking block is "running" only while the session is still live
+          // and this is the last assistant message being streamed. Once the
+          // session ends (or for older messages) it shows as completed.
+          const isLastAssistant = index === mergedMessages.length - 1;
+          const thinkingRunning = Boolean(thinkingText) && !session.endedAt && isLastAssistant;
+
+          const thinkingNode = thinkingText ? (
+            <ThinkingPanel
+              thinkingText={thinkingText}
+              running={thinkingRunning}
+              timerText={
+                thinkingRunning
+                  ? t("activity.thinking")
+                  : `${t("activity.thoughtFor")}`
+              }
+            />
+          ) : null;
 
           return (
             <div key={index} className="turn">
+              {thinkingNode}
               {answer}
               {toolRounds && toolRounds.length > 0 && (
                 <RoundShell

@@ -1916,6 +1916,38 @@ export function AppProvider({ children }: { children: ReactNode }) {
           }
           break;
         }
+        case "sub_agent_thinking": {
+          const d = event.data as { sessionId: string; text: string };
+          const sessionId = String(d.sessionId || "");
+          const current = activeSubAgentSessionRef.current;
+          console.debug("[subagent-debug] sub_agent_thinking", { sessionId, currentId: current?.id, len: String(d.text || "").length, msgCount: current?.messages.length });
+            if (current && current.id === sessionId) {
+              const msgs = [...current.messages];
+              const text = String(d.text || "");
+              // Attach the reasoning to the current round's assistant message.
+              // If the last assistant message is a tool-call placeholder (i.e. the
+              // previous round ended) or none exists yet, open a fresh placeholder
+              // for this round's thinking so reasoning is never merged into an
+              // earlier round's message.
+              const lastMsg = msgs[msgs.length - 1] as SubAgentMessage | undefined;
+              const lastIsTextAssistant =
+                !!lastMsg &&
+                lastMsg.role === "assistant" &&
+                !(lastMsg.tool_calls && lastMsg.tool_calls.length > 0);
+              if (lastIsTextAssistant) {
+                msgs[msgs.length - 1] = {
+                  ...lastMsg,
+                  _thinking: ((lastMsg as unknown as { _thinking?: string })._thinking || "") + text,
+                };
+              } else {
+                msgs.push({ role: "assistant", content: "", _thinking: text });
+              }
+              const updated: SubAgentSession = { ...current, messages: msgs };
+              setActiveSubAgentSession(updated);
+              activeSubAgentSessionRef.current = updated;
+            }
+            break;
+          }
         case "sub_agent_tool_call": {
           const d = event.data as { sessionId: string; toolName: string; args: Record<string, unknown> };
           const sessionId = String(d.sessionId || "");
