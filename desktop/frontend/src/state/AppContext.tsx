@@ -456,8 +456,20 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [activeSubAgentSession, setActiveSubAgentSession] = useState<SubAgentSession | null>(null);
   const [subAgentSessionLoading, setSubAgentSessionLoading] = useState(false);
   const activeSubAgentSessionRef = useRef<SubAgentSession | null>(null);
+  const subAgentViewingRef = useRef(false);
+  const subAgentCacheRef = useRef<Record<string, SubAgentSession>>({});
   const subAgentThinkingStartedAt = useRef<Record<string, number>>({});
   const [pendingExpandSubAgentId, setPendingExpandSubAgentId] = useState<string>("");
+
+  // Helper: apply a sub-agent session update from SSE handlers. Always updates
+  // the live ref and cache; only pushes to React state when the user is viewing.
+  const applySubAgentSession = useCallback((updated: SubAgentSession) => {
+    activeSubAgentSessionRef.current = updated;
+    subAgentCacheRef.current[updated.id] = updated;
+    if (subAgentViewingRef.current) {
+      setActiveSubAgentSession(updated);
+    }
+  }, []);
   useEffect(() => {
     draftModeRef.current = draftMode;
   }, [draftMode]);
@@ -1882,8 +1894,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
               description: String(d.description || current.description),
               prompt: String(d.prompt || current.prompt),
             };
-            setActiveSubAgentSession(updated);
-            activeSubAgentSessionRef.current = updated;
+            applySubAgentSession(updated);
           }
           break;
         }
@@ -1922,8 +1933,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
               msgs.push({ role: "assistant", content: text });
             }
             const updated: SubAgentSession = { ...current, messages: msgs };
-            setActiveSubAgentSession(updated);
-            activeSubAgentSessionRef.current = updated;
+            applySubAgentSession(updated);
           }
           break;
         }
@@ -1956,8 +1966,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
                 subAgentThinkingStartedAt.current[sessionId] = Date.now();
               }
               const updated: SubAgentSession = { ...current, messages: msgs };
-              setActiveSubAgentSession(updated);
-              activeSubAgentSessionRef.current = updated;
+              applySubAgentSession(updated);
             }
             break;
           }
@@ -1975,8 +1984,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
               }
             }
             const updated: SubAgentSession = { ...current, messages: msgs };
-            setActiveSubAgentSession(updated);
-            activeSubAgentSessionRef.current = updated;
+            applySubAgentSession(updated);
           }
           break;
         }
@@ -2022,8 +2030,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
               ...current,
               messages: msgs,
             };
-            setActiveSubAgentSession(updated);
-            activeSubAgentSessionRef.current = updated;
+            applySubAgentSession(updated);
           }
           break;
         }
@@ -2063,8 +2070,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
               content: String(d.text || ""),
             });
             const updated: SubAgentSession = { ...current, messages: msgs };
-            setActiveSubAgentSession(updated);
-            activeSubAgentSessionRef.current = updated;
+            applySubAgentSession(updated);
           }
           break;
         }
@@ -2080,8 +2086,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
               maxRoundsReached: Boolean(d.max_rounds_reached),
               endedAt: new Date().toISOString(),
             };
-            setActiveSubAgentSession(updated);
-            activeSubAgentSessionRef.current = updated;
+            applySubAgentSession(updated);
           }
           break;
         }
@@ -2451,7 +2456,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const switchToChat = useCallback(
     async (chatId: string, workspaceId = "") => {
       // If we're viewing a sub-agent session, return to the main chat first.
-      if (activeSubAgentSessionRef.current) {
+      const currentSub = activeSubAgentSessionRef.current;
+      if (currentSub) {
+        subAgentCacheRef.current[currentSub.id] = currentSub;
+        subAgentViewingRef.current = false;
         setActiveSubAgentSession(null);
         activeSubAgentSessionRef.current = null;
       }
@@ -2494,7 +2502,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const selectWorkspace = useCallback(
     async (workspaceId: string) => {
-      if (activeSubAgentSessionRef.current) {
+      const currentSub = activeSubAgentSessionRef.current;
+      if (currentSub) {
+        subAgentCacheRef.current[currentSub.id] = currentSub;
+        subAgentViewingRef.current = false;
         setActiveSubAgentSession(null);
         activeSubAgentSessionRef.current = null;
       }
@@ -2876,13 +2887,31 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const enterSubAgentSession = useCallback(async (sessionId: string) => {
+    // Check the live cache first — survives chat switches & workspace changes.
+    const cached = subAgentCacheRef.current[sessionId];
+    if (cached && !cached.endedAt) {
+      activeSubAgentSessionRef.current = cached;
+      subAgentViewingRef.current = true;
+      setActiveSubAgentSession(cached);
+      setSubAgentSessionLoading(false);
+      return;
+    }
+    const live = activeSubAgentSessionRef.current;
+    if (live && live.id === sessionId && !live.endedAt) {
+      subAgentViewingRef.current = true;
+      setActiveSubAgentSession(live);
+      setSubAgentSessionLoading(false);
+      return;
+    }
     setSubAgentSessionLoading(true);
     try {
       const chatId = stateRef.current?.activeChatId || "";
       const session = await client.getSubAgentSessionHistory(sessionId, chatId);
       if (session) {
-        setActiveSubAgentSession(session);
         activeSubAgentSessionRef.current = session;
+        subAgentCacheRef.current[session.id] = session;
+        subAgentViewingRef.current = true;
+        setActiveSubAgentSession(session);
       }
     } catch {
       // Session load failure is non-fatal
@@ -2894,8 +2923,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const exitSubAgentSession = useCallback(() => {
     const sessionId = activeSubAgentSessionRef.current?.id || "";
     setPendingExpandSubAgentId(sessionId);
+    subAgentViewingRef.current = false;
     setActiveSubAgentSession(null);
-    activeSubAgentSessionRef.current = null;
+    // Keep the ref + cache intact so SSE handlers continue to update the live
+    // session while the user is in the main chat. On re-enter, enterSubAgentSession
+    // prefers the in-memory data over a server reload.
   }, []);
 
   // Clear the pending auto-expand target shortly after returning to main chat,
