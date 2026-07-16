@@ -386,9 +386,20 @@ def _resolve_subagent_model(
     """
     selector = str(getattr(record, "model_selector", "") or "").strip()
     if not selector:
-        provider = str(getattr(agent, "provider", "") or "")
-        model_name = str(getattr(agent, "model_name", "") or "")
-        params = dict(getattr(agent, "params", {}) or {})
+        # Reuse the main session's *current* model rather than the bare
+        # ``agent.params``. ``_session_model_for_call`` returns the model the
+        # active chat is pinned to (``sess.call_model_*``), which already carries
+        # the user's live ``reasoning_effort``/thinking setting. Using
+        # ``agent.params`` directly would silently drop that setting for the
+        # sub-agent, so it would never think the way the main session does.
+        try:
+            resolved = agent._session_model_for_call()
+            provider, model_name, params, _openai_conf = resolved
+        except Exception:
+            provider = str(getattr(agent, "provider", "") or "")
+            model_name = str(getattr(agent, "model_name", "") or "")
+            params = dict(getattr(agent, "params", {}) or {})
+        params = dict(params or {})
         return (provider, model_name, params), None
 
     choice = agent._find_configured_model_choice(selector)
@@ -413,6 +424,15 @@ def _resolve_subagent_model(
     params = dict(choice.get("params") or {})
     if model_name:
         params["model"] = model_name
+    # Inherit the user's live reasoning effort unless the selector's own params
+    # already pin one. Mirrors the main session so the sub-agent thinks at the
+    # same level the user selected.
+    try:
+        level = agent._current_reasoning_effort()
+    except Exception:
+        level = ""
+    if level and "reasoning_effort" not in params:
+        params["reasoning_effort"] = level
     return (provider, model_name, params), None
 
 
