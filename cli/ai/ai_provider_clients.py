@@ -42,6 +42,8 @@ _ORPHAN_HIDDEN_MARKER_RE = re.compile(
 )
 
 # Stream-aware sanitizer entry per hidden block:
+#   - label: identifies the block kind so the consumer can post-process the
+#     captured thinking (e.g. strip the "thought" channel label).
 #   - opener_re: matches the literal that introduces the hidden block.
 #   - closer_re: matches the corresponding terminator.
 #   - opener_prefix_re: matches any *prefix* of opener_re anchored at end-of-text.
@@ -51,8 +53,9 @@ _ORPHAN_HIDDEN_MARKER_RE = re.compile(
 # All patterns are case-insensitive because models occasionally emit different
 # casings; opener_re/closer_re are also DOTALL-ready by virtue of using [\s\S]
 # in the consumer logic, while these literals are simple.
-_STREAM_HIDDEN_BLOCKS: List[Tuple[re.Pattern, re.Pattern, re.Pattern]] = [
+_STREAM_HIDDEN_BLOCKS: List[Tuple[str, re.Pattern, re.Pattern, re.Pattern]] = [
     (
+        "think",
         # Matches <think>,  think, <think > etc. (standard + DeepSeek-R1)
         re.compile(r"<\s*/?\s*think\s*>", re.IGNORECASE),
         re.compile(r"</\s*think\s*>", re.IGNORECASE),
@@ -61,6 +64,7 @@ _STREAM_HIDDEN_BLOCKS: List[Tuple[re.Pattern, re.Pattern, re.Pattern]] = [
         re.compile(r"<[\s/]*(?:t(?:h(?:i(?:n(?:k(?:\s*>?)?)?)?)?)?)?\Z", re.IGNORECASE),
     ),
     (
+        "channel_thought",
         re.compile(r"<\|channel\>\s*thought", re.IGNORECASE),
         re.compile(r"<channel\|>", re.IGNORECASE),
         re.compile(
@@ -69,6 +73,7 @@ _STREAM_HIDDEN_BLOCKS: List[Tuple[re.Pattern, re.Pattern, re.Pattern]] = [
         ),
     ),
     (
+        "channel_orphan",
         # Orphan channel sentinel with no "thought" payload and no closer
         # (e.g. "<|channel>" leaked when the provider stripped the reasoning
         # content upstream). There is no legitimate visible text after it, so
@@ -78,6 +83,12 @@ _STREAM_HIDDEN_BLOCKS: List[Tuple[re.Pattern, re.Pattern, re.Pattern]] = [
         re.compile(r"<\|?c(?:h(?:a(?:n(?:n(?:e(?:l)?)?)?)?)?)?\Z", re.IGNORECASE),
     ),
 ]
+
+# When a hidden block is opened by the bare ``<|channel>`` sentinel (because
+# the stream split the opener right after ``>``), the channel label
+# ``thought\n`` lands inside the block body instead of the opener. It is a
+# protocol label, not model reasoning, so strip it from the captured thinking.
+_CHANNEL_THOUGHT_LABEL_RE = re.compile(r"^\s*thought\b[^\S\n]*\n?", re.IGNORECASE)
 
 # Additional prefix matchers for closer literals. While inside a hidden block
 # we discard everything anyway, so closer-prefix lookahead is only relevant
@@ -134,6 +145,7 @@ class _StreamingSanitizer:
     def __init__(self) -> None:
         self._pending = ""
         self._closer: Optional[re.Pattern] = None
+        self._strip_thought_label = False
         self._thinking_parts: List[str] = []
 
     def get_thinking(self) -> str:
@@ -161,9 +173,10 @@ class _StreamingSanitizer:
         # character (math, code, comparisons) than an aborted sentinel.
         if self._closer is not None:
             if self._pending:
-                self._thinking_parts.append(self._pending)
+                self._thinking_parts.append(self._strip_channel_label(self._pending))
             self._pending = ""
             self._closer = None
+            self._strip_thought_label = False
             return ""
         scrubbed = _sanitize_assistant_text(self._pending)
         self._pending = ""
@@ -179,17 +192,19 @@ class _StreamingSanitizer:
                 m = self._closer.search(self._pending)
                 if m is None:
                     return "".join(out_parts)
-                thinking = self._pending[: m.start()]
+                thinking = self._strip_channel_label(self._pending[: m.start()])
                 if thinking:
                     self._thinking_parts.append(thinking)
                 self._pending = self._pending[m.end():]
                 self._closer = None
+                self._strip_thought_label = False
                 continue
 
             earliest_match: Optional[re.Match] = None
             earliest_closer: Optional[re.Pattern] = None
             earliest_kind: str = ""
-            for opener_re, closer_re, _prefix_re in _STREAM_HIDDEN_BLOCKS:
+            earliest_label: str = ""
+            for label, opener_re, closer_re, _prefix_re in _STREAM_HIDDEN_BLOCKS:
                 m = opener_re.search(self._pending)
                 if m is None:
                     continue
@@ -197,6 +212,7 @@ class _StreamingSanitizer:
                     earliest_match = m
                     earliest_closer = closer_re
                     earliest_kind = "opener"
+                    earliest_label = label
             # Also detect orphan closer literals at top level. If a closer
             # appears with no matching opener in our pending buffer, the
             # provider must have stripped the opener (e.g., reasoning content
@@ -205,7 +221,7 @@ class _StreamingSanitizer:
             # text. We pick the earliest such hit so it competes with opener
             # matches above and we always make progress on the leftmost
             # marker first.
-            for _opener_re, closer_re, _prefix_re in _STREAM_HIDDEN_BLOCKS:
+            for _label, _opener_re, closer_re, _prefix_re in _STREAM_HIDDEN_BLOCKS:
                 m = closer_re.search(self._pending)
                 if m is None:
                     continue
@@ -219,6 +235,7 @@ class _StreamingSanitizer:
                 self._pending = self._pending[earliest_match.end():]
                 if earliest_kind == "opener":
                     self._closer = earliest_closer
+                    self._strip_thought_label = earliest_label == "channel_orphan"
                 # For orphan_closer we just dropped the literal and stay at
                 # top level.
                 continue
@@ -233,6 +250,15 @@ class _StreamingSanitizer:
                 self._pending = ""
             return "".join(out_parts)
 
+    def _strip_channel_label(self, thinking: str) -> str:
+        """Remove the leading ``thought`` channel label from captured thinking
+        when the block was opened by the bare ``<|channel>`` sentinel (the
+        label then sits inside the block body instead of the opener).
+        """
+        if not self._strip_thought_label or not thinking:
+            return thinking
+        return _CHANNEL_THOUGHT_LABEL_RE.sub("", thinking, count=1)
+
     @staticmethod
     def _suspect_suffix_length(text: str) -> int:
         """Return how many trailing chars in ``text`` could still grow into a
@@ -242,7 +268,7 @@ class _StreamingSanitizer:
         if not text:
             return 0
         best = 0
-        for _opener_re, _closer_re, prefix_re in _STREAM_HIDDEN_BLOCKS:
+        for _label, _opener_re, _closer_re, prefix_re in _STREAM_HIDDEN_BLOCKS:
             m = prefix_re.search(text)
             if m is not None:
                 length = m.end() - m.start()

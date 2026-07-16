@@ -14,6 +14,18 @@ def _stream(deltas):
     return "".join(out_parts)
 
 
+def _stream_thinking(deltas):
+    """Drive a fresh sanitizer and return the accumulated thinking text."""
+    san = _make_stream_sanitizer()
+    thinking_parts = []
+    for d in deltas:
+        san.feed(d)
+        thinking_parts.append(san.get_thinking())
+    san.flush()
+    thinking_parts.append(san.get_thinking())
+    return "".join(thinking_parts)
+
+
 class StreamingSanitizerTests(unittest.TestCase):
     def test_passthrough_text_with_no_sentinels(self):
         self.assertEqual(_stream(["hello ", "world"]), "hello world")
@@ -63,6 +75,34 @@ class StreamingSanitizerTests(unittest.TestCase):
         # leak the opener or any of the in-progress content.
         deltas = ["visible ", "<|channel>thought hidden tail without closer"]
         self.assertEqual(_stream(deltas), "visible ")
+
+    def test_thinking_excludes_thought_label_when_split_after_channel_opener(self):
+        # Regression: the stream split right after "<|channel>", so the bare
+        # channel opener matched first and the "thought\n" label landed inside
+        # the block body. The captured thinking must not retain the label.
+        deltas = ["<|channel>", "thought\ntest message", "<channel|>"]
+        self.assertEqual(_stream_thinking(deltas), "test message")
+        self.assertEqual(_stream(deltas), "")
+
+    def test_thinking_excludes_thought_label_when_split_mid_label(self):
+        deltas = ["<|channel>th", "ought\ntest message", "<channel|>"]
+        self.assertEqual(_stream_thinking(deltas), "test message")
+
+    def test_thinking_excludes_thought_label_in_single_chunk(self):
+        self.assertEqual(
+            _stream_thinking(["<|channel>thought\ntest message<channel|>"]).strip(),
+            "test message",
+        )
+
+    def test_thinking_excludes_thought_label_for_unterminated_block_at_flush(self):
+        deltas = ["<|channel>", "thought\nnever closed"]
+        self.assertEqual(_stream_thinking(deltas), "never closed")
+
+    def test_thinking_starting_with_word_thought_is_preserved(self):
+        # Only the protocol label is stripped; genuine reasoning that merely
+        # starts with the word "thoughtful" must survive intact.
+        deltas = ["<|channel>", "thoughtful analysis here", "<channel|>"]
+        self.assertEqual(_stream_thinking(deltas), "thoughtful analysis here")
 
     def test_lonely_lt_at_end_of_stream_is_emitted_on_flush(self):
         # A trailing `<` that turns out NOT to be the start of a sentinel must
