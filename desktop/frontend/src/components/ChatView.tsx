@@ -661,14 +661,18 @@ function SubAgentSessionView({ session, now }: { session: import("../api/types")
           ) : null;
           const toolRounds = getSubAgentMessageToolRounds(msg, { lang });
           const thinkingText = String((msg as unknown as { _thinking?: string })._thinking || "").trim();
+          const thinkingElapsedSeconds = (msg as unknown as { _thinking_elapsed_seconds?: number })._thinking_elapsed_seconds;
           console.debug("[subagent-debug] render assistant", { index, hasAnswer: !!answer, toolRounds: toolRounds?.length, thinkingLen: thinkingText.length });
           if (!answer && !toolRounds?.length && !thinkingText) return null;
 
           // A thinking block is "running" only while the session is still live
           // and this is the last assistant message being streamed. Once the
-          // session ends (or for older messages) it shows as completed.
+          // model starts emitting visible text or tool calls the thinking phase
+          // has ended, even if the session is still in progress.
           const isLastAssistant = index === mergedMessages.length - 1;
-          const thinkingRunning = Boolean(thinkingText) && !session.endedAt && isLastAssistant;
+          const hasMessageContent = !!answer;
+          const hasMessageToolCalls = !!(msg.tool_calls && msg.tool_calls.length > 0);
+          const thinkingRunning = Boolean(thinkingText) && !session.endedAt && isLastAssistant && !hasMessageContent && !hasMessageToolCalls;
 
           const thinkingNode = thinkingText ? (
             <ThinkingPanel
@@ -676,8 +680,10 @@ function SubAgentSessionView({ session, now }: { session: import("../api/types")
               running={thinkingRunning}
               timerText={
                 thinkingRunning
-                  ? t("activity.thinking")
-                  : `${t("activity.thoughtFor")}`
+                  ? `${t("activity.thinking")} (${formatElapsed(now - new Date(session.startedAt).getTime())})`
+                  : thinkingElapsedSeconds != null
+                    ? `${t("activity.thoughtFor")} ${formatElapsed(thinkingElapsedSeconds * 1000)}`
+                    : `${t("activity.thoughtFor")}`
               }
             />
           ) : null;
