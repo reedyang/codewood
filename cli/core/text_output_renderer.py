@@ -495,11 +495,11 @@ def render_math_block_body(body: str) -> str:
     return rendered
 
 
-def normalize_display_text(text: str) -> str:
-    """Normalize assistant display text for consistent terminal rendering."""
+def _normalize_display_text_lines(text: str) -> str:
+    """Normalize newlines / blank runs without altering inline content."""
     if not isinstance(text, str) or not text:
         return ""
-    s = convert_inline_latex_math(text)
+    s = text
     s = s.replace("\r\n", "\n").replace("\r", "\n")
     if not s.strip():
         return ""
@@ -521,6 +521,13 @@ def normalize_display_text(text: str) -> str:
     while out and out[-1] == "":
         out.pop()
     return "\n".join(out)
+
+
+def normalize_display_text(text: str) -> str:
+    """Normalize assistant display text for consistent terminal rendering."""
+    if not isinstance(text, str) or not text:
+        return ""
+    return _normalize_display_text_lines(convert_inline_latex_math(text))
 
 
 def _reframe_proposed_plan_blocks(text: str) -> str:
@@ -569,7 +576,11 @@ def format_assistant_display_response_plain(text: str) -> str:
     or model-internal thinking content.
     """
     cleaned = strip_tool_json_blocks_for_display(_strip_hidden_blocks(text))
-    return normalize_display_text(cleaned)
+    # Keep LaTeX source intact for the GUI: the frontend Markdown renderer can
+    # render multi-line math itself, while converting it here collapses
+    # structures like ``$\begin{cases}...\end{cases}$`` into one flat line on
+    # chat-history reload.
+    return _normalize_display_text_lines(cleaned)
 
 
 # --- GitHub-style Markdown tables -----------------------------------------

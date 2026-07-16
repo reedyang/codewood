@@ -183,6 +183,22 @@ class AiOutputDisplayTests(unittest.TestCase):
         self.assertNotIn("Proposed Plan", out)
         self.assertNotIn("\x1b[", out)
 
+    def test_format_assistant_display_response_plain_preserves_multiline_latex_for_gui(self):
+        text = (
+            "### 架构流程图 (文字描述)\n"
+            "`Main Agent` $\\xrightarrow{call\\ run\\_subagent}$ `Executor` "
+            "$\\begin{cases}\n"
+            "\\text{LLM Call} \\\\\n"
+            "\\text{SSE Event}\n"
+            "\\end{cases}$ "
+            "$\\xrightarrow{return}$ `Main Agent`"
+        )
+        out = aoh.format_assistant_display_response_plain(text)
+        self.assertIn("$\\begin{cases}\n", out)
+        self.assertIn("\\text{LLM Call} \\\\\n", out)
+        self.assertIn("\\end{cases}$", out)
+        self.assertNotIn("LLM Call SSE Event", out)
+
     def test_format_assistant_display_response_reframes_proposed_plan(self):
         text = "<proposed_plan>\n# Plan\n- step\n</proposed_plan>"
         out = aoh.format_assistant_display_response(text)
