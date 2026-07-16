@@ -4532,7 +4532,17 @@ def run_agent_loop(agent: Any):
                                 ticker.start()
                                 explore_ticker = ticker
                         else:
-                            self._print_tool_call_feedback(tool_name, args, failed=False)
+                            # In GUI streaming mode, tools that produce an
+                            # expandable output (everything except run_subagent
+                            # and project_context_search) defer printing the
+                            # prompt line so it can be sent in the same SSE
+                            # event as the output. This avoids a race where the
+                            # prompt and output arrive in different rounds and
+                            # the output is mis-attributed to the wrong tool.
+                            _gui_stream = bool(getattr(self, "_gui_plain_stream", False))
+                            _tool_defers_prompt = _gui_stream and tool_name not in ("run_subagent", "project_context_search")
+                            if not _tool_defers_prompt:
+                                self._print_tool_call_feedback(tool_name, args, failed=False)
                 else:
                     tool_name, args = "", {}
 
@@ -4840,6 +4850,19 @@ def run_agent_loop(agent: Any):
                             recorder(tool_name, args, result if isinstance(result, dict) else {})
                         except Exception:
                             pass
+                    # In GUI streaming mode, tools that deferred their prompt
+                    # line now print the accumulated tool_round (prompt +
+                    # output as a single SSE event). This guarantees the
+                    # frontend receives a coherent CMD_PROMPT / CMD_OUTPUT
+                    # pair that cannot be split across rounds by a race.
+                    _gui_stream = bool(getattr(self, "_gui_plain_stream", False))
+                    if _gui_stream and tool_name not in ("run_subagent", "project_context_search"):
+                        _rounds = getattr(self, "_accumulated_tool_rounds", None) or []
+                        if _rounds:
+                            try:
+                                print(_rounds[-1])
+                            except Exception:
+                                pass
                     # Real-time context tracking: after each tool result is
                     # appended to history, refresh usage and auto-compact if
                     # the trigger threshold is exceeded.
