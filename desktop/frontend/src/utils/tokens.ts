@@ -205,6 +205,20 @@ export function hasProposedPlan(text: string): boolean {
  *      (complete blocks are rendered as cards elsewhere and left intact);
  *    - leaked `<tool_calls ...>` / `<|assistant ...` envelope tags.
  *  Never touches a COMPLETE `<proposed_plan>...</proposed_plan>` block. */
+/** Mirrors the backend ``_sanitize_assistant_text`` (cli/ai/ai_provider_clients.py):
+ *  strips hidden ``<think>...</think>`` blocks, ``<|channel>thought ... <channel|>``
+ *  blocks, and any dangling sentinel markers. Used when replaying persisted assistant
+ *  messages (e.g. sub-agent sessions) whose raw ``content`` is entirely hidden markers
+ *  so the markers never leak into the rendered transcript. */
+export function stripHiddenAssistantMarkers(text: string): string {
+  let s = String(text ?? "");
+  if (!s) return s;
+  s = s.replace(/<\s*\/?\s*think\s*>[\s\S]*?<\s*\/?\s*think\s*>/gi, "");
+  s = s.replace(/<\|channel\>\s*thought[\s\S]*?<channel\|>/gi, "");
+  s = s.replace(/<\|channel\>\s*thought|<channel\|>|<\s*\/?\s*think\s*>/gi, "");
+  return s;
+}
+
 export function stripLeakedToolMarkup(text: string): string {
   let s = String(text ?? "");
   if (!s) return s;

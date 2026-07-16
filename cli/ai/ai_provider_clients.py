@@ -966,11 +966,11 @@ def _stream_openai_like_response(
                 _attach_output_usage(self.final_message, {"usage": last_usage}, url)
             if isinstance(self.final_message, dict):
                 clean_content = _sanitize_assistant_text(raw_buffer)
-                if clean_content != raw_buffer:
+                if clean_content and clean_content != raw_buffer:
                     self.final_message["_clean_content"] = clean_content
                 elif self.final_message.get("_clean_content"):
                     # Stale _clean_content that duplicates raw content — remove it.
-                    if self.final_message["_clean_content"] == raw_buffer:
+                    if not self.final_message["_clean_content"] or self.final_message["_clean_content"] == raw_buffer:
                         del self.final_message["_clean_content"]
             if isinstance(self.final_message, dict) and self.thinking_text:
                 self.final_message["_thinking"] = self.thinking_text
@@ -1697,7 +1697,7 @@ def _call_openai_once(
                            sorted(data.keys()), url)
     _attach_cache_stats(message_for_history, data, url)
     _attach_output_usage(message_for_history, data, url)
-    if display_text != raw_text:
+    if display_text and display_text != raw_text:
         message_for_history["_clean_content"] = display_text
     if not raw_text:
         _OPENAI_ROUTE_LOG.warning(
@@ -2337,7 +2337,7 @@ def _call_with_ollama(
                     if tool_calls:
                         self.final_message["tool_calls"] = tool_calls
                     clean_content = _sanitize_assistant_text(raw_buffer)
-                    if clean_content != raw_buffer:
+                    if clean_content and clean_content != raw_buffer:
                         self.final_message["_clean_content"] = clean_content
                     if self.thinking_text:
                         self.final_message["_thinking"] = self.thinking_text
@@ -2362,6 +2362,8 @@ def _call_with_ollama(
     display_response = _sanitize_assistant_text(ai_response)
     if display_response and display_response != ai_response:
         message["_clean_content"] = display_response
+    elif message.get("_clean_content") and not message["_clean_content"]:
+        del message["_clean_content"]
     append_history(ai_response, message)
     if return_message:
         display_message = dict(message)

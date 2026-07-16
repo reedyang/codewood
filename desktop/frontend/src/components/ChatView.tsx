@@ -36,6 +36,7 @@ import {
   parseMessageToSegments,
   retokenizeReferencePills,
   stripHiddenControl,
+  stripHiddenAssistantMarkers,
   stripPlanModePrefix,
 } from "../utils/tokens";
 import type { Segment, TokenKind } from "../utils/tokens";
@@ -541,8 +542,12 @@ function SubAgentSessionView({ session }: { session: import("../api/types").SubA
     let i = 0;
     while (i < session.messages.length) {
       const msg = session.messages[i];
+      // A persisted assistant message whose raw content is entirely hidden
+      // markers (e.g. "<|channel>thought\n<channel|>") carries an empty
+      // "_clean_content" and no user-visible text — treat it as content-less.
+      const msgContent = stripHiddenAssistantMarkers(msg.content || "").trim();
       const isToolOnlyAssistant =
-        msg.role === "assistant" && !msg.content && (!!msg.tool_rounds?.length || !!msg.tool_calls?.length);
+        msg.role === "assistant" && !msgContent && (!!msg.tool_rounds?.length || !!msg.tool_calls?.length);
       if (!isToolOnlyAssistant) {
         result.push(msg);
         i++;
@@ -610,10 +615,11 @@ function SubAgentSessionView({ session }: { session: import("../api/types").SubA
         if (msg.role === "assistant") {
           // Prefer the sanitized form when present (mirrors the main chat),
           // so persisted sessions never render hidden <|channel> markers.
-          const displayContent =
-            ((msg as unknown as Record<string, unknown>)._clean_content as string) ||
-            msg.content ||
-            "";
+          // Fall back to the marker-stripped raw content; an empty _clean_content
+          // (recorded when the raw was entirely hidden markers) means no visible
+          // text, so we must not fall through to the raw marker string.
+          const cleanContent = ((msg as unknown as Record<string, unknown>)._clean_content as string) || "";
+          const displayContent = cleanContent || stripHiddenAssistantMarkers(msg.content || "");
           const answer = displayContent ? (
             <div className="answer">
               <MarkdownText text={displayContent} />
