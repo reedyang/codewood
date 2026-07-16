@@ -456,6 +456,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [activeSubAgentSession, setActiveSubAgentSession] = useState<SubAgentSession | null>(null);
   const [subAgentSessionLoading, setSubAgentSessionLoading] = useState(false);
   const activeSubAgentSessionRef = useRef<SubAgentSession | null>(null);
+  const subAgentThinkingStartedAt = useRef<Record<string, number>>({});
   const [pendingExpandSubAgentId, setPendingExpandSubAgentId] = useState<string>("");
   useEffect(() => {
     draftModeRef.current = draftMode;
@@ -1901,10 +1902,20 @@ export function AppProvider({ children }: { children: ReactNode }) {
             ) {
               // Streaming update: append the delta to the in-progress
               // assistant text message rather than starting a new one.
+              const hadOnlyThinking = !!(last as unknown as { _thinking?: string })._thinking && !(last.content || "");
               msgs[msgs.length - 1] = {
                 ...last,
                 content: (last.content || "") + text,
               };
+              // When visible text first arrives after thinking, the thinking
+              // phase has ended — finalize the elapsed time on the message.
+              if (hadOnlyThinking && !(msgs[msgs.length - 1] as any)._thinking_elapsed_seconds) {
+                const startedAt = subAgentThinkingStartedAt.current[sessionId];
+                if (typeof startedAt === "number") {
+                  (msgs[msgs.length - 1] as any)._thinking_elapsed_seconds = Math.max(0.1, Math.round((Date.now() - startedAt) / 100) / 10);
+                  delete subAgentThinkingStartedAt.current[sessionId];
+                }
+              }
             } else {
               // A fresh assistant turn (first delta of a round, or a round that
               // had no prior text-only assistant message).
@@ -1924,16 +1935,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
             if (current && current.id === sessionId) {
               const msgs = [...current.messages];
               const text = String(d.text || "");
-              // Attach the reasoning to the current round's assistant message.
-              // If the last assistant message is a tool-call placeholder (i.e. the
-              // previous round ended) or none exists yet, open a fresh placeholder
-              // for this round's thinking so reasoning is never merged into an
-              // earlier round's message.
               const lastMsg = msgs[msgs.length - 1] as SubAgentMessage | undefined;
               const lastIsTextAssistant =
                 !!lastMsg &&
                 lastMsg.role === "assistant" &&
                 !(lastMsg.tool_calls && lastMsg.tool_calls.length > 0);
+              const hadThinking = lastIsTextAssistant && !!((lastMsg as unknown as { _thinking?: string })._thinking);
               if (lastIsTextAssistant) {
                 msgs[msgs.length - 1] = {
                   ...lastMsg,
@@ -1942,30 +1949,70 @@ export function AppProvider({ children }: { children: ReactNode }) {
               } else {
                 msgs.push({ role: "assistant", content: "", _thinking: text });
               }
+              // Record the start time when thinking begins for a message that
+              // did not have thinking before. Used to compute elapsed client-side
+              // once the thinking phase ends (visible text or tool calls arrive).
+              if (!hadThinking && !subAgentThinkingStartedAt.current[sessionId]) {
+                subAgentThinkingStartedAt.current[sessionId] = Date.now();
+              }
               const updated: SubAgentSession = { ...current, messages: msgs };
               setActiveSubAgentSession(updated);
               activeSubAgentSessionRef.current = updated;
             }
             break;
           }
+        case "sub_agent_thinking_end": {
+          const d = event.data as { sessionId: string; thinkingElapsedSeconds: number };
+          const sessionId = String(d.sessionId || "");
+          const current = activeSubAgentSessionRef.current;
+          if (current && current.id === sessionId && typeof d.thinkingElapsedSeconds === "number" && d.thinkingElapsedSeconds > 0) {
+            const msgs = current.messages ? [...current.messages] : [];
+            for (let i = msgs.length - 1; i >= 0; i--) {
+              const m = msgs[i] as SubAgentMessage;
+              if (m.role === "assistant" && (m as any)._thinking && !(m as any)._thinking_elapsed_seconds) {
+                msgs[i] = { ...m, _thinking_elapsed_seconds: d.thinkingElapsedSeconds };
+                break;
+              }
+            }
+            const updated: SubAgentSession = { ...current, messages: msgs };
+            setActiveSubAgentSession(updated);
+            activeSubAgentSessionRef.current = updated;
+          }
+          break;
+        }
         case "sub_agent_tool_call": {
           const d = event.data as { sessionId: string; toolName: string; args: Record<string, unknown>; thinkingElapsedSeconds?: number };
           const sessionId = String(d.sessionId || "");
           const current = activeSubAgentSessionRef.current;
           if (current && current.id === sessionId) {
             const msgs = current.messages ? [...current.messages] : [];
-            // Backfill the thinking elapsed time on the previous assistant
-            // message that has _thinking but no timing yet. The backend sends
-            // this once per round on the first tool call.
+            // Finalize thinking elapsed on the previous assistant message that
+            // has _thinking but no timing yet. Prefer the backend-supplied value
+            // if present; otherwise compute client-side from the start time.
+            let elapsedSet = false;
             if (typeof d.thinkingElapsedSeconds === "number" && d.thinkingElapsedSeconds > 0) {
               for (let i = msgs.length - 1; i >= 0; i--) {
                 const m = msgs[i] as SubAgentMessage;
                 if (m.role === "assistant" && (m as any)._thinking && !(m as any)._thinking_elapsed_seconds) {
                   msgs[i] = { ...m, _thinking_elapsed_seconds: d.thinkingElapsedSeconds };
+                  elapsedSet = true;
                   break;
                 }
               }
             }
+            if (!elapsedSet) {
+              const startedAt = subAgentThinkingStartedAt.current[sessionId];
+              if (typeof startedAt === "number") {
+                for (let i = msgs.length - 1; i >= 0; i--) {
+                  const m = msgs[i] as SubAgentMessage;
+                  if (m.role === "assistant" && (m as any)._thinking && !(m as any)._thinking_elapsed_seconds) {
+                    (msgs[i] as any)._thinking_elapsed_seconds = Math.max(0.1, Math.round((Date.now() - startedAt) / 100) / 10);
+                    break;
+                  }
+                }
+              }
+            }
+            delete subAgentThinkingStartedAt.current[sessionId];
             msgs.push({
               role: "assistant",
               content: "",

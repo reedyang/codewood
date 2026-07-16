@@ -251,6 +251,7 @@ export type ServerEvent =
   | { event: "sub_agent_start"; data: { sessionId: string; name: string; topic: string; description: string; prompt: string } }
   | { event: "sub_agent_assistant"; data: { sessionId: string; text: string } }
   | { event: "sub_agent_thinking"; data: { sessionId: string; text: string } }
+  | { event: "sub_agent_thinking_end"; data: { sessionId: string; thinkingElapsedSeconds: number } }
   | { event: "sub_agent_tool_call"; data: { sessionId: string; toolName: string; args: Record<string, unknown>; thinkingElapsedSeconds?: number } }
   | { event: "sub_agent_output"; data: { sessionId: string; text: string; toolName: string } }
   | { event: "sub_agent_end"; data: { sessionId: string; output: string; success: boolean; max_rounds_reached?: boolean } }

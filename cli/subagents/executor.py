@@ -826,6 +826,13 @@ def run_subagent(
                             "text": _thinking_tail,
                         })
                 _thinking_ended_at_sub = time.monotonic()
+                if _thinking_started_at_sub is not None:
+                    _thinking_end_elapsed = round(_thinking_ended_at_sub - _thinking_started_at_sub, 1)
+                    if _thinking_end_elapsed > 0:
+                        _emit_subagent_event(agent, "sub_agent_thinking_end", {
+                            "sessionId": session_id,
+                            "thinkingElapsedSeconds": _thinking_end_elapsed,
+                        })
                 message = getattr(stream_result, "final_message", None)
                 if not isinstance(message, dict):
                     message = {"role": "assistant", "content": "".join(_streamed_text)}
