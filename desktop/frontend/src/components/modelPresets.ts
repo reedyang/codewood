@@ -121,6 +121,16 @@ export const MODEL_PRESETS: ModelPreset[] = [
     kind: "openai"
   },
   {
+    id: "openrouter",
+    label: "OpenRouter",
+    provider: "OpenRouter",
+    base_url: "https://openrouter.ai/api/v1",
+    api_mode: "chat",
+    include_thinking_in_messages: false,
+    kind: "openai",
+    context_length_attr_name: "context_length",
+  },
+  {
     id: "ollama",
     label: "Ollama",
     provider: "Ollama",
