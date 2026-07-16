@@ -427,10 +427,13 @@ def _build_structured_turns(agent: Any) -> List[Dict[str, Any]]:
         # represents a distinct model pass. Merge it into the previous tool
         # round when that round already has tools, so the GUI shows one
         # collapsible "Called N tools" group instead of separate groups.
+        # Messages that carry their own _thinking start a new round so each
+        # "Thought for" block maps to its own tool-call group.
         if _is_tool_plan(content):
             turn = _ensure_turn()
             wait = (ts - prev_ts) if (ts is not None and prev_ts is not None) else 0
-            if current_round is None or not current_round.get("tools", "").strip():
+            has_own_thinking = bool(str(msg.get("_thinking") or "").strip()) if isinstance(msg, dict) else False
+            if current_round is None or not current_round.get("tools", "").strip() or has_own_thinking:
                 current_round = _new_round(turn, wait)
             else:
                 current_round["waitSeconds"] += max(0, int(round(wait)))
