@@ -300,6 +300,23 @@ _LATEX_CMD_RE = re.compile(r"\\([A-Za-z]+)")
 # Inline math spans: ``$...$`` (not ``$$``) and ``\(...\)``.
 _INLINE_MATH_RE = re.compile(r"(?<!\$)\$(?!\$)([^$\n]+?)\$(?!\$)|\\\(([^\n]+?)\\\)")
 
+# amsmath stretchy arrows with an argument (``\xrightarrow{text}``,
+# ``\xleftarrow{text}``). ``pylatexenc`` cannot render these and returns an
+# empty string, which would otherwise leave the whole ``$...$`` span verbatim
+# in the TUI. Rewrite them to a Unicode arrow + argument (which pylatexenc
+# then renders normally) so they display consistently with the GUI.
+_XARROW_RE = re.compile(r"\\x(rightarrow|leftarrow)\s*\{([^{}]*)\}")
+
+
+def _rewrite_xarrows(body: str) -> str:
+    """Rewrite amsmath stretchy arrows (e.g. ``\\xrightarrow{...}``) to a
+    Unicode arrow followed by the argument text (e.g. ``→ call run_subagent``).
+    pylatexenc cannot render these, so we pre-expand them before conversion."""
+    return _XARROW_RE.sub(
+        lambda m: ("\u2192" if m.group(1) == "rightarrow" else "\u2190") + " " + m.group(2),
+        body,
+    )
+
 # Unicode super/subscript maps. ``pylatexenc`` leaves ``x^2`` / ``x_i`` as-is,
 # so after it converts the rest we lift simple scripts into Unicode (only when
 # every character is mappable; otherwise the ``^``/``_`` form is kept verbatim
@@ -372,9 +389,26 @@ def _render_math_with_pylatexenc(body: str) -> str | None:
     except Exception:
         return None
     rendered = _apply_unicode_scripts(rendered.strip())
-    # Collapse the newlines pylatexenc may introduce for display math so an
-    # inline span stays on one line.
-    rendered = re.sub(r"\s*\n\s*", " ", rendered).strip()
+    # Most inline-math spans should stay inline, but some model outputs place a
+    # multi-line environment like ``cases`` inside a single ``$...$`` span. In
+    # that situation the GUI/KaTeX keeps the row structure, so preserve it in
+    # the TUI too instead of flattening everything into one run-on line.
+    if _CASES_ENV_RE.search(body or ""):
+        rows = [ln.strip() for ln in rendered.split("\n") if ln.strip()]
+        if rows:
+            braces = _left_brace_pieces(len(rows))
+            # Inline ``$...$`` sometimes wraps a multi-line ``cases`` block.
+            # Start the brace block on its own line so the tall left brace stays
+            # vertically aligned instead of hanging off the tail of preceding prose.
+            rendered = "\n" + "\n".join(
+                f"{br} {ln}" for br, ln in zip(braces, rows)
+            )
+        else:
+            rendered = ""
+    else:
+        # Collapse the newlines pylatexenc may introduce for display math so an
+        # inline span stays on one line.
+        rendered = re.sub(r"\s*\n\s*", " ", rendered).strip()
     if "\\" in rendered:
         return None
     return rendered
@@ -387,6 +421,9 @@ def _render_inline_math_span(body: str) -> str:
     back to the curated-symbol map (arrows/operators) when pylatexenc is not
     installed, so the feature degrades gracefully instead of failing.
     """
+    # Pre-expand amsmath stretchy arrows (``\xrightarrow{...}``) which
+    # pylatexenc cannot render; this turns them into a Unicode arrow + text.
+    body = _rewrite_xarrows(body)
     via_lib = _render_math_with_pylatexenc(body)
     if via_lib is not None:
         return via_lib
@@ -397,6 +434,37 @@ def _render_inline_math_span(body: str) -> str:
     s = _apply_unicode_scripts(s)
     s = s.replace("{", "").replace("}", "")
     return s.strip()
+
+
+def _attach_inline_suffix_to_multiline_math_block(block: str, suffix: str) -> str:
+    """Attach same-line continuation text to the visual middle of a math block.
+
+    When an inline ``$...$`` span degrades to multiple TUI lines (e.g. a
+    ``cases`` environment), any continuation text that followed it on the same
+    source line should read as continuing from the whole block, not from the
+    bottom row only. GUI/KaTeX naturally centers that continuation on the math
+    axis; in the TUI we approximate that by appending it to the middle row and
+    horizontally aligning its start column to the widest row of the block.
+    """
+    if not isinstance(block, str) or "\n" not in block:
+        return block + suffix
+    if not isinstance(suffix, str) or not suffix:
+        return block
+    lines = block.split("\n")
+    if not lines:
+        return block + suffix
+    visible = [idx for idx, line in enumerate(lines) if line.strip()]
+    if not visible:
+        return block + suffix
+    mid = visible[min(len(visible) // 2, len(visible) - 1)]
+    suffix_text = suffix.lstrip()
+    if not suffix_text:
+        return block
+    block_width = max(_md_cell_display_width(lines[idx]) for idx in visible)
+    mid_width = _md_cell_display_width(lines[mid])
+    pad = max(1, block_width - mid_width + 1)
+    lines[mid] = lines[mid] + (" " * pad) + suffix_text
+    return "\n".join(lines)
 
 
 # A relation/comparison operator inside a span is a strong "this is math" hint
@@ -448,24 +516,51 @@ def convert_inline_latex_math(text: str) -> str:
     if not isinstance(text, str) or "$" not in text and "\\(" not in text:
         return text
 
-    def _repl(m: "re.Match[str]") -> str:
+    out: List[str] = []
+    pos = 0
+    while True:
+        m = _INLINE_MATH_RE.search(text, pos)
+        if m is None:
+            out.append(text[pos:])
+            break
+        out.append(text[pos : m.start()])
         body = m.group(1) if m.group(1) is not None else m.group(2)
         if body is None:
-            return m.group(0)
+            out.append(m.group(0))
+            pos = m.end()
+            continue
         # Require a clear math signal before treating the span as math. This
         # keeps plain ``$`` usage (prices like ``$5``, shell vars like
         # ``$PATH``) untouched while catching operator/relation spans such as
         # ``$y = 3$`` and ``$x = y - 1$`` that carry no backslash command.
         if not _looks_like_inline_math(body):
-            return m.group(0)
+            out.append(m.group(0))
+            pos = m.end()
+            continue
         converted = _render_inline_math_span(body)
         # Bail out if conversion left unhandled TeX (a backslash command):
         # rendering a half-converted span is worse than leaving it as-is.
         if not converted or "\\" in converted:
-            return m.group(0)
-        return converted
-
-    return _INLINE_MATH_RE.sub(_repl, text)
+            out.append(m.group(0))
+            pos = m.end()
+            continue
+        if "\n" in converted:
+            line_end = text.find("\n", m.end())
+            if line_end < 0:
+                line_end = len(text)
+            trailing_same_line = text[m.end() : line_end]
+            if trailing_same_line:
+                converted = _attach_inline_suffix_to_multiline_math_block(
+                    converted,
+                    convert_inline_latex_math(trailing_same_line),
+                )
+                pos = line_end
+            else:
+                pos = m.end()
+        else:
+            pos = m.end()
+        out.append(converted)
+    return "".join(out)
 
 
 def render_math_block_body(body: str) -> str:

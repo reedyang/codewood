@@ -1287,6 +1287,77 @@ class MarkdownRenderingTests(unittest.TestCase):
             out, "\u4e24\u4e2a\u672a\u77e5\u6570 x \u548c y \u7684\u65b9\u7a0b\u7ec4"
         )
 
+    def test_inline_math_cases_environment_preserves_multiline_shape(self):
+        out = aoh.convert_inline_latex_math(
+            "$\\begin{cases} "
+            "\\text{LLM Call} \\rightarrow \\text{Tool Call} \\\\ "
+            "\\text{SSE Event} \\rightarrow \\text{GUI Viewer} \\\\ "
+            "\\text{Session Store} \\rightarrow \\text{Disk (.json)} "
+            "\\end{cases}$"
+        )
+        self.assertIn("\n", out)
+        self.assertIn("LLM Call", out)
+        self.assertIn("SSE Event", out)
+        self.assertIn("Session Store", out)
+        self.assertIn("\u23a7", out)  # ⎧
+        self.assertIn("\u23a8", out)  # ⎨
+        self.assertIn("\u23a9", out)  # ⎩
+
+    def test_inline_math_cases_environment_starts_on_new_line_in_prose(self):
+        out = aoh.convert_inline_latex_math(
+            "Nested Loop $\\begin{cases} "
+            "\\text{LLM Call} \\rightarrow \\text{Tool Call} \\\\ "
+            "\\text{SSE Event} \\rightarrow \\text{GUI Viewer} "
+            "\\end{cases}$ final"
+        )
+        self.assertIn("Nested Loop \n\u23b0", out)
+        self.assertIn("\u23b0 LLM Call", out)
+        self.assertIn("final", out)
+        block_lines = [
+            ln for ln in out.split("\n")
+            if ln[:1] in {"\u23b0", "\u23b1", "\u23a7", "\u23a8", "\u23a9"}
+        ]
+        target = next(ln for ln in block_lines if "final" in ln)
+        split_at = target.rfind("final")
+        prefix_width = aoh._md_cell_display_width(target[:split_at])
+        block_only_width = aoh._md_cell_display_width(target[:split_at].rstrip())
+        other_widths = [
+            aoh._md_cell_display_width(ln)
+            for ln in block_lines
+            if ln != target
+        ]
+        self.assertEqual(prefix_width, max(other_widths + [block_only_width]) + 1)
+
+    def test_inline_math_cases_environment_attaches_following_math_to_middle_row(self):
+        out = aoh.convert_inline_latex_math(
+            "Nested Loop $\\begin{cases} "
+            "\\text{LLM Call} \\rightarrow \\text{Tool Call} \\\\ "
+            "\\text{SSE Event} \\rightarrow \\text{GUI Viewer} \\\\ "
+            "\\text{Session Store} \\rightarrow \\text{Disk (.json)} "
+            "\\end{cases}$ $\\rightarrow$ Final Answer $\\xrightarrow{return}$ Main Agent"
+        )
+        self.assertIn("\u23a7 LLM Call", out)
+        self.assertIn("\u23a9 Session Store \u2192Disk (.json)", out)
+        self.assertNotIn(
+            "\u23a9 Session Store \u2192Disk (.json) \u2192 Final Answer",
+            out,
+        )
+        block_lines = [
+            ln for ln in out.split("\n")
+            if ln[:1] in {"\u23b0", "\u23b1", "\u23a7", "\u23a8", "\u23a9"}
+        ]
+        target = next(ln for ln in block_lines if "Final Answer" in ln)
+        split_at = target.rfind("\u2192 Final Answer")
+        self.assertGreater(split_at, 0)
+        prefix_width = aoh._md_cell_display_width(target[:split_at])
+        block_only_width = aoh._md_cell_display_width(target[:split_at].rstrip())
+        other_widths = [
+            aoh._md_cell_display_width(ln)
+            for ln in block_lines
+            if ln != target
+        ]
+        self.assertEqual(prefix_width, max(other_widths + [block_only_width]) + 1)
+
     def test_display_math_block_single_line_renders_centered(self):
         out = self._render("Here:\n$$ E = mc^2 $$\nDone.")
         self.assertIn("E = mc\u00b2", out)
