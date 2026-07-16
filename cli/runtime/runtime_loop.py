@@ -4704,7 +4704,7 @@ def run_agent_loop(agent: Any):
                             )
                             continue_after_batch = True
                             break
-                        if active_sid != canon_sid:
+                        if active_sid != canon_sid and not bool(getattr(self, "_gui_plain_stream", False)):
                             print(t("runtime.skill_about_to_enable", skill=sid))
                         self._active_skill_full_prompt = full_prompt
                         self._active_skill_id = canon_sid or sid
