@@ -2150,10 +2150,10 @@ def _update_latest_assistant_clean_content(agent: Any, clean_content: str) -> No
         if existing_clean == clean_content:
             return
         raw_content = str(msg.get("content") or "")
-        # Never record a blank _clean_content: it would be preferred over raw
-        # content by the renderer and produce an empty display when the raw
-        # content was entirely hidden markers (e.g. "<|channel>thought...").
-        if not clean_content or raw_content == clean_content or raw_content.rstrip("\n") == clean_content.rstrip("\n"):
+        # Record the sanitized form even when empty: an explicit "" _clean_content
+        # signals "no visible text" (raw was entirely hidden markers), so the
+        # renderer can rely on it instead of falling back to the raw markers.
+        if raw_content == clean_content or raw_content.rstrip("\n") == clean_content.rstrip("\n"):
             msg.pop("_clean_content", None)
         else:
             msg["_clean_content"] = clean_content

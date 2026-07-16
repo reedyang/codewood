@@ -656,7 +656,10 @@ class ChatStateManager:
                         raw = str(msg.get("content") or "")
                         from ..runtime.runtime_loop import _stream_visible_text_with_json_pause
                         cleaned = _stream_visible_text_with_json_pause(raw, final=True)
-                        if cleaned and cleaned != raw:
+                        if cleaned != raw:
+                            # Record even an empty cleaned form: it signals the
+                            # raw content was entirely hidden markers, so the
+                            # renderer must not fall back to the raw string.
                             msg["_clean_content"] = cleaned
                 record_payload = {
                     k: v for k, v in chat.items()
@@ -1139,9 +1142,11 @@ class ChatStateManager:
                         ]
                         if cleaned_tools:
                             entry["pseudo_tool_call_tools"] = cleaned_tools
-                clean_content = str(m.get("_clean_content") or "").strip()
-                if clean_content:
-                    entry["_clean_content"] = clean_content
+                # Preserve _clean_content even when empty: a blank value is an
+                # explicit signal that the raw content was entirely hidden
+                # markers (no visible text), which must survive export.
+                if "_clean_content" in m:
+                    entry["_clean_content"] = m["_clean_content"]
                 thinking = str(m.get("_thinking") or "").strip()
                 if thinking:
                     entry["_thinking"] = thinking
