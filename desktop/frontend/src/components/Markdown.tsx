@@ -8,8 +8,187 @@ import { CodeBlock } from "./CodeBlock";
 // links) so the model reply is colored in the GUI without a heavy dependency.
 // All text flows through React children, so it is escaped by default.
 
+// Underscore emphasis (`_italic_`) is constrained to non-whitespace,
+// non-underscore content so snake_case identifiers like `run_subagent` /
+// `Agent.execute_tool` are NOT mistaken for emphasis (which would otherwise
+// swallow the whole span — including any `$...$` math — as a single <em>).
 const INLINE_RE =
-  /(`[^`]+`)|(\*\*\*[^*]+\*\*\*)|(\*\*[^*]+\*\*)|(__[^_]+__)|(\*[^*]+\*)|(_[^_]+_)|(~~[^~]+~~)|(<u>[^<]*<\/u>)|(\[[^\]]+\]\([^)]+\))|(\[\^[^\]]+\])/g;
+  /(`[^`]+`)|(\*\*\*[^*]+\*\*\*)|(\*\*[^*]+\*\*)|(__[^\s_]+__)|(\*[^*]+\*)|(_[^\s_]+_)|(~~[^~]+~~)|(<u>[^<]*<\/u>)|(\[[^\]]+\]\([^)]+\))|(\[\^[^\]]+\])/g;
+
+// ---------------------------------------------------------------------------
+// Bare-LaTeX auto-detection: the model sometimes emits LaTeX without `$`
+// delimiters (e.g. `\xrightarrow{call}`, `\begin{cases}...\end{cases}`).
+// KaTeX can render these, but the text never reaches KaTeX without delimiters.
+// This pre-processor detects high-confidence bare-LaTeX constructs and wraps
+// them in `$...$` / `$$...$$` so the existing KaTeX pipeline handles them.
+// ---------------------------------------------------------------------------
+
+// Matches `\begin{xxx}...\end{xxx}` (single-line or multi-line). The inner
+// content may contain `\\`, `&`, `\text{...}`, etc. We match greedily up to
+// the matching `\end{xxx}` on the same line for the common single-line case,
+// and across lines for multi-line environments.
+const BARE_ENV_RE = /\\begin\{(\w+)\}([\s\S]*?)\\end\{\1\}/g;
+
+// Matches a LaTeX command name followed by `{` — the start of a braced
+// argument. The brace body is matched separately via balanced-brace scanning
+// in `collectBareCmdMatches`. We use this as a fast pre-filter.
+const BARE_CMD_START_RE = /\\([a-zA-Z]+)\{/g;
+
+// High-confidence LaTeX commands that are almost always math when bare.
+// Commands like \left, \right, \Big, \newpage, \label, \item, etc. are
+// excluded to avoid false positives on regular prose.
+const MATH_CMD_NAMES = new Set([
+  // Greek letters
+  "alpha","beta","gamma","delta","epsilon","zeta","eta","theta","iota",
+  "kappa","lambda","mu","nu","xi","pi","rho","sigma","tau","upsilon",
+  "phi","chi","psi","omega",
+  "Gamma","Delta","Theta","Lambda","Xi","Pi","Sigma","Phi","Psi","Omega",
+  // Fractions, roots, binomials
+  "frac","dfrac","tfrac","sqrt","binom","dbinom","tbinom",
+  // Display/text style
+  "displaystyle","textstyle","scriptstyle","scriptscriptstyle",
+  // Text/font
+  "text","textrm","textbf","textit","textsf","texttt",
+  "mathrm","mathbf","mathit","mathbb","mathcal","mathfrak","mathsf","mathtt",
+  "operatorname",
+  // Accents/decorations
+  "hat","bar","vec","dot","ddot","tilde","breve","acute","grave","check",
+  "widehat","widetilde","overline","underline","overbrace","underbrace",
+  // Arrows
+  "rightarrow","leftarrow","leftrightarrow","longrightarrow","longleftarrow",
+  "xrightarrow","xleftarrow","mapsto","hookrightarrow","hookleftarrow",
+  "nearrow","searrow","swarrow","nwarrow",
+  "Rightarrow","Leftarrow","Leftrightarrow","Longrightarrow","Longleftarrow",
+  "Leftrightarrow","leftrightsquigarrow",
+  // Relations
+  "leq","geq","le","ge","ll","gg","neq","ne","approx","simeq","cong",
+  "equiv","propto","sim","nsim","ncong","napprox",
+  "perp","parallel","asymp","prec","succ","preceq","succeq",
+  "subset","supset","subseteq","supseteq","in","ni","notin",
+  "vdash","dashv","models","doteq","approxeq","triangleq",
+  // Operators
+  "sum","prod","coprod","int","iint","iiint","oint",
+  "bigcup","bigcap","bigoplus","bigotimes",
+  "lim","inf","sup","max","min","dim","ker","deg","det","gcd","hom",
+  "log","ln","exp","sin","cos","tan","sec","csc","cot",
+  "arcsin","arccos","arctan","sinh","cosh","tanh","coth","Pr",
+  "varlimsup","varliminf","limsup","liminf",
+  "varprojlim","varinjlim","projlim","injlim",
+  // Set/logic
+  "cup","cap","vee","wedge","oplus","otimes","circ","bullet","star",
+  "dagger","ddagger",
+  // Matrix delimiters
+  "bmatrix","pmatrix","vmatrix","Bmatrix","Vmatrix","cases","aligned",
+  "gathered","array","matrix",
+]);
+
+/**
+ * Detect bare LaTeX in `text` and wrap it in `$...$` / `$$...$$` delimiters
+ * so KaTeX can render it.  Only high-confidence patterns are wrapped to avoid
+ * false positives on regular prose that happens to contain backslashes.
+ *
+ * Strategy: collect ALL math regions (existing `$...$` + new display
+ * environments) FIRST, then only wrap bare commands that are outside ALL
+ * regions. This prevents double-wrapping (e.g. `\frac` inside a
+ * `\begin{cases}` that was just wrapped in `$$...$$`).
+ */
+function wrapBareLatex(text: string): string {
+  if (!text || !text.includes("\\")) {
+    return text;
+  }
+
+  // Phase 1: collect all math regions on the ORIGINAL text.
+  // Regions are [start, end) half-open intervals.
+  const regions: Array<[number, number]> = [];
+
+  // 1a. Existing inline/display math: $...$ and $$...$$
+  const mathRe = /\$\$([\s\S]+?)\$\$|(?<!\\)\$(?!\$)((?:\\.|[^$\\\n])+?)(?<!\\)\$(?!\$)/g;
+  let rm: RegExpExecArray | null;
+  while ((rm = mathRe.exec(text)) !== null) {
+    regions.push([rm.index, rm.index + rm[0].length]);
+  }
+
+  // 1b. Bare display-math environments: \begin{cases}...\end{cases}
+  //     (only those NOT already inside a math region).
+  const bareEnvs: Array<{ start: number; end: number; env: string; body: string }> = [];
+  const envRe = new RegExp(BARE_ENV_RE.source, "g");
+  let em: RegExpExecArray | null;
+  while ((em = envRe.exec(text)) !== null) {
+    const start = em.index;
+    const end = start + em[0].length;
+    if (!regions.some(([rs, re]) => start >= rs && end <= re)) {
+      bareEnvs.push({ start, end, env: em[1], body: em[2] });
+      regions.push([start, end]);
+    }
+  }
+
+  // Phase 2: collect bare commands, excluding those inside any region.
+  const matches: Array<{ start: number; end: number; full: string }> = [];
+
+  // 2a. Commands with braced arguments: \frac{1}{2}, \xrightarrow{call}, etc.
+  const cmdRe = new RegExp(BARE_CMD_START_RE.source, "g");
+  let cm: RegExpExecArray | null;
+  while ((cm = cmdRe.exec(text)) !== null) {
+    const cmdName = cm[1];
+    if (!MATH_CMD_NAMES.has(cmdName)) continue;
+    const cmdStart = cm.index;
+    if (regions.some(([rs, re]) => cmdStart >= rs && cmdStart < re)) continue;
+    const braceStart = cm.index + cm[0].length - 1;
+    if (braceStart >= text.length || text[braceStart] !== "{") continue;
+    let depth = 1;
+    let j = braceStart + 1;
+    while (j < text.length && depth > 0) {
+      if (text[j] === "{") depth++;
+      else if (text[j] === "}") depth--;
+      j++;
+    }
+    if (depth !== 0) continue;
+    matches.push({ start: cmdStart, end: j, full: text.slice(cmdStart, j) });
+  }
+
+  // 2b. Standalone commands without braces: \alpha, \infty, \leq, etc.
+  const standaloneRe = /\\([a-zA-Z]+)/g;
+  let sm: RegExpExecArray | null;
+  while ((sm = standaloneRe.exec(text)) !== null) {
+    const cmdName = sm[1];
+    if (!MATH_CMD_NAMES.has(cmdName)) continue;
+    const cmdStart = sm.index;
+    if (regions.some(([rs, re]) => cmdStart >= rs && cmdStart < re)) continue;
+    if (text[cmdStart + sm[0].length] === "{") continue; // handled by 2a
+    matches.push({ start: cmdStart, end: cmdStart + sm[0].length, full: sm[0] });
+  }
+
+  if (bareEnvs.length === 0 && matches.length === 0) {
+    return text;
+  }
+
+  // Build the full list of edits: envs → $$...$$, commands → $...$
+  const edits: Array<{ start: number; end: number; replacement: string }> = [];
+  for (const e of bareEnvs) {
+    edits.push({ start: e.start, end: e.end, replacement: `$$\\begin{${e.env}}${e.body}\\end{${e.env}}$$` });
+  }
+  for (const m of matches) {
+    edits.push({ start: m.start, end: m.end, replacement: `$${m.full}$` });
+  }
+
+  // Sort by start desc, deduplicate (longest match wins for overlapping ranges).
+  edits.sort((a, b) => b.start - a.start);
+  const deduped: typeof edits = [];
+  let lastEnd = Infinity;
+  for (const e of edits) {
+    if (e.end <= lastEnd) {
+      deduped.push(e);
+      lastEnd = e.start;
+    }
+  }
+
+  // Apply in reverse order so offsets stay valid.
+  let s = text;
+  for (const e of deduped) {
+    s = s.slice(0, e.start) + e.replacement + s.slice(e.end);
+  }
+  return s;
+}
 
 // Curated LaTeX-command -> Unicode map for inline math the model commonly
 // emits in narrative (e.g. `$\rightarrow$`). The GUI has no TeX engine, so
@@ -45,6 +224,32 @@ const LATEX_MATH_SYMBOLS: Record<string, string> = {
   infty: "\u221e",
   ldots: "\u2026",
   cdots: "\u22ef",
+  subset: "\u2282",
+  supset: "\u2283",
+  cup: "\u222a",
+  cap: "\u2229",
+  forall: "\u2200",
+  exists: "\u2203",
+  neg: "\u00ac",
+  land: "\u2227",
+  lor: "\u2228",
+ oplus: "\u2295",
+  otimes: "\u2297",
+  nabla: "\u2207",
+  partial: "\u2202",
+  alpha: "\u03b1",
+  beta: "\u03b2",
+  gamma: "\u03b3",
+  delta: "\u03b4",
+  epsilon: "\u03b5",
+  theta: "\u03b8",
+  lambda: "\u03bb",
+  mu: "\u03bc",
+  pi: "\u03c0",
+  sigma: "\u03c3",
+  phi: "\u03c6",
+  psi: "\u03c8",
+  omega: "\u03c9",
 };
 
 // Inline math spans: `$...$` (not `$$`) and `\(...\)`.
@@ -304,22 +509,22 @@ function renderInline(text: string, keyBase: string): ReactNode[] {
         </code>,
       );
     } else if (tok.startsWith("***")) {
-      nodes.push(<strong key={k}><em>{tok.slice(3, -3)}</em></strong>);
+      nodes.push(<strong key={k}><em>{renderInline(tok.slice(3, -3), `${k}-bi`)}</em></strong>);
     } else if (tok.startsWith("**") || tok.startsWith("__")) {
-      nodes.push(<strong key={k}>{tok.slice(2, -2)}</strong>);
+      nodes.push(<strong key={k}>{renderInline(tok.slice(2, -2), `${k}-b`)}</strong>);
     } else if (tok.startsWith("<u>")) {
-      nodes.push(<u key={k}>{tok.slice(3, -4)}</u>);
+      nodes.push(<u key={k}>{renderInline(tok.slice(3, -4), `${k}-u`)}</u>);
     } else if (tok.startsWith("~~")) {
-      nodes.push(<del key={k}>{tok.slice(2, -2)}</del>);
+      nodes.push(<del key={k}>{renderInline(tok.slice(2, -2), `${k}-d`)}</del>);
     } else if (tok.startsWith("*") || tok.startsWith("_")) {
-      nodes.push(<em key={k}>{tok.slice(1, -1)}</em>);
+      nodes.push(<em key={k}>{renderInline(tok.slice(1, -1), `${k}-i`)}</em>);
     } else if (tok.startsWith("[")) {
       const mm = /^\[([^\]]+)\]\(([^)]+)\)$/.exec(tok);
       const href = mm ? safeHref(mm[2]) : null;
       if (mm && href) {
         nodes.push(
           <a key={k} href={href} target="_blank" rel="noreferrer noopener">
-            {mm[1]}
+            {renderInline(mm[1], `${k}-a`)}
           </a>,
         );
       } else if (tok.startsWith("[^")) {
@@ -413,7 +618,10 @@ export function MarkdownText({ text }: { text: string }): ReactNode {
 }
 
 function MarkdownBody({ text }: { text: string }): ReactNode {
-  const rawLines = stripLeakedToolMarkup(text).replace(/\r\n/g, "\n").split("\n");
+  // Auto-detect bare LaTeX (no `$` delimiters) and wrap it so KaTeX can render
+  // it. Must run before line splitting so multi-line environments like
+  // `\begin{cases}...\end{cases}` are handled as a single unit.
+  const rawLines = stripLeakedToolMarkup(wrapBareLatex(text)).replace(/\r\n/g, "\n").split("\n");
 
   // ---- footnotes ----
   // Collect footnote definitions (`[^label]: content ...`) before rendering.
