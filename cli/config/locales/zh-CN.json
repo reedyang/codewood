@@ -223,6 +223,7 @@
   "subagents.error.max_rounds": "子智能体达到最大轮数 {rounds}，仍未给出最终答案",
   "subagents.error.image_not_found": "❌ 图片文件不存在或格式不受支持：{path}",
   "subagents.error.model_not_found": "❌ 子智能体 '{subagent}' 配置的模型 '{selector}' 在 model_providers 中不存在。请修正子智能体文件中的 'model' 字段（必须与配置中的 provider/model 完全一致）。可用模型：{available}",
+  "subagents.error.cancelled": "❌ 子智能体已被用户取消",
   "subagent.explore.running": "探索中...",
   "subagent.explore.running_topic": "正在探索：{topic}...",
   "subagent.explore.completed": "探索完成（{elapsed}秒）",
