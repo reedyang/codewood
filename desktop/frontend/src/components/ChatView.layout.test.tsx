@@ -58,6 +58,54 @@ describe("HistoryRoundDetailView", () => {
       text.compareDocumentPosition(tools) & Node.DOCUMENT_POSITION_FOLLOWING,
     ).not.toBe(0);
   });
+
+  it("does not auto-scroll expanded thinking to the bottom", () => {
+    const scrollTopSets: number[] = [];
+    const scrollHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollHeight");
+    const scrollTop = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollTop");
+    Object.defineProperty(HTMLElement.prototype, "scrollHeight", {
+      configurable: true,
+      get() {
+        return 123;
+      },
+    });
+    Object.defineProperty(HTMLElement.prototype, "scrollTop", {
+      configurable: true,
+      get() {
+        return 0;
+      },
+      set(value) {
+        scrollTopSets.push(Number(value));
+      },
+    });
+    try {
+      render(
+        <HistoryRoundDetailView
+          round={{
+            waitSeconds: 9,
+            thinking: "第一行\n第二行",
+          }}
+        />,
+      );
+
+      fireEvent.click(screen.getByRole("button", { name: "Thought for 9s" }));
+
+      expect(screen.getByText((content) => content.includes("第一行"))).toBeTruthy();
+      expect(document.querySelector(".thinking-scroll")).toBeTruthy();
+      expect(scrollTopSets).not.toContain(123);
+    } finally {
+      if (scrollHeight) {
+        Object.defineProperty(HTMLElement.prototype, "scrollHeight", scrollHeight);
+      } else {
+        delete (HTMLElement.prototype as Partial<HTMLElement>).scrollHeight;
+      }
+      if (scrollTop) {
+        Object.defineProperty(HTMLElement.prototype, "scrollTop", scrollTop);
+      } else {
+        delete (HTMLElement.prototype as Partial<HTMLElement>).scrollTop;
+      }
+    }
+  });
 });
 
 describe("RoundShell", () => {

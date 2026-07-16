@@ -1730,7 +1730,6 @@ function ThinkingPanel({
   timerText?: string;
 }) {
   const [expanded, setExpanded] = useState(running);
-  const scrollRef = useRef<HTMLDivElement>(null);
   const { t } = useApp();
 
   // Auto-expand when thinking starts, auto-collapse when thinking ends
@@ -1738,12 +1737,6 @@ function ThinkingPanel({
   useEffect(() => {
     setExpanded(running);
   }, [running]);
-
-  useEffect(() => {
-    if (expanded && scrollRef.current) {
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-    }
-  }, [thinkingText, expanded]);
 
   if (!thinkingText.trim()) {
     return null;
@@ -1765,7 +1758,7 @@ function ThinkingPanel({
         </button>
         {expanded && (
           <>
-            <div className="thinking-scroll" ref={scrollRef}>
+            <div className="thinking-scroll">
               <div className="thinking-content">
                 <MarkdownText text={thinkingText} />
               </div>
