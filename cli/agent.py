@@ -2568,7 +2568,9 @@ class Agent:
         return max(1, int(width) - output_indent_width - (1 if output_indent_width else 0))
 
     def _print_conversation_interrupted_banner(self) -> int:
-        msg = "■ Conversation interrupted - tell the model what to do differently. Something went wrong?"
+        from .core.localization import get_display_language, translate
+
+        msg = translate("runtime.conversation_interrupted", get_display_language(self))
         print("")
         try:
             print(_ansi_rgb(msg, 197, 15, 31))
