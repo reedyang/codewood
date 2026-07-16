@@ -520,7 +520,7 @@ function useOutsideClose(open: boolean, onClose: () => void) {
  *  exist solely as a faithful archive of the sub-agent's real interaction
  *  protocol and token statistics.
  */
-function SubAgentSessionView({ session }: { session: import("../api/types").SubAgentSession }) {
+function SubAgentSessionView({ session, now }: { session: import("../api/types").SubAgentSession; now: number }) {
   const { t, state } = useApp();
   const lang = normalizeLang(state?.language);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -707,7 +707,7 @@ function SubAgentSessionView({ session }: { session: import("../api/types").SubA
       {!session.endedAt && (
         <div style={{ marginTop: -12, marginBottom: 0, padding: 0, lineHeight: 1 }}>
           <span className="activity-header running" style={{ display: "inline-flex", alignItems: "center", gap: 8, fontSize: 13, opacity: 0.7 }}>
-            <span className="activity-text marquee">{t("activity.working")}</span>
+            <span className="activity-text marquee">{t("activity.working")} ({formatElapsed(now - new Date(session.startedAt).getTime())})</span>
           </span>
         </div>
       )}
@@ -1290,7 +1290,7 @@ export function ChatView() {
     <div className="chat-view">
       <ChatTitleBar />
       {activeSubAgentSession ? (
-        <SubAgentSessionView session={activeSubAgentSession} />
+        <SubAgentSessionView session={activeSubAgentSession} now={now} />
       ) : subAgentSessionLoading ? (
         <div className="subagent-session-loading">
           <div className="subagent-session-loading-spinner" />
