@@ -654,8 +654,10 @@ class ChatStateManager:
                 for msg in chat.get("messages", []):
                     if isinstance(msg, dict) and msg.get("role") == "assistant" and not msg.get("_clean_content"):
                         raw = str(msg.get("content") or "")
-                        from ..runtime.runtime_loop import _stream_visible_text_with_json_pause
+                        from ..runtime.runtime_loop import _stream_visible_text_with_json_pause, _strip_channel_thought_markers
                         cleaned = _stream_visible_text_with_json_pause(raw, final=True)
+                        if cleaned == raw:
+                            cleaned = _strip_channel_thought_markers(raw)
                         if cleaned != raw:
                             # Record even an empty cleaned form: it signals the
                             # raw content was entirely hidden markers, so the

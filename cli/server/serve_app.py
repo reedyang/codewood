@@ -533,7 +533,8 @@ def _build_structured_turns(agent: Any) -> List[Dict[str, Any]]:
                 current_round["tools"] = "\n".join(tool_rounds) + "\n"
         else:
             rendered = _render_step(idx, msg)
-            if current_round is None or current_round.get("text"):
+            has_own_thinking = bool(str(msg.get("_thinking") or "").strip()) if isinstance(msg, dict) else False
+            if current_round is None or current_round.get("text") or has_own_thinking:
                 current_round = _new_round(turn, wait)
             else:
                 current_round["waitSeconds"] += max(0, int(round(wait)))
@@ -4967,9 +4968,9 @@ class ServeApp:
         # the GUI can show a per-round "Working/Worked" wait timer and lay out
         # model text + tool output for that round in natural order. Scoped to the
         # chat bound to the calling loop thread so parallel chats stay separate.
-        self.agent._gui_round_begin = lambda: self.broadcaster.publish(  # type: ignore[attr-defined]
-            "round_start", self._route()
-        )
+        self.agent._gui_round_begin = lambda: setattr(  # type: ignore[attr-defined]
+            self.agent, "_gui_round_start_mono", time.monotonic()
+        ) or self.broadcaster.publish("round_start", self._route())
         self.agent._gui_round_end = lambda: self.broadcaster.publish(  # type: ignore[attr-defined]
             "round_end",
             self._route(
@@ -4980,6 +4981,9 @@ class ServeApp:
                               or getattr(self.agent, "context_window", 0) or 0),
                 },
                 cacheStats=_compute_chat_cache_stats(self.agent),
+                thinkingElapsedSeconds=round(
+                    time.monotonic() - getattr(self.agent, "_gui_round_start_mono", time.monotonic()), 1
+                ),
             ),
         )
         # Bridge for the GUI-only browser tools: lets a tool send a command to

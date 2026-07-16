@@ -28,6 +28,7 @@ import type {
   SubAgentSession,
   SubAgentsOverview,
   Turn,
+  TurnRound,
   WorkspaceChatSummary,
 } from "../api/types";
 import { normalizeLang, translate, type Lang } from "../i18n";
@@ -1477,7 +1478,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }, []);
 
   // Freeze the current round's wait timer (the model has fully responded).
-  const endRound = useCallback((chatId: string) => {
+  const endRound = useCallback((chatId: string, backendElapsedMs?: number) => {
     if (!chatId) {
       return;
     }
@@ -1495,7 +1496,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
         return prev;
       }
       const rounds = [...turn.rounds];
-      rounds[rounds.length - 1] = { ...lastRound, waitEndedAt: Date.now() };
+      const updated: TurnRound = { ...lastRound, waitEndedAt: Date.now() };
+      if (typeof backendElapsedMs === "number" && backendElapsedMs > 0) {
+        updated.backendElapsedMs = backendElapsedMs;
+      }
+      rounds[rounds.length - 1] = updated;
       const next = [...list];
       next[next.length - 1] = { ...turn, rounds };
       return { ...prev, [chatId]: next };
@@ -1715,11 +1720,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
           break;
         }
         case "round_end": {
-          endRound(eventKey);
+          const roundMeta = event.data as Record<string, unknown>;
+          const backendElapsedS = typeof roundMeta.thinkingElapsedSeconds === "number"
+            ? roundMeta.thinkingElapsedSeconds as number : undefined;
+          endRound(eventKey, backendElapsedS != null ? Math.round(backendElapsedS * 1000) : undefined);
           // Refresh context-usage ring and cache-stats dashboard from the
           // round_end payload so they stay live during a multi-round task
           // instead of freezing until the terminal idle event.
-          const roundMeta = event.data as Record<string, unknown>;
           const cu = roundMeta.contextUsage as
             | { percent?: number; tokens?: number; window?: number }
             | undefined;

@@ -1911,7 +1911,10 @@ function LiveToolGroupView({
     const thinkingRunning = round.waitEndedAt === null && !round.thinkingEndedAt;
     const startedAt = round.thinkingStartedAt ?? round.waitStartedAt;
     const endedAt = round.thinkingEndedAt ?? round.waitEndedAt ?? now;
-    const elapsed = formatElapsed(Math.max(0, endedAt - startedAt));
+    const clientElapsed = formatElapsed(Math.max(0, endedAt - startedAt));
+    const backendMs = (round as unknown as { backendElapsedMs?: number }).backendElapsedMs;
+    const thoughtForElapsed = backendMs != null && backendMs > 0
+      ? formatElapsed(backendMs) : clientElapsed;
     return [
       <ThinkingPanel
         key={`thinking-${round.id}-${index}`}
@@ -1919,8 +1922,8 @@ function LiveToolGroupView({
         running={thinkingRunning}
         timerText={
           thinkingRunning
-            ? `${t("activity.thinking")} (${elapsed})`
-            : `${t("activity.thoughtFor")} ${elapsed}`
+            ? `${t("activity.thinking")} (${clientElapsed})`
+            : `${t("activity.thoughtFor")} ${thoughtForElapsed}`
         }
       />,
     ];
@@ -2343,10 +2346,16 @@ export function LiveRoundView({
           timerText={(() => {
             const startedAt = round.thinkingStartedAt ?? round.waitStartedAt;
             const endedAt = round.thinkingEndedAt ?? round.waitEndedAt ?? now;
-            const elapsed = formatElapsed(endedAt - startedAt);
+            const clientElapsed = formatElapsed(endedAt - startedAt);
+            // When the backend provides its own elapsed measurement (via
+            // round_end.thinkingElapsedSeconds), prefer it so the live view
+            // matches the value shown on history reload.
+            const backendMs = (round as unknown as { backendElapsedMs?: number }).backendElapsedMs;
+            const thoughtForElapsed = backendMs != null && backendMs > 0
+              ? formatElapsed(backendMs) : clientElapsed;
             return thinkingRunning
-              ? `${t("activity.thinking")} (${elapsed})`
-              : `${t("activity.thoughtFor")} ${elapsed}`;
+              ? `${t("activity.thinking")} (${clientElapsed})`
+              : `${t("activity.thoughtFor")} ${thoughtForElapsed}`;
           })()}
         />
       )}
