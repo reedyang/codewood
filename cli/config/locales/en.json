@@ -358,6 +358,7 @@
   "runtime.tool_plan_missing_name": "❌ Tool plan is missing tool name. Ending this round.",
   "runtime.apply_patch_failed": "❌ apply_patch failed: {error}",
   "runtime.user_cancelled_task": "⏹️ User cancellation detected. The current task has been terminated.",
+  "runtime.conversation_interrupted": "■ Conversation interrupted - tell the model what to do differently. Something went wrong?",
   "runtime.request_user_input.default_question": "Please choose how to proceed:",
   "runtime.request_user_input.required": "🙋 Need your input before continuing.",
   "runtime.request_user_input.question": "❓ {question}",
