@@ -1952,7 +1952,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
                   _thinking: ((lastMsg as unknown as { _thinking?: string })._thinking || "") + text,
                 };
               } else {
-                msgs.push({ role: "assistant", content: "", _thinking: text });
+                const newMsg: SubAgentMessage = { role: "assistant", content: "", _thinking: text };
+                // If the previous message is a tool-call placeholder (created by
+                // sub_agent_tool_call before thinking arrived), insert the thinking
+                // message BEFORE it so the display order is: thought → tool calls.
+                if (lastMsg?.role === "assistant" && lastMsg.tool_calls?.length) {
+                  msgs.splice(msgs.length - 1, 0, newMsg);
+                } else {
+                  msgs.push(newMsg);
+                }
               }
               if (!hadThinking && !subAgentThinkingStartRef.current[sessionId]) {
                 subAgentThinkingStartRef.current[sessionId] = Date.now();

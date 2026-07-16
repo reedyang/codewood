@@ -653,7 +653,12 @@ function SubAgentSessionView({ session, now }: { session: import("../api/types")
           const hasMessageToolCalls = !!(msg.tool_calls && msg.tool_calls.length > 0);
           const thinkingRunning = Boolean(thinkingText) && !session.endedAt && isLastAssistant && !hasMessageContent && !hasMessageToolCalls;
 
-          const thinkingNode = thinkingText ? (
+          // When the message carries its own visible answer text, the thinking
+          // belongs to that answer (final-answer round) — skip the standalone
+          // thinking block so it doesn't appear as a spurious "Thought for 0s"
+          // during live streaming.
+          const showThinking = Boolean(thinkingText) && !hasMessageContent;
+          const thinkingNode = showThinking ? (
             <ThinkingPanel
               thinkingText={thinkingText}
               running={thinkingRunning}
