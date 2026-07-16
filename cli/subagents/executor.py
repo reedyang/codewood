@@ -37,6 +37,8 @@ from ..ai.ai_provider_clients import (
 from ..core.config.subagents_loader import DEFAULT_SUBAGENT_MAX_ROUNDS, SubAgentRecord
 from ..core.localization import get_display_language, translate
 from ..core.console_utils import (
+    GUI_CMD_PROMPT_BEGIN,
+    GUI_CMD_PROMPT_END,
     GUI_CMD_OUTPUT_BEGIN,
     GUI_CMD_OUTPUT_END,
     GUI_SUBAGENT_SESSION_BEGIN,
@@ -131,16 +133,18 @@ class SubAgentSessionStore:
         tool_rounds_raw: List[Dict[str, Any]],
         tool_rounds: Optional[List[str]] = None,
     ) -> None:
-        """Attach the structured ``_tool_rounds_raw`` entries (and the rendered
-        ``tool_rounds`` display strings) to the most recent assistant message.
+        """Attach the structured ``_tool_rounds_raw`` entries to the most recent
+        assistant message.
 
         Sub-agent tool calls are recorded with the same shape the main chat
         uses (``{"tool", "args", "failed", "elapsed", "output", ["marker"]}``),
         so the GUI/TUI renderers are shared and descriptions can be re-rendered
-        in any language. The rendered ``tool_rounds`` is persisted too (not just
-        re-derived on reload) because the reload path may run with a different
-        agent instance than the one that executed the sub-agent, and some
-        formatters (e.g. ``read``'s relative-path logic) depend on agent state.
+        in any language. Only ``_tool_rounds_raw`` is persisted — the rendered
+        ``tool_rounds`` display string is NOT stored. The GUI derives both the
+        tool description and the expandable tool output from ``_tool_rounds_raw``
+        on load (the subagent-session-history endpoint re-renders it through the
+        same ``agent._rerender_tool_rounds`` pipeline the main chat uses), so a
+        stale pre-rendered blob can never desync from the structured data.
         """
         if not tool_rounds_raw:
             return
@@ -152,8 +156,9 @@ class SubAgentSessionStore:
             for msg in reversed(session["messages"]):
                 if msg.get("role") == "assistant":
                     msg["_tool_rounds_raw"] = list(tool_rounds_raw)
-                    if tool_rounds:
-                        msg["tool_rounds"] = list(tool_rounds)
+                    # Drop any previously persisted pre-rendered tool_rounds so
+                    # the GUI is forced to re-derive the display from raw data.
+                    msg.pop("tool_rounds", None)
                     break
             chat_id = session.get("_chat_id")
         if chat_id is not None:
@@ -289,9 +294,22 @@ def _render_subagent_tool_round(
         except Exception:
             prompt = ""
     if not prompt:
-        # Fallback if the agent helper is unavailable.
+        # Fallback: derive a human-friendly "• <label> <detail>" line using the
+        # agent's own tool-label logic, so known tools (read, project_context_search,
+        # ...) still read naturally instead of a bare "• <tool>" with no detail.
         bullet = "\u2022"
-        prompt = f"{GUI_CMD_PROMPT_BEGIN}{bullet} {str(tool_name or 'tool')}{GUI_CMD_PROMPT_END}"
+        label = str(tool_name or "tool")
+        detail = ""
+        natural = getattr(agent, "_natural_tool_action", None)
+        humanize = getattr(agent, "_humanize_tool_name", None)
+        try:
+            if callable(natural):
+                label, detail = natural(str(tool_name or "tool"), args if isinstance(args, dict) else {})
+            elif callable(humanize):
+                label = humanize(str(tool_name or "tool"))
+        except Exception:
+            pass
+        prompt = f"{GUI_CMD_PROMPT_BEGIN}{bullet} {label}{(' ' + detail) if detail else ''}{GUI_CMD_PROMPT_END}"
 
     # Extract the human-readable result payload (mirrors the main chat's
     # _build_model_tool_result_history_content).
@@ -916,11 +934,11 @@ def run_subagent(
                 try:
                     _extract = getattr(agent, "_extract_tool_result_output", None)
                     if callable(_extract):
-                        _round_output = _extract(t, r)
+                        _round_output = _extract(str(tool_name), r)
                 except Exception:
                     _round_output = ""
                 raw_entry = {
-                    "tool": t,
+                    "tool": str(tool_name),
                     "args": dict(args) if isinstance(args, dict) else {},
                     "failed": not bool(r.get("success", True)),
                     "elapsed": r.get("_elapsed_seconds"),
@@ -949,31 +967,13 @@ def run_subagent(
                     "toolRound": tool_round,
                 })
 
-            # Attach the structured raw rounds AND the pre-rendered tool_rounds
-            # to the persisted assistant message. ``_tool_rounds_raw`` mirrors the
-            # main session's storage (re-renderable, outputs expandable on
-            # reload); ``tool_rounds`` is the rendered form the GUI consumes
-            # directly, persisted so reload never depends on re-rendering with a
-            # potentially different agent instance.
+            # Persist only the structured ``_tool_rounds_raw``. The GUI derives
+            # both the tool description and the expandable tool output from this
+            # on load (the subagent-session-history endpoint re-renders it through
+            # the same ``agent._rerender_tool_rounds`` pipeline the main chat
+            # uses), so no pre-rendered ``tool_rounds`` blob is stored.
             if round_raw:
-                tool_rounds: List[str] = []
-                try:
-                    tool_rounds = list(agent._rerender_tool_rounds(round_raw))
-                except Exception:
-                    tool_rounds = [
-                        _render_subagent_tool_round(
-                            agent,
-                            str(rt.get("tool") or ""),
-                            rt.get("args", {}) if isinstance(rt.get("args"), dict) else {},
-                            {
-                                "success": not bool(rt.get("failed", False)),
-                                "output": rt.get("output") or "",
-                                "content": rt.get("output") or "",
-                            },
-                        )
-                        for rt in round_raw
-                    ]
-                store.set_assistant_tool_rounds_raw(session_id, round_raw, tool_rounds)
+                store.set_assistant_tool_rounds_raw(session_id, round_raw)
 
         # max_rounds exhausted: return the last text we have.
         output = last_assistant_text or _t(agent, "subagents.error.max_rounds", rounds=max_rounds)

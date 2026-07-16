@@ -33,6 +33,10 @@ import type {
 import { normalizeLang, translate, type Lang } from "../i18n";
 import { MODEL_PRESETS } from "../components/modelPresets";
 import {
+  buildFallbackToolRound,
+  buildFallbackToolRoundFromCall,
+} from "../utils/subagentToolRounds";
+import {
   loadUiPrefs,
   saveUiPrefs,
   toggleId,
@@ -1939,15 +1943,29 @@ export function AppProvider({ children }: { children: ReactNode }) {
           const current = activeSubAgentSessionRef.current;
           if (current && current.id === sessionId) {
             const msgs = [...current.messages];
-            // If toolRound is provided, attach it to the last assistant message
-            if (d.toolRound) {
-              for (let i = msgs.length - 1; i >= 0; i--) {
-                if (msgs[i].role === "assistant") {
-                  const existing = msgs[i].tool_rounds || [];
-                  msgs[i] = { ...msgs[i], tool_rounds: [...existing, d.toolRound] };
-                  break;
-                }
+            // Prefer the backend-rendered toolRound, but synthesize one from
+            // the paired tool_call + tool output when a sub-agent session only
+            // carries raw tool data or the live event omitted the rendered row.
+            for (let i = msgs.length - 1; i >= 0; i--) {
+              const msg = msgs[i];
+              if (!msg || msg.role !== "assistant") {
+                continue;
               }
+              const existing = msg.tool_rounds || [];
+              const nextCall = Array.isArray(msg.tool_calls)
+                ? msg.tool_calls[existing.length]
+                : undefined;
+              const nextRound =
+                d.toolRound ||
+                (
+                  nextCall
+                    ? buildFallbackToolRoundFromCall(nextCall, String(d.text || ""), { lang })
+                    : buildFallbackToolRound(String(d.toolName || ""), {}, String(d.text || ""), "", { lang })
+                );
+              if (nextRound) {
+                msgs[i] = { ...msg, tool_rounds: [...existing, nextRound] };
+              }
+              break;
             }
             msgs.push({
               role: "tool" as const,

@@ -2,6 +2,7 @@
 .code*
 .venv*
 .cursor
+.pnpm-store
 AGENTS.override.md
 dist
 build/codewood

@@ -341,14 +341,34 @@ export interface SubAgentsOverview {
 }
 
 /** A message within a sub-agent session. */
+export interface SubAgentToolCall {
+  name?: string;
+  args?: Record<string, unknown>;
+  function?: {
+    name?: string;
+    arguments?: string | Record<string, unknown>;
+  };
+}
+
+export interface SubAgentToolRoundRaw {
+  tool?: string;
+  args?: Record<string, unknown>;
+  failed?: boolean;
+  elapsed?: number | null;
+  output?: string;
+  marker?: string;
+}
+
 export interface SubAgentMessage {
   role: "system" | "user" | "assistant" | "tool";
   content: string;
-  tool_calls?: { name: string; args: Record<string, unknown> }[];
+  tool_calls?: SubAgentToolCall[];
   /** Rendered tool-round display text (main-chat envelope) attached to an
    *  assistant message that issued tool calls. When present it is rendered
    *  through StepsView instead of the raw tool_calls + tool messages. */
   tool_rounds?: string[];
+  /** Structured raw tool-round records persisted by the backend. */
+  _tool_rounds_raw?: SubAgentToolRoundRaw[];
   name?: string;
   tool_call_id?: string;
 }

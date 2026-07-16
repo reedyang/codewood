@@ -10,6 +10,7 @@ import {
 import { useApp } from "../state/AppContext";
 import { ConsolePanel } from "./ConsolePanel";
 import type { HistoryRound, HistoryTurn, SubAgentMessage, Turn, TurnRound } from "../api/types";
+import { normalizeLang } from "../i18n";
 import { Icon, type IconName } from "./Icon";
 import { MarkdownText } from "./Markdown";
 import { StepsView, countToolCalls, getLastToolPromptBody, textContainsSubAgentSession } from "./Steps";
@@ -22,6 +23,7 @@ import {
   appendImageRefs,
   parseImageRefs,
 } from "../utils/imageRefs";
+import { getSubAgentMessageToolRounds } from "../utils/subagentToolRounds";
 import {
   AttachmentStrip,
   SentImageThumb,
@@ -519,7 +521,8 @@ function useOutsideClose(open: boolean, onClose: () => void) {
  *  protocol and token statistics.
  */
 function SubAgentSessionView({ session }: { session: import("../api/types").SubAgentSession }) {
-  const { t } = useApp();
+  const { t, state } = useApp();
+  const lang = normalizeLang(state?.language);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -559,38 +562,31 @@ function SubAgentSessionView({ session }: { session: import("../api/types").SubA
       // or it carries an empty "_clean_content") is content-less and should be
       // merged into the surrounding "Called N tools" group.
       const msgContent = visibleTextOf(msg).trim();
+      const msgRounds = getSubAgentMessageToolRounds(msg, { lang });
       const isToolOnlyAssistant =
-        msg.role === "assistant" && !msgContent && (!!msg.tool_rounds?.length || !!msg.tool_calls?.length);
+        msg.role === "assistant" && !msgContent && msgRounds.length > 0;
       if (!isToolOnlyAssistant) {
         result.push(msg);
         i++;
         continue;
       }
       const allRounds: string[] = [];
-      const addRound = (
-        rounds: string[] | undefined,
-        calls: { name?: string; function?: { name?: string } }[] | undefined,
-      ) => {
-        if (rounds?.length) {
+      const addRound = (message: SubAgentMessage) => {
+        const rounds = getSubAgentMessageToolRounds(message, { lang });
+        if (rounds.length > 0) {
           allRounds.push(...rounds);
-        } else if (calls?.length) {
-          for (const tc of calls) {
-            // OpenAI-format tool_calls nest the name under ``function.name``.
-            const callName = tc.function?.name || tc.name || "";
-            allRounds.push(`\uE000\u2022 ${callName}\uE001`);
-          }
         }
       };
-      addRound(msg.tool_rounds, msg.tool_calls);
+      addRound(msg);
       let j = i + 1;
       while (j < session.messages.length) {
         const next = session.messages[j];
         if (
           next.role === "assistant" &&
           !visibleTextOf(next).trim() &&
-          (!!next.tool_rounds?.length || !!next.tool_calls?.length)
+          getSubAgentMessageToolRounds(next, { lang }).length > 0
         ) {
-          addRound(next.tool_rounds, next.tool_calls);
+          addRound(next);
           j++;
         } else if (next.role === "tool") {
           j++; // skip tool results — the raw JSON is too verbose for inline display
@@ -646,7 +642,7 @@ function SubAgentSessionView({ session }: { session: import("../api/types").SubA
               <MarkdownText text={displayContent} />
             </div>
           ) : null;
-          const toolRounds = msg.tool_rounds;
+          const toolRounds = getSubAgentMessageToolRounds(msg, { lang });
           if (!answer && !toolRounds?.length) return null;
 
           return (
